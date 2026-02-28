@@ -63,7 +63,7 @@ PLAN ──▶ APPLY ──▶ UNIFY
 None.
 
 ### Git State
-Last commit: (pending — phase commit below)
+Last commit: 16e814a — feat(06-bridge-unification): StateSnapshot JSON as sole unit data source
 Branch: master
 
 ## Session Continuity
