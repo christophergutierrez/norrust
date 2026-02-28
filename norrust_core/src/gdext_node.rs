@@ -1,5 +1,11 @@
+use crate::board::Board;
+use crate::game_state::{apply_action, Action, ActionError, GameState};
+use crate::hex::Hex;
 use crate::loader::Registry;
+use crate::pathfinding::{get_zoc_hexes, reachable_hexes};
 use crate::schema::{TerrainDef, UnitDef};
+use crate::unit::Unit;
+use godot::builtin::PackedInt32Array;
 use godot::prelude::*;
 
 /// GDExtension entry point — registers all Rust classes with Redot.
@@ -16,6 +22,7 @@ pub struct NorRustCore {
     base: Base<Node>,
     units: Option<Registry<UnitDef>>,
     terrain: Option<Registry<TerrainDef>>,
+    game: Option<GameState>,
 }
 
 #[godot_api]
@@ -25,7 +32,28 @@ impl INode for NorRustCore {
             base,
             units: None,
             terrain: None,
+            game: None,
         }
+    }
+}
+
+/// Map an ActionError to a negative integer error code for GDScript.
+///
+/// Codes:
+///   -1 = UnitNotFound
+///   -2 = NotYourTurn
+///   -3 = DestinationOutOfBounds
+///   -4 = DestinationOccupied
+///   -5 = UnitAlreadyMoved
+///   -6 = DestinationUnreachable
+fn action_err_code(e: ActionError) -> i32 {
+    match e {
+        ActionError::UnitNotFound(_)        => -1,
+        ActionError::NotYourTurn            => -2,
+        ActionError::DestinationOutOfBounds => -3,
+        ActionError::DestinationOccupied    => -4,
+        ActionError::UnitAlreadyMoved       => -5,
+        ActionError::DestinationUnreachable => -6,
     }
 }
 
@@ -77,5 +105,195 @@ impl NorRustCore {
             .and_then(|r| r.get(&unit_id.to_string()))
             .map(|u| u.max_hp as i32)
             .unwrap_or(-1)
+    }
+
+    // ── GameState lifecycle ────────────────────────────────────────────────
+
+    /// Create a new game with a `cols × rows` board and a deterministic RNG seed.
+    /// Returns true on success. seed must be > 0.
+    #[func]
+    fn create_game(&mut self, cols: i32, rows: i32, seed: i64) -> bool {
+        if cols <= 0 || rows <= 0 || seed <= 0 {
+            godot_error!("create_game: cols, rows, and seed must all be > 0");
+            return false;
+        }
+        let board = Board::new(cols as u32, rows as u32);
+        self.game = Some(GameState::new_seeded(board, seed as u64));
+        true
+    }
+
+    /// Set the terrain type for the hex at offset (col, row).
+    /// Does nothing if no game has been created.
+    #[func]
+    fn set_terrain_at(&mut self, col: i32, row: i32, terrain_id: GString) {
+        let Some(state) = self.game.as_mut() else { return };
+        state.board.set_terrain(Hex::from_offset(col, row), terrain_id.to_string());
+    }
+
+    /// Place a unit on the board at offset (col, row).
+    /// Copies movement, movement_costs, attacks, and defense from the matching UnitDef
+    /// if data has been loaded. Does nothing if no game has been created.
+    #[func]
+    fn place_unit_at(
+        &mut self,
+        unit_id: i32,
+        def_id: GString,
+        hp: i32,
+        faction: i32,
+        col: i32,
+        row: i32,
+    ) {
+        if self.game.is_none() { return }
+
+        let mut unit = Unit::new(unit_id as u32, def_id.to_string(), hp as u32, faction as u8);
+
+        // Clone stat fields from UnitDef before mutably borrowing game.
+        let def_stats = self.units.as_ref().and_then(|r| r.get(&def_id.to_string())).map(|def| {
+            (def.max_hp, def.movement, def.movement_costs.clone(), def.attacks.clone(), def.defense.clone())
+        });
+
+        if let Some((max_hp, movement, movement_costs, attacks, defense)) = def_stats {
+            unit.max_hp = max_hp;
+            unit.hp = max_hp;
+            unit.movement = movement;
+            unit.movement_costs = movement_costs;
+            unit.attacks = attacks;
+            unit.defense = defense;
+        } else {
+            godot_warn!("place_unit_at: UnitDef '{}' not found, unit uses defaults", def_id);
+        }
+
+        let state = self.game.as_mut().unwrap();
+        state.place_unit(unit, Hex::from_offset(col, row));
+    }
+
+    /// Apply a Move action. Returns 0 on success, a negative error code on failure.
+    /// Error codes: -1=UnitNotFound, -2=NotYourTurn, -3=OutOfBounds,
+    ///              -4=Occupied, -5=AlreadyMoved, -6=Unreachable
+    #[func]
+    fn apply_move(&mut self, unit_id: i32, col: i32, row: i32) -> i32 {
+        let Some(state) = self.game.as_mut() else { return -1 };
+        match apply_action(
+            state,
+            Action::Move {
+                unit_id: unit_id as u32,
+                destination: Hex::from_offset(col, row),
+            },
+        ) {
+            Ok(()) => 0,
+            Err(e) => action_err_code(e),
+        }
+    }
+
+    /// Apply an Attack action. Returns 0 on success, a negative error code on failure.
+    #[func]
+    fn apply_attack(&mut self, attacker_id: i32, defender_id: i32) -> i32 {
+        let Some(state) = self.game.as_mut() else { return -1 };
+        match apply_action(
+            state,
+            Action::Attack {
+                attacker_id: attacker_id as u32,
+                defender_id: defender_id as u32,
+            },
+        ) {
+            Ok(()) => 0,
+            Err(e) => action_err_code(e),
+        }
+    }
+
+    /// Apply an EndTurn action. Returns 0 on success, -1 if no game exists.
+    #[func]
+    fn end_turn(&mut self) -> i32 {
+        let Some(state) = self.game.as_mut() else { return -1 };
+        match apply_action(state, Action::EndTurn) {
+            Ok(()) => 0,
+            Err(e) => action_err_code(e),
+        }
+    }
+
+    // ── GameState queries ──────────────────────────────────────────────────
+
+    /// Returns unit positions as a flat PackedInt32Array: [unit_id, col, row, ...].
+    /// Returns an empty array if no game has been created.
+    #[func]
+    fn get_unit_positions(&self) -> PackedInt32Array {
+        let Some(state) = self.game.as_ref() else {
+            return PackedInt32Array::new();
+        };
+        let mut arr = PackedInt32Array::new();
+        for (&unit_id, &hex) in &state.positions {
+            let (col, row) = hex.to_offset();
+            arr.push(unit_id as i32);
+            arr.push(col);
+            arr.push(row);
+        }
+        arr
+    }
+
+    /// Returns unit data as a flat PackedInt32Array: [unit_id, col, row, faction, hp, ...].
+    /// Groups of 5 integers per unit. Returns an empty array if no game has been created.
+    #[func]
+    fn get_unit_data(&self) -> PackedInt32Array {
+        let Some(state) = self.game.as_ref() else {
+            return PackedInt32Array::new();
+        };
+        let mut arr = PackedInt32Array::new();
+        for (&unit_id, &hex) in &state.positions {
+            let (col, row) = hex.to_offset();
+            let unit = &state.units[&unit_id];
+            arr.push(unit_id as i32);
+            arr.push(col);
+            arr.push(row);
+            arr.push(unit.faction as i32);
+            arr.push(unit.hp as i32);
+        }
+        arr
+    }
+
+    /// Returns the active faction (0 or 1), or -1 if no game exists.
+    #[func]
+    fn get_active_faction(&self) -> i32 {
+        self.game.as_ref().map(|s| s.active_faction as i32).unwrap_or(-1)
+    }
+
+    /// Returns the current turn number, or -1 if no game exists.
+    #[func]
+    fn get_turn(&self) -> i32 {
+        self.game.as_ref().map(|s| s.turn as i32).unwrap_or(-1)
+    }
+
+    /// Returns reachable hexes for a unit as a flat PackedInt32Array: [col, row, ...].
+    /// Uses the unit's movement budget and movement_costs. Returns empty if unit not found.
+    #[func]
+    fn get_reachable_hexes(&self, unit_id: i32) -> PackedInt32Array {
+        let Some(state) = self.game.as_ref() else {
+            return PackedInt32Array::new();
+        };
+        let uid = unit_id as u32;
+        let Some(unit) = state.units.get(&uid) else {
+            return PackedInt32Array::new();
+        };
+        let Some(&start) = state.positions.get(&uid) else {
+            return PackedInt32Array::new();
+        };
+
+        let zoc = get_zoc_hexes(state, unit.faction);
+        let hexes = reachable_hexes(
+            &state.board,
+            &unit.movement_costs,
+            1,
+            start,
+            unit.movement,
+            &zoc,
+            false,
+        );
+
+        let mut arr = PackedInt32Array::new();
+        for hex in hexes {
+            let (col, row) = hex.to_offset();
+            arr.push(col);
+            arr.push(row);
+        }
+        arr
     }
 }

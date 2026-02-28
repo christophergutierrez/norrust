@@ -8,15 +8,15 @@ Five phases take the project from data schema definitions through a fully playab
 
 **v0.1 Initial Release** (v0.1.0)
 Status: In progress
-Phases: 1 of 5 complete
+Phases: 3 of 5 complete
 
 ## Phases
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 1 | Foundation & Data Schema | 3 | ✅ Complete | 2026-02-27 |
-| 2 | The Headless Core | TBD | Not started | - |
-| 3 | The Presentation Layer | TBD | Not started | - |
+| 2 | The Headless Core | 5 | ✅ Complete | 2026-02-27 |
+| 3 | The Presentation Layer | 3 | ✅ Complete | 2026-02-28 |
 | 4 | The Game Loop & Polish | TBD | Not started | - |
 | 5 | AI Hooks & External APIs | TBD | Not started | - |
 

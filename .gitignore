@@ -13,3 +13,19 @@ norrust_client/bin/*.dylib
 # OS artifacts
 .DS_Store
 Thumbs.db
+
+.gitignore
+.paul/*.md
+
+# Setup docs
+ALTERNATIVE.md
+ANALYSIS.md
+MISSSION_CONTROL.md
+REFERENCE.md
+REWRITE_PHASE_1.md
+REWRITE_PHASE_2.md
+REWRITE_PHASE_3.md
+REWRITE_PHASE_4.md
+REWRITE_PHASE_5.md
+REWRITE_PLAN.md
+

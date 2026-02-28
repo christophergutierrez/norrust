@@ -15,21 +15,27 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] TOML data schemas for units and terrain — Phase 1 (fighter, archer, grassland, forest)
 - [x] Redot presentation layer connected via GDExtension — Phase 1 (NorRustCore class, hello world + data query proven)
 - [x] Generic data Registry loadable from disk and queryable from GDScript — Phase 1
+- [x] Rust headless simulation core (hex grid, GameState, unit positions) — Phase 2
+- [x] Hex grid math (axial/cube coordinates, odd-r offset) with A* pathfinding — Phase 2
+- [x] Combat resolution with terrain defense and time-of-day modifiers — Phase 2
+- [x] Zone of Control (ZOC) enforcement — Phase 2
+- [x] Redot TileMap hex grid + mouse → hex coordinate input — Phase 3
+- [x] Unit spawning from Rust GameState, rendered with faction colour and HP — Phase 3
+- [x] Valid move range highlighting queried from Rust (reachable_hexes flood-fill) — Phase 3
+- [x] Action dispatch: Redot → Rust → visual update (move, attack, end turn) — Phase 3
 
 ### Active (In Progress)
 
-- [ ] Rust headless simulation core (hex grid, GameState, unit positions)
-- [ ] Hex grid math (axial/cube coordinates) with A* pathfinding
-- [ ] Combat resolution with terrain defense and time-of-day modifiers
-- [ ] Zone of Control (ZOC) enforcement
 - [ ] Factions TOML schema — deferred from Phase 1
+- [ ] End Turn logic, Time of Day progression, healing — Phase 4
+- [ ] Recruitment UI (select and place units on Castle hexes) — Phase 4
+- [ ] Win/loss condition detection (leader death or turn limits) — Phase 4
+- [ ] Movement interpolation and basic attack animations — Phase 4
 
 ### Planned (Next)
 
-- [ ] Complete game loop: turns, recruitment, win/loss conditions
 - [ ] JSON state serialization for external AI agents
 - [ ] Socket API for external scripts to query state and send actions
-- [ ] Unit and terrain animations in Redot
 
 ### Out of Scope
 
@@ -59,6 +65,12 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | `crate-type = ["cdylib", "rlib"]` | cdylib for Redot loading, rlib for `cargo test` — both needed | 2026-02-27 | Active |
 | `bin/` copy workflow for .so | Godot `res://` cannot traverse `..`; copy .so to `norrust_client/bin/` after build | 2026-02-27 | Active |
 | Return -1 (not panic) for not-found queries | GDScript has no Option type; -1 is clear sentinel for missing data | 2026-02-27 | Active |
+| Cubic hex coordinates + odd-r offset at I/O | All internal hex math in cube coords; convert to/from offset only at board/bridge boundaries | 2026-02-27 | Active |
+| apply_action() mutates GameState in place | Zero-copy, simple API; returns Result<(), ActionError> | 2026-02-27 | Active |
+| movement=0 sentinel → skip pathfinding check | Backward-compat for Unit::new() callers; movement>0 requires valid path | 2026-02-27 | Active |
+| PackedInt32Array 5-tuple for get_unit_data() | Single bridge call: id/col/row/faction/hp per unit; GDScript loops in steps of 5 | 2026-02-28 | Active |
+| Attack branch before reachable-move in _input() | Enemy click = attack intent; reachable click = move — prevents silent move-to-occupied | 2026-02-28 | Active |
+| Copy UnitDef stats into Unit at spawn time | Keeps apply_action() registry-free; phase 3 bridge calls place_unit_at() once per unit | 2026-02-28 | Active |
 
 ## Tech Stack
 
@@ -78,4 +90,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-02-27 after Phase 1*
+*Last updated: 2026-02-28 after Phase 3*
