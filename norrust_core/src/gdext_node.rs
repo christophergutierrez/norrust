@@ -227,45 +227,6 @@ impl NorRustCore {
 
     // ── GameState queries ──────────────────────────────────────────────────
 
-    /// Returns unit positions as a flat PackedInt32Array: [unit_id, col, row, ...].
-    /// Returns an empty array if no game has been created.
-    #[func]
-    fn get_unit_positions(&self) -> PackedInt32Array {
-        let Some(state) = self.game.as_ref() else {
-            return PackedInt32Array::new();
-        };
-        let mut arr = PackedInt32Array::new();
-        for (&unit_id, &hex) in &state.positions {
-            let (col, row) = hex.to_offset();
-            arr.push(unit_id as i32);
-            arr.push(col);
-            arr.push(row);
-        }
-        arr
-    }
-
-    /// Returns unit data as a flat PackedInt32Array: [unit_id, col, row, faction, hp, moved, attacked, ...].
-    /// Groups of 7 integers per unit. Returns an empty array if no game has been created.
-    #[func]
-    fn get_unit_data(&self) -> PackedInt32Array {
-        let Some(state) = self.game.as_ref() else {
-            return PackedInt32Array::new();
-        };
-        let mut arr = PackedInt32Array::new();
-        for (&unit_id, &hex) in &state.positions {
-            let (col, row) = hex.to_offset();
-            let unit = &state.units[&unit_id];
-            arr.push(unit_id as i32);
-            arr.push(col);
-            arr.push(row);
-            arr.push(unit.faction as i32);
-            arr.push(unit.hp as i32);
-            arr.push(unit.moved as i32);
-            arr.push(unit.attacked as i32);
-        }
-        arr
-    }
-
     /// Returns the active faction (0 or 1), or -1 if no game exists.
     #[func]
     fn get_active_faction(&self) -> i32 {

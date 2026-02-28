@@ -4,14 +4,48 @@
 
 Five phases take the project from data schema definitions through a fully playable hex-based strategy game with external AI hooks. The Rust simulation core is built and tested headlessly before any visual work begins; Redot rendering is layered on top once the core is proven.
 
-## Current Milestone
+## Previous Milestone
+
+**v0.2 Bridge Unification** (v0.2.0)
+Status: ✅ Complete
+Phases: 1 of 1 complete
+Released: 2026-02-28
+
+## v0.2 Phases
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 6 | Bridge Unification | 1 | ✅ Complete | 2026-02-28 |
+
+## v0.2 Phase Details
+
+### Phase 6: Bridge Unification ✅
+
+**Goal:** Eliminate dual state extraction and magic array indices — `StateSnapshot` JSON becomes
+the sole source of truth for unit data in both GDScript and external AI clients.
+**Depends on:** Phase 5 (get_state_json() bridge stable)
+**Completed:** 2026-02-28
+
+**Plans:**
+- [x] 06-01: Remove flat array bridge methods, refactor GDScript to parse JSON snapshot
+
+**Delivered:**
+- `get_unit_data()` and `get_unit_positions()` removed from gdext_node.rs
+- `_parse_state()` helper: single JSON parse per draw/input cycle
+- `_draw_units()` and `_build_unit_pos_map()` use named dictionary keys (`unit["hp"]`, etc.)
+- `RH_STRIDE`, `RH_COL`, `RH_ROW` constants guard `get_reachable_hexes()` boundary
+- Visual regression: none — game renders identically
+
+---
+
+## Previous Milestone
 
 **v0.1 Initial Release** (v0.1.0)
 Status: ✅ Complete
 Phases: 5 of 5 complete
 Released: 2026-02-28
 
-## Phases
+## v0.1 Phases
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
@@ -21,7 +55,7 @@ Released: 2026-02-28
 | 4 | The Game Loop & Polish | 4 | ✅ Complete | 2026-02-28 |
 | 5 | AI Hooks & External APIs | 1 | ✅ Complete | 2026-02-28 |
 
-## Phase Details
+## v0.1 Phase Details
 
 ### Phase 1: Foundation & Data Schema ✅
 
@@ -40,44 +74,30 @@ Released: 2026-02-28
 - `NorRustCore` GodotClass with `load_data()` + `get_unit_max_hp()`
 - Round-trip proven: Disk → TOML → Rust → GDScript
 
-### Phase 2: The Headless Core
+### Phase 2: The Headless Core ✅
 
 **Goal:** Play the game in the terminal/tests — full simulation logic with no graphics.
-**Depends on:** Phase 1 (Rust project and data schemas)
-**Research:** Likely (hex coordinate systems, A* with ZOC, Wesnoth combat math)
-**Research topics:** Axial vs cube hex coords, ZOC skirmisher rules, time-of-day damage tables
+**Completed:** 2026-02-27
 
-**Scope:**
-- Hex grid coordinate system (axial or cube)
-- `GameState` struct (board, units, HP, current turn)
-- A* pathfinding respecting terrain costs and ZOC
-- Combat resolution (RNG, terrain defense, time-of-day)
-- Exhaustive Rust unit tests for pathfinding and combat
+**Delivered:**
+- Cubic hex coordinate system (odd-r offset at I/O boundaries)
+- `GameState` struct with A* pathfinding, ZOC, unit placement
+- Combat resolution: RNG, terrain defense, time-of-day modifiers, resistances
+- 30+ Rust unit tests
 
-**Plans:**
-- Plans to be defined during `/paul:plan`
-
-### Phase 3: The Presentation Layer
+### Phase 3: The Presentation Layer ✅
 
 **Goal:** See the game and click things — visual rendering connected to Rust core.
-**Depends on:** Phase 2 (working headless core)
-**Research:** Likely (Redot TileMap hex configuration, GDExtension data bridge)
+**Completed:** 2026-02-28
 
-**Scope:**
-- Redot TileMap configured for hexagons
-- Map loading: GDScript/Rust bridge to draw from config
-- Unit spawning from Rust `GameState`
-- Mouse → hex coordinate input handling
-- Valid move range highlighting (queried from Rust)
-- Action dispatch: Redot → Rust → visual update
-
-**Plans:**
-- Plans to be defined during `/paul:plan`
+**Delivered:**
+- Redot TileMap hex grid, mouse → hex coordinate input
+- Unit spawning, faction colours, HP display, move range highlighting
+- Action dispatch: Redot → Rust → visual update (move, attack, end turn)
 
 ### Phase 4: The Game Loop & Polish ✅
 
 **Goal:** A complete, playable match from start to win/loss.
-**Depends on:** Phase 3 (visual layer working)
 **Completed:** 2026-02-28
 
 **Plans:**
@@ -92,15 +112,9 @@ Released: 2026-02-28
 - Visual polish: exhausted unit dimming, colored HUD, village gold-tan hexes
 - Rust as terrain source of truth: `get_terrain_at()` bridge drives `_draw()`
 
-**Deferred (scope trimmed):**
-- Recruitment UI + castle hexes — future milestone
-- Movement/attack animations — future milestone
-- Village capture/ownership — future milestone
-
 ### Phase 5: AI Hooks & External APIs ✅
 
 **Goal:** Open the doors for the machines — clean external interfaces for AI agents.
-**Depends on:** Phase 4 (complete game loop)
 **Completed:** 2026-02-28
 
 **Plans:**
@@ -112,8 +126,5 @@ Released: 2026-02-28
 - `apply_action_json(json)` bridge: action submission from external clients (-99 on parse error)
 - 6 new unit tests; serde_json dependency added
 
-**Deferred:**
-- Socket/TCP server — JSON layer is ready; transport layer is future work
-
 ---
-*Roadmap created: 2026-02-27*
+*Roadmap updated: 2026-02-28 — v0.2 milestone created*

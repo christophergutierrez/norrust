@@ -33,6 +33,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Terrain-driven rendering via get_terrain_at() bridge (Rust as source of truth) — Phase 4 (04-04)
 - [x] JSON state serialization (StateSnapshot) + action deserialization (ActionRequest) — Phase 5 (05-01)
 - [x] get_state_json() + apply_action_json() GDExtension bridge for external AI clients — Phase 5 (05-01)
+- [x] StateSnapshot JSON as sole unit data source: flat array bridge methods removed, GDScript uses named dict keys — Phase 6 (06-01)
+- [x] Named stride constants (RH_STRIDE/RH_COL/RH_ROW) for get_reachable_hexes() boundary — Phase 6 (06-01)
 
 ### Active (In Progress / Deferred)
 
@@ -72,7 +74,7 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | Cubic hex coordinates + odd-r offset at I/O | All internal hex math in cube coords; convert to/from offset only at board/bridge boundaries | 2026-02-27 | Active |
 | apply_action() mutates GameState in place | Zero-copy, simple API; returns Result<(), ActionError> | 2026-02-27 | Active |
 | movement=0 sentinel → skip pathfinding check | Backward-compat for Unit::new() callers; movement>0 requires valid path | 2026-02-27 | Active |
-| PackedInt32Array 7-tuple for get_unit_data() | id/col/row/faction/hp/moved/attacked per unit; exhaustion state queryable from GDScript | 2026-02-28 | Active |
+| PackedInt32Array 7-tuple for get_unit_data() | id/col/row/faction/hp/moved/attacked per unit; exhaustion state queryable from GDScript | 2026-02-28 | Superseded (v0.2) |
 | Attack branch before reachable-move in _input() | Enemy click = attack intent; reachable click = move — prevents silent move-to-occupied | 2026-02-28 | Active |
 | Copy UnitDef stats into Unit at spawn time | Keeps apply_action() registry-free; phase 3 bridge calls place_unit_at() once per unit | 2026-02-28 | Active |
 | Board.healing_map cached at set_terrain_at() | EndTurn healing needs no registry access; healing values stored on board at terrain-set time | 2026-02-28 | Active |
@@ -82,6 +84,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | StateSnapshot DTO (not Serialize on GameState) | GameState has HashMap<Hex,_> keys + SmallRng — neither serializes cleanly via derive | 2026-02-28 | Active |
 | #[serde(tag="action")] internally-tagged ActionRequest | Idiomatic JSON discriminated union; human-readable for AI clients | 2026-02-28 | Active |
 | -99 JSON parse error sentinel | Distinct from ActionError codes -1..-7; AI clients can distinguish bad JSON from rejected actions | 2026-02-28 | Active |
+| StateSnapshot JSON as sole GDScript unit data source | Eliminates dual extraction + magic integer indices; GDScript uses unit["hp"] etc. | 2026-02-28 | Active |
+| get_reachable_hexes() stays as PackedInt32Array | Coordinate pairs are minimal; JSON overhead not justified — RH_* constants guard the boundary instead | 2026-02-28 | Active |
+| Single _parse_state() call per frame/input | JSON parsed once; Dictionary passed to all helpers — avoids double-parse within a draw/input cycle | 2026-02-28 | Active |
 
 ## Tech Stack
 
@@ -101,4 +106,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-02-28 after Phase 5 (v0.1 milestone complete)*
+*Last updated: 2026-02-28 after Phase 6 (v0.2 milestone complete)*

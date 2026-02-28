@@ -17,6 +17,11 @@ const COLOR_GRASSLAND = Color(0.29, 0.49, 0.31)  # #4a7c4e
 const COLOR_FOREST    = Color(0.18, 0.35, 0.15)  # #2d5927
 const COLOR_VILLAGE   = Color(0.72, 0.60, 0.25)  # gold-tan
 
+# Stride constants for get_reachable_hexes() — returns [col, row, col, row, ...]
+const RH_STRIDE = 2
+const RH_COL    = 0
+const RH_ROW    = 1
+
 var _core: NorRustCore
 var _tile_map: TileMap
 var _selected_unit_id: int = -1
@@ -77,7 +82,14 @@ func _center_camera() -> void:
 	) / 2.0
 	_tile_map.position = screen_centre - board_centre
 
+func _parse_state() -> Dictionary:
+	var json_str = _core.get_state_json()
+	var parsed = JSON.parse_string(json_str)
+	return parsed if parsed != null else {}
+
 func _draw() -> void:
+	var state = _parse_state()
+
 	# 1. Terrain hexes
 	for col in range(BOARD_COLS):
 		for row in range(BOARD_ROWS):
@@ -99,16 +111,15 @@ func _draw() -> void:
 
 	# 3. Selected unit outline (white polyline ring)
 	if _selected_unit_id != -1:
-		var pos_map = _build_unit_pos_map()
-		for cell in pos_map:
-			if pos_map[cell][0] == _selected_unit_id:
-				var center = _tile_map.map_to_local(cell) + _tile_map.position
+		for unit in state.get("units", []):
+			if unit["id"] == _selected_unit_id:
+				var center = _tile_map.map_to_local(Vector2i(unit["col"], unit["row"])) + _tile_map.position
 				var pts = _hex_polygon(center, HEX_RADIUS)
 				pts.append(pts[0])   # close the loop
 				draw_polyline(pts, Color.WHITE, 2.5)
 
 	# 4. Unit circles + HP text
-	_draw_units()
+	_draw_units(state)
 
 	# 5. Win overlay
 	if _game_over:
@@ -140,15 +151,13 @@ func _draw() -> void:
 			-1, 14, faction_color
 		)
 
-func _draw_units() -> void:
-	var data = _core.get_unit_data()
-	var i = 0
-	while i + 7 <= data.size():
-		var col      = data[i + 1]
-		var row      = data[i + 2]
-		var faction  = data[i + 3]
-		var hp       = data[i + 4]
-		var exhausted = data[i + 5] == 1 or data[i + 6] == 1
+func _draw_units(state: Dictionary) -> void:
+	for unit in state.get("units", []):
+		var col      = unit["col"]
+		var row      = unit["row"]
+		var faction  = unit["faction"]
+		var hp       = unit["hp"]
+		var exhausted = unit["moved"] or unit["attacked"]
 		var center   = _tile_map.map_to_local(Vector2i(col, row)) + _tile_map.position
 		var alpha    = 0.4 if exhausted else 1.0
 		var color    = Color(0.25, 0.42, 0.88, alpha) if faction == 0 else Color(0.80, 0.12, 0.12, alpha)
@@ -160,20 +169,12 @@ func _draw_units() -> void:
 			HORIZONTAL_ALIGNMENT_LEFT,
 			-1, 13, Color.WHITE
 		)
-		i += 7
 
-func _build_unit_pos_map() -> Dictionary:
+func _build_unit_pos_map(state: Dictionary) -> Dictionary:
 	# Returns Dictionary: Vector2i(col, row) -> [unit_id, faction]
 	var result: Dictionary = {}
-	var data = _core.get_unit_data()
-	var i = 0
-	while i + 7 <= data.size():
-		var uid     = data[i]
-		var col     = data[i + 1]
-		var row     = data[i + 2]
-		var faction = data[i + 3]
-		result[Vector2i(col, row)] = [uid, faction]
-		i += 7
+	for unit in state.get("units", []):
+		result[Vector2i(unit["col"], unit["row"])] = [unit["id"], unit["faction"]]
 	return result
 
 func _clear_selection() -> void:
@@ -226,7 +227,8 @@ func _input(event: InputEvent) -> void:
 		return
 
 	var clicked_cell = Vector2i(col, row)
-	var pos_map      = _build_unit_pos_map()
+	var state        = _parse_state()
+	var pos_map      = _build_unit_pos_map(state)
 	var active       = _core.get_active_faction()
 
 	if _selected_unit_id != -1 and clicked_cell in pos_map and pos_map[clicked_cell][1] != active:
@@ -252,8 +254,8 @@ func _input(event: InputEvent) -> void:
 		_selected_unit_id = uid
 		var raw = _core.get_reachable_hexes(uid)
 		_reachable_cells = []
-		for k in range(0, raw.size(), 2):
-			_reachable_cells.append(Vector2i(raw[k], raw[k + 1]))
+		for k in range(0, raw.size(), RH_STRIDE):
+			_reachable_cells.append(Vector2i(raw[k + RH_COL], raw[k + RH_ROW]))
 		queue_redraw()
 
 	else:

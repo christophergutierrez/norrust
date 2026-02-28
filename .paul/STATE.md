@@ -5,25 +5,25 @@
 See: .paul/PROJECT.md (updated 2026-02-28)
 
 **Core value:** A playable hex-based strategy game where simulation logic is strictly separated from presentation, enabling human players and AI agents to use the same clean engine.
-**Current focus:** v0.1 COMPLETE — all 5 phases shipped
+**Current focus:** v0.2 — Bridge Unification (COMPLETE)
 
 ## Current Position
 
-Milestone: v0.1 Initial Release — ✅ COMPLETE
-Phase: 5 of 5 (AI Hooks & External APIs) — Complete
-Plan: 05-01 unified
-Status: Milestone complete — ready for v0.2 planning
-Last activity: 2026-02-28 — Phase 5 complete, v0.1 milestone closed
+Milestone: v0.2 Bridge Unification — ✅ COMPLETE
+Phase: 6 of 6 (Bridge Unification) — Complete
+Plan: 06-01 complete
+Status: v0.2 milestone complete — ready for v0.3 planning
+Last activity: 2026-02-28 — Phase 6 complete; v0.2 milestone closed
 
 Progress:
-- Milestone: [████████████████████] 100%
-- Phase 5:   [████████████████████] 100%
+- Milestone v0.2: [██████████] 100%
+- Phase 6:        [██████████] 100%
 
 ## Loop Position
 
 ```
 PLAN ──▶ APPLY ──▶ UNIFY
-  ✓        ✓        ✓     [v0.1 milestone complete]
+  ✓        ✓        ✓     [Loop complete — v0.2 milestone done]
 ```
 
 ## Accumulated Context
@@ -38,43 +38,39 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | `bin/` copy workflow for .so | Phase 1 | After `cargo build`: `cp target/debug/libnorrust_core.so ../norrust_client/bin/` |
 | Return -1 (not panic) for not-found GDScript queries | Phase 1 | GDScript has no Option; -1 = sentinel for missing data |
 | Cubic hex coordinates (x+y+z=0) as canonical type | Phase 2 | All hex math internal; offset only at I/O boundaries |
-| Odd-r offset (pointy-top) for Board/map | Phase 2 | Matches Wesnoth map convention |
-| Unit instance (Unit) separate from blueprint (UnitDef) | Phase 2 | GameState owns runtime Unit; def_id string links to Registry at lookup time |
 | apply_action mutates &mut GameState in place | Phase 2 | Zero-copy, simpler API; returns Result<(), ActionError> |
-| 99 = impassable movement cost convention | Phase 2 | Matches UnitDef.movement_costs schema; skip terrain with cost >= 99 |
-| Unit carries combat data (attacks, defense map) | Phase 2 | Avoids registry coupling in apply_action(Attack); caller copies from UnitDef at spawn |
-| PackedInt32Array 7-tuple for get_unit_data() | Phase 4 | id/col/row/faction/hp/moved/attacked; GDScript loops in steps of 7 |
-| Copy UnitDef stats into Unit at spawn time | Phase 3 | place_unit_at() enriches Unit before insertion; apply_action() stays registry-free |
+| Unit carries combat data (attacks, defense map) | Phase 2 | Avoids registry coupling in apply_action(Attack) |
 | Board.healing_map cached at set_terrain_at() | Phase 4 | EndTurn healing needs no registry access |
-| Unit carries resistances map | Phase 4 | Copied from UnitDef at spawn; combat resistance lookup registry-free |
-| get_terrain_at() bridge: Rust is terrain source of truth | Phase 4 | _draw() queries Rust per hex; new terrain types need zero GDScript changes |
-| StateSnapshot DTO (not Serialize on GameState) | Phase 5 | GameState has HashMap<Hex,_> + SmallRng — neither serializes cleanly via derive |
-| #[serde(tag="action")] internally-tagged ActionRequest | Phase 5 | Idiomatic JSON for AI clients; human-readable discriminated union |
-| -99 JSON parse error sentinel | Phase 5 | Distinct from ActionError codes -1..-7; AI clients can distinguish bad JSON from rejected actions |
+| get_terrain_at() bridge: Rust is terrain source of truth | Phase 4 | _draw() queries Rust per hex |
+| StateSnapshot DTO (not Serialize on GameState) | Phase 5 | Clean JSON; avoids HashMap<Hex,_> + SmallRng issues |
+| #[serde(tag="action")] internally-tagged ActionRequest | Phase 5 | Idiomatic JSON for AI clients |
+| -99 JSON parse error sentinel | Phase 5 | Distinct from ActionError codes -1..-7 |
+| StateSnapshot JSON as sole GDScript unit data source | Phase 6 | get_unit_data/get_unit_positions removed; unit["hp"] etc. |
+| get_reachable_hexes() stays PackedInt32Array + RH_* constants | Phase 6 | Coordinate pairs are minimal; JSON overhead unjustified |
+| Single _parse_state() per draw/input cycle | Phase 6 | JSON parsed once; Dictionary passed to all helpers |
 
 ### Deferred Issues
 
 | Issue | Origin | Effort | Revisit |
 |-------|--------|--------|---------|
-| `factions.toml` schema not designed | Phase 1 | S | v0.2 |
-| Skirmisher flag on Unit | Phase 2 | S | v0.2 |
-| No recruitment / gold / castle system | Phase 3 | L | v0.2 |
-| Movement/attack animations | Phase 4 | M | v0.2 |
-| Village capture/ownership mechanic | Phase 4 | M | v0.2 |
-| Socket/TCP server for external Python agents | Phase 5 | M | v0.2 |
+| `factions.toml` schema not designed | Phase 1 | S | v0.3+ |
+| No recruitment / gold / castle system | Phase 3 | L | v0.3+ |
+| Movement/attack animations | Phase 4 | M | v0.3+ |
+| Village capture/ownership mechanic | Phase 4 | M | v0.3+ |
+| Socket/TCP server for external Python agents | Phase 5 | M | v0.3+ |
 
 ### Blockers/Concerns
 None.
 
 ### Git State
-Last commit: 8041de9 — feat(05-ai-hooks): JSON state export + action submission bridge — v0.1 complete
+Last commit: (pending — phase commit below)
 Branch: master
 
 ## Session Continuity
 
 Last session: 2026-02-28
-Stopped at: v0.1 milestone complete — all 5 phases unified
-Next action: /paul:milestone to start v0.2, or /paul:discuss-milestone to explore next goals
+Stopped at: v0.2 milestone complete — all phases unified
+Next action: /paul:discuss-milestone or /paul:milestone for v0.3
 Resume file: .paul/ROADMAP.md
 
 ---
