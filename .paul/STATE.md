@@ -70,8 +70,7 @@ PLAN ──▶ APPLY ──▶ UNIFY
 None.
 
 ### Git State
-Last commit: 7219e8e — feat(04-01-game-loop): adjacency enforcement, retaliation, win/loss detection
-Phase 4 work: uncommitted (04-02 through 04-04 changes pending phase commit)
+Last commit: 6e0f8a8 — feat(04-game-loop-polish): complete game loop with combat, healing, HUD, and villages
 Branch: master
 
 ## Session Continuity
