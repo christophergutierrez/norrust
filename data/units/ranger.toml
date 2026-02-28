@@ -1,0 +1,43 @@
+id = "ranger"
+name = "Ranger"
+level = 2
+experience = 80
+advances_to = []
+max_hp = 38
+movement = 6
+
+[[attacks]]
+id = "bow"
+name = "Bow"
+damage = 7
+strikes = 4
+attack_type = "pierce"
+range = "ranged"
+
+[[attacks]]
+id = "short_sword"
+name = "Short Sword"
+damage = 5
+strikes = 2
+attack_type = "blade"
+range = "melee"
+
+[resistances]
+blade = -10
+pierce = -10
+impact = -10
+fire = 0
+cold = 0
+arcane = -20
+
+[movement_costs]
+grassland = 1
+forest = 1
+mountain = 2
+water = 99
+
+[defense]
+grassland = 40
+forest = 70
+mountain = 50
+water = 30

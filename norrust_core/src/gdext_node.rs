@@ -162,10 +162,10 @@ impl NorRustCore {
 
         // Clone stat fields from UnitDef before mutably borrowing game.
         let def_stats = self.units.as_ref().and_then(|r| r.get(&def_id.to_string())).map(|def| {
-            (def.max_hp, def.movement, def.movement_costs.clone(), def.attacks.clone(), def.defense.clone(), def.resistances.clone())
+            (def.max_hp, def.movement, def.movement_costs.clone(), def.attacks.clone(), def.defense.clone(), def.resistances.clone(), def.experience)
         });
 
-        if let Some((max_hp, movement, movement_costs, attacks, defense, resistances)) = def_stats {
+        if let Some((max_hp, movement, movement_costs, attacks, defense, resistances, experience)) = def_stats {
             unit.max_hp = max_hp;
             unit.hp = max_hp;
             unit.movement = movement;
@@ -173,6 +173,7 @@ impl NorRustCore {
             unit.attacks = attacks;
             unit.defense = defense;
             unit.resistances = resistances;
+            unit.xp_needed = experience;
         } else {
             godot_warn!("place_unit_at: UnitDef '{}' not found, unit uses defaults", def_id);
         }

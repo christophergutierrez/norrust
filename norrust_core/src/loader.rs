@@ -113,18 +113,29 @@ mod tests {
     fn test_unit_registry_loads() {
         let dir = data_dir().join("units");
         let registry: Registry<UnitDef> = Registry::load_from_dir(&dir).unwrap();
-        assert_eq!(registry.len(), 2);
+        assert_eq!(registry.len(), 4); // fighter, archer, hero, ranger
 
         let fighter = registry.get("fighter").expect("fighter not found");
         assert_eq!(fighter.max_hp, 30);
         assert_eq!(fighter.movement, 5);
         assert_eq!(fighter.attacks[0].damage, 7);
         assert_eq!(fighter.attacks[0].strikes, 3);
+        assert_eq!(fighter.level, 1);
+        assert_eq!(fighter.experience, 40);
+        assert_eq!(fighter.advances_to, vec!["hero"]);
 
         let archer = registry.get("archer").expect("archer not found");
         assert_eq!(archer.max_hp, 25);
         assert_eq!(archer.attacks[0].damage, 5);
         assert_eq!(archer.attacks[0].strikes, 4);
+
+        let hero = registry.get("hero").expect("hero not found");
+        assert_eq!(hero.max_hp, 45);
+        assert_eq!(hero.level, 2);
+
+        let ranger = registry.get("ranger").expect("ranger not found");
+        assert_eq!(ranger.max_hp, 38);
+        assert_eq!(ranger.level, 2);
     }
 
     #[test]

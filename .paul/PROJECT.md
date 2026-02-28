@@ -35,6 +35,10 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] get_state_json() + apply_action_json() GDExtension bridge for external AI clients — Phase 5 (05-01)
 - [x] StateSnapshot JSON as sole unit data source: flat array bridge methods removed, GDScript uses named dict keys — Phase 6 (06-01)
 - [x] Named stride constants (RH_STRIDE/RH_COL/RH_ROW) for get_reachable_hexes() boundary — Phase 6 (06-01)
+- [x] UnitDef advancement schema: level, experience, advances_to in TOML (serde default) — Phase 7 (07-01)
+- [x] Unit runtime XP fields: xp, xp_needed, advancement_pending; xp_needed set at spawn — Phase 7 (07-01)
+- [x] UnitSnapshot JSON exposes xp/xp_needed/advancement_pending for GDScript and AI clients — Phase 7 (07-01)
+- [x] Level-2 unit definitions: hero.toml (fighter→hero) and ranger.toml (archer→ranger) — Phase 7 (07-01)
 
 ### Active (In Progress / Deferred)
 
@@ -87,6 +91,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | StateSnapshot JSON as sole GDScript unit data source | Eliminates dual extraction + magic integer indices; GDScript uses unit["hp"] etc. | 2026-02-28 | Active |
 | get_reachable_hexes() stays as PackedInt32Array | Coordinate pairs are minimal; JSON overhead not justified — RH_* constants guard the boundary instead | 2026-02-28 | Active |
 | Single _parse_state() call per frame/input | JSON parsed once; Dictionary passed to all helpers — avoids double-parse within a draw/input cycle | 2026-02-28 | Active |
+| #[serde(default)] on UnitDef advancement fields | level/experience/advances_to optional in TOML; existing files load without changes | 2026-02-28 | Active |
+| xp_needed copied at place_unit_at() from registry | Runtime Unit is registry-free; same pattern as attacks/resistances/defense | 2026-02-28 | Active |
+| advancement_pending is data-only in Phase 7 | Field set/cleared in Phase 8 (combat XP gain + Action::Advance); no premature logic | 2026-02-28 | Active |
 
 ## Tech Stack
 
@@ -106,4 +113,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-02-28 after Phase 6 (v0.2 milestone complete)*
+*Last updated: 2026-02-28 after Phase 7 (v0.3 advancement schema complete)*

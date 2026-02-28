@@ -1,5 +1,8 @@
 id = "archer"
 name = "Archer"
+level = 1
+experience = 40
+advances_to = ["ranger"]
 max_hp = 25
 movement = 5
 

@@ -10,20 +10,20 @@ See: .paul/PROJECT.md (updated 2026-02-28)
 ## Current Position
 
 Milestone: v0.3 Unit Advancement
-Phase: 7 of 9 (Advancement Schema) — Not started
+Phase: 8 of 9 (XP & Advancement Logic) — Not started
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-02-28 — v0.3 milestone created
+Last activity: 2026-02-28 — Phase 7 complete, transitioned to Phase 8
 
 Progress:
-- Milestone v0.3: [░░░░░░░░░░] 0%
-- Phase 7:        [░░░░░░░░░░] 0%
+- Milestone v0.3: [███░░░░░░░] ~33%
+- Phase 7:        [██████████] 100% ✅
 
 ## Loop Position
 
 ```
 PLAN ──▶ APPLY ──▶ UNIFY
-  ○        ○        ○     [Ready for first PLAN]
+  ✓        ✓        ✓     [Loop complete — ready for Phase 8 PLAN]
 ```
 
 ## Accumulated Context
@@ -48,6 +48,9 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | StateSnapshot JSON as sole GDScript unit data source | Phase 6 | get_unit_data/get_unit_positions removed; unit["hp"] etc. |
 | get_reachable_hexes() stays PackedInt32Array + RH_* constants | Phase 6 | Coordinate pairs are minimal; JSON overhead unjustified |
 | Single _parse_state() per draw/input cycle | Phase 6 | JSON parsed once; Dictionary passed to all helpers |
+| #[serde(default)] on UnitDef advancement fields | Phase 7 | Existing TOML files load without modification |
+| xp_needed copied at place_unit_at() from registry | Phase 7 | Runtime Unit stays registry-free; same pattern as attacks/resistances |
+| advancement_pending data-only in Phase 7 | Phase 7 | Logic (set/clear) is Phase 8 work; no premature coupling |
 
 ### Deferred Issues
 
@@ -63,14 +66,14 @@ PLAN ──▶ APPLY ──▶ UNIFY
 None.
 
 ### Git State
-Last commit: 16e814a — feat(06-bridge-unification): StateSnapshot JSON as sole unit data source
+Last commit: TBD — feat(07-advancement-schema): pending phase commit
 Branch: master
 
 ## Session Continuity
 
 Last session: 2026-02-28
-Stopped at: v0.3 milestone created — ready to plan Phase 7
-Next action: /paul:plan for Phase 7 (Advancement Schema)
+Stopped at: Phase 7 complete — ready to plan Phase 8
+Next action: /paul:plan for Phase 8 (XP & Advancement Logic)
 Resume file: .paul/ROADMAP.md
 
 ---

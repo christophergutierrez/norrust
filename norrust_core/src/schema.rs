@@ -1,6 +1,8 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
+fn default_level() -> u8 { 1 }
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct AttackDef {
     pub id: String,
@@ -26,6 +28,15 @@ pub struct UnitDef {
     pub movement_costs: HashMap<String, u32>,
     /// terrain_id -> defense percentage
     pub defense: HashMap<String, u32>,
+    /// Unit tier — 1 = base, 2 = advanced, etc.
+    #[serde(default = "default_level")]
+    pub level: u8,
+    /// XP required to advance to the next unit type.
+    #[serde(default)]
+    pub experience: u32,
+    /// Unit type IDs this unit can advance into (empty = no advancement).
+    #[serde(default)]
+    pub advances_to: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

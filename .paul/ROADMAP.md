@@ -8,25 +8,35 @@ Five phases take the project from data schema definitions through a fully playab
 
 **v0.3 Unit Advancement** (v0.3.0)
 Status: 🚧 In progress
-Phases: 0 of 3 complete
+Phases: 1 of 3 complete
 
 ## v0.3 Phases
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
-| 7 | Advancement Schema | TBD | Not started | - |
+| 7 | Advancement Schema | 1 | ✅ Complete | 2026-02-28 |
 | 8 | XP & Advancement Logic | TBD | Not started | - |
 | 9 | Advancement Presentation | TBD | Not started | - |
 
 ## v0.3 Phase Details
 
-### Phase 7: Advancement Schema
+### Phase 7: Advancement Schema ✅
 
 **Goal:** Extend data definitions and runtime structs to carry advancement information — TOML files
-gain `experience`, `advances_to`, `level`; `Unit` gains `xp` and `advancement_pending`;
-`UnitSnapshot` JSON exposes both for GDScript.
+gain `experience`, `advances_to`, `level`; `Unit` gains `xp`, `xp_needed`, and `advancement_pending`;
+`UnitSnapshot` JSON exposes all three for GDScript and AI clients.
 **Depends on:** Phase 6 (StateSnapshot JSON as sole unit data source)
-**Plans:** TBD (defined during `/paul:plan`)
+**Completed:** 2026-02-28
+
+**Plans:**
+- [x] 07-01: UnitDef schema, TOML data files, Unit runtime struct, UnitSnapshot JSON
+
+**Delivered:**
+- `UnitDef`: `level`, `experience`, `advances_to` — all `#[serde(default)]`
+- `data/units/fighter.toml` + `archer.toml`: level 1, experience=40, advances_to set
+- `data/units/hero.toml` + `ranger.toml`: new level-2 definitions with dual-attack loadouts
+- `Unit`: `xp`, `xp_needed`, `advancement_pending` runtime fields; `xp_needed` set at spawn
+- `UnitSnapshot` JSON: exposes all XP/advancement fields; 37 tests passing
 
 ### Phase 8: XP & Advancement Logic
 
@@ -167,4 +177,4 @@ Released: 2026-02-28
 - 6 new unit tests; serde_json dependency added
 
 ---
-*Roadmap updated: 2026-02-28 — v0.2 milestone created*
+*Roadmap updated: 2026-02-28 — Phase 7 complete*

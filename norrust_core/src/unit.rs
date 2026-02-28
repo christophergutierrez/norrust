@@ -38,6 +38,12 @@ pub struct Unit {
     /// Damage type resistance modifiers: attack_type → modifier in percent.
     /// Negative = weakness (more damage taken), positive = resistance (less damage taken).
     pub resistances: HashMap<String, i32>,
+    /// Current experience points earned through combat.
+    pub xp: u32,
+    /// XP threshold to trigger advancement (copied from UnitDef.experience at spawn).
+    pub xp_needed: u32,
+    /// Set true when xp >= xp_needed; cleared by Action::Advance (Phase 8).
+    pub advancement_pending: bool,
 }
 
 impl Unit {
@@ -57,6 +63,9 @@ impl Unit {
             movement: 0,
             movement_costs: HashMap::new(),
             resistances: HashMap::new(),
+            xp: 0,
+            xp_needed: 0,
+            advancement_pending: false,
         }
     }
 }

@@ -23,6 +23,9 @@ pub struct UnitSnapshot {
     pub max_hp: u32,
     pub moved: bool,
     pub attacked: bool,
+    pub xp: u32,
+    pub xp_needed: u32,
+    pub advancement_pending: bool,
 }
 
 /// Complete serializable snapshot of a GameState for external consumers.
@@ -74,6 +77,9 @@ impl StateSnapshot {
                     max_hp: unit.max_hp,
                     moved: unit.moved,
                     attacked: unit.attacked,
+                    xp: unit.xp,
+                    xp_needed: unit.xp_needed,
+                    advancement_pending: unit.advancement_pending,
                 })
             })
             .collect();
@@ -137,6 +143,22 @@ mod tests {
         assert_eq!(snap.units[0].id, 1);
         assert_eq!(snap.units[0].hp, 30);
         assert!(!snap.units[0].moved);
+        assert_eq!(snap.units[0].xp, 0);
+        assert_eq!(snap.units[0].xp_needed, 0);
+        assert!(!snap.units[0].advancement_pending);
+    }
+
+    #[test]
+    fn test_snapshot_xp_fields_serialize() {
+        let board = Board::new(4, 3);
+        let mut state = GameState::new(board);
+        let unit = Unit::new(1, "fighter", 30, 0);
+        state.place_unit(unit, Hex::from_offset(0, 0));
+        let snap = StateSnapshot::from_game_state(&state);
+        let json = serde_json::to_string(&snap).expect("serialization must succeed");
+        assert!(json.contains("\"xp\":0"));
+        assert!(json.contains("\"xp_needed\":0"));
+        assert!(json.contains("\"advancement_pending\":false"));
     }
 
     #[test]
