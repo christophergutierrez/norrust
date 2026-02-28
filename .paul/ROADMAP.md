@@ -4,6 +4,46 @@
 
 Five phases take the project from data schema definitions through a fully playable hex-based strategy game with external AI hooks. The Rust simulation core is built and tested headlessly before any visual work begins; Redot rendering is layered on top once the core is proven.
 
+## Current Milestone
+
+**v0.3 Unit Advancement** (v0.3.0)
+Status: 🚧 In progress
+Phases: 0 of 3 complete
+
+## v0.3 Phases
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 7 | Advancement Schema | TBD | Not started | - |
+| 8 | XP & Advancement Logic | TBD | Not started | - |
+| 9 | Advancement Presentation | TBD | Not started | - |
+
+## v0.3 Phase Details
+
+### Phase 7: Advancement Schema
+
+**Goal:** Extend data definitions and runtime structs to carry advancement information — TOML files
+gain `experience`, `advances_to`, `level`; `Unit` gains `xp` and `advancement_pending`;
+`UnitSnapshot` JSON exposes both for GDScript.
+**Depends on:** Phase 6 (StateSnapshot JSON as sole unit data source)
+**Plans:** TBD (defined during `/paul:plan`)
+
+### Phase 8: XP & Advancement Logic
+
+**Goal:** Implement XP gain in combat, the `Action::Advance` action, and headless balance
+simulation tests that verify advancement thresholds and damage-type interactions are well-tuned.
+**Depends on:** Phase 7 (advancement fields on Unit and UnitDef)
+**Plans:** TBD (defined during `/paul:plan`)
+
+### Phase 9: Advancement Presentation
+
+**Goal:** Surface XP and advancement state in the Redot layer — XP progress in the HUD,
+visual indicator when a unit is ready to advance, and click-to-advance interaction.
+**Depends on:** Phase 8 (Advance action implemented and tested)
+**Plans:** TBD (defined during `/paul:plan`)
+
+---
+
 ## Previous Milestone
 
 **v0.2 Bridge Unification** (v0.2.0)

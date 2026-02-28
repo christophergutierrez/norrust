@@ -5,25 +5,25 @@
 See: .paul/PROJECT.md (updated 2026-02-28)
 
 **Core value:** A playable hex-based strategy game where simulation logic is strictly separated from presentation, enabling human players and AI agents to use the same clean engine.
-**Current focus:** v0.2 — Bridge Unification (COMPLETE)
+**Current focus:** v0.3 — Unit Advancement
 
 ## Current Position
 
-Milestone: v0.2 Bridge Unification — ✅ COMPLETE
-Phase: 6 of 6 (Bridge Unification) — Complete
-Plan: 06-01 complete
-Status: v0.2 milestone complete — ready for v0.3 planning
-Last activity: 2026-02-28 — Phase 6 complete; v0.2 milestone closed
+Milestone: v0.3 Unit Advancement
+Phase: 7 of 9 (Advancement Schema) — Not started
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-02-28 — v0.3 milestone created
 
 Progress:
-- Milestone v0.2: [██████████] 100%
-- Phase 6:        [██████████] 100%
+- Milestone v0.3: [░░░░░░░░░░] 0%
+- Phase 7:        [░░░░░░░░░░] 0%
 
 ## Loop Position
 
 ```
 PLAN ──▶ APPLY ──▶ UNIFY
-  ✓        ✓        ✓     [Loop complete — v0.2 milestone done]
+  ○        ○        ○     [Ready for first PLAN]
 ```
 
 ## Accumulated Context
@@ -69,8 +69,8 @@ Branch: master
 ## Session Continuity
 
 Last session: 2026-02-28
-Stopped at: v0.2 milestone complete — all phases unified
-Next action: /paul:discuss-milestone or /paul:milestone for v0.3
+Stopped at: v0.3 milestone created — ready to plan Phase 7
+Next action: /paul:plan for Phase 7 (Advancement Schema)
 Resume file: .paul/ROADMAP.md
 
 ---
