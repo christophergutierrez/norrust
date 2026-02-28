@@ -10,21 +10,21 @@ See: .paul/PROJECT.md (updated 2026-02-28)
 ## Current Position
 
 Milestone: v0.1 Initial Release
-Phase: 4 of 5 (The Game Loop & Polish) — Not started
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-02-28 — Phase 3 complete, transitioned to Phase 4
+Phase: 4 of 5 (The Game Loop & Polish) — In progress
+Plan: 04-01 complete
+Status: Loop closed — ready for 04-02 PLAN
+Last activity: 2026-02-28 — Completed 04-01 (adjacency, retaliation, win/loss)
 
 Progress:
-- Milestone: [██████████░░░░░] 60%
-- Phase 4:   [░░░░░░░░░░] 0%
+- Milestone: [████████████░░░] 70%
+- Phase 4:   [██░░░░░░░░] 20%
 
 ## Loop Position
 
 Current loop state:
 ```
 PLAN ──▶ APPLY ──▶ UNIFY
-  ○        ○        ○     [Ready for PLAN — Phase 4 not started]
+  ✓        ✓        ✓     [Loop complete — ready for next PLAN]
 ```
 
 ## Accumulated Context
@@ -55,26 +55,27 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | Issue | Origin | Effort | Revisit |
 |-------|--------|--------|---------|
 | `factions.toml` schema not designed | Phase 1, 01-01 | S | Before Phase 4 recruitment |
-| Defender retaliation not implemented | Phase 2, 02-04 | M | Phase 4 (bidirectional combat) |
-| Resistance modifiers not applied | Phase 2, 02-04 | S | Phase 4 |
-| Skirmisher flag on Unit | Phase 2, 02-05 | S | Phase 4 |
-| Attack adjacency not enforced | Phase 3, 03-03 | S | Phase 4 |
-| No win/loss condition detection | Phase 3, 03-03 | M | Phase 4 |
+| Resistance modifiers not applied | Phase 2, 02-04 | S | 04-02 |
+| Skirmisher flag on Unit | Phase 2, 02-05 | S | 04-02 |
+| Multi-strike retaliation cap (1 round) | Phase 4, 04-01 | S | 04-02 |
+| No healing / village hexes | Phase 3 | M | 04-02 |
+| No recruitment / gold system | Phase 3 | L | 04-02 |
+| No visual "already moved" indicator | Phase 4, 04-01 | S | 04-02 |
+| Ranged attack range check | Deferred | M | Later |
 
 ### Blockers/Concerns
 None.
 
 ### Git State
-Last commit: 4f669e6 — feat(01-foundation): data schemas, GDExtension bridge, end-to-end data flow
+Last commit: (04-01 — pending commit)
 Branch: master
-Note: Phase 2 + Phase 3 work uncommitted — commit before starting Phase 4
 
 ## Session Continuity
 
 Last session: 2026-02-28
-Stopped at: Phase 3 complete — unit display + action dispatch human-verified
-Next action: Commit Phase 2+3 work, then /paul:plan for Phase 4
-Resume file: .paul/ROADMAP.md
+Stopped at: 04-01 complete — adjacency + retaliation + win screen human-verified
+Next action: Run /paul:plan for 04-02 (healing, recruitment, gold)
+Resume file: .paul/phases/04-game-loop-polish/04-01-SUMMARY.md
 
 ---
 *STATE.md — Updated after every significant action*

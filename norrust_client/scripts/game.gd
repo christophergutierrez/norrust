@@ -20,6 +20,7 @@ var _core: NorRustCore
 var _tile_map: TileMap
 var _selected_unit_id: int = -1
 var _reachable_cells: Array = []   # Array of Vector2i
+var _game_over: bool = false
 
 func _ready() -> void:
 	_setup_rust_core()
@@ -97,6 +98,21 @@ func _draw() -> void:
 	# 4. Unit circles + HP text
 	_draw_units()
 
+	# 5. Win overlay
+	if _game_over:
+		var winner = _core.get_winner()
+		var msg = "Faction %d wins!" % winner
+		var screen_w = ProjectSettings.get_setting("display/window/size/viewport_width")
+		var screen_h = ProjectSettings.get_setting("display/window/size/viewport_height")
+		var center = Vector2(screen_w, screen_h) / 2.0
+		draw_string(
+			ThemeDB.fallback_font,
+			center + Vector2(-80, 0),
+			msg,
+			HORIZONTAL_ALIGNMENT_LEFT,
+			-1, 32, Color.YELLOW
+		)
+
 func _draw_units() -> void:
 	var data = _core.get_unit_data()
 	var i = 0
@@ -143,7 +159,16 @@ func _hex_polygon(center: Vector2, radius: float) -> PackedVector2Array:
 		pts.append(center + Vector2(cos(angle), sin(angle)) * radius)
 	return pts
 
+func _check_game_over() -> void:
+	var winner = _core.get_winner()
+	if winner >= 0:
+		_game_over = true
+		print("Faction %d wins!" % winner)
+		queue_redraw()
+
 func _input(event: InputEvent) -> void:
+	if _game_over:
+		return
 	# 'E' key: end turn
 	if event is InputEventKey:
 		var key_event = event as InputEventKey
@@ -183,6 +208,7 @@ func _input(event: InputEvent) -> void:
 		print("Attack result: %d" % result)
 		_clear_selection()
 		queue_redraw()
+		_check_game_over()
 
 	elif _selected_unit_id != -1 and clicked_cell in _reachable_cells:
 		# Move selected unit to clicked reachable hex

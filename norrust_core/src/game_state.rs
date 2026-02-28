@@ -15,6 +15,7 @@ pub enum ActionError {
     DestinationOccupied,
     UnitAlreadyMoved,
     DestinationUnreachable,
+    NotAdjacent,
 }
 
 /// Discrete state changes that may be applied to a `GameState`.
@@ -136,6 +137,9 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                 }
             }
 
+            // Capture attacker position for adjacency check (after validation block)
+            let attacker_pos = state.positions[&attacker_id];
+
             // Clone the attack definition (if any) to drop the immutable borrow
             let attack = match state.units.get(&attacker_id).unwrap().attacks.first() {
                 Some(a) => a.clone(),
@@ -152,6 +156,11 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                 .get(&defender_id)
                 .copied()
                 .ok_or(ActionError::UnitNotFound(defender_id))?;
+
+            // Enforce melee adjacency
+            if !attacker_pos.neighbors().contains(&defender_pos) {
+                return Err(ActionError::NotAdjacent);
+            }
 
             // Determine defender terrain defense
             let terrain_defense = {
@@ -185,6 +194,44 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
             if defender_hp == 0 {
                 state.units.remove(&defender_id);
                 state.positions.remove(&defender_id);
+            }
+
+            // Retaliation: defender strikes back if still alive and has attacks
+            if state.units.contains_key(&defender_id) {
+                let ret_attack = state.units.get(&defender_id)
+                    .and_then(|d| d.attacks.first())
+                    .cloned();
+
+                if let Some(def_attack) = ret_attack {
+                    let ret_defense = {
+                        let a = state.units.get(&attacker_id).unwrap();
+                        let terrain_id = state.board.terrain_at(attacker_pos).unwrap_or("");
+                        a.defense.get(terrain_id).copied().unwrap_or(a.default_defense)
+                    };
+                    let ret_tod = {
+                        let d = state.units.get(&defender_id).unwrap();
+                        tod_damage_modifier(d.alignment, time_of_day(state.turn))
+                    };
+                    let ret_damage = resolve_attack(
+                        &mut state.rng,
+                        def_attack.damage,
+                        def_attack.strikes,
+                        ret_defense,
+                        ret_tod,
+                    );
+                    state.units.get_mut(&defender_id).unwrap().attacked = true;
+                    if state.units.contains_key(&attacker_id) {
+                        let attacker_hp = {
+                            let a = state.units.get_mut(&attacker_id).unwrap();
+                            a.hp = a.hp.saturating_sub(ret_damage);
+                            a.hp
+                        };
+                        if attacker_hp == 0 {
+                            state.units.remove(&attacker_id);
+                            state.positions.remove(&attacker_id);
+                        }
+                    }
+                }
             }
 
             Ok(())
@@ -302,5 +349,33 @@ mod tests {
         assert_eq!(result, Ok(()));
         assert!(!state.units.contains_key(&2), "defender must be removed after death");
         assert!(!state.positions.contains_key(&2), "defender position must be cleared");
+    }
+
+    #[test]
+    fn test_attack_not_adjacent_returns_error() {
+        let board = Board::new(10, 10);
+        let mut state = GameState::new(board);
+
+        let attack = AttackDef {
+            id: "sword".to_string(),
+            name: "Sword".to_string(),
+            damage: 7,
+            strikes: 3,
+            attack_type: "blade".to_string(),
+            range: "melee".to_string(),
+        };
+        let mut attacker = Unit::new(1, "fighter", 30, 0);
+        attacker.attacks = vec![attack];
+        let defender = Unit::new(2, "archer", 30, 1);
+
+        // Place units 2 hexes apart — not adjacent
+        state.place_unit(attacker, Hex::ORIGIN);
+        state.place_unit(defender, Hex::from_offset(2, 0));
+
+        let result =
+            apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 });
+        assert_eq!(result, Err(ActionError::NotAdjacent));
+        // Neither unit should be modified
+        assert_eq!(state.units[&2].hp, 30, "defender HP must be unchanged");
     }
 }

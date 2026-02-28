@@ -54,6 +54,7 @@ fn action_err_code(e: ActionError) -> i32 {
         ActionError::DestinationOccupied    => -4,
         ActionError::UnitAlreadyMoved       => -5,
         ActionError::DestinationUnreachable => -6,
+        ActionError::NotAdjacent            => -7,
     }
 }
 
@@ -260,6 +261,20 @@ impl NorRustCore {
     #[func]
     fn get_turn(&self) -> i32 {
         self.game.as_ref().map(|s| s.turn as i32).unwrap_or(-1)
+    }
+
+    /// Returns the winning faction (0 or 1) when one faction has no units left.
+    /// Returns -1 if the game is ongoing or no game exists.
+    #[func]
+    fn get_winner(&self) -> i32 {
+        let Some(state) = self.game.as_ref() else { return -1 };
+        let has_0 = state.units.values().any(|u| u.faction == 0);
+        let has_1 = state.units.values().any(|u| u.faction == 1);
+        match (has_0, has_1) {
+            (true, false) => 0,
+            (false, true) => 1,
+            _ => -1,
+        }
     }
 
     /// Returns reachable hexes for a unit as a flat PackedInt32Array: [col, row, ...].
