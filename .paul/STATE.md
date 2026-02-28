@@ -67,8 +67,7 @@ PLAN ──▶ APPLY ──▶ UNIFY
 None.
 
 ### Git State
-Last commit: 6962b46 — docs(paul): update STATE.md with phase 4 commit hash
-Phase 5 work: uncommitted (snapshot.rs, gdext_node.rs, Cargo.toml changes)
+Last commit: 8041de9 — feat(05-ai-hooks): JSON state export + action submission bridge — v0.1 complete
 Branch: master
 
 ## Session Continuity
