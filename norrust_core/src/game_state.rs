@@ -178,9 +178,17 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                 tod_damage_modifier(attacker.alignment, time_of_day(state.turn))
             };
 
+            // Resistance modifier: defender's resistance to the attacker's attack type
+            let resistance = {
+                let defender = state.units.get(&defender_id).unwrap();
+                defender.resistances.get(&attack.attack_type).copied().unwrap_or(0)
+            };
+            let effective_damage =
+                ((attack.damage as i64 * (100 + resistance as i64)) / 100).max(0) as u32;
+
             // Resolve — requires mutable borrow of rng only
             let damage =
-                resolve_attack(&mut state.rng, attack.damage, attack.strikes, terrain_defense, tod_mod);
+                resolve_attack(&mut state.rng, effective_damage, attack.strikes, terrain_defense, tod_mod);
 
             // Apply damage and mark attacker as having attacked
             state.units.get_mut(&attacker_id).unwrap().attacked = true;
@@ -212,9 +220,15 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                         let d = state.units.get(&defender_id).unwrap();
                         tod_damage_modifier(d.alignment, time_of_day(state.turn))
                     };
+                    let ret_resistance = {
+                        let a = state.units.get(&attacker_id).unwrap();
+                        a.resistances.get(&def_attack.attack_type).copied().unwrap_or(0)
+                    };
+                    let ret_effective_damage =
+                        ((def_attack.damage as i64 * (100 + ret_resistance as i64)) / 100).max(0) as u32;
                     let ret_damage = resolve_attack(
                         &mut state.rng,
-                        def_attack.damage,
+                        ret_effective_damage,
                         def_attack.strikes,
                         ret_defense,
                         ret_tod,

@@ -11,13 +11,13 @@ See: .paul/PROJECT.md (updated 2026-02-28)
 
 Milestone: v0.1 Initial Release
 Phase: 4 of 5 (The Game Loop & Polish) — In progress
-Plan: 04-02 complete
-Status: Loop closed — ready for 04-03 PLAN
-Last activity: 2026-02-28 — Completed 04-02 (exhaustion indicators + per-turn healing)
+Plan: 04-03 complete
+Status: Loop closed — ready for 04-04 PLAN
+Last activity: 2026-02-28 — Completed 04-03 (resistance modifiers + HUD)
 
 Progress:
-- Milestone: [█████████████░░] 75%
-- Phase 4:   [████░░░░░░] 40%
+- Milestone: [██████████████░] 80%
+- Phase 4:   [██████░░░░] 60%
 
 ## Loop Position
 
@@ -73,9 +73,9 @@ Branch: master
 ## Session Continuity
 
 Last session: 2026-02-28
-Stopped at: 04-02 complete — exhaustion dimming + grassland healing human-verified
-Next action: Run /paul:plan for 04-03 (village/castle hexes, recruitment, or animations)
-Resume file: .paul/phases/04-game-loop-polish/04-02-SUMMARY.md
+Stopped at: 04-03 complete — resistance modifiers + colored HUD human-verified
+Next action: Run /paul:plan for 04-04 (village/castle hexes, recruitment, or animations)
+Resume file: .paul/phases/04-game-loop-polish/04-03-SUMMARY.md
 
 ---
 *STATE.md — Updated after every significant action*

@@ -113,6 +113,21 @@ func _draw() -> void:
 			-1, 32, Color.YELLOW
 		)
 
+	# 6. HUD: Turn · Time of Day · Active Faction (text color matches unit circle color)
+	if not _game_over:
+		var faction     = _core.get_active_faction()
+		var faction_name  = "Blue" if faction == 0 else "Red"
+		var faction_color = Color(0.25, 0.42, 0.88) if faction == 0 else Color(0.80, 0.12, 0.12)
+		var tod = _core.get_time_of_day_name()
+		var hud_text = "Turn %d  ·  %s  ·  %s's Turn" % [_core.get_turn(), tod, faction_name]
+		draw_string(
+			ThemeDB.fallback_font,
+			Vector2(10, 20),
+			hud_text,
+			HORIZONTAL_ALIGNMENT_LEFT,
+			-1, 14, faction_color
+		)
+
 func _draw_units() -> void:
 	var data = _core.get_unit_data()
 	var i = 0

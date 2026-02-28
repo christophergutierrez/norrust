@@ -35,6 +35,9 @@ pub struct Unit {
     pub movement: u32,
     /// Terrain movement costs: terrain_id → movement point cost.
     pub movement_costs: HashMap<String, u32>,
+    /// Damage type resistance modifiers: attack_type → modifier in percent.
+    /// Negative = weakness (more damage taken), positive = resistance (less damage taken).
+    pub resistances: HashMap<String, i32>,
 }
 
 impl Unit {
@@ -53,6 +56,7 @@ impl Unit {
             default_defense: 40,
             movement: 0,
             movement_costs: HashMap::new(),
+            resistances: HashMap::new(),
         }
     }
 }

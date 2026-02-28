@@ -1,4 +1,5 @@
 use crate::board::Board;
+use crate::combat::{time_of_day, TimeOfDay};
 use crate::game_state::{apply_action, Action, ActionError, GameState};
 use crate::hex::Hex;
 use crate::loader::Registry;
@@ -153,16 +154,17 @@ impl NorRustCore {
 
         // Clone stat fields from UnitDef before mutably borrowing game.
         let def_stats = self.units.as_ref().and_then(|r| r.get(&def_id.to_string())).map(|def| {
-            (def.max_hp, def.movement, def.movement_costs.clone(), def.attacks.clone(), def.defense.clone())
+            (def.max_hp, def.movement, def.movement_costs.clone(), def.attacks.clone(), def.defense.clone(), def.resistances.clone())
         });
 
-        if let Some((max_hp, movement, movement_costs, attacks, defense)) = def_stats {
+        if let Some((max_hp, movement, movement_costs, attacks, defense, resistances)) = def_stats {
             unit.max_hp = max_hp;
             unit.hp = max_hp;
             unit.movement = movement;
             unit.movement_costs = movement_costs;
             unit.attacks = attacks;
             unit.defense = defense;
+            unit.resistances = resistances;
         } else {
             godot_warn!("place_unit_at: UnitDef '{}' not found, unit uses defaults", def_id);
         }
@@ -266,6 +268,18 @@ impl NorRustCore {
     #[func]
     fn get_turn(&self) -> i32 {
         self.game.as_ref().map(|s| s.turn as i32).unwrap_or(-1)
+    }
+
+    /// Returns "Day", "Night", or "Neutral" for the current turn's time of day.
+    /// Returns "Neutral" if no game exists.
+    #[func]
+    fn get_time_of_day_name(&self) -> GString {
+        let turn = self.game.as_ref().map(|s| s.turn).unwrap_or(1);
+        match time_of_day(turn) {
+            TimeOfDay::Day     => "Day",
+            TimeOfDay::Night   => "Night",
+            TimeOfDay::Neutral => "Neutral",
+        }.into()
     }
 
     /// Returns the winning faction (0 or 1) when one faction has no units left.
