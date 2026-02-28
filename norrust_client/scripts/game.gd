@@ -174,7 +174,7 @@ func _build_unit_pos_map(state: Dictionary) -> Dictionary:
 	# Returns Dictionary: Vector2i(col, row) -> [unit_id, faction]
 	var result: Dictionary = {}
 	for unit in state.get("units", []):
-		result[Vector2i(unit["col"], unit["row"])] = [unit["id"], unit["faction"]]
+		result[Vector2i(unit["col"], unit["row"])] = [int(unit["id"]), int(unit["faction"])]
 	return result
 
 func _clear_selection() -> void:
