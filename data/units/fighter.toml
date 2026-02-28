@@ -1,0 +1,32 @@
+id = "fighter"
+name = "Fighter"
+max_hp = 30
+movement = 5
+
+[[attacks]]
+id = "sword"
+name = "Sword"
+damage = 7
+strikes = 3
+attack_type = "blade"
+range = "melee"
+
+[resistances]
+blade = 0
+pierce = -20
+impact = 0
+fire = 0
+cold = 0
+arcane = -20
+
+[movement_costs]
+grassland = 1
+forest = 2
+mountain = 3
+water = 99
+
+[defense]
+grassland = 40
+forest = 60
+mountain = 60
+water = 30

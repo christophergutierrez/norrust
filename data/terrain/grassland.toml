@@ -1,0 +1,5 @@
+id = "grassland"
+name = "Grassland"
+symbol = "g"
+default_defense = 40
+default_movement_cost = 1

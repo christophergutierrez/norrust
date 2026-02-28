@@ -1,0 +1,5 @@
+id = "forest"
+name = "Forest"
+symbol = "f"
+default_defense = 60
+default_movement_cost = 2
