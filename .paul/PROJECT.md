@@ -39,6 +39,12 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Unit runtime XP fields: xp, xp_needed, advancement_pending; xp_needed set at spawn — Phase 7 (07-01)
 - [x] UnitSnapshot JSON exposes xp/xp_needed/advancement_pending for GDScript and AI clients — Phase 7 (07-01)
 - [x] Level-2 unit definitions: hero.toml (fighter→hero) and ranger.toml (archer→ranger) — Phase 7 (07-01)
+- [x] XP gain in combat: 1 XP per hit + 8 kill bonus for both attacker and defender — Phase 8 (08-01)
+- [x] advancement_pending auto-set when xp >= xp_needed (guarded by xp_needed > 0) — Phase 8 (08-01)
+- [x] advance_unit() pure Rust function: stat mutation, full heal, xp reset — Phase 8 (08-02)
+- [x] apply_advance() GDExtension bridge method for GDScript — Phase 8 (08-02)
+- [x] ActionRequest::Advance JSON API variant for external AI clients — Phase 8 (08-02)
+- [x] Headless advancement simulation: 5-kill XP accumulation → hero promotion verified — Phase 8 (08-02)
 
 ### Active (In Progress / Deferred)
 
@@ -94,6 +100,10 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | #[serde(default)] on UnitDef advancement fields | level/experience/advances_to optional in TOML; existing files load without changes | 2026-02-28 | Active |
 | xp_needed copied at place_unit_at() from registry | Runtime Unit is registry-free; same pattern as attacks/resistances/defense | 2026-02-28 | Active |
 | advancement_pending is data-only in Phase 7 | Field set/cleared in Phase 8 (combat XP gain + Action::Advance); no premature logic | 2026-02-28 | Active |
+| 1 XP per hit + 8 kill bonus formula | Simple, testable, Wesnoth-compatible; both attacker and defender earn XP | 2026-02-28 | Active |
+| advance_unit() as free function in unit.rs | Directly usable in tests and bridge without registry coupling | 2026-02-28 | Active |
+| Advance intercepted in apply_action_json before into() | Preserves registry-free apply_action(); Action enum unchanged | 2026-02-28 | Active |
+| advances_to index 0 only for bridge | Multi-target choice deferred to Phase 9+; single path sufficient now | 2026-02-28 | Active |
 
 ## Tech Stack
 
@@ -113,4 +123,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-02-28 after Phase 7 (v0.3 advancement schema complete)*
+*Last updated: 2026-02-28 after Phase 8 (v0.3 XP & advancement logic complete)*

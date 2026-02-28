@@ -10,20 +10,20 @@ See: .paul/PROJECT.md (updated 2026-02-28)
 ## Current Position
 
 Milestone: v0.3 Unit Advancement
-Phase: 8 of 9 (XP & Advancement Logic) — Not started
+Phase: 9 of 9 (Advancement Presentation) — Not started
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-02-28 — Phase 7 complete, transitioned to Phase 8
+Last activity: 2026-02-28 — Phase 8 complete, transitioned to Phase 9
 
 Progress:
-- Milestone v0.3: [███░░░░░░░] ~33%
-- Phase 7:        [██████████] 100% ✅
+- Milestone v0.3: [██████░░░░] ~67%
+- Phase 8:        [██████████] 100% ✅
 
 ## Loop Position
 
 ```
 PLAN ──▶ APPLY ──▶ UNIFY
-  ✓        ✓        ✓     [Loop complete — ready for Phase 8 PLAN]
+  ✓        ✓        ✓     [Loop complete — ready for Phase 9 PLAN]
 ```
 
 ## Accumulated Context
@@ -51,6 +51,8 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | #[serde(default)] on UnitDef advancement fields | Phase 7 | Existing TOML files load without modification |
 | xp_needed copied at place_unit_at() from registry | Phase 7 | Runtime Unit stays registry-free; same pattern as attacks/resistances |
 | advancement_pending data-only in Phase 7 | Phase 7 | Logic (set/clear) is Phase 8 work; no premature coupling |
+| 1 XP/hit + 8 kill bonus; both sides earn | Phase 8 | Symmetric XP; headless sim verified 5-kill chain |
+| advance_unit() free function; bridge-side registry | Phase 8 | apply_action stays registry-free; advance intercepted before into() |
 
 ### Deferred Issues
 
@@ -66,14 +68,14 @@ PLAN ──▶ APPLY ──▶ UNIFY
 None.
 
 ### Git State
-Last commit: TBD — feat(07-advancement-schema): pending phase commit
+Last commit: TBD — feat(08-xp-advancement-logic): pending phase commit
 Branch: master
 
 ## Session Continuity
 
 Last session: 2026-02-28
-Stopped at: Phase 7 complete — ready to plan Phase 8
-Next action: /paul:plan for Phase 8 (XP & Advancement Logic)
+Stopped at: Phase 8 complete — ready to plan Phase 9
+Next action: /paul:plan for Phase 9 (Advancement Presentation)
 Resume file: .paul/ROADMAP.md
 
 ---

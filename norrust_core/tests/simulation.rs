@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use norrust_core::board::Board;
 use norrust_core::game_state::{apply_action, Action, GameState};
 use norrust_core::hex::Hex;
-use norrust_core::schema::AttackDef;
-use norrust_core::unit::Unit;
+use norrust_core::schema::{AttackDef, UnitDef};
+use norrust_core::unit::{advance_unit, Unit};
 
 #[test]
 fn test_headless_match_scenario() {
@@ -66,4 +66,65 @@ fn test_headless_match_scenario() {
     assert!(state.units.contains_key(&1), "unit 1 (attacker) must survive");
     assert!(!state.units.contains_key(&2), "unit 2 (defender) must be dead");
     assert!(!state.positions.contains_key(&2), "unit 2 position must be cleared");
+}
+
+#[test]
+fn test_headless_advancement_scenario() {
+    // ── Setup: fighter with xp_needed=40 vs. repeated weak enemies ──
+    let board = Board::new(5, 5);
+    let mut state = GameState::new_seeded(board, 7);
+
+    let sword = AttackDef {
+        id: "sword".to_string(), name: "Sword".to_string(),
+        damage: 100, strikes: 1,
+        attack_type: "blade".to_string(), range: "melee".to_string(),
+    };
+    let mut fighter = Unit::new(1, "fighter", 30, 0);
+    fighter.attacks = vec![sword.clone()];
+    fighter.xp_needed = 40;
+    state.place_unit(fighter, Hex::from_offset(0, 0));
+
+    // Kill 5 enemies: each kill = 9 XP (1 hit + 8 kill bonus) → 45 XP total
+    for enemy_id in 2u32..=6 {
+        let mut enemy = Unit::new(enemy_id, "enemy", 1, 1);
+        enemy.default_defense = 0;
+        state.place_unit(enemy, Hex::from_offset(1, 0));
+
+        apply_action(
+            &mut state,
+            Action::Attack { attacker_id: 1, defender_id: enemy_id },
+        )
+        .expect("attack should succeed");
+
+        // Two EndTurns: return to faction 0 and reset attacked flag
+        apply_action(&mut state, Action::EndTurn).expect("EndTurn should succeed");
+        apply_action(&mut state, Action::EndTurn).expect("EndTurn should succeed");
+    }
+
+    assert!(state.units[&1].xp >= 40, "fighter should have accumulated 40+ XP");
+    assert!(state.units[&1].advancement_pending, "advancement_pending must be set");
+
+    // ── Advance the fighter to hero ──────────────────────────────────
+    let hero_def = UnitDef {
+        id: "hero".to_string(),
+        name: "Hero".to_string(),
+        max_hp: 45,
+        movement: 5,
+        attacks: vec![sword],
+        resistances: HashMap::new(),
+        movement_costs: HashMap::new(),
+        defense: HashMap::new(),
+        level: 2,
+        experience: 80,
+        advances_to: vec![],
+    };
+
+    advance_unit(state.units.get_mut(&1).unwrap(), &hero_def);
+
+    assert_eq!(state.units[&1].def_id, "hero");
+    assert_eq!(state.units[&1].max_hp, 45);
+    assert_eq!(state.units[&1].hp, 45);
+    assert_eq!(state.units[&1].xp, 0);
+    assert_eq!(state.units[&1].xp_needed, 80);
+    assert!(!state.units[&1].advancement_pending);
 }

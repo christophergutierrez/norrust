@@ -204,6 +204,19 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                 state.positions.remove(&defender_id);
             }
 
+            // XP grant: attacker earns 1 for a hit, +8 bonus for a kill.
+            if state.units.contains_key(&attacker_id) {
+                let xp_earned = if damage > 0 { 1 } else { 0 }
+                    + if defender_hp == 0 { 8 } else { 0 };
+                if xp_earned > 0 {
+                    let a = state.units.get_mut(&attacker_id).unwrap();
+                    a.xp += xp_earned;
+                    if a.xp_needed > 0 && a.xp >= a.xp_needed {
+                        a.advancement_pending = true;
+                    }
+                }
+            }
+
             // Retaliation: defender strikes back if still alive and has attacks
             if state.units.contains_key(&defender_id) {
                 let ret_attack = state.units.get(&defender_id)
@@ -234,7 +247,7 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                         ret_tod,
                     );
                     state.units.get_mut(&defender_id).unwrap().attacked = true;
-                    if state.units.contains_key(&attacker_id) {
+                    let attacker_killed = if state.units.contains_key(&attacker_id) {
                         let attacker_hp = {
                             let a = state.units.get_mut(&attacker_id).unwrap();
                             a.hp = a.hp.saturating_sub(ret_damage);
@@ -243,6 +256,22 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                         if attacker_hp == 0 {
                             state.units.remove(&attacker_id);
                             state.positions.remove(&attacker_id);
+                        }
+                        attacker_hp == 0
+                    } else {
+                        false
+                    };
+
+                    // XP grant: defender earns 1 for a retaliation hit, +8 if they killed the attacker.
+                    if state.units.contains_key(&defender_id) {
+                        let def_xp = if ret_damage > 0 { 1 } else { 0 }
+                            + if attacker_killed { 8 } else { 0 };
+                        if def_xp > 0 {
+                            let d = state.units.get_mut(&defender_id).unwrap();
+                            d.xp += def_xp;
+                            if d.xp_needed > 0 && d.xp >= d.xp_needed {
+                                d.advancement_pending = true;
+                            }
                         }
                     }
                 }
@@ -383,6 +412,104 @@ mod tests {
         assert_eq!(result, Ok(()));
         assert!(!state.units.contains_key(&2), "defender must be removed after death");
         assert!(!state.positions.contains_key(&2), "defender position must be cleared");
+    }
+
+    #[test]
+    fn test_attacker_gains_xp_on_hit() {
+        let board = Board::new(10, 10);
+        let mut state = GameState::new_seeded(board, 42);
+        let attack = AttackDef {
+            id: "sword".to_string(), name: "Sword".to_string(),
+            damage: 1, strikes: 1,
+            attack_type: "blade".to_string(), range: "melee".to_string(),
+        };
+        let mut attacker = Unit::new(1, "fighter", 30, 0);
+        attacker.attacks = vec![attack];
+        attacker.xp_needed = 40;
+        let mut defender = Unit::new(2, "archer", 30, 1);
+        defender.default_defense = 0; // always hit
+        state.place_unit(attacker, Hex::ORIGIN);
+        state.place_unit(defender, Hex::from_offset(1, 0));
+
+        apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+
+        assert!(state.units[&1].xp >= 1, "attacker should gain at least 1 XP for a hit");
+    }
+
+    #[test]
+    fn test_attacker_gains_kill_bonus_xp() {
+        let board = Board::new(10, 10);
+        let mut state = GameState::new_seeded(board, 42);
+        let attack = AttackDef {
+            id: "sword".to_string(), name: "Sword".to_string(),
+            damage: 100, strikes: 1,
+            attack_type: "blade".to_string(), range: "melee".to_string(),
+        };
+        let mut attacker = Unit::new(1, "fighter", 30, 0);
+        attacker.attacks = vec![attack];
+        attacker.xp_needed = 40;
+        let mut defender = Unit::new(2, "archer", 5, 1);
+        defender.default_defense = 0;
+        state.place_unit(attacker, Hex::ORIGIN);
+        state.place_unit(defender, Hex::from_offset(1, 0));
+
+        apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+
+        assert!(!state.units.contains_key(&2), "defender must be dead");
+        assert_eq!(state.units[&1].xp, 9, "1 hit XP + 8 kill bonus = 9");
+    }
+
+    #[test]
+    fn test_advancement_pending_triggers_at_threshold() {
+        let board = Board::new(10, 10);
+        let mut state = GameState::new_seeded(board, 42);
+        let attack = AttackDef {
+            id: "sword".to_string(), name: "Sword".to_string(),
+            damage: 100, strikes: 1,
+            attack_type: "blade".to_string(), range: "melee".to_string(),
+        };
+        let mut attacker = Unit::new(1, "fighter", 30, 0);
+        attacker.attacks = vec![attack];
+        attacker.xp = 39;
+        attacker.xp_needed = 40;
+        let mut defender = Unit::new(2, "archer", 5, 1);
+        defender.default_defense = 0;
+        state.place_unit(attacker, Hex::ORIGIN);
+        state.place_unit(defender, Hex::from_offset(1, 0));
+
+        apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+
+        assert!(state.units[&1].xp >= 40, "xp should reach threshold");
+        assert!(state.units[&1].advancement_pending, "advancement_pending must be set");
+    }
+
+    #[test]
+    fn test_defender_gains_xp_from_retaliation() {
+        let board = Board::new(10, 10);
+        let mut state = GameState::new_seeded(board, 42);
+        let attack = AttackDef {
+            id: "sword".to_string(), name: "Sword".to_string(),
+            damage: 1, strikes: 1,
+            attack_type: "blade".to_string(), range: "melee".to_string(),
+        };
+        let mut attacker = Unit::new(1, "fighter", 30, 0);
+        attacker.attacks = vec![attack];
+        attacker.default_defense = 0;
+        let ret_attack = AttackDef {
+            id: "bow".to_string(), name: "Bow".to_string(),
+            damage: 1, strikes: 1,
+            attack_type: "pierce".to_string(), range: "melee".to_string(),
+        };
+        let mut defender = Unit::new(2, "archer", 30, 1);
+        defender.attacks = vec![ret_attack];
+        defender.default_defense = 0;
+        defender.xp_needed = 40;
+        state.place_unit(attacker, Hex::ORIGIN);
+        state.place_unit(defender, Hex::from_offset(1, 0));
+
+        apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+
+        assert!(state.units[&2].xp >= 1, "defender should gain at least 1 XP for retaliation hit");
     }
 
     #[test]

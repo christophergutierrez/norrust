@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::schema::AttackDef;
+use crate::schema::{AttackDef, UnitDef};
 
 /// Unit alignment — determines Time of Day damage modifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +46,25 @@ pub struct Unit {
     pub advancement_pending: bool,
 }
 
+/// Advance `unit` to the stats defined by `new_def`.
+///
+/// Copies all stat fields from `new_def`, heals to full, resets xp to 0,
+/// clears advancement_pending, and updates def_id. Registry-free: caller
+/// resolves the target UnitDef before calling.
+pub fn advance_unit(unit: &mut Unit, new_def: &UnitDef) {
+    unit.def_id = new_def.id.clone();
+    unit.max_hp = new_def.max_hp;
+    unit.hp = new_def.max_hp;
+    unit.movement = new_def.movement;
+    unit.movement_costs = new_def.movement_costs.clone();
+    unit.attacks = new_def.attacks.clone();
+    unit.defense = new_def.defense.clone();
+    unit.resistances = new_def.resistances.clone();
+    unit.xp_needed = new_def.experience;
+    unit.xp = 0;
+    unit.advancement_pending = false;
+}
+
 impl Unit {
     pub fn new(id: u32, def_id: impl Into<String>, hp: u32, faction: u8) -> Self {
         Self {
@@ -67,5 +86,48 @@ impl Unit {
             xp_needed: 0,
             advancement_pending: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema::AttackDef;
+
+    #[test]
+    fn test_advance_unit_updates_stats_and_resets_xp() {
+        let mut unit = Unit::new(1, "fighter", 30, 0);
+        unit.xp = 40;
+        unit.xp_needed = 40;
+        unit.advancement_pending = true;
+
+        let hero_def = UnitDef {
+            id: "hero".to_string(),
+            name: "Hero".to_string(),
+            max_hp: 45,
+            movement: 5,
+            attacks: vec![AttackDef {
+                id: "sword".to_string(), name: "Sword".to_string(),
+                damage: 9, strikes: 4,
+                attack_type: "blade".to_string(), range: "melee".to_string(),
+            }],
+            resistances: HashMap::new(),
+            movement_costs: HashMap::new(),
+            defense: HashMap::new(),
+            level: 2,
+            experience: 80,
+            advances_to: vec![],
+        };
+
+        advance_unit(&mut unit, &hero_def);
+
+        assert_eq!(unit.def_id, "hero");
+        assert_eq!(unit.max_hp, 45);
+        assert_eq!(unit.hp, 45);
+        assert_eq!(unit.movement, 5);
+        assert_eq!(unit.attacks[0].damage, 9);
+        assert_eq!(unit.xp, 0);
+        assert_eq!(unit.xp_needed, 80);
+        assert!(!unit.advancement_pending);
     }
 }

@@ -100,6 +100,7 @@ pub enum ActionRequest {
     Move { unit_id: u32, col: i32, row: i32 },
     Attack { attacker_id: u32, defender_id: u32 },
     EndTurn,
+    Advance { unit_id: u32 },
 }
 
 impl From<ActionRequest> for Action {
@@ -113,6 +114,9 @@ impl From<ActionRequest> for Action {
                 Action::Attack { attacker_id, defender_id }
             }
             ActionRequest::EndTurn => Action::EndTurn,
+            ActionRequest::Advance { .. } => {
+                unreachable!("Advance is handled by apply_advance() before into()")
+            }
         }
     }
 }

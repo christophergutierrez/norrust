@@ -6,7 +6,7 @@ use crate::loader::Registry;
 use crate::pathfinding::{get_zoc_hexes, reachable_hexes};
 use crate::schema::{TerrainDef, UnitDef};
 use crate::snapshot::{ActionRequest, StateSnapshot};
-use crate::unit::Unit;
+use crate::unit::{advance_unit, Unit};
 use godot::builtin::PackedInt32Array;
 use godot::prelude::*;
 
@@ -200,6 +200,49 @@ impl NorRustCore {
         }
     }
 
+    /// Advance a unit to its next form. The unit must belong to the active faction
+    /// and have advancement_pending = true.
+    ///
+    /// Returns:
+    ///   0  = success
+    ///  -1  = unit not found
+    ///  -2  = not your turn (unit belongs to wrong faction)
+    ///  -8  = unit not ready to advance (advancement_pending is false)
+    ///  -9  = no advancement target (advances_to is empty)
+    /// -10  = target UnitDef not found in registry
+    #[func]
+    fn apply_advance(&mut self, unit_id: i32) -> i32 {
+        let Some(state) = self.game.as_mut() else { return -1 };
+        let uid = unit_id as u32;
+
+        let (current_def_id, advancement_pending, faction) = match state.units.get(&uid) {
+            Some(u) => (u.def_id.clone(), u.advancement_pending, u.faction),
+            None => return -1,
+        };
+        if faction != state.active_faction {
+            return -2;
+        }
+        if !advancement_pending {
+            return -8;
+        }
+
+        let target_def_id = match self.units.as_ref()
+            .and_then(|r| r.get(&current_def_id))
+            .and_then(|def| def.advances_to.first().cloned())
+        {
+            Some(id) => id,
+            None => return -9,
+        };
+
+        let new_def = match self.units.as_ref().and_then(|r| r.get(&target_def_id)) {
+            Some(def) => def.clone(),
+            None => return -10,
+        };
+
+        advance_unit(state.units.get_mut(&uid).unwrap(), &new_def);
+        0
+    }
+
     /// Apply an Attack action. Returns 0 on success, a negative error code on failure.
     #[func]
     fn apply_attack(&mut self, attacker_id: i32, defender_id: i32) -> i32 {
@@ -332,7 +375,7 @@ impl NorRustCore {
     ///   {"action":"EndTurn"}
     #[func]
     fn apply_action_json(&mut self, json: GString) -> i32 {
-        let Some(state) = self.game.as_mut() else { return -1 };
+        if self.game.is_none() { return -1 }
         let req: ActionRequest = match serde_json::from_str(&json.to_string()) {
             Ok(r) => r,
             Err(e) => {
@@ -340,9 +383,15 @@ impl NorRustCore {
                 return -99;
             }
         };
-        match apply_action(state, req.into()) {
-            Ok(()) => 0,
-            Err(e) => action_err_code(e),
+        match req {
+            ActionRequest::Advance { unit_id } => self.apply_advance(unit_id as i32),
+            other => {
+                let Some(state) = self.game.as_mut() else { return -1 };
+                match apply_action(state, other.into()) {
+                    Ok(()) => 0,
+                    Err(e) => action_err_code(e),
+                }
+            }
         }
     }
 }

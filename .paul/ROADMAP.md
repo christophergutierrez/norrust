@@ -8,14 +8,14 @@ Five phases take the project from data schema definitions through a fully playab
 
 **v0.3 Unit Advancement** (v0.3.0)
 Status: 🚧 In progress
-Phases: 1 of 3 complete
+Phases: 2 of 3 complete
 
 ## v0.3 Phases
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 7 | Advancement Schema | 1 | ✅ Complete | 2026-02-28 |
-| 8 | XP & Advancement Logic | TBD | Not started | - |
+| 8 | XP & Advancement Logic | 2 | ✅ Complete | 2026-02-28 |
 | 9 | Advancement Presentation | TBD | Not started | - |
 
 ## v0.3 Phase Details
@@ -38,12 +38,23 @@ gain `experience`, `advances_to`, `level`; `Unit` gains `xp`, `xp_needed`, and `
 - `Unit`: `xp`, `xp_needed`, `advancement_pending` runtime fields; `xp_needed` set at spawn
 - `UnitSnapshot` JSON: exposes all XP/advancement fields; 37 tests passing
 
-### Phase 8: XP & Advancement Logic
+### Phase 8: XP & Advancement Logic ✅
 
-**Goal:** Implement XP gain in combat, the `Action::Advance` action, and headless balance
-simulation tests that verify advancement thresholds and damage-type interactions are well-tuned.
+**Goal:** Implement XP gain in combat, the advancement action, and headless balance simulation tests.
 **Depends on:** Phase 7 (advancement fields on Unit and UnitDef)
-**Plans:** TBD (defined during `/paul:plan`)
+**Completed:** 2026-02-28
+
+**Plans:**
+- [x] 08-01: XP gain in Attack branch (1 XP/hit + 8 kill bonus, both attacker and defender)
+- [x] 08-02: advance_unit() + apply_advance() bridge + ActionRequest::Advance JSON API + simulation test
+
+**Delivered:**
+- XP grant in `Action::Attack` — attacker and defender earn XP symmetrically; `advancement_pending` auto-sets
+- `advance_unit()` pure Rust free function — usable without registry or bridge
+- `apply_advance()` GDExtension bridge method — GDScript callable with error codes
+- `ActionRequest::Advance` JSON variant — AI clients can advance units via JSON API
+- Headless simulation: 5-kill XP accumulation → hero promotion verified end-to-end
+- 43 tests passing (41 lib + 2 integration)
 
 ### Phase 9: Advancement Presentation
 
@@ -177,4 +188,4 @@ Released: 2026-02-28
 - 6 new unit tests; serde_json dependency added
 
 ---
-*Roadmap updated: 2026-02-28 — Phase 7 complete*
+*Roadmap updated: 2026-02-28 — Phase 8 complete*
