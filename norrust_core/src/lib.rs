@@ -6,6 +6,7 @@ pub mod hex;
 pub mod loader;
 pub mod pathfinding;
 pub mod schema;
+pub mod snapshot;
 pub mod unit;
 
 /// Primary game state — populated in Phase 2: The Headless Core.

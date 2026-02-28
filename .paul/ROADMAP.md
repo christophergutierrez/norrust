@@ -7,8 +7,9 @@ Five phases take the project from data schema definitions through a fully playab
 ## Current Milestone
 
 **v0.1 Initial Release** (v0.1.0)
-Status: In progress
-Phases: 4 of 5 complete
+Status: ✅ Complete
+Phases: 5 of 5 complete
+Released: 2026-02-28
 
 ## Phases
 
@@ -18,7 +19,7 @@ Phases: 4 of 5 complete
 | 2 | The Headless Core | 5 | ✅ Complete | 2026-02-27 |
 | 3 | The Presentation Layer | 3 | ✅ Complete | 2026-02-28 |
 | 4 | The Game Loop & Polish | 4 | ✅ Complete | 2026-02-28 |
-| 5 | AI Hooks & External APIs | TBD | Not started | - |
+| 5 | AI Hooks & External APIs | 1 | ✅ Complete | 2026-02-28 |
 
 ## Phase Details
 
@@ -96,19 +97,23 @@ Phases: 4 of 5 complete
 - Movement/attack animations — future milestone
 - Village capture/ownership — future milestone
 
-### Phase 5: AI Hooks & External APIs
+### Phase 5: AI Hooks & External APIs ✅
 
 **Goal:** Open the doors for the machines — clean external interfaces for AI agents.
 **Depends on:** Phase 4 (complete game loop)
-**Research:** Unlikely (internal serialization patterns)
-
-**Scope:**
-- JSON export of `GameState` in Rust
-- Accept JSON action string → convert to `Action`
-- (Optional) Lightweight local socket server for external Python agents
+**Completed:** 2026-02-28
 
 **Plans:**
-- Plans to be defined during `/paul:plan`
+- [x] 05-01: JSON state serialization (StateSnapshot) + action submission (ActionRequest) + GDExtension bridge
+
+**Delivered:**
+- `snapshot.rs`: `StateSnapshot`, `UnitSnapshot`, `TileSnapshot`, `ActionRequest`
+- `get_state_json()` bridge: full game state as JSON string
+- `apply_action_json(json)` bridge: action submission from external clients (-99 on parse error)
+- 6 new unit tests; serde_json dependency added
+
+**Deferred:**
+- Socket/TCP server — JSON layer is ready; transport layer is future work
 
 ---
 *Roadmap created: 2026-02-27*

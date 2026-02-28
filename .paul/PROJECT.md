@@ -31,17 +31,15 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Colored HUD (Turn · TimeOfDay · Faction) with faction-colored text — Phase 4 (04-03)
 - [x] Village terrain type (healing=8) with contested hexes on 8×5 board — Phase 4 (04-04)
 - [x] Terrain-driven rendering via get_terrain_at() bridge (Rust as source of truth) — Phase 4 (04-04)
+- [x] JSON state serialization (StateSnapshot) + action deserialization (ActionRequest) — Phase 5 (05-01)
+- [x] get_state_json() + apply_action_json() GDExtension bridge for external AI clients — Phase 5 (05-01)
 
-### Active (In Progress)
+### Active (In Progress / Deferred)
 
 - [ ] Factions TOML schema — deferred from Phase 1
 - [ ] Recruitment UI (select and place units on Castle hexes) — deferred from Phase 4
 - [ ] Movement interpolation and basic attack animations — deferred from Phase 4
-
-### Planned (Next)
-
-- [ ] JSON state serialization for external AI agents
-- [ ] Socket API for external scripts to query state and send actions
+- [ ] Socket/TCP server for external Python agents — deferred from Phase 5 (JSON layer complete; transport layer future)
 
 ### Out of Scope
 
@@ -81,6 +79,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | Unit carries resistances map | Copied from UnitDef at spawn; combat resistance lookup registry-free | 2026-02-28 | Active |
 | get_terrain_at() bridge: Rust is terrain source of truth | _draw() queries Rust per hex; adding terrain types requires zero GDScript changes | 2026-02-28 | Active |
 | Village always heals (no ownership/capture) | Simpler; capture mechanic deferred to future milestone | 2026-02-28 | Active |
+| StateSnapshot DTO (not Serialize on GameState) | GameState has HashMap<Hex,_> keys + SmallRng — neither serializes cleanly via derive | 2026-02-28 | Active |
+| #[serde(tag="action")] internally-tagged ActionRequest | Idiomatic JSON discriminated union; human-readable for AI clients | 2026-02-28 | Active |
+| -99 JSON parse error sentinel | Distinct from ActionError codes -1..-7; AI clients can distinguish bad JSON from rejected actions | 2026-02-28 | Active |
 
 ## Tech Stack
 
@@ -100,4 +101,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-02-28 after Phase 4*
+*Last updated: 2026-02-28 after Phase 5 (v0.1 milestone complete)*

@@ -5,6 +5,7 @@ use crate::hex::Hex;
 use crate::loader::Registry;
 use crate::pathfinding::{get_zoc_hexes, reachable_hexes};
 use crate::schema::{TerrainDef, UnitDef};
+use crate::snapshot::{ActionRequest, StateSnapshot};
 use crate::unit::Unit;
 use godot::builtin::PackedInt32Array;
 use godot::prelude::*;
@@ -336,5 +337,50 @@ impl NorRustCore {
             arr.push(row);
         }
         arr
+    }
+
+    // ── AI / External API ──────────────────────────────────────────────────
+
+    /// Serializes the current game state as a JSON string for external consumers.
+    /// Returns "" if no game has been created or serialization fails.
+    ///
+    /// JSON shape:
+    ///   { "turn": N, "active_faction": 0|1, "cols": N, "rows": N,
+    ///     "terrain": [{"col":C,"row":R,"terrain_id":"..."}, ...],
+    ///     "units":   [{"id":N,"def_id":"...","col":C,"row":R,
+    ///                  "faction":0|1,"hp":N,"max_hp":N,"moved":bool,"attacked":bool}, ...] }
+    #[func]
+    fn get_state_json(&self) -> GString {
+        let Some(state) = self.game.as_ref() else { return "".into() };
+        match serde_json::to_string(&StateSnapshot::from_game_state(state)) {
+            Ok(s) => s.into(),
+            Err(e) => {
+                godot_error!("get_state_json: serialization failed: {}", e);
+                "".into()
+            }
+        }
+    }
+
+    /// Parse a JSON action string and apply it to the game.
+    /// Returns 0 on success, -99 on JSON parse error, or a negative ActionError code.
+    ///
+    /// Supported formats:
+    ///   {"action":"Move","unit_id":1,"col":3,"row":2}
+    ///   {"action":"Attack","attacker_id":1,"defender_id":2}
+    ///   {"action":"EndTurn"}
+    #[func]
+    fn apply_action_json(&mut self, json: GString) -> i32 {
+        let Some(state) = self.game.as_mut() else { return -1 };
+        let req: ActionRequest = match serde_json::from_str(&json.to_string()) {
+            Ok(r) => r,
+            Err(e) => {
+                godot_error!("apply_action_json: parse error: {}", e);
+                return -99;
+            }
+        };
+        match apply_action(state, req.into()) {
+            Ok(()) => 0,
+            Err(e) => action_err_code(e),
+        }
     }
 }
