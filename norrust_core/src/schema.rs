@@ -38,4 +38,7 @@ pub struct TerrainDef {
     pub default_defense: u32,
     /// Fallback movement cost for units with no terrain-specific entry
     pub default_movement_cost: u32,
+    /// HP restored to units of the active faction at the start of their turn (0 = no healing).
+    #[serde(default)]
+    pub healing: u32,
 }

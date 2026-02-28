@@ -11,13 +11,13 @@ See: .paul/PROJECT.md (updated 2026-02-28)
 
 Milestone: v0.1 Initial Release
 Phase: 4 of 5 (The Game Loop & Polish) — In progress
-Plan: 04-01 complete
-Status: Loop closed — ready for 04-02 PLAN
-Last activity: 2026-02-28 — Completed 04-01 (adjacency, retaliation, win/loss)
+Plan: 04-02 complete
+Status: Loop closed — ready for 04-03 PLAN
+Last activity: 2026-02-28 — Completed 04-02 (exhaustion indicators + per-turn healing)
 
 Progress:
-- Milestone: [████████████░░░] 70%
-- Phase 4:   [██░░░░░░░░] 20%
+- Milestone: [█████████████░░] 75%
+- Phase 4:   [████░░░░░░] 40%
 
 ## Loop Position
 
@@ -67,15 +67,15 @@ PLAN ──▶ APPLY ──▶ UNIFY
 None.
 
 ### Git State
-Last commit: (04-01 — pending commit)
+Last commit: 7219e8e — feat(04-01-game-loop): adjacency enforcement, retaliation, win/loss detection
 Branch: master
 
 ## Session Continuity
 
 Last session: 2026-02-28
-Stopped at: 04-01 complete — adjacency + retaliation + win screen human-verified
-Next action: Run /paul:plan for 04-02 (healing, recruitment, gold)
-Resume file: .paul/phases/04-game-loop-polish/04-01-SUMMARY.md
+Stopped at: 04-02 complete — exhaustion dimming + grassland healing human-verified
+Next action: Run /paul:plan for 04-03 (village/castle hexes, recruitment, or animations)
+Resume file: .paul/phases/04-game-loop-polish/04-02-SUMMARY.md
 
 ---
 *STATE.md — Updated after every significant action*

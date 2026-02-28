@@ -129,6 +129,9 @@ impl NorRustCore {
     fn set_terrain_at(&mut self, col: i32, row: i32, terrain_id: GString) {
         let Some(state) = self.game.as_mut() else { return };
         state.board.set_terrain(Hex::from_offset(col, row), terrain_id.to_string());
+        if let Some(terrain) = self.terrain.as_ref().and_then(|r| r.get(&terrain_id.to_string())) {
+            state.board.set_healing(terrain_id.to_string(), terrain.healing);
+        }
     }
 
     /// Place a unit on the board at offset (col, row).
@@ -231,8 +234,8 @@ impl NorRustCore {
         arr
     }
 
-    /// Returns unit data as a flat PackedInt32Array: [unit_id, col, row, faction, hp, ...].
-    /// Groups of 5 integers per unit. Returns an empty array if no game has been created.
+    /// Returns unit data as a flat PackedInt32Array: [unit_id, col, row, faction, hp, moved, attacked, ...].
+    /// Groups of 7 integers per unit. Returns an empty array if no game has been created.
     #[func]
     fn get_unit_data(&self) -> PackedInt32Array {
         let Some(state) = self.game.as_ref() else {
@@ -247,6 +250,8 @@ impl NorRustCore {
             arr.push(row);
             arr.push(unit.faction as i32);
             arr.push(unit.hp as i32);
+            arr.push(unit.moved as i32);
+            arr.push(unit.attacked as i32);
         }
         arr
     }

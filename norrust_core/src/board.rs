@@ -15,12 +15,13 @@ pub struct Board {
     pub width: u32,
     pub height: u32,
     terrain: HashMap<Hex, String>,
+    healing_map: HashMap<String, u32>,
 }
 
 impl Board {
     pub fn new(width: u32, height: u32) -> Self {
         assert!(width > 0 && height > 0, "Board dimensions must be positive");
-        Self { width, height, terrain: HashMap::new() }
+        Self { width, height, terrain: HashMap::new(), healing_map: HashMap::new() }
     }
 
     /// Returns true if `hex` lies within the board's bounds.
@@ -38,6 +39,16 @@ impl Board {
     /// Return the terrain id at `hex`, or `None` if no terrain is set.
     pub fn terrain_at(&self, hex: Hex) -> Option<&str> {
         self.terrain.get(&hex).map(String::as_str)
+    }
+
+    /// Store the healing value for a terrain type.
+    pub fn set_healing(&mut self, terrain_id: impl Into<String>, healing: u32) {
+        self.healing_map.insert(terrain_id.into(), healing);
+    }
+
+    /// Return healing per turn for a terrain id (0 if unknown).
+    pub fn healing_for(&self, terrain_id: &str) -> u32 {
+        self.healing_map.get(terrain_id).copied().unwrap_or(0)
     }
 }
 

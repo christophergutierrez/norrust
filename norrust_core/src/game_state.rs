@@ -246,6 +246,26 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                 unit.moved = false;
                 unit.attacked = false;
             }
+
+            // Heal units of the newly-active faction based on their terrain.
+            let active = state.active_faction;
+            let to_heal: Vec<u32> = state.units.iter()
+                .filter(|(_, u)| u.faction == active)
+                .map(|(id, _)| *id)
+                .collect();
+            for uid in to_heal {
+                if let Some(&hex) = state.positions.get(&uid) {
+                    let healing = state.board
+                        .terrain_at(hex)
+                        .map(|t| state.board.healing_for(t))
+                        .unwrap_or(0);
+                    if healing > 0 {
+                        let unit = state.units.get_mut(&uid).unwrap();
+                        unit.hp = (unit.hp + healing).min(unit.max_hp);
+                    }
+                }
+            }
+
             Ok(())
         }
     }

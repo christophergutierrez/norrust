@@ -116,13 +116,15 @@ func _draw() -> void:
 func _draw_units() -> void:
 	var data = _core.get_unit_data()
 	var i = 0
-	while i + 5 <= data.size():
-		var col     = data[i + 1]
-		var row     = data[i + 2]
-		var faction = data[i + 3]
-		var hp      = data[i + 4]
-		var center  = _tile_map.map_to_local(Vector2i(col, row)) + _tile_map.position
-		var color   = Color(0.25, 0.42, 0.88) if faction == 0 else Color(0.80, 0.12, 0.12)
+	while i + 7 <= data.size():
+		var col      = data[i + 1]
+		var row      = data[i + 2]
+		var faction  = data[i + 3]
+		var hp       = data[i + 4]
+		var exhausted = data[i + 5] == 1 or data[i + 6] == 1
+		var center   = _tile_map.map_to_local(Vector2i(col, row)) + _tile_map.position
+		var alpha    = 0.4 if exhausted else 1.0
+		var color    = Color(0.25, 0.42, 0.88, alpha) if faction == 0 else Color(0.80, 0.12, 0.12, alpha)
 		draw_circle(center, HEX_RADIUS * 0.45, color)
 		draw_string(
 			ThemeDB.fallback_font,
@@ -131,20 +133,20 @@ func _draw_units() -> void:
 			HORIZONTAL_ALIGNMENT_LEFT,
 			-1, 13, Color.WHITE
 		)
-		i += 5
+		i += 7
 
 func _build_unit_pos_map() -> Dictionary:
 	# Returns Dictionary: Vector2i(col, row) -> [unit_id, faction]
 	var result: Dictionary = {}
 	var data = _core.get_unit_data()
 	var i = 0
-	while i + 5 <= data.size():
+	while i + 7 <= data.size():
 		var uid     = data[i]
 		var col     = data[i + 1]
 		var row     = data[i + 2]
 		var faction = data[i + 3]
 		result[Vector2i(col, row)] = [uid, faction]
-		i += 5
+		i += 7
 	return result
 
 func _clear_selection() -> void:
