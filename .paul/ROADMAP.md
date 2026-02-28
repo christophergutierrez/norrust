@@ -8,7 +8,7 @@ Five phases take the project from data schema definitions through a fully playab
 
 **v0.1 Initial Release** (v0.1.0)
 Status: In progress
-Phases: 3 of 5 complete
+Phases: 4 of 5 complete
 
 ## Phases
 
@@ -17,7 +17,7 @@ Phases: 3 of 5 complete
 | 1 | Foundation & Data Schema | 3 | ✅ Complete | 2026-02-27 |
 | 2 | The Headless Core | 5 | ✅ Complete | 2026-02-27 |
 | 3 | The Presentation Layer | 3 | ✅ Complete | 2026-02-28 |
-| 4 | The Game Loop & Polish | TBD | Not started | - |
+| 4 | The Game Loop & Polish | 4 | ✅ Complete | 2026-02-28 |
 | 5 | AI Hooks & External APIs | TBD | Not started | - |
 
 ## Phase Details
@@ -73,20 +73,28 @@ Phases: 3 of 5 complete
 **Plans:**
 - Plans to be defined during `/paul:plan`
 
-### Phase 4: The Game Loop & Polish
+### Phase 4: The Game Loop & Polish ✅
 
 **Goal:** A complete, playable match from start to win/loss.
 **Depends on:** Phase 3 (visual layer working)
-**Research:** Unlikely (internal patterns)
-
-**Scope:**
-- End Turn logic, Time of Day progression, healing
-- Recruitment UI (select and place units on Castle hexes)
-- Movement interpolation and basic attack animations
-- Win/loss condition detection (leader death or turn limits)
+**Completed:** 2026-02-28
 
 **Plans:**
-- Plans to be defined during `/paul:plan`
+- [x] 04-01: Adjacency enforcement, defender retaliation, win/loss detection
+- [x] 04-02: Unit exhaustion indicators, per-terrain healing on EndTurn
+- [x] 04-03: Resistance modifiers in combat, colored HUD (Turn · ToD · Faction)
+- [x] 04-04: Village terrain (healing=8), 8×5 board, terrain-driven rendering
+
+**Delivered:**
+- Full Wesnoth-style combat: adjacency check, bidirectional retaliation, time-of-day modifiers, resistance types
+- Turn structure: EndTurn with faction flip, per-terrain healing, time-of-day cycle
+- Visual polish: exhausted unit dimming, colored HUD, village gold-tan hexes
+- Rust as terrain source of truth: `get_terrain_at()` bridge drives `_draw()`
+
+**Deferred (scope trimmed):**
+- Recruitment UI + castle hexes — future milestone
+- Movement/attack animations — future milestone
+- Village capture/ownership — future milestone
 
 ### Phase 5: AI Hooks & External APIs
 

@@ -1,6 +1,6 @@
 extends Node2D
 
-const BOARD_COLS  = 5
+const BOARD_COLS  = 8
 const BOARD_ROWS  = 5
 
 # Circumradius of each drawn hexagon (center to vertex, pixels).
@@ -15,6 +15,7 @@ const HEX_CELL_H  = 64   # HEX_RADIUS * 2
 
 const COLOR_GRASSLAND = Color(0.29, 0.49, 0.31)  # #4a7c4e
 const COLOR_FOREST    = Color(0.18, 0.35, 0.15)  # #2d5927
+const COLOR_VILLAGE   = Color(0.72, 0.60, 0.25)  # gold-tan
 
 var _core: NorRustCore
 var _tile_map: TileMap
@@ -38,15 +39,19 @@ func _setup_rust_core() -> void:
 
 	_core.create_game(BOARD_COLS, BOARD_ROWS, 42)
 
+	# Grassland/forest checkerboard base
 	for col in range(BOARD_COLS):
 		for row in range(BOARD_ROWS):
 			var terrain = "forest" if (col + row) % 2 == 1 else "grassland"
 			_core.set_terrain_at(col, row, terrain)
+	# Village hexes — contested healing positions in the centre
+	_core.set_terrain_at(3, 1, "village")
+	_core.set_terrain_at(4, 3, "village")
 
 	# Spawn two fighter units — stats (movement, movement_costs, attacks) are
 	# copied from the UnitDef registry automatically in the Rust bridge.
-	_core.place_unit_at(1, "fighter", 30, 0, 0, 2)  # faction 0 (blue)
-	_core.place_unit_at(2, "fighter", 30, 1, 4, 2)  # faction 1 (red)
+	_core.place_unit_at(1, "fighter", 30, 0, 1, 2)  # faction 0 (blue)
+	_core.place_unit_at(2, "fighter", 30, 1, 6, 2)  # faction 1 (red)
 
 func _setup_tilemap() -> void:
 	var tile_set = TileSet.new()
@@ -76,8 +81,15 @@ func _draw() -> void:
 	# 1. Terrain hexes
 	for col in range(BOARD_COLS):
 		for row in range(BOARD_ROWS):
-			var center = _tile_map.map_to_local(Vector2i(col, row)) + _tile_map.position
-			var color  = COLOR_FOREST if (col + row) % 2 == 1 else COLOR_GRASSLAND
+			var center     = _tile_map.map_to_local(Vector2i(col, row)) + _tile_map.position
+			var terrain_id = _core.get_terrain_at(col, row)
+			var color: Color
+			if terrain_id == "village":
+				color = COLOR_VILLAGE
+			elif terrain_id == "forest":
+				color = COLOR_FOREST
+			else:
+				color = COLOR_GRASSLAND
 			draw_polygon(_hex_polygon(center, HEX_RADIUS), [color])
 
 	# 2. Reachable hex highlights (semi-transparent yellow overlay)

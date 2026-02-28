@@ -135,6 +135,13 @@ impl NorRustCore {
         }
     }
 
+    /// Returns the terrain id at offset (col, row), or "" if none is set.
+    #[func]
+    fn get_terrain_at(&self, col: i32, row: i32) -> GString {
+        let Some(state) = self.game.as_ref() else { return "".into() };
+        state.board.terrain_at(Hex::from_offset(col, row)).unwrap_or("").into()
+    }
+
     /// Place a unit on the board at offset (col, row).
     /// Copies movement, movement_costs, attacks, and defense from the matching UnitDef
     /// if data has been loaded. Does nothing if no game has been created.

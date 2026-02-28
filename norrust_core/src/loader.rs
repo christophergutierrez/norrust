@@ -131,7 +131,7 @@ mod tests {
     fn test_terrain_registry_loads() {
         let dir = data_dir().join("terrain");
         let registry: Registry<TerrainDef> = Registry::load_from_dir(&dir).unwrap();
-        assert_eq!(registry.len(), 2);
+        assert_eq!(registry.len(), 3);
 
         let grass = registry.get("grassland").expect("grassland not found");
         assert_eq!(grass.default_defense, 40);
@@ -140,6 +140,10 @@ mod tests {
         let forest = registry.get("forest").expect("forest not found");
         assert_eq!(forest.default_defense, 60);
         assert_eq!(forest.default_movement_cost, 2);
+
+        let village = registry.get("village").expect("village not found");
+        assert_eq!(village.healing, 8);
+        assert_eq!(village.default_defense, 40);
     }
 
     #[test]

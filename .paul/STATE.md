@@ -5,26 +5,25 @@
 See: .paul/PROJECT.md (updated 2026-02-28)
 
 **Core value:** A playable hex-based strategy game where simulation logic is strictly separated from presentation, enabling human players and AI agents to use the same clean engine.
-**Current focus:** Phase 4 — The Game Loop & Polish
+**Current focus:** Phase 5 — AI Hooks & External APIs
 
 ## Current Position
 
 Milestone: v0.1 Initial Release
-Phase: 4 of 5 (The Game Loop & Polish) — In progress
-Plan: 04-03 complete
-Status: Loop closed — ready for 04-04 PLAN
-Last activity: 2026-02-28 — Completed 04-03 (resistance modifiers + HUD)
+Phase: 5 of 5 (AI Hooks & External APIs) — Not started
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-02-28 — Phase 4 complete, transitioned to Phase 5
 
 Progress:
-- Milestone: [██████████████░] 80%
-- Phase 4:   [██████░░░░] 60%
+- Milestone: [████████████████░] 90%
+- Phase 5:   [░░░░░░░░░░] 0%
 
 ## Loop Position
 
-Current loop state:
 ```
 PLAN ──▶ APPLY ──▶ UNIFY
-  ✓        ✓        ✓     [Loop complete — ready for next PLAN]
+  ○        ○        ○     [Phase 4 complete — ready to plan Phase 5]
 ```
 
 ## Accumulated Context
@@ -46,36 +45,41 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | Alignment enum in unit.rs (not combat.rs) | Phase 2, 02-04 | Prevents circular import: combat.rs imports unit.rs, not vice versa |
 | Unit carries combat data (attacks, defense map) | Phase 2, 02-04 | Avoids registry coupling in apply_action(Attack); caller copies from UnitDef at spawn |
 | movement=0 sentinel on Unit | Phase 2, 02-05 | Skip pathfinding check — backward compat for all existing Unit::new() callers |
-| PackedInt32Array 5-tuple for get_unit_data() | Phase 3, 03-03 | id/col/row/faction/hp per unit; GDScript loops in steps of 5 |
+| PackedInt32Array 7-tuple for get_unit_data() | Phase 4, 04-02 | id/col/row/faction/hp/moved/attacked; GDScript loops in steps of 7 |
 | Copy UnitDef stats into Unit at spawn time | Phase 3, 03-03 | place_unit_at() enriches Unit before insertion; apply_action() stays registry-free |
 | Attack branch before reachable-move in _input() | Phase 3, 03-03 | Enemy click = attack; reachable click = move; no silent move-to-occupied hex |
+| Board.healing_map cached at set_terrain_at() | Phase 4, 04-02 | EndTurn healing needs no registry access |
+| Unit carries resistances map | Phase 4, 04-03 | Copied from UnitDef at spawn; combat resistance lookup registry-free |
+| get_terrain_at() bridge: Rust is terrain source of truth | Phase 4, 04-04 | _draw() queries Rust per hex; new terrain types need zero GDScript changes |
+| Village always heals (no ownership/capture) | Phase 4, 04-04 | Simpler; capture mechanic deferred to future |
 
 ### Deferred Issues
 
 | Issue | Origin | Effort | Revisit |
 |-------|--------|--------|---------|
-| `factions.toml` schema not designed | Phase 1, 01-01 | S | Before Phase 4 recruitment |
-| Resistance modifiers not applied | Phase 2, 02-04 | S | 04-02 |
-| Skirmisher flag on Unit | Phase 2, 02-05 | S | 04-02 |
-| Multi-strike retaliation cap (1 round) | Phase 4, 04-01 | S | 04-02 |
-| No healing / village hexes | Phase 3 | M | 04-02 |
-| No recruitment / gold system | Phase 3 | L | 04-02 |
-| No visual "already moved" indicator | Phase 4, 04-01 | S | 04-02 |
-| Ranged attack range check | Deferred | M | Later |
+| `factions.toml` schema not designed | Phase 1, 01-01 | S | Future milestone |
+| Skirmisher flag on Unit | Phase 2, 02-05 | S | Future |
+| Multi-strike retaliation cap (1 round) | Phase 4, 04-01 | S | Future |
+| No recruitment / gold / castle system | Phase 3 | L | Future milestone |
+| No visual "already moved" indicator | Phase 4, 04-01 | S | Future |
+| Ranged attack range check | Deferred | M | Future |
+| Movement/attack animations | Phase 4 | M | Future milestone |
+| Village capture/ownership mechanic | Phase 4, 04-04 | M | Future |
 
 ### Blockers/Concerns
 None.
 
 ### Git State
 Last commit: 7219e8e — feat(04-01-game-loop): adjacency enforcement, retaliation, win/loss detection
+Phase 4 work: uncommitted (04-02 through 04-04 changes pending phase commit)
 Branch: master
 
 ## Session Continuity
 
 Last session: 2026-02-28
-Stopped at: 04-03 complete — resistance modifiers + colored HUD human-verified
-Next action: Run /paul:plan for 04-04 (village/castle hexes, recruitment, or animations)
-Resume file: .paul/phases/04-game-loop-polish/04-03-SUMMARY.md
+Stopped at: Phase 4 complete — all 4 plans unified; ready to plan Phase 5
+Next action: /paul:plan for Phase 5 (AI Hooks & External APIs)
+Resume file: .paul/ROADMAP.md
 
 ---
 *STATE.md — Updated after every significant action*

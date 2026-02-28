@@ -23,14 +23,20 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Unit spawning from Rust GameState, rendered with faction colour and HP — Phase 3
 - [x] Valid move range highlighting queried from Rust (reachable_hexes flood-fill) — Phase 3
 - [x] Action dispatch: Redot → Rust → visual update (move, attack, end turn) — Phase 3
+- [x] End Turn logic, Time of Day progression, per-terrain healing — Phase 4 (04-01, 04-02)
+- [x] Adjacency enforcement and defender retaliation (Wesnoth-style bidirectional combat) — Phase 4 (04-01)
+- [x] Win/loss condition detection (faction elimination) — Phase 4 (04-01)
+- [x] Unit exhaustion visual indicators (dimmed circle on moved/attacked units) — Phase 4 (04-02)
+- [x] Resistance modifiers in combat resolution — Phase 4 (04-03)
+- [x] Colored HUD (Turn · TimeOfDay · Faction) with faction-colored text — Phase 4 (04-03)
+- [x] Village terrain type (healing=8) with contested hexes on 8×5 board — Phase 4 (04-04)
+- [x] Terrain-driven rendering via get_terrain_at() bridge (Rust as source of truth) — Phase 4 (04-04)
 
 ### Active (In Progress)
 
 - [ ] Factions TOML schema — deferred from Phase 1
-- [ ] End Turn logic, Time of Day progression, healing — Phase 4
-- [ ] Recruitment UI (select and place units on Castle hexes) — Phase 4
-- [ ] Win/loss condition detection (leader death or turn limits) — Phase 4
-- [ ] Movement interpolation and basic attack animations — Phase 4
+- [ ] Recruitment UI (select and place units on Castle hexes) — deferred from Phase 4
+- [ ] Movement interpolation and basic attack animations — deferred from Phase 4
 
 ### Planned (Next)
 
@@ -68,9 +74,13 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | Cubic hex coordinates + odd-r offset at I/O | All internal hex math in cube coords; convert to/from offset only at board/bridge boundaries | 2026-02-27 | Active |
 | apply_action() mutates GameState in place | Zero-copy, simple API; returns Result<(), ActionError> | 2026-02-27 | Active |
 | movement=0 sentinel → skip pathfinding check | Backward-compat for Unit::new() callers; movement>0 requires valid path | 2026-02-27 | Active |
-| PackedInt32Array 5-tuple for get_unit_data() | Single bridge call: id/col/row/faction/hp per unit; GDScript loops in steps of 5 | 2026-02-28 | Active |
+| PackedInt32Array 7-tuple for get_unit_data() | id/col/row/faction/hp/moved/attacked per unit; exhaustion state queryable from GDScript | 2026-02-28 | Active |
 | Attack branch before reachable-move in _input() | Enemy click = attack intent; reachable click = move — prevents silent move-to-occupied | 2026-02-28 | Active |
 | Copy UnitDef stats into Unit at spawn time | Keeps apply_action() registry-free; phase 3 bridge calls place_unit_at() once per unit | 2026-02-28 | Active |
+| Board.healing_map cached at set_terrain_at() | EndTurn healing needs no registry access; healing values stored on board at terrain-set time | 2026-02-28 | Active |
+| Unit carries resistances map | Copied from UnitDef at spawn; combat resistance lookup registry-free | 2026-02-28 | Active |
+| get_terrain_at() bridge: Rust is terrain source of truth | _draw() queries Rust per hex; adding terrain types requires zero GDScript changes | 2026-02-28 | Active |
+| Village always heals (no ownership/capture) | Simpler; capture mechanic deferred to future milestone | 2026-02-28 | Active |
 
 ## Tech Stack
 
@@ -90,4 +100,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-02-28 after Phase 3*
+*Last updated: 2026-02-28 after Phase 4*
