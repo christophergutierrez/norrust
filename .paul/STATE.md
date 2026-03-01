@@ -83,10 +83,9 @@ PLAN ──▶ APPLY ──▶ UNIFY
 None.
 
 ### Git State
-Last commit: acc0944 — feat(12-unit-def-schema): UnitDef/AttackDef schema expansion, alignment wired
+Last commit: bc70f14 — feat(13-wesnoth-data-import): Python WML scraper, 318 unit TOMLs, 11 terrain TOMLs
 Branch: master
 Feature branches merged: none
-(Phase 13 commit pending)
 
 ## Session Continuity
 
