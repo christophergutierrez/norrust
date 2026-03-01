@@ -1,0 +1,46 @@
+id = "Dark Omen"
+name = "Dark Omen"
+race = "raven"
+level = 1
+experience = 44
+max_hp = 26
+movement = 9
+alignment = "chaotic"
+cost = 29
+usage = "scout"
+abilities = []
+advances_to = ["War Harbinger"]
+
+[[attacks]]
+id = "beak"
+name = "beak"
+damage = 7
+strikes = 2
+attack_type = "pierce"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "lightning"
+name = "lightning"
+damage = 13
+strikes = 1
+attack_type = "fire"
+range = "ranged"
+specials = []
+
+[resistances]
+arcane = -10
+blade = 0
+cold = 0
+fire = 0
+impact = 10
+pierce = 0
+
+[movement_costs]
+cave = 3
+fungus = 3
+
+[defense]
+cave = 70
+fungus = 70

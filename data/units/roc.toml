@@ -1,0 +1,49 @@
+id = "Roc"
+name = "Roc"
+race = "monster"
+level = 3
+experience = 150
+max_hp = 76
+movement = 10
+alignment = "neutral"
+cost = 70
+usage = "scout"
+abilities = []
+advances_to = []
+
+[[attacks]]
+id = "claws"
+name = "claws"
+damage = 12
+strikes = 3
+attack_type = "pierce"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "beak"
+name = "beak"
+damage = 12
+strikes = 2
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "rock"
+name = "rock"
+damage = 14
+strikes = 1
+attack_type = "impact"
+range = "ranged"
+specials = []
+
+[resistances]
+
+[movement_costs]
+cave = 3
+fungus = 3
+
+[defense]
+cave = 80
+fungus = 70

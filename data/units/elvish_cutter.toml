@@ -1,0 +1,60 @@
+id = "Elvish Cutter"
+name = "Elvish Cutter"
+race = "ship"
+level = 3
+experience = 105
+max_hp = 110
+movement = 10
+alignment = "neutral"
+cost = 72
+usage = "null"
+abilities = ["regenerates_4"]
+advances_to = ["Elvish Sloop"]
+
+[[attacks]]
+id = "ram"
+name = "ram"
+damage = 15
+strikes = 1
+attack_type = "impact"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "archers"
+name = "marksmen"
+damage = 7
+strikes = 5
+attack_type = "pierce"
+range = "ranged"
+specials = []
+
+[[attacks]]
+id = "archers"
+name = "marksmen"
+damage = 10
+strikes = 3
+attack_type = "pierce"
+range = "ranged"
+specials = []
+
+[resistances]
+arcane = -60
+blade = 0
+cold = -30
+fire = 30
+impact = 10
+pierce = 0
+
+[movement_costs]
+deep_water = 1
+reef = 3
+shallow_water = 2
+swamp_water = 2
+village = 1
+
+[defense]
+deep_water = 60
+reef = 90
+shallow_water = 70
+swamp_water = 80

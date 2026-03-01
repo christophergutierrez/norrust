@@ -1,0 +1,68 @@
+id = "Orcish Ruler"
+name = "Orcish Ruler"
+race = "orc"
+level = 2
+experience = 102
+max_hp = 60
+movement = 6
+alignment = "chaotic"
+cost = 45
+usage = "mixed fighter"
+abilities = ["leadership"]
+advances_to = ["Orcish Sovereign"]
+
+[[attacks]]
+id = "greatsword"
+name = "greatsword"
+damage = 9
+strikes = 3
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "crossbow"
+name = "crossbow"
+damage = 6
+strikes = 3
+attack_type = "pierce"
+range = "ranged"
+specials = []
+
+[resistances]
+arcane = 0
+blade = 0
+cold = 0
+fire = 0
+impact = 0
+pierce = 0
+
+[movement_costs]
+castle = 1
+cave = 2
+flat = 1
+forest = 2
+frozen = 2
+fungus = 3
+hills = 1
+mountains = 2
+reef = 2
+sand = 2
+shallow_water = 3
+swamp_water = 3
+village = 1
+
+[defense]
+castle = 40
+cave = 60
+flat = 60
+forest = 50
+frozen = 80
+fungus = 60
+hills = 50
+mountains = 40
+reef = 70
+sand = 70
+shallow_water = 80
+swamp_water = 70
+village = 40

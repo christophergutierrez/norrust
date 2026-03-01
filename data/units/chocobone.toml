@@ -1,0 +1,61 @@
+id = "Chocobone"
+name = "Chocobone"
+race = "undead"
+level = 2
+experience = 100
+max_hp = 45
+movement = 9
+alignment = "chaotic"
+cost = 28
+usage = "scout"
+abilities = ["submerge"]
+advances_to = []
+
+[[attacks]]
+id = "spear"
+name = "spear"
+damage = 11
+strikes = 2
+attack_type = "pierce"
+range = "melee"
+specials = []
+
+[resistances]
+arcane = 40
+blade = -20
+cold = -60
+fire = 20
+impact = 10
+pierce = -30
+
+[movement_costs]
+castle = 1
+cave = 2
+deep_water = 3
+flat = 1
+forest = 2
+frozen = 2
+fungus = 2
+hills = 2
+mountains = 3
+reef = 2
+sand = 2
+shallow_water = 2
+swamp_water = 2
+village = 1
+
+[defense]
+castle = 40
+cave = 60
+deep_water = 90
+flat = 60
+forest = 50
+frozen = 70
+fungus = 40
+hills = 50
+mountains = 40
+reef = 70
+sand = 70
+shallow_water = 80
+swamp_water = 70
+village = 40

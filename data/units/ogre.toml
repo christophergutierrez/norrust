@@ -1,0 +1,59 @@
+id = "Ogre"
+name = "Ogre"
+race = "ogre"
+level = 2
+experience = 100
+max_hp = 68
+movement = 5
+alignment = "neutral"
+cost = 27
+usage = "fighter"
+abilities = []
+advances_to = []
+
+[[attacks]]
+id = "cleaver"
+name = "cleaver"
+damage = 10
+strikes = 3
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[resistances]
+arcane = -10
+blade = -20
+cold = 0
+fire = 0
+impact = 0
+pierce = -20
+
+[movement_costs]
+castle = 1
+cave = 1
+flat = 1
+forest = 2
+frozen = 2
+fungus = 2
+hills = 1
+mountains = 2
+reef = 2
+sand = 2
+shallow_water = 2
+swamp_water = 2
+village = 1
+
+[defense]
+castle = 60
+cave = 60
+flat = 70
+forest = 60
+frozen = 80
+fungus = 50
+hills = 50
+mountains = 40
+reef = 70
+sand = 70
+shallow_water = 80
+swamp_water = 80
+village = 60

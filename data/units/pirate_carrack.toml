@@ -1,0 +1,60 @@
+id = "Pirate Carrack"
+name = "Pirate Carrack"
+race = "ship"
+level = 3
+experience = 150
+max_hp = 130
+movement = 8
+alignment = "chaotic"
+cost = 82
+usage = "null"
+abilities = []
+advances_to = []
+
+[[attacks]]
+id = "ram"
+name = "ram"
+damage = 18
+strikes = 1
+attack_type = "impact"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "ballistae"
+name = "ballistae"
+damage = 21
+strikes = 2
+attack_type = "pierce"
+range = "ranged"
+specials = []
+
+[[attacks]]
+id = "grapple"
+name = "grapple"
+damage = 6
+strikes = 4
+attack_type = "pierce"
+range = "ranged"
+specials = []
+
+[resistances]
+arcane = -60
+blade = 0
+cold = -30
+fire = 30
+impact = 10
+pierce = 0
+
+[movement_costs]
+deep_water = 1
+reef = 3
+shallow_water = 2
+swamp_water = 2
+village = 1
+
+[defense]
+deep_water = 60
+reef = 90
+shallow_water = 70
+swamp_water = 80

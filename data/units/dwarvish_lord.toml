@@ -1,0 +1,51 @@
+id = "Dwarvish Lord"
+name = "Dwarvish Lord"
+race = "dwarf"
+level = 3
+experience = 150
+max_hp = 74
+movement = 4
+alignment = "neutral"
+cost = 69
+usage = "fighter"
+abilities = []
+advances_to = []
+
+[[attacks]]
+id = "battle axe"
+name = "battle axe"
+damage = 15
+strikes = 3
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "hammer"
+name = "hammer"
+damage = 19
+strikes = 2
+attack_type = "impact"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "hatchet"
+name = "hatchet"
+damage = 10
+strikes = 1
+attack_type = "blade"
+range = "ranged"
+specials = []
+
+[resistances]
+arcane = -10
+blade = -40
+cold = -10
+fire = -10
+impact = -30
+pierce = -30
+
+[movement_costs]
+
+[defense]

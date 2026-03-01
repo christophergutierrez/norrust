@@ -1,0 +1,32 @@
+id = "Gryphon Rider"
+name = "Gryphon Rider"
+race = "gryphon"
+level = 1
+experience = 46
+max_hp = 34
+movement = 8
+alignment = "neutral"
+cost = 23
+usage = "scout"
+abilities = []
+advances_to = ["Gryphon Master"]
+
+[[attacks]]
+id = "claws"
+name = "claws"
+damage = 12
+strikes = 2
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[resistances]
+arcane = -10
+
+[movement_costs]
+cave = 3
+fungus = 3
+
+[defense]
+cave = 80
+fungus = 70

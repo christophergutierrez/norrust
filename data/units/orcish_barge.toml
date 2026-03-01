@@ -1,0 +1,42 @@
+id = "Orcish Barge"
+name = "Orcish Barge"
+race = "ship"
+level = 3
+experience = 90
+max_hp = 150
+movement = 4
+alignment = "chaotic"
+cost = 42
+usage = "null"
+abilities = ["heals_8", "cures"]
+advances_to = ["Orcish Battle Barge"]
+
+[[attacks]]
+id = "archers"
+name = "archers"
+damage = 6
+strikes = 5
+attack_type = "pierce"
+range = "ranged"
+specials = []
+
+[resistances]
+arcane = -60
+blade = -10
+cold = -30
+fire = 30
+impact = -20
+pierce = -20
+
+[movement_costs]
+deep_water = 1
+reef = 3
+shallow_water = 2
+swamp_water = 2
+village = 1
+
+[defense]
+deep_water = 60
+reef = 90
+shallow_water = 70
+swamp_water = 80

@@ -4,6 +4,7 @@ use norrust_core::ai::ai_take_turn;
 use norrust_core::board::Board;
 use norrust_core::game_state::{apply_action, Action, GameState};
 use norrust_core::hex::Hex;
+use norrust_core::loader::Registry;
 use norrust_core::schema::{AttackDef, UnitDef};
 use norrust_core::unit::{advance_unit, Unit};
 
@@ -321,4 +322,35 @@ fn test_ai_marches_toward_enemy_when_no_attack() {
     let (col, _) = state.positions[&1].to_offset();
     assert!(col > 0, "unit should have advanced from col 0, now at col {}", col);
     assert_eq!(col, 5, "should have marched to col 5 (furthest reachable toward enemy)");
+}
+
+#[test]
+fn test_wesnoth_units_load() {
+    let data_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("norrust_core has a parent dir")
+        .join("data/units");
+
+    let registry = Registry::<UnitDef>::load_from_dir(&data_dir)
+        .expect("all unit TOMLs must load without error");
+
+    // 4 custom units + 200+ scraped Wesnoth units
+    assert!(
+        registry.len() >= 200,
+        "expected >= 200 units, got {}",
+        registry.len()
+    );
+
+    // Spot-check: Spearman must load with correct stats
+    let spearman = registry
+        .get("Spearman")
+        .expect("Spearman must be in registry");
+    assert_eq!(spearman.max_hp, 36, "Spearman max_hp");
+    assert_eq!(spearman.movement, 5, "Spearman movement");
+    assert_eq!(spearman.level, 1, "Spearman level");
+    assert_eq!(spearman.alignment, "lawful", "Spearman alignment");
+    assert!(
+        spearman.attacks.iter().any(|a| a.attack_type == "pierce"),
+        "Spearman must have a pierce attack"
+    );
 }

@@ -113,7 +113,7 @@ mod tests {
     fn test_unit_registry_loads() {
         let dir = data_dir().join("units");
         let registry: Registry<UnitDef> = Registry::load_from_dir(&dir).unwrap();
-        assert_eq!(registry.len(), 4); // fighter, archer, hero, ranger
+        assert!(registry.len() >= 4, "expected at least 4 units, got {}", registry.len());
 
         let fighter = registry.get("fighter").expect("fighter not found");
         assert_eq!(fighter.max_hp, 30);
@@ -142,7 +142,7 @@ mod tests {
     fn test_terrain_registry_loads() {
         let dir = data_dir().join("terrain");
         let registry: Registry<TerrainDef> = Registry::load_from_dir(&dir).unwrap();
-        assert_eq!(registry.len(), 3);
+        assert!(registry.len() >= 3, "expected at least 3 terrain types, got {}", registry.len());
 
         let grass = registry.get("grassland").expect("grassland not found");
         assert_eq!(grass.default_defense, 40);

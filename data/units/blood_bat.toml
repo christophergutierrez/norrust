@@ -1,0 +1,32 @@
+id = "Blood Bat"
+name = "Blood Bat"
+race = "bats"
+level = 1
+experience = 37
+max_hp = 27
+movement = 9
+alignment = "chaotic"
+cost = 23
+usage = "scout"
+abilities = []
+advances_to = ["Dread Bat"]
+
+[[attacks]]
+id = "fangs"
+name = "fangs"
+damage = 5
+strikes = 3
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[resistances]
+cold = -30
+
+[movement_costs]
+cave = 1
+fungus = 2
+
+[defense]
+cave = 40
+fungus = 40

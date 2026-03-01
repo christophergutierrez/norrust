@@ -60,6 +60,10 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] parse_alignment() pub helper: "lawful"→Lawful, "chaotic"→Chaotic, else→Liminal — Phase 12 (12-01)
 - [x] alignment wired from TOML registry to Unit at spawn (place_unit_at) and advance (advance_unit) — Phase 12 (12-01)
 - [x] fighter/hero alignment="lawful"; archer/ranger alignment="neutral" in unit TOMLs — Phase 12 (12-01)
+- [x] tools/scrape_wesnoth.py: stdlib-only Python WML → TOML scraper for Wesnoth unit data — Phase 13 (13-01)
+- [x] 318 Wesnoth unit TOMLs generated from WML source; all 322 units load via Registry<UnitDef> — Phase 13 (13-01)
+- [x] 11 terrain type TOMLs (flat, hills, mountains, cave, frozen, fungus, sand, shallow_water, reef, swamp_water, castle) — Phase 13 (13-01)
+- [x] Integration test verifying all 322 unit TOMLs load; Spearman spot-check (max_hp=36, movement=5, alignment="lawful") passes — Phase 13 (13-01)
 
 ### Active (In Progress / Deferred)
 
@@ -130,6 +134,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | #[derive(Default)] on AttackDef and UnitDef | Enables ..Default::default() in ~16 test constructions; future schema additions need only 1 line per test file | 2026-03-01 | Active |
 | "neutral" alignment maps to Liminal | Same ToD modifier (no bonus/penalty); Neutral variant deferred until dusk/dawn time periods added | 2026-03-01 | Active |
 | parse_alignment() as single string→Alignment conversion point | Clean boundary; all callers (spawn, advance, future) go through one function | 2026-03-01 | Active |
+| parse_value() uses [^"]* (non-greedy first-quote) in WML scraper | WML inline comments (# wmllint: no spellcheck) after closing " caused 7 malformed TOMLs with greedy .* — first-quote match avoids capturing them | 2026-03-01 | Active |
+| Denormalized unit TOMLs from WML scraper (no MovetypeDef registry) | Keeps loader path simple; movement_costs/defense/resistances inlined per unit as already expected by UnitDef schema | 2026-03-01 | Active |
+| Registry tests use >= N count assertions | Hardcoded == 4/== 3 broke when data directory grew; >= N survives future data additions | 2026-03-01 | Active |
 
 ## Tech Stack
 
@@ -149,4 +156,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-01 after Phase 12 (UnitDef schema expansion — Phase 12 complete)*
+*Last updated: 2026-03-01 after Phase 13 (Wesnoth data import — v0.5 Unit Content milestone complete)*

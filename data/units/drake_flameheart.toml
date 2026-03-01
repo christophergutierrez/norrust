@@ -1,0 +1,52 @@
+id = "Drake Flameheart"
+name = "Drake Flameheart"
+race = "drake"
+level = 3
+experience = 150
+max_hp = 72
+movement = 5
+alignment = "lawful"
+cost = 66
+usage = "mixed fighter"
+abilities = ["leadership"]
+advances_to = []
+
+[[attacks]]
+id = "war blade"
+name = "war blade"
+damage = 11
+strikes = 3
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "fire breath"
+name = "fire breath"
+damage = 8
+strikes = 4
+attack_type = "fire"
+range = "ranged"
+specials = []
+
+[resistances]
+cold = 40
+
+[movement_costs]
+
+[defense]
+castle = 60
+cave = 70
+deep_water = 80
+flat = 70
+forest = 60
+frozen = 80
+fungus = 60
+hills = 60
+mountains = 60
+reef = 70
+sand = 60
+shallow_water = 80
+swamp_water = 70
+unwalkable = 60
+village = 60

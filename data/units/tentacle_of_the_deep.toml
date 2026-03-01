@@ -1,0 +1,41 @@
+id = "Tentacle of the Deep"
+name = "Tentacle of the Deep"
+race = "monster"
+level = 1
+experience = 50
+max_hp = 25
+movement = 2
+alignment = "chaotic"
+cost = 12
+usage = "fighter"
+abilities = ["regenerates_8"]
+advances_to = []
+
+[[attacks]]
+id = "tentacle"
+name = "tentacle"
+damage = 4
+strikes = 3
+attack_type = "impact"
+range = "melee"
+specials = []
+
+[resistances]
+arcane = 0
+blade = 20
+cold = -60
+fire = 0
+impact = -30
+pierce = 0
+
+[movement_costs]
+deep_water = 1
+reef = 2
+shallow_water = 1
+swamp_water = 2
+
+[defense]
+deep_water = 50
+reef = 50
+shallow_water = 50
+swamp_water = 60

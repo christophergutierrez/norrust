@@ -1,0 +1,68 @@
+id = "Footpad"
+name = "Footpad"
+race = "human"
+level = 1
+experience = 35
+max_hp = 30
+movement = 7
+alignment = "chaotic"
+cost = 14
+usage = "scout"
+abilities = []
+advances_to = ["Outlaw"]
+
+[[attacks]]
+id = "club"
+name = "club"
+damage = 4
+strikes = 2
+attack_type = "impact"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "sling"
+name = "sling"
+damage = 5
+strikes = 2
+attack_type = "impact"
+range = "ranged"
+specials = []
+
+[resistances]
+arcane = -10
+blade = 30
+cold = 0
+fire = 0
+impact = 20
+pierce = 20
+
+[movement_costs]
+castle = 1
+cave = 2
+flat = 1
+forest = 2
+frozen = 2
+fungus = 2
+hills = 2
+mountains = 3
+reef = 2
+sand = 2
+shallow_water = 2
+swamp_water = 2
+village = 1
+
+[defense]
+castle = 30
+cave = 50
+flat = 40
+forest = 30
+frozen = 60
+fungus = 30
+hills = 30
+mountains = 30
+reef = 50
+sand = 60
+shallow_water = 60
+swamp_water = 60
+village = 30

@@ -1,0 +1,66 @@
+id = "Knight"
+name = "Knight"
+race = "human"
+level = 2
+experience = 100
+max_hp = 58
+movement = 8
+alignment = "lawful"
+cost = 50
+usage = "fighter"
+abilities = []
+advances_to = ["Paladin", "Grand Knight"]
+
+[[attacks]]
+id = "sword"
+name = "sword"
+damage = 8
+strikes = 4
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "lance"
+name = "lance"
+damage = 14
+strikes = 2
+attack_type = "pierce"
+range = "melee"
+specials = []
+
+[resistances]
+arcane = -10
+blade = -20
+cold = 0
+fire = 0
+impact = -30
+pierce = 20
+
+[movement_costs]
+castle = 1
+cave = 4
+flat = 1
+forest = 3
+frozen = 2
+fungus = 4
+hills = 2
+reef = 3
+sand = 2
+shallow_water = 4
+swamp_water = 4
+village = 1
+
+[defense]
+castle = 60
+cave = 80
+flat = 60
+forest = 70
+frozen = 70
+fungus = 80
+hills = 60
+reef = 70
+sand = 70
+shallow_water = 80
+swamp_water = 80
+village = 60

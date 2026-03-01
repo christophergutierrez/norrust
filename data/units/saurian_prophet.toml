@@ -1,0 +1,68 @@
+id = "Saurian Prophet"
+name = "Saurian Prophet"
+race = "lizard"
+level = 3
+experience = 150
+max_hp = 43
+movement = 6
+alignment = "chaotic"
+cost = 51
+usage = "archer"
+abilities = ["heals_4"]
+advances_to = []
+
+[[attacks]]
+id = "staff"
+name = "staff"
+damage = 6
+strikes = 3
+attack_type = "impact"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "curse"
+name = "curse"
+damage = 12
+strikes = 3
+attack_type = "cold"
+range = "ranged"
+specials = []
+
+[resistances]
+arcane = -10
+blade = 10
+cold = 20
+fire = 20
+impact = 10
+pierce = -20
+
+[movement_costs]
+castle = 1
+cave = 1
+flat = 1
+forest = 2
+frozen = 4
+fungus = 1
+hills = 1
+mountains = 2
+reef = 2
+sand = 1
+shallow_water = 3
+swamp_water = 1
+village = 1
+
+[defense]
+castle = 40
+cave = 40
+flat = 60
+forest = 40
+frozen = 70
+fungus = 40
+hills = 40
+mountains = 40
+reef = 60
+sand = 40
+shallow_water = 60
+swamp_water = 40
+village = 50

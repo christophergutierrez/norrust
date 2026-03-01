@@ -1,0 +1,6 @@
+id = "reef"
+name = "Reef"
+symbol = "r"
+default_defense = 70
+default_movement_cost = 2
+healing = 0

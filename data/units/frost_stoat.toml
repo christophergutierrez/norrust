@@ -1,0 +1,68 @@
+id = "Frost Stoat"
+name = "Frost Stoat"
+race = "monster"
+level = 0
+experience = 25
+max_hp = 23
+movement = 6
+alignment = "chaotic"
+cost = 12
+usage = "fighter"
+abilities = ["skirmisher"]
+advances_to = []
+
+[[attacks]]
+id = "bite"
+name = "bite"
+damage = 5
+strikes = 2
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "claw"
+name = "ice claw"
+damage = 3
+strikes = 3
+attack_type = "cold"
+range = "melee"
+specials = []
+
+[resistances]
+arcane = 20
+blade = 30
+cold = -40
+fire = 0
+impact = 20
+pierce = 20
+
+[movement_costs]
+castle = 1
+cave = 2
+flat = 1
+forest = 2
+frozen = 2
+fungus = 2
+hills = 2
+mountains = 3
+reef = 2
+sand = 2
+shallow_water = 2
+swamp_water = 2
+village = 1
+
+[defense]
+castle = 30
+cave = 50
+flat = 40
+forest = 30
+frozen = 60
+fungus = 30
+hills = 30
+mountains = 30
+reef = 50
+sand = 60
+shallow_water = 60
+swamp_water = 60
+village = 30

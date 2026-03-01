@@ -1,0 +1,70 @@
+id = "Bone Shooter"
+name = "Bone Shooter"
+race = "undead"
+level = 2
+experience = 60
+max_hp = 42
+movement = 5
+alignment = "chaotic"
+cost = 24
+usage = "archer"
+abilities = ["submerge"]
+advances_to = ["Banebow"]
+
+[[attacks]]
+id = "dagger"
+name = "dagger"
+damage = 6
+strikes = 2
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "bow"
+name = "bow"
+damage = 10
+strikes = 3
+attack_type = "pierce"
+range = "ranged"
+specials = []
+
+[resistances]
+arcane = 40
+blade = -40
+cold = -60
+fire = 20
+impact = 20
+pierce = -60
+
+[movement_costs]
+castle = 1
+cave = 2
+deep_water = 3
+flat = 1
+forest = 2
+frozen = 2
+fungus = 2
+hills = 2
+mountains = 3
+reef = 2
+sand = 2
+shallow_water = 2
+swamp_water = 2
+village = 1
+
+[defense]
+castle = 40
+cave = 60
+deep_water = 90
+flat = 60
+forest = 50
+frozen = 70
+fungus = 40
+hills = 50
+mountains = 40
+reef = 70
+sand = 70
+shallow_water = 80
+swamp_water = 70
+village = 40

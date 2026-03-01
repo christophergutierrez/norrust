@@ -1,0 +1,68 @@
+id = "Firebane Ant"
+name = "Firebane Ant"
+race = "monster"
+level = 2
+experience = 100
+max_hp = 46
+movement = 6
+alignment = "neutral"
+cost = 19
+usage = "fighter"
+abilities = []
+advances_to = []
+
+[[attacks]]
+id = "fangs"
+name = "fangs"
+damage = 9
+strikes = 3
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "fire"
+name = "fire"
+damage = 10
+strikes = 1
+attack_type = "fire"
+range = "ranged"
+specials = []
+
+[resistances]
+arcane = 0
+blade = 0
+cold = 20
+fire = -20
+impact = -20
+pierce = 0
+
+[movement_costs]
+castle = 1
+cave = 2
+flat = 1
+forest = 2
+frozen = 2
+fungus = 3
+hills = 1
+mountains = 2
+reef = 2
+sand = 2
+shallow_water = 3
+swamp_water = 3
+village = 1
+
+[defense]
+castle = 40
+cave = 60
+flat = 60
+forest = 50
+frozen = 80
+fungus = 60
+hills = 50
+mountains = 40
+reef = 70
+sand = 70
+shallow_water = 80
+swamp_water = 70
+village = 40

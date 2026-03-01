@@ -1,0 +1,68 @@
+id = "Master at Arms"
+name = "Master at Arms"
+race = "human"
+level = 3
+experience = 150
+max_hp = 57
+movement = 7
+alignment = "lawful"
+cost = 44
+usage = "mixed fighter"
+abilities = ["skirmisher"]
+advances_to = []
+
+[[attacks]]
+id = "saber"
+name = "saber"
+damage = 7
+strikes = 5
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "crossbow"
+name = "crossbow"
+damage = 20
+strikes = 1
+attack_type = "pierce"
+range = "ranged"
+specials = []
+
+[resistances]
+arcane = -10
+blade = 30
+cold = -10
+fire = 0
+impact = 20
+pierce = 20
+
+[movement_costs]
+castle = 1
+cave = 2
+flat = 1
+forest = 2
+frozen = 2
+fungus = 2
+hills = 2
+mountains = 3
+reef = 2
+sand = 2
+shallow_water = 2
+swamp_water = 2
+village = 1
+
+[defense]
+castle = 30
+cave = 50
+flat = 40
+forest = 30
+frozen = 60
+fungus = 30
+hills = 30
+mountains = 30
+reef = 50
+sand = 60
+shallow_water = 60
+swamp_water = 60
+village = 30

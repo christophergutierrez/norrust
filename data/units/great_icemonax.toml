@@ -1,0 +1,77 @@
+id = "Great Icemonax"
+name = "Great Icemonax"
+race = "monster"
+level = 2
+experience = 100
+max_hp = 56
+movement = 5
+alignment = "neutral"
+cost = 26
+usage = "fighter"
+abilities = []
+advances_to = []
+
+[[attacks]]
+id = "claws"
+name = "claws"
+damage = 9
+strikes = 3
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "bite"
+name = "bite"
+damage = 13
+strikes = 2
+attack_type = "cold"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "tail"
+name = "tail"
+damage = 23
+strikes = 1
+attack_type = "impact"
+range = "melee"
+specials = []
+
+[resistances]
+arcane = 0
+blade = -30
+cold = -50
+fire = -30
+impact = -20
+pierce = -40
+
+[movement_costs]
+castle = 1
+cave = 1
+flat = 1
+forest = 2
+frozen = 2
+fungus = 2
+hills = 1
+mountains = 2
+reef = 2
+sand = 2
+shallow_water = 2
+swamp_water = 2
+village = 1
+
+[defense]
+castle = 60
+cave = 60
+flat = 70
+forest = 60
+frozen = 80
+fungus = 50
+hills = 50
+mountains = 40
+reef = 70
+sand = 70
+shallow_water = 80
+swamp_water = 80
+village = 60

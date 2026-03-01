@@ -1,0 +1,46 @@
+id = "Skeletal Dragon"
+name = "Skeletal Dragon"
+race = "undead"
+level = 4
+experience = 200
+max_hp = 98
+movement = 5
+alignment = "chaotic"
+cost = 160
+usage = "fighter"
+abilities = []
+advances_to = []
+
+[[attacks]]
+id = "jaw"
+name = "jaw"
+damage = 15
+strikes = 3
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "claws"
+name = "claws"
+damage = 27
+strikes = 2
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[resistances]
+arcane = 20
+blade = -40
+cold = -60
+fire = 20
+impact = 20
+pierce = -60
+
+[movement_costs]
+cave = 1
+fungus = 1
+
+[defense]
+cave = 60
+fungus = 50

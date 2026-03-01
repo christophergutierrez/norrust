@@ -1,0 +1,37 @@
+id = "Raven"
+name = "Raven"
+race = "raven"
+level = 0
+experience = 28
+max_hp = 16
+movement = 8
+alignment = "chaotic"
+cost = 12
+usage = "scout"
+abilities = []
+advances_to = ["Dark Omen"]
+
+[[attacks]]
+id = "beak"
+name = "beak"
+damage = 4
+strikes = 2
+attack_type = "pierce"
+range = "melee"
+specials = []
+
+[resistances]
+arcane = -10
+blade = 0
+cold = 0
+fire = 0
+impact = 10
+pierce = 0
+
+[movement_costs]
+cave = 3
+fungus = 3
+
+[defense]
+cave = 70
+fungus = 70

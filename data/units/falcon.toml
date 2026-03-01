@@ -1,0 +1,46 @@
+id = "Falcon"
+name = "Falcon"
+race = "falcon"
+level = 0
+experience = 24
+max_hp = 18
+movement = 9
+alignment = "neutral"
+cost = 12
+usage = "scout"
+abilities = []
+advances_to = ["Elder Falcon"]
+
+[[attacks]]
+id = "claws"
+name = "claws"
+damage = 3
+strikes = 3
+attack_type = "pierce"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "beak"
+name = "beak"
+damage = 5
+strikes = 1
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[resistances]
+arcane = -10
+blade = 0
+cold = 0
+fire = 0
+impact = 10
+pierce = 0
+
+[movement_costs]
+cave = 3
+fungus = 3
+
+[defense]
+cave = 70
+fungus = 70

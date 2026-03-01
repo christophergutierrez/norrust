@@ -1,0 +1,61 @@
+id = "Naga Warrior"
+name = "Naga Warrior"
+race = "naga"
+level = 2
+experience = 56
+max_hp = 43
+movement = 7
+alignment = "neutral"
+cost = 22
+usage = "fighter"
+abilities = []
+advances_to = ["Naga Myrmidon"]
+
+[[attacks]]
+id = "sword"
+name = "sword"
+damage = 7
+strikes = 4
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[resistances]
+arcane = 0
+blade = 0
+cold = 0
+fire = 0
+impact = 0
+pierce = 0
+
+[movement_costs]
+castle = 2
+cave = 2
+deep_water = 1
+flat = 2
+forest = 3
+frozen = 2
+fungus = 2
+hills = 3
+mountains = 5
+reef = 2
+sand = 1
+shallow_water = 1
+swamp_water = 1
+village = 1
+
+[defense]
+castle = 50
+cave = 60
+deep_water = 50
+flat = 70
+forest = 60
+frozen = 80
+fungus = 60
+hills = 60
+mountains = 60
+reef = 30
+sand = 60
+shallow_water = 40
+swamp_water = 40
+village = 60

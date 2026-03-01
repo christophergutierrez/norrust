@@ -1,0 +1,68 @@
+id = "Dune Strider"
+name = "female^Dune Strider"
+race = "dunefolk"
+level = 2
+experience = 64
+max_hp = 42
+movement = 6
+alignment = "lawful"
+cost = 29
+usage = "mixed fighter"
+abilities = ["skirmisher"]
+advances_to = ["Dune Harrier"]
+
+[[attacks]]
+id = "spear"
+name = "spear"
+damage = 6
+strikes = 4
+attack_type = "pierce"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "bolas"
+name = "bolas"
+damage = 7
+strikes = 2
+attack_type = "impact"
+range = "ranged"
+specials = []
+
+[resistances]
+arcane = -10
+blade = 10
+cold = 0
+fire = 0
+impact = 10
+pierce = 10
+
+[movement_costs]
+castle = 1
+cave = 2
+flat = 1
+forest = 2
+frozen = 3
+fungus = 2
+hills = 2
+mountains = 2
+reef = 2
+sand = 1
+shallow_water = 3
+swamp_water = 2
+village = 1
+
+[defense]
+castle = 40
+cave = 60
+flat = 50
+forest = 40
+frozen = 80
+fungus = 40
+hills = 40
+mountains = 40
+reef = 60
+sand = 40
+shallow_water = 70
+swamp_water = 70
+village = 40

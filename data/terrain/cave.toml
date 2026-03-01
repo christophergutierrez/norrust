@@ -1,0 +1,6 @@
+id = "cave"
+name = "Cave"
+symbol = "c"
+default_defense = 60
+default_movement_cost = 2
+healing = 0

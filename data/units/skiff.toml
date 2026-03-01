@@ -1,0 +1,51 @@
+id = "Skiff"
+name = "Skiff"
+race = "ship"
+level = 2
+experience = 70
+max_hp = 90
+movement = 8
+alignment = "neutral"
+cost = 42
+usage = "null"
+abilities = []
+advances_to = ["Merchant Carrack", "Pirate Carrack"]
+
+[[attacks]]
+id = "ram"
+name = "ram"
+damage = 15
+strikes = 1
+attack_type = "impact"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "archers"
+name = "archers"
+damage = 8
+strikes = 4
+attack_type = "pierce"
+range = "ranged"
+specials = []
+
+[resistances]
+arcane = -60
+blade = 0
+cold = -30
+fire = 30
+impact = 10
+pierce = 0
+
+[movement_costs]
+deep_water = 1
+reef = 3
+shallow_water = 2
+swamp_water = 2
+village = 1
+
+[defense]
+deep_water = 60
+reef = 90
+shallow_water = 70
+swamp_water = 80

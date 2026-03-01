@@ -1,0 +1,42 @@
+id = "Fireship"
+name = "Fireship"
+race = "ship"
+level = 2
+experience = 100
+max_hp = 110
+movement = 6
+alignment = "chaotic"
+cost = 57
+usage = "null"
+abilities = []
+advances_to = []
+
+[[attacks]]
+id = "ram"
+name = "ram"
+damage = 13
+strikes = 3
+attack_type = "fire"
+range = "melee"
+specials = []
+
+[resistances]
+arcane = -60
+blade = 0
+cold = -30
+fire = -50
+impact = 10
+pierce = 0
+
+[movement_costs]
+deep_water = 1
+reef = 3
+shallow_water = 2
+swamp_water = 2
+village = 1
+
+[defense]
+deep_water = 60
+reef = 90
+shallow_water = 70
+swamp_water = 80

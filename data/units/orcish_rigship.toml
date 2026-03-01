@@ -1,0 +1,60 @@
+id = "Orcish Rigship"
+name = "Orcish Rigship"
+race = "ship"
+level = 3
+experience = 110
+max_hp = 135
+movement = 8
+alignment = "chaotic"
+cost = 94
+usage = "null"
+abilities = []
+advances_to = ["Orcish Warship"]
+
+[[attacks]]
+id = "ram"
+name = "ram"
+damage = 20
+strikes = 1
+attack_type = "impact"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "archers"
+name = "crossbows"
+damage = 9
+strikes = 4
+attack_type = "pierce"
+range = "ranged"
+specials = []
+
+[[attacks]]
+id = "firearchers"
+name = "crossbows"
+damage = 7
+strikes = 5
+attack_type = "fire"
+range = "ranged"
+specials = []
+
+[resistances]
+arcane = -60
+blade = 0
+cold = -30
+fire = 30
+impact = 10
+pierce = 0
+
+[movement_costs]
+deep_water = 1
+reef = 3
+shallow_water = 2
+swamp_water = 2
+village = 1
+
+[defense]
+deep_water = 60
+reef = 90
+shallow_water = 70
+swamp_water = 80

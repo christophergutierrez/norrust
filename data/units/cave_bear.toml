@@ -1,0 +1,42 @@
+id = "Cave Bear"
+name = "Cave Bear"
+race = "monster"
+level = 2
+experience = 100
+max_hp = 72
+movement = 6
+alignment = "chaotic"
+cost = 29
+usage = "fighter"
+abilities = []
+advances_to = []
+
+[[attacks]]
+id = "fangs"
+name = "fangs"
+damage = 14
+strikes = 2
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "claws"
+name = "claws"
+damage = 7
+strikes = 4
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[resistances]
+arcane = -10
+blade = 0
+cold = 0
+fire = 0
+impact = 0
+pierce = 0
+
+[movement_costs]
+
+[defense]

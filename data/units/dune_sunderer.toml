@@ -1,0 +1,68 @@
+id = "Dune Sunderer"
+name = "Dune Sunderer"
+race = "dunefolk"
+level = 2
+experience = 85
+max_hp = 55
+movement = 7
+alignment = "lawful"
+cost = 38
+usage = "fighter"
+abilities = []
+advances_to = ["Dune Cataphract"]
+
+[[attacks]]
+id = "mace"
+name = "mace"
+damage = 11
+strikes = 3
+attack_type = "impact"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "composite bow"
+name = "composite bow"
+damage = 5
+strikes = 3
+attack_type = "pierce"
+range = "ranged"
+specials = []
+
+[resistances]
+arcane = -10
+blade = -20
+cold = 0
+fire = 0
+impact = -20
+pierce = 20
+
+[movement_costs]
+castle = 1
+cave = 3
+flat = 1
+forest = 3
+frozen = 2
+fungus = 3
+hills = 2
+mountains = 4
+reef = 3
+sand = 1
+shallow_water = 4
+swamp_water = 4
+village = 1
+
+[defense]
+castle = 50
+cave = 70
+flat = 60
+forest = 70
+frozen = 70
+fungus = 70
+hills = 50
+mountains = 60
+reef = 70
+sand = 60
+shallow_water = 80
+swamp_water = 80
+village = 60

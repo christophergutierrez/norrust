@@ -1,0 +1,68 @@
+id = "Dune Windbolt"
+name = "Dune Windbolt"
+race = "dunefolk"
+level = 3
+experience = 150
+max_hp = 52
+movement = 8
+alignment = "liminal"
+cost = 49
+usage = "archer"
+abilities = []
+advances_to = []
+
+[[attacks]]
+id = "mace"
+name = "mace"
+damage = 10
+strikes = 2
+attack_type = "impact"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "composite bow"
+name = "composite bow"
+damage = 8
+strikes = 5
+attack_type = "pierce"
+range = "ranged"
+specials = []
+
+[resistances]
+arcane = -10
+blade = -10
+cold = 0
+fire = 0
+impact = -10
+pierce = 20
+
+[movement_costs]
+castle = 1
+cave = 3
+flat = 1
+forest = 3
+frozen = 2
+fungus = 3
+hills = 2
+mountains = 3
+reef = 3
+sand = 1
+shallow_water = 4
+swamp_water = 4
+village = 1
+
+[defense]
+castle = 40
+cave = 70
+flat = 60
+forest = 60
+frozen = 70
+fungus = 60
+hills = 40
+mountains = 40
+reef = 70
+sand = 60
+shallow_water = 80
+swamp_water = 80
+village = 60

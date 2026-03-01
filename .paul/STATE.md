@@ -2,28 +2,27 @@
 
 ## Project Reference
 
-See: .paul/PROJECT.md (updated 2026-02-28)
+See: .paul/PROJECT.md (updated 2026-03-01)
 
 **Core value:** A playable hex-based strategy game where simulation logic is strictly separated from presentation, enabling human players and AI agents to use the same clean engine.
-**Current focus:** v0.5 — Unit Content
+**Current focus:** v0.5 Unit Content — COMPLETE
 
 ## Current Position
 
-Milestone: v0.5 Unit Content
-Phase: 13 of 2 (Wesnoth Data Import) — Not started
-Plan: Not started
-Status: Ready to plan Phase 13
-Last activity: 2026-03-01 — Phase 12 complete (UnitDef schema expansion)
+Milestone: v0.5 Unit Content — Complete ✅
+Phase: 13 of 13 (Wesnoth Data Import) — Complete
+Plan: 13-01 complete
+Status: Milestone v0.5 complete — ready for next milestone
+Last activity: 2026-03-01 — Phase 13 complete, v0.5 Unit Content milestone delivered
 
 Progress:
-- Milestone v0.4: [██████████] 100% ✅
-- Milestone v0.5: [█████░░░░░] 50%
+- Milestone v0.5: [██████████] 100% ✅
 
 ## Loop Position
 
 ```
 PLAN ──▶ APPLY ──▶ UNIFY
-  ✓        ✓        ✓     [Phase 12 complete — ready to plan Phase 13]
+  ✓        ✓        ✓     [Loop complete — milestone v0.5 closed]
 ```
 
 ## Accumulated Context
@@ -63,32 +62,37 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | #[derive(Default)] on AttackDef and UnitDef | Phase 12 | ..Default::default() in test constructions; future fields need 1 line per test file |
 | "neutral" alignment maps to Liminal (same ToD modifier) | Phase 12 | Neutral variant deferred; parse_alignment() is the single string→Alignment boundary |
 | parse_alignment() as pub fn in unit.rs | Phase 12 | Single conversion point used by place_unit_at() and advance_unit() |
+| parse_value() uses [^"]* (first-quote match) in WML scraper | Phase 13 | Avoids capturing WML inline comments after closing "; greedy .* caused 7 malformed TOMLs |
+| Denormalized unit TOMLs from scraper (no MovetypeDef registry) | Phase 13 | Keeps loader simple; movement_costs/defense/resistances inlined per unit |
+| Registry tests use >= N count assertions | Phase 13 | Hardcoded == 4/== 3 broke with 322-file data dir; >= N survives data growth |
 
 ### Deferred Issues
 
 | Issue | Origin | Effort | Revisit |
 |-------|--------|--------|---------|
-| `factions.toml` schema not designed | Phase 1 | S | v0.4+ |
-| No recruitment / gold / castle system | Phase 3 | L | v0.4+ |
-| Movement/attack animations | Phase 4 | M | v0.4+ |
-| Village capture/ownership mechanic | Phase 4 | M | v0.4+ |
-| Socket/TCP server for external Python agents | Phase 5 | M | v0.4+ |
-| 'A' key advancement requires unit selected — no UI hint | Phase 9 | S | v0.4+ |
-| Greedy AI doesn't advance without attack opportunity (wide boards with forest) | Phase 10 | M | Fixed Phase 11 — march fallback added |
+| `factions.toml` schema not designed | Phase 1 | S | v0.6+ |
+| No recruitment / gold / castle system | Phase 3 | L | v0.6+ |
+| Movement/attack animations | Phase 4 | M | v0.6+ |
+| Village capture/ownership mechanic | Phase 4 | M | v0.6+ |
+| Socket/TCP server for external Python agents | Phase 5 | M | v0.6+ |
+| 'A' key advancement requires unit selected — no UI hint | Phase 9 | S | v0.6+ |
+| Scraped terrain IDs (flat/hills/etc.) don't match board terrain IDs (grassland/forest/village) | Phase 13 | M | v0.6+ |
+| Some advances_to chains reference units not in registry (skipped for no-attacks/template) | Phase 13 | S | v0.6+ |
 
 ### Blockers/Concerns
 None.
 
 ### Git State
-Last commit: 110131f — feat(11-ai-bridge-gdscript): march fallback, AI bridge, human vs AI playable
+Last commit: acc0944 — feat(12-unit-def-schema): UnitDef/AttackDef schema expansion, alignment wired
 Branch: master
 Feature branches merged: none
+(Phase 13 commit pending)
 
 ## Session Continuity
 
 Last session: 2026-03-01
-Stopped at: Phase 12 complete — UnitDef/AttackDef schema expanded, alignment wired
-Next action: /paul:plan for Phase 13 (Wesnoth Data Import)
+Stopped at: v0.5 Unit Content milestone complete — Phase 13 UNIFY done
+Next action: /paul:discuss-milestone or /paul:milestone for v0.6
 Resume file: .paul/ROADMAP.md
 
 ---

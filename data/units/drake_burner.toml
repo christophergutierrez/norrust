@@ -1,0 +1,52 @@
+id = "Drake Burner"
+name = "Drake Burner"
+race = "drake"
+level = 1
+experience = 43
+max_hp = 42
+movement = 5
+alignment = "lawful"
+cost = 21
+usage = "archer"
+abilities = []
+advances_to = ["Fire Drake", "Drake Flare"]
+
+[[attacks]]
+id = "claws"
+name = "claws"
+damage = 7
+strikes = 2
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "fire breath"
+name = "fire breath"
+damage = 6
+strikes = 4
+attack_type = "fire"
+range = "ranged"
+specials = []
+
+[resistances]
+cold = 40
+
+[movement_costs]
+
+[defense]
+castle = 60
+cave = 70
+deep_water = 80
+flat = 70
+forest = 60
+frozen = 80
+fungus = 60
+hills = 60
+mountains = 60
+reef = 70
+sand = 60
+shallow_water = 80
+swamp_water = 70
+unwalkable = 60
+village = 60

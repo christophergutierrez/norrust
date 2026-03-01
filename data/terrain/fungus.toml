@@ -1,0 +1,6 @@
+id = "fungus"
+name = "Fungus"
+symbol = "f"
+default_defense = 50
+default_movement_cost = 2
+healing = 0

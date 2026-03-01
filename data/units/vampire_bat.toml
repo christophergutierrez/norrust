@@ -1,0 +1,32 @@
+id = "Vampire Bat"
+name = "Vampire Bat"
+race = "bats"
+level = 0
+experience = 22
+max_hp = 16
+movement = 8
+alignment = "chaotic"
+cost = 13
+usage = "scout"
+abilities = []
+advances_to = ["Blood Bat"]
+
+[[attacks]]
+id = "fangs"
+name = "fangs"
+damage = 4
+strikes = 2
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[resistances]
+cold = -30
+
+[movement_costs]
+cave = 1
+fungus = 2
+
+[defense]
+cave = 40
+fungus = 40

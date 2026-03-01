@@ -1,0 +1,76 @@
+id = "Elvish Sylph"
+name = "female^Elvish Sylph"
+race = "elf"
+level = 4
+experience = 200
+max_hp = 60
+movement = 6
+alignment = "neutral"
+cost = 110
+usage = "mixed fighter"
+abilities = []
+advances_to = []
+
+[[attacks]]
+id = "faerie touch"
+name = "faerie touch"
+damage = 6
+strikes = 3
+attack_type = "impact"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "gossamer"
+name = "ethereal web"
+damage = 7
+strikes = 5
+attack_type = "impact"
+range = "ranged"
+specials = []
+
+[[attacks]]
+id = "faerie fire"
+name = "faerie fire"
+damage = 10
+strikes = 5
+attack_type = "arcane"
+range = "ranged"
+specials = []
+
+[resistances]
+arcane = -20
+
+[movement_costs]
+castle = 1
+cave = 2
+deep_water = 2
+flat = 1
+forest = 1
+frozen = 1
+fungus = 2
+hills = 1
+mountains = 2
+reef = 1
+sand = 1
+shallow_water = 1
+swamp_water = 1
+unwalkable = 2
+village = 1
+
+[defense]
+castle = 40
+cave = 70
+deep_water = 70
+flat = 50
+forest = 30
+frozen = 60
+fungus = 50
+hills = 50
+mountains = 40
+reef = 50
+sand = 60
+shallow_water = 60
+swamp_water = 60
+unwalkable = 70
+village = 40

@@ -1,0 +1,59 @@
+id = "Merman Fighter"
+name = "Merman Fighter"
+race = "merman"
+level = 1
+experience = 34
+max_hp = 36
+movement = 6
+alignment = "lawful"
+cost = 14
+usage = "fighter"
+abilities = []
+advances_to = ["Merman Warrior"]
+
+[[attacks]]
+id = "trident"
+name = "trident"
+damage = 6
+strikes = 3
+attack_type = "pierce"
+range = "melee"
+specials = []
+
+[resistances]
+arcane = 0
+blade = 0
+cold = -20
+fire = 0
+impact = 0
+pierce = 0
+
+[movement_costs]
+castle = 1
+cave = 3
+deep_water = 1
+flat = 2
+forest = 4
+frozen = 2
+fungus = 3
+hills = 4
+reef = 2
+sand = 2
+shallow_water = 1
+swamp_water = 1
+village = 1
+
+[defense]
+castle = 60
+cave = 80
+deep_water = 50
+flat = 70
+forest = 70
+frozen = 70
+fungus = 80
+hills = 70
+reef = 30
+sand = 70
+shallow_water = 40
+swamp_water = 40
+village = 60

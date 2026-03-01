@@ -1,0 +1,6 @@
+id = "castle"
+name = "Castle"
+symbol = "c"
+default_defense = 40
+default_movement_cost = 1
+healing = 0

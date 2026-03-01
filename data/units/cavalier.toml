@@ -1,0 +1,66 @@
+id = "Cavalier"
+name = "Cavalier"
+race = "human"
+level = 3
+experience = 150
+max_hp = 64
+movement = 9
+alignment = "lawful"
+cost = 62
+usage = "scout"
+abilities = []
+advances_to = []
+
+[[attacks]]
+id = "sword"
+name = "longsword"
+damage = 10
+strikes = 4
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "crossbow"
+name = "crossbow"
+damage = 20
+strikes = 1
+attack_type = "pierce"
+range = "ranged"
+specials = []
+
+[resistances]
+arcane = -10
+blade = -30
+cold = -20
+fire = 0
+impact = -40
+pierce = 20
+
+[movement_costs]
+castle = 1
+cave = 4
+flat = 1
+forest = 3
+frozen = 2
+fungus = 4
+hills = 2
+reef = 3
+sand = 2
+shallow_water = 4
+swamp_water = 4
+village = 1
+
+[defense]
+castle = 60
+cave = 80
+flat = 60
+forest = 70
+frozen = 70
+fungus = 80
+hills = 60
+reef = 70
+sand = 70
+shallow_water = 80
+swamp_water = 80
+village = 60

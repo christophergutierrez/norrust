@@ -1,0 +1,42 @@
+id = "Pirate Galleon"
+name = "Pirate Galleon"
+race = "mechanical"
+level = 1
+experience = 50
+max_hp = 35
+movement = 5
+alignment = "lawful"
+cost = 15
+usage = "null"
+abilities = []
+advances_to = []
+
+[[attacks]]
+id = "ballista"
+name = "ballista"
+damage = 20
+strikes = 1
+attack_type = "pierce"
+range = "ranged"
+specials = []
+
+[resistances]
+arcane = -60
+blade = 0
+cold = -30
+fire = 30
+impact = 10
+pierce = 0
+
+[movement_costs]
+deep_water = 1
+reef = 3
+shallow_water = 2
+swamp_water = 2
+village = 1
+
+[defense]
+deep_water = 60
+reef = 90
+shallow_water = 70
+swamp_water = 80

@@ -1,0 +1,68 @@
+id = "Rock Scorpion"
+name = "Rock Scorpion"
+race = "monster"
+level = 1
+experience = 50
+max_hp = 35
+movement = 5
+alignment = "neutral"
+cost = 18
+usage = "fighter"
+abilities = []
+advances_to = []
+
+[[attacks]]
+id = "pincers"
+name = "pincers"
+damage = 6
+strikes = 4
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "spray"
+name = "spray"
+damage = 4
+strikes = 1
+attack_type = "impact"
+range = "ranged"
+specials = []
+
+[resistances]
+arcane = 0
+blade = -30
+cold = 10
+fire = -10
+impact = -10
+pierce = -40
+
+[movement_costs]
+castle = 1
+cave = 2
+flat = 1
+forest = 2
+frozen = 2
+fungus = 2
+hills = 3
+mountains = 4
+reef = 2
+sand = 2
+shallow_water = 3
+swamp_water = 2
+village = 1
+
+[defense]
+castle = 40
+cave = 60
+flat = 60
+forest = 50
+frozen = 60
+fungus = 50
+hills = 50
+mountains = 40
+reef = 60
+sand = 60
+shallow_water = 70
+swamp_water = 60
+village = 40

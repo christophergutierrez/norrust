@@ -1,0 +1,59 @@
+id = "Ghast"
+name = "Ghast"
+race = "undead"
+level = 3
+experience = 150
+max_hp = 65
+movement = 5
+alignment = "chaotic"
+cost = 50
+usage = "fighter"
+abilities = ["feeding"]
+advances_to = []
+
+[[attacks]]
+id = "bite"
+name = "bite"
+damage = 12
+strikes = 3
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[resistances]
+arcane = -30
+blade = -10
+cold = -40
+fire = -10
+impact = -20
+pierce = -10
+
+[movement_costs]
+castle = 1
+cave = 2
+flat = 1
+forest = 2
+frozen = 2
+fungus = 2
+hills = 2
+mountains = 3
+reef = 2
+sand = 2
+shallow_water = 3
+swamp_water = 2
+village = 1
+
+[defense]
+castle = 40
+cave = 60
+flat = 60
+forest = 50
+frozen = 70
+fungus = 40
+hills = 50
+mountains = 40
+reef = 70
+sand = 70
+shallow_water = 80
+swamp_water = 70
+village = 40

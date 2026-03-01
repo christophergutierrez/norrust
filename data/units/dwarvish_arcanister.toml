@@ -1,0 +1,33 @@
+id = "Dwarvish Arcanister"
+name = "Dwarvish Arcanister"
+race = "dwarf"
+level = 4
+experience = 200
+max_hp = 54
+movement = 4
+alignment = "neutral"
+cost = 98
+usage = "fighter"
+abilities = []
+advances_to = []
+
+[[attacks]]
+id = "hammer"
+name = "hammer"
+damage = 26
+strikes = 2
+attack_type = "impact"
+range = "melee"
+specials = []
+
+[resistances]
+arcane = -10
+blade = -50
+cold = -10
+fire = -10
+impact = -50
+pierce = -50
+
+[movement_costs]
+
+[defense]

@@ -4,18 +4,19 @@
 
 Five phases take the project from data schema definitions through a fully playable hex-based strategy game with external AI hooks. The Rust simulation core is built and tested headlessly before any visual work begins; Redot rendering is layered on top once the core is proven.
 
-## Current Milestone
+## Previous Milestone
 
 **v0.5 Unit Content** (v0.5.0)
-Status: 🚧 In progress
-Phases: 1 of 2 complete
+Status: ✅ Complete
+Phases: 2 of 2 complete
+Released: 2026-03-01
 
 ## v0.5 Phases
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 12 | UnitDef Schema Expansion | 1 | ✅ Complete | 2026-03-01 |
-| 13 | Wesnoth Data Import | TBD | Not started | - |
+| 13 | Wesnoth Data Import | 1 | ✅ Complete | 2026-03-01 |
 
 ## v0.5 Phase Details
 
@@ -38,13 +39,23 @@ Move `alignment` from GDScript spawn-time parameter to registry-sourced data.
 - 4 unit TOMLs updated: fighter/hero="lawful", archer/ranger="neutral"
 - 49 tests passing (44 lib + 5 integration)
 
-### Phase 13: Wesnoth Data Import
+### Phase 13: Wesnoth Data Import ✅
 
 **Goal:** Python scraper reads Wesnoth WML from `/home/chris/git_home/wesnoth/data/core/units/`,
-expands movement type macros, and outputs 218 unit TOMLs + terrain TOMLs. All units load via
+expands movement type macros, and outputs unit TOMLs + terrain TOMLs. All units load via
 `Registry::<UnitDef>::load_from_dir()` verified by integration test.
 **Depends on:** Phase 12 (expanded UnitDef schema must exist before TOMLs are generated)
-**Plans:** TBD (defined during /paul:plan)
+**Completed:** 2026-03-01
+
+**Plans:**
+- [x] 13-01: Python WML scraper + terrain TOMLs + Rust integration test
+
+**Delivered:**
+- `tools/scrape_wesnoth.py`: 270-line stdlib-only WML → TOML scraper; 38 movetypes, 328 unit_type blocks parsed
+- 318 Wesnoth unit TOMLs generated (322 total with 4 custom); all load via Registry<UnitDef>
+- 11 terrain TOMLs (flat, hills, mountains, cave, frozen, fungus, sand, shallow_water, reef, swamp_water, castle)
+- `test_wesnoth_units_load`: asserts registry.len() >= 200; Spearman spot-check (hp=36, mv=5, pierce)
+- 50 tests passing (44 lib + 6 integration)
 
 ---
 
@@ -295,4 +306,4 @@ Released: 2026-02-28
 - 6 new unit tests; serde_json dependency added
 
 ---
-*Roadmap updated: 2026-03-01 — Phase 12 complete, Phase 13 (Wesnoth Data Import) next*
+*Roadmap updated: 2026-03-01 — v0.5 Unit Content milestone complete (Phases 12 + 13)*

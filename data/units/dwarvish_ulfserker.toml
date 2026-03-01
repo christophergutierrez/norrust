@@ -1,0 +1,33 @@
+id = "Dwarvish Ulfserker"
+name = "Dwarvish Ulfserker"
+race = "dwarf"
+level = 1
+experience = 42
+max_hp = 34
+movement = 5
+alignment = "neutral"
+cost = 19
+usage = "fighter"
+abilities = []
+advances_to = ["Dwarvish Berserker"]
+
+[[attacks]]
+id = "berserker frenzy"
+name = "berserker frenzy"
+damage = 4
+strikes = 4
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[resistances]
+arcane = -10
+blade = -20
+cold = -10
+fire = -10
+impact = -20
+pierce = -20
+
+[movement_costs]
+
+[defense]

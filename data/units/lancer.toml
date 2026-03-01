@@ -1,0 +1,57 @@
+id = "Lancer"
+name = "Lancer"
+race = "human"
+level = 2
+experience = 100
+max_hp = 50
+movement = 10
+alignment = "lawful"
+cost = 47
+usage = "fighter"
+abilities = []
+advances_to = []
+
+[[attacks]]
+id = "lance"
+name = "lance"
+damage = 12
+strikes = 3
+attack_type = "pierce"
+range = "melee"
+specials = []
+
+[resistances]
+arcane = -10
+blade = -20
+cold = 0
+fire = 0
+impact = -30
+pierce = 20
+
+[movement_costs]
+castle = 1
+cave = 4
+flat = 1
+forest = 3
+frozen = 2
+fungus = 4
+hills = 2
+reef = 3
+sand = 2
+shallow_water = 4
+swamp_water = 4
+village = 1
+
+[defense]
+castle = 60
+cave = 80
+flat = 60
+forest = 70
+frozen = 70
+fungus = 80
+hills = 60
+reef = 70
+sand = 70
+shallow_water = 80
+swamp_water = 80
+village = 60

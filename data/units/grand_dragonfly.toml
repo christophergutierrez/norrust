@@ -1,0 +1,46 @@
+id = "Grand Dragonfly"
+name = "Grand Dragonfly"
+race = "monster"
+level = 2
+experience = 100
+max_hp = 39
+movement = 7
+alignment = "neutral"
+cost = 30
+usage = "scout"
+abilities = []
+advances_to = []
+
+[[attacks]]
+id = "bite"
+name = "bite"
+damage = 8
+strikes = 3
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "sting"
+name = "sting"
+damage = 12
+strikes = 1
+attack_type = "pierce"
+range = "melee"
+specials = []
+
+[resistances]
+arcane = -10
+blade = -20
+cold = 20
+fire = 0
+impact = -10
+pierce = -10
+
+[movement_costs]
+cave = 1
+fungus = 2
+
+[defense]
+cave = 40
+fungus = 40

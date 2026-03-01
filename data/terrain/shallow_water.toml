@@ -1,0 +1,6 @@
+id = "shallow_water"
+name = "Shallow Water"
+symbol = "s"
+default_defense = 80
+default_movement_cost = 3
+healing = 0

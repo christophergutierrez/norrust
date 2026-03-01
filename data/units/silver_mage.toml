@@ -1,0 +1,68 @@
+id = "Silver Mage"
+name = "Silver Mage"
+race = "human"
+level = 3
+experience = 150
+max_hp = 48
+movement = 6
+alignment = "neutral"
+cost = 59
+usage = "mixed fighter"
+abilities = ["teleport"]
+advances_to = []
+
+[[attacks]]
+id = "staff"
+name = "staff"
+damage = 7
+strikes = 2
+attack_type = "impact"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "missile"
+name = "missile"
+damage = 9
+strikes = 4
+attack_type = "fire"
+range = "ranged"
+specials = []
+
+[resistances]
+arcane = -10
+blade = 0
+cold = -50
+fire = -50
+impact = 0
+pierce = 0
+
+[movement_costs]
+castle = 1
+cave = 2
+flat = 1
+forest = 2
+frozen = 3
+fungus = 2
+hills = 2
+mountains = 3
+reef = 2
+sand = 2
+shallow_water = 3
+swamp_water = 3
+village = 1
+
+[defense]
+castle = 40
+cave = 60
+flat = 60
+forest = 50
+frozen = 80
+fungus = 50
+hills = 50
+mountains = 40
+reef = 70
+sand = 70
+shallow_water = 80
+swamp_water = 80
+village = 40

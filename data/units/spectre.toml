@@ -1,0 +1,59 @@
+id = "Spectre"
+name = "Spectre"
+race = "undead"
+level = 3
+experience = 150
+max_hp = 33
+movement = 7
+alignment = "chaotic"
+cost = 78
+usage = "scout"
+abilities = []
+advances_to = []
+
+[[attacks]]
+id = "baneblade"
+name = "baneblade"
+damage = 9
+strikes = 4
+attack_type = "arcane"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "wail"
+name = "wail"
+damage = 6
+strikes = 3
+attack_type = "cold"
+range = "ranged"
+specials = []
+
+[resistances]
+arcane = 10
+blade = -50
+cold = -70
+fire = -10
+impact = -50
+pierce = -50
+
+[movement_costs]
+castle = 1
+cave = 1
+deep_water = 2
+flat = 1
+forest = 1
+frozen = 1
+fungus = 1
+hills = 1
+mountains = 1
+reef = 2
+sand = 1
+shallow_water = 2
+swamp_water = 1
+unwalkable = 1
+village = 1
+
+[defense]
+cave = 50
+fungus = 50

@@ -1,0 +1,33 @@
+id = "Dwarvish Runesmith"
+name = "Dwarvish Runesmith"
+race = "dwarf"
+level = 2
+experience = 71
+max_hp = 40
+movement = 4
+alignment = "neutral"
+cost = 27
+usage = "fighter"
+abilities = []
+advances_to = ["Dwarvish Runemaster"]
+
+[[attacks]]
+id = "hammer"
+name = "hammer"
+damage = 12
+strikes = 2
+attack_type = "impact"
+range = "melee"
+specials = []
+
+[resistances]
+arcane = -10
+blade = -40
+cold = -10
+fire = -10
+impact = -30
+pierce = -30
+
+[movement_costs]
+
+[defense]

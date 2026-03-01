@@ -1,0 +1,32 @@
+id = "Dread Bat"
+name = "Dread Bat"
+race = "bats"
+level = 2
+experience = 100
+max_hp = 33
+movement = 9
+alignment = "chaotic"
+cost = 32
+usage = "scout"
+abilities = []
+advances_to = []
+
+[[attacks]]
+id = "fangs"
+name = "fangs"
+damage = 6
+strikes = 4
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[resistances]
+cold = -30
+
+[movement_costs]
+cave = 1
+fungus = 2
+
+[defense]
+cave = 40
+fungus = 40

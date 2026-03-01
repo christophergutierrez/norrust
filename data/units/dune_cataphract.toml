@@ -1,0 +1,77 @@
+id = "Dune Cataphract"
+name = "Dune Cataphract"
+race = "dunefolk"
+level = 3
+experience = 150
+max_hp = 71
+movement = 7
+alignment = "lawful"
+cost = 69
+usage = "fighter"
+abilities = []
+advances_to = []
+
+[[attacks]]
+id = "mace"
+name = "mace"
+damage = 15
+strikes = 3
+attack_type = "impact"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "lance"
+name = "lance"
+damage = 14
+strikes = 2
+attack_type = "pierce"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "composite bow"
+name = "composite bow"
+damage = 6
+strikes = 3
+attack_type = "pierce"
+range = "ranged"
+specials = []
+
+[resistances]
+arcane = -10
+blade = -30
+cold = 0
+fire = 0
+impact = -30
+pierce = 20
+
+[movement_costs]
+castle = 1
+cave = 3
+flat = 1
+forest = 3
+frozen = 2
+fungus = 3
+hills = 2
+mountains = 4
+reef = 3
+sand = 1
+shallow_water = 4
+swamp_water = 4
+village = 1
+
+[defense]
+castle = 50
+cave = 70
+flat = 60
+forest = 70
+frozen = 70
+fungus = 70
+hills = 50
+mountains = 60
+reef = 70
+sand = 60
+shallow_water = 80
+swamp_water = 80
+village = 60

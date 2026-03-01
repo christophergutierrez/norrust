@@ -1,0 +1,68 @@
+id = "Dune Scorcher"
+name = "Dune Scorcher"
+race = "dunefolk"
+level = 2
+experience = 64
+max_hp = 51
+movement = 6
+alignment = "lawful"
+cost = 30
+usage = "archer"
+abilities = []
+advances_to = ["Dune Firetrooper"]
+
+[[attacks]]
+id = "dagger"
+name = "dagger"
+damage = 9
+strikes = 2
+attack_type = "blade"
+range = "melee"
+specials = []
+
+[[attacks]]
+id = "flamethrower"
+name = "flamethrower"
+damage = 10
+strikes = 3
+attack_type = "fire"
+range = "ranged"
+specials = []
+
+[resistances]
+arcane = -10
+blade = 10
+cold = 0
+fire = 0
+impact = -20
+pierce = -10
+
+[movement_costs]
+castle = 1
+cave = 2
+flat = 1
+forest = 2
+frozen = 3
+fungus = 2
+hills = 2
+mountains = 2
+reef = 2
+sand = 1
+shallow_water = 3
+swamp_water = 2
+village = 1
+
+[defense]
+castle = 40
+cave = 60
+flat = 60
+forest = 60
+frozen = 80
+fungus = 50
+hills = 40
+mountains = 40
+reef = 70
+sand = 60
+shallow_water = 80
+swamp_water = 70
+village = 40
