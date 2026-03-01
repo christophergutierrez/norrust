@@ -45,6 +45,10 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] apply_advance() GDExtension bridge method for GDScript — Phase 8 (08-02)
 - [x] ActionRequest::Advance JSON API variant for external AI clients — Phase 8 (08-02)
 - [x] Headless advancement simulation: 5-kill XP accumulation → hero promotion verified — Phase 8 (08-02)
+- [x] XP progress text ("xp/xp_needed") drawn below HP on each unit circle — Phase 9 (09-01)
+- [x] Gold arc ring indicator on units with advancement_pending = true — Phase 9 (09-01)
+- [x] 'A' key handler: advances selected unit via apply_advance() with faction + pending guards — Phase 9 (09-01)
+- [x] Integration test with real fighter.toml stats: 7×3 sword, 5 kills → hero (45 HP, 9×4 sword) — Phase 9 (09-01)
 
 ### Active (In Progress / Deferred)
 
@@ -104,6 +108,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | advance_unit() as free function in unit.rs | Directly usable in tests and bridge without registry coupling | 2026-02-28 | Active |
 | Advance intercepted in apply_action_json before into() | Preserves registry-free apply_action(); Action enum unchanged | 2026-02-28 | Active |
 | advances_to index 0 only for bridge | Multi-target choice deferred to Phase 9+; single path sufficient now | 2026-02-28 | Active |
+| int() cast on all JSON numeric fields in GDScript | Redot JSON.parse_string() returns all numbers as float; int() required for display and comparison | 2026-02-28 | Active |
+| draw_arc() for advancement ring; draw_polyline() for hex outlines | Visually distinct ring layers — unit-level gold arc vs hex-boundary white polyline | 2026-02-28 | Active |
+| 5 fighters per side as starting spawn | With 2 units, advancement (40 XP) is unreachable before one dies; 5 enemies guarantees a full advancement cycle | 2026-02-28 | Active |
 
 ## Tech Stack
 
@@ -123,4 +130,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-02-28 after Phase 8 (v0.3 XP & advancement logic complete)*
+*Last updated: 2026-02-28 after Phase 9 (v0.3 Advancement Presentation complete — milestone v0.3 done)*

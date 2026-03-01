@@ -5,25 +5,25 @@
 See: .paul/PROJECT.md (updated 2026-02-28)
 
 **Core value:** A playable hex-based strategy game where simulation logic is strictly separated from presentation, enabling human players and AI agents to use the same clean engine.
-**Current focus:** v0.3 — Unit Advancement
+**Current focus:** v0.4 — AI Opponent
 
 ## Current Position
 
-Milestone: v0.3 Unit Advancement
-Phase: 9 of 9 (Advancement Presentation) — Not started
+Milestone: v0.4 AI Opponent
+Phase: Not started
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-02-28 — Phase 8 complete, transitioned to Phase 9
+Last activity: 2026-02-28 — v0.3 complete, milestone transition to v0.4
 
 Progress:
-- Milestone v0.3: [██████░░░░] ~67%
-- Phase 8:        [██████████] 100% ✅
+- Milestone v0.3: [██████████] 100% ✅
+- Milestone v0.4: [░░░░░░░░░░] 0%
 
 ## Loop Position
 
 ```
 PLAN ──▶ APPLY ──▶ UNIFY
-  ✓        ✓        ✓     [Loop complete — ready for Phase 9 PLAN]
+  ✓        ✓        ✓     [v0.3 complete — ready for v0.4 Phase 1 PLAN]
 ```
 
 ## Accumulated Context
@@ -53,29 +53,33 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | advancement_pending data-only in Phase 7 | Phase 7 | Logic (set/clear) is Phase 8 work; no premature coupling |
 | 1 XP/hit + 8 kill bonus; both sides earn | Phase 8 | Symmetric XP; headless sim verified 5-kill chain |
 | advance_unit() free function; bridge-side registry | Phase 8 | apply_action stays registry-free; advance intercepted before into() |
+| int() cast on all JSON numeric fields in GDScript | Phase 9 | Redot JSON returns floats; int() required for display + comparison |
+| draw_arc() for advancement ring; draw_polyline() for hex outlines | Phase 9 | Visually distinct unit-level vs hex-level ring layers |
 
 ### Deferred Issues
 
 | Issue | Origin | Effort | Revisit |
 |-------|--------|--------|---------|
-| `factions.toml` schema not designed | Phase 1 | S | v0.3+ |
-| No recruitment / gold / castle system | Phase 3 | L | v0.3+ |
-| Movement/attack animations | Phase 4 | M | v0.3+ |
-| Village capture/ownership mechanic | Phase 4 | M | v0.3+ |
-| Socket/TCP server for external Python agents | Phase 5 | M | v0.3+ |
+| `factions.toml` schema not designed | Phase 1 | S | v0.4+ |
+| No recruitment / gold / castle system | Phase 3 | L | v0.4+ |
+| Movement/attack animations | Phase 4 | M | v0.4+ |
+| Village capture/ownership mechanic | Phase 4 | M | v0.4+ |
+| Socket/TCP server for external Python agents | Phase 5 | M | v0.4+ |
+| 'A' key advancement requires unit selected — no UI hint | Phase 9 | S | v0.4+ |
 
 ### Blockers/Concerns
 None.
 
 ### Git State
-Last commit: TBD — feat(08-xp-advancement-logic): pending phase commit
+Last commit: 985f2b9 — feat(08-xp-advancement-logic): XP gain, advance_unit(), apply_advance() bridge
 Branch: master
+Pending: feat(09-advancement-presentation) commit
 
 ## Session Continuity
 
 Last session: 2026-02-28
-Stopped at: Phase 8 complete — ready to plan Phase 9
-Next action: /paul:plan for Phase 9 (Advancement Presentation)
+Stopped at: v0.3 complete — v0.4 AI Opponent milestone transition done
+Next action: /paul:plan for v0.4 Phase 1 (Greedy AI Opponent)
 Resume file: .paul/ROADMAP.md
 
 ---

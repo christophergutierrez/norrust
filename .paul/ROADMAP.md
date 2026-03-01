@@ -6,9 +6,18 @@ Five phases take the project from data schema definitions through a fully playab
 
 ## Current Milestone
 
+**v0.4 AI Opponent** (v0.4.0)
+Status: 🔵 Planned
+Phases: 0 of TBD complete
+
+---
+
+## Previous Milestone
+
 **v0.3 Unit Advancement** (v0.3.0)
-Status: 🚧 In progress
-Phases: 2 of 3 complete
+Status: ✅ Complete
+Phases: 3 of 3 complete
+Released: 2026-02-28
 
 ## v0.3 Phases
 
@@ -16,7 +25,7 @@ Phases: 2 of 3 complete
 |-------|------|-------|--------|-----------|
 | 7 | Advancement Schema | 1 | ✅ Complete | 2026-02-28 |
 | 8 | XP & Advancement Logic | 2 | ✅ Complete | 2026-02-28 |
-| 9 | Advancement Presentation | TBD | Not started | - |
+| 9 | Advancement Presentation | 1 | ✅ Complete | 2026-02-28 |
 
 ## v0.3 Phase Details
 
@@ -56,12 +65,23 @@ gain `experience`, `advances_to`, `level`; `Unit` gains `xp`, `xp_needed`, and `
 - Headless simulation: 5-kill XP accumulation → hero promotion verified end-to-end
 - 43 tests passing (41 lib + 2 integration)
 
-### Phase 9: Advancement Presentation
+### Phase 9: Advancement Presentation ✅
 
 **Goal:** Surface XP and advancement state in the Redot layer — XP progress in the HUD,
 visual indicator when a unit is ready to advance, and click-to-advance interaction.
 **Depends on:** Phase 8 (Advance action implemented and tested)
-**Plans:** TBD (defined during `/paul:plan`)
+**Completed:** 2026-02-28
+
+**Plans:**
+- [x] 09-01: XP text, gold arc ring, 'A' key advancement handler, 5-unit spawn, float fix
+
+**Delivered:**
+- XP progress text ("xp/xp_needed") drawn per unit; int() cast guards Redot float JSON values
+- Gold draw_arc() ring on units with advancement_pending = true (visually distinct from hex outline)
+- 'A' key handler: advances selected friendly unit; guards faction + pending + selection
+- 5 fighters per side — advancement reachable in normal play (5 kills × 9 XP = 45 XP)
+- test_fighter_advancement_with_real_stats: headless proof using actual 7×3 fighter sword stats
+- 44 tests passing (41 lib + 3 integration)
 
 ---
 
@@ -188,4 +208,4 @@ Released: 2026-02-28
 - 6 new unit tests; serde_json dependency added
 
 ---
-*Roadmap updated: 2026-02-28 — Phase 8 complete*
+*Roadmap updated: 2026-02-28 — v0.3 complete, v0.4 AI Opponent planned*

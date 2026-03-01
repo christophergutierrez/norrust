@@ -53,10 +53,19 @@ func _setup_rust_core() -> void:
 	_core.set_terrain_at(3, 1, "village")
 	_core.set_terrain_at(4, 3, "village")
 
-	# Spawn two fighter units — stats (movement, movement_costs, attacks) are
-	# copied from the UnitDef registry automatically in the Rust bridge.
-	_core.place_unit_at(1, "fighter", 30, 0, 1, 2)  # faction 0 (blue)
-	_core.place_unit_at(2, "fighter", 30, 1, 6, 2)  # faction 1 (red)
+	# Spawn 5 fighters per faction — stats are copied from the UnitDef registry.
+	# 5 enemies per side means a unit can reach 40 XP (5 kills × 9 XP each)
+	# and advance during normal play.
+	_core.place_unit_at(1, "fighter", 30, 0, 0, 0)
+	_core.place_unit_at(2, "fighter", 30, 0, 0, 2)
+	_core.place_unit_at(3, "fighter", 30, 0, 0, 4)
+	_core.place_unit_at(4, "fighter", 30, 0, 1, 1)
+	_core.place_unit_at(5, "fighter", 30, 0, 1, 3)
+	_core.place_unit_at(6, "fighter", 30, 1, 7, 0)
+	_core.place_unit_at(7, "fighter", 30, 1, 7, 2)
+	_core.place_unit_at(8, "fighter", 30, 1, 7, 4)
+	_core.place_unit_at(9, "fighter", 30, 1, 6, 1)
+	_core.place_unit_at(10, "fighter", 30, 1, 6, 3)
 
 func _setup_tilemap() -> void:
 	var tile_set = TileSet.new()
@@ -169,6 +178,16 @@ func _draw_units(state: Dictionary) -> void:
 			HORIZONTAL_ALIGNMENT_LEFT,
 			-1, 13, Color.WHITE
 		)
+		if unit["advancement_pending"]:
+			draw_arc(center, HEX_RADIUS * 0.52, 0, TAU, 24, Color(1.0, 0.85, 0.0), 2.5)
+		if unit["xp_needed"] > 0:
+			draw_string(
+				ThemeDB.fallback_font,
+				center + Vector2(-10, 18),
+				str(int(unit["xp"])) + "/" + str(int(unit["xp_needed"])),
+				HORIZONTAL_ALIGNMENT_LEFT,
+				-1, 10, Color.WHITE
+			)
 
 func _build_unit_pos_map(state: Dictionary) -> Dictionary:
 	# Returns Dictionary: Vector2i(col, row) -> [unit_id, faction]
@@ -207,6 +226,18 @@ func _input(event: InputEvent) -> void:
 			print("End turn: code %d, faction %d, turn %d" % [result, _core.get_active_faction(), _core.get_turn()])
 			_clear_selection()
 			queue_redraw()
+		elif key_event.pressed and not key_event.echo and key_event.keycode == KEY_A:
+			if _selected_unit_id != -1:
+				var state = _parse_state()
+				var active = _core.get_active_faction()
+				for unit in state.get("units", []):
+					if int(unit["id"]) == _selected_unit_id and int(unit["faction"]) == active \
+							and unit["advancement_pending"]:
+						var result = _core.apply_advance(_selected_unit_id)
+						print("Advance unit %d: code %d" % [_selected_unit_id, result])
+						_clear_selection()
+						queue_redraw()
+						break
 		return
 
 	if not event is InputEventMouseButton:
