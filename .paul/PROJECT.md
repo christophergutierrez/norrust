@@ -52,6 +52,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Analytic greedy AI: expected_outgoing_damage() scorer, kill bonus ×3, no RNG rollouts — Phase 10 (10-01)
 - [x] ai_take_turn(state, faction): greedy move+attack planner for all faction units; EndTurn; pure Rust — Phase 10 (10-01)
 - [x] Headless AI-vs-AI integration test: 5v5 fighters terminate with winner in ≤100 turns — Phase 10 (10-01)
+- [x] March fallback in ai_take_turn(): advance toward nearest enemy when no attack reachable — Phase 11 (11-01)
+- [x] fn ai_take_turn(faction: i32) GDExtension bridge: callable from GDScript — Phase 11 (11-01)
+- [x] Human vs AI opponent fully playable: 'E' auto-triggers faction 1 AI, win detection works — Phase 11 (11-01)
 
 ### Active (In Progress / Deferred)
 
@@ -117,6 +120,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | N=0 greedy AI (no simulation) | Analytic expected-value only; deterministic, fast, testable; difficulty adjustment deferred | 2026-02-28 | Active |
 | ai_take_turn() in pure Rust ai.rs | AI is a caller of apply_action — same API as GDScript and tests; bridge added in Phase 11 | 2026-02-28 | Active |
 | kill_bonus ×3 for expected kills | Prioritizes securing kills over trading blows; simple multiplier without MC rollouts | 2026-02-28 | Active |
+| March via min_by_key(distance to nearest enemy) | Reuses ZOC-filtered candidates already computed for scoring; no extra pathfinding call | 2026-02-28 | Active |
+| GDScript AI trigger checks active_faction after end_turn() | ai_take_turn() calls EndTurn internally; checking faction after player's EndTurn is the cleanest trigger point | 2026-02-28 | Active |
 
 ## Tech Stack
 
@@ -136,4 +141,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-02-28 after Phase 9 (v0.3 Advancement Presentation complete — milestone v0.3 done)*
+*Last updated: 2026-02-28 after Phase 11 (v0.4 AI Opponent complete — milestone v0.4 done)*

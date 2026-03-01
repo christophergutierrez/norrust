@@ -225,6 +225,11 @@ func _input(event: InputEvent) -> void:
 			var result = _core.end_turn()
 			print("End turn: code %d, faction %d, turn %d" % [result, _core.get_active_faction(), _core.get_turn()])
 			_clear_selection()
+			# Auto-play AI for faction 1. ai_take_turn() applies EndTurn internally,
+			# so active faction returns to 0 after this call.
+			if _core.get_active_faction() == 1:
+				_core.ai_take_turn(1)
+				_check_game_over()
 			queue_redraw()
 		elif key_event.pressed and not key_event.echo and key_event.keycode == KEY_A:
 			if _selected_unit_id != -1:

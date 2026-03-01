@@ -9,21 +9,21 @@ See: .paul/PROJECT.md (updated 2026-02-28)
 
 ## Current Position
 
-Milestone: v0.4 AI Opponent
-Phase: 10 of 2 (AI Core) — Complete ✅
-Plan: 10-01 — Complete
-Status: Phase 10 complete — Phase 11 (AI Bridge & GDScript) is next
-Last activity: 2026-02-28 — Phase 10 complete
+Milestone: v0.4 AI Opponent — Complete ✅
+Phase: 11 of 2 (AI Bridge & GDScript) — Complete ✅
+Plan: 11-01 — Complete
+Status: Milestone v0.4 complete — ready for next milestone
+Last activity: 2026-02-28 — Phase 11 complete, milestone v0.4 done
 
 Progress:
 - Milestone v0.3: [██████████] 100% ✅
-- Milestone v0.4: [█████░░░░░] 50%
+- Milestone v0.4: [██████████] 100% ✅
 
 ## Loop Position
 
 ```
 PLAN ──▶ APPLY ──▶ UNIFY
-  ✓        ✓        ✓     [Loop complete — Phase 10 done, Phase 11 is next]
+  ✓        ✓        ✓     [Loop complete — milestone v0.4 done]
 ```
 
 ## Accumulated Context
@@ -58,6 +58,8 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | Greedy AI (N=0): expected-damage scorer + kill bonus ×3 | Phase 10 | Analytic, deterministic, no RNG rollouts; same apply_action API |
 | ai_take_turn() pure Rust in ai.rs; bridge in Phase 11 | Phase 10 | AI is a caller of apply_action — registry-free, testable headlessly |
 | Uniform grassland in AI-vs-AI test (not checkerboard) | Phase 10 | Checkerboard (forest=2) with movement=5 prevents first-turn engagement |
+| March via min_by_key(distance to nearest enemy) over candidates | Phase 11 | Reuses ZOC-filtered reachable hexes; no extra pathfinding; march respects ZOC |
+| GDScript AI trigger checks active_faction after end_turn() | Phase 11 | ai_take_turn() includes EndTurn; checking faction after player's EndTurn is cleanest trigger |
 
 ### Deferred Issues
 
@@ -69,22 +71,22 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | Village capture/ownership mechanic | Phase 4 | M | v0.4+ |
 | Socket/TCP server for external Python agents | Phase 5 | M | v0.4+ |
 | 'A' key advancement requires unit selected — no UI hint | Phase 9 | S | v0.4+ |
-| Greedy AI doesn't advance without attack opportunity (wide boards with forest) | Phase 10 | M | Phase 11 |
+| Greedy AI doesn't advance without attack opportunity (wide boards with forest) | Phase 10 | M | Fixed Phase 11 — march fallback added |
 
 ### Blockers/Concerns
 None.
 
 ### Git State
-Last commit: 985f2b9 — feat(08-xp-advancement-logic): XP gain, advance_unit(), apply_advance() bridge
+Last commit: (pending — feat(11-ai-bridge-gdscript) commit)
 Branch: master
-Pending: feat(09-advancement-presentation) + feat(10-ai-core) commits
+Feature branches merged: none
 
 ## Session Continuity
 
 Last session: 2026-02-28
-Stopped at: Phase 10 (AI Core) complete — ai_take_turn() implemented and tested
-Next action: /paul:plan for Phase 11 (AI Bridge & GDScript)
-Resume file: .paul/phases/10-ai-core/10-01-SUMMARY.md
+Stopped at: Milestone v0.4 AI Opponent complete — all phases done
+Next action: /paul:discuss-milestone for v0.5
+Resume file: .paul/ROADMAP.md
 
 ---
 *STATE.md — Updated after every significant action*

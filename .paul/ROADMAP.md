@@ -7,15 +7,16 @@ Five phases take the project from data schema definitions through a fully playab
 ## Current Milestone
 
 **v0.4 AI Opponent** (v0.4.0)
-Status: 🚧 In progress
-Phases: 1 of 2 complete
+Status: ✅ Complete
+Phases: 2 of 2 complete
+Released: 2026-02-28
 
 ## v0.4 Phases
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 10 | AI Core (ai.rs) | 1 | ✅ Complete | 2026-02-28 |
-| 11 | AI Bridge & GDScript | TBD | Not started | - |
+| 11 | AI Bridge & GDScript | 1 | ✅ Complete | 2026-02-28 |
 
 ## v0.4 Phase Details
 
@@ -35,6 +36,22 @@ scorer, move+attack planner, and headless AI-vs-AI integration test.
 - `ai_take_turn(state, faction)`: greedy move+attack for all faction units; EndTurn; registry-free
 - `test_ai_vs_ai_terminates`: 5v5 headless integration test — game terminates with a winner in ≤100 turns
 - 48 tests passing (44 lib + 4 integration)
+
+### Phase 11: AI Bridge & GDScript ✅
+
+**Goal:** Connect the Phase 10 Rust AI to the Redot presentation layer: march fallback, GDExtension bridge method, and GDScript auto-trigger — making human vs AI opponent fully playable.
+**Depends on:** Phase 10 (ai_take_turn() pure Rust API)
+**Completed:** 2026-02-28
+
+**Plans:**
+- [x] 11-01: March fallback, ai_take_turn() bridge, GDScript KEY_E wiring, human-verify
+
+**Delivered:**
+- March fallback in `ai_take_turn()`: units advance toward nearest enemy when no attack is reachable
+- `fn ai_take_turn(faction: i32)` GDExtension bridge: callable from GDScript with faction validation
+- GDScript auto-AI: after player 'E', faction 1 AI plays automatically; win detection follows
+- `test_ai_marches_toward_enemy_when_no_attack`: 8×1 board, col 0 → col 5 with movement=5
+- 49 tests passing (44 lib + 5 integration)
 
 ---
 
@@ -234,4 +251,4 @@ Released: 2026-02-28
 - 6 new unit tests; serde_json dependency added
 
 ---
-*Roadmap updated: 2026-02-28 — v0.3 complete, v0.4 AI Opponent planned*
+*Roadmap updated: 2026-02-28 — v0.4 AI Opponent complete*

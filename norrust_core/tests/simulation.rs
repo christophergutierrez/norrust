@@ -276,3 +276,42 @@ fn test_ai_vs_ai_terminates() {
         state.units.values().filter(|u| u.faction == 1).count(),
     );
 }
+
+#[test]
+fn test_ai_marches_toward_enemy_when_no_attack() {
+    // 8×1 board (single row) — forces purely horizontal movement.
+    // Faction 0 at col 0, faction 1 at col 7: distance = 7, movement = 5.
+    // No attack possible. AI should march to col 5 (max reachable toward enemy).
+    let mut board = Board::new(8, 1);
+    for col in 0..8_i32 {
+        board.set_terrain(Hex::from_offset(col, 0), "grassland");
+    }
+    let mut state = GameState::new_seeded(board, 42);
+
+    let sword = AttackDef {
+        id: "sword".to_string(), name: "Sword".to_string(),
+        damage: 7, strikes: 3,
+        attack_type: "blade".to_string(), range: "melee".to_string(),
+    };
+    let mut costs = HashMap::new();
+    costs.insert("grassland".to_string(), 1u32);
+
+    let mut f0 = Unit::new(1, "fighter", 30, 0);
+    f0.attacks = vec![sword.clone()];
+    f0.movement = 5;
+    f0.movement_costs = costs.clone();
+
+    let mut f1 = Unit::new(2, "fighter", 30, 1);
+    f1.attacks = vec![sword];
+    f1.movement = 5;
+    f1.movement_costs = costs;
+
+    state.place_unit(f0, Hex::from_offset(0, 0));
+    state.place_unit(f1, Hex::from_offset(7, 0));
+
+    ai_take_turn(&mut state, 0);
+
+    let (col, _) = state.positions[&1].to_offset();
+    assert!(col > 0, "unit should have advanced from col 0, now at col {}", col);
+    assert_eq!(col, 5, "should have marched to col 5 (furthest reachable toward enemy)");
+}

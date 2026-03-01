@@ -181,6 +181,21 @@ pub fn ai_take_turn(state: &mut GameState, faction: u8) {
             }
             let _ =
                 apply_action(state, Action::Attack { attacker_id: uid, defender_id: eid });
+        } else if !enemies.is_empty() {
+            // March: move to the reachable hex closest to any enemy.
+            if let Some(&march_dest) = candidates
+                .iter()
+                .filter(|&&h| h != start)
+                .min_by_key(|&&c| {
+                    enemies
+                        .iter()
+                        .map(|(_, epos, _)| c.distance(*epos))
+                        .min()
+                        .unwrap_or(u32::MAX)
+                })
+            {
+                let _ = apply_action(state, Action::Move { unit_id: uid, destination: march_dest });
+            }
         }
     }
 

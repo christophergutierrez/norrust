@@ -346,6 +346,16 @@ impl NorRustCore {
 
     // ── AI / External API ──────────────────────────────────────────────────
 
+    /// Let the AI play all units for `faction` (must be 0 or 1), then call EndTurn.
+    /// No-op if no game exists or faction is invalid.
+    /// After this call, `get_active_faction()` will return the opposite faction.
+    #[func]
+    fn ai_take_turn(&mut self, faction: i32) {
+        let Some(state) = self.game.as_mut() else { return };
+        if faction < 0 || faction > 1 { return }
+        crate::ai::ai_take_turn(state, faction as u8);
+    }
+
     /// Serializes the current game state as a JSON string for external consumers.
     /// Returns "" if no game has been created or serialization fails.
     ///
