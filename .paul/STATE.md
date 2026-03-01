@@ -10,20 +10,20 @@ See: .paul/PROJECT.md (updated 2026-02-28)
 ## Current Position
 
 Milestone: v0.4 AI Opponent
-Phase: Not started
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-02-28 — v0.3 complete, milestone transition to v0.4
+Phase: 10 of 2 (AI Core) — Complete ✅
+Plan: 10-01 — Complete
+Status: Phase 10 complete — Phase 11 (AI Bridge & GDScript) is next
+Last activity: 2026-02-28 — Phase 10 complete
 
 Progress:
 - Milestone v0.3: [██████████] 100% ✅
-- Milestone v0.4: [░░░░░░░░░░] 0%
+- Milestone v0.4: [█████░░░░░] 50%
 
 ## Loop Position
 
 ```
 PLAN ──▶ APPLY ──▶ UNIFY
-  ✓        ✓        ✓     [v0.3 complete — ready for v0.4 Phase 1 PLAN]
+  ✓        ✓        ✓     [Loop complete — Phase 10 done, Phase 11 is next]
 ```
 
 ## Accumulated Context
@@ -55,6 +55,9 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | advance_unit() free function; bridge-side registry | Phase 8 | apply_action stays registry-free; advance intercepted before into() |
 | int() cast on all JSON numeric fields in GDScript | Phase 9 | Redot JSON returns floats; int() required for display + comparison |
 | draw_arc() for advancement ring; draw_polyline() for hex outlines | Phase 9 | Visually distinct unit-level vs hex-level ring layers |
+| Greedy AI (N=0): expected-damage scorer + kill bonus ×3 | Phase 10 | Analytic, deterministic, no RNG rollouts; same apply_action API |
+| ai_take_turn() pure Rust in ai.rs; bridge in Phase 11 | Phase 10 | AI is a caller of apply_action — registry-free, testable headlessly |
+| Uniform grassland in AI-vs-AI test (not checkerboard) | Phase 10 | Checkerboard (forest=2) with movement=5 prevents first-turn engagement |
 
 ### Deferred Issues
 
@@ -66,6 +69,7 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | Village capture/ownership mechanic | Phase 4 | M | v0.4+ |
 | Socket/TCP server for external Python agents | Phase 5 | M | v0.4+ |
 | 'A' key advancement requires unit selected — no UI hint | Phase 9 | S | v0.4+ |
+| Greedy AI doesn't advance without attack opportunity (wide boards with forest) | Phase 10 | M | Phase 11 |
 
 ### Blockers/Concerns
 None.
@@ -73,14 +77,14 @@ None.
 ### Git State
 Last commit: 985f2b9 — feat(08-xp-advancement-logic): XP gain, advance_unit(), apply_advance() bridge
 Branch: master
-Pending: feat(09-advancement-presentation) commit
+Pending: feat(09-advancement-presentation) + feat(10-ai-core) commits
 
 ## Session Continuity
 
 Last session: 2026-02-28
-Stopped at: v0.3 complete — v0.4 AI Opponent milestone transition done
-Next action: /paul:plan for v0.4 Phase 1 (Greedy AI Opponent)
-Resume file: .paul/ROADMAP.md
+Stopped at: Phase 10 (AI Core) complete — ai_take_turn() implemented and tested
+Next action: /paul:plan for Phase 11 (AI Bridge & GDScript)
+Resume file: .paul/phases/10-ai-core/10-01-SUMMARY.md
 
 ---
 *STATE.md — Updated after every significant action*

@@ -49,6 +49,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Gold arc ring indicator on units with advancement_pending = true — Phase 9 (09-01)
 - [x] 'A' key handler: advances selected unit via apply_advance() with faction + pending guards — Phase 9 (09-01)
 - [x] Integration test with real fighter.toml stats: 7×3 sword, 5 kills → hero (45 HP, 9×4 sword) — Phase 9 (09-01)
+- [x] Analytic greedy AI: expected_outgoing_damage() scorer, kill bonus ×3, no RNG rollouts — Phase 10 (10-01)
+- [x] ai_take_turn(state, faction): greedy move+attack planner for all faction units; EndTurn; pure Rust — Phase 10 (10-01)
+- [x] Headless AI-vs-AI integration test: 5v5 fighters terminate with winner in ≤100 turns — Phase 10 (10-01)
 
 ### Active (In Progress / Deferred)
 
@@ -111,6 +114,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | int() cast on all JSON numeric fields in GDScript | Redot JSON.parse_string() returns all numbers as float; int() required for display and comparison | 2026-02-28 | Active |
 | draw_arc() for advancement ring; draw_polyline() for hex outlines | Visually distinct ring layers — unit-level gold arc vs hex-boundary white polyline | 2026-02-28 | Active |
 | 5 fighters per side as starting spawn | With 2 units, advancement (40 XP) is unreachable before one dies; 5 enemies guarantees a full advancement cycle | 2026-02-28 | Active |
+| N=0 greedy AI (no simulation) | Analytic expected-value only; deterministic, fast, testable; difficulty adjustment deferred | 2026-02-28 | Active |
+| ai_take_turn() in pure Rust ai.rs | AI is a caller of apply_action — same API as GDScript and tests; bridge added in Phase 11 | 2026-02-28 | Active |
+| kill_bonus ×3 for expected kills | Prioritizes securing kills over trading blows; simple multiplier without MC rollouts | 2026-02-28 | Active |
 
 ## Tech Stack
 

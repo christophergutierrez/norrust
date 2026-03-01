@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use norrust_core::ai::ai_take_turn;
 use norrust_core::board::Board;
 use norrust_core::game_state::{apply_action, Action, GameState};
 use norrust_core::hex::Hex;
@@ -198,4 +199,80 @@ fn test_fighter_advancement_with_real_stats() {
     // Verify weapon updated: hero sword does 9×4
     assert_eq!(state.units[&1].attacks[0].damage, 9);
     assert_eq!(state.units[&1].attacks[0].strikes, 4);
+}
+
+#[test]
+fn test_ai_vs_ai_terminates() {
+    fn game_winner(state: &GameState) -> Option<u8> {
+        let has_0 = state.units.values().any(|u| u.faction == 0);
+        let has_1 = state.units.values().any(|u| u.faction == 1);
+        match (has_0, has_1) {
+            (true, false) => Some(0),
+            (false, true) => Some(1),
+            _ => None,
+        }
+    }
+
+    // 8×5 board with uniform grassland terrain.
+    // Uniform terrain ensures movement=5 units can reach adjacent to opponents
+    // on turn 1 (closest faction-1 units are at distance 5 from faction-0 col-1 units).
+    let mut board = Board::new(8, 5);
+    for col in 0..8_i32 {
+        for row in 0..5_i32 {
+            board.set_terrain(Hex::from_offset(col, row), "grassland");
+        }
+    }
+    let mut state = GameState::new_seeded(board, 42);
+
+    let sword = AttackDef {
+        id: "sword".to_string(),
+        name: "Sword".to_string(),
+        damage: 7,
+        strikes: 3,
+        attack_type: "blade".to_string(),
+        range: "melee".to_string(),
+    };
+    let mut movement_costs = HashMap::new();
+    movement_costs.insert("grassland".to_string(), 1u32);
+    let mut defense_map = HashMap::new();
+    defense_map.insert("grassland".to_string(), 40u32);
+
+    let make_unit = |id: u32, faction: u8| -> Unit {
+        let mut u = Unit::new(id, "fighter", 30, faction);
+        u.attacks = vec![sword.clone()];
+        u.movement = 5;
+        u.movement_costs = movement_costs.clone();
+        u.defense = defense_map.clone();
+        u.default_defense = 40;
+        u.xp_needed = 40;
+        u
+    };
+
+    // Faction 0: left side
+    let f0_positions = [(0, 0), (0, 2), (0, 4), (1, 1), (1, 3)];
+    for (i, (col, row)) in f0_positions.iter().enumerate() {
+        state.place_unit(make_unit(i as u32 + 1, 0), Hex::from_offset(*col, *row));
+    }
+
+    // Faction 1: right side
+    let f1_positions = [(7, 0), (7, 2), (7, 4), (6, 1), (6, 3)];
+    for (i, (col, row)) in f1_positions.iter().enumerate() {
+        state.place_unit(make_unit(i as u32 + 6, 1), Hex::from_offset(*col, *row));
+    }
+
+    // Run AI vs AI for up to 100 turns (each call to ai_take_turn includes EndTurn).
+    for _ in 0..100 {
+        let faction = state.active_faction;
+        ai_take_turn(&mut state, faction);
+        if game_winner(&state).is_some() {
+            break;
+        }
+    }
+
+    assert!(
+        game_winner(&state).is_some(),
+        "AI vs AI game must have a winner within 100 turns; {} faction-0 units, {} faction-1 units remain",
+        state.units.values().filter(|u| u.faction == 0).count(),
+        state.units.values().filter(|u| u.faction == 1).count(),
+    );
 }

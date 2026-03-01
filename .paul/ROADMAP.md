@@ -7,8 +7,34 @@ Five phases take the project from data schema definitions through a fully playab
 ## Current Milestone
 
 **v0.4 AI Opponent** (v0.4.0)
-Status: 🔵 Planned
-Phases: 0 of TBD complete
+Status: 🚧 In progress
+Phases: 1 of 2 complete
+
+## v0.4 Phases
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 10 | AI Core (ai.rs) | 1 | ✅ Complete | 2026-02-28 |
+| 11 | AI Bridge & GDScript | TBD | Not started | - |
+
+## v0.4 Phase Details
+
+### Phase 10: AI Core (ai.rs) ✅
+
+**Goal:** Implement the analytic greedy AI in a pure-Rust `ai.rs` module — expected-damage
+scorer, move+attack planner, and headless AI-vs-AI integration test.
+**Depends on:** Phase 9 (stable GameState, apply_action, pathfinding, combat APIs)
+**Completed:** 2026-02-28
+
+**Plans:**
+- [x] 10-01: expected_outgoing_damage(), score_attack(), ai_take_turn(), test_ai_vs_ai_terminates
+
+**Delivered:**
+- `expected_outgoing_damage()`: analytic expected-value scorer (hit_chance × effective_dmg × strikes × tod)
+- `score_attack()`: pair scorer using terrain defense, time-of-day, resistances; kill bonus ×3
+- `ai_take_turn(state, faction)`: greedy move+attack for all faction units; EndTurn; registry-free
+- `test_ai_vs_ai_terminates`: 5v5 headless integration test — game terminates with a winner in ≤100 turns
+- 48 tests passing (44 lib + 4 integration)
 
 ---
 
