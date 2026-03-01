@@ -396,6 +396,7 @@ mod tests {
             strikes: 1,
             attack_type: "blade".to_string(),
             range: "melee".to_string(),
+            ..Default::default()
         };
         let mut attacker = Unit::new(1, "fighter", 30, 0);
         attacker.attacks = vec![attack];
@@ -422,6 +423,7 @@ mod tests {
             id: "sword".to_string(), name: "Sword".to_string(),
             damage: 1, strikes: 1,
             attack_type: "blade".to_string(), range: "melee".to_string(),
+            ..Default::default()
         };
         let mut attacker = Unit::new(1, "fighter", 30, 0);
         attacker.attacks = vec![attack];
@@ -444,6 +446,7 @@ mod tests {
             id: "sword".to_string(), name: "Sword".to_string(),
             damage: 100, strikes: 1,
             attack_type: "blade".to_string(), range: "melee".to_string(),
+            ..Default::default()
         };
         let mut attacker = Unit::new(1, "fighter", 30, 0);
         attacker.attacks = vec![attack];
@@ -467,6 +470,7 @@ mod tests {
             id: "sword".to_string(), name: "Sword".to_string(),
             damage: 100, strikes: 1,
             attack_type: "blade".to_string(), range: "melee".to_string(),
+            ..Default::default()
         };
         let mut attacker = Unit::new(1, "fighter", 30, 0);
         attacker.attacks = vec![attack];
@@ -491,6 +495,7 @@ mod tests {
             id: "sword".to_string(), name: "Sword".to_string(),
             damage: 1, strikes: 1,
             attack_type: "blade".to_string(), range: "melee".to_string(),
+            ..Default::default()
         };
         let mut attacker = Unit::new(1, "fighter", 30, 0);
         attacker.attacks = vec![attack];
@@ -499,6 +504,7 @@ mod tests {
             id: "bow".to_string(), name: "Bow".to_string(),
             damage: 1, strikes: 1,
             attack_type: "pierce".to_string(), range: "melee".to_string(),
+            ..Default::default()
         };
         let mut defender = Unit::new(2, "archer", 30, 1);
         defender.attacks = vec![ret_attack];
@@ -524,6 +530,7 @@ mod tests {
             strikes: 3,
             attack_type: "blade".to_string(),
             range: "melee".to_string(),
+            ..Default::default()
         };
         let mut attacker = Unit::new(1, "fighter", 30, 0);
         attacker.attacks = vec![attack];

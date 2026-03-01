@@ -6,6 +6,50 @@ Five phases take the project from data schema definitions through a fully playab
 
 ## Current Milestone
 
+**v0.5 Unit Content** (v0.5.0)
+Status: 🚧 In progress
+Phases: 1 of 2 complete
+
+## v0.5 Phases
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 12 | UnitDef Schema Expansion | 1 | ✅ Complete | 2026-03-01 |
+| 13 | Wesnoth Data Import | TBD | Not started | - |
+
+## v0.5 Phase Details
+
+### Phase 12: UnitDef Schema Expansion ✅
+
+**Goal:** Extend `UnitDef` and `AttackDef` Rust structs with new fields — `alignment`, `race`, `cost`,
+`usage`, `abilities`, attack `specials` — all with `#[serde(default)]` so existing TOMLs load unchanged.
+Move `alignment` from GDScript spawn-time parameter to registry-sourced data.
+**Depends on:** Phase 11 (stable GDExtension bridge, place_unit_at() API)
+**Completed:** 2026-03-01
+
+**Plans:**
+- [x] 12-01: UnitDef/AttackDef schema expansion + alignment wired from TOML to Unit at spawn/advance
+
+**Delivered:**
+- `UnitDef`: race, cost, usage, abilities, alignment — all `#[serde(default)]`
+- `AttackDef`: specials — `#[serde(default)]`
+- `parse_alignment()`: "lawful"→Lawful, "chaotic"→Chaotic, else→Liminal — pub fn in unit.rs
+- alignment wired: place_unit_at() + advance_unit() both call parse_alignment()
+- 4 unit TOMLs updated: fighter/hero="lawful", archer/ranger="neutral"
+- 49 tests passing (44 lib + 5 integration)
+
+### Phase 13: Wesnoth Data Import
+
+**Goal:** Python scraper reads Wesnoth WML from `/home/chris/git_home/wesnoth/data/core/units/`,
+expands movement type macros, and outputs 218 unit TOMLs + terrain TOMLs. All units load via
+`Registry::<UnitDef>::load_from_dir()` verified by integration test.
+**Depends on:** Phase 12 (expanded UnitDef schema must exist before TOMLs are generated)
+**Plans:** TBD (defined during /paul:plan)
+
+---
+
+## Previous Milestone
+
 **v0.4 AI Opponent** (v0.4.0)
 Status: ✅ Complete
 Phases: 2 of 2 complete
@@ -251,4 +295,4 @@ Released: 2026-02-28
 - 6 new unit tests; serde_json dependency added
 
 ---
-*Roadmap updated: 2026-02-28 — v0.4 AI Opponent complete*
+*Roadmap updated: 2026-03-01 — Phase 12 complete, Phase 13 (Wesnoth Data Import) next*

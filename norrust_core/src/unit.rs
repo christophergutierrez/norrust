@@ -10,6 +10,17 @@ pub enum Alignment {
     Liminal,
 }
 
+/// Parse a UnitDef alignment string into the runtime Alignment enum.
+/// "lawful" → Lawful, "chaotic" → Chaotic, anything else → Liminal.
+/// "neutral" and "" both map to Liminal (same ToD modifier — no bonus/penalty).
+pub fn parse_alignment(s: &str) -> Alignment {
+    match s {
+        "lawful"  => Alignment::Lawful,
+        "chaotic" => Alignment::Chaotic,
+        _         => Alignment::Liminal,
+    }
+}
+
 /// A runtime unit instance within a game.
 ///
 /// `Unit` holds mutable per-game state (hp, flags) and the combat data needed
@@ -60,6 +71,7 @@ pub fn advance_unit(unit: &mut Unit, new_def: &UnitDef) {
     unit.attacks = new_def.attacks.clone();
     unit.defense = new_def.defense.clone();
     unit.resistances = new_def.resistances.clone();
+    unit.alignment = parse_alignment(&new_def.alignment);
     unit.xp_needed = new_def.experience;
     unit.xp = 0;
     unit.advancement_pending = false;
@@ -110,6 +122,7 @@ mod tests {
                 id: "sword".to_string(), name: "Sword".to_string(),
                 damage: 9, strikes: 4,
                 attack_type: "blade".to_string(), range: "melee".to_string(),
+                ..Default::default()
             }],
             resistances: HashMap::new(),
             movement_costs: HashMap::new(),
@@ -117,6 +130,7 @@ mod tests {
             level: 2,
             experience: 80,
             advances_to: vec![],
+            ..Default::default()
         };
 
         advance_unit(&mut unit, &hero_def);

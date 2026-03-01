@@ -5,6 +5,7 @@ experience = 80
 advances_to = []
 max_hp = 45
 movement = 5
+alignment = "lawful"
 
 [[attacks]]
 id = "sword"

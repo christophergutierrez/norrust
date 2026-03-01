@@ -55,6 +55,11 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] March fallback in ai_take_turn(): advance toward nearest enemy when no attack reachable — Phase 11 (11-01)
 - [x] fn ai_take_turn(faction: i32) GDExtension bridge: callable from GDScript — Phase 11 (11-01)
 - [x] Human vs AI opponent fully playable: 'E' auto-triggers faction 1 AI, win detection works — Phase 11 (11-01)
+- [x] UnitDef schema expanded: race, cost, usage, abilities, alignment (all serde default) — Phase 12 (12-01)
+- [x] AttackDef schema expanded: specials field (serde default) — Phase 12 (12-01)
+- [x] parse_alignment() pub helper: "lawful"→Lawful, "chaotic"→Chaotic, else→Liminal — Phase 12 (12-01)
+- [x] alignment wired from TOML registry to Unit at spawn (place_unit_at) and advance (advance_unit) — Phase 12 (12-01)
+- [x] fighter/hero alignment="lawful"; archer/ranger alignment="neutral" in unit TOMLs — Phase 12 (12-01)
 
 ### Active (In Progress / Deferred)
 
@@ -122,6 +127,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | kill_bonus ×3 for expected kills | Prioritizes securing kills over trading blows; simple multiplier without MC rollouts | 2026-02-28 | Active |
 | March via min_by_key(distance to nearest enemy) | Reuses ZOC-filtered candidates already computed for scoring; no extra pathfinding call | 2026-02-28 | Active |
 | GDScript AI trigger checks active_faction after end_turn() | ai_take_turn() calls EndTurn internally; checking faction after player's EndTurn is the cleanest trigger point | 2026-02-28 | Active |
+| #[derive(Default)] on AttackDef and UnitDef | Enables ..Default::default() in ~16 test constructions; future schema additions need only 1 line per test file | 2026-03-01 | Active |
+| "neutral" alignment maps to Liminal | Same ToD modifier (no bonus/penalty); Neutral variant deferred until dusk/dawn time periods added | 2026-03-01 | Active |
+| parse_alignment() as single string→Alignment conversion point | Clean boundary; all callers (spawn, advance, future) go through one function | 2026-03-01 | Active |
 
 ## Tech Stack
 
@@ -141,4 +149,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-02-28 after Phase 11 (v0.4 AI Opponent complete — milestone v0.4 done)*
+*Last updated: 2026-03-01 after Phase 12 (UnitDef schema expansion — Phase 12 complete)*

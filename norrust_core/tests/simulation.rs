@@ -26,6 +26,7 @@ fn test_headless_match_scenario() {
         strikes: 1,
         attack_type: "blade".to_string(),
         range: "melee".to_string(),
+        ..Default::default()
     };
     let mut unit1 = Unit::new(1, "fighter", 30, 0);
     unit1.movement = 4;
@@ -79,6 +80,7 @@ fn test_headless_advancement_scenario() {
         id: "sword".to_string(), name: "Sword".to_string(),
         damage: 100, strikes: 1,
         attack_type: "blade".to_string(), range: "melee".to_string(),
+        ..Default::default()
     };
     let mut fighter = Unit::new(1, "fighter", 30, 0);
     fighter.attacks = vec![sword.clone()];
@@ -118,6 +120,7 @@ fn test_headless_advancement_scenario() {
         level: 2,
         experience: 80,
         advances_to: vec![],
+        ..Default::default()
     };
 
     advance_unit(state.units.get_mut(&1).unwrap(), &hero_def);
@@ -147,6 +150,7 @@ fn test_fighter_advancement_with_real_stats() {
         id: "sword".to_string(), name: "Sword".to_string(),
         damage: 7, strikes: 3,
         attack_type: "blade".to_string(), range: "melee".to_string(),
+        ..Default::default()
     };
     let mut fighter = Unit::new(1, "fighter", 30, 0);
     fighter.attacks = vec![sword.clone()];
@@ -178,7 +182,7 @@ fn test_fighter_advancement_with_real_stats() {
         attacks: vec![
             AttackDef { id: "sword".to_string(), name: "Sword".to_string(),
                         damage: 9, strikes: 4, attack_type: "blade".to_string(),
-                        range: "melee".to_string() },
+                        range: "melee".to_string(), ..Default::default() },
         ],
         resistances: HashMap::new(),
         movement_costs: HashMap::new(),
@@ -186,6 +190,7 @@ fn test_fighter_advancement_with_real_stats() {
         level: 2,
         experience: 80,
         advances_to: vec![],
+        ..Default::default()
     };
 
     advance_unit(state.units.get_mut(&1).unwrap(), &hero_def);
@@ -231,6 +236,7 @@ fn test_ai_vs_ai_terminates() {
         strikes: 3,
         attack_type: "blade".to_string(),
         range: "melee".to_string(),
+        ..Default::default()
     };
     let mut movement_costs = HashMap::new();
     movement_costs.insert("grassland".to_string(), 1u32);
@@ -292,6 +298,7 @@ fn test_ai_marches_toward_enemy_when_no_attack() {
         id: "sword".to_string(), name: "Sword".to_string(),
         damage: 7, strikes: 3,
         attack_type: "blade".to_string(), range: "melee".to_string(),
+        ..Default::default()
     };
     let mut costs = HashMap::new();
     costs.insert("grassland".to_string(), 1u32);

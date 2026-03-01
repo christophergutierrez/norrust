@@ -5,25 +5,25 @@
 See: .paul/PROJECT.md (updated 2026-02-28)
 
 **Core value:** A playable hex-based strategy game where simulation logic is strictly separated from presentation, enabling human players and AI agents to use the same clean engine.
-**Current focus:** v0.4 — AI Opponent
+**Current focus:** v0.5 — Unit Content
 
 ## Current Position
 
-Milestone: v0.4 AI Opponent — Complete ✅
-Phase: 11 of 2 (AI Bridge & GDScript) — Complete ✅
-Plan: 11-01 — Complete
-Status: Milestone v0.4 complete — ready for next milestone
-Last activity: 2026-02-28 — Phase 11 complete, milestone v0.4 done
+Milestone: v0.5 Unit Content
+Phase: 13 of 2 (Wesnoth Data Import) — Not started
+Plan: Not started
+Status: Ready to plan Phase 13
+Last activity: 2026-03-01 — Phase 12 complete (UnitDef schema expansion)
 
 Progress:
-- Milestone v0.3: [██████████] 100% ✅
 - Milestone v0.4: [██████████] 100% ✅
+- Milestone v0.5: [█████░░░░░] 50%
 
 ## Loop Position
 
 ```
 PLAN ──▶ APPLY ──▶ UNIFY
-  ✓        ✓        ✓     [Loop complete — milestone v0.4 done]
+  ✓        ✓        ✓     [Phase 12 complete — ready to plan Phase 13]
 ```
 
 ## Accumulated Context
@@ -60,6 +60,9 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | Uniform grassland in AI-vs-AI test (not checkerboard) | Phase 10 | Checkerboard (forest=2) with movement=5 prevents first-turn engagement |
 | March via min_by_key(distance to nearest enemy) over candidates | Phase 11 | Reuses ZOC-filtered reachable hexes; no extra pathfinding; march respects ZOC |
 | GDScript AI trigger checks active_faction after end_turn() | Phase 11 | ai_take_turn() includes EndTurn; checking faction after player's EndTurn is cleanest trigger |
+| #[derive(Default)] on AttackDef and UnitDef | Phase 12 | ..Default::default() in test constructions; future fields need 1 line per test file |
+| "neutral" alignment maps to Liminal (same ToD modifier) | Phase 12 | Neutral variant deferred; parse_alignment() is the single string→Alignment boundary |
+| parse_alignment() as pub fn in unit.rs | Phase 12 | Single conversion point used by place_unit_at() and advance_unit() |
 
 ### Deferred Issues
 
@@ -77,15 +80,15 @@ PLAN ──▶ APPLY ──▶ UNIFY
 None.
 
 ### Git State
-Last commit: (pending — feat(11-ai-bridge-gdscript) commit)
+Last commit: 110131f — feat(11-ai-bridge-gdscript): march fallback, AI bridge, human vs AI playable
 Branch: master
 Feature branches merged: none
 
 ## Session Continuity
 
-Last session: 2026-02-28
-Stopped at: Milestone v0.4 AI Opponent complete — all phases done
-Next action: /paul:discuss-milestone for v0.5
+Last session: 2026-03-01
+Stopped at: Phase 12 complete — UnitDef/AttackDef schema expanded, alignment wired
+Next action: /paul:plan for Phase 13 (Wesnoth Data Import)
 Resume file: .paul/ROADMAP.md
 
 ---

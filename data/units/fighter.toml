@@ -5,6 +5,7 @@ experience = 40
 advances_to = ["hero"]
 max_hp = 30
 movement = 5
+alignment = "lawful"
 
 [[attacks]]
 id = "sword"

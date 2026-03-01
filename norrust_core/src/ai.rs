@@ -236,6 +236,7 @@ mod tests {
             strikes: 1,
             attack_type: "blade".to_string(),
             range: "melee".to_string(),
+            ..Default::default()
         };
         let mut attacker = Unit::new(1, "fighter", 30, 0);
         attacker.attacks = vec![sword];
