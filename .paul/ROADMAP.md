@@ -4,6 +4,54 @@
 
 Five phases take the project from data schema definitions through a fully playable hex-based strategy game with external AI hooks. The Rust simulation core is built and tested headlessly before any visual work begins; Redot rendering is layered on top once the core is proven.
 
+## Current Milestone
+
+**v0.6 Terrain System** (v0.6.0)
+Status: 🚧 In Progress
+Phases: 1 of 3 complete
+
+## v0.6 Phases
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 14 | Tile Runtime + Terrain Wiring | 1 | ✅ Complete | 2026-03-01 |
+| 15 | Map Generator | TBD | 🔵 Not started | - |
+| 16 | Terrain Presentation | TBD | 🔵 Not started | - |
+
+## v0.6 Phase Details
+
+### Phase 14: Tile Runtime + Terrain Wiring ✅
+
+**Goal:** Replace `HashMap<Hex, String>` with `HashMap<Hex, Tile>` on Board. `Tile` is a runtime struct instantiated from `TerrainDef` at `set_terrain_at()` — same pattern as `Unit`/`UnitDef`. Reconcile terrain IDs to Wesnoth vocabulary. Wire movement costs and defense into pathfinding and combat from `Tile` properties.
+**Depends on:** Phase 13 (TerrainDef TOMLs for all Wesnoth terrain types exist)
+**Completed:** 2026-03-01
+
+**Plans:**
+- [x] 14-01: Tile struct, Board refactor, terrain ID reconciliation, test_terrain_wiring
+
+**Delivered:**
+- `Tile` struct: terrain_id, movement_cost, defense, healing — instantiated from TerrainDef at placement
+- `Board` stores `HashMap<Hex, Tile>`; `tile_at()` query; `terrain_at()` backward-compatible
+- `healing_map` removed; EndTurn healing reads `tile.healing` directly
+- `set_terrain_at()` bridge: `Tile::from_def()` when TerrainDef found, `Tile::new()` fallback
+- Terrain IDs reconciled: "flat", "mountains", "shallow_water" in all custom unit TOMLs, tests, game.gd
+- `test_terrain_wiring`: hills cost 2 MP, flat costs 1 MP — movement costs verified end-to-end
+- 51 tests passing (44 lib + 7 integration)
+
+### Phase 15: Map Generator
+
+**Goal:** Procedural map generation with geographically sensible terrain placement. Elevation-based zones (mountains → hills → flat) with moisture layer (forest, fungus, swamp). Villages and castles placed structurally. Board initialized from generator rather than hardcoded GDScript calls.
+**Depends on:** Phase 14 (Tile system and terrain IDs in place)
+**Plans:** TBD (defined during /paul:plan)
+
+### Phase 16: Terrain Presentation
+
+**Goal:** Per-tile color rendered from `Tile.color` property (read from `TileSnapshot`). Path highlight via `Tile.highlight_mode` property — Rust sets it, GDScript reads and renders. No sprites; placeholder colors throughout.
+**Depends on:** Phase 15 (map generator produces varied terrain to display)
+**Plans:** TBD (defined during /paul:plan)
+
+---
+
 ## Previous Milestone
 
 **v0.5 Unit Content** (v0.5.0)
@@ -306,4 +354,4 @@ Released: 2026-02-28
 - 6 new unit tests; serde_json dependency added
 
 ---
-*Roadmap updated: 2026-03-01 — v0.5 Unit Content milestone complete (Phases 12 + 13)*
+*Roadmap updated: 2026-03-01 — v0.6 Terrain System milestone created (Phases 14–16)*

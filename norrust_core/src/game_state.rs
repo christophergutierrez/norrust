@@ -298,10 +298,7 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                 .collect();
             for uid in to_heal {
                 if let Some(&hex) = state.positions.get(&uid) {
-                    let healing = state.board
-                        .terrain_at(hex)
-                        .map(|t| state.board.healing_for(t))
-                        .unwrap_or(0);
+                    let healing = state.board.tile_at(hex).map(|t| t.healing).unwrap_or(0);
                     if healing > 0 {
                         let unit = state.units.get_mut(&uid).unwrap();
                         unit.hp = (unit.hp + healing).min(unit.max_hp);

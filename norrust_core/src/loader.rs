@@ -144,9 +144,9 @@ mod tests {
         let registry: Registry<TerrainDef> = Registry::load_from_dir(&dir).unwrap();
         assert!(registry.len() >= 3, "expected at least 3 terrain types, got {}", registry.len());
 
-        let grass = registry.get("grassland").expect("grassland not found");
-        assert_eq!(grass.default_defense, 40);
-        assert_eq!(grass.default_movement_cost, 1);
+        let flat = registry.get("flat").expect("flat not found");
+        assert_eq!(flat.default_defense, 60);
+        assert_eq!(flat.default_movement_cost, 1);
 
         let forest = registry.get("forest").expect("forest not found");
         assert_eq!(forest.default_defense, 60);

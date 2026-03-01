@@ -64,6 +64,12 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] 318 Wesnoth unit TOMLs generated from WML source; all 322 units load via Registry<UnitDef> — Phase 13 (13-01)
 - [x] 11 terrain type TOMLs (flat, hills, mountains, cave, frozen, fungus, sand, shallow_water, reef, swamp_water, castle) — Phase 13 (13-01)
 - [x] Integration test verifying all 322 unit TOMLs load; Spearman spot-check (max_hp=36, movement=5, alignment="lawful") passes — Phase 13 (13-01)
+- [x] Tile runtime struct: terrain_id, movement_cost, defense, healing — instantiated from TerrainDef at set-time, autonomous per-hex — Phase 14 (14-01)
+- [x] Board stores HashMap<Hex, Tile>; tile_at() query; terrain_at() preserved for compatibility — Phase 14 (14-01)
+- [x] healing_map cache removed; EndTurn healing reads tile.healing directly — Phase 14 (14-01)
+- [x] set_terrain_at() bridge: Tile::from_def() when TerrainDef in registry, Tile::new() fallback — Phase 14 (14-01)
+- [x] Terrain IDs reconciled to Wesnoth vocabulary: "grassland"→"flat", "mountain"→"mountains", "water"→"shallow_water" in all 4 custom unit TOMLs, game.gd, and all test files — Phase 14 (14-01)
+- [x] test_terrain_wiring: hills cost 2 MP, flat costs 1 MP — movement costs wire correctly — Phase 14 (14-01)
 
 ### Active (In Progress / Deferred)
 
@@ -137,6 +143,10 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | parse_value() uses [^"]* (non-greedy first-quote) in WML scraper | WML inline comments (# wmllint: no spellcheck) after closing " caused 7 malformed TOMLs with greedy .* — first-quote match avoids capturing them | 2026-03-01 | Active |
 | Denormalized unit TOMLs from WML scraper (no MovetypeDef registry) | Keeps loader path simple; movement_costs/defense/resistances inlined per unit as already expected by UnitDef schema | 2026-03-01 | Active |
 | Registry tests use >= N count assertions | Hardcoded == 4/== 3 broke when data directory grew; >= N survives future data additions | 2026-03-01 | Active |
+| Tile/TileDef mirrors Unit/UnitDef pattern | Each hex is autonomous with its own terrain properties; per-hex customisation without new TOML types; same uniform API | 2026-03-01 | Active |
+| Tile::new() defaults: movement_cost=1, defense=40, healing=0 | Sensible open-ground fallback; tests and bridge work without registry | 2026-03-01 | Active |
+| set_terrain_at() bridge: Tile::from_def() or Tile::new() fallback | Graceful degradation when terrain ID not in registry; no crash path | 2026-03-01 | Active |
+| Board.healing_map replaced by tile.healing | Eliminates stale cache; EndTurn healing reads authoritative per-hex value directly | 2026-03-01 | Active |
 
 ## Tech Stack
 
@@ -156,4 +166,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-01 after Phase 13 (Wesnoth data import — v0.5 Unit Content milestone complete)*
+*Last updated: 2026-03-01 after Phase 14 (Tile Runtime + Terrain Wiring — v0.6 Terrain System Phase 1 of 3 complete)*

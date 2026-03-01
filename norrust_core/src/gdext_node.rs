@@ -130,9 +130,11 @@ impl NorRustCore {
     #[func]
     fn set_terrain_at(&mut self, col: i32, row: i32, terrain_id: GString) {
         let Some(state) = self.game.as_mut() else { return };
-        state.board.set_terrain(Hex::from_offset(col, row), terrain_id.to_string());
-        if let Some(terrain) = self.terrain.as_ref().and_then(|r| r.get(&terrain_id.to_string())) {
-            state.board.set_healing(terrain_id.to_string(), terrain.healing);
+        let hex = Hex::from_offset(col, row);
+        if let Some(def) = self.terrain.as_ref().and_then(|r| r.get(&terrain_id.to_string())) {
+            state.board.set_tile(hex, crate::board::Tile::from_def(def));
+        } else {
+            state.board.set_terrain(hex, terrain_id.to_string());
         }
     }
 

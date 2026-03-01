@@ -32,13 +32,13 @@ cold = 0
 arcane = -20
 
 [movement_costs]
-grassland = 1
+flat = 1
 forest = 1
-mountain = 2
-water = 99
+mountains = 2
+shallow_water = 99
 
 [defense]
-grassland = 40
+flat = 40
 forest = 70
-mountain = 50
-water = 30
+mountains = 50
+shallow_water = 30

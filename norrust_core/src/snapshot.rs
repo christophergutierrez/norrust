@@ -132,7 +132,7 @@ mod tests {
     fn test_state_snapshot_fields() {
         let board = Board::new(8, 5);
         let mut state = GameState::new(board);
-        state.board.set_terrain(Hex::from_offset(0, 0), "grassland");
+        state.board.set_terrain(Hex::from_offset(0, 0), "flat");
         state.board.set_terrain(Hex::from_offset(1, 0), "forest");
         let unit = Unit::new(1, "fighter", 30, 0);
         state.place_unit(unit, Hex::from_offset(0, 0));

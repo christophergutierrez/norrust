@@ -1,6 +1,40 @@
 use std::collections::HashMap;
 
 use crate::hex::Hex;
+use crate::schema::TerrainDef;
+
+/// Runtime hex tile — instantiated from `TerrainDef` at placement time.
+///
+/// Mirrors the `Unit`/`UnitDef` pattern: each hex on the board carries its own
+/// autonomous copy of terrain properties so that per-hex customisation is possible
+/// without new TOML types.
+#[derive(Debug, Clone)]
+pub struct Tile {
+    pub terrain_id: String,
+    /// Default movement cost for units with no entry for this terrain (from TerrainDef).
+    pub movement_cost: u32,
+    /// Default defense % for units with no entry for this terrain (from TerrainDef).
+    pub defense: u32,
+    /// HP healed to active-faction units at the start of their turn (0 = no healing).
+    pub healing: u32,
+}
+
+impl Tile {
+    /// Create a Tile with sensible defaults. Used in tests and fallback paths.
+    pub fn new(terrain_id: impl Into<String>) -> Self {
+        Self { terrain_id: terrain_id.into(), movement_cost: 1, defense: 40, healing: 0 }
+    }
+
+    /// Create a Tile from a TerrainDef registry entry.
+    pub fn from_def(def: &TerrainDef) -> Self {
+        Self {
+            terrain_id: def.id.clone(),
+            movement_cost: def.default_movement_cost,
+            defense: def.default_defense,
+            healing: def.healing,
+        }
+    }
+}
 
 /// Defines the playable area of a map in offset coordinate space.
 ///
@@ -8,20 +42,19 @@ use crate::hex::Hex;
 /// how Wesnoth-compatible map files describe their layout. Boundary checks
 /// convert to offset coordinates internally.
 ///
-/// Each hex may have a terrain type (stored as a terrain id string). Hexes
-/// without an assigned terrain return `None` from `terrain_at`.
+/// Each hex may have a `Tile` (terrain type + properties). Hexes without an
+/// assigned tile return `None` from `tile_at` / `terrain_at`.
 #[derive(Debug, Clone)]
 pub struct Board {
     pub width: u32,
     pub height: u32,
-    terrain: HashMap<Hex, String>,
-    healing_map: HashMap<String, u32>,
+    tiles: HashMap<Hex, Tile>,
 }
 
 impl Board {
     pub fn new(width: u32, height: u32) -> Self {
         assert!(width > 0 && height > 0, "Board dimensions must be positive");
-        Self { width, height, terrain: HashMap::new(), healing_map: HashMap::new() }
+        Self { width, height, tiles: HashMap::new() }
     }
 
     /// Returns true if `hex` lies within the board's bounds.
@@ -30,25 +63,28 @@ impl Board {
         col >= 0 && row >= 0 && col < self.width as i32 && row < self.height as i32
     }
 
-    /// Assign a terrain type to `hex`. Panics if `hex` is out of bounds.
+    /// Assign a terrain type to `hex` using default Tile values. Panics if out of bounds.
+    ///
+    /// Use `set_tile()` when a `TerrainDef` is available for full property initialisation.
     pub fn set_terrain(&mut self, hex: Hex, terrain_id: impl Into<String>) {
         assert!(self.contains(hex), "set_terrain: hex out of bounds");
-        self.terrain.insert(hex, terrain_id.into());
+        self.tiles.insert(hex, Tile::new(terrain_id));
     }
 
-    /// Return the terrain id at `hex`, or `None` if no terrain is set.
+    /// Assign a fully-initialised `Tile` to `hex`. Panics if out of bounds.
+    pub fn set_tile(&mut self, hex: Hex, tile: Tile) {
+        assert!(self.contains(hex), "set_tile: hex out of bounds");
+        self.tiles.insert(hex, tile);
+    }
+
+    /// Return the terrain id at `hex`, or `None` if no tile is set.
     pub fn terrain_at(&self, hex: Hex) -> Option<&str> {
-        self.terrain.get(&hex).map(String::as_str)
+        self.tiles.get(&hex).map(|t| t.terrain_id.as_str())
     }
 
-    /// Store the healing value for a terrain type.
-    pub fn set_healing(&mut self, terrain_id: impl Into<String>, healing: u32) {
-        self.healing_map.insert(terrain_id.into(), healing);
-    }
-
-    /// Return healing per turn for a terrain id (0 if unknown).
-    pub fn healing_for(&self, terrain_id: &str) -> u32 {
-        self.healing_map.get(terrain_id).copied().unwrap_or(0)
+    /// Return the `Tile` at `hex`, or `None` if no tile is set.
+    pub fn tile_at(&self, hex: Hex) -> Option<&Tile> {
+        self.tiles.get(&hex)
     }
 }
 
@@ -99,5 +135,6 @@ mod tests {
         board.set_terrain(Hex::ORIGIN, "forest");
         assert_eq!(board.terrain_at(Hex::ORIGIN), Some("forest"));
         assert_eq!(board.terrain_at(Hex::from_offset(1, 0)), None);
+        assert_eq!(board.tile_at(Hex::ORIGIN).unwrap().terrain_id, "forest");
     }
 }

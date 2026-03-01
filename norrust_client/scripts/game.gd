@@ -13,7 +13,7 @@ const HEX_RADIUS  = 32.0
 const HEX_CELL_W  = 55   # roundi(HEX_RADIUS * sqrt(3))
 const HEX_CELL_H  = 64   # HEX_RADIUS * 2
 
-const COLOR_GRASSLAND = Color(0.29, 0.49, 0.31)  # #4a7c4e
+const COLOR_FLAT      = Color(0.29, 0.49, 0.31)  # #4a7c4e
 const COLOR_FOREST    = Color(0.18, 0.35, 0.15)  # #2d5927
 const COLOR_VILLAGE   = Color(0.72, 0.60, 0.25)  # gold-tan
 
@@ -47,7 +47,7 @@ func _setup_rust_core() -> void:
 	# Grassland/forest checkerboard base
 	for col in range(BOARD_COLS):
 		for row in range(BOARD_ROWS):
-			var terrain = "forest" if (col + row) % 2 == 1 else "grassland"
+			var terrain = "forest" if (col + row) % 2 == 1 else "flat"
 			_core.set_terrain_at(col, row, terrain)
 	# Village hexes — contested healing positions in the centre
 	_core.set_terrain_at(3, 1, "village")
@@ -110,7 +110,7 @@ func _draw() -> void:
 			elif terrain_id == "forest":
 				color = COLOR_FOREST
 			else:
-				color = COLOR_GRASSLAND
+				color = COLOR_FLAT
 			draw_polygon(_hex_polygon(center, HEX_RADIUS), [color])
 
 	# 2. Reachable hex highlights (semi-transparent yellow overlay)

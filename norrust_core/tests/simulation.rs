@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use norrust_core::ai::ai_take_turn;
 use norrust_core::board::Board;
-use norrust_core::game_state::{apply_action, Action, GameState};
+use norrust_core::game_state::{apply_action, Action, ActionError, GameState};
 use norrust_core::hex::Hex;
 use norrust_core::loader::Registry;
 use norrust_core::schema::{AttackDef, UnitDef};
@@ -10,11 +10,11 @@ use norrust_core::unit::{advance_unit, Unit};
 
 #[test]
 fn test_headless_match_scenario() {
-    // ── Setup: 5×5 board, all grassland ──────────────────────
+    // ── Setup: 5×5 board, all flat ───────────────────────────
     let mut board = Board::new(5, 5);
     for col in 0..5_i32 {
         for row in 0..5_i32 {
-            board.set_terrain(Hex::from_offset(col, row), "grassland");
+            board.set_terrain(Hex::from_offset(col, row), "flat");
         }
     }
     let mut state = GameState::new_seeded(board, 99);
@@ -33,7 +33,7 @@ fn test_headless_match_scenario() {
     unit1.movement = 4;
     unit1.movement_costs = {
         let mut m = HashMap::new();
-        m.insert("grassland".to_string(), 1u32);
+        m.insert("flat".to_string(), 1u32);
         m
     };
     unit1.attacks = vec![sword];
@@ -219,13 +219,13 @@ fn test_ai_vs_ai_terminates() {
         }
     }
 
-    // 8×5 board with uniform grassland terrain.
+    // 8×5 board with uniform flat terrain.
     // Uniform terrain ensures movement=5 units can reach adjacent to opponents
     // on turn 1 (closest faction-1 units are at distance 5 from faction-0 col-1 units).
     let mut board = Board::new(8, 5);
     for col in 0..8_i32 {
         for row in 0..5_i32 {
-            board.set_terrain(Hex::from_offset(col, row), "grassland");
+            board.set_terrain(Hex::from_offset(col, row), "flat");
         }
     }
     let mut state = GameState::new_seeded(board, 42);
@@ -240,9 +240,9 @@ fn test_ai_vs_ai_terminates() {
         ..Default::default()
     };
     let mut movement_costs = HashMap::new();
-    movement_costs.insert("grassland".to_string(), 1u32);
+    movement_costs.insert("flat".to_string(), 1u32);
     let mut defense_map = HashMap::new();
-    defense_map.insert("grassland".to_string(), 40u32);
+    defense_map.insert("flat".to_string(), 40u32);
 
     let make_unit = |id: u32, faction: u8| -> Unit {
         let mut u = Unit::new(id, "fighter", 30, faction);
@@ -291,7 +291,7 @@ fn test_ai_marches_toward_enemy_when_no_attack() {
     // No attack possible. AI should march to col 5 (max reachable toward enemy).
     let mut board = Board::new(8, 1);
     for col in 0..8_i32 {
-        board.set_terrain(Hex::from_offset(col, 0), "grassland");
+        board.set_terrain(Hex::from_offset(col, 0), "flat");
     }
     let mut state = GameState::new_seeded(board, 42);
 
@@ -302,7 +302,7 @@ fn test_ai_marches_toward_enemy_when_no_attack() {
         ..Default::default()
     };
     let mut costs = HashMap::new();
-    costs.insert("grassland".to_string(), 1u32);
+    costs.insert("flat".to_string(), 1u32);
 
     let mut f0 = Unit::new(1, "fighter", 30, 0);
     f0.attacks = vec![sword.clone()];
@@ -353,4 +353,48 @@ fn test_wesnoth_units_load() {
         spearman.attacks.iter().any(|a| a.attack_type == "pierce"),
         "Spearman must have a pierce attack"
     );
+}
+
+#[test]
+fn test_terrain_wiring() {
+    // Board: flat | flat | hills | hills | flat  (1-row, 5 cols)
+    let mut board = Board::new(5, 1);
+    for col in 0..5_i32 {
+        let t = if col >= 2 && col <= 3 { "hills" } else { "flat" };
+        board.set_terrain(Hex::from_offset(col, 0), t);
+    }
+    let mut state = GameState::new_seeded(board, 1);
+
+    // Build a unit with Spearman-style movement costs (flat=1, hills=2)
+    let mut unit = Unit::new(1, "Spearman", 36, 0);
+    unit.movement = 5;
+    let mut movement_costs = HashMap::new();
+    movement_costs.insert("flat".to_string(), 1u32);
+    movement_costs.insert("hills".to_string(), 2u32);
+    unit.movement_costs = movement_costs;
+    state.place_unit(unit, Hex::from_offset(0, 0));
+
+    // flat(0→1)=1 + hills(1→2)=2 + hills(2→3)=2 = total 5 ≤ budget 5 → reachable
+    let r = apply_action(&mut state, Action::Move {
+        unit_id: 1,
+        destination: Hex::from_offset(3, 0),
+    });
+    assert!(r.is_ok(), "should reach col 3: flat(1)+hills(2)+hills(2)=5 = budget");
+
+    // Rebuild unit at col 0 for next assertion
+    let mut unit2 = Unit::new(2, "Spearman", 36, 0);
+    unit2.movement = 5;
+    let mut mc2 = HashMap::new();
+    mc2.insert("flat".to_string(), 1u32);
+    mc2.insert("hills".to_string(), 2u32);
+    unit2.movement_costs = mc2;
+    state.place_unit(unit2, Hex::from_offset(0, 0));
+
+    // flat(1) + hills(2) + hills(2) + flat(1) = 6 > budget 5 → unreachable
+    let r2 = apply_action(&mut state, Action::Move {
+        unit_id: 2,
+        destination: Hex::from_offset(4, 0),
+    });
+    assert_eq!(r2, Err(ActionError::DestinationUnreachable),
+        "col 4 costs 6 MP total, exceeds budget 5");
 }

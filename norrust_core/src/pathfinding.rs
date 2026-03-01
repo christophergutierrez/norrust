@@ -266,11 +266,11 @@ mod tests {
         let mut board = Board::new(5, 5);
         for col in 0..5_i32 {
             for row in 0..5_i32 {
-                board.set_terrain(Hex::from_offset(col, row), "grassland");
+                board.set_terrain(Hex::from_offset(col, row), "flat");
             }
         }
         let mut movement_costs = HashMap::new();
-        movement_costs.insert("grassland".to_string(), 1u32);
+        movement_costs.insert("flat".to_string(), 1u32);
         let zoc: HashSet<Hex> = HashSet::new();
 
         let start = Hex::from_offset(2, 2);

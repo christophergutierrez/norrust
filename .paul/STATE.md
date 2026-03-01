@@ -5,24 +5,24 @@
 See: .paul/PROJECT.md (updated 2026-03-01)
 
 **Core value:** A playable hex-based strategy game where simulation logic is strictly separated from presentation, enabling human players and AI agents to use the same clean engine.
-**Current focus:** v0.5 Unit Content — COMPLETE
+**Current focus:** v0.6 Terrain System
 
 ## Current Position
 
-Milestone: v0.5 Unit Content — Complete ✅
-Phase: 13 of 13 (Wesnoth Data Import) — Complete
-Plan: 13-01 complete
-Status: Milestone v0.5 complete — ready for next milestone
-Last activity: 2026-03-01 — Phase 13 complete, v0.5 Unit Content milestone delivered
+Milestone: v0.6 Terrain System
+Phase: 15 of 3 (Map Generator) — Not started
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-03-01 — Phase 14 complete, transitioned to Phase 15
 
 Progress:
-- Milestone v0.5: [██████████] 100% ✅
+- Milestone v0.6: [███░░░░░░░] 33%
 
 ## Loop Position
 
 ```
 PLAN ──▶ APPLY ──▶ UNIFY
-  ✓        ✓        ✓     [Loop complete — milestone v0.5 closed]
+  ✓        ✓        ✓     [Loop complete - ready for next PLAN]
 ```
 
 ## Accumulated Context
@@ -39,7 +39,7 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | Cubic hex coordinates (x+y+z=0) as canonical type | Phase 2 | All hex math internal; offset only at I/O boundaries |
 | apply_action mutates &mut GameState in place | Phase 2 | Zero-copy, simpler API; returns Result<(), ActionError> |
 | Unit carries combat data (attacks, defense map) | Phase 2 | Avoids registry coupling in apply_action(Attack) |
-| Board.healing_map cached at set_terrain_at() | Phase 4 | EndTurn healing needs no registry access |
+| Board.healing_map cached at set_terrain_at() | Phase 4 | EndTurn healing needs no registry access [SUPERSEDED Phase 14] |
 | get_terrain_at() bridge: Rust is terrain source of truth | Phase 4 | _draw() queries Rust per hex |
 | StateSnapshot DTO (not Serialize on GameState) | Phase 5 | Clean JSON; avoids HashMap<Hex,_> + SmallRng issues |
 | #[serde(tag="action")] internally-tagged ActionRequest | Phase 5 | Idiomatic JSON for AI clients |
@@ -56,7 +56,7 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | draw_arc() for advancement ring; draw_polyline() for hex outlines | Phase 9 | Visually distinct unit-level vs hex-level ring layers |
 | Greedy AI (N=0): expected-damage scorer + kill bonus ×3 | Phase 10 | Analytic, deterministic, no RNG rollouts; same apply_action API |
 | ai_take_turn() pure Rust in ai.rs; bridge in Phase 11 | Phase 10 | AI is a caller of apply_action — registry-free, testable headlessly |
-| Uniform grassland in AI-vs-AI test (not checkerboard) | Phase 10 | Checkerboard (forest=2) with movement=5 prevents first-turn engagement |
+| Uniform flat terrain in AI-vs-AI test (not checkerboard) | Phase 10 | Checkerboard (forest=2) with movement=5 prevents first-turn engagement |
 | March via min_by_key(distance to nearest enemy) over candidates | Phase 11 | Reuses ZOC-filtered reachable hexes; no extra pathfinding; march respects ZOC |
 | GDScript AI trigger checks active_faction after end_turn() | Phase 11 | ai_take_turn() includes EndTurn; checking faction after player's EndTurn is cleanest trigger |
 | #[derive(Default)] on AttackDef and UnitDef | Phase 12 | ..Default::default() in test constructions; future fields need 1 line per test file |
@@ -65,6 +65,10 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | parse_value() uses [^"]* (first-quote match) in WML scraper | Phase 13 | Avoids capturing WML inline comments after closing "; greedy .* caused 7 malformed TOMLs |
 | Denormalized unit TOMLs from scraper (no MovetypeDef registry) | Phase 13 | Keeps loader simple; movement_costs/defense/resistances inlined per unit |
 | Registry tests use >= N count assertions | Phase 13 | Hardcoded == 4/== 3 broke with 322-file data dir; >= N survives data growth |
+| Tile/TileDef mirrors Unit/UnitDef pattern | Phase 14 | Per-hex autonomous properties; uniform API; customisation without new TOML types |
+| Tile::new() defaults: movement_cost=1, defense=40, healing=0 | Phase 14 | Open-ground fallback; tests and bridge work without registry |
+| set_terrain_at() bridge: Tile::from_def() or Tile::new() fallback | Phase 14 | Graceful degradation when terrain ID not in registry |
+| Board.healing_map replaced by tile.healing | Phase 14 | Eliminates stale cache; EndTurn healing reads authoritative per-hex value directly |
 
 ### Deferred Issues
 
@@ -76,22 +80,22 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | Village capture/ownership mechanic | Phase 4 | M | v0.6+ |
 | Socket/TCP server for external Python agents | Phase 5 | M | v0.6+ |
 | 'A' key advancement requires unit selected — no UI hint | Phase 9 | S | v0.6+ |
-| Scraped terrain IDs (flat/hills/etc.) don't match board terrain IDs (grassland/forest/village) | Phase 13 | M | v0.6+ |
 | Some advances_to chains reference units not in registry (skipped for no-attacks/template) | Phase 13 | S | v0.6+ |
+| Tile.defense not wired as combat fallback (Unit.default_defense still used) | Phase 14 | S | Phase 16+ |
 
 ### Blockers/Concerns
 None.
 
 ### Git State
-Last commit: bc70f14 — feat(13-wesnoth-data-import): Python WML scraper, 318 unit TOMLs, 11 terrain TOMLs
+Last commit: TBD (Phase 14 commit pending)
 Branch: master
 Feature branches merged: none
 
 ## Session Continuity
 
 Last session: 2026-03-01
-Stopped at: v0.5 Unit Content milestone complete — Phase 13 UNIFY done
-Next action: /paul:discuss-milestone or /paul:milestone for v0.6
+Stopped at: Phase 14 complete — Tile struct, terrain ID reconciliation, 51 tests pass
+Next action: /paul:plan for Phase 15 (Map Generator)
 Resume file: .paul/ROADMAP.md
 
 ---
