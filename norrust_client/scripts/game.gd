@@ -13,9 +13,7 @@ const HEX_RADIUS  = 32.0
 const HEX_CELL_W  = 55   # roundi(HEX_RADIUS * sqrt(3))
 const HEX_CELL_H  = 64   # HEX_RADIUS * 2
 
-const COLOR_FLAT      = Color(0.29, 0.49, 0.31)  # #4a7c4e
-const COLOR_FOREST    = Color(0.18, 0.35, 0.15)  # #2d5927
-const COLOR_VILLAGE   = Color(0.72, 0.60, 0.25)  # gold-tan
+const COLOR_FLAT = Color(0.29, 0.49, 0.31)  # #4a7c4e — fallback for hexes without color data
 
 # Stride constants for get_reachable_hexes() — returns [col, row, col, row, ...]
 const RH_STRIDE = 2
@@ -44,14 +42,8 @@ func _setup_rust_core() -> void:
 
 	_core.create_game(BOARD_COLS, BOARD_ROWS, 42)
 
-	# Grassland/forest checkerboard base
-	for col in range(BOARD_COLS):
-		for row in range(BOARD_ROWS):
-			var terrain = "forest" if (col + row) % 2 == 1 else "flat"
-			_core.set_terrain_at(col, row, terrain)
-	# Village hexes — contested healing positions in the centre
-	_core.set_terrain_at(3, 1, "village")
-	_core.set_terrain_at(4, 3, "village")
+	# Generate procedural terrain (seed=42 produces the default map layout)
+	_core.generate_map(42)
 
 	# Spawn 5 fighters per faction — stats are copied from the UnitDef registry.
 	# 5 enemies per side means a unit can reach 40 XP (5 kills × 9 XP each)
@@ -99,18 +91,18 @@ func _parse_state() -> Dictionary:
 func _draw() -> void:
 	var state = _parse_state()
 
+	# Build per-hex color map from state snapshot (colors defined in terrain TOMLs)
+	var tile_colors: Dictionary = {}
+	for tile in state.get("terrain", []):
+		var c: String = tile.get("color", "")
+		tile_colors[Vector2i(int(tile["col"]), int(tile["row"]))] = \
+			Color.html(c) if c != "" else COLOR_FLAT
+
 	# 1. Terrain hexes
 	for col in range(BOARD_COLS):
 		for row in range(BOARD_ROWS):
-			var center     = _tile_map.map_to_local(Vector2i(col, row)) + _tile_map.position
-			var terrain_id = _core.get_terrain_at(col, row)
-			var color: Color
-			if terrain_id == "village":
-				color = COLOR_VILLAGE
-			elif terrain_id == "forest":
-				color = COLOR_FOREST
-			else:
-				color = COLOR_FLAT
+			var center = _tile_map.map_to_local(Vector2i(col, row)) + _tile_map.position
+			var color  = tile_colors.get(Vector2i(col, row), COLOR_FLAT)
 			draw_polygon(_hex_polygon(center, HEX_RADIUS), [color])
 
 	# 2. Reachable hex highlights (semi-transparent yellow overlay)
