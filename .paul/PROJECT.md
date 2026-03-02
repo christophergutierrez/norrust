@@ -90,11 +90,14 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] EndTurn village income: 2 gold per owned village to newly-active faction — Phase 20 (20-01)
 - [x] StateSnapshot.gold exposed in JSON for AI clients and GDScript — Phase 20 (20-01)
 - [x] HUD displays active faction's gold ("Xg" appended to existing HUD string) — Phase 20 (20-01)
+- [x] FactionDef TOML schema (id, name, leader_def, recruits, starting_gold); Registry<FactionDef> + RecruitGroup expansion — Phase 21 (21-01)
+- [x] Starting gold wired from FactionDef at game start via apply_starting_gold() bridge — Phase 21 (21-01)
+- [x] apply_recruit() pure Rust function: castle hex validation, gold check (can't go negative), deduction, placement — Phase 21 (21-02)
+- [x] ActionRequest::Recruit in JSON API — AI agents can recruit via external JSON interface — Phase 21 (21-02)
+- [x] Castle terrain hexes in contested.toml (col 0 + col 7); GDScript 'R' key recruit panel with teal highlights and unit cost display — Phase 21 (21-02)
 
 ### Active (In Progress / Deferred)
 
-- [ ] Factions TOML schema — deferred from Phase 1
-- [ ] Recruitment UI (select and place units on Castle hexes) — deferred from Phase 4
 - [ ] Movement interpolation and basic attack animations — deferred from Phase 4
 - [ ] Socket/TCP server for external Python agents — deferred from Phase 5 (JSON layer complete; transport layer future)
 
@@ -170,6 +173,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | Tile.defense as middle tier in combat fallback | unit.defense[id] → tile.defense → unit.default_defense; preserves test pattern of bare-board with default_defense=0 | 2026-03-02 | Active |
 | gold: [u32; 2] array (not HashMap) | Exactly 2 factions; array simpler; indexed by faction as usize | 2026-03-02 | Active |
 | Village income on newly-active faction's turn start | "Gold at start of turn" semantics; village captured this turn pays next time you're active | 2026-03-02 | Active |
+| apply_recruit() free function (not Action enum variant) | Advance pattern: registry-free, headlessly testable; bridge handles cost lookup + Unit construction | 2026-03-02 | Active |
+| Castle validity = terrain_id == "castle" only | No leader adjacency requirement — keeps recruitment simple; factional restriction via scenario design | 2026-03-02 | Active |
+| apply_starting_gold() as separate bridge call (not auto in load_factions) | GDScript knows both faction IDs only at PLAYING transition; explicit timing beats implicit side-effects | 2026-03-02 | Active |
 
 ## Tech Stack
 
@@ -189,4 +195,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-02 after Phase 20 (Gold Economy — 65 tests pass)*
+*Last updated: 2026-03-02 after v0.9 Game Mechanics (Gold Economy + Factions + Recruitment — 69 tests pass)*
