@@ -2,10 +2,10 @@ use std::collections::{HashMap, HashSet};
 
 use norrust_core::ai::ai_take_turn;
 use norrust_core::board::Board;
-use norrust_core::game_state::{apply_action, Action, ActionError, GameState};
+use norrust_core::game_state::{apply_action, apply_recruit, Action, ActionError, GameState};
 use norrust_core::hex::Hex;
 use norrust_core::loader::Registry;
-use norrust_core::schema::{AttackDef, UnitDef};
+use norrust_core::schema::{AttackDef, FactionDef, UnitDef};
 use norrust_core::unit::{advance_unit, Unit};
 
 #[test]
@@ -424,13 +424,20 @@ fn test_load_board_from_file() {
         }
     }
 
-    // AC-3: Spawn zones (cols 0-1, 6-7) are flat
+    // AC-3: Spawn zones — cols 0 and 7 are castle (recruit zones), cols 1 and 6 are flat
     for row in 0..5_i32 {
-        for spawn_col in [0, 1, 6, 7] {
+        for castle_col in [0, 7] {
             assert_eq!(
-                board.terrain_at(Hex::from_offset(spawn_col, row)),
+                board.terrain_at(Hex::from_offset(castle_col, row)),
+                Some("castle"),
+                "recruit zone col {castle_col} row {row} must be castle"
+            );
+        }
+        for flat_col in [1, 6] {
+            assert_eq!(
+                board.terrain_at(Hex::from_offset(flat_col, row)),
                 Some("flat"),
-                "spawn zone col {spawn_col} row {row} must be flat"
+                "corridor col {flat_col} row {row} must be flat"
             );
         }
     }
@@ -519,4 +526,88 @@ fn test_generate_map() {
     for t in &contested {
         assert!(valid.contains(t), "unexpected terrain '{t}' in contested zone");
     }
+}
+
+#[test]
+fn test_faction_def_starting_gold_loads() {
+    let data_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("data");
+    let registry = Registry::<FactionDef>::load_from_dir(&data_path.join("factions"))
+        .expect("factions must load");
+    // At least the three shipped factions must be present
+    assert!(registry.len() >= 3, "expected >= 3 factions, got {}", registry.len());
+    let loyalists = registry.get("loyalists").expect("loyalists must exist");
+    assert_eq!(loyalists.starting_gold, 100, "loyalists starting_gold should be 100");
+    // All loaded factions should have positive starting gold
+    assert!(
+        registry.all().all(|f| f.starting_gold > 0),
+        "all factions must have positive starting_gold"
+    );
+}
+
+#[test]
+fn test_recruit_deducts_gold() {
+    use norrust_core::board::Tile;
+    use norrust_core::unit::Unit;
+
+    let mut board = Board::new(4, 3);
+    let castle_hex = Hex::from_offset(0, 0);
+    board.set_tile(castle_hex, Tile {
+        terrain_id: "castle".to_string(),
+        movement_cost: 1,
+        defense: 40,
+        healing: 0,
+        color: "#c8b47a".to_string(),
+    });
+    let mut state = GameState::new(board);
+    state.gold = [50, 50];
+
+    let unit = Unit::new(1, "spearman", 33, 0);
+    let cost = 14u32;
+
+    apply_recruit(&mut state, unit, castle_hex, cost).expect("recruit must succeed");
+
+    assert_eq!(state.gold[0], 36, "gold should be 50 - 14 = 36");
+    assert!(state.units.contains_key(&1), "unit must be placed on the board");
+}
+
+#[test]
+fn test_recruit_fails_not_enough_gold() {
+    use norrust_core::board::Tile;
+    use norrust_core::unit::Unit;
+
+    let mut board = Board::new(4, 3);
+    let castle_hex = Hex::from_offset(0, 0);
+    board.set_tile(castle_hex, Tile {
+        terrain_id: "castle".to_string(),
+        movement_cost: 1,
+        defense: 40,
+        healing: 0,
+        color: "#c8b47a".to_string(),
+    });
+    let mut state = GameState::new(board);
+    state.gold = [0, 0];
+
+    let unit = Unit::new(1, "spearman", 33, 0);
+    let result = apply_recruit(&mut state, unit, castle_hex, 14);
+
+    assert_eq!(result, Err(ActionError::NotEnoughGold));
+    assert!(state.units.is_empty(), "no unit should be placed on failure");
+}
+
+#[test]
+fn test_recruit_fails_not_castle_hex() {
+    use norrust_core::unit::Unit;
+
+    let mut board = Board::new(4, 3);
+    board.set_terrain(Hex::from_offset(0, 0), "flat");
+    let mut state = GameState::new(board);
+    state.gold = [100, 100];
+
+    let unit = Unit::new(1, "spearman", 33, 0);
+    let result = apply_recruit(&mut state, unit, Hex::from_offset(0, 0), 14);
+
+    assert_eq!(result, Err(ActionError::DestinationNotCastle));
 }

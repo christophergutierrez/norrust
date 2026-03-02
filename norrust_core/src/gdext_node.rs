@@ -1,6 +1,6 @@
 use crate::board::Board;
 use crate::combat::{time_of_day, TimeOfDay};
-use crate::game_state::{apply_action, Action, ActionError, GameState};
+use crate::game_state::{apply_action, apply_recruit, Action, ActionError, GameState};
 use crate::hex::Hex;
 use crate::loader::Registry;
 use crate::pathfinding::{get_zoc_hexes, reachable_hexes};
@@ -59,6 +59,8 @@ fn action_err_code(e: ActionError) -> i32 {
         ActionError::UnitAlreadyMoved       => -5,
         ActionError::DestinationUnreachable => -6,
         ActionError::NotAdjacent            => -7,
+        ActionError::NotEnoughGold          => -8,
+        ActionError::DestinationNotCastle   => -9,
     }
 }
 
@@ -309,6 +311,64 @@ impl NorRustCore {
         state.units.remove(&uid);
         state.positions.remove(&uid);
         true
+    }
+
+    /// Recruit a unit of `def_id` type onto the castle hex at (col, row).
+    /// Uses the active faction and deducts the unit's gold cost from state.gold.
+    /// Returns 0 on success, -1 if no game/registry/def not found, or a negative error code.
+    #[func]
+    fn recruit_unit_at(&mut self, unit_id: i32, def_id: GString, col: i32, row: i32) -> i32 {
+        if self.game.is_none() { return -1; }
+        let def_id_str = def_id.to_string();
+
+        // Clone all needed data from def before mutably borrowing game
+        let def_data = self.units.as_ref()
+            .and_then(|r| r.get(&def_id_str))
+            .map(|def| (
+                def.max_hp,
+                def.movement,
+                def.movement_costs.clone(),
+                def.attacks.clone(),
+                def.defense.clone(),
+                def.resistances.clone(),
+                def.experience,
+                def.alignment.clone(),
+                def.cost,
+            ));
+
+        let Some((max_hp, movement, movement_costs, attacks, defense, resistances, experience, alignment, cost)) = def_data else {
+            godot_warn!("recruit_unit_at: UnitDef '{}' not found", def_id);
+            return -1;
+        };
+
+        let state = self.game.as_mut().unwrap();
+        let faction = state.active_faction;
+
+        let mut unit = Unit::new(unit_id as u32, def_id_str, max_hp, faction);
+        unit.max_hp = max_hp;
+        unit.hp = max_hp;
+        unit.movement = movement;
+        unit.movement_costs = movement_costs;
+        unit.attacks = attacks;
+        unit.defense = defense;
+        unit.resistances = resistances;
+        unit.xp_needed = experience;
+        unit.alignment = parse_alignment(&alignment);
+
+        let destination = Hex::from_offset(col, row);
+        match apply_recruit(state, unit, destination, cost) {
+            Ok(()) => 0,
+            Err(e) => action_err_code(e),
+        }
+    }
+
+    /// Returns the gold cost of the unit def, or 0 if not found.
+    #[func]
+    fn get_unit_cost(&self, def_id: GString) -> i32 {
+        self.units.as_ref()
+            .and_then(|r| r.get(&def_id.to_string()))
+            .map(|u| u.cost as i32)
+            .unwrap_or(0)
     }
 
     /// Apply a Move action. Returns 0 on success, a negative error code on failure.
@@ -584,6 +644,26 @@ impl NorRustCore {
         format!("[{}]", filtered.join(",")).into()
     }
 
+    /// Set state.gold from the loaded faction definitions.
+    /// Call after load_factions() + load_board(), once both faction IDs are known.
+    /// Returns true on success, false if either faction ID not found or no game loaded.
+    #[func]
+    fn apply_starting_gold(&mut self, f0_id: GString, f1_id: GString) -> bool {
+        let Some(state) = self.game.as_mut() else { return false; };
+        let f0_id = f0_id.to_string();
+        let f1_id = f1_id.to_string();
+        let gold0 = self.factions.iter()
+            .find(|(f, _)| f.id == f0_id)
+            .map(|(f, _)| f.starting_gold);
+        let gold1 = self.factions.iter()
+            .find(|(f, _)| f.id == f1_id)
+            .map(|(f, _)| f.starting_gold);
+        match (gold0, gold1) {
+            (Some(g0), Some(g1)) => { state.gold = [g0, g1]; true }
+            _ => { godot_error!("apply_starting_gold: faction id not found"); false }
+        }
+    }
+
     /// Returns the level of the unit def, or 1 if not found.
     #[func]
     fn get_unit_level(&self, def_id: GString) -> i32 {
@@ -612,6 +692,9 @@ impl NorRustCore {
         };
         match req {
             ActionRequest::Advance { unit_id } => self.apply_advance(unit_id as i32),
+            ActionRequest::Recruit { unit_id, def_id, col, row } => {
+                self.recruit_unit_at(unit_id as i32, def_id.into(), col, row)
+            }
             other => {
                 let Some(state) = self.game.as_mut() else { return -1 };
                 match apply_action(state, other.into()) {

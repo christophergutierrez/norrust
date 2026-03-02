@@ -3,6 +3,7 @@ use std::collections::HashMap;
 
 fn default_level() -> u8 { 1 }
 fn default_alignment() -> String { "liminal".to_string() }
+fn default_starting_gold() -> u32 { 100 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct AttackDef {
@@ -93,6 +94,8 @@ pub struct FactionDef {
     pub name: String,
     pub leader_def: String,
     pub recruits: Vec<String>,  // mix of group ids and unit def ids; expanded at load time
+    #[serde(default = "default_starting_gold")]
+    pub starting_gold: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]

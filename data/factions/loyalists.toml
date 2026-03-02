@@ -2,3 +2,4 @@ id = "loyalists"
 name = "Loyalists"
 leader_def = "Lieutenant"
 recruits = ["human_base"]
+starting_gold = 100

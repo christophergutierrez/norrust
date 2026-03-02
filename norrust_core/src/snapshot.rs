@@ -107,6 +107,7 @@ pub enum ActionRequest {
     Attack { attacker_id: u32, defender_id: u32 },
     EndTurn,
     Advance { unit_id: u32 },
+    Recruit { unit_id: u32, def_id: String, col: i32, row: i32 },
 }
 
 impl From<ActionRequest> for Action {
@@ -122,6 +123,9 @@ impl From<ActionRequest> for Action {
             ActionRequest::EndTurn => Action::EndTurn,
             ActionRequest::Advance { .. } => {
                 unreachable!("Advance is handled by apply_advance() before into()")
+            }
+            ActionRequest::Recruit { .. } => {
+                unreachable!("Recruit is handled by recruit_unit_at() before into()")
             }
         }
     }

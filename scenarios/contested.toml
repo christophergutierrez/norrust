@@ -4,9 +4,9 @@
 width = 8
 height = 5
 tiles = [
-  "flat", "flat", "forest",    "hills",     "hills",     "forest",    "flat", "flat",
-  "flat", "flat", "forest",    "village",   "mountains", "forest",    "flat", "flat",
-  "flat", "flat", "hills",     "forest",    "forest",    "hills",     "flat", "flat",
-  "flat", "flat", "forest",    "mountains", "village",   "forest",    "flat", "flat",
-  "flat", "flat", "forest",    "hills",     "hills",     "forest",    "flat", "flat",
+  "castle", "flat", "forest",    "hills",     "hills",     "forest",    "flat", "castle",
+  "castle", "flat", "forest",    "village",   "mountains", "forest",    "flat", "castle",
+  "castle", "flat", "hills",     "forest",    "forest",    "hills",     "flat", "castle",
+  "castle", "flat", "forest",    "mountains", "village",   "forest",    "flat", "castle",
+  "castle", "flat", "forest",    "hills",     "hills",     "forest",    "flat", "castle",
 ]

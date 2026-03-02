@@ -6,7 +6,7 @@ use crate::hex::Hex;
 use crate::pathfinding::{find_path, get_zoc_hexes};
 use crate::unit::Unit;
 
-/// Errors returned by `apply_action` when an action is invalid.
+/// Errors returned by `apply_action` and `apply_recruit` when an action is invalid.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ActionError {
     UnitNotFound(u32),
@@ -16,6 +16,8 @@ pub enum ActionError {
     UnitAlreadyMoved,
     DestinationUnreachable,
     NotAdjacent,
+    NotEnoughGold,
+    DestinationNotCastle,
 }
 
 /// Discrete state changes that may be applied to a `GameState`.
@@ -348,6 +350,35 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
             Ok(())
         }
     }
+}
+
+/// Recruit a unit onto a castle hex, deducting its gold cost from the active faction.
+///
+/// Validates: destination in bounds, is a castle hex, is unoccupied, faction has enough gold.
+/// On success: deducts `cost` from `state.gold[unit.faction as usize]` and places the unit.
+pub fn apply_recruit(
+    state: &mut GameState,
+    unit: Unit,
+    destination: Hex,
+    cost: u32,
+) -> Result<(), ActionError> {
+    if !state.board.contains(destination) {
+        return Err(ActionError::DestinationOutOfBounds);
+    }
+    match state.board.tile_at(destination) {
+        Some(tile) if tile.terrain_id == "castle" => {}
+        _ => return Err(ActionError::DestinationNotCastle),
+    }
+    if state.positions.values().any(|&h| h == destination) {
+        return Err(ActionError::DestinationOccupied);
+    }
+    let faction = unit.faction as usize;
+    if state.gold[faction] < cost {
+        return Err(ActionError::NotEnoughGold);
+    }
+    state.gold[faction] -= cost;
+    state.place_unit(unit, destination);
+    Ok(())
 }
 
 #[cfg(test)]

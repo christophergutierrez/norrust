@@ -7,15 +7,16 @@ Five phases take the project from data schema definitions through a fully playab
 ## Current Milestone
 
 **v0.9 Game Mechanics** (v0.9.0)
-Status: 🚧 In Progress
-Phases: 0 of 2 complete
+Status: ✅ Complete
+Phases: 2 of 2 complete
+Released: 2026-03-02
 
 ## v0.9 Phases
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 20 | Gold Economy | 1 | ✅ Complete | 2026-03-02 |
-| 21 | Factions + Recruitment | TBD | Not started | - |
+| 21 | Factions + Recruitment | 2 | ✅ Complete | 2026-03-02 |
 
 ## v0.9 Phase Details
 
@@ -41,8 +42,18 @@ Phases: 0 of 2 complete
 **Depends on:** Phase 20 (gold tracking must exist before recruitment can spend it)
 
 **Plans:**
-- [ ] 21-01: FactionDef TOML + Registry + load_factions() bridge + starting gold wiring
-- [ ] 21-02: Action::Recruit + castle scenario + GDScript 'R' key + headless test
+- [x] 21-01: FactionDef.starting_gold + apply_starting_gold() bridge + game.gd wiring
+- [x] 21-02: Action::Recruit + castle scenario + GDScript 'R' key + headless tests
+
+**Delivered:**
+- `FactionDef.starting_gold: u32` (default 100) — set into state.gold at game start via bridge
+- `apply_recruit(state, unit, destination, cost)` — pure Rust, registry-free, headlessly testable
+- `ActionError::NotEnoughGold` + `::DestinationNotCastle` (-8/-9 error codes)
+- `recruit_unit_at()` + `get_unit_cost()` GDExtension bridges
+- `ActionRequest::Recruit` — JSON API path for AI agent recruitment
+- `scenarios/contested.toml` — col 0 + col 7 are castle (recruit zones); col 1 + 6 flat corridors
+- GDScript 'R' key: recruit panel with teal castle highlights, unit list with costs, click-to-place
+- 69 tests passing (55 lib + 14 integration)
 
 ---
 

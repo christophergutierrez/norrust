@@ -37,6 +37,9 @@ var _leader_level: Array = [1, 1]
 var _palette: Array = []                   # list of def_id strings for current setup phase
 var _selected_palette_idx: int = 0
 var _next_unit_id: int = 1
+var _recruit_mode: bool = false
+var _recruit_palette: Array = []
+var _selected_recruit_idx: int = 0
 
 func _ready() -> void:
 	_setup_rust_core()
@@ -160,6 +163,9 @@ func _draw() -> void:
 				-1, 14, faction_color
 			)
 
+		if _recruit_mode:
+			_draw_recruit_panel(state)
+
 func _draw_units(state: Dictionary) -> void:
 	for unit in state.get("units", []):
 		var col      = unit["col"]
@@ -243,6 +249,38 @@ func _draw_setup_hud() -> void:
 				draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, y),
 					label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, col)
 
+func _draw_recruit_panel(state: Dictionary) -> void:
+	var faction = _core.get_active_faction()
+	var screen_w = ProjectSettings.get_setting("display/window/size/viewport_width")
+	var screen_h = ProjectSettings.get_setting("display/window/size/viewport_height")
+
+	# Highlight castle hexes
+	for tile in state.get("terrain", []):
+		if tile.get("terrain_id", "") == "castle":
+			var center = _tile_map.map_to_local(Vector2i(int(tile["col"]), int(tile["row"]))) \
+						 + _tile_map.position
+			draw_polygon(_hex_polygon(center, HEX_RADIUS), [Color(0.0, 0.8, 0.8, 0.4)])
+
+	# Sidebar panel
+	draw_rect(Rect2(screen_w - 200, 0, 200, screen_h), Color(0, 0, 0, 0.6))
+	var faction_color = Color(0.25, 0.42, 0.88) if faction == 0 else Color(0.80, 0.12, 0.12)
+	var gold_arr = state.get("gold", [0, 0])
+	var gold = int(gold_arr[faction])
+	draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, 24),
+		"RECRUIT — %dg" % gold, HORIZONTAL_ALIGNMENT_LEFT, -1, 15, faction_color)
+	draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, 44),
+		"Click castle hex to place", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color.LIGHT_GRAY)
+	draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, 58),
+		"[R] Cancel", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color.LIGHT_GRAY)
+	for i in range(_recruit_palette.size()):
+		var def_id = _recruit_palette[i]
+		var cost = _core.get_unit_cost(def_id)
+		var y = 80 + i * 20
+		var label = "[%d] %s (%dg)" % [i + 1, def_id, cost]
+		var col = Color.YELLOW if i == _selected_recruit_idx else Color.WHITE
+		draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, y),
+			label, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, col)
+
 func _build_unit_pos_map(state: Dictionary) -> Dictionary:
 	# Returns Dictionary: Vector2i(col, row) -> [unit_id, faction]
 	var result: Dictionary = {}
@@ -309,6 +347,22 @@ func _input(event: InputEvent) -> void:
 						_clear_selection()
 						queue_redraw()
 						break
+		elif key_event.pressed and not key_event.echo and key_event.keycode == KEY_R:
+			if not _recruit_mode:
+				var faction = _core.get_active_faction()
+				var raw = _core.get_faction_recruits_json(_faction_id[faction], 0)
+				_recruit_palette = JSON.parse_string(raw) if raw != "" else []
+				_selected_recruit_idx = 0
+				_recruit_mode = true
+				_clear_selection()
+			else:
+				_recruit_mode = false
+			queue_redraw()
+		elif key_event.pressed and not key_event.echo \
+				and key_event.keycode >= KEY_1 and key_event.keycode <= KEY_9:
+			if _recruit_mode and _recruit_palette.size() > 0:
+				_selected_recruit_idx = min(key_event.keycode - KEY_1, _recruit_palette.size() - 1)
+				queue_redraw()
 		return
 
 	if not event is InputEventMouseButton:
@@ -332,6 +386,19 @@ func _input(event: InputEvent) -> void:
 	var state        = _parse_state()
 	var pos_map      = _build_unit_pos_map(state)
 	var active       = _core.get_active_faction()
+
+	if _recruit_mode:
+		var def_id = _recruit_palette[_selected_recruit_idx] if _recruit_palette.size() > 0 else ""
+		if def_id != "":
+			var result = _core.recruit_unit_at(_next_unit_id, def_id, col, row)
+			if result == 0:
+				_next_unit_id += 1
+				print("Recruited %s at (%d,%d)" % [def_id, col, row])
+			else:
+				print("Recruit failed: code %d" % result)
+		_recruit_mode = false
+		queue_redraw()
+		return
 
 	if _selected_unit_id != -1 and clicked_cell in pos_map and pos_map[clicked_cell][1] != active:
 		# Attack enemy unit at clicked hex (check before reachable-move so enemy hexes
@@ -392,6 +459,8 @@ func _handle_setup_input(event: InputEvent) -> void:
 			if _game_mode == GameMode.SETUP_BLUE:
 				_game_mode = GameMode.PICK_FACTION_RED
 			else:
+				# Both factions chosen — wire starting gold before game begins
+				_core.apply_starting_gold(_faction_id[0], _faction_id[1])
 				_game_mode = GameMode.PLAYING
 			queue_redraw()
 			return
