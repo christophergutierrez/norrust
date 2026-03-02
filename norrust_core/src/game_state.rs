@@ -37,6 +37,8 @@ pub struct GameState {
     pub rng: Rng,
     /// Maps village hexes (healing > 0) to the owning faction (-1 = unowned stored as i8::MAX).
     pub village_owners: HashMap<Hex, i8>,
+    /// Gold per faction: [faction_0_gold, faction_1_gold]. Starting value 10 each.
+    pub gold: [u32; 2],
 }
 
 impl GameState {
@@ -49,6 +51,7 @@ impl GameState {
             active_faction: 0,
             rng: Rng::new(12345),
             village_owners: HashMap::new(),
+            gold: [10, 10],
         }
     }
 
@@ -313,6 +316,14 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
             if state.active_faction == 0 {
                 state.turn += 1;
             }
+
+            // Village income: newly-active faction earns 2 gold per owned village
+            let active_i8 = state.active_faction as i8;
+            let income = state.village_owners.values()
+                .filter(|&&owner| owner == active_i8)
+                .count() as u32 * 2;
+            state.gold[state.active_faction as usize] += income;
+
             for unit in state.units.values_mut() {
                 unit.moved = false;
                 unit.attacked = false;
@@ -760,5 +771,28 @@ mod tests {
         assert_eq!(result, Err(ActionError::NotAdjacent));
         // Neither unit should be modified
         assert_eq!(state.units[&2].hp, 30, "defender HP must be unchanged");
+    }
+
+    #[test]
+    fn test_village_income_adds_gold() {
+        let board = Board::new(10, 10);
+        let mut state = GameState::new(board);
+
+        // Verify starting gold
+        assert_eq!(state.gold, [10, 10]);
+
+        // Give faction 0 ownership of one village directly
+        let village_hex = Hex::from_offset(3, 3);
+        state.village_owners.insert(village_hex, 0);
+
+        // faction 0 ends turn → faction 1 becomes active → faction 1 gets income (0 villages = 0g)
+        apply_action(&mut state, Action::EndTurn).unwrap();
+        assert_eq!(state.active_faction, 1);
+        assert_eq!(state.gold[1], 10, "faction 1 owns no villages, gold unchanged");
+
+        // faction 1 ends turn → faction 0 becomes active → faction 0 gets income (1 village = 2g)
+        apply_action(&mut state, Action::EndTurn).unwrap();
+        assert_eq!(state.active_faction, 0);
+        assert_eq!(state.gold[0], 12, "faction 0 owns 1 village: 10 + 2 = 12");
     }
 }

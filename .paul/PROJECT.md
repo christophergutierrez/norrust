@@ -86,6 +86,10 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] load_units() GDExtension bridge: places all units from file via place_unit_at() — Phase 18 (18-01)
 - [x] game.gd: _setup_rust_core() wired to load_board() + load_units(); all hardcoded spawns removed — Phase 18 (18-01)
 - [x] Tile.defense wired into combat fallback chain (attack + retaliation): unit.defense[id] → tile.defense → unit.default_defense — Phase 19 (19-01)
+- [x] GameState.gold [u32; 2] per-faction gold tracking, starting at [10, 10] — Phase 20 (20-01)
+- [x] EndTurn village income: 2 gold per owned village to newly-active faction — Phase 20 (20-01)
+- [x] StateSnapshot.gold exposed in JSON for AI clients and GDScript — Phase 20 (20-01)
+- [x] HUD displays active faction's gold ("Xg" appended to existing HUD string) — Phase 20 (20-01)
 
 ### Active (In Progress / Deferred)
 
@@ -164,6 +168,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | set_terrain_at() bridge: Tile::from_def() or Tile::new() fallback | Graceful degradation when terrain ID not in registry; no crash path | 2026-03-01 | Active |
 | Board.healing_map replaced by tile.healing | Eliminates stale cache; EndTurn healing reads authoritative per-hex value directly | 2026-03-01 | Active |
 | Tile.defense as middle tier in combat fallback | unit.defense[id] → tile.defense → unit.default_defense; preserves test pattern of bare-board with default_defense=0 | 2026-03-02 | Active |
+| gold: [u32; 2] array (not HashMap) | Exactly 2 factions; array simpler; indexed by faction as usize | 2026-03-02 | Active |
+| Village income on newly-active faction's turn start | "Gold at start of turn" semantics; village captured this turn pays next time you're active | 2026-03-02 | Active |
 
 ## Tech Stack
 
@@ -183,4 +189,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-02 after Phase 19 (Tile Defense Combat Wiring — v0.8 Combat Completeness complete, 64 tests pass)*
+*Last updated: 2026-03-02 after Phase 20 (Gold Economy — 65 tests pass)*

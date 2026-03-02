@@ -149,7 +149,9 @@ func _draw() -> void:
 			var faction_name  = "Blue" if faction == 0 else "Red"
 			var faction_color = Color(0.25, 0.42, 0.88) if faction == 0 else Color(0.80, 0.12, 0.12)
 			var tod = _core.get_time_of_day_name()
-			var hud_text = "Turn %d  ·  %s  ·  %s's Turn" % [_core.get_turn(), tod, faction_name]
+			var gold_arr = state.get("gold", [0, 0])
+			var gold = int(gold_arr[faction])
+			var hud_text = "Turn %d  ·  %s  ·  %s's Turn  ·  %dg" % [_core.get_turn(), tod, faction_name, gold]
 			draw_string(
 				ThemeDB.fallback_font,
 				Vector2(10, 20),

@@ -6,6 +6,48 @@ Five phases take the project from data schema definitions through a fully playab
 
 ## Current Milestone
 
+**v0.9 Game Mechanics** (v0.9.0)
+Status: 🚧 In Progress
+Phases: 0 of 2 complete
+
+## v0.9 Phases
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 20 | Gold Economy | 1 | ✅ Complete | 2026-03-02 |
+| 21 | Factions + Recruitment | TBD | Not started | - |
+
+## v0.9 Phase Details
+
+### Phase 20: Gold Economy ✅
+
+**Goal:** Add per-faction gold tracking to GameState. On EndTurn, each faction earns 2 gold per village it owns (village_owners already tracked). Starting gold hardcoded at 10 per faction. StateSnapshot JSON exposes gold per faction. HUD displays current gold.
+**Depends on:** Phase 19 (Tile system stable; village_owners already in GameState)
+**Completed:** 2026-03-02
+
+**Plans:**
+- [x] 20-01: GameState.gold, EndTurn income, StateSnapshot + HUD
+
+**Delivered:**
+- `GameState.gold: [u32; 2]` — per-faction gold, starting [10, 10]
+- EndTurn income: 2g × owned village count to newly-active faction
+- `StateSnapshot.gold` in JSON — AI clients and GDScript both see it
+- HUD: "Turn 1 · Day · Blue's Turn · 10g"
+- 65 tests passing (55 lib + 10 integration)
+
+### Phase 21: Factions + Recruitment
+
+**Goal:** Define FactionDef TOML schema (id, name, starting_gold, recruitable_units[]). Load factions via Registry<FactionDef> + load_factions() bridge, replacing hardcoded starting gold. Add castle hexes to contested.toml. Implement Action::Recruit with can't-go-negative guard. Wire 'R' key in GDScript to recruit first affordable unit from faction list on selected castle hex.
+**Depends on:** Phase 20 (gold tracking must exist before recruitment can spend it)
+
+**Plans:**
+- [ ] 21-01: FactionDef TOML + Registry + load_factions() bridge + starting gold wiring
+- [ ] 21-02: Action::Recruit + castle scenario + GDScript 'R' key + headless test
+
+---
+
+## Previous Milestone
+
 **v0.8 Combat Completeness** (v0.8.0)
 Status: ✅ Complete
 Phases: 1 of 1 complete
@@ -458,4 +500,4 @@ Released: 2026-02-28
 - 6 new unit tests; serde_json dependency added
 
 ---
-*Roadmap updated: 2026-03-02 — v0.8 Combat Completeness milestone complete (Phase 19)*
+*Roadmap updated: 2026-03-02 — v0.9 Game Mechanics milestone created (Phases 20–21)*

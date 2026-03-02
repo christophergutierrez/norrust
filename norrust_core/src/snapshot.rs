@@ -43,6 +43,7 @@ pub struct StateSnapshot {
     pub rows: u32,
     pub terrain: Vec<TileSnapshot>,
     pub units: Vec<UnitSnapshot>,
+    pub gold: [u32; 2],
 }
 
 impl StateSnapshot {
@@ -89,7 +90,7 @@ impl StateSnapshot {
             })
             .collect();
 
-        StateSnapshot { turn: state.turn, active_faction: state.active_faction, cols, rows, terrain, units }
+        StateSnapshot { turn: state.turn, active_faction: state.active_faction, cols, rows, terrain, units, gold: state.gold }
     }
 }
 
