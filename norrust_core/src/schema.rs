@@ -60,6 +60,14 @@ pub struct UnitDef {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct BoardDef {
+    pub width: u32,
+    pub height: u32,
+    /// Flat row-major array of terrain IDs. Length must equal width × height.
+    pub tiles: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct TerrainDef {
     pub id: String,
     pub name: String,

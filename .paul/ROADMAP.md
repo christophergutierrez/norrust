@@ -6,6 +6,48 @@ Five phases take the project from data schema definitions through a fully playab
 
 ## Current Milestone
 
+**v0.7 Scenario System** (v0.7.0)
+Status: 🚧 In Progress
+Phases: 1 of 2 complete
+
+## v0.7 Phases
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 17 | Board File Format | 1 | ✅ Complete | 2026-03-01 |
+| 18 | Unit Placement + Wiring | TBD | Not started | - |
+
+## v0.7 Phase Details
+
+### Phase 17: Board File Format
+
+**Goal:** Define a TOML schema for board files (`width`, `height`, flat `tiles` array of terrain IDs). Add `load_board()` GDExtension bridge method that reads the file, looks up each terrain ID in the TerrainDef registry, and populates the board. Headless integration test verifying terrain loads correctly from file.
+**Depends on:** Phase 16 (Tile struct and terrain color chain stable)
+**Completed:** 2026-03-01
+
+**Plans:**
+- [x] 17-01: Board TOML schema, `load_board()` bridge, headless test
+
+**Delivered:**
+- `BoardDef` TOML struct: width, height, flat row-major tiles array
+- `scenario::load_board(path)` pure Rust: reads TOML, validates tile count, populates Board
+- `scenarios/contested.toml`: 8×5 board with flat spawn zones, forest/hills/mountains interior, 2 villages
+- `load_board(path, seed)` GDExtension bridge: creates GameState, upgrades tiles from registry
+- 55 tests passing (46 lib + 9 integration)
+
+### Phase 18: Unit Placement + Wiring
+
+**Goal:** Define a separate TOML schema for unit placement files (`[[units]]` array with `unit_type`, `faction`, `col`, `row`). Add `load_units()` bridge method. Wire both `load_board()` and `load_units()` into game.gd startup, replacing `generate_map()` and the hardcoded spawn block. Create first hand-authored scenario in `scenarios/`.
+**Depends on:** Phase 17 (`load_board()` bridge stable)
+**Completed:** -
+
+**Plans:**
+- [ ] 18-01: Unit placement TOML schema, `load_units()` bridge, game.gd wiring, first scenario
+
+---
+
+## Previous Milestone
+
 **v0.6 Terrain System** (v0.6.0)
 Status: ✅ Complete
 Phases: 3 of 3 complete

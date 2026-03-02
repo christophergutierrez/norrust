@@ -171,6 +171,50 @@ impl NorRustCore {
         true
     }
 
+    /// Load board terrain from a TOML scenario file and create a new game.
+    ///
+    /// The board file must have `width`, `height`, and `tiles` (flat row-major array of terrain IDs).
+    /// This replaces `create_game()` + `generate_map()` for scenario-based play.
+    /// `seed` must be > 0 (used for combat RNG).
+    /// Returns true on success, false on any error.
+    #[func]
+    fn load_board(&mut self, board_path: GString, seed: i64) -> bool {
+        if seed <= 0 {
+            godot_error!("load_board: seed must be > 0");
+            return false;
+        }
+        let path = std::path::PathBuf::from(board_path.to_string());
+        let board = match crate::scenario::load_board(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                godot_error!("{}", e);
+                return false;
+            }
+        };
+        self.game = Some(GameState::new_seeded(board, seed as u64));
+
+        // Upgrade tiles from TerrainDef registry if available.
+        // Collect-then-apply pattern avoids borrow conflict between terrain_at (&board)
+        // and set_tile (&mut board).
+        let Some(registry) = self.terrain.as_ref() else { return true };
+        let Some(state) = self.game.as_mut() else { return true };
+        let width = state.board.width as i32;
+        let height = state.board.height as i32;
+        let assignments: Vec<(Hex, crate::board::Tile)> = (0..width)
+            .flat_map(|col| (0..height).map(move |row| (col, row)))
+            .filter_map(|(col, row)| {
+                let hex = Hex::from_offset(col, row);
+                let terrain_id = state.board.terrain_at(hex)?.to_string();
+                let def = registry.get(&terrain_id)?;
+                Some((hex, crate::board::Tile::from_def(def)))
+            })
+            .collect();
+        for (hex, tile) in assignments {
+            state.board.set_tile(hex, tile);
+        }
+        true
+    }
+
     /// Returns the terrain id at offset (col, row), or "" if none is set.
     #[func]
     fn get_terrain_at(&self, col: i32, row: i32) -> GString {

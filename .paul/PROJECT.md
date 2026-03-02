@@ -76,6 +76,10 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] TerrainDef.color, Tile.color, TileSnapshot.color — full color data chain from TOML to JSON — Phase 16 (16-01)
 - [x] All 14 terrain TOMLs have distinct hex color values; hills (#8b7355) and mountains (#6b6b6b) visually distinct — Phase 16 (16-01)
 - [x] game.gd: data-driven tile_colors map from state["terrain"]; COLOR_FOREST/COLOR_VILLAGE constants removed — Phase 16 (16-01)
+- [x] BoardDef TOML schema (width, height, flat row-major tiles array) — Phase 17 (17-01)
+- [x] scenario::load_board(path) pure Rust function: reads board TOML, validates tile count, populates Board — Phase 17 (17-01)
+- [x] scenarios/contested.toml: first hand-authored 8×5 scenario board with flat spawn zones, contested interior, 2 villages — Phase 17 (17-01)
+- [x] load_board(path, seed) GDExtension bridge: creates GameState, upgrades tiles from TerrainDef registry — Phase 17 (17-01)
 
 ### Active (In Progress / Deferred)
 
@@ -172,4 +176,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-01 after Phase 16 (Terrain Presentation — v0.6 Terrain System complete, 53 tests pass)*
+*Last updated: 2026-03-01 after Phase 17 (Board File Format — scenario::load_board(), scenarios/contested.toml, 55 tests pass)*

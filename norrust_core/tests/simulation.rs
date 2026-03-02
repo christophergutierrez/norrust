@@ -400,6 +400,47 @@ fn test_terrain_wiring() {
 }
 
 #[test]
+fn test_load_board_from_file() {
+    use norrust_core::scenario::load_board;
+
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("norrust_core has a parent dir")
+        .join("scenarios/contested.toml");
+
+    let board = load_board(&path).expect("contested.toml must load without error");
+
+    // AC-1: Dimensions correct
+    assert_eq!(board.width, 8, "board width must be 8");
+    assert_eq!(board.height, 5, "board height must be 5");
+
+    // AC-2: All 40 hexes have terrain
+    for col in 0..8_i32 {
+        for row in 0..5_i32 {
+            assert!(
+                board.terrain_at(Hex::from_offset(col, row)).is_some(),
+                "hex ({col},{row}) must have terrain"
+            );
+        }
+    }
+
+    // AC-3: Spawn zones (cols 0-1, 6-7) are flat
+    for row in 0..5_i32 {
+        for spawn_col in [0, 1, 6, 7] {
+            assert_eq!(
+                board.terrain_at(Hex::from_offset(spawn_col, row)),
+                Some("flat"),
+                "spawn zone col {spawn_col} row {row} must be flat"
+            );
+        }
+    }
+
+    // Spot-check interior: village at (3,1) and (4,3)
+    assert_eq!(board.terrain_at(Hex::from_offset(3, 1)), Some("village"));
+    assert_eq!(board.terrain_at(Hex::from_offset(4, 3)), Some("village"));
+}
+
+#[test]
 fn test_generate_map() {
     use norrust_core::mapgen::generate_map;
 

@@ -1,0 +1,12 @@
+# scenarios/contested.toml
+# 8 columns × 5 rows. Tiles are row-major (left→right, top→bottom).
+# Cols 0-1 and 6-7 are flat spawn zones for each faction.
+width = 8
+height = 5
+tiles = [
+  "flat", "flat", "forest",    "hills",     "hills",     "forest",    "flat", "flat",
+  "flat", "flat", "forest",    "village",   "mountains", "forest",    "flat", "flat",
+  "flat", "flat", "hills",     "forest",    "forest",    "hills",     "flat", "flat",
+  "flat", "flat", "forest",    "mountains", "village",   "forest",    "flat", "flat",
+  "flat", "flat", "forest",    "hills",     "hills",     "forest",    "flat", "flat",
+]
