@@ -7,16 +7,17 @@ Five phases take the project from data schema definitions through a fully playab
 ## Current Milestone
 
 **v0.6 Terrain System** (v0.6.0)
-Status: 🚧 In Progress
-Phases: 1 of 3 complete
+Status: ✅ Complete
+Phases: 3 of 3 complete
+Released: 2026-03-01
 
 ## v0.6 Phases
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 14 | Tile Runtime + Terrain Wiring | 1 | ✅ Complete | 2026-03-01 |
-| 15 | Map Generator | TBD | 🔵 Not started | - |
-| 16 | Terrain Presentation | TBD | 🔵 Not started | - |
+| 15 | Map Generator | 1 | ✅ Complete | 2026-03-01 |
+| 16 | Terrain Presentation | 1 | ✅ Complete | 2026-03-01 |
 
 ## v0.6 Phase Details
 
@@ -38,17 +39,38 @@ Phases: 1 of 3 complete
 - `test_terrain_wiring`: hills cost 2 MP, flat costs 1 MP — movement costs verified end-to-end
 - 51 tests passing (44 lib + 7 integration)
 
-### Phase 15: Map Generator
+### Phase 15: Map Generator ✅
 
-**Goal:** Procedural map generation with geographically sensible terrain placement. Elevation-based zones (mountains → hills → flat) with moisture layer (forest, fungus, swamp). Villages and castles placed structurally. Board initialized from generator rather than hardcoded GDScript calls.
+**Goal:** Procedural map generation with geographically sensible terrain placement. Spawn zones flat, contested zone mixed flat/forest/hills/mountains, villages at structural positions. Board initialized from generator rather than hardcoded GDScript calls.
 **Depends on:** Phase 14 (Tile system and terrain IDs in place)
-**Plans:** TBD (defined during /paul:plan)
+**Completed:** 2026-03-01
 
-### Phase 16: Terrain Presentation
+**Plans:**
+- [x] 15-01: mapgen.rs with generate_map(board, seed), GDExtension bridge, game.gd wiring
 
-**Goal:** Per-tile color rendered from `Tile.color` property (read from `TileSnapshot`). Path highlight via `Tile.highlight_mode` property — Rust sets it, GDScript reads and renders. No sprites; placeholder colors throughout.
+**Delivered:**
+- `mapgen.rs`: `generate_map(board, seed)` with XOR noise hash; outer 2 cols = flat (spawn zones); villages at (cols/3, rows/2) and (cols*2/3, rows/2); contested zone = flat/forest/hills/mountains
+- `generate_map(seed: i64) -> bool` GDExtension bridge — calls generator, upgrades tiles from registry
+- `game.gd`: single `_core.generate_map(42)` replaces 7 lines of manual terrain setup
+- `test_generate_map`: integration test verifying all ACs headlessly (no registry)
+- 52 tests passing (44 lib + 8 integration)
+
+### Phase 16: Terrain Presentation ✅
+
+**Goal:** Per-tile color from TOML data through Tile/TileSnapshot to GDScript rendering. Replace hardcoded terrain-to-color switch with data-driven lookup.
 **Depends on:** Phase 15 (map generator produces varied terrain to display)
-**Plans:** TBD (defined during /paul:plan)
+**Completed:** 2026-03-01
+
+**Plans:**
+- [x] 16-01: TerrainDef.color + Tile.color + TileSnapshot.color + 14 terrain TOMLs + game.gd data-driven rendering
+
+**Delivered:**
+- `TerrainDef.color`, `Tile.color`, `TileSnapshot.color` — full data chain from TOML to JSON
+- All 14 terrain TOMLs updated with distinct hex color values
+- game.gd: `tile_colors` map from `state["terrain"]`; `COLOR_FOREST`/`COLOR_VILLAGE` constants removed
+- Hills (#8b7355) and mountains (#6b6b6b) now render distinctly from flat (#4a7c4e)
+- `test_tile_snapshot_includes_color`: new unit test verifying color in JSON output
+- 53 tests passing (45 lib + 8 integration)
 
 ---
 

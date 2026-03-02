@@ -4,3 +4,4 @@ symbol = "s"
 default_defense = 70
 default_movement_cost = 2
 healing = 0
+color = "#c8a85a"

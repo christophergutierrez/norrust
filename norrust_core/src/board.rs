@@ -17,12 +17,14 @@ pub struct Tile {
     pub defense: u32,
     /// HP healed to active-faction units at the start of their turn (0 = no healing).
     pub healing: u32,
+    /// Hex color string for rendering (e.g. "#4a7c4e"). "#808080" = no TOML color assigned.
+    pub color: String,
 }
 
 impl Tile {
     /// Create a Tile with sensible defaults. Used in tests and fallback paths.
     pub fn new(terrain_id: impl Into<String>) -> Self {
-        Self { terrain_id: terrain_id.into(), movement_cost: 1, defense: 40, healing: 0 }
+        Self { terrain_id: terrain_id.into(), movement_cost: 1, defense: 40, healing: 0, color: "#808080".to_string() }
     }
 
     /// Create a Tile from a TerrainDef registry entry.
@@ -32,6 +34,7 @@ impl Tile {
             movement_cost: def.default_movement_cost,
             defense: def.default_defense,
             healing: def.healing,
+            color: def.color.clone(),
         }
     }
 }

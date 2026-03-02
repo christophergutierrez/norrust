@@ -138,6 +138,39 @@ impl NorRustCore {
         }
     }
 
+    /// Generate a procedural map layout using `seed`.
+    /// Fills every hex with terrain, then upgrades all tiles via the TerrainDef registry.
+    /// Returns true on success, false if no game exists or seed <= 0.
+    ///
+    /// Call this after `create_game()` instead of multiple `set_terrain_at()` calls.
+    #[func]
+    fn generate_map(&mut self, seed: i64) -> bool {
+        if seed <= 0 { return false; }
+        let Some(state) = self.game.as_mut() else { return false };
+
+        // Generate terrain string IDs (registry-free)
+        crate::mapgen::generate_map(&mut state.board, seed as u64);
+
+        // Upgrade all tiles to Tile::from_def() using the terrain registry
+        // Collect assignments first to avoid borrow conflicts
+        let Some(registry) = self.terrain.as_ref() else { return true };
+        let width = state.board.width as i32;
+        let height = state.board.height as i32;
+        let assignments: Vec<(Hex, crate::board::Tile)> = (0..width)
+            .flat_map(|col| (0..height).map(move |row| (col, row)))
+            .filter_map(|(col, row)| {
+                let hex = Hex::from_offset(col, row);
+                let terrain_id = state.board.terrain_at(hex)?.to_string();
+                let def = registry.get(&terrain_id)?;
+                Some((hex, crate::board::Tile::from_def(def)))
+            })
+            .collect();
+        for (hex, tile) in assignments {
+            state.board.set_tile(hex, tile);
+        }
+        true
+    }
+
     /// Returns the terrain id at offset (col, row), or "" if none is set.
     #[func]
     fn get_terrain_at(&self, col: i32, row: i32) -> GString {

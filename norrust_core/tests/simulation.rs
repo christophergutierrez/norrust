@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use norrust_core::ai::ai_take_turn;
 use norrust_core::board::Board;
@@ -397,4 +397,55 @@ fn test_terrain_wiring() {
     });
     assert_eq!(r2, Err(ActionError::DestinationUnreachable),
         "col 4 costs 6 MP total, exceeds budget 5");
+}
+
+#[test]
+fn test_generate_map() {
+    use norrust_core::mapgen::generate_map;
+
+    let mut board = Board::new(8, 5);
+    generate_map(&mut board, 42);
+
+    // AC-1: All 40 hexes must have terrain
+    for col in 0..8_i32 {
+        for row in 0..5_i32 {
+            assert!(
+                board.terrain_at(Hex::from_offset(col, row)).is_some(),
+                "hex ({col},{row}) must have terrain assigned"
+            );
+        }
+    }
+
+    // AC-2: Spawn zones (cols 0-1 and 6-7) always flat
+    for row in 0..5_i32 {
+        for spawn_col in [0, 1, 6, 7] {
+            assert_eq!(
+                board.terrain_at(Hex::from_offset(spawn_col, row)),
+                Some("flat"),
+                "spawn zone col {spawn_col} row {row} must be flat"
+            );
+        }
+    }
+
+    // AC-3: Villages at structural positions (8 cols: v1=2, v2=5; mid_row=2)
+    assert_eq!(board.terrain_at(Hex::from_offset(2, 2)), Some("village"),
+        "village must be at (2,2)");
+    assert_eq!(board.terrain_at(Hex::from_offset(5, 2)), Some("village"),
+        "village must be at (5,2)");
+
+    // AC-4: Contested zone has at least 2 distinct terrain types
+    let contested: HashSet<&str> = (2..6_i32)
+        .flat_map(|col| (0..5_i32).map(move |row| (col, row)))
+        .filter(|&(col, row)| !(col == 2 && row == 2) && !(col == 5 && row == 2))
+        .filter_map(|(col, row)| board.terrain_at(Hex::from_offset(col, row)))
+        .collect();
+    assert!(
+        contested.len() >= 2,
+        "contested zone must have at least 2 terrain types, got: {:?}", contested
+    );
+    // All terrain IDs must be from the valid set
+    let valid: HashSet<&str> = ["flat", "forest", "hills", "mountains"].into();
+    for t in &contested {
+        assert!(valid.contains(t), "unexpected terrain '{t}' in contested zone");
+    }
 }

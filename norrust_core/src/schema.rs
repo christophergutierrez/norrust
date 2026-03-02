@@ -72,4 +72,7 @@ pub struct TerrainDef {
     /// HP restored to units of the active faction at the start of their turn (0 = no healing).
     #[serde(default)]
     pub healing: u32,
+    /// Hex color string for rendering (e.g. "#4a7c4e"). Empty string = use fallback.
+    #[serde(default)]
+    pub color: String,
 }

@@ -4,3 +4,4 @@ symbol = "r"
 default_defense = 70
 default_movement_cost = 2
 healing = 0
+color = "#3d7a8a"

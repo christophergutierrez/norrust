@@ -9,13 +9,23 @@ norrust_client/.redot/
 norrust_client/bin/*.so
 norrust_client/bin/*.dll
 norrust_client/bin/*.dylib
+norrust_client/bin/*.exp
+norrust_client/bin/*.lib
+norrust_client/bin/*.pdb
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+
+# IDE and Tool artifacts
+.claude/
 
 # OS artifacts
 .DS_Store
 Thumbs.db
 
-.gitignore
-.paul/*.md
+# Paul volatile state
+.paul/STATE.md
 
 # Setup docs
 ALTERNATIVE.md

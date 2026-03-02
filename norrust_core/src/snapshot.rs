@@ -9,6 +9,7 @@ pub struct TileSnapshot {
     pub col: i32,
     pub row: i32,
     pub terrain_id: String,
+    pub color: String,
 }
 
 /// Flat representation of a single runtime unit.
@@ -52,10 +53,11 @@ impl StateSnapshot {
             .flat_map(|col| (0..rows as i32).map(move |row| (col, row)))
             .filter_map(|(col, row)| {
                 let hex = Hex::from_offset(col, row);
-                state.board.terrain_at(hex).map(|t| TileSnapshot {
+                state.board.tile_at(hex).map(|tile| TileSnapshot {
                     col,
                     row,
-                    terrain_id: t.to_owned(),
+                    terrain_id: tile.terrain_id.clone(),
+                    color: tile.color.clone(),
                 })
             })
             .collect();
@@ -207,5 +209,29 @@ mod tests {
     fn test_action_request_invalid_returns_error() {
         let result: Result<ActionRequest, _> = serde_json::from_str("not valid json");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_tile_snapshot_includes_color() {
+        use crate::board::Tile;
+
+        let board = Board::new(4, 3);
+        let mut state = GameState::new(board);
+        let tile = Tile {
+            terrain_id: "flat".to_string(),
+            movement_cost: 1,
+            defense: 60,
+            healing: 0,
+            color: "#4a7c4e".to_string(),
+        };
+        state.board.set_tile(Hex::from_offset(0, 0), tile);
+
+        let snap = StateSnapshot::from_game_state(&state);
+        assert_eq!(snap.terrain.len(), 1);
+        assert_eq!(snap.terrain[0].terrain_id, "flat");
+        assert_eq!(snap.terrain[0].color, "#4a7c4e");
+
+        let json = serde_json::to_string(&snap).expect("serialization must succeed");
+        assert!(json.contains("\"color\":\"#4a7c4e\""), "color must appear in JSON output");
     }
 }

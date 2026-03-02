@@ -4,3 +4,4 @@ symbol = "v"
 default_defense = 40
 default_movement_cost = 1
 healing = 8
+color = "#b89a30"

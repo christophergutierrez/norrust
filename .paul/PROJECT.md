@@ -70,6 +70,12 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] set_terrain_at() bridge: Tile::from_def() when TerrainDef in registry, Tile::new() fallback — Phase 14 (14-01)
 - [x] Terrain IDs reconciled to Wesnoth vocabulary: "grassland"→"flat", "mountain"→"mountains", "water"→"shallow_water" in all 4 custom unit TOMLs, game.gd, and all test files — Phase 14 (14-01)
 - [x] test_terrain_wiring: hills cost 2 MP, flat costs 1 MP — movement costs wire correctly — Phase 14 (14-01)
+- [x] mapgen.rs: generate_map(board, seed) — deterministic XOR noise; spawn zones flat; structural villages; contested zone varied — Phase 15 (15-01)
+- [x] generate_map(seed: i64) GDExtension bridge: calls generator, upgrades tiles from TerrainDef registry — Phase 15 (15-01)
+- [x] game.gd: single _core.generate_map(42) replaces 7-line manual terrain setup loop — Phase 15 (15-01)
+- [x] TerrainDef.color, Tile.color, TileSnapshot.color — full color data chain from TOML to JSON — Phase 16 (16-01)
+- [x] All 14 terrain TOMLs have distinct hex color values; hills (#8b7355) and mountains (#6b6b6b) visually distinct — Phase 16 (16-01)
+- [x] game.gd: data-driven tile_colors map from state["terrain"]; COLOR_FOREST/COLOR_VILLAGE constants removed — Phase 16 (16-01)
 
 ### Active (In Progress / Deferred)
 
@@ -166,4 +172,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-01 after Phase 14 (Tile Runtime + Terrain Wiring — v0.6 Terrain System Phase 1 of 3 complete)*
+*Last updated: 2026-03-01 after Phase 16 (Terrain Presentation — v0.6 Terrain System complete, 53 tests pass)*

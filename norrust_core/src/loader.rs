@@ -147,6 +147,7 @@ mod tests {
         let flat = registry.get("flat").expect("flat not found");
         assert_eq!(flat.default_defense, 60);
         assert_eq!(flat.default_movement_cost, 1);
+        assert_eq!(flat.color, "#4a7c4e", "flat terrain color must match TOML value");
 
         let forest = registry.get("forest").expect("forest not found");
         assert_eq!(forest.default_defense, 60);

@@ -5,6 +5,7 @@ pub mod game_state;
 pub mod gdext_node;
 pub mod hex;
 pub mod loader;
+pub mod mapgen;
 pub mod pathfinding;
 pub mod schema;
 pub mod snapshot;

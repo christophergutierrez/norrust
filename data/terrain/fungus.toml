@@ -4,3 +4,4 @@ symbol = "f"
 default_defense = 50
 default_movement_cost = 2
 healing = 0
+color = "#6b5c2e"
