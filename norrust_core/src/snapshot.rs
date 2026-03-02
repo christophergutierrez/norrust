@@ -10,6 +10,8 @@ pub struct TileSnapshot {
     pub row: i32,
     pub terrain_id: String,
     pub color: String,
+    /// Owning faction (0 or 1), or -1 if unowned / not a village.
+    pub owner: i32,
 }
 
 /// Flat representation of a single runtime unit.
@@ -58,6 +60,7 @@ impl StateSnapshot {
                     row,
                     terrain_id: tile.terrain_id.clone(),
                     color: tile.color.clone(),
+                    owner: state.village_owners.get(&hex).copied().map(|o| o as i32).unwrap_or(-1),
                 })
             })
             .collect();
@@ -209,6 +212,41 @@ mod tests {
     fn test_action_request_invalid_returns_error() {
         let result: Result<ActionRequest, _> = serde_json::from_str("not valid json");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_tile_snapshot_owner_field() {
+        use crate::board::Tile;
+        use crate::game_state::Action;
+        use crate::unit::Unit;
+
+        let board = Board::new(4, 3);
+        let mut state = GameState::new(board);
+
+        let village_hex = Hex::from_offset(1, 1);
+        state.board.set_tile(village_hex, Tile {
+            terrain_id: "village".to_string(),
+            movement_cost: 1,
+            defense: 40,
+            healing: 8,
+            color: "#8b7355".to_string(),
+        });
+        state.place_unit(Unit::new(1, "fighter", 30, 0), village_hex);
+
+        // Before capture: owner is -1
+        let snap = StateSnapshot::from_game_state(&state);
+        let village_tile = snap.terrain.iter().find(|t| t.terrain_id == "village").unwrap();
+        assert_eq!(village_tile.owner, -1);
+
+        // After EndTurn: faction 0 captures
+        crate::game_state::apply_action(&mut state, Action::EndTurn).unwrap();
+        let snap2 = StateSnapshot::from_game_state(&state);
+        let village_tile2 = snap2.terrain.iter().find(|t| t.terrain_id == "village").unwrap();
+        assert_eq!(village_tile2.owner, 0);
+
+        // JSON must include the owner field
+        let json = serde_json::to_string(&snap2).unwrap();
+        assert!(json.contains("\"owner\":0"));
     }
 
     #[test]

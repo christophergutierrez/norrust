@@ -6,14 +6,14 @@ const BOARD_COLS  = 8
 const BOARD_ROWS  = 5
 
 # Circumradius of each drawn hexagon (center to vertex, pixels).
-const HEX_RADIUS  = 32.0
+const HEX_RADIUS  = 64.0
 
 # Tile cell size for a regular pointy-top hex with circumradius HEX_RADIUS:
-#   width  = R × √3  ≈ 55px  (horizontal center-to-center stride)
-#   height = R × 2   = 64px  (vertical bounding box; stride = height × 0.75 = 48 = R×1.5)
+#   width  = R × √3  ≈ 111px  (horizontal center-to-center stride)
+#   height = R × 2   = 128px  (vertical bounding box; stride = height × 0.75 = 96 = R×1.5)
 # This ensures same-row and diagonal neighbours both share edges with no gaps.
-const HEX_CELL_W  = 55   # roundi(HEX_RADIUS * sqrt(3))
-const HEX_CELL_H  = 64   # HEX_RADIUS * 2
+const HEX_CELL_W  = 111   # roundi(HEX_RADIUS * sqrt(3))
+const HEX_CELL_H  = 128   # HEX_RADIUS * 2
 
 const COLOR_FLAT = Color(0.29, 0.49, 0.31)  # #4a7c4e — fallback for hexes without color data
 
