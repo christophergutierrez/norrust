@@ -60,6 +60,20 @@ pub struct UnitDef {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct UnitPlacement {
+    pub id: u32,
+    pub unit_type: String,
+    pub faction: u8,
+    pub col: i32,
+    pub row: i32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UnitsDef {
+    pub units: Vec<UnitPlacement>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct BoardDef {
     pub width: u32,
     pub height: u32,

@@ -215,6 +215,39 @@ impl NorRustCore {
         true
     }
 
+    /// Load unit placements from a TOML units file and place all units on the board.
+    ///
+    /// The file must contain `[[units]]` entries with `id`, `unit_type`, `faction`,
+    /// `col`, `row`. Stats (hp, movement, attacks, etc.) are copied from the UnitDef
+    /// registry by the existing `place_unit_at()` logic.
+    /// Returns true on success, false if no game exists or the file cannot be read.
+    #[func]
+    fn load_units(&mut self, units_path: GString) -> bool {
+        if self.game.is_none() {
+            godot_error!("load_units: no game exists — call load_board() first");
+            return false;
+        }
+        let path = std::path::PathBuf::from(units_path.to_string());
+        let placements = match crate::scenario::load_units(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                godot_error!("{}", e);
+                return false;
+            }
+        };
+        for p in placements {
+            self.place_unit_at(
+                p.id as i32,
+                p.unit_type.as_str().into(),
+                0, // hp ignored — place_unit_at always sets max_hp from registry
+                p.faction as i32,
+                p.col,
+                p.row,
+            );
+        }
+        true
+    }
+
     /// Returns the terrain id at offset (col, row), or "" if none is set.
     #[func]
     fn get_terrain_at(&self, col: i32, row: i32) -> GString {

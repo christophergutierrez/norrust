@@ -7,15 +7,16 @@ Five phases take the project from data schema definitions through a fully playab
 ## Current Milestone
 
 **v0.7 Scenario System** (v0.7.0)
-Status: 🚧 In Progress
-Phases: 1 of 2 complete
+Status: ✅ Complete
+Phases: 2 of 2 complete
+Released: 2026-03-01
 
 ## v0.7 Phases
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 17 | Board File Format | 1 | ✅ Complete | 2026-03-01 |
-| 18 | Unit Placement + Wiring | TBD | Not started | - |
+| 18 | Unit Placement + Wiring | 1 | ✅ Complete | 2026-03-01 |
 
 ## v0.7 Phase Details
 
@@ -42,7 +43,15 @@ Phases: 1 of 2 complete
 **Completed:** -
 
 **Plans:**
-- [ ] 18-01: Unit placement TOML schema, `load_units()` bridge, game.gd wiring, first scenario
+- [x] 18-01: Unit placement TOML schema, `load_units()` bridge, game.gd wiring, first scenario
+
+**Delivered:**
+- `UnitPlacement` + `UnitsDef` TOML structs: `[[units]]` array-of-tables with id, unit_type, faction, col, row
+- `scenario::load_units(path)` pure Rust: reads TOML, returns `Vec<UnitPlacement>` (registry-free)
+- `scenarios/contested_units.toml`: 10 fighters, 5 per faction, left/right spawn zones
+- `load_units()` GDExtension bridge: iterates placements, calls `place_unit_at()` per entry
+- `game.gd` startup: 14 hardcoded lines replaced by `load_board()` + `load_units()` — no hardcoded state
+- 56 tests passing (46 lib + 10 integration)
 
 ---
 
@@ -418,4 +427,4 @@ Released: 2026-02-28
 - 6 new unit tests; serde_json dependency added
 
 ---
-*Roadmap updated: 2026-03-01 — v0.6 Terrain System milestone created (Phases 14–16)*
+*Roadmap updated: 2026-03-01 — v0.7 Scenario System milestone complete (Phases 17–18)*

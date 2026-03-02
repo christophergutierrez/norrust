@@ -40,24 +40,11 @@ func _setup_rust_core() -> void:
 	var data_path = project_dir + "/../data"
 	_core.load_data(data_path)
 
-	_core.create_game(BOARD_COLS, BOARD_ROWS, 42)
-
-	# Generate procedural terrain (seed=42 produces the default map layout)
-	_core.generate_map(42)
-
-	# Spawn 5 fighters per faction — stats are copied from the UnitDef registry.
-	# 5 enemies per side means a unit can reach 40 XP (5 kills × 9 XP each)
-	# and advance during normal play.
-	_core.place_unit_at(1, "fighter", 30, 0, 0, 0)
-	_core.place_unit_at(2, "fighter", 30, 0, 0, 2)
-	_core.place_unit_at(3, "fighter", 30, 0, 0, 4)
-	_core.place_unit_at(4, "fighter", 30, 0, 1, 1)
-	_core.place_unit_at(5, "fighter", 30, 0, 1, 3)
-	_core.place_unit_at(6, "fighter", 30, 1, 7, 0)
-	_core.place_unit_at(7, "fighter", 30, 1, 7, 2)
-	_core.place_unit_at(8, "fighter", 30, 1, 7, 4)
-	_core.place_unit_at(9, "fighter", 30, 1, 6, 1)
-	_core.place_unit_at(10, "fighter", 30, 1, 6, 3)
+	# Load board and units from scenario files.
+	# scenarios/ lives at the repo root, one level up from the Redot project.
+	var scenarios_dir = project_dir + "/../scenarios"
+	_core.load_board(scenarios_dir + "/contested.toml", 42)
+	_core.load_units(scenarios_dir + "/contested_units.toml")
 
 func _setup_tilemap() -> void:
 	var tile_set = TileSet.new()

@@ -80,6 +80,11 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] scenario::load_board(path) pure Rust function: reads board TOML, validates tile count, populates Board — Phase 17 (17-01)
 - [x] scenarios/contested.toml: first hand-authored 8×5 scenario board with flat spawn zones, contested interior, 2 villages — Phase 17 (17-01)
 - [x] load_board(path, seed) GDExtension bridge: creates GameState, upgrades tiles from TerrainDef registry — Phase 17 (17-01)
+- [x] UnitPlacement/UnitsDef TOML schema (id, unit_type, faction, col, row per [[units]] entry) — Phase 18 (18-01)
+- [x] scenario::load_units(path) pure Rust function: reads placement file, returns Vec<UnitPlacement> — Phase 18 (18-01)
+- [x] scenarios/contested_units.toml: 10 fighters in starting positions (5 per faction, left/right spawn zones) — Phase 18 (18-01)
+- [x] load_units() GDExtension bridge: places all units from file via place_unit_at() — Phase 18 (18-01)
+- [x] game.gd: _setup_rust_core() wired to load_board() + load_units(); all hardcoded spawns removed — Phase 18 (18-01)
 
 ### Active (In Progress / Deferred)
 
@@ -176,4 +181,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-01 after Phase 17 (Board File Format — scenario::load_board(), scenarios/contested.toml, 55 tests pass)*
+*Last updated: 2026-03-01 after Phase 18 (Unit Placement + Wiring — v0.7 Scenario System complete, 56 tests pass)*

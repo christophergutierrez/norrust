@@ -441,6 +441,36 @@ fn test_load_board_from_file() {
 }
 
 #[test]
+fn test_load_units_from_file() {
+    use norrust_core::scenario::load_units;
+
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("norrust_core has a parent dir")
+        .join("scenarios/contested_units.toml");
+
+    let placements = load_units(&path).expect("contested_units.toml must load");
+
+    // AC-1: Count and faction balance
+    assert_eq!(placements.len(), 10, "10 units total");
+    let f0 = placements.iter().filter(|p| p.faction == 0).count();
+    let f1 = placements.iter().filter(|p| p.faction == 1).count();
+    assert_eq!(f0, 5, "5 faction 0 units");
+    assert_eq!(f1, 5, "5 faction 1 units");
+
+    // AC-2: Valid positions and non-empty unit types
+    for p in &placements {
+        assert!(!p.unit_type.is_empty(), "unit_type must not be empty for id={}", p.id);
+        assert!(p.col >= 0 && p.col < 8, "col out of range for id={}", p.id);
+        assert!(p.row >= 0 && p.row < 5, "row out of range for id={}", p.id);
+    }
+
+    // AC-2: Unique IDs
+    let ids: HashSet<u32> = placements.iter().map(|p| p.id).collect();
+    assert_eq!(ids.len(), placements.len(), "all unit IDs must be unique");
+}
+
+#[test]
 fn test_generate_map() {
     use norrust_core::mapgen::generate_map;
 

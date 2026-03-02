@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::board::Board;
 use crate::hex::Hex;
-use crate::schema::BoardDef;
+use crate::schema::{BoardDef, UnitPlacement, UnitsDef};
 
 /// Load a Board from a TOML board file.
 ///
@@ -32,6 +32,19 @@ pub fn load_board(path: &Path) -> Result<Board, String> {
         }
     }
     Ok(board)
+}
+
+/// Load unit placements from a TOML units file.
+///
+/// The file must contain one or more `[[units]]` entries, each with
+/// `id`, `unit_type`, `faction`, `col`, `row` fields.
+/// Returns Err if the file cannot be read or parsed.
+pub fn load_units(path: &Path) -> Result<Vec<UnitPlacement>, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("load_units: cannot read {:?}: {}", path, e))?;
+    let def: UnitsDef = toml::from_str(&text)
+        .map_err(|e| format!("load_units: parse error in {:?}: {}", path, e))?;
+    Ok(def.units)
 }
 
 #[cfg(test)]

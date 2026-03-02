@@ -1,0 +1,74 @@
+# scenarios/contested_units.toml
+# 5 fighters per faction. Faction 0 (blue): left spawn zone (cols 0-1).
+# Faction 1 (red): right spawn zone (cols 6-7).
+# 5 enemies per side means a unit can reach 40 XP (5 kills × 9 XP each) and advance.
+
+[[units]]
+id = 1
+unit_type = "fighter"
+faction = 0
+col = 0
+row = 0
+
+[[units]]
+id = 2
+unit_type = "fighter"
+faction = 0
+col = 0
+row = 2
+
+[[units]]
+id = 3
+unit_type = "fighter"
+faction = 0
+col = 0
+row = 4
+
+[[units]]
+id = 4
+unit_type = "fighter"
+faction = 0
+col = 1
+row = 1
+
+[[units]]
+id = 5
+unit_type = "fighter"
+faction = 0
+col = 1
+row = 3
+
+[[units]]
+id = 6
+unit_type = "fighter"
+faction = 1
+col = 7
+row = 0
+
+[[units]]
+id = 7
+unit_type = "fighter"
+faction = 1
+col = 7
+row = 2
+
+[[units]]
+id = 8
+unit_type = "fighter"
+faction = 1
+col = 7
+row = 4
+
+[[units]]
+id = 9
+unit_type = "fighter"
+faction = 1
+col = 6
+row = 1
+
+[[units]]
+id = 10
+unit_type = "fighter"
+faction = 1
+col = 6
+row = 3
