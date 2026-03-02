@@ -35,6 +35,8 @@ pub struct GameState {
     pub turn: u32,
     pub active_faction: u8,
     pub rng: Rng,
+    /// Maps village hexes (healing > 0) to the owning faction (-1 = unowned stored as i8::MAX).
+    pub village_owners: HashMap<Hex, i8>,
 }
 
 impl GameState {
@@ -46,6 +48,7 @@ impl GameState {
             turn: 1,
             active_faction: 0,
             rng: Rng::new(12345),
+            village_owners: HashMap::new(),
         }
     }
 
@@ -173,7 +176,12 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                     .get(&defender_id)
                     .ok_or(ActionError::UnitNotFound(defender_id))?;
                 let terrain_id = state.board.terrain_at(defender_pos).unwrap_or("");
-                defender.defense.get(terrain_id).copied().unwrap_or(defender.default_defense)
+                defender.defense.get(terrain_id).copied()
+                    .unwrap_or_else(|| {
+                        state.board.tile_at(defender_pos)
+                            .map(|t| t.defense)
+                            .unwrap_or(defender.default_defense)
+                    })
             };
 
             // Time of Day modifier from attacker's alignment
@@ -231,7 +239,12 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                     let ret_defense = {
                         let a = state.units.get(&attacker_id).unwrap();
                         let terrain_id = state.board.terrain_at(attacker_pos).unwrap_or("");
-                        a.defense.get(terrain_id).copied().unwrap_or(a.default_defense)
+                        a.defense.get(terrain_id).copied()
+                            .unwrap_or_else(|| {
+                                state.board.tile_at(attacker_pos)
+                                    .map(|t| t.defense)
+                                    .unwrap_or(a.default_defense)
+                            })
                     };
                     let ret_tod = {
                         let d = state.units.get(&defender_id).unwrap();
@@ -285,6 +298,17 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
         }
 
         Action::EndTurn => {
+            // Capture villages where the ending faction's units are standing.
+            let ending_faction = state.active_faction as i8;
+            let captures: Vec<Hex> = state.units.iter()
+                .filter(|(_, u)| u.faction == state.active_faction)
+                .filter_map(|(id, _)| state.positions.get(id).copied())
+                .filter(|&hex| state.board.tile_at(hex).map(|t| t.healing > 0).unwrap_or(false))
+                .collect();
+            for hex in captures {
+                state.village_owners.insert(hex, ending_faction);
+            }
+
             state.active_faction = 1 - state.active_faction;
             if state.active_faction == 0 {
                 state.turn += 1;
@@ -553,6 +577,160 @@ mod tests {
         apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
 
         assert_eq!(state.units[&1].hp, 30, "archer should take no retaliation from melee-only defender at range");
+    }
+
+    #[test]
+    fn test_end_turn_captures_village() {
+        use crate::board::Tile;
+        let board = Board::new(10, 10);
+        let mut state = GameState::new(board);
+
+        // Place a village tile
+        let village_hex = Hex::from_offset(2, 2);
+        state.board.set_tile(village_hex, Tile {
+            terrain_id: "village".to_string(),
+            movement_cost: 1,
+            defense: 40,
+            healing: 8,
+            color: "#8b7355".to_string(),
+        });
+
+        // Faction 0 unit standing on the village
+        state.place_unit(Unit::new(1, "fighter", 30, 0), village_hex);
+
+        // Before EndTurn: no owner
+        assert!(state.village_owners.is_empty());
+
+        apply_action(&mut state, Action::EndTurn).unwrap();
+
+        // After EndTurn: faction 0 owns the village
+        assert_eq!(state.village_owners.get(&village_hex).copied(), Some(0i8));
+    }
+
+    #[test]
+    fn test_village_changes_owner_on_capture() {
+        use crate::board::Tile;
+        let board = Board::new(10, 10);
+        let mut state = GameState::new(board);
+
+        let village_hex = Hex::from_offset(3, 1);
+        state.board.set_tile(village_hex, Tile {
+            terrain_id: "village".to_string(),
+            movement_cost: 1,
+            defense: 40,
+            healing: 8,
+            color: "#8b7355".to_string(),
+        });
+
+        // Faction 0 captures on turn 1
+        state.place_unit(Unit::new(1, "fighter", 30, 0), village_hex);
+        apply_action(&mut state, Action::EndTurn).unwrap();
+        assert_eq!(state.village_owners.get(&village_hex).copied(), Some(0i8));
+
+        // Faction 1 moves in and captures on their turn
+        state.place_unit(Unit::new(2, "archer", 25, 1), Hex::from_offset(3, 2));
+        // Move unit 1 away so faction 1 can capture
+        state.positions.insert(1, Hex::from_offset(0, 0));
+        state.positions.insert(2, village_hex);
+        apply_action(&mut state, Action::EndTurn).unwrap();
+        assert_eq!(state.village_owners.get(&village_hex).copied(), Some(1i8));
+    }
+
+    #[test]
+    fn test_tile_defense_used_in_combat() {
+        use crate::board::Tile;
+
+        // --- Scenario A: Tile.defense used as fallback when unit has no terrain entry ---
+        {
+            let board = Board::new(10, 10);
+            let mut state = GameState::new_seeded(board, 42);
+
+            let attack = AttackDef {
+                id: "sword".to_string(),
+                name: "Sword".to_string(),
+                damage: 10,
+                strikes: 10,
+                attack_type: "blade".to_string(),
+                range: "melee".to_string(),
+                ..Default::default()
+            };
+            let mut attacker = Unit::new(1, "fighter", 50, 0);
+            attacker.attacks = vec![attack];
+            attacker.default_defense = 0;
+
+            // Defender has no terrain-specific entries; default_defense = 0 (would always be hit)
+            let mut defender = Unit::new(2, "grunt", 50, 1);
+            defender.default_defense = 0;
+            // defense map is empty — Tile.defense should be used as fallback
+
+            let defender_pos = Hex::from_offset(1, 0);
+            state.place_unit(attacker, Hex::ORIGIN);
+            state.place_unit(defender, defender_pos);
+
+            // Place a tile at the defender's position with defense = 100 (never hit)
+            state.board.set_tile(defender_pos, Tile {
+                terrain_id: "hills".to_string(),
+                movement_cost: 2,
+                defense: 100,
+                healing: 0,
+                color: "#8b7355".to_string(),
+            });
+
+            apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+
+            // With tile.defense = 100, hit_pct = 0, so 0 damage every strike
+            assert_eq!(
+                state.units[&2].hp, 50,
+                "Tile.defense=100 must block all damage when unit has no terrain entry"
+            );
+        }
+
+        // --- Scenario B: Unit-specific defense entry beats Tile.defense ---
+        {
+            let board = Board::new(10, 10);
+            let mut state = GameState::new_seeded(board, 42);
+
+            let attack = AttackDef {
+                id: "sword".to_string(),
+                name: "Sword".to_string(),
+                damage: 10,
+                strikes: 10,
+                attack_type: "blade".to_string(),
+                range: "melee".to_string(),
+                ..Default::default()
+            };
+            let mut attacker = Unit::new(1, "fighter", 50, 0);
+            attacker.attacks = vec![attack];
+            attacker.default_defense = 0;
+
+            // Defender has hills = 0 in defense map (always hit on hills)
+            let mut defender = Unit::new(2, "grunt", 50, 1);
+            defender.default_defense = 0;
+            defender.defense.insert("hills".to_string(), 0); // unit entry: 0% defense on hills
+
+            let defender_pos = Hex::from_offset(1, 0);
+            state.place_unit(attacker, Hex::ORIGIN);
+            state.place_unit(defender, defender_pos);
+
+            // Tile has defense = 100 — but unit-specific entry (0) should take priority
+            state.board.set_tile(defender_pos, Tile {
+                terrain_id: "hills".to_string(),
+                movement_cost: 2,
+                defense: 100,
+                healing: 0,
+                color: "#8b7355".to_string(),
+            });
+
+            apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+
+            // Unit's defense["hills"] = 0 overrides tile.defense = 100 — damage must land
+            // Use get() in case all 10 strikes killed the defender
+            let hp_after = state.units.get(&2).map(|u| u.hp).unwrap_or(0);
+            assert!(
+                hp_after < 50,
+                "Unit-specific defense=0 on hills must override Tile.defense=100"
+            );
+        }
     }
 
     #[test]

@@ -85,6 +85,7 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] scenarios/contested_units.toml: 10 fighters in starting positions (5 per faction, left/right spawn zones) — Phase 18 (18-01)
 - [x] load_units() GDExtension bridge: places all units from file via place_unit_at() — Phase 18 (18-01)
 - [x] game.gd: _setup_rust_core() wired to load_board() + load_units(); all hardcoded spawns removed — Phase 18 (18-01)
+- [x] Tile.defense wired into combat fallback chain (attack + retaliation): unit.defense[id] → tile.defense → unit.default_defense — Phase 19 (19-01)
 
 ### Active (In Progress / Deferred)
 
@@ -162,6 +163,7 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | Tile::new() defaults: movement_cost=1, defense=40, healing=0 | Sensible open-ground fallback; tests and bridge work without registry | 2026-03-01 | Active |
 | set_terrain_at() bridge: Tile::from_def() or Tile::new() fallback | Graceful degradation when terrain ID not in registry; no crash path | 2026-03-01 | Active |
 | Board.healing_map replaced by tile.healing | Eliminates stale cache; EndTurn healing reads authoritative per-hex value directly | 2026-03-01 | Active |
+| Tile.defense as middle tier in combat fallback | unit.defense[id] → tile.defense → unit.default_defense; preserves test pattern of bare-board with default_defense=0 | 2026-03-02 | Active |
 
 ## Tech Stack
 
@@ -181,4 +183,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-01 after Phase 18 (Unit Placement + Wiring — v0.7 Scenario System complete, 56 tests pass)*
+*Last updated: 2026-03-02 after Phase 19 (Tile Defense Combat Wiring — v0.8 Combat Completeness complete, 64 tests pass)*

@@ -6,6 +6,37 @@ Five phases take the project from data schema definitions through a fully playab
 
 ## Current Milestone
 
+**v0.8 Combat Completeness** (v0.8.0)
+Status: ✅ Complete
+Phases: 1 of 1 complete
+Released: 2026-03-02
+
+## v0.8 Phases
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 19 | Tile Defense Combat Wiring | 1 | ✅ Complete | 2026-03-02 |
+
+## v0.8 Phase Details
+
+### Phase 19: Tile Defense Combat Wiring
+
+**Goal:** Wire `Tile.defense` into combat resolution as the authoritative terrain defense value, replacing `Unit.default_defense`. The per-hex defense stat is already stored on `Tile` (populated from `TerrainDef` at `set_terrain_at()`) but is not yet consulted during attack calculations. This phase makes combat fully data-driven from TOML terrain definitions.
+**Depends on:** Phase 18 (Tile system stable, terrain IDs reconciled)
+**Completed:** 2026-03-02
+
+**Plans:**
+- [x] 19-01: Wire Tile.defense into combat fallback chain (attack + retaliation), test_tile_defense_used_in_combat
+
+**Delivered:**
+- Fallback chain `unit.defense[terrain_id] → tile.defense → unit.default_defense` in both attack and retaliation paths
+- `test_tile_defense_used_in_combat`: Scenario A (tile blocks all hits at 100%) and Scenario B (unit entry wins at 0%) both verified
+- 64 tests passing (54 lib + 10 integration)
+
+---
+
+## Previous Milestone
+
 **v0.7 Scenario System** (v0.7.0)
 Status: ✅ Complete
 Phases: 2 of 2 complete
@@ -427,4 +458,4 @@ Released: 2026-02-28
 - 6 new unit tests; serde_json dependency added
 
 ---
-*Roadmap updated: 2026-03-01 — v0.7 Scenario System milestone complete (Phases 17–18)*
+*Roadmap updated: 2026-03-02 — v0.8 Combat Completeness milestone complete (Phase 19)*
