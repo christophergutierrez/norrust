@@ -4,7 +4,7 @@ use crate::game_state::{apply_action, Action, ActionError, GameState};
 use crate::hex::Hex;
 use crate::loader::Registry;
 use crate::pathfinding::{get_zoc_hexes, reachable_hexes};
-use crate::schema::{TerrainDef, UnitDef};
+use crate::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
 use crate::snapshot::{ActionRequest, StateSnapshot};
 use crate::unit::{advance_unit, parse_alignment, Unit};
 use godot::builtin::PackedInt32Array;
@@ -25,6 +25,7 @@ pub struct NorRustCore {
     units: Option<Registry<UnitDef>>,
     terrain: Option<Registry<TerrainDef>>,
     game: Option<GameState>,
+    factions: Vec<(FactionDef, Vec<String>)>,  // (def, expanded+deduped recruit ids)
 }
 
 #[godot_api]
@@ -35,6 +36,7 @@ impl INode for NorRustCore {
             units: None,
             terrain: None,
             game: None,
+            factions: Vec::new(),
         }
     }
 }
@@ -295,6 +297,20 @@ impl NorRustCore {
         state.place_unit(unit, Hex::from_offset(col, row));
     }
 
+    /// Remove the unit at offset (col, row). Returns true if a unit was removed.
+    #[func]
+    fn remove_unit_at(&mut self, col: i32, row: i32) -> bool {
+        let Some(state) = self.game.as_mut() else { return false };
+        let target_hex = Hex::from_offset(col, row);
+        let uid = state.positions.iter()
+            .find(|(_, &hex)| hex == target_hex)
+            .map(|(&id, _)| id);
+        let Some(uid) = uid else { return false };
+        state.units.remove(&uid);
+        state.positions.remove(&uid);
+        true
+    }
+
     /// Apply a Move action. Returns 0 on success, a negative error code on failure.
     /// Error codes: -1=UnitNotFound, -2=NotYourTurn, -3=OutOfBounds,
     ///              -4=Occupied, -5=AlreadyMoved, -6=Unreachable
@@ -487,6 +503,94 @@ impl NorRustCore {
                 "".into()
             }
         }
+    }
+
+    // ── Faction / recruitment ──────────────────────────────────────────────
+
+    /// Load faction and recruit-group data from `data_path/factions/` and
+    /// `data_path/recruit_groups/`. Expands group references, deduplicates, and
+    /// stores the results in `self.factions`. Returns true on success.
+    #[func]
+    fn load_factions(&mut self, data_path: GString) -> bool {
+        use std::path::PathBuf;
+        let base = PathBuf::from(data_path.to_string());
+
+        let groups = match Registry::<RecruitGroup>::load_from_dir(&base.join("recruit_groups")) {
+            Ok(r) => r,
+            Err(e) => { godot_error!("load_factions: {}", e); return false; }
+        };
+        let faction_reg = match Registry::<FactionDef>::load_from_dir(&base.join("factions")) {
+            Ok(r) => r,
+            Err(e) => { godot_error!("load_factions: {}", e); return false; }
+        };
+
+        self.factions = faction_reg.all().map(|f| {
+            let mut recruits: Vec<String> = Vec::new();
+            for entry in &f.recruits {
+                if let Some(grp) = groups.get(entry) {
+                    recruits.extend(grp.members.iter().cloned());
+                } else {
+                    recruits.push(entry.clone());
+                }
+            }
+            // Dedup preserving insertion order
+            let mut seen = std::collections::HashSet::new();
+            recruits.retain(|id| seen.insert(id.clone()));
+            (f.clone(), recruits)
+        }).collect();
+
+        godot_print!("load_factions: loaded {} factions", self.factions.len());
+        true
+    }
+
+    /// Returns a JSON array of faction objects: [{"id":"loyalists","name":"Loyalists"}, ...]
+    #[func]
+    fn get_faction_ids_json(&self) -> GString {
+        let arr: Vec<String> = self.factions.iter()
+            .map(|(f, _)| format!("{{\"id\":\"{}\",\"name\":\"{}\"}}", f.id, f.name))
+            .collect();
+        format!("[{}]", arr.join(",")).into()
+    }
+
+    /// Returns the `leader_def` string for the given faction, or `""` if not found.
+    #[func]
+    fn get_faction_leader(&self, faction_id: GString) -> GString {
+        let id = faction_id.to_string();
+        self.factions.iter()
+            .find(|(f, _)| f.id == id)
+            .map(|(f, _)| f.leader_def.as_str())
+            .unwrap_or("")
+            .into()
+    }
+
+    /// Returns JSON array of def_id strings for the faction's recruits, filtered by
+    /// level ≤ max_level. `max_level <= 0` means no filter.
+    #[func]
+    fn get_faction_recruits_json(&self, faction_id: GString, max_level: i32) -> GString {
+        let id = faction_id.to_string();
+        let Some((_, recruits)) = self.factions.iter().find(|(f, _)| f.id == id) else {
+            return "[]".into();
+        };
+        let filtered: Vec<String> = recruits.iter()
+            .filter(|def_id| {
+                if max_level <= 0 { return true; }
+                self.units.as_ref()
+                    .and_then(|r| r.get(*def_id))
+                    .map(|u| u.level as i32 <= max_level)
+                    .unwrap_or(true)
+            })
+            .map(|id| format!("\"{}\"", id))
+            .collect();
+        format!("[{}]", filtered.join(",")).into()
+    }
+
+    /// Returns the level of the unit def, or 1 if not found.
+    #[func]
+    fn get_unit_level(&self, def_id: GString) -> i32 {
+        self.units.as_ref()
+            .and_then(|r| r.get(&def_id.to_string()))
+            .map(|u| u.level as i32)
+            .unwrap_or(1)
     }
 
     /// Parse a JSON action string and apply it to the game.

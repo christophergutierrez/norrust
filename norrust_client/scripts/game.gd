@@ -1,5 +1,7 @@
 extends Node2D
 
+enum GameMode { PICK_FACTION_BLUE, PICK_FACTION_RED, SETUP_BLUE, SETUP_RED, PLAYING }
+
 const BOARD_COLS  = 8
 const BOARD_ROWS  = 5
 
@@ -26,6 +28,16 @@ var _selected_unit_id: int = -1
 var _reachable_cells: Array = []   # Array of Vector2i
 var _game_over: bool = false
 
+var _game_mode: int = GameMode.PICK_FACTION_BLUE
+var _factions: Array = []                  # [{id, name}, ...]
+var _sel_faction_idx: int = 0              # highlighted row in faction picker
+var _faction_id: Array = ["", ""]          # [blue_faction_id, red_faction_id]
+var _leader_placed: Array = [false, false]
+var _leader_level: Array = [1, 1]
+var _palette: Array = []                   # list of def_id strings for current setup phase
+var _selected_palette_idx: int = 0
+var _next_unit_id: int = 1
+
 func _ready() -> void:
 	_setup_rust_core()
 	_setup_tilemap()
@@ -40,11 +52,13 @@ func _setup_rust_core() -> void:
 	var data_path = project_dir + "/../data"
 	_core.load_data(data_path)
 
-	# Load board and units from scenario files.
+	# Load board from scenario file; units are placed interactively in setup mode.
 	# scenarios/ lives at the repo root, one level up from the Redot project.
 	var scenarios_dir = project_dir + "/../scenarios"
 	_core.load_board(scenarios_dir + "/contested.toml", 42)
-	_core.load_units(scenarios_dir + "/contested_units.toml")
+	_core.load_factions(data_path)
+	var raw = _core.get_faction_ids_json()
+	_factions = JSON.parse_string(raw) if raw != "" else []
 
 func _setup_tilemap() -> void:
 	var tile_set = TileSet.new()
@@ -92,13 +106,14 @@ func _draw() -> void:
 			var color  = tile_colors.get(Vector2i(col, row), COLOR_FLAT)
 			draw_polygon(_hex_polygon(center, HEX_RADIUS), [color])
 
-	# 2. Reachable hex highlights (semi-transparent yellow overlay)
-	for cell in _reachable_cells:
-		var center = _tile_map.map_to_local(cell) + _tile_map.position
-		draw_polygon(_hex_polygon(center, HEX_RADIUS), [Color(1, 1, 0, 0.35)])
+	# 2. Reachable hex highlights — skip in setup mode
+	if _game_mode == GameMode.PLAYING:
+		for cell in _reachable_cells:
+			var center = _tile_map.map_to_local(cell) + _tile_map.position
+			draw_polygon(_hex_polygon(center, HEX_RADIUS), [Color(1, 1, 0, 0.35)])
 
-	# 3. Selected unit outline (white polyline ring)
-	if _selected_unit_id != -1:
+	# 3. Selected unit outline — skip in setup mode
+	if _game_mode == GameMode.PLAYING and _selected_unit_id != -1:
 		for unit in state.get("units", []):
 			if unit["id"] == _selected_unit_id:
 				var center = _tile_map.map_to_local(Vector2i(unit["col"], unit["row"])) + _tile_map.position
@@ -106,38 +121,42 @@ func _draw() -> void:
 				pts.append(pts[0])   # close the loop
 				draw_polyline(pts, Color.WHITE, 2.5)
 
-	# 4. Unit circles + HP text
+	# 4. Unit circles + HP text (always drawn so placed units show up in setup)
 	_draw_units(state)
 
-	# 5. Win overlay
-	if _game_over:
-		var winner = _core.get_winner()
-		var msg = "Faction %d wins!" % winner
-		var screen_w = ProjectSettings.get_setting("display/window/size/viewport_width")
-		var screen_h = ProjectSettings.get_setting("display/window/size/viewport_height")
-		var center = Vector2(screen_w, screen_h) / 2.0
-		draw_string(
-			ThemeDB.fallback_font,
-			center + Vector2(-80, 0),
-			msg,
-			HORIZONTAL_ALIGNMENT_LEFT,
-			-1, 32, Color.YELLOW
-		)
+	# 5. Setup HUD or game HUD
+	if _game_mode != GameMode.PLAYING:
+		_draw_setup_hud()
+	else:
+		# Win overlay
+		if _game_over:
+			var winner = _core.get_winner()
+			var msg = "Faction %d wins!" % winner
+			var screen_w = ProjectSettings.get_setting("display/window/size/viewport_width")
+			var screen_h = ProjectSettings.get_setting("display/window/size/viewport_height")
+			var center = Vector2(screen_w, screen_h) / 2.0
+			draw_string(
+				ThemeDB.fallback_font,
+				center + Vector2(-80, 0),
+				msg,
+				HORIZONTAL_ALIGNMENT_LEFT,
+				-1, 32, Color.YELLOW
+			)
 
-	# 6. HUD: Turn · Time of Day · Active Faction (text color matches unit circle color)
-	if not _game_over:
-		var faction     = _core.get_active_faction()
-		var faction_name  = "Blue" if faction == 0 else "Red"
-		var faction_color = Color(0.25, 0.42, 0.88) if faction == 0 else Color(0.80, 0.12, 0.12)
-		var tod = _core.get_time_of_day_name()
-		var hud_text = "Turn %d  ·  %s  ·  %s's Turn" % [_core.get_turn(), tod, faction_name]
-		draw_string(
-			ThemeDB.fallback_font,
-			Vector2(10, 20),
-			hud_text,
-			HORIZONTAL_ALIGNMENT_LEFT,
-			-1, 14, faction_color
-		)
+		# HUD: Turn · Time of Day · Active Faction (text color matches unit circle color)
+		if not _game_over:
+			var faction     = _core.get_active_faction()
+			var faction_name  = "Blue" if faction == 0 else "Red"
+			var faction_color = Color(0.25, 0.42, 0.88) if faction == 0 else Color(0.80, 0.12, 0.12)
+			var tod = _core.get_time_of_day_name()
+			var hud_text = "Turn %d  ·  %s  ·  %s's Turn" % [_core.get_turn(), tod, faction_name]
+			draw_string(
+				ThemeDB.fallback_font,
+				Vector2(10, 20),
+				hud_text,
+				HORIZONTAL_ALIGNMENT_LEFT,
+				-1, 14, faction_color
+			)
 
 func _draw_units(state: Dictionary) -> void:
 	for unit in state.get("units", []):
@@ -168,12 +187,75 @@ func _draw_units(state: Dictionary) -> void:
 				-1, 10, Color.WHITE
 			)
 
+func _draw_setup_hud() -> void:
+	var is_blue = (_game_mode == GameMode.PICK_FACTION_BLUE or _game_mode == GameMode.SETUP_BLUE)
+	var faction_name  = "Blue" if is_blue else "Red"
+	var faction_color = Color(0.25, 0.42, 0.88) if is_blue else Color(0.80, 0.12, 0.12)
+	var screen_w = ProjectSettings.get_setting("display/window/size/viewport_width")
+	var screen_h = ProjectSettings.get_setting("display/window/size/viewport_height")
+
+	draw_rect(Rect2(screen_w - 200, 0, 200, screen_h), Color(0, 0, 0, 0.6))
+
+	if _game_mode == GameMode.PICK_FACTION_BLUE or _game_mode == GameMode.PICK_FACTION_RED:
+		draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, 24),
+			"FACTION — %s" % faction_name,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 15, faction_color)
+		draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, 44),
+			"Press 1-%d to pick" % _factions.size(),
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color.LIGHT_GRAY)
+		for i in range(_factions.size()):
+			var y = 70 + i * 22
+			var label = "[%d] %s" % [i + 1, _factions[i]["name"]]
+			var col = Color.YELLOW if i == _sel_faction_idx else Color.WHITE
+			draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, y),
+				label, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, col)
+	else:
+		draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, 24),
+			"SETUP — %s" % faction_name,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 15, faction_color)
+		var fi = _faction_index_for_mode()
+		if not _leader_placed[fi]:
+			var leader_def = _core.get_faction_leader(_faction_id[fi])
+			# Sidebar: just show the unit name
+			draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, 44),
+				"Place leader:", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color.LIGHT_GRAY)
+			draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, 62),
+				leader_def, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color.YELLOW)
+			# Draw prompt ON the board so the user clicks the board, not the sidebar
+			var board_mid = _tile_map.map_to_local(Vector2i(BOARD_COLS / 2, BOARD_ROWS / 2)) + _tile_map.position
+			var prompt = "Click a hex on the board to place %s" % leader_def
+			draw_rect(Rect2(board_mid.x - 200, board_mid.y - 14, 400, 24), Color(0, 0, 0, 0.75))
+			draw_string(ThemeDB.fallback_font, board_mid + Vector2(-196, 8),
+				prompt, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color.YELLOW)
+		else:
+			draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, 44),
+				"Click: place / remove",
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color.LIGHT_GRAY)
+			draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, 58),
+				"[Enter] Done placing",
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color.LIGHT_GRAY)
+			for i in range(_palette.size()):
+				var y = 84 + i * 22
+				var label = "[%d] %s" % [i + 1, _palette[i]]
+				var col = Color.YELLOW if i == _selected_palette_idx else Color.WHITE
+				draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, y),
+					label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, col)
+
 func _build_unit_pos_map(state: Dictionary) -> Dictionary:
 	# Returns Dictionary: Vector2i(col, row) -> [unit_id, faction]
 	var result: Dictionary = {}
 	for unit in state.get("units", []):
 		result[Vector2i(unit["col"], unit["row"])] = [int(unit["id"]), int(unit["faction"])]
 	return result
+
+func _faction_index_for_mode() -> int:
+	return 0 if _game_mode == GameMode.SETUP_BLUE else 1
+
+func _reload_palette() -> void:
+	var fi = _faction_index_for_mode()
+	var raw = _core.get_faction_recruits_json(_faction_id[fi], _leader_level[fi])
+	_palette = JSON.parse_string(raw) if raw != "" else []
+	_selected_palette_idx = 0
 
 func _clear_selection() -> void:
 	_selected_unit_id = -1
@@ -195,6 +277,9 @@ func _check_game_over() -> void:
 		queue_redraw()
 
 func _input(event: InputEvent) -> void:
+	if _game_mode != GameMode.PLAYING:
+		_handle_setup_input(event)
+		return
 	if _game_over:
 		return
 	# 'E' key: end turn
@@ -276,3 +361,77 @@ func _input(event: InputEvent) -> void:
 	else:
 		_clear_selection()
 		queue_redraw()
+
+func _handle_setup_input(event: InputEvent) -> void:
+	if event is InputEventKey and (event as InputEventKey).pressed \
+			and not (event as InputEventKey).echo:
+		var key = (event as InputEventKey).keycode
+
+		if _game_mode == GameMode.PICK_FACTION_BLUE or _game_mode == GameMode.PICK_FACTION_RED:
+			if key >= KEY_1 and key <= KEY_9:
+				var idx = key - KEY_1
+				if idx < _factions.size():
+					var fi = 0 if _game_mode == GameMode.PICK_FACTION_BLUE else 1
+					_faction_id[fi] = _factions[idx]["id"]
+					_sel_faction_idx = 0
+					_game_mode = GameMode.SETUP_BLUE if _game_mode == GameMode.PICK_FACTION_BLUE \
+								 else GameMode.SETUP_RED
+					queue_redraw()
+				return
+
+		# SETUP modes — key input
+		if key >= KEY_1 and key <= KEY_9:
+			var fi = _faction_index_for_mode()
+			if _leader_placed[fi] and _palette.size() > 0:
+				_selected_palette_idx = min(key - KEY_1, _palette.size() - 1)
+			queue_redraw()
+			return
+		if key == KEY_ENTER or key == KEY_KP_ENTER:
+			if _game_mode == GameMode.SETUP_BLUE:
+				_game_mode = GameMode.PICK_FACTION_RED
+			else:
+				_game_mode = GameMode.PLAYING
+			queue_redraw()
+			return
+
+	if not event is InputEventMouseButton:
+		return
+	if not (event as InputEventMouseButton).pressed:
+		return
+	if (event as InputEventMouseButton).button_index != MOUSE_BUTTON_LEFT:
+		return
+	if _game_mode == GameMode.PICK_FACTION_BLUE or _game_mode == GameMode.PICK_FACTION_RED:
+		return
+
+	var local_pos = _tile_map.to_local(get_global_mouse_position())
+	var cell      = _tile_map.local_to_map(local_pos)
+	var col = cell.x
+	var row = cell.y
+	if col < 0 or col >= BOARD_COLS or row < 0 or row >= BOARD_ROWS:
+		return
+
+	var state   = _parse_state()
+	var pos_map = _build_unit_pos_map(state)
+	var clicked = Vector2i(col, row)
+	var fi      = _faction_index_for_mode()
+	var faction = fi
+
+	if not _leader_placed[fi]:
+		# First placement must be the leader
+		if clicked not in pos_map:
+			var leader_def = _core.get_faction_leader(_faction_id[fi])
+			_core.place_unit_at(_next_unit_id, leader_def, 0, faction, col, row)
+			_next_unit_id += 1
+			_leader_placed[fi] = true
+			_leader_level[fi]  = _core.get_unit_level(leader_def)
+			_reload_palette()
+		queue_redraw()
+		return
+
+	if clicked in pos_map and pos_map[clicked][1] == faction:
+		_core.remove_unit_at(col, row)
+	elif clicked not in pos_map and _palette.size() > 0:
+		var def_id = _palette[_selected_palette_idx]
+		_core.place_unit_at(_next_unit_id, def_id, 0, faction, col, row)
+		_next_unit_id += 1
+	queue_redraw()

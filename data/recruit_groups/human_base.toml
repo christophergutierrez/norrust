@@ -1,0 +1,2 @@
+id = "human_base"
+members = ["Spearman", "Bowman", "Cavalryman", "Mage", "Heavy Infantryman", "Sergeant"]

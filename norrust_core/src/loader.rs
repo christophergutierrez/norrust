@@ -1,4 +1,4 @@
-use crate::schema::{TerrainDef, UnitDef};
+use crate::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use std::path::Path;
@@ -33,6 +33,14 @@ impl IdField for TerrainDef {
     fn id(&self) -> &str {
         &self.id
     }
+}
+
+impl IdField for RecruitGroup {
+    fn id(&self) -> &str { &self.id }
+}
+
+impl IdField for FactionDef {
+    fn id(&self) -> &str { &self.id }
 }
 
 pub struct Registry<T> {
@@ -99,7 +107,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::{TerrainDef, UnitDef};
+    use crate::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
     use std::path::PathBuf;
 
     fn data_dir() -> PathBuf {
@@ -163,5 +171,84 @@ mod tests {
         let dir = data_dir().join("units");
         let registry: Registry<UnitDef> = Registry::load_from_dir(&dir).unwrap();
         assert!(registry.get("dragon").is_none());
+    }
+
+    #[test]
+    fn test_recruit_group_registry_loads() {
+        let dir = data_dir().join("recruit_groups");
+        let registry: Registry<RecruitGroup> = Registry::load_from_dir(&dir).unwrap();
+        assert_eq!(registry.len(), 3, "expected 3 recruit groups, got {}", registry.len());
+
+        let elf = registry.get("elf_base").expect("elf_base not found");
+        assert!(elf.members.contains(&"Elvish Fighter".to_string()), "elf_base missing Elvish Fighter");
+        assert!(elf.members.contains(&"Elvish Archer".to_string()), "elf_base missing Elvish Archer");
+
+        let human = registry.get("human_base").expect("human_base not found");
+        assert!(human.members.contains(&"Spearman".to_string()), "human_base missing Spearman");
+
+        let orc = registry.get("orc_base").expect("orc_base not found");
+        assert!(orc.members.contains(&"Orcish Grunt".to_string()), "orc_base missing Orcish Grunt");
+    }
+
+    #[test]
+    fn test_faction_registry_loads() {
+        let dir = data_dir().join("factions");
+        let registry: Registry<FactionDef> = Registry::load_from_dir(&dir).unwrap();
+        assert_eq!(registry.len(), 3, "expected 3 factions, got {}", registry.len());
+
+        let elves = registry.get("elves").expect("elves faction not found");
+        assert_eq!(elves.leader_def, "Elvish Captain");
+        assert_eq!(elves.recruits, vec!["elf_base"]);
+
+        let loyalists = registry.get("loyalists").expect("loyalists not found");
+        assert_eq!(loyalists.leader_def, "Lieutenant");
+        assert_eq!(loyalists.recruits, vec!["human_base"]);
+
+        let orcs = registry.get("orcs").expect("orcs not found");
+        assert_eq!(orcs.leader_def, "Orcish Warrior");
+    }
+
+    #[test]
+    fn test_faction_recruit_expansion_and_level_filter() {
+        let groups = Registry::<RecruitGroup>::load_from_dir(&data_dir().join("recruit_groups")).unwrap();
+        let factions = Registry::<FactionDef>::load_from_dir(&data_dir().join("factions")).unwrap();
+        let units = Registry::<UnitDef>::load_from_dir(&data_dir().join("units")).unwrap();
+
+        for faction in factions.all() {
+            // Expand recruits
+            let mut recruits: Vec<String> = Vec::new();
+            for entry in &faction.recruits {
+                if let Some(grp) = groups.get(entry) {
+                    recruits.extend(grp.members.iter().cloned());
+                } else {
+                    recruits.push(entry.clone());
+                }
+            }
+            assert!(!recruits.is_empty(), "faction '{}' expanded to empty recruit list", faction.id);
+
+            // Verify leader exists in unit registry
+            let leader = units.get(&faction.leader_def)
+                .unwrap_or_else(|| panic!("faction '{}' leader '{}' not in unit registry", faction.id, faction.leader_def));
+            let max_level = leader.level as i32;
+
+            // All recruits should exist in unit registry
+            for recruit_id in &recruits {
+                assert!(
+                    units.get(recruit_id).is_some(),
+                    "faction '{}' recruit '{}' not found in unit registry",
+                    faction.id, recruit_id
+                );
+            }
+
+            // Level-filtered list should be non-empty
+            let filtered: Vec<&String> = recruits.iter()
+                .filter(|id| units.get(id.as_str()).map(|u| u.level as i32 <= max_level).unwrap_or(true))
+                .collect();
+            assert!(
+                !filtered.is_empty(),
+                "faction '{}' has empty recruit list after level filter (max_level={})",
+                faction.id, max_level
+            );
+        }
     }
 }

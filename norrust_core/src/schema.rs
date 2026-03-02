@@ -82,6 +82,20 @@ pub struct BoardDef {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct RecruitGroup {
+    pub id: String,
+    pub members: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct FactionDef {
+    pub id: String,
+    pub name: String,
+    pub leader_def: String,
+    pub recruits: Vec<String>,  // mix of group ids and unit def ids; expanded at load time
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct TerrainDef {
     pub id: String,
     pub name: String,

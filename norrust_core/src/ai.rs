@@ -39,7 +39,9 @@ fn score_attack(
     let attacker_tod = tod_damage_modifier(attacker.alignment, tod);
     let defender_tod = tod_damage_modifier(defender.alignment, tod);
 
-    let attacker_first_atk = match attacker.attacks.first() {
+    let dist = attacker_hex.distance(defender_hex);
+    let range_str = if dist == 1 { "melee" } else { "ranged" };
+    let attacker_first_atk = match attacker.attacks.iter().find(|a| a.range == range_str) {
         Some(a) => a,
         None => return 0.0,
     };
@@ -72,7 +74,7 @@ fn score_attack(
         atk_resistance,
     );
 
-    let received = match defender.attacks.first() {
+    let received = match defender.attacks.iter().find(|a| a.range == range_str) {
         Some(def_atk) => {
             let def_resistance = attacker
                 .resistances
@@ -159,7 +161,11 @@ pub fn ai_take_turn(state: &mut GameState, faction: u8) {
             let unit = &state.units[&uid];
             for c in &candidates {
                 for (eid, epos, enemy) in &enemies {
-                    if c.neighbors().contains(epos) {
+                    let can_engage = unit.attacks.iter().any(|a| {
+                        (a.range == "melee" && c.neighbors().contains(epos))
+                            || (a.range == "ranged" && c.distance(*epos) == 2)
+                    });
+                    if can_engage {
                         let s = score_attack(unit, *c, enemy, *epos, state);
                         if s > best_score {
                             best_score = s;

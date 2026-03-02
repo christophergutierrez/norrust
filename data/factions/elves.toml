@@ -1,0 +1,4 @@
+id = "elves"
+name = "Elves"
+leader_def = "Elvish Captain"
+recruits = ["elf_base"]

@@ -137,30 +137,34 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                 }
             }
 
-            // Capture attacker position for adjacency check (after validation block)
             let attacker_pos = state.positions[&attacker_id];
 
-            // Clone the attack definition (if any) to drop the immutable borrow
-            let attack = match state.units.get(&attacker_id).unwrap().attacks.first() {
-                Some(a) => a.clone(),
-                None => {
-                    // No attacks defined — mark as attacked and succeed
-                    state.units.get_mut(&attacker_id).unwrap().attacked = true;
-                    return Ok(());
-                }
-            };
-
-            // Defender must exist
+            // Defender must exist — position needed to determine engagement range
             let defender_pos = state
                 .positions
                 .get(&defender_id)
                 .copied()
                 .ok_or(ActionError::UnitNotFound(defender_id))?;
 
-            // Enforce melee adjacency
-            if !attacker_pos.neighbors().contains(&defender_pos) {
-                return Err(ActionError::NotAdjacent);
-            }
+            // Select attack matching the engagement distance (melee=1, ranged=2)
+            let dist = attacker_pos.distance(defender_pos);
+            let range_needed = match dist {
+                1 => "melee",
+                2 => "ranged",
+                _ => return Err(ActionError::NotAdjacent),
+            };
+
+            let attack = {
+                let unit = state.units.get(&attacker_id).unwrap();
+                if unit.attacks.is_empty() {
+                    state.units.get_mut(&attacker_id).unwrap().attacked = true;
+                    return Ok(());
+                }
+                unit.attacks.iter()
+                    .find(|a| a.range == range_needed)
+                    .cloned()
+                    .ok_or(ActionError::NotAdjacent)?
+            };
 
             // Determine defender terrain defense
             let terrain_defense = {
@@ -220,7 +224,7 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
             // Retaliation: defender strikes back if still alive and has attacks
             if state.units.contains_key(&defender_id) {
                 let ret_attack = state.units.get(&defender_id)
-                    .and_then(|d| d.attacks.first())
+                    .and_then(|d| d.attacks.iter().find(|a| a.range == range_needed))
                     .cloned();
 
                 if let Some(def_attack) = ret_attack {
@@ -513,6 +517,42 @@ mod tests {
         apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
 
         assert!(state.units[&2].xp >= 1, "defender should gain at least 1 XP for retaliation hit");
+    }
+
+    #[test]
+    fn test_ranged_attacker_gets_no_retaliation_from_melee_only_defender() {
+        // Archer (ranged) attacks Grunt (melee-only) from distance 2.
+        // Grunt has no ranged weapon → no retaliation → attacker HP unchanged.
+        let board = Board::new(10, 10);
+        let mut state = GameState::new(board);
+
+        let bow = AttackDef {
+            id: "bow".to_string(), name: "Bow".to_string(),
+            damage: 5, strikes: 4,
+            attack_type: "pierce".to_string(), range: "ranged".to_string(),
+            ..Default::default()
+        };
+        let mut archer = Unit::new(1, "archer", 30, 0);
+        archer.attacks = vec![bow];
+        archer.default_defense = 0;
+
+        let sword = AttackDef {
+            id: "sword".to_string(), name: "Sword".to_string(),
+            damage: 7, strikes: 3,
+            attack_type: "blade".to_string(), range: "melee".to_string(),
+            ..Default::default()
+        };
+        let mut grunt = Unit::new(2, "grunt", 30, 1);
+        grunt.attacks = vec![sword];
+        grunt.default_defense = 0;
+
+        // Distance 2 — ranged engagement
+        state.place_unit(archer, Hex::ORIGIN);
+        state.place_unit(grunt, Hex::from_offset(2, 0));
+
+        apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+
+        assert_eq!(state.units[&1].hp, 30, "archer should take no retaliation from melee-only defender at range");
     }
 
     #[test]
