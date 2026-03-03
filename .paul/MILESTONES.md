@@ -13,6 +13,91 @@ Completed milestone log for this project.
 | v0.7 Scenario System | 2026-03-01 | ~1 day | 2 phases, 2 plans |
 | v0.8 Combat Completeness | 2026-03-02 | ~1 day | 1 phase, 1 plan |
 | v0.9 Game Mechanics | 2026-03-02 | ~1 day | 2 phases, 3 plans |
+| v1.0 Game Readability | 2026-03-02 | ~1 day | 2 phases, 2 plans |
+| v1.1 Camera & Viewport | 2026-03-03 | ~1 day | 1 phase, 1 plan |
+| v1.2 Love2D Migration | 2026-03-03 | ~1 day | 3 phases, 3 plans |
+
+---
+
+## ✅ v1.2 Love2D Migration
+
+**Completed:** 2026-03-03
+**Duration:** ~1 day
+
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 3 |
+| Plans | 3 |
+| Files created | 3 (norrust_love/) |
+| Files deleted | 10 (norrust_client/ + gdext_node.rs) |
+| Tests | 73 (56 lib + 16 integration + 1 FFI) |
+
+### Key Accomplishments
+
+- **C ABI bridge** — 36 `extern "C"` functions with opaque `NorRustEngine` pointer and caller-frees memory management
+- **Love2D game client** — 1202 lines of Lua (conf.lua + norrust.lua + main.lua) with full game.gd feature parity
+- **LuaJIT FFI bindings** — `norrust.lua` wraps all 36 C functions with Lua-native types + inline JSON decoder (~90 lines)
+- **Pure hex math** — `hex_to_pixel`/`pixel_to_hex` replacing Godot TileMap dependency
+- **Redot cleanup** — `norrust_client/` deleted, `gdext_node.rs` deleted, `godot` crate dependency removed
+- **Documentation updated** — README, ARCHITECTURE, BRIDGE_API, DEVELOPMENT all rewritten for Love2D
+
+### Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Opaque NorRustEngine pointer for C ABI | Mirrors NorRustCore without Godot deps |
+| Caller-frees string/array memory | CString::into_raw for returns; LuaJIT caller frees |
+| ffi.gc destructor on engine pointer | Automatic cleanup on GC; memory-safe |
+| Inline JSON decoder in norrust.lua | No external Lua deps; ~90 lines |
+| push/pop camera transform | Clean separation of board-space and screen-space |
+| cdylib crate-type retained after cleanup | Still needed for .so loaded by LuaJIT FFI |
+
+---
+
+## ✅ v1.1 Camera & Viewport
+
+**Completed:** 2026-03-03
+**Duration:** ~1 day
+
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 1 |
+| Plans | 1 |
+| Tests | 72 (56 lib + 16 integration) |
+
+### Key Accomplishments
+
+- **HEX_RADIUS 64→96px** — larger hexes with HEX_CELL_W=166, HEX_CELL_H=192; labels scaled 1.5×
+- **Drag-to-pan** on empty board space + **arrow key continuous pan** at 500px/sec
+- **Board-edge clamping** with half-viewport + HEX_RADIUS margin
+- **Smooth camera lerp** (factor 8.0) to center selected unit; keyboard pan cancels lerp
+- **_select_unit() helper** centralizing selection + camera-follow logic
+
+---
+
+## ✅ v1.0 Game Readability
+
+**Completed:** 2026-03-02
+**Duration:** ~1 day
+
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 2 |
+| Plans | 2 |
+| Tests | 72 (56 lib + 16 integration) |
+
+### Key Accomplishments
+
+- **Unit stat panel** — click any unit to see full details: name, level, HP, XP, movement, attacks, abilities
+- **AttackSnapshot struct** — full unit loadout in StateSnapshot JSON
+- **_inspect_unit_id** — inspection state independent of selection for viewing enemy stats
+- **In-hex type name** — `def_id.split("_")[0].capitalize().left(7)` visible in every hex without clicking
 
 ---
 
@@ -187,4 +272,4 @@ Completed milestone log for this project.
 - Full Wesnoth-style combat: adjacency enforcement, bidirectional retaliation, time-of-day modifiers, resistances
 
 ---
-*MILESTONES.md — Updated: 2026-03-02 (v0.9 Game Mechanics)*
+*MILESTONES.md — Updated: 2026-03-03 (v1.2 Love2D Migration)*
