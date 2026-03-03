@@ -102,6 +102,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] _draw_unit_panel(): faction-colored header, HP, XP (conditional), movement+exhaustion status, per-attack breakdown, abilities list in right sidebar — Phase 22 (22-01)
 - [x] Unit type name abbreviation (first-word of def_id, capitalized, max 7 chars) rendered centered inside each hex circle — Phase 23 (23-01)
 - [x] C ABI bridge: 36 extern "C" functions (NorRustEngine opaque pointer + caller-frees memory) exposing all game engine methods for LuaJIT FFI — Phase 25 (25-01)
+- [x] Love2D game client (1202 lines Lua) with full feature parity to game.gd — hex rendering, input, HUD, sidebar panel, recruitment, camera, AI opponent — Phase 26 (26-01)
+- [x] LuaJIT FFI bindings module (norrust.lua) wrapping all 36 C ABI functions with Lua-native types + inline JSON decoder — Phase 26 (26-01)
+- [x] Pure hex math (hex_to_pixel, pixel_to_hex) replacing Godot TileMap dependency — no engine dependency for coordinate conversion — Phase 26 (26-01)
 
 ### Active (In Progress / Deferred)
 
@@ -189,6 +192,11 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | Opaque NorRustEngine pointer for C ABI | Mirrors NorRustCore without Godot deps; all functions take *mut NorRustEngine as first param | 2026-03-03 | Active |
 | Caller-frees string/array memory management | CString::into_raw for returns, norrust_free_string/norrust_free_int_array for cleanup | 2026-03-03 | Active |
 | Both bridges coexist (GDExtension + C ABI) | No conditional compilation; GDExtension preserved until Love2D client verified (Phase 27) | 2026-03-03 | Active |
+| hex_to_pixel/pixel_to_hex pure math in Love2D | Godot TileMap unavailable; pointy-top odd-r offset formulas are well-defined | 2026-03-03 | Active |
+| Inline JSON decoder in norrust.lua (~90 lines) | Love2D/LuaJIT has no JSON parser; external deps prohibited | 2026-03-03 | Active |
+| push/pop camera transform in Love2D | Separates board-space hex drawing from screen-space UI cleanly | 2026-03-03 | Active |
+| ffi.gc destructor on engine pointer | Automatic cleanup on GC; no explicit free required; memory-safe even if love.quit not called | 2026-03-03 | Active |
+| reachable_set as string-keyed lookup ("col,row" → true) | O(1) hex containment checks for click handler; array iteration O(n) insufficient | 2026-03-03 | Active |
 
 ## Tech Stack
 
@@ -210,4 +218,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-03 after v1.2 Phase 25 C ABI Bridge (36 extern "C" functions for LuaJIT FFI — 73 tests pass)*
+*Last updated: 2026-03-03 after v1.2 Phase 26 Love2D Client (1202 lines Lua, full game.gd feature parity — 73 tests pass)*

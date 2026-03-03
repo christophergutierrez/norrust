@@ -8,12 +8,12 @@ Five phases take the project from data schema definitions through a fully playab
 
 **v1.2 Love2D Migration**
 Status: 🚧 In Progress
-Phases: 1 of 3 complete
+Phases: 2 of 3 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 25 | C ABI Bridge | 1 | ✅ Complete | 2026-03-03 |
-| 26 | Love2D Client | TBD | Not started | - |
+| 26 | Love2D Client | 1 | ✅ Complete | 2026-03-03 |
 | 27 | Redot Cleanup | TBD | Not started | - |
 
 ## v1.2 Phase Details
@@ -35,11 +35,22 @@ Phases: 1 of 3 complete
 - Zero changes to existing modules; both GDExtension and C ABI bridges coexist
 - 73 tests passing (56 lib + 16 integration + 1 new FFI test)
 
-### Phase 26: Love2D Client
+### Phase 26: Love2D Client ✅
 
 **Goal:** Port `norrust_client/scripts/game.gd` to Love2D `main.lua`. Full feature parity: hex rendering, unit circles with labels, camera panning (drag + arrow keys), HUD, sidebar unit panel, recruit panel, setup mode (faction pick + leader placement), AI opponent, win detection. Uses LuaJIT FFI to call C ABI bridge from Phase 25.
 **Depends on:** Phase 25 (C ABI bridge must exist for Love2D to call Rust)
 **Constraints:** Pure Lua + Love2D; no external Lua dependencies beyond Love2D stdlib.
+**Completed:** 2026-03-03
+
+**Plans:**
+- [x] 26-01: LuaJIT FFI bindings (norrust.lua) + complete game client (main.lua) + conf.lua
+
+**Delivered:**
+- `norrust_love/norrust.lua`: LuaJIT FFI bindings wrapping all 36 C ABI functions with Lua-native types + inline JSON decoder (~90 lines)
+- `norrust_love/main.lua`: Complete game client (831 lines) — hex rendering, input, HUD, sidebar panel, recruitment, camera, AI opponent, setup mode, win detection
+- `norrust_love/conf.lua`: Love2D window configuration (1280×720, resizable)
+- Pure hex math (hex_to_pixel, pixel_to_hex) replacing Godot TileMap; push/pop camera transform; reachable_set O(1) lookup
+- 1202 total Lua lines across 3 files; all 8 acceptance criteria passed; 73 Rust tests passing
 
 ### Phase 27: Redot Cleanup
 

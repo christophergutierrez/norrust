@@ -79,16 +79,24 @@ fn test_ffi_full_game_cycle() {
         norrust_free_int_array(hexes_ptr, out_len);
 
         // ── Apply move: move unit 1 to a reachable hex ─────────────
-        // Pick a destination from reachable hexes (use the first one)
+        // Collect reachable hexes, then try each until we find an unoccupied one
         let mut move_out_len: i32 = 0;
         let move_hexes = norrust_get_reachable_hexes(engine, 1, &mut move_out_len);
         assert!(move_out_len >= 2, "need at least one reachable hex pair");
-        let dest_col = *move_hexes;
-        let dest_row = *move_hexes.add(1);
+        let mut destinations = Vec::new();
+        for i in (0..move_out_len as usize).step_by(2) {
+            destinations.push((*move_hexes.add(i), *move_hexes.add(i + 1)));
+        }
         norrust_free_int_array(move_hexes, move_out_len);
 
-        let result = norrust_apply_move(engine, 1, dest_col, dest_row);
-        assert_eq!(result, 0, "norrust_apply_move must succeed (code 0)");
+        let mut moved = false;
+        for (col, row) in &destinations {
+            if norrust_apply_move(engine, 1, *col, *row) == 0 {
+                moved = true;
+                break;
+            }
+        }
+        assert!(moved, "at least one reachable hex must be a valid move destination");
 
         // ── End turn ───────────────────────────────────────────────
         let result = norrust_end_turn(engine);
