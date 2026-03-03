@@ -32,6 +32,11 @@ local SCENARIOS = {
     {name = "Ambush (12x8)",    board = "ambush.toml",     units = "ambush_units.toml",    preset_units = true},
 }
 
+-- Available campaigns
+local CAMPAIGNS = {
+    {name = "The Road to Norrust", file = "tutorial.toml"},
+}
+
 -- ── State variables ─────────────────────────────────────────────────────────
 
 local engine
@@ -57,6 +62,14 @@ local recruit_palette = {}
 local selected_recruit_idx = 0
 local recruit_error = ""
 local inspect_unit_id = -1
+
+-- Campaign
+local campaigns_path = ""
+local campaign_active = false
+local campaign_data = nil        -- parsed JSON from norrust_load_campaign
+local campaign_index = 0         -- 0-indexed current scenario in campaign
+local campaign_veterans = {}     -- array of veteran unit tables from previous scenario
+local campaign_gold = 0          -- carried gold for next scenario
 
 -- Camera
 local board_origin_x, board_origin_y = 0, 0
@@ -267,6 +280,18 @@ local function draw_setup_hud()
             love.graphics.setColor(1, 1, 1, 1)
             love.graphics.printf(string.format("[%d] %s", i, sc.name), 0, vp_h / 2 + 10 + (i - 1) * 28, vp_w, "center")
         end
+
+        -- Campaign section
+        local cy = vp_h / 2 + 10 + #SCENARIOS * 28 + 10
+        love.graphics.setFont(fonts[14])
+        love.graphics.setColor(0.83, 0.83, 0.83, 1)
+        love.graphics.printf("Campaigns:", 0, cy, vp_w, "center")
+        cy = cy + 22
+        for i, camp in ipairs(CAMPAIGNS) do
+            love.graphics.setFont(fonts[15])
+            love.graphics.setColor(1, 0.85, 0, 1)
+            love.graphics.printf(string.format("[C] %s", camp.name), 0, cy + (i - 1) * 28, vp_w, "center")
+        end
         return
     end
 
@@ -465,6 +490,125 @@ local function load_selected_scenario()
     center_camera()
 end
 
+-- ── Campaign helpers ─────────────────────────────────────────────────────
+
+--- Find the player keep hex and its adjacent castle hexes for veteran placement.
+local function find_keep_and_castles()
+    local state = norrust.get_state(engine)
+    local keep_col, keep_row = nil, nil
+    local castle_hexes = {}
+
+    for _, tile in ipairs(state.terrain or {}) do
+        local tc, tr = int(tile.col), int(tile.row)
+        if tile.terrain_id == "keep" then
+            -- Use leftmost keep (player side)
+            if keep_col == nil or tc < keep_col then
+                keep_col, keep_row = tc, tr
+            end
+        end
+    end
+
+    if keep_col then
+        -- Collect adjacent castle hexes
+        for _, tile in ipairs(state.terrain or {}) do
+            if tile.terrain_id == "castle" then
+                local tc, tr = int(tile.col), int(tile.row)
+                -- Check adjacency (distance ~1 in offset coords via hex neighbors)
+                local dx = math.abs(tc - keep_col)
+                local dy = math.abs(tr - keep_row)
+                if dx <= 1 and dy <= 1 and not (dx == 0 and dy == 0) then
+                    castle_hexes[#castle_hexes + 1] = {col = tc, row = tr}
+                end
+            end
+        end
+    end
+
+    return keep_col, keep_row, castle_hexes
+end
+
+--- Place veteran units on keep + adjacent castles, skipping occupied hexes.
+local function place_veterans()
+    if #campaign_veterans == 0 then return end
+
+    local keep_col, keep_row, castle_hexes = find_keep_and_castles()
+    if not keep_col then return end
+
+    local state = norrust.get_state(engine)
+    local pos_map = build_unit_pos_map(state)
+
+    -- Build placement list: keep first, then castles
+    local slots = {{col = keep_col, row = keep_row}}
+    for _, ch in ipairs(castle_hexes) do
+        slots[#slots + 1] = ch
+    end
+
+    local placed = 0
+    for _, vet in ipairs(campaign_veterans) do
+        if placed >= #slots then break end
+
+        -- Find next unoccupied slot
+        local slot = nil
+        for si = placed + 1, #slots do
+            local key = int(slots[si].col) .. "," .. int(slots[si].row)
+            if not pos_map[key] then
+                slot = slots[si]
+                placed = si
+                break
+            end
+        end
+        if not slot then break end
+
+        local uid = norrust.get_next_unit_id(engine)
+        norrust.place_veteran_unit(
+            engine, uid,
+            vet.def_id, 0,
+            int(slot.col), int(slot.row),
+            int(vet.hp), int(vet.xp), int(vet.xp_needed),
+            vet.advancement_pending
+        )
+        -- Update pos_map so next veteran doesn't collide
+        pos_map[int(slot.col) .. "," .. int(slot.row)] = {id = uid, faction = 0}
+    end
+end
+
+--- Load the next campaign scenario (or the first one).
+--- Engine keeps registries (units, terrain, factions); load_board replaces GameState.
+local function load_campaign_scenario()
+    local sc = campaign_data.scenarios[campaign_index + 1]
+    scenario_board = sc.board
+    scenario_units = sc.units
+    scenario_preset = sc.preset_units
+
+    -- Reset client state for new scenario
+    game_over = false
+    winner_faction = -1
+    clear_selection()
+    recruit_mode = false
+
+    -- Load board (creates fresh GameState; registries stay)
+    load_selected_scenario()
+
+    -- Load preset units + starting gold
+    if scenario_preset then
+        norrust.apply_starting_gold(engine, faction_id[1], faction_id[2])
+        norrust.load_units(engine, scenarios_path .. "/" .. scenario_units)
+        next_unit_id = norrust.get_next_unit_id(engine)
+    end
+
+    -- Place veterans from previous scenario
+    if campaign_index > 0 and #campaign_veterans > 0 then
+        place_veterans()
+        next_unit_id = norrust.get_next_unit_id(engine)
+    end
+
+    -- Apply carry-over gold (override faction 0's starting gold)
+    if campaign_index > 0 and campaign_gold > 0 then
+        norrust.set_faction_gold(engine, 0, campaign_gold)
+    end
+
+    game_mode = PLAYING
+end
+
 -- ── love.load ───────────────────────────────────────────────────────────────
 
 function love.load()
@@ -483,6 +627,8 @@ function love.load()
     local project_root = source .. "/.."
     local data_path = project_root .. "/data"
     scenarios_path = project_root .. "/scenarios"
+
+    campaigns_path = project_root .. "/campaigns"
 
     -- Load data + factions (scenario loaded after selection)
     assert(norrust.load_data(engine, data_path), "Failed to load data")
@@ -637,9 +783,20 @@ function love.draw()
         if game_over then
             local vp_w, vp_h = love.graphics.getDimensions()
             local winner_name = winner_faction == 0 and "Blue" or "Red"
-            local msg
+            local msg, sub_msg
             if winner_faction == 0 then
-                msg = "Victory! " .. winner_name .. " wins!"
+                if campaign_active then
+                    if campaign_index + 1 < #campaign_data.scenarios then
+                        msg = "Victory!"
+                        sub_msg = "Press Enter for next battle"
+                    else
+                        msg = "Campaign Victory!"
+                        sub_msg = "Press Enter to continue"
+                    end
+                else
+                    msg = "Victory! " .. winner_name .. " wins!"
+                    sub_msg = "Press Enter to continue"
+                end
             else
                 -- Check if it was a timeout or elimination
                 local max_t = state.max_turns
@@ -649,10 +806,20 @@ function love.draw()
                 else
                     msg = winner_name .. " wins!"
                 end
+                if campaign_active then
+                    sub_msg = "Campaign over — Press Enter"
+                else
+                    sub_msg = "Press Enter to continue"
+                end
             end
             love.graphics.setFont(fonts[32])
             love.graphics.setColor(1, 1, 0, 1)
             love.graphics.printf(msg, vp_w / 2 - 240, vp_h / 2 - 16, 480, "center")
+            if sub_msg then
+                love.graphics.setFont(fonts[14])
+                love.graphics.setColor(0.83, 0.83, 0.83, 1)
+                love.graphics.printf(sub_msg, vp_w / 2 - 240, vp_h / 2 + 24, 480, "center")
+            end
         end
 
         -- HUD
@@ -697,11 +864,29 @@ function love.keypressed(key)
     if game_mode == PICK_SCENARIO then
         local num = tonumber(key)
         if num and num >= 1 and num <= #SCENARIOS then
+            campaign_active = false
             scenario_board = SCENARIOS[num].board
             scenario_units = SCENARIOS[num].units
             scenario_preset = SCENARIOS[num].preset_units
             load_selected_scenario()
             game_mode = PICK_FACTION_BLUE
+        elseif key == "c" then
+            -- Start campaign
+            local camp = CAMPAIGNS[1]
+            campaign_data = norrust.load_campaign(engine, campaigns_path .. "/" .. camp.file)
+            if campaign_data then
+                campaign_active = true
+                campaign_index = 0
+                campaign_veterans = {}
+                campaign_gold = 0
+                -- Load first scenario's board for faction selection
+                local sc = campaign_data.scenarios[1]
+                scenario_board = sc.board
+                scenario_units = sc.units
+                scenario_preset = sc.preset_units
+                load_selected_scenario()
+                game_mode = PICK_FACTION_BLUE
+            end
         end
         return
     end
@@ -720,6 +905,9 @@ function love.keypressed(key)
                     -- Preset scenarios: skip manual setup, go straight through
                     if game_mode == PICK_FACTION_BLUE then
                         game_mode = PICK_FACTION_RED
+                    elseif campaign_active then
+                        -- Campaign: use campaign loader (handles gold, veterans)
+                        load_campaign_scenario()
                     else
                         -- Both factions chosen — load units and start
                         norrust.apply_starting_gold(engine, faction_id[1], faction_id[2])
@@ -748,7 +936,33 @@ function love.keypressed(key)
     end
 
     -- Playing mode
-    if game_over then return end
+    if game_over then
+        if key == "return" or key == "kpenter" then
+            if campaign_active and winner_faction == 0 then
+                -- Player won — check if more scenarios remain
+                local survivors = norrust.get_survivors(engine, 0)
+                campaign_veterans = survivors
+                campaign_gold = norrust.get_carry_gold(
+                    engine, 0,
+                    campaign_data.gold_carry_percent,
+                    campaign_data.early_finish_bonus
+                )
+                campaign_index = campaign_index + 1
+                if campaign_index < #campaign_data.scenarios then
+                    load_campaign_scenario()
+                else
+                    -- Campaign complete — return to scenario selection
+                    campaign_active = false
+                    game_mode = PICK_SCENARIO
+                end
+            else
+                -- Individual scenario win/loss, or campaign defeat
+                campaign_active = false
+                game_mode = PICK_SCENARIO
+            end
+        end
+        return
+    end
 
     if key == "e" then
         -- End turn + AI

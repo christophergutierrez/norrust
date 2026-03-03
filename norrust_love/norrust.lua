@@ -180,6 +180,13 @@ ffi.cdef[[
 
     // Trigger zones
     int32_t norrust_get_next_unit_id(NorRustEngine* engine);
+
+    // Campaign
+    char* norrust_load_campaign(NorRustEngine* engine, const char* path);
+    char* norrust_get_survivors_json(NorRustEngine* engine, int32_t faction);
+    int32_t norrust_get_carry_gold(NorRustEngine* engine, int32_t faction, int32_t gold_carry_percent, int32_t early_finish_bonus);
+    int32_t norrust_place_veteran_unit(NorRustEngine* engine, int32_t unit_id, const char* def_id, int32_t faction, int32_t col, int32_t row, int32_t hp, int32_t xp, int32_t xp_needed, int32_t advancement_pending);
+    void norrust_set_faction_gold(NorRustEngine* engine, int32_t faction, int32_t gold);
 ]]
 
 -- ── Load shared library ─────────────────────────────────────────────────────
@@ -379,6 +386,35 @@ end
 
 function M.get_next_unit_id(engine)
     return lib.norrust_get_next_unit_id(engine)
+end
+
+-- ── Campaign ──────────────────────────────────────────────────────────────
+
+function M.load_campaign(engine, path)
+    local raw = get_string(lib.norrust_load_campaign(engine, path))
+    if raw == "" then return nil end
+    return json_decode(raw)
+end
+
+function M.get_survivors(engine, faction)
+    local raw = get_string(lib.norrust_get_survivors_json(engine, faction))
+    return json_decode(raw) or {}
+end
+
+function M.get_carry_gold(engine, faction, gold_carry_percent, early_finish_bonus)
+    return lib.norrust_get_carry_gold(engine, faction, gold_carry_percent, early_finish_bonus)
+end
+
+function M.place_veteran_unit(engine, unit_id, def_id, faction, col, row, hp, xp, xp_needed, advancement_pending)
+    return lib.norrust_place_veteran_unit(engine, unit_id, def_id, faction, col, row, hp, xp, xp_needed, advancement_pending and 1 or 0)
+end
+
+function M.set_faction_gold(engine, faction, gold)
+    lib.norrust_set_faction_gold(engine, faction, gold)
+end
+
+function M.free(engine)
+    lib.norrust_free(engine)
 end
 
 return M

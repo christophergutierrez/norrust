@@ -1,0 +1,15 @@
+[campaign]
+id = "tutorial"
+name = "The Road to Norrust"
+gold_carry_percent = 80
+early_finish_bonus = 5
+
+[[scenarios]]
+board = "crossing.toml"
+units = "crossing_units.toml"
+preset_units = true
+
+[[scenarios]]
+board = "ambush.toml"
+units = "ambush_units.toml"
+preset_units = true

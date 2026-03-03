@@ -9,6 +9,7 @@ use std::ffi::{c_char, CStr, CString};
 use std::path::PathBuf;
 
 use crate::board::Tile;
+use crate::campaign;
 use crate::combat::{time_of_day, TimeOfDay};
 use crate::game_state::{apply_action, apply_recruit, Action, ActionError, GameState, PendingSpawn, TriggerZone};
 use crate::hex::Hex;
@@ -836,4 +837,128 @@ pub unsafe extern "C" fn norrust_ai_take_turn(
     if faction < 0 || faction > 1 { return; }
     let Some(state) = e.game.as_mut() else { return };
     crate::ai::ai_take_turn(state, faction as u8);
+}
+
+// ── Campaign ─────────────────────────────────────────────────────────────────
+
+#[no_mangle]
+pub unsafe extern "C" fn norrust_load_campaign(
+    _engine: *mut NorRustEngine,
+    path: *const c_char,
+) -> *mut c_char {
+    let p = PathBuf::from(cstr_to_str(path));
+    let campaign = match campaign::load_campaign(&p) {
+        Ok(c) => c,
+        Err(_) => return to_c_string(""),
+    };
+
+    // Build JSON manually (no Serialize on CampaignDef needed)
+    let scenarios_json: Vec<String> = campaign
+        .scenarios
+        .iter()
+        .map(|s| {
+            format!(
+                "{{\"board\":\"{}\",\"units\":\"{}\",\"preset_units\":{}}}",
+                s.board, s.units, s.preset_units
+            )
+        })
+        .collect();
+
+    let json = format!(
+        "{{\"id\":\"{}\",\"name\":\"{}\",\"gold_carry_percent\":{},\"early_finish_bonus\":{},\"scenarios\":[{}]}}",
+        campaign.id,
+        campaign.name,
+        campaign.gold_carry_percent,
+        campaign.early_finish_bonus,
+        scenarios_json.join(",")
+    );
+    to_c_string(&json)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn norrust_get_survivors_json(
+    engine: *mut NorRustEngine,
+    faction: i32,
+) -> *mut c_char {
+    let Some(e) = engine.as_ref() else { return to_c_string("[]") };
+    let Some(state) = e.game.as_ref() else { return to_c_string("[]") };
+    let survivors = campaign::get_survivors(state, faction as u8);
+    match serde_json::to_string(&survivors) {
+        Ok(s) => to_c_string(&s),
+        Err(_) => to_c_string("[]"),
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn norrust_get_carry_gold(
+    engine: *mut NorRustEngine,
+    faction: i32,
+    gold_carry_percent: i32,
+    early_finish_bonus: i32,
+) -> i32 {
+    let Some(e) = engine.as_ref() else { return 0 };
+    let Some(state) = e.game.as_ref() else { return 0 };
+
+    let current_gold = state.gold.get(faction as usize).copied().unwrap_or(0);
+    let turns_remaining = state
+        .max_turns
+        .map(|max| max.saturating_sub(state.turn))
+        .unwrap_or(0);
+
+    campaign::calculate_carry_gold(
+        current_gold,
+        gold_carry_percent as u32,
+        turns_remaining,
+        early_finish_bonus as u32,
+    ) as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn norrust_place_veteran_unit(
+    engine: *mut NorRustEngine,
+    unit_id: i32,
+    def_id: *const c_char,
+    faction: i32,
+    col: i32,
+    row: i32,
+    hp: i32,
+    xp: i32,
+    xp_needed: i32,
+    advancement_pending: i32,
+) -> i32 {
+    let Some(e) = engine.as_mut() else { return -1 };
+    let did = cstr_to_str(def_id);
+
+    // Build unit from registry (gets full combat stats)
+    let mut unit = unit_from_registry(e, unit_id as u32, did, faction as u8);
+
+    // Override with carried-over progression state
+    unit.hp = hp as u32;
+    unit.xp = xp as u32;
+    unit.xp_needed = xp_needed as u32;
+    unit.advancement_pending = advancement_pending != 0;
+
+    let hex = Hex::from_offset(col, row);
+    let Some(state) = e.game.as_mut() else { return -1 };
+    if !state.board.contains(hex) {
+        return -1;
+    }
+    if state.positions.values().any(|&h| h == hex) {
+        return -1;
+    }
+    state.place_unit(unit, hex);
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn norrust_set_faction_gold(
+    engine: *mut NorRustEngine,
+    faction: i32,
+    gold: i32,
+) {
+    let Some(e) = engine.as_mut() else { return };
+    let Some(state) = e.game.as_mut() else { return };
+    if faction >= 0 && (faction as usize) < state.gold.len() {
+        state.gold[faction as usize] = gold.max(0) as u32;
+    }
 }

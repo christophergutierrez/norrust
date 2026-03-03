@@ -115,6 +115,12 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Ambush scenario: 12x8 forest board with 3 trigger zones spawning 5 hidden enemies, 25-turn limit, preset units — Phase 29 (29-01)
 - [x] norrust_get_next_unit_id() FFI function: avoids ID conflicts after trigger-spawned units — Phase 29 (29-01)
 - [x] Headless scenario validation: auto-discovery of TOML pairs, 10 structural invariants, false-winner detection, FFI symbol completeness — Phase 29 (29-01)
+- [x] Campaign TOML schema: CampaignDef with scenario sequence, gold_carry_percent, early_finish_bonus — Phase 30 (30-01)
+- [x] VeteranUnit carry-over: surviving units serialize with hp/xp/xp_needed/advancement_pending/abilities for next scenario — Phase 30 (30-01)
+- [x] place_veteran_unit FFI: unit_from_registry() for combat stats + override progression fields with carried values — Phase 30 (30-01)
+- [x] Gold carry-over calculation: percentage penalty + early finish bonus per remaining turn — Phase 30 (30-01)
+- [x] Love2D campaign flow: campaign selection (C key), scenario auto-progression on victory, veteran placement on keep+castles, carry-over gold injection — Phase 30 (30-01)
+- [x] Tutorial campaign: crossing → ambush with 80% gold carry and 5g/turn early bonus — Phase 30 (30-01)
 
 ### Active (In Progress / Deferred)
 
@@ -124,7 +130,7 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 ### Out of Scope
 
 - TOML editor UI for modding — post-MVP
-- Campaign persistence (veteran units) — v1.3 Phase 30
+- Campaign save/load to disk — post-MVP (in-memory carry-over shipped in Phase 30)
 - Multiplayer — post-MVP (architecture supports it via Action queue)
 
 ## Constraints
@@ -214,6 +220,10 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | check_winner() as GameState method | Headless-testable without FFI; direct access to state fields | 2026-03-03 | Active |
 | LoadedBoard struct from load_board() | Board + scenario metadata returned together; scenarios self-describe win conditions | 2026-03-03 | Active |
 | preset_units flag on SCENARIOS table | Crossing uses TOML units; contested uses manual placement; both paths coexist | 2026-03-03 | Active |
+| Campaign progression is client-side (Love2D) | Engine is per-scenario; load_board() replaces GameState; client manages campaign_index, veterans, gold | 2026-03-03 | Active |
+| Engine reuse across campaign scenarios | load_board() creates fresh GameState but keeps registries; avoids re-loading data/factions | 2026-03-03 | Active |
+| unit_from_registry() + field override for veterans | Full combat stats from registry, then override hp/xp/xp_needed/advancement_pending with carried values | 2026-03-03 | Active |
+| Veterans placed on leftmost keep + adjacent castles | Player's keep is leftmost; placement skips occupied hexes from preset units | 2026-03-03 | Active |
 
 ## Tech Stack
 
@@ -233,4 +243,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-03 after Phase 29 — trigger zones, ambush scenario, headless validation (83 tests pass)*
+*Last updated: 2026-03-03 after Phase 30 — campaign chain with unit/gold carry-over (94 tests pass)*

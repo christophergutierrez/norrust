@@ -7,14 +7,14 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 ## Current Milestone
 
 **v1.3 Campaign Mode**
-Status: 🚧 In Progress
-Phases: 2 of 3 complete
+Status: ✅ Complete
+Phases: 3 of 3 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 28 | Map Crossing | 1 | ✅ Complete | 2026-03-03 |
 | 29 | Second Scenario | 1 | ✅ Complete | 2026-03-03 |
-| 30 | Campaign Chain | TBD | Not started | - |
+| 30 | Campaign Chain | 1 | ✅ Complete | 2026-03-03 |
 
 ## v1.3 Phase Details
 
@@ -59,11 +59,22 @@ Phases: 2 of 3 complete
 - Crossing scenario bugfixes: Blue castle ring + Red keep position
 - 83 tests passing (56 lib + 23 integration + 3 scenario_validation + 1 FFI)
 
-### Phase 30: Campaign Chain
+### Phase 30: Campaign Chain ✅
 
 **Goal:** Link scenarios into a campaign sequence. Campaign defined in TOML (scenario list, starting conditions). Units that survive scenario 1 carry to scenario 2 with XP/level/advancement. Gold carries over with percentage penalty (e.g. 80%). Early finish bonus gold.
 **Depends on:** Phase 29 (both scenarios must exist to chain)
 **Constraints:** Campaign TOML file consistent with existing data-driven approach. Both individual scenarios and campaign mode must work.
+**Completed:** 2026-03-03
+
+**Plans:**
+- [x] 30-01: Campaign schema + carry-over logic + FFI + Love2D flow
+
+**Delivered:**
+- `campaigns/tutorial.toml`: campaign definition (crossing → ambush, 80% gold carry, 5g/turn early bonus)
+- `campaign.rs`: CampaignDef, VeteranUnit, load_campaign(), get_survivors(), calculate_carry_gold()
+- 5 new FFI functions: norrust_load_campaign, norrust_get_survivors_json, norrust_get_carry_gold, norrust_place_veteran_unit, norrust_set_faction_gold
+- Love2D campaign flow: C key selection, load_campaign_scenario(), victory/defeat overlays, veteran placement on keep+castles
+- 8 campaign integration tests (3 pure Rust + 5 FFI); 94 total tests passing
 
 ---
 
@@ -754,4 +765,4 @@ See MILESTONES.md for full history.
 </details>
 
 ---
-*Roadmap updated: 2026-03-03 — Phase 29 complete (trigger zones + ambush scenario)*
+*Roadmap updated: 2026-03-03 — Phase 30 complete, v1.3 Campaign Mode milestone complete*
