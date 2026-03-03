@@ -101,6 +101,7 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] _inspect_unit_id inspection state in game.gd (independent from _selected_unit_id): click any unit to open stat panel — Phase 22 (22-01)
 - [x] _draw_unit_panel(): faction-colored header, HP, XP (conditional), movement+exhaustion status, per-attack breakdown, abilities list in right sidebar — Phase 22 (22-01)
 - [x] Unit type name abbreviation (first-word of def_id, capitalized, max 7 chars) rendered centered inside each hex circle — Phase 23 (23-01)
+- [x] C ABI bridge: 36 extern "C" functions (NorRustEngine opaque pointer + caller-frees memory) exposing all game engine methods for LuaJIT FFI — Phase 25 (25-01)
 
 ### Active (In Progress / Deferred)
 
@@ -118,8 +119,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 ### Technical
 - Clean-room rewrite — no code copied from `/home/chris/git_home/wesnoth` (reference only)
 - Simulation core must be pure Rust (no graphics/UI dependencies)
-- Presentation layer must be Redot (not Godot)
-- Integration via GDExtension (gdext 0.2.4, Redot 26.1)
+- Presentation layer migrating from Redot to Love2D (v1.2 milestone)
+- Integration via C ABI (extern "C" + LuaJIT FFI); GDExtension bridge preserved until Phase 27
 
 ### Architecture
 - Strict separation: Rust core knows nothing about graphics or UI
@@ -185,14 +186,19 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | abilities: Vec<String> on Unit copied from UnitDef at spawn/advance | Same pattern as attacks/resistances; apply_action() stays registry-free; "leader" gates recruitment | 2026-03-02 | Active |
 | _inspect_unit_id separate from _selected_unit_id | Selection is movement intent; inspection is information — mixing would break enemy stat viewing | 2026-03-02 | Active |
 | AttackSnapshot flat struct (not reusing AttackDef) | Snapshot layer independent of schema layer; clean serialization DTO | 2026-03-02 | Active |
+| Opaque NorRustEngine pointer for C ABI | Mirrors NorRustCore without Godot deps; all functions take *mut NorRustEngine as first param | 2026-03-03 | Active |
+| Caller-frees string/array memory management | CString::into_raw for returns, norrust_free_string/norrust_free_int_array for cleanup | 2026-03-03 | Active |
+| Both bridges coexist (GDExtension + C ABI) | No conditional compilation; GDExtension preserved until Love2D client verified (Phase 27) | 2026-03-03 | Active |
 
 ## Tech Stack
 
 | Layer | Technology | Notes |
 |-------|------------|-------|
 | Simulation Core | Rust (norrust_core) | Headless, pure logic; cdylib + rlib |
-| Presentation | Redot 26.1 + GDScript | 2D hex rendering |
-| Integration | GDExtension (godot crate 0.2.4) | Rust ↔ Redot bridge |
+| Presentation (current) | Redot 26.1 + GDScript | 2D hex rendering (being replaced by Love2D) |
+| Presentation (target) | Love2D 11.5 + LuaJIT | 2D hex rendering via FFI |
+| Integration (legacy) | GDExtension (godot crate 0.2.4) | Rust ↔ Redot bridge (until Phase 27) |
+| Integration (new) | C ABI + LuaJIT FFI | extern "C" functions in ffi.rs |
 | Data Format | TOML / JSON | Config files, state export |
 | Reference | Wesnoth source | Read-only at `/home/chris/git_home/wesnoth` |
 
@@ -204,4 +210,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-02 after v1.0 Phase 23 In-Hex Readability (unit type name in every hex — 72 tests pass)*
+*Last updated: 2026-03-03 after v1.2 Phase 25 C ABI Bridge (36 extern "C" functions for LuaJIT FFI — 73 tests pass)*

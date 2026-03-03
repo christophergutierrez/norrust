@@ -6,6 +6,51 @@ Five phases take the project from data schema definitions through a fully playab
 
 ## Current Milestone
 
+**v1.2 Love2D Migration**
+Status: 🚧 In Progress
+Phases: 1 of 3 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 25 | C ABI Bridge | 1 | ✅ Complete | 2026-03-03 |
+| 26 | Love2D Client | TBD | Not started | - |
+| 27 | Redot Cleanup | TBD | Not started | - |
+
+## v1.2 Phase Details
+
+### Phase 25: C ABI Bridge ✅
+
+**Goal:** Replace GDExtension bridge with `#[no_mangle] pub extern "C"` functions callable via LuaJIT FFI. Expose all existing bridge methods (load_data, load_board, load_units, load_factions, get_state_json, apply_action_json, apply_move, apply_attack, end_turn, ai_take_turn, recruit, advance, etc.) through C ABI. Existing Rust tests continue passing — the core is unchanged; only the bridge layer changes.
+**Depends on:** Phase 24 (stable game with all features)
+**Constraints:** Core logic untouched; only bridge/FFI layer added. GDExtension bridge preserved until Phase 27.
+**Completed:** 2026-03-03
+
+**Plans:**
+- [x] 25-01: NorRustEngine opaque struct + 36 extern "C" functions + integration test
+
+**Delivered:**
+- `ffi.rs`: 36 `extern "C"` functions (4 lifecycle + 32 bridge) with `norrust_` prefix
+- `NorRustEngine` opaque pointer with caller-frees memory management (strings + int arrays)
+- `test_ffi_full_game_cycle`: comprehensive integration test covering create → load → query → move → end_turn → cleanup
+- Zero changes to existing modules; both GDExtension and C ABI bridges coexist
+- 73 tests passing (56 lib + 16 integration + 1 new FFI test)
+
+### Phase 26: Love2D Client
+
+**Goal:** Port `norrust_client/scripts/game.gd` to Love2D `main.lua`. Full feature parity: hex rendering, unit circles with labels, camera panning (drag + arrow keys), HUD, sidebar unit panel, recruit panel, setup mode (faction pick + leader placement), AI opponent, win detection. Uses LuaJIT FFI to call C ABI bridge from Phase 25.
+**Depends on:** Phase 25 (C ABI bridge must exist for Love2D to call Rust)
+**Constraints:** Pure Lua + Love2D; no external Lua dependencies beyond Love2D stdlib.
+
+### Phase 27: Redot Cleanup
+
+**Goal:** Remove `norrust_client/` directory (Redot project), remove `gdext` dependency from Cargo.toml, update PROJECT.md tech stack to reflect Love2D, document the migration in ROADMAP.md history.
+**Depends on:** Phase 26 (Love2D client at full parity before removing Redot)
+**Constraints:** Only remove after Love2D client is verified working.
+
+---
+
+## Previous Milestone
+
 **v1.1 Camera & Viewport**
 Status: ✅ Complete
 Phases: 1 of 1 complete
@@ -624,4 +669,4 @@ See MILESTONES.md for full history.
 </details>
 
 ---
-*Roadmap updated: 2026-03-03 — v1.1 Camera & Viewport milestone complete (Phase 24 Scrollable Camera)*
+*Roadmap updated: 2026-03-03 — v1.2 Love2D Migration milestone created (Phases 25-27)*

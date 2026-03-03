@@ -1,6 +1,7 @@
 pub mod ai;
 pub mod board;
 pub mod combat;
+pub mod ffi;
 pub mod game_state;
 pub mod gdext_node;
 pub mod hex;
