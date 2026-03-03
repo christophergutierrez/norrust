@@ -6,6 +6,38 @@ Five phases take the project from data schema definitions through a fully playab
 
 ## Current Milestone
 
+**v1.1 Camera & Viewport**
+Status: ✅ Complete
+Phases: 1 of 1 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 24 | Scrollable Camera | 1 | ✅ Complete | 2026-03-03 |
+
+## v1.1 Phase Details
+
+### Phase 24: Scrollable Camera ✅
+
+**Goal:** Make the board scrollable and hexes larger so the game is visually comfortable at any board size. Increase HEX_RADIUS from 64 to 96px, add drag-to-pan and arrow key panning, clamp camera to board bounds, and soft-pan camera to follow unit selection. HUD and sidebar panel remain screen-anchored.
+**Depends on:** Phase 23 (in-hex readability complete; all rendering uses world coords via _tile_map)
+**Constraints:** Pure GDScript/Redot changes — no Rust or bridge changes
+**Completed:** 2026-03-03
+
+**Plans:**
+- [x] 24-01: HEX_RADIUS 64→96 + drag-to-pan + arrow key pan + board clamp + selection-follow
+
+**Delivered:**
+- HEX_RADIUS 96px; HEX_CELL_W=166, HEX_CELL_H=192; labels scaled 1.5× (name 14pt, HP 18pt, XP 14pt)
+- Drag-to-pan on empty board space; arrow key continuous pan at 500px/sec
+- Board-edge clamping with half-viewport + HEX_RADIUS margin
+- Smooth camera lerp (factor 8.0) to center selected unit; keyboard pan cancels lerp
+- _select_unit() helper; _apply_camera_offset() clamp helper; _process(delta) for continuous input
+- Zero Rust changes; 72 tests passing (56 lib + 16 integration)
+
+---
+
+## Previous Milestone
+
 **v1.0 Game Readability**
 Status: ✅ Complete
 Phases: 2 of 2 complete
@@ -592,4 +624,4 @@ See MILESTONES.md for full history.
 </details>
 
 ---
-*Roadmap updated: 2026-03-02 — v1.0 Game Readability milestone complete (Phase 23 In-Hex Readability)*
+*Roadmap updated: 2026-03-03 — v1.1 Camera & Viewport milestone complete (Phase 24 Scrollable Camera)*

@@ -6,14 +6,14 @@ const BOARD_COLS  = 8
 const BOARD_ROWS  = 5
 
 # Circumradius of each drawn hexagon (center to vertex, pixels).
-const HEX_RADIUS  = 64.0
+const HEX_RADIUS  = 96.0
 
 # Tile cell size for a regular pointy-top hex with circumradius HEX_RADIUS:
-#   width  = R × √3  ≈ 111px  (horizontal center-to-center stride)
-#   height = R × 2   = 128px  (vertical bounding box; stride = height × 0.75 = 96 = R×1.5)
+#   width  = R × √3  ≈ 166px  (horizontal center-to-center stride)
+#   height = R × 2   = 192px  (vertical bounding box; stride = height × 0.75 = 144 = R×1.5)
 # This ensures same-row and diagonal neighbours both share edges with no gaps.
-const HEX_CELL_W  = 111   # roundi(HEX_RADIUS * sqrt(3))
-const HEX_CELL_H  = 128   # HEX_RADIUS * 2
+const HEX_CELL_W  = 166   # roundi(HEX_RADIUS * sqrt(3))
+const HEX_CELL_H  = 192   # HEX_RADIUS * 2
 
 const COLOR_FLAT = Color(0.29, 0.49, 0.31)  # #4a7c4e — fallback for hexes without color data
 
@@ -42,6 +42,19 @@ var _recruit_palette: Array = []
 var _selected_recruit_idx: int = 0
 var _recruit_error: String = ""
 var _inspect_unit_id: int = -1
+
+# Camera panning state
+var _board_origin: Vector2 = Vector2.ZERO     # tilemap position when board is centered
+var _camera_offset: Vector2 = Vector2.ZERO    # accumulated pan offset
+var _camera_min: Vector2 = Vector2.ZERO       # min clamp for _camera_offset
+var _camera_max: Vector2 = Vector2.ZERO       # max clamp for _camera_offset
+var _drag_active: bool = false
+var _drag_start: Vector2 = Vector2.ZERO       # mouse position at drag start
+var _drag_camera_start: Vector2 = Vector2.ZERO  # camera offset at drag start
+var _camera_target: Vector2 = Vector2.ZERO    # lerp target for selection-follow
+var _camera_lerping: bool = false
+const CAMERA_PAN_SPEED = 500.0                # pixels/sec for keyboard pan
+const CAMERA_LERP_SPEED = 8.0                 # lerp factor (~0.3s to reach target)
 
 func _ready() -> void:
 	_setup_rust_core()
@@ -83,11 +96,55 @@ func _center_camera() -> void:
 	var top_left     = _tile_map.map_to_local(Vector2i(0, 0))
 	var bot_right    = _tile_map.map_to_local(Vector2i(BOARD_COLS - 1, BOARD_ROWS - 1))
 	var board_centre = (top_left + bot_right) / 2.0
-	var screen_centre = Vector2(
-		ProjectSettings.get_setting("display/window/size/viewport_width"),
-		ProjectSettings.get_setting("display/window/size/viewport_height")
-	) / 2.0
-	_tile_map.position = screen_centre - board_centre
+	var vp_w = ProjectSettings.get_setting("display/window/size/viewport_width")
+	var vp_h = ProjectSettings.get_setting("display/window/size/viewport_height")
+	var screen_centre = Vector2(vp_w, vp_h) / 2.0
+	_board_origin = screen_centre - board_centre
+
+	# Compute clamp bounds: allow panning so any board edge can reach viewport center.
+	# board_pixel_extent = half the board size in pixels (from center to edge hex + margin)
+	var board_half_w = (bot_right.x - top_left.x) / 2.0 + HEX_RADIUS
+	var board_half_h = (bot_right.y - top_left.y) / 2.0 + HEX_RADIUS
+	var pan_range_x = maxf(board_half_w - vp_w / 2.0 + HEX_RADIUS, 0)
+	var pan_range_y = maxf(board_half_h - vp_h / 2.0 + HEX_RADIUS, 0)
+	_camera_min = Vector2(-pan_range_x, -pan_range_y)
+	_camera_max = Vector2(pan_range_x, pan_range_y)
+
+	_camera_offset = _camera_offset.clamp(_camera_min, _camera_max)
+	_tile_map.position = _board_origin + _camera_offset
+
+func _apply_camera_offset() -> void:
+	_camera_offset = _camera_offset.clamp(_camera_min, _camera_max)
+	_tile_map.position = _board_origin + _camera_offset
+
+func _process(delta: float) -> void:
+	# Keyboard panning (arrow keys only — WASD conflicts with game keys A/E/R)
+	var pan_dir = Vector2.ZERO
+	if Input.is_key_pressed(KEY_LEFT):
+		pan_dir.x += 1  # move board right = pan camera left
+	if Input.is_key_pressed(KEY_RIGHT):
+		pan_dir.x -= 1
+	if Input.is_key_pressed(KEY_UP):
+		pan_dir.y += 1
+	if Input.is_key_pressed(KEY_DOWN):
+		pan_dir.y -= 1
+
+	if pan_dir != Vector2.ZERO:
+		_camera_lerping = false  # keyboard pan cancels lerp
+		_camera_offset += pan_dir.normalized() * CAMERA_PAN_SPEED * delta
+		_apply_camera_offset()
+		queue_redraw()
+		return  # skip lerp this frame
+
+	# Smooth camera lerp toward selection target
+	if _camera_lerping:
+		_camera_offset = _camera_offset.lerp(_camera_target, CAMERA_LERP_SPEED * delta)
+		_apply_camera_offset()
+		queue_redraw()
+		if _camera_offset.distance_to(_camera_target) < 1.0:
+			_camera_offset = _camera_target
+			_apply_camera_offset()
+			_camera_lerping = false
 
 func _parse_state() -> Dictionary:
 	var json_str = _core.get_state_json()
@@ -187,27 +244,27 @@ func _draw_units(state: Dictionary) -> void:
 		var abbrev: String = (unit["def_id"] as String).split("_")[0].capitalize().left(7)
 		draw_string(
 			ThemeDB.fallback_font,
-			center + Vector2(-28, -6),
+			center + Vector2(-42, -9),
 			abbrev,
 			HORIZONTAL_ALIGNMENT_CENTER,
-			56, 9, Color.WHITE
+			84, 14, Color.WHITE
 		)
 		draw_string(
 			ThemeDB.fallback_font,
-			center + Vector2(-8, 7),
+			center + Vector2(-12, 10),
 			str(hp),
 			HORIZONTAL_ALIGNMENT_LEFT,
-			-1, 13, Color.WHITE
+			-1, 18, Color.WHITE
 		)
 		if unit["advancement_pending"]:
-			draw_arc(center, HEX_RADIUS * 0.52, 0, TAU, 24, Color(1.0, 0.85, 0.0), 2.5)
+			draw_arc(center, HEX_RADIUS * 0.52, 0, TAU, 24, Color(1.0, 0.85, 0.0), 3.5)
 		if unit["xp_needed"] > 0:
 			draw_string(
 				ThemeDB.fallback_font,
-				center + Vector2(-10, 20),
+				center + Vector2(-15, 28),
 				str(int(unit["xp"])) + "/" + str(int(unit["xp_needed"])),
 				HORIZONTAL_ALIGNMENT_LEFT,
-				-1, 10, Color.WHITE
+				-1, 14, Color.WHITE
 			)
 
 func _draw_setup_hud() -> void:
@@ -397,6 +454,28 @@ func _clear_selection() -> void:
 	_reachable_cells = []
 	_inspect_unit_id = -1
 
+func _select_unit(uid: int) -> void:
+	_selected_unit_id = uid
+	_inspect_unit_id  = uid
+	var raw = _core.get_reachable_hexes(uid)
+	_reachable_cells = []
+	for k in range(0, raw.size(), RH_STRIDE):
+		_reachable_cells.append(Vector2i(raw[k + RH_COL], raw[k + RH_ROW]))
+
+	# Camera-follow: compute offset that centers the unit in viewport
+	var state = _parse_state()
+	for unit in state.get("units", []):
+		if int(unit["id"]) == uid:
+			var unit_local = _tile_map.map_to_local(Vector2i(int(unit["col"]), int(unit["row"])))
+			var vp_w = ProjectSettings.get_setting("display/window/size/viewport_width")
+			var vp_h = ProjectSettings.get_setting("display/window/size/viewport_height")
+			var screen_centre = Vector2(vp_w, vp_h) / 2.0
+			# _board_origin + target_offset + unit_local = screen_centre
+			_camera_target = screen_centre - _board_origin - unit_local
+			_camera_target = _camera_target.clamp(_camera_min, _camera_max)
+			_camera_lerping = true
+			break
+
 func _hex_polygon(center: Vector2, radius: float) -> PackedVector2Array:
 	var pts = PackedVector2Array()
 	for i in range(6):
@@ -464,11 +543,30 @@ func _input(event: InputEvent) -> void:
 				queue_redraw()
 		return
 
+	# Drag-to-pan: mouse motion while dragging
+	if event is InputEventMouseMotion and _drag_active:
+		_camera_lerping = false
+		_camera_offset = _drag_camera_start + (event.position - _drag_start)
+		_apply_camera_offset()
+		queue_redraw()
+		return
+
+	# Mouse button release: end drag
+	if event is InputEventMouseButton and not (event as InputEventMouseButton).pressed \
+			and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
+		_drag_active = false
+		return
+
 	if not event is InputEventMouseButton:
 		return
 	if not (event as InputEventMouseButton).pressed:
 		return
 	if (event as InputEventMouseButton).button_index != MOUSE_BUTTON_LEFT:
+		return
+
+	# Check if click is in sidebar area (right 200px) — don't start drag there
+	var screen_w = ProjectSettings.get_setting("display/window/size/viewport_width")
+	if (event as InputEventMouseButton).position.x > screen_w - 200:
 		return
 
 	var local_pos = _tile_map.to_local(get_global_mouse_position())
@@ -477,6 +575,10 @@ func _input(event: InputEvent) -> void:
 	var row       = cell.y
 
 	if col < 0 or col >= BOARD_COLS or row < 0 or row >= BOARD_ROWS:
+		# Off-board click — start drag for panning
+		_drag_active = true
+		_drag_start = (event as InputEventMouseButton).position
+		_drag_camera_start = _camera_offset
 		_clear_selection()
 		queue_redraw()
 		return
@@ -524,13 +626,7 @@ func _input(event: InputEvent) -> void:
 
 	elif clicked_cell in pos_map and pos_map[clicked_cell][1] == active:
 		# Select this friendly unit and show its info panel
-		var uid = pos_map[clicked_cell][0]
-		_selected_unit_id = uid
-		_inspect_unit_id  = uid
-		var raw = _core.get_reachable_hexes(uid)
-		_reachable_cells = []
-		for k in range(0, raw.size(), RH_STRIDE):
-			_reachable_cells.append(Vector2i(raw[k + RH_COL], raw[k + RH_ROW]))
+		_select_unit(pos_map[clicked_cell][0])
 		queue_redraw()
 
 	elif clicked_cell in pos_map:
@@ -539,6 +635,10 @@ func _input(event: InputEvent) -> void:
 		queue_redraw()
 
 	else:
+		# Clicked empty on-board hex — start drag for panning
+		_drag_active = true
+		_drag_start = (event as InputEventMouseButton).position
+		_drag_camera_start = _camera_offset
 		_clear_selection()
 		queue_redraw()
 
