@@ -1,7 +1,7 @@
 # scenarios/crossing_units.toml — Unit placements for crossing scenario
 #
 # Blue: leader on keep (1,5) only — must recruit to build army
-# Red:  leader on keep (14,5) + 3 defenders in castle hexes
+# Red:  leader on keep (13,5) + 3 defenders in castle hexes
 
 [[units]]
 id = 1
@@ -14,14 +14,14 @@ row = 5
 id = 2
 unit_type = "Lieutenant"
 faction = 1
-col = 14
+col = 13
 row = 5
 
 [[units]]
 id = 3
 unit_type = "Spearman"
 faction = 1
-col = 13
+col = 14
 row = 5
 
 [[units]]

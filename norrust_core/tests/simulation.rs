@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use norrust_core::ai::ai_take_turn;
 use norrust_core::board::Board;
-use norrust_core::game_state::{apply_action, apply_recruit, Action, ActionError, GameState};
+use norrust_core::game_state::{
+    apply_action, apply_recruit, Action, ActionError, GameState, PendingSpawn, TriggerZone,
+};
 use norrust_core::hex::Hex;
 use norrust_core::loader::Registry;
 use norrust_core::schema::{AttackDef, FactionDef, UnitDef};
@@ -671,20 +673,20 @@ fn test_recruit_fails_non_leader_on_keep() {
 
 #[test]
 fn test_objective_hex_win() {
-    // A unit reaching the objective hex should trigger a win for that faction.
+    // A faction 0 unit reaching the objective hex should trigger a win.
     let board = Board::new(5, 1);
     let mut state = GameState::new(board);
     state.objective_hex = Some(Hex::from_offset(4, 0));
 
-    // Place faction 0 unit, no faction 1 units needed for this test
     state.place_unit(Unit::new(1, "fighter", 30, 0), Hex::from_offset(0, 0));
-    state.place_unit(Unit::new(2, "enemy", 30, 1), Hex::from_offset(3, 0));
+    state.place_unit(Unit::new(2, "enemy", 30, 1), Hex::from_offset(4, 0));
 
-    // Before reaching objective — no winner (both factions have units)
-    assert_eq!(state.check_winner(), None);
+    // Defender on objective does NOT trigger a win
+    assert_eq!(state.check_winner(), None, "defender on objective must not win");
 
-    // Move unit to objective hex
+    // Move attacker to objective hex
     state.positions.insert(1, Hex::from_offset(4, 0));
+    state.positions.insert(2, Hex::from_offset(3, 0)); // move defender off
 
     // Faction 0 should win
     assert_eq!(state.check_winner(), Some(0), "faction 0 unit on objective hex must win");
@@ -710,6 +712,158 @@ fn test_turn_limit_loss() {
     // Turn 3 — exceeds max_turns=2, defender wins
     state.turn = 3;
     assert_eq!(state.check_winner(), Some(1), "defender must win when turn > max_turns");
+}
+
+#[test]
+fn test_trigger_zone_spawns_units() {
+    // Moving a faction-0 unit into a trigger hex should spawn the designated enemies.
+    let board = Board::new(5, 5);
+    let mut state = GameState::new(board);
+
+    // Faction 0 mover at (0,0)
+    let mut mover = Unit::new(1, "fighter", 30, 0);
+    mover.movement = 5;
+    state.place_unit(mover, Hex::from_offset(0, 0));
+
+    // Faction 1 unit elsewhere (so game doesn't end by elimination)
+    state.place_unit(Unit::new(2, "enemy", 30, 1), Hex::from_offset(4, 4));
+
+    // Set up trigger zone at (1,0) that spawns two enemy units
+    let spawn_a = PendingSpawn {
+        unit: Unit::new(10, "ambusher_a", 25, 1),
+        destination: Hex::from_offset(1, 1),
+    };
+    let spawn_b = PendingSpawn {
+        unit: Unit::new(11, "ambusher_b", 25, 1),
+        destination: Hex::from_offset(2, 0),
+    };
+    state.trigger_zones.push(TriggerZone {
+        trigger_hex: Hex::from_offset(1, 0),
+        trigger_faction: 0,
+        spawns: vec![spawn_a, spawn_b],
+        triggered: false,
+    });
+
+    // Move into trigger hex
+    apply_action(&mut state, Action::Move { unit_id: 1, destination: Hex::from_offset(1, 0) })
+        .expect("move into trigger hex should succeed");
+
+    // Verify spawns
+    assert!(state.units.contains_key(&10), "ambusher_a must be spawned");
+    assert!(state.units.contains_key(&11), "ambusher_b must be spawned");
+    assert_eq!(state.positions[&10], Hex::from_offset(1, 1));
+    assert_eq!(state.positions[&11], Hex::from_offset(2, 0));
+    assert!(state.trigger_zones[0].triggered, "trigger zone must be marked triggered");
+}
+
+#[test]
+fn test_trigger_fires_only_once() {
+    // A triggered zone must not spawn units again when re-entered.
+    let board = Board::new(5, 5);
+    let mut state = GameState::new(board);
+
+    let mut mover = Unit::new(1, "fighter", 30, 0);
+    mover.movement = 5;
+    state.place_unit(mover, Hex::from_offset(0, 0));
+    state.place_unit(Unit::new(2, "enemy", 30, 1), Hex::from_offset(4, 4));
+
+    state.trigger_zones.push(TriggerZone {
+        trigger_hex: Hex::from_offset(1, 0),
+        trigger_faction: 0,
+        spawns: vec![PendingSpawn {
+            unit: Unit::new(10, "ambusher", 25, 1),
+            destination: Hex::from_offset(2, 1),
+        }],
+        triggered: false,
+    });
+
+    // First entry — triggers spawn
+    apply_action(&mut state, Action::Move { unit_id: 1, destination: Hex::from_offset(1, 0) })
+        .expect("first move should succeed");
+    assert!(state.units.contains_key(&10), "ambusher must be spawned on first entry");
+    let unit_count_after_first = state.units.len();
+
+    // End turns to reset moved flag, then move away and back
+    apply_action(&mut state, Action::EndTurn).unwrap();
+    apply_action(&mut state, Action::EndTurn).unwrap();
+    apply_action(&mut state, Action::Move { unit_id: 1, destination: Hex::from_offset(0, 0) })
+        .expect("move away should succeed");
+    apply_action(&mut state, Action::EndTurn).unwrap();
+    apply_action(&mut state, Action::EndTurn).unwrap();
+
+    // Second entry — must NOT spawn again
+    apply_action(&mut state, Action::Move { unit_id: 1, destination: Hex::from_offset(1, 0) })
+        .expect("second move should succeed");
+    assert_eq!(state.units.len(), unit_count_after_first, "no new units on re-entry");
+}
+
+#[test]
+fn test_trigger_skips_occupied_hex() {
+    // If a spawn destination is already occupied, that spawn is silently skipped.
+    let board = Board::new(5, 5);
+    let mut state = GameState::new(board);
+
+    let mut mover = Unit::new(1, "fighter", 30, 0);
+    mover.movement = 5;
+    state.place_unit(mover, Hex::from_offset(0, 0));
+
+    // Place a unit on the spawn destination to block it
+    state.place_unit(Unit::new(2, "blocker", 30, 1), Hex::from_offset(1, 1));
+
+    state.trigger_zones.push(TriggerZone {
+        trigger_hex: Hex::from_offset(1, 0),
+        trigger_faction: 0,
+        spawns: vec![
+            PendingSpawn {
+                unit: Unit::new(10, "blocked_spawn", 25, 1),
+                destination: Hex::from_offset(1, 1), // occupied by blocker
+            },
+            PendingSpawn {
+                unit: Unit::new(11, "free_spawn", 25, 1),
+                destination: Hex::from_offset(2, 0), // unoccupied
+            },
+        ],
+        triggered: false,
+    });
+
+    apply_action(&mut state, Action::Move { unit_id: 1, destination: Hex::from_offset(1, 0) })
+        .expect("move should succeed");
+
+    assert!(!state.units.contains_key(&10), "blocked spawn must be skipped");
+    assert!(state.units.contains_key(&11), "free spawn must be placed");
+    assert!(state.trigger_zones[0].triggered, "zone must still be marked triggered");
+}
+
+#[test]
+fn test_trigger_faction_filter() {
+    // A trigger zone with trigger_faction=0 must NOT fire when faction 1 moves into it.
+    let board = Board::new(5, 5);
+    let mut state = GameState::new(board);
+
+    // Faction 0 unit elsewhere
+    state.place_unit(Unit::new(1, "fighter", 30, 0), Hex::from_offset(4, 4));
+
+    // Faction 1 mover
+    let mut mover = Unit::new(2, "enemy_scout", 30, 1);
+    mover.movement = 5;
+    state.place_unit(mover, Hex::from_offset(0, 0));
+    state.active_faction = 1; // faction 1's turn
+
+    state.trigger_zones.push(TriggerZone {
+        trigger_hex: Hex::from_offset(1, 0),
+        trigger_faction: 0, // only fires for faction 0
+        spawns: vec![PendingSpawn {
+            unit: Unit::new(10, "ambusher", 25, 1),
+            destination: Hex::from_offset(2, 0),
+        }],
+        triggered: false,
+    });
+
+    apply_action(&mut state, Action::Move { unit_id: 2, destination: Hex::from_offset(1, 0) })
+        .expect("faction 1 move should succeed");
+
+    assert!(!state.units.contains_key(&10), "trigger must NOT fire for wrong faction");
+    assert!(!state.trigger_zones[0].triggered, "zone must remain untriggered");
 }
 
 #[test]

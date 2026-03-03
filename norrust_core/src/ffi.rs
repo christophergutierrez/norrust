@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use crate::board::Tile;
 use crate::combat::{time_of_day, TimeOfDay};
-use crate::game_state::{apply_action, apply_recruit, Action, ActionError, GameState};
+use crate::game_state::{apply_action, apply_recruit, Action, ActionError, GameState, PendingSpawn, TriggerZone};
 use crate::hex::Hex;
 use crate::loader::Registry;
 use crate::pathfinding::{get_zoc_hexes, reachable_hexes};
@@ -264,13 +264,48 @@ pub unsafe extern "C" fn norrust_load_units(
         Ok(p) => p,
         Err(_) => return 0,
     };
-    for p in placements {
+
+    // Place units and track highest ID
+    let mut max_id: u32 = 0;
+    for p in &placements {
         let unit = unit_from_registry(e, p.id, &p.unit_type, p.faction as u8);
         let hex = Hex::from_offset(p.col, p.row);
         if let Some(state) = e.game.as_mut() {
             state.place_unit(unit, hex);
         }
+        if p.id > max_id { max_id = p.id; }
     }
+
+    // Set next_unit_id above all placed units
+    if let Some(state) = e.game.as_mut() {
+        state.next_unit_id = max_id + 1;
+    }
+
+    // Load and resolve trigger zones from the same file
+    if let Ok(trigger_defs) = crate::scenario::load_triggers(&path) {
+        for tdef in trigger_defs {
+            let mut spawns = Vec::new();
+            for s in &tdef.spawns {
+                let state = e.game.as_mut().unwrap();
+                let uid = state.next_unit_id;
+                state.next_unit_id += 1;
+                let unit = unit_from_registry(e, uid, &s.unit_type, s.faction);
+                spawns.push(PendingSpawn {
+                    unit,
+                    destination: Hex::from_offset(s.col, s.row),
+                });
+            }
+            if let Some(state) = e.game.as_mut() {
+                state.trigger_zones.push(TriggerZone {
+                    trigger_hex: Hex::from_offset(tdef.trigger_col, tdef.trigger_row),
+                    trigger_faction: tdef.trigger_faction,
+                    spawns,
+                    triggered: false,
+                });
+            }
+        }
+    }
+
     1
 }
 
@@ -618,6 +653,16 @@ pub unsafe extern "C" fn norrust_get_state_json(
         Ok(s) => to_c_string(&s),
         Err(_) => to_c_string(""),
     }
+}
+
+// ── Unit ID management ──────────────────────────────────────────────────
+
+#[no_mangle]
+pub unsafe extern "C" fn norrust_get_next_unit_id(engine: *mut NorRustEngine) -> i32 {
+    engine.as_ref()
+        .and_then(|e| e.game.as_ref())
+        .map(|s| s.next_unit_id as i32)
+        .unwrap_or(1)
 }
 
 // ── Actions ──────────────────────────────────────────────────────────────────

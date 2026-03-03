@@ -21,6 +21,22 @@ pub enum ActionError {
     LeaderNotOnKeep,
 }
 
+/// A unit waiting to be spawned when a trigger zone fires.
+#[derive(Debug, Clone)]
+pub struct PendingSpawn {
+    pub unit: Unit,
+    pub destination: Hex,
+}
+
+/// A hex that spawns enemies when a unit of the designated faction enters it.
+#[derive(Debug, Clone)]
+pub struct TriggerZone {
+    pub trigger_hex: Hex,
+    pub trigger_faction: u8,
+    pub spawns: Vec<PendingSpawn>,
+    pub triggered: bool,
+}
+
 /// Discrete state changes that may be applied to a `GameState`.
 #[derive(Debug, Clone)]
 pub enum Action {
@@ -46,6 +62,10 @@ pub struct GameState {
     pub objective_hex: Option<Hex>,
     /// Maximum number of turns. If exceeded, defender (faction 1) wins by timeout.
     pub max_turns: Option<u32>,
+    /// Trigger zones — spawn enemies when a unit of the designated faction enters.
+    pub trigger_zones: Vec<TriggerZone>,
+    /// Next available unit ID for auto-assigned units (trigger spawns, etc.).
+    pub next_unit_id: u32,
 }
 
 impl GameState {
@@ -61,6 +81,8 @@ impl GameState {
             gold: [10, 10],
             objective_hex: None,
             max_turns: None,
+            trigger_zones: Vec::new(),
+            next_unit_id: 1,
         }
     }
 
@@ -75,12 +97,15 @@ impl GameState {
     ///
     /// Priority: 1) objective hex reached, 2) turn limit exceeded, 3) elimination.
     pub fn check_winner(&self) -> Option<u8> {
-        // 1. Objective hex: if any unit occupies it, that faction wins
+        // 1. Objective hex: attacker (faction 0) wins by reaching it.
+        //    Defender units already on the objective don't count.
         if let Some(obj) = self.objective_hex {
             for (&uid, &hex) in &self.positions {
                 if hex == obj {
                     if let Some(unit) = self.units.get(&uid) {
-                        return Some(unit.faction);
+                        if unit.faction == 0 {
+                            return Some(0);
+                        }
                     }
                 }
             }
@@ -166,6 +191,24 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
 
             state.positions.insert(unit_id, destination);
             state.units.get_mut(&unit_id).unwrap().moved = true;
+
+            // Check trigger zones: spawn enemies if a matching zone is entered
+            let mover_faction = state.active_faction;
+            let mut spawns_to_place: Vec<PendingSpawn> = Vec::new();
+            for tz in &mut state.trigger_zones {
+                if !tz.triggered && tz.trigger_hex == destination && tz.trigger_faction == mover_faction {
+                    tz.triggered = true;
+                    spawns_to_place.extend(tz.spawns.drain(..));
+                }
+            }
+            for spawn in spawns_to_place {
+                if state.board.contains(spawn.destination)
+                    && !state.positions.values().any(|&h| h == spawn.destination)
+                {
+                    state.place_unit(spawn.unit, spawn.destination);
+                }
+            }
+
             Ok(())
         }
 

@@ -29,6 +29,7 @@ local PLAYING    = 4
 local SCENARIOS = {
     {name = "Contested (8x5)",  board = "contested.toml",  units = "contested_units.toml", preset_units = false},
     {name = "Crossing (16x10)", board = "crossing.toml",   units = "crossing_units.toml",  preset_units = true},
+    {name = "Ambush (12x8)",    board = "ambush.toml",     units = "ambush_units.toml",    preset_units = true},
 }
 
 -- ── State variables ─────────────────────────────────────────────────────────
@@ -723,12 +724,7 @@ function love.keypressed(key)
                         -- Both factions chosen — load units and start
                         norrust.apply_starting_gold(engine, faction_id[1], faction_id[2])
                         norrust.load_units(engine, scenarios_path .. "/" .. scenario_units)
-                        local state = norrust.get_state(engine)
-                        for _, u in ipairs(state.units or {}) do
-                            if int(u.id) >= next_unit_id then
-                                next_unit_id = int(u.id) + 1
-                            end
-                        end
+                        next_unit_id = norrust.get_next_unit_id(engine)
                         game_mode = PLAYING
                     end
                 else

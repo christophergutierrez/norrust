@@ -111,6 +111,10 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] LoadedBoard struct: load_board() returns board + objective_hex + max_turns from TOML — Phase 28 (28-01)
 - [x] Scenario selection screen in Love2D with dynamic board dimensions from state JSON — Phase 28 (28-01)
 - [x] Crossing scenario: 16x10 board with preset units, 30-turn limit, reach-enemy-keep objective — Phase 28 (28-01)
+- [x] TriggerZone system: schema (TriggerDef/TriggerSpawnDef), runtime (PendingSpawn/TriggerZone), fire-on-Move with two-phase drain, load_triggers() — Phase 29 (29-01)
+- [x] Ambush scenario: 12x8 forest board with 3 trigger zones spawning 5 hidden enemies, 25-turn limit, preset units — Phase 29 (29-01)
+- [x] norrust_get_next_unit_id() FFI function: avoids ID conflicts after trigger-spawned units — Phase 29 (29-01)
+- [x] Headless scenario validation: auto-discovery of TOML pairs, 10 structural invariants, false-winner detection, FFI symbol completeness — Phase 29 (29-01)
 
 ### Active (In Progress / Deferred)
 
@@ -203,6 +207,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | push/pop camera transform in Love2D | Separates board-space hex drawing from screen-space UI cleanly | 2026-03-03 | Active |
 | ffi.gc destructor on engine pointer | Automatic cleanup on GC; no explicit free required; memory-safe even if love.quit not called | 2026-03-03 | Active |
 | reachable_set as string-keyed lookup ("col,row" → true) | O(1) hex containment checks for click handler; array iteration O(n) insufficient | 2026-03-03 | Active |
+| TriggerZone with PendingSpawn: pre-built Units at load time | Avoids registry access at trigger-fire time; IDs assigned sequentially from next_unit_id | 2026-03-03 | Active |
+| Two-phase drain pattern for spawn placement | Collect spawns into local Vec then place; avoids mutable borrow conflict on state | 2026-03-03 | Active |
+| trigger_faction defaults to 0 via serde default | Most triggers are player-activated; AI-triggered zones opt-in | 2026-03-03 | Active |
 | 3-tier check_winner() priority: objective hex → turn limit → elimination | Most specific condition first; universal fallback last; future scenarios mix and match | 2026-03-03 | Active |
 | check_winner() as GameState method | Headless-testable without FFI; direct access to state fields | 2026-03-03 | Active |
 | LoadedBoard struct from load_board() | Board + scenario metadata returned together; scenarios self-describe win conditions | 2026-03-03 | Active |
@@ -226,4 +233,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-03 after Phase 28 — objective hex + turn limit win conditions, crossing scenario (76 tests pass)*
+*Last updated: 2026-03-03 after Phase 29 — trigger zones, ambush scenario, headless validation (83 tests pass)*

@@ -8,12 +8,12 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 **v1.3 Campaign Mode**
 Status: 🚧 In Progress
-Phases: 1 of 3 complete
+Phases: 2 of 3 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 28 | Map Crossing | 1 | ✅ Complete | 2026-03-03 |
-| 29 | Second Scenario | TBD | Not started | - |
+| 29 | Second Scenario | 1 | ✅ Complete | 2026-03-03 |
 | 30 | Campaign Chain | TBD | Not started | - |
 
 ## v1.3 Phase Details
@@ -38,11 +38,26 @@ Phases: 1 of 3 complete
 - `preset_units` flag for scenarios with TOML-defined units (skip manual setup)
 - 3 new integration tests; 76 tests passing (56 lib + 19 integration + 1 FFI)
 
-### Phase 29: Second Scenario
+### Phase 29: Second Scenario ✅
 
 **Goal:** Create a second standalone board with different layout and terrain. Possibly introduce trigger zones where enemies spawn when player units enter an area. Must be independently playable as a single scenario.
 **Depends on:** Phase 28 (map crossing win condition must work)
 **Constraints:** New board design, different feel from Phase 28. Standalone — no carry-over dependency.
+**Completed:** 2026-03-03
+
+**Plans:**
+- [x] 29-01: TriggerZone system + ambush scenario + headless validation
+
+**Delivered:**
+- `TriggerZone` system: `TriggerDef`/`TriggerSpawnDef` schema, `PendingSpawn`/`TriggerZone` runtime, fire-on-Move with two-phase drain
+- `load_triggers()` function + trigger loading wired into `norrust_load_units()` FFI
+- `norrust_get_next_unit_id()` FFI function for ID conflict avoidance
+- `scenarios/ambush.toml`: 12×8 forest-heavy board with keeps, castles, objective (10,4), 25-turn limit
+- `scenarios/ambush_units.toml`: 6 units + 3 trigger zones spawning 5 hidden enemies
+- Love2D: ambush in scenario selection, get_next_unit_id wiring
+- Headless scenario validation: auto-discovery, 10 invariants, false-winner detection, FFI tests
+- Crossing scenario bugfixes: Blue castle ring + Red keep position
+- 83 tests passing (56 lib + 23 integration + 3 scenario_validation + 1 FFI)
 
 ### Phase 30: Campaign Chain
 
@@ -739,4 +754,4 @@ See MILESTONES.md for full history.
 </details>
 
 ---
-*Roadmap updated: 2026-03-03 — v1.3 Campaign Mode milestone created (Phases 28-30)*
+*Roadmap updated: 2026-03-03 — Phase 29 complete (trigger zones + ambush scenario)*

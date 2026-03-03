@@ -1,0 +1,94 @@
+# scenarios/ambush_units.toml — Unit placements + trigger zones for ambush scenario
+#
+# Blue: leader on keep (1,4) + 2 units on adjacent castles — must recruit to push
+# Red:  leader on keep (10,4) + 2 defenders on adjacent castles
+# Triggers: 3 hidden zones in the forest that spawn enemies when player enters
+
+[[units]]
+id = 1
+unit_type = "Lieutenant"
+faction = 0
+col = 1
+row = 4
+
+[[units]]
+id = 2
+unit_type = "Spearman"
+faction = 0
+col = 0
+row = 3
+
+[[units]]
+id = 3
+unit_type = "Bowman"
+faction = 0
+col = 2
+row = 4
+
+[[units]]
+id = 4
+unit_type = "Lieutenant"
+faction = 1
+col = 10
+row = 4
+
+[[units]]
+id = 5
+unit_type = "Spearman"
+faction = 1
+col = 9
+row = 3
+
+[[units]]
+id = 6
+unit_type = "Bowman"
+faction = 1
+col = 10
+row = 5
+
+# ── Trigger Zones ────────────────────────────────────────────────────────
+
+# Trigger 1: forest ambush at (4,4) — spawns Spearman + Bowman
+[[triggers]]
+trigger_col = 4
+trigger_row = 4
+
+[[triggers.spawns]]
+unit_type = "Spearman"
+faction = 1
+col = 4
+row = 3
+
+[[triggers.spawns]]
+unit_type = "Bowman"
+faction = 1
+col = 5
+row = 3
+
+# Trigger 2: forest ambush at (6,2) — spawns Heavy Infantryman
+[[triggers]]
+trigger_col = 6
+trigger_row = 2
+
+[[triggers.spawns]]
+unit_type = "Heavy Infantryman"
+faction = 1
+col = 7
+row = 2
+
+# Trigger 3: forest trap at (7,4) — spawns Spearman + Bowman
+[[triggers]]
+trigger_col = 7
+trigger_row = 4
+
+[[triggers.spawns]]
+unit_type = "Spearman"
+faction = 1
+col = 8
+row = 4
+
+[[triggers.spawns]]
+unit_type = "Bowman"
+faction = 1
+col = 8
+row = 5

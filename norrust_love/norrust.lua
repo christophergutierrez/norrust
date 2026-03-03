@@ -177,6 +177,9 @@ ffi.cdef[[
 
     // AI
     void norrust_ai_take_turn(NorRustEngine* engine, int32_t faction);
+
+    // Trigger zones
+    int32_t norrust_get_next_unit_id(NorRustEngine* engine);
 ]]
 
 -- ── Load shared library ─────────────────────────────────────────────────────
@@ -370,6 +373,12 @@ end
 
 function M.ai_take_turn(engine, faction)
     lib.norrust_ai_take_turn(engine, faction)
+end
+
+-- ── Trigger zones ──────────────────────────────────────────────────────────
+
+function M.get_next_unit_id(engine)
+    return lib.norrust_get_next_unit_id(engine)
 end
 
 return M

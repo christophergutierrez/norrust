@@ -70,8 +70,28 @@ pub struct UnitPlacement {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct TriggerSpawnDef {
+    pub unit_type: String,
+    pub faction: u8,
+    pub col: i32,
+    pub row: i32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TriggerDef {
+    pub trigger_col: i32,
+    pub trigger_row: i32,
+    /// Which faction's units trigger this zone (default 0 = player).
+    #[serde(default)]
+    pub trigger_faction: u8,
+    pub spawns: Vec<TriggerSpawnDef>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct UnitsDef {
     pub units: Vec<UnitPlacement>,
+    #[serde(default)]
+    pub triggers: Vec<TriggerDef>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

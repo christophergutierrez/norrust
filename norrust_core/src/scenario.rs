@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::board::Board;
 use crate::hex::Hex;
-use crate::schema::{BoardDef, UnitPlacement, UnitsDef};
+use crate::schema::{BoardDef, TriggerDef, UnitPlacement, UnitsDef};
 
 /// Result of loading a board file — includes board plus optional scenario metadata.
 #[derive(Debug)]
@@ -66,6 +66,18 @@ pub fn load_units(path: &Path) -> Result<Vec<UnitPlacement>, String> {
     let def: UnitsDef = toml::from_str(&text)
         .map_err(|e| format!("load_units: parse error in {:?}: {}", path, e))?;
     Ok(def.units)
+}
+
+/// Load trigger zone definitions from a TOML units file.
+///
+/// Parses the same file as `load_units()` but extracts the optional `[[triggers]]`
+/// section. Returns an empty vec if no triggers are defined.
+pub fn load_triggers(path: &Path) -> Result<Vec<TriggerDef>, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("load_triggers: cannot read {:?}: {}", path, e))?;
+    let def: UnitsDef = toml::from_str(&text)
+        .map_err(|e| format!("load_triggers: parse error in {:?}: {}", path, e))?;
+    Ok(def.triggers)
 }
 
 #[cfg(test)]

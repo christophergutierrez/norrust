@@ -1,0 +1,26 @@
+# scenarios/ambush.toml — 12 columns × 8 rows, row-major (left→right, top→bottom)
+#
+# Campaign scenario: player must navigate through dense forest to reach enemy keep.
+# Hidden trigger zones spawn enemy reinforcements when player units enter.
+#
+# Blue keep: (1,4) — 6 adjacent castle hexes: (0,3)(1,3)(0,4)(2,4)(0,5)(1,5)
+# Red  keep: (10,4) — 6 adjacent castle hexes: (9,3)(10,3)(9,4)(11,4)(9,5)(10,5)
+#
+# Objective: Blue must reach (10,4) within 25 turns.
+
+width = 12
+height = 8
+objective_col = 10
+objective_row = 4
+max_turns = 25
+
+tiles = [
+  "forest", "forest", "hills",  "forest", "forest", "hills",  "forest", "forest", "hills",  "forest", "forest", "forest",
+  "forest", "forest", "forest", "flat",   "forest", "forest", "forest", "flat",   "forest", "forest", "forest", "forest",
+  "forest", "forest", "flat",   "flat",   "forest", "hills",  "forest", "village","forest", "flat",   "forest", "forest",
+  "castle", "castle", "forest", "hills",  "flat",   "forest", "flat",   "forest", "flat",   "castle", "castle", "forest",
+  "castle", "keep",   "castle", "flat",   "forest", "village","flat",   "forest", "flat",   "castle", "keep",   "castle",
+  "castle", "castle", "forest", "flat",   "hills",  "forest", "village","flat",   "flat",   "castle", "castle", "forest",
+  "forest", "forest", "flat",   "hills",  "forest", "flat",   "forest", "forest", "hills",  "flat",   "forest", "forest",
+  "forest", "forest", "forest", "forest", "hills",  "forest", "forest", "forest", "forest", "hills",  "forest", "forest",
+]
