@@ -95,6 +95,11 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] apply_recruit() pure Rust function: castle hex validation, gold check (can't go negative), deduction, placement — Phase 21 (21-02)
 - [x] ActionRequest::Recruit in JSON API — AI agents can recruit via external JSON interface — Phase 21 (21-02)
 - [x] Castle terrain hexes in contested.toml (col 0 + col 7); GDScript 'R' key recruit panel with teal highlights and unit cost display — Phase 21 (21-02)
+- [x] Unit abilities field: `Vec<String>` on Unit, copied from UnitDef at spawn/advance; lieutenant/elvish_captain/orcish_warrior TOMLs carry "leader"/"leadership" abilities — Phase 22 (22-01)
+- [x] Recruitment gated on "leader" ability: apply_recruit() + ai_recruit() check abilities before finding keep — Phase 22 (22-01)
+- [x] AttackSnapshot struct + UnitSnapshot.movement/attacks/abilities — full unit loadout in StateSnapshot JSON — Phase 22 (22-01)
+- [x] _inspect_unit_id inspection state in game.gd (independent from _selected_unit_id): click any unit to open stat panel — Phase 22 (22-01)
+- [x] _draw_unit_panel(): faction-colored header, HP, XP (conditional), movement+exhaustion status, per-attack breakdown, abilities list in right sidebar — Phase 22 (22-01)
 
 ### Active (In Progress / Deferred)
 
@@ -176,6 +181,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | apply_recruit() free function (not Action enum variant) | Advance pattern: registry-free, headlessly testable; bridge handles cost lookup + Unit construction | 2026-03-02 | Active |
 | Castle validity = terrain_id == "castle" only | No leader adjacency requirement — keeps recruitment simple; factional restriction via scenario design | 2026-03-02 | Active |
 | apply_starting_gold() as separate bridge call (not auto in load_factions) | GDScript knows both faction IDs only at PLAYING transition; explicit timing beats implicit side-effects | 2026-03-02 | Active |
+| abilities: Vec<String> on Unit copied from UnitDef at spawn/advance | Same pattern as attacks/resistances; apply_action() stays registry-free; "leader" gates recruitment | 2026-03-02 | Active |
+| _inspect_unit_id separate from _selected_unit_id | Selection is movement intent; inspection is information — mixing would break enemy stat viewing | 2026-03-02 | Active |
+| AttackSnapshot flat struct (not reusing AttackDef) | Snapshot layer independent of schema layer; clean serialization DTO | 2026-03-02 | Active |
 
 ## Tech Stack
 
@@ -195,4 +203,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-02 after v0.9 Game Mechanics (Gold Economy + Factions + Recruitment — 69 tests pass)*
+*Last updated: 2026-03-02 after v1.0 Phase 22 Selection Panel (unit stat panel + UnitSnapshot loadout — 72 tests pass)*

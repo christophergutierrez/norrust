@@ -14,6 +14,16 @@ pub struct TileSnapshot {
     pub owner: i32,
 }
 
+/// Flat representation of a single attack in a unit's loadout.
+#[derive(Debug, Serialize)]
+pub struct AttackSnapshot {
+    pub id:      String,
+    pub name:    String,
+    pub damage:  u32,
+    pub strikes: u32,
+    pub range:   String,
+}
+
 /// Flat representation of a single runtime unit.
 #[derive(Debug, Serialize)]
 pub struct UnitSnapshot {
@@ -29,6 +39,9 @@ pub struct UnitSnapshot {
     pub xp: u32,
     pub xp_needed: u32,
     pub advancement_pending: bool,
+    pub movement: u32,
+    pub attacks: Vec<AttackSnapshot>,
+    pub abilities: Vec<String>,
 }
 
 /// Complete serializable snapshot of a GameState for external consumers.
@@ -86,6 +99,15 @@ impl StateSnapshot {
                     xp: unit.xp,
                     xp_needed: unit.xp_needed,
                     advancement_pending: unit.advancement_pending,
+                    movement: unit.movement,
+                    attacks: unit.attacks.iter().map(|a| AttackSnapshot {
+                        id:      a.id.clone(),
+                        name:    a.name.clone(),
+                        damage:  a.damage,
+                        strikes: a.strikes,
+                        range:   a.range.clone(),
+                    }).collect(),
+                    abilities: unit.abilities.clone(),
                 })
             })
             .collect();
@@ -252,6 +274,39 @@ mod tests {
         // JSON must include the owner field
         let json = serde_json::to_string(&snap2).unwrap();
         assert!(json.contains("\"owner\":0"));
+    }
+
+    #[test]
+    fn test_unit_snapshot_includes_movement_attacks_abilities() {
+        use crate::schema::AttackDef;
+
+        let board = Board::new(4, 3);
+        let mut state = GameState::new(board);
+        let mut unit = Unit::new(1, "Lieutenant", 40, 0);
+        unit.movement = 6;
+        unit.attacks = vec![AttackDef {
+            id: "sword".to_string(), name: "sword".to_string(),
+            damage: 8, strikes: 3,
+            attack_type: "blade".to_string(), range: "melee".to_string(),
+            ..Default::default()
+        }];
+        unit.abilities = vec!["leader".to_string(), "leadership".to_string()];
+        state.place_unit(unit, Hex::from_offset(0, 0));
+
+        let snap = StateSnapshot::from_game_state(&state);
+        let u = &snap.units[0];
+        assert_eq!(u.movement, 6);
+        assert_eq!(u.attacks.len(), 1);
+        assert_eq!(u.attacks[0].name, "sword");
+        assert_eq!(u.attacks[0].damage, 8);
+        assert_eq!(u.attacks[0].strikes, 3);
+        assert_eq!(u.attacks[0].range, "melee");
+        assert_eq!(u.abilities, vec!["leader", "leadership"]);
+
+        let json = serde_json::to_string(&snap).expect("serialization must succeed");
+        assert!(json.contains("\"movement\":6"), "movement must appear in JSON");
+        assert!(json.contains("\"attacks\":["), "attacks array must appear in JSON");
+        assert!(json.contains("\"abilities\":["), "abilities array must appear in JSON");
     }
 
     #[test]

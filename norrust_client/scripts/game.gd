@@ -41,6 +41,7 @@ var _recruit_mode: bool = false
 var _recruit_palette: Array = []
 var _selected_recruit_idx: int = 0
 var _recruit_error: String = ""
+var _inspect_unit_id: int = -1
 
 func _ready() -> void:
 	_setup_rust_core()
@@ -166,6 +167,11 @@ func _draw() -> void:
 
 		if _recruit_mode:
 			_draw_recruit_panel(state)
+		elif _inspect_unit_id != -1:
+			for unit in state.get("units", []):
+				if int(unit["id"]) == _inspect_unit_id:
+					_draw_unit_panel(unit)
+					break
 
 func _draw_units(state: Dictionary) -> void:
 	for unit in state.get("units", []):
@@ -292,6 +298,76 @@ func _draw_recruit_panel(state: Dictionary) -> void:
 		draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, y),
 			label, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, col)
 
+func _draw_unit_panel(unit: Dictionary) -> void:
+	var screen_w = ProjectSettings.get_setting("display/window/size/viewport_width")
+	var screen_h = ProjectSettings.get_setting("display/window/size/viewport_height")
+	draw_rect(Rect2(screen_w - 200, 0, 200, screen_h), Color(0, 0, 0, 0.75))
+
+	var faction = int(unit["faction"])
+	var faction_name  = "Blue" if faction == 0 else "Red"
+	var faction_color = Color(0.25, 0.42, 0.88) if faction == 0 else Color(0.80, 0.12, 0.12)
+
+	var y = 24
+	# Unit name + faction
+	draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, y),
+		unit["def_id"], HORIZONTAL_ALIGNMENT_LEFT, -1, 15, faction_color)
+	y += 18
+	draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, y),
+		faction_name, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, faction_color)
+	y += 20
+
+	# HP
+	draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, y),
+		"HP: %d / %d" % [int(unit["hp"]), int(unit["max_hp"])],
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color.WHITE)
+	y += 16
+
+	# XP
+	if int(unit["xp_needed"]) > 0:
+		draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, y),
+			"XP: %d / %d" % [int(unit["xp"]), int(unit["xp_needed"])],
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color.WHITE)
+		y += 16
+
+	# Movement
+	var move_status = ""
+	if unit["moved"] and unit["attacked"]:
+		move_status = " (done)"
+	elif unit["moved"]:
+		move_status = " (moved)"
+	elif unit["attacked"]:
+		move_status = " (attacked)"
+	draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, y),
+		"Move: %d%s" % [int(unit["movement"]), move_status],
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color.WHITE)
+	y += 20
+
+	# Attacks
+	var attacks = unit.get("attacks", [])
+	if attacks.size() > 0:
+		draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, y),
+			"── Attacks ──", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color.LIGHT_GRAY)
+		y += 15
+		for atk in attacks:
+			draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, y),
+				"%s" % atk["name"], HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color.YELLOW)
+			y += 14
+			draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, y),
+				"  %d×%d %s" % [int(atk["damage"]), int(atk["strikes"]), atk["range"]],
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color.WHITE)
+			y += 15
+
+	# Abilities
+	var abilities = unit.get("abilities", [])
+	if abilities.size() > 0:
+		draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, y),
+			"── Abilities ──", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color.LIGHT_GRAY)
+		y += 15
+		for ab in abilities:
+			draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, y),
+				ab, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(0.6, 1.0, 0.6))
+			y += 14
+
 func _build_unit_pos_map(state: Dictionary) -> Dictionary:
 	# Returns Dictionary: Vector2i(col, row) -> [unit_id, faction]
 	var result: Dictionary = {}
@@ -311,6 +387,7 @@ func _reload_palette() -> void:
 func _clear_selection() -> void:
 	_selected_unit_id = -1
 	_reachable_cells = []
+	_inspect_unit_id = -1
 
 func _hex_polygon(center: Vector2, radius: float) -> PackedVector2Array:
 	var pts = PackedVector2Array()
@@ -426,6 +503,7 @@ func _input(event: InputEvent) -> void:
 		var result   = _core.apply_attack(_selected_unit_id, enemy_id)
 		print("Attack result: %d" % result)
 		_clear_selection()
+		_inspect_unit_id = enemy_id   # show attacked unit's stats in panel
 		queue_redraw()
 		_check_game_over()
 
@@ -437,13 +515,19 @@ func _input(event: InputEvent) -> void:
 		queue_redraw()
 
 	elif clicked_cell in pos_map and pos_map[clicked_cell][1] == active:
-		# Select this friendly unit
+		# Select this friendly unit and show its info panel
 		var uid = pos_map[clicked_cell][0]
 		_selected_unit_id = uid
+		_inspect_unit_id  = uid
 		var raw = _core.get_reachable_hexes(uid)
 		_reachable_cells = []
 		for k in range(0, raw.size(), RH_STRIDE):
 			_reachable_cells.append(Vector2i(raw[k + RH_COL], raw[k + RH_ROW]))
+		queue_redraw()
+
+	elif clicked_cell in pos_map:
+		# Clicked an enemy unit with no friendly selected — show info panel only
+		_inspect_unit_id = pos_map[clicked_cell][0]
 		queue_redraw()
 
 	else:

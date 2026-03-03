@@ -6,12 +6,40 @@ Five phases take the project from data schema definitions through a fully playab
 
 ## Current Milestone
 
-Awaiting next milestone definition.
-Run `/paul:discuss-milestone` or `/paul:milestone` to define.
+**v1.0 Game Readability**
+Status: 🚧 In Progress
+Phases: 1 of 2 complete
 
-## Next Milestone
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 22 | Selection Panel | 1 | ✅ Complete | 2026-03-02 |
+| 23 | In-Hex Readability | TBD | Not started | - |
 
-Run `/paul:discuss-milestone` to define scope.
+## v1.0 Phase Details
+
+### Phase 22: Selection Panel ✅
+
+**Goal:** Clicking any unit (friendly or enemy) opens a stat panel showing full details from the existing JSON snapshot: unit name/type, level, HP (current/max), XP progress, movement budget remaining, all attacks (name, damage, strikes, range), terrain defense % at current position, and abilities list. Panel is read-only for enemy units. No new Rust bridges required — all data already in StateSnapshot JSON.
+**Depends on:** Phase 21 (stable GameState + JSON snapshot with all unit fields)
+**Completed:** 2026-03-02
+
+**Plans:**
+- [x] 22-01: UnitSnapshot JSON extension + _inspect_unit_id state + _draw_unit_panel() in game.gd
+
+**Delivered:**
+- `AttackSnapshot` struct + `UnitSnapshot.movement`, `.attacks`, `.abilities` — full loadout in StateSnapshot JSON
+- `_inspect_unit_id` inspection state in game.gd independent of selection state
+- `_draw_unit_panel()`: faction-colored header, HP, XP (conditional), movement+exhaustion, per-attack breakdown, abilities list
+- Click-any-unit (friendly or enemy) shows panel; empty hex clears; recruit mode takes priority
+- 72 tests passing (1 new: test_unit_snapshot_includes_movement_attacks_abilities)
+
+### Phase 23: In-Hex Readability
+
+**Goal:** Show the unit's type name (or meaningful abbreviation) inside each hex at all times so units are identifiable without clicking. May require increasing HEX_SIZE to give sufficient real estate alongside existing HP/XP text — coordinate math in _draw() updated accordingly if so.
+**Depends on:** Phase 22 (selection panel complete; hex layout changes may interact with panel positioning)
+**Plans:** TBD (defined during /paul:plan)
+
+---
 
 ## v0.9 Phase Details
 
@@ -555,4 +583,4 @@ See MILESTONES.md for full history.
 </details>
 
 ---
-*Roadmap updated: 2026-03-02 — v0.9 Game Mechanics complete*
+*Roadmap updated: 2026-03-02 — Phase 22 Selection Panel complete*
