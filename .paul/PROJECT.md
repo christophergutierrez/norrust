@@ -122,8 +122,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 ### Technical
 - Clean-room rewrite — no code copied from `/home/chris/git_home/wesnoth` (reference only)
 - Simulation core must be pure Rust (no graphics/UI dependencies)
-- Presentation layer migrating from Redot to Love2D (v1.2 milestone)
-- Integration via C ABI (extern "C" + LuaJIT FFI); GDExtension bridge preserved until Phase 27
+- Presentation layer: Love2D 11.5 (norrust_love/)
+- Integration via C ABI (extern "C" + LuaJIT FFI)
 
 ### Architecture
 - Strict separation: Rust core knows nothing about graphics or UI
@@ -203,10 +203,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | Layer | Technology | Notes |
 |-------|------------|-------|
 | Simulation Core | Rust (norrust_core) | Headless, pure logic; cdylib + rlib |
-| Presentation (current) | Redot 26.1 + GDScript | 2D hex rendering (being replaced by Love2D) |
-| Presentation (target) | Love2D 11.5 + LuaJIT | 2D hex rendering via FFI |
-| Integration (legacy) | GDExtension (godot crate 0.2.4) | Rust ↔ Redot bridge (until Phase 27) |
-| Integration (new) | C ABI + LuaJIT FFI | extern "C" functions in ffi.rs |
+| Presentation | Love2D 11.5 + LuaJIT | 2D hex rendering via FFI (norrust_love/) |
+| Integration | C ABI + LuaJIT FFI | extern "C" functions in ffi.rs → norrust.lua |
 | Data Format | TOML / JSON | Config files, state export |
 | Reference | Wesnoth source | Read-only at `/home/chris/git_home/wesnoth` |
 
@@ -218,4 +216,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-03 after v1.2 Phase 26 Love2D Client (1202 lines Lua, full game.gd feature parity — 73 tests pass)*
+*Last updated: 2026-03-03 after v1.2 complete — Redot removed, Love2D sole presentation layer (73 tests pass)*

@@ -7,14 +7,14 @@ Five phases take the project from data schema definitions through a fully playab
 ## Current Milestone
 
 **v1.2 Love2D Migration**
-Status: 🚧 In Progress
-Phases: 2 of 3 complete
+Status: ✅ Complete
+Phases: 3 of 3 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 25 | C ABI Bridge | 1 | ✅ Complete | 2026-03-03 |
 | 26 | Love2D Client | 1 | ✅ Complete | 2026-03-03 |
-| 27 | Redot Cleanup | TBD | Not started | - |
+| 27 | Redot Cleanup | 1 | ✅ Complete | 2026-03-03 |
 
 ## v1.2 Phase Details
 
@@ -52,11 +52,22 @@ Phases: 2 of 3 complete
 - Pure hex math (hex_to_pixel, pixel_to_hex) replacing Godot TileMap; push/pop camera transform; reachable_set O(1) lookup
 - 1202 total Lua lines across 3 files; all 8 acceptance criteria passed; 73 Rust tests passing
 
-### Phase 27: Redot Cleanup
+### Phase 27: Redot Cleanup ✅
 
 **Goal:** Remove `norrust_client/` directory (Redot project), remove `gdext` dependency from Cargo.toml, update PROJECT.md tech stack to reflect Love2D, document the migration in ROADMAP.md history.
 **Depends on:** Phase 26 (Love2D client at full parity before removing Redot)
 **Constraints:** Only remove after Love2D client is verified working.
+**Completed:** 2026-03-03
+
+**Plans:**
+- [x] 27-01: Delete gdext_node.rs + godot dependency + norrust_client/ + clean .gitignore
+
+**Delivered:**
+- `gdext_node.rs` deleted; `godot = "0.2"` dependency removed from Cargo.toml
+- Entire `norrust_client/` directory removed (9 tracked files)
+- `.gitignore` cleaned of Redot-specific entries
+- Single integration path remains: C ABI (ffi.rs) → LuaJIT FFI → Love2D
+- 73 Rust tests passing; Love2D client verified working post-cleanup
 
 ---
 

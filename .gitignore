@@ -1,18 +1,6 @@
 # Rust build artifacts
 norrust_core/target/
 
-# Redot/Godot generated files
-norrust_client/.godot/
-norrust_client/.redot/
-
-# Compiled extension binaries (placed here manually after cargo build, not tracked)
-norrust_client/bin/*.so
-norrust_client/bin/*.dll
-norrust_client/bin/*.dylib
-norrust_client/bin/*.exp
-norrust_client/bin/*.lib
-norrust_client/bin/*.pdb
-
 # Python artifacts
 __pycache__/
 *.py[cod]
