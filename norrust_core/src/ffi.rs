@@ -240,11 +240,14 @@ pub unsafe extern "C" fn norrust_load_board(
     let Some(e) = engine.as_mut() else { return 0 };
     if seed <= 0 { return 0; }
     let path = PathBuf::from(cstr_to_str(board_path));
-    let board = match crate::scenario::load_board(&path) {
+    let loaded = match crate::scenario::load_board(&path) {
         Ok(b) => b,
         Err(_) => return 0,
     };
-    e.game = Some(GameState::new_seeded(board, seed as u64));
+    let mut state = GameState::new_seeded(loaded.board, seed as u64);
+    state.objective_hex = loaded.objective_hex;
+    state.max_turns = loaded.max_turns;
+    e.game = Some(state);
     upgrade_tiles_mut(e);
     1
 }
@@ -578,13 +581,31 @@ pub unsafe extern "C" fn norrust_get_time_of_day_name(
 pub unsafe extern "C" fn norrust_get_winner(engine: *mut NorRustEngine) -> i32 {
     let Some(e) = engine.as_ref() else { return -1 };
     let Some(state) = e.game.as_ref() else { return -1 };
-    let has_0 = state.units.values().any(|u| u.faction == 0);
-    let has_1 = state.units.values().any(|u| u.faction == 1);
-    match (has_0, has_1) {
-        (true, false) => 0,
-        (false, true) => 1,
-        _ => -1,
+    match state.check_winner() {
+        Some(f) => f as i32,
+        None => -1,
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn norrust_set_objective_hex(
+    engine: *mut NorRustEngine,
+    col: i32,
+    row: i32,
+) {
+    let Some(e) = engine.as_mut() else { return };
+    let Some(state) = e.game.as_mut() else { return };
+    state.objective_hex = Some(Hex::from_offset(col, row));
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn norrust_set_max_turns(
+    engine: *mut NorRustEngine,
+    max_turns: i32,
+) {
+    let Some(e) = engine.as_mut() else { return };
+    let Some(state) = e.game.as_mut() else { return };
+    state.max_turns = if max_turns > 0 { Some(max_turns as u32) } else { None };
 }
 
 #[no_mangle]

@@ -42,6 +42,10 @@ pub struct GameState {
     pub village_owners: HashMap<Hex, i8>,
     /// Gold per faction: [faction_0_gold, faction_1_gold]. Starting value 10 each.
     pub gold: [u32; 2],
+    /// Objective hex — if a unit reaches this hex, that unit's faction wins.
+    pub objective_hex: Option<Hex>,
+    /// Maximum number of turns. If exceeded, defender (faction 1) wins by timeout.
+    pub max_turns: Option<u32>,
 }
 
 impl GameState {
@@ -55,6 +59,8 @@ impl GameState {
             rng: Rng::new(12345),
             village_owners: HashMap::new(),
             gold: [10, 10],
+            objective_hex: None,
+            max_turns: None,
         }
     }
 
@@ -63,6 +69,38 @@ impl GameState {
         let mut s = Self::new(board);
         s.rng = Rng::new(rng_seed);
         s
+    }
+
+    /// Check for a winner. Returns Some(faction) if someone has won, None otherwise.
+    ///
+    /// Priority: 1) objective hex reached, 2) turn limit exceeded, 3) elimination.
+    pub fn check_winner(&self) -> Option<u8> {
+        // 1. Objective hex: if any unit occupies it, that faction wins
+        if let Some(obj) = self.objective_hex {
+            for (&uid, &hex) in &self.positions {
+                if hex == obj {
+                    if let Some(unit) = self.units.get(&uid) {
+                        return Some(unit.faction);
+                    }
+                }
+            }
+        }
+
+        // 2. Turn limit: defender (faction 1) wins by timeout
+        if let Some(max) = self.max_turns {
+            if self.turn > max {
+                return Some(1);
+            }
+        }
+
+        // 3. Elimination: if one side has no units, the other wins
+        let has_0 = self.units.values().any(|u| u.faction == 0);
+        let has_1 = self.units.values().any(|u| u.faction == 1);
+        match (has_0, has_1) {
+            (true, false) => Some(0),
+            (false, true) => Some(1),
+            _ => None,
+        }
     }
 
     /// Place a unit on the board at `hex`.

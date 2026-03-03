@@ -57,6 +57,12 @@ pub struct StateSnapshot {
     pub terrain: Vec<TileSnapshot>,
     pub units: Vec<UnitSnapshot>,
     pub gold: [u32; 2],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub objective_col: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub objective_row: Option<i32>,
 }
 
 impl StateSnapshot {
@@ -112,7 +118,26 @@ impl StateSnapshot {
             })
             .collect();
 
-        StateSnapshot { turn: state.turn, active_faction: state.active_faction, cols, rows, terrain, units, gold: state.gold }
+        let (objective_col, objective_row) = match state.objective_hex {
+            Some(hex) => {
+                let (c, r) = hex.to_offset();
+                (Some(c), Some(r))
+            }
+            None => (None, None),
+        };
+
+        StateSnapshot {
+            turn: state.turn,
+            active_faction: state.active_faction,
+            cols,
+            rows,
+            terrain,
+            units,
+            gold: state.gold,
+            max_turns: state.max_turns,
+            objective_col,
+            objective_row,
+        }
     }
 }
 

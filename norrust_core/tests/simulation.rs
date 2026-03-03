@@ -408,7 +408,12 @@ fn test_load_board_from_file() {
         .expect("norrust_core has a parent dir")
         .join("scenarios/contested.toml");
 
-    let board = load_board(&path).expect("contested.toml must load without error");
+    let loaded = load_board(&path).expect("contested.toml must load without error");
+    let board = &loaded.board;
+
+    // No objective or max_turns for contested scenario
+    assert!(loaded.objective_hex.is_none(), "contested has no objective_hex");
+    assert!(loaded.max_turns.is_none(), "contested has no max_turns");
 
     // AC-1: Dimensions correct
     assert_eq!(board.width, 8, "board width must be 8");
@@ -662,4 +667,69 @@ fn test_recruit_fails_non_leader_on_keep() {
 
     let result = apply_recruit(&mut state, Unit::new(1, "spearman", 33, 0), castle_hex, 14);
     assert_eq!(result, Err(ActionError::LeaderNotOnKeep));
+}
+
+#[test]
+fn test_objective_hex_win() {
+    // A unit reaching the objective hex should trigger a win for that faction.
+    let board = Board::new(5, 1);
+    let mut state = GameState::new(board);
+    state.objective_hex = Some(Hex::from_offset(4, 0));
+
+    // Place faction 0 unit, no faction 1 units needed for this test
+    state.place_unit(Unit::new(1, "fighter", 30, 0), Hex::from_offset(0, 0));
+    state.place_unit(Unit::new(2, "enemy", 30, 1), Hex::from_offset(3, 0));
+
+    // Before reaching objective — no winner (both factions have units)
+    assert_eq!(state.check_winner(), None);
+
+    // Move unit to objective hex
+    state.positions.insert(1, Hex::from_offset(4, 0));
+
+    // Faction 0 should win
+    assert_eq!(state.check_winner(), Some(0), "faction 0 unit on objective hex must win");
+}
+
+#[test]
+fn test_turn_limit_loss() {
+    // Exceeding max_turns should give victory to the defender (faction 1).
+    let board = Board::new(5, 1);
+    let mut state = GameState::new(board);
+    state.max_turns = Some(2);
+
+    state.place_unit(Unit::new(1, "fighter", 30, 0), Hex::from_offset(0, 0));
+    state.place_unit(Unit::new(2, "enemy", 30, 1), Hex::from_offset(4, 0));
+
+    // Turn 1 — within limit
+    assert_eq!(state.check_winner(), None);
+
+    // Turn 2 — still within limit
+    state.turn = 2;
+    assert_eq!(state.check_winner(), None);
+
+    // Turn 3 — exceeds max_turns=2, defender wins
+    state.turn = 3;
+    assert_eq!(state.check_winner(), Some(1), "defender must win when turn > max_turns");
+}
+
+#[test]
+fn test_elimination_still_works() {
+    // With no objective_hex or max_turns, elimination win condition should work as before.
+    let board = Board::new(5, 1);
+    let mut state = GameState::new(board);
+
+    // No objective or turn limit
+    assert!(state.objective_hex.is_none());
+    assert!(state.max_turns.is_none());
+
+    state.place_unit(Unit::new(1, "fighter", 30, 0), Hex::from_offset(0, 0));
+    state.place_unit(Unit::new(2, "enemy", 30, 1), Hex::from_offset(4, 0));
+
+    // Both factions alive — no winner
+    assert_eq!(state.check_winner(), None);
+
+    // Remove faction 1 unit — faction 0 wins by elimination
+    state.units.remove(&2);
+    state.positions.remove(&2);
+    assert_eq!(state.check_winner(), Some(0), "faction 0 wins by elimination");
 }

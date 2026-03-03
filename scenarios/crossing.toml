@@ -1,0 +1,27 @@
+# scenarios/crossing.toml — 16 columns × 10 rows, row-major (left→right, top→bottom)
+#
+# Campaign scenario: player must cross the map and reach the enemy keep.
+#
+# Blue keep: (1,5)  — castle hexes around it (cols 0-2)
+# Red  keep: (14,5) — castle hexes around it (cols 13-15)
+#
+# Objective: Blue must reach (14,5) within 30 turns.
+
+width = 16
+height = 10
+objective_col = 14
+objective_row = 5
+max_turns = 30
+
+tiles = [
+  "flat",   "flat",   "forest", "forest", "hills",     "hills",     "forest", "flat",      "flat",      "forest", "hills",     "hills",     "forest", "flat",   "flat",   "flat",
+  "castle", "castle", "forest", "hills",  "mountains", "forest",    "flat",   "village",   "forest",    "hills",  "mountains", "forest",    "flat",   "castle", "castle", "flat",
+  "castle", "castle", "flat",   "forest", "flat",      "hills",     "forest", "flat",      "hills",     "forest", "flat",      "hills",     "forest", "castle", "castle", "flat",
+  "flat",   "flat",   "hills",  "flat",   "village",   "forest",    "hills",  "mountains", "forest",    "village","flat",      "forest",    "hills",  "flat",   "flat",   "flat",
+  "castle", "castle", "forest", "hills",  "forest",    "flat",      "village","flat",      "flat",      "forest", "hills",     "forest",    "flat",   "castle", "castle", "flat",
+  "castle", "keep",   "castle", "forest", "flat",      "hills",     "forest", "flat",      "hills",     "forest", "flat",      "forest",    "castle", "keep",   "castle", "flat",
+  "castle", "castle", "forest", "flat",   "hills",     "forest",    "flat",   "village",   "forest",    "hills",  "flat",      "forest",    "flat",   "castle", "castle", "flat",
+  "flat",   "flat",   "hills",  "forest", "village",   "hills",     "forest", "flat",      "hills",     "forest", "village",   "hills",     "forest", "flat",   "flat",   "flat",
+  "castle", "castle", "flat",   "hills",  "forest",    "flat",      "hills",  "mountains", "flat",      "hills",  "forest",    "flat",      "hills",  "castle", "castle", "flat",
+  "flat",   "flat",   "forest", "forest", "hills",     "hills",     "forest", "flat",      "flat",      "forest", "hills",     "hills",     "forest", "flat",   "flat",   "flat",
+]

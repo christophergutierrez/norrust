@@ -4,13 +4,24 @@ use crate::board::Board;
 use crate::hex::Hex;
 use crate::schema::{BoardDef, UnitPlacement, UnitsDef};
 
+/// Result of loading a board file — includes board plus optional scenario metadata.
+#[derive(Debug)]
+pub struct LoadedBoard {
+    pub board: Board,
+    /// Objective hex — reaching it wins the game.
+    pub objective_hex: Option<Hex>,
+    /// Maximum turns before defender wins by timeout.
+    pub max_turns: Option<u32>,
+}
+
 /// Load a Board from a TOML board file.
 ///
 /// The file must have `width`, `height`, and `tiles` fields.
 /// `tiles` is a flat row-major array of terrain ID strings (left→right, top→bottom).
+/// Optional `objective_col`/`objective_row` and `max_turns` fields set win conditions.
 /// Returns Err if the file cannot be read, parsed, or if
 /// `tiles.len() != width * height`.
-pub fn load_board(path: &Path) -> Result<Board, String> {
+pub fn load_board(path: &Path) -> Result<LoadedBoard, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("load_board: cannot read {:?}: {}", path, e))?;
     let def: BoardDef = toml::from_str(&text)
@@ -31,7 +42,17 @@ pub fn load_board(path: &Path) -> Result<Board, String> {
             board.set_terrain(Hex::from_offset(col, row), terrain_id);
         }
     }
-    Ok(board)
+
+    let objective_hex = match (def.objective_col, def.objective_row) {
+        (Some(col), Some(row)) => Some(Hex::from_offset(col, row)),
+        _ => None,
+    };
+
+    Ok(LoadedBoard {
+        board,
+        objective_hex,
+        max_turns: def.max_turns,
+    })
 }
 
 /// Load unit placements from a TOML units file.

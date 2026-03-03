@@ -80,6 +80,15 @@ pub struct BoardDef {
     pub height: u32,
     /// Flat row-major array of terrain IDs. Length must equal width × height.
     pub tiles: Vec<String>,
+    /// Objective hex column — if set with objective_row, reaching this hex wins.
+    #[serde(default)]
+    pub objective_col: Option<i32>,
+    /// Objective hex row — if set with objective_col, reaching this hex wins.
+    #[serde(default)]
+    pub objective_row: Option<i32>,
+    /// Maximum turns before defender wins by timeout.
+    #[serde(default)]
+    pub max_turns: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

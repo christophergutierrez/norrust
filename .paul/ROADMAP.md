@@ -2,9 +2,57 @@
 
 ## Overview
 
-Five phases take the project from data schema definitions through a fully playable hex-based strategy game with external AI hooks. The Rust simulation core is built and tested headlessly before any visual work begins; Redot rendering is layered on top once the core is proven.
+A hex-based strategy game with a headless Rust simulation core and Love2D presentation layer. The Rust core handles all game logic; Love2D renders state via LuaJIT FFI through a C ABI bridge.
 
 ## Current Milestone
+
+**v1.3 Campaign Mode**
+Status: 🚧 In Progress
+Phases: 1 of 3 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 28 | Map Crossing | 1 | ✅ Complete | 2026-03-03 |
+| 29 | Second Scenario | TBD | Not started | - |
+| 30 | Campaign Chain | TBD | Not started | - |
+
+## v1.3 Phase Details
+
+### Phase 28: Map Crossing ✅
+
+**Goal:** Create a large board scenario (e.g. 16x12) with a "reach enemy keep" win condition. Player starts at one keep, must cross the map to reach the enemy keep on the opposite side. Enemy AI starts with gold, recruits defenders, and plays aggressively. Turn limit enforces forward pressure.
+**Depends on:** Phase 27 (Love2D client stable)
+**Constraints:** Reuse existing AI + recruitment. New win condition type alongside existing "eliminate all". Each scenario standalone playable.
+**Completed:** 2026-03-03
+
+**Plans:**
+- [x] 28-01: Objective hex + turn limit win conditions, LoadedBoard, crossing scenario, scenario selection
+
+**Delivered:**
+- `check_winner()` method on GameState: 3-tier priority (objective hex → turn limit → elimination)
+- `LoadedBoard` struct: `load_board()` returns board + objective_hex + max_turns from TOML
+- `norrust_set_objective_hex()` + `norrust_set_max_turns()` FFI functions
+- `scenarios/crossing.toml`: 16×10 board with keeps, castles, mixed terrain, objective + 30-turn limit
+- `scenarios/crossing_units.toml`: Blue leader vs red leader + 3 defenders (preset)
+- Love2D: scenario selection screen, dynamic board dimensions, objective hex highlight, "Turn X / Y" HUD
+- `preset_units` flag for scenarios with TOML-defined units (skip manual setup)
+- 3 new integration tests; 76 tests passing (56 lib + 19 integration + 1 FFI)
+
+### Phase 29: Second Scenario
+
+**Goal:** Create a second standalone board with different layout and terrain. Possibly introduce trigger zones where enemies spawn when player units enter an area. Must be independently playable as a single scenario.
+**Depends on:** Phase 28 (map crossing win condition must work)
+**Constraints:** New board design, different feel from Phase 28. Standalone — no carry-over dependency.
+
+### Phase 30: Campaign Chain
+
+**Goal:** Link scenarios into a campaign sequence. Campaign defined in TOML (scenario list, starting conditions). Units that survive scenario 1 carry to scenario 2 with XP/level/advancement. Gold carries over with percentage penalty (e.g. 80%). Early finish bonus gold.
+**Depends on:** Phase 29 (both scenarios must exist to chain)
+**Constraints:** Campaign TOML file consistent with existing data-driven approach. Both individual scenarios and campaign mode must work.
+
+---
+
+## Previous Milestone
 
 **v1.2 Love2D Migration**
 Status: ✅ Complete
@@ -691,4 +739,4 @@ See MILESTONES.md for full history.
 </details>
 
 ---
-*Roadmap updated: 2026-03-03 — v1.2 Love2D Migration milestone created (Phases 25-27)*
+*Roadmap updated: 2026-03-03 — v1.3 Campaign Mode milestone created (Phases 28-30)*

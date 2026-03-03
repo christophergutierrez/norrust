@@ -5,8 +5,8 @@ local norrust = require("norrust")
 
 -- ── Constants ───────────────────────────────────────────────────────────────
 
-local BOARD_COLS = 8
-local BOARD_ROWS = 5
+local BOARD_COLS = 8   -- set dynamically after scenario load
+local BOARD_ROWS = 5   -- set dynamically after scenario load
 local HEX_RADIUS = 96
 local HEX_CELL_W = 166   -- HEX_RADIUS * sqrt(3)
 local HEX_CELL_H = 192   -- HEX_RADIUS * 2
@@ -16,22 +16,35 @@ local CAMERA_LERP_SPEED = 8.0
 local BLUE = {0.25, 0.42, 0.88}
 local RED  = {0.80, 0.12, 0.12}
 
--- Game modes (mirrors game.gd enum)
+-- Game modes
+local PICK_SCENARIO     = -1
 local PICK_FACTION_BLUE = 0
 local PICK_FACTION_RED  = 1
 local SETUP_BLUE = 2
 local SETUP_RED  = 3
 local PLAYING    = 4
 
+-- Available scenarios
+-- preset_units: if true, units come from TOML file — skip manual leader placement
+local SCENARIOS = {
+    {name = "Contested (8x5)",  board = "contested.toml",  units = "contested_units.toml", preset_units = false},
+    {name = "Crossing (16x10)", board = "crossing.toml",   units = "crossing_units.toml",  preset_units = true},
+}
+
 -- ── State variables ─────────────────────────────────────────────────────────
 
 local engine
+local scenarios_path = ""
+local scenario_board = ""
+local scenario_units = ""
+local scenario_preset = false
 local selected_unit_id = -1
 local reachable_cells = {}     -- array of {col=N, row=N}
 local reachable_set = {}       -- "col,row" -> true for fast lookup
 local game_over = false
+local winner_faction = -1
 
-local game_mode = PICK_FACTION_BLUE
+local game_mode = PICK_SCENARIO
 local factions = {}            -- [{id, name}, ...]
 local sel_faction_idx = 0      -- 0-indexed (matches game.gd)
 local faction_id = {"", ""}    -- Lua 1-indexed: [1]=blue, [2]=red
@@ -177,8 +190,10 @@ local function select_unit(uid)
 end
 
 local function check_game_over()
-    if norrust.get_winner(engine) >= 0 then
+    local w = norrust.get_winner(engine)
+    if w >= 0 then
         game_over = true
+        winner_faction = w
     end
 end
 
@@ -234,10 +249,29 @@ local function draw_units(state)
 end
 
 local function draw_setup_hud()
+    local vp_w, vp_h = love.graphics.getDimensions()
+
+    -- Scenario selection screen (full screen, no sidebar)
+    if game_mode == PICK_SCENARIO then
+        love.graphics.setFont(fonts[18])
+        love.graphics.setColor(1, 0.85, 0, 1)
+        love.graphics.printf("The Clash for Norrust", 0, vp_h / 2 - 60, vp_w, "center")
+
+        love.graphics.setFont(fonts[14])
+        love.graphics.setColor(0.83, 0.83, 0.83, 1)
+        love.graphics.printf("Select a scenario:", 0, vp_h / 2 - 20, vp_w, "center")
+
+        for i, sc in ipairs(SCENARIOS) do
+            love.graphics.setFont(fonts[15])
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.printf(string.format("[%d] %s", i, sc.name), 0, vp_h / 2 + 10 + (i - 1) * 28, vp_w, "center")
+        end
+        return
+    end
+
     local is_blue = (game_mode == PICK_FACTION_BLUE or game_mode == SETUP_BLUE)
     local faction_name = is_blue and "Blue" or "Red"
     local fc = is_blue and BLUE or RED
-    local vp_w, vp_h = love.graphics.getDimensions()
 
     -- Sidebar background
     love.graphics.setColor(0, 0, 0, 0.6)
@@ -417,6 +451,19 @@ local function draw_unit_panel(unit)
     end
 end
 
+-- ── Scenario loading ──────────────────────────────────────────────────────
+
+local function load_selected_scenario()
+    assert(norrust.load_board(engine, scenarios_path .. "/" .. scenario_board, 42), "Failed to load board")
+
+    -- Read board dimensions from state
+    local state = norrust.get_state(engine)
+    BOARD_COLS = int(state.cols or 8)
+    BOARD_ROWS = int(state.rows or 5)
+
+    center_camera()
+end
+
 -- ── love.load ───────────────────────────────────────────────────────────────
 
 function love.load()
@@ -434,18 +481,17 @@ function love.load()
     local source = love.filesystem.getSource()
     local project_root = source .. "/.."
     local data_path = project_root .. "/data"
-    local scenarios_path = project_root .. "/scenarios"
+    scenarios_path = project_root .. "/scenarios"
 
-    -- Load data
+    -- Load data + factions (scenario loaded after selection)
     assert(norrust.load_data(engine, data_path), "Failed to load data")
-    assert(norrust.load_board(engine, scenarios_path .. "/contested.toml", 42), "Failed to load board")
     assert(norrust.load_factions(engine, data_path), "Failed to load factions")
 
     -- Parse faction list
     factions = norrust.get_faction_ids(engine)
 
-    -- Center camera
-    center_camera()
+    -- Start at scenario selection
+    game_mode = PICK_SCENARIO
 end
 
 -- ── love.update ─────────────────────────────────────────────────────────────
@@ -487,6 +533,12 @@ end
 -- ── love.draw ───────────────────────────────────────────────────────────────
 
 function love.draw()
+    -- Scenario selection: no board loaded yet
+    if game_mode == PICK_SCENARIO then
+        draw_setup_hud()
+        return
+    end
+
     local state = norrust.get_state(engine)
 
     -- Build tile color map
@@ -535,10 +587,24 @@ function love.draw()
         end
     end
 
-    -- 4. Units
+    -- 4. Objective hex highlight
+    if state.objective_col and state.objective_row then
+        local ocol = int(state.objective_col)
+        local orow = int(state.objective_row)
+        local ox, oy = hex_to_pixel(ocol, orow)
+        -- Pulsing gold border
+        love.graphics.setColor(1.0, 0.85, 0.0, 0.9)
+        love.graphics.setLineWidth(4.0)
+        love.graphics.polygon("line", hex_polygon(ox, oy, HEX_RADIUS))
+        -- Inner star marker
+        love.graphics.setColor(1.0, 0.85, 0.0, 0.3)
+        love.graphics.polygon("fill", hex_polygon(ox, oy, HEX_RADIUS * 0.3))
+    end
+
+    -- 5. Units
     draw_units(state)
 
-    -- 5. Recruit-mode hex highlights (drawn after units, matching game.gd Z-order)
+    -- 6. Recruit-mode hex highlights (drawn after units, matching game.gd Z-order)
     if recruit_mode then
         for _, tile in ipairs(state.terrain or {}) do
             local tid = tile.terrain_id or ""
@@ -568,12 +634,24 @@ function love.draw()
     else
         -- Win overlay
         if game_over then
-            local winner = norrust.get_winner(engine)
-            local msg = string.format("Faction %d wins!", winner)
             local vp_w, vp_h = love.graphics.getDimensions()
+            local winner_name = winner_faction == 0 and "Blue" or "Red"
+            local msg
+            if winner_faction == 0 then
+                msg = "Victory! " .. winner_name .. " wins!"
+            else
+                -- Check if it was a timeout or elimination
+                local max_t = state.max_turns
+                local cur_t = int(state.turn or 1)
+                if max_t and cur_t > int(max_t) then
+                    msg = "Defeat — Turn limit reached!"
+                else
+                    msg = winner_name .. " wins!"
+                end
+            end
             love.graphics.setFont(fonts[32])
             love.graphics.setColor(1, 1, 0, 1)
-            love.graphics.printf(msg, vp_w / 2 - 160, vp_h / 2 - 16, 320, "center")
+            love.graphics.printf(msg, vp_w / 2 - 240, vp_h / 2 - 16, 480, "center")
         end
 
         -- HUD
@@ -585,8 +663,14 @@ function love.draw()
             local gold_arr = state.gold or {0, 0}
             local gold = int(gold_arr[faction + 1] or 0)
             local turn = norrust.get_turn(engine)
-            local hud_text = string.format("Turn %d  ·  %s  ·  %s's Turn  ·  %dg",
-                turn, tod, faction_name, gold)
+            local turn_str
+            if state.max_turns then
+                turn_str = string.format("Turn %d / %d", turn, int(state.max_turns))
+            else
+                turn_str = string.format("Turn %d", turn)
+            end
+            local hud_text = string.format("%s  ·  %s  ·  %s's Turn  ·  %dg",
+                turn_str, tod, faction_name, gold)
             love.graphics.setFont(fonts[14])
             love.graphics.setColor(fc[1], fc[2], fc[3])
             love.graphics.print(hud_text, 10, 6)
@@ -608,6 +692,19 @@ end
 -- ── love.keypressed ─────────────────────────────────────────────────────────
 
 function love.keypressed(key)
+    -- Scenario selection
+    if game_mode == PICK_SCENARIO then
+        local num = tonumber(key)
+        if num and num >= 1 and num <= #SCENARIOS then
+            scenario_board = SCENARIOS[num].board
+            scenario_units = SCENARIOS[num].units
+            scenario_preset = SCENARIOS[num].preset_units
+            load_selected_scenario()
+            game_mode = PICK_FACTION_BLUE
+        end
+        return
+    end
+
     -- Setup mode
     if game_mode ~= PLAYING then
         -- Faction picker: number keys
@@ -617,12 +714,31 @@ function love.keypressed(key)
                 local fi = game_mode == PICK_FACTION_BLUE and 0 or 1
                 faction_id[fi + 1] = factions[num].id
                 sel_faction_idx = 0
-                game_mode = game_mode == PICK_FACTION_BLUE and SETUP_BLUE or SETUP_RED
+
+                if scenario_preset then
+                    -- Preset scenarios: skip manual setup, go straight through
+                    if game_mode == PICK_FACTION_BLUE then
+                        game_mode = PICK_FACTION_RED
+                    else
+                        -- Both factions chosen — load units and start
+                        norrust.apply_starting_gold(engine, faction_id[1], faction_id[2])
+                        norrust.load_units(engine, scenarios_path .. "/" .. scenario_units)
+                        local state = norrust.get_state(engine)
+                        for _, u in ipairs(state.units or {}) do
+                            if int(u.id) >= next_unit_id then
+                                next_unit_id = int(u.id) + 1
+                            end
+                        end
+                        game_mode = PLAYING
+                    end
+                else
+                    game_mode = game_mode == PICK_FACTION_BLUE and SETUP_BLUE or SETUP_RED
+                end
             end
             return
         end
 
-        -- Setup: Enter to continue
+        -- Setup: Enter to continue (manual placement scenarios only)
         if key == "return" or key == "kpenter" then
             if game_mode == SETUP_BLUE then
                 game_mode = PICK_FACTION_RED
@@ -642,7 +758,8 @@ function love.keypressed(key)
         -- End turn + AI
         norrust.end_turn(engine)
         clear_selection()
-        if norrust.get_active_faction(engine) == 1 then
+        check_game_over()
+        if not game_over and norrust.get_active_faction(engine) == 1 then
             local n = norrust.ai_recruit(engine, faction_id[2], next_unit_id)
             next_unit_id = next_unit_id + n
             norrust.ai_take_turn(engine, 1)
@@ -693,6 +810,7 @@ end
 
 function love.mousepressed(x, y, button)
     if button ~= 1 then return end
+    if game_mode == PICK_SCENARIO then return end
 
     -- Setup mode click
     if game_mode ~= PLAYING then
@@ -786,6 +904,7 @@ function love.mousepressed(x, y, button)
     elseif selected_unit_id ~= -1 and reachable_set[clicked_key] then
         norrust.apply_move(engine, selected_unit_id, col, row)
         clear_selection()
+        check_game_over()
 
     -- Select friendly unit
     elseif pos_map[clicked_key] and pos_map[clicked_key].faction == active then

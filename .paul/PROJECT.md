@@ -105,6 +105,12 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Love2D game client (1202 lines Lua) with full feature parity to game.gd — hex rendering, input, HUD, sidebar panel, recruitment, camera, AI opponent — Phase 26 (26-01)
 - [x] LuaJIT FFI bindings module (norrust.lua) wrapping all 36 C ABI functions with Lua-native types + inline JSON decoder — Phase 26 (26-01)
 - [x] Pure hex math (hex_to_pixel, pixel_to_hex) replacing Godot TileMap dependency — no engine dependency for coordinate conversion — Phase 26 (26-01)
+- [x] Objective hex win condition: any unit reaching target hex wins for that faction — Phase 28 (28-01)
+- [x] Turn limit loss condition: defender (faction 1) wins if turn exceeds max_turns — Phase 28 (28-01)
+- [x] check_winner() method on GameState: 3-tier priority (objective hex → turn limit → elimination) — Phase 28 (28-01)
+- [x] LoadedBoard struct: load_board() returns board + objective_hex + max_turns from TOML — Phase 28 (28-01)
+- [x] Scenario selection screen in Love2D with dynamic board dimensions from state JSON — Phase 28 (28-01)
+- [x] Crossing scenario: 16x10 board with preset units, 30-turn limit, reach-enemy-keep objective — Phase 28 (28-01)
 
 ### Active (In Progress / Deferred)
 
@@ -114,7 +120,7 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 ### Out of Scope
 
 - TOML editor UI for modding — post-MVP
-- Campaign persistence (veteran units) — post-MVP
+- Campaign persistence (veteran units) — v1.3 Phase 30
 - Multiplayer — post-MVP (architecture supports it via Action queue)
 
 ## Constraints
@@ -197,6 +203,10 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | push/pop camera transform in Love2D | Separates board-space hex drawing from screen-space UI cleanly | 2026-03-03 | Active |
 | ffi.gc destructor on engine pointer | Automatic cleanup on GC; no explicit free required; memory-safe even if love.quit not called | 2026-03-03 | Active |
 | reachable_set as string-keyed lookup ("col,row" → true) | O(1) hex containment checks for click handler; array iteration O(n) insufficient | 2026-03-03 | Active |
+| 3-tier check_winner() priority: objective hex → turn limit → elimination | Most specific condition first; universal fallback last; future scenarios mix and match | 2026-03-03 | Active |
+| check_winner() as GameState method | Headless-testable without FFI; direct access to state fields | 2026-03-03 | Active |
+| LoadedBoard struct from load_board() | Board + scenario metadata returned together; scenarios self-describe win conditions | 2026-03-03 | Active |
+| preset_units flag on SCENARIOS table | Crossing uses TOML units; contested uses manual placement; both paths coexist | 2026-03-03 | Active |
 
 ## Tech Stack
 
@@ -216,4 +226,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-03 after v1.2 complete — Redot removed, Love2D sole presentation layer (73 tests pass)*
+*Last updated: 2026-03-03 after Phase 28 — objective hex + turn limit win conditions, crossing scenario (76 tests pass)*

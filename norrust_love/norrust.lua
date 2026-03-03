@@ -162,6 +162,8 @@ ffi.cdef[[
     char* norrust_get_time_of_day_name(NorRustEngine* engine);
     int32_t norrust_get_winner(NorRustEngine* engine);
     char* norrust_get_state_json(NorRustEngine* engine);
+    void norrust_set_objective_hex(NorRustEngine* engine, int32_t col, int32_t row);
+    void norrust_set_max_turns(NorRustEngine* engine, int32_t max_turns);
 
     // Actions
     int32_t norrust_apply_move(NorRustEngine* engine, int32_t unit_id, int32_t col, int32_t row);
@@ -316,6 +318,14 @@ function M.get_state(engine)
     local raw = get_string(lib.norrust_get_state_json(engine))
     if raw == "" then return {} end
     return json_decode(raw) or {}
+end
+
+function M.set_objective_hex(engine, col, row)
+    lib.norrust_set_objective_hex(engine, col, row)
+end
+
+function M.set_max_turns(engine, max_turns)
+    lib.norrust_set_max_turns(engine, max_turns)
 end
 
 -- ── Actions ─────────────────────────────────────────────────────────────────
