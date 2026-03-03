@@ -184,9 +184,17 @@ func _draw_units(state: Dictionary) -> void:
 		var alpha    = 0.4 if exhausted else 1.0
 		var color    = Color(0.25, 0.42, 0.88, alpha) if faction == 0 else Color(0.80, 0.12, 0.12, alpha)
 		draw_circle(center, HEX_RADIUS * 0.45, color)
+		var abbrev: String = (unit["def_id"] as String).split("_")[0].capitalize().left(7)
 		draw_string(
 			ThemeDB.fallback_font,
-			center + Vector2(-8, 5),
+			center + Vector2(-28, -6),
+			abbrev,
+			HORIZONTAL_ALIGNMENT_CENTER,
+			56, 9, Color.WHITE
+		)
+		draw_string(
+			ThemeDB.fallback_font,
+			center + Vector2(-8, 7),
 			str(hp),
 			HORIZONTAL_ALIGNMENT_LEFT,
 			-1, 13, Color.WHITE
@@ -196,7 +204,7 @@ func _draw_units(state: Dictionary) -> void:
 		if unit["xp_needed"] > 0:
 			draw_string(
 				ThemeDB.fallback_font,
-				center + Vector2(-10, 18),
+				center + Vector2(-10, 20),
 				str(int(unit["xp"])) + "/" + str(int(unit["xp_needed"])),
 				HORIZONTAL_ALIGNMENT_LEFT,
 				-1, 10, Color.WHITE

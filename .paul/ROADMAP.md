@@ -7,13 +7,13 @@ Five phases take the project from data schema definitions through a fully playab
 ## Current Milestone
 
 **v1.0 Game Readability**
-Status: 🚧 In Progress
-Phases: 1 of 2 complete
+Status: ✅ Complete
+Phases: 2 of 2 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 22 | Selection Panel | 1 | ✅ Complete | 2026-03-02 |
-| 23 | In-Hex Readability | TBD | Not started | - |
+| 23 | In-Hex Readability | 1 | ✅ Complete | 2026-03-02 |
 
 ## v1.0 Phase Details
 
@@ -33,11 +33,20 @@ Phases: 1 of 2 complete
 - Click-any-unit (friendly or enemy) shows panel; empty hex clears; recruit mode takes priority
 - 72 tests passing (1 new: test_unit_snapshot_includes_movement_attacks_abilities)
 
-### Phase 23: In-Hex Readability
+### Phase 23: In-Hex Readability ✅
 
-**Goal:** Show the unit's type name (or meaningful abbreviation) inside each hex at all times so units are identifiable without clicking. May require increasing HEX_SIZE to give sufficient real estate alongside existing HP/XP text — coordinate math in _draw() updated accordingly if so.
-**Depends on:** Phase 22 (selection panel complete; hex layout changes may interact with panel positioning)
-**Plans:** TBD (defined during /paul:plan)
+**Goal:** Show the unit's type name (or meaningful abbreviation) inside each hex at all times so units are identifiable without clicking.
+**Depends on:** Phase 22 (selection panel complete; UnitSnapshot with def_id already in JSON)
+**Completed:** 2026-03-02
+
+**Plans:**
+- [x] 23-01: In-hex name abbreviation in _draw_units()
+
+**Delivered:**
+- `_draw_units()`: `def_id.split("_")[0].capitalize().left(7)` drawn centered at 9px font above HP text
+- "Fighter", "Elvish", "Orcish" etc. visible in every hex at all times — no click required
+- HP/XP baseline shifted 2px down; HEX_RADIUS unchanged; zero Rust changes
+- 72 tests passing (56 lib + 16 integration)
 
 ---
 
@@ -583,4 +592,4 @@ See MILESTONES.md for full history.
 </details>
 
 ---
-*Roadmap updated: 2026-03-02 — Phase 22 Selection Panel complete*
+*Roadmap updated: 2026-03-02 — v1.0 Game Readability milestone complete (Phase 23 In-Hex Readability)*

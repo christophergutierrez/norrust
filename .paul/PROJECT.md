@@ -100,6 +100,7 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] AttackSnapshot struct + UnitSnapshot.movement/attacks/abilities — full unit loadout in StateSnapshot JSON — Phase 22 (22-01)
 - [x] _inspect_unit_id inspection state in game.gd (independent from _selected_unit_id): click any unit to open stat panel — Phase 22 (22-01)
 - [x] _draw_unit_panel(): faction-colored header, HP, XP (conditional), movement+exhaustion status, per-attack breakdown, abilities list in right sidebar — Phase 22 (22-01)
+- [x] Unit type name abbreviation (first-word of def_id, capitalized, max 7 chars) rendered centered inside each hex circle — Phase 23 (23-01)
 
 ### Active (In Progress / Deferred)
 
@@ -203,4 +204,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-02 after v1.0 Phase 22 Selection Panel (unit stat panel + UnitSnapshot loadout — 72 tests pass)*
+*Last updated: 2026-03-02 after v1.0 Phase 23 In-Hex Readability (unit type name in every hex — 72 tests pass)*
