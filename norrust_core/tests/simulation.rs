@@ -424,22 +424,33 @@ fn test_load_board_from_file() {
         }
     }
 
-    // AC-3: Spawn zones — cols 0 and 7 are castle (recruit zones), cols 1 and 6 are flat
-    for row in 0..5_i32 {
-        for castle_col in [0, 7] {
-            assert_eq!(
-                board.terrain_at(Hex::from_offset(castle_col, row)),
-                Some("castle"),
-                "recruit zone col {castle_col} row {row} must be castle"
-            );
-        }
-        for flat_col in [1, 6] {
-            assert_eq!(
-                board.terrain_at(Hex::from_offset(flat_col, row)),
-                Some("flat"),
-                "corridor col {flat_col} row {row} must be flat"
-            );
-        }
+    // AC-3: Keep positions
+    assert_eq!(board.terrain_at(Hex::from_offset(1, 2)), Some("keep"), "Blue keep at (1,2)");
+    assert_eq!(board.terrain_at(Hex::from_offset(6, 2)), Some("keep"), "Red keep at (6,2)");
+
+    // AC-4: Castle hexes adjacent to each keep
+    for (col, row) in [(0,1),(0,2),(0,3),(1,1),(1,3),(2,2)] {
+        assert_eq!(
+            board.terrain_at(Hex::from_offset(col, row)),
+            Some("castle"),
+            "Blue castle at ({col},{row})"
+        );
+    }
+    for (col, row) in [(5,1),(5,2),(5,3),(6,1),(6,3),(7,2)] {
+        assert_eq!(
+            board.terrain_at(Hex::from_offset(col, row)),
+            Some("castle"),
+            "Red castle at ({col},{row})"
+        );
+    }
+
+    // AC-5: Corner hexes are flat
+    for (col, row) in [(0,0),(1,0),(0,4),(1,4),(6,0),(7,0),(6,4),(7,4)] {
+        assert_eq!(
+            board.terrain_at(Hex::from_offset(col, row)),
+            Some("flat"),
+            "corner flat at ({col},{row})"
+        );
     }
 
     // Spot-check interior: village at (3,1) and (4,3)
@@ -547,27 +558,39 @@ fn test_faction_def_starting_gold_loads() {
     );
 }
 
-#[test]
-fn test_recruit_deducts_gold() {
+/// Set up a minimal board with a keep at (0,0) and an adjacent castle at (1,0).
+/// Places a leader unit on the keep for the active faction.
+/// (1,0) is adjacent to (0,0): both convert to Hex distance 1.)
+fn setup_recruit_board() -> (GameState, Hex, Hex) {
     use norrust_core::board::Tile;
     use norrust_core::unit::Unit;
-
+    let keep_hex    = Hex::from_offset(0, 0);
+    let castle_hex  = Hex::from_offset(1, 0);
     let mut board = Board::new(4, 3);
-    let castle_hex = Hex::from_offset(0, 0);
+    board.set_tile(keep_hex, Tile {
+        terrain_id: "keep".to_string(), movement_cost: 1, defense: 40, healing: 0,
+        color: "#c8a030".to_string(),
+    });
     board.set_tile(castle_hex, Tile {
-        terrain_id: "castle".to_string(),
-        movement_cost: 1,
-        defense: 40,
-        healing: 0,
+        terrain_id: "castle".to_string(), movement_cost: 1, defense: 40, healing: 0,
         color: "#c8b47a".to_string(),
     });
     let mut state = GameState::new(board);
+    // Place a leader (with "leader" ability) on the keep so recruitment is allowed
+    let mut leader = Unit::new(99, "leader", 30, 0);
+    leader.abilities = vec!["leader".to_string()];
+    state.place_unit(leader, keep_hex);
+    (state, keep_hex, castle_hex)
+}
+
+#[test]
+fn test_recruit_deducts_gold() {
+    use norrust_core::unit::Unit;
+    let (mut state, _keep, castle_hex) = setup_recruit_board();
     state.gold = [50, 50];
 
     let unit = Unit::new(1, "spearman", 33, 0);
-    let cost = 14u32;
-
-    apply_recruit(&mut state, unit, castle_hex, cost).expect("recruit must succeed");
+    apply_recruit(&mut state, unit, castle_hex, 14).expect("recruit must succeed");
 
     assert_eq!(state.gold[0], 36, "gold should be 50 - 14 = 36");
     assert!(state.units.contains_key(&1), "unit must be placed on the board");
@@ -575,39 +598,68 @@ fn test_recruit_deducts_gold() {
 
 #[test]
 fn test_recruit_fails_not_enough_gold() {
-    use norrust_core::board::Tile;
     use norrust_core::unit::Unit;
-
-    let mut board = Board::new(4, 3);
-    let castle_hex = Hex::from_offset(0, 0);
-    board.set_tile(castle_hex, Tile {
-        terrain_id: "castle".to_string(),
-        movement_cost: 1,
-        defense: 40,
-        healing: 0,
-        color: "#c8b47a".to_string(),
-    });
-    let mut state = GameState::new(board);
+    let (mut state, _keep, castle_hex) = setup_recruit_board();
     state.gold = [0, 0];
 
-    let unit = Unit::new(1, "spearman", 33, 0);
-    let result = apply_recruit(&mut state, unit, castle_hex, 14);
+    let result = apply_recruit(&mut state, Unit::new(1, "spearman", 33, 0), castle_hex, 14);
 
     assert_eq!(result, Err(ActionError::NotEnoughGold));
-    assert!(state.units.is_empty(), "no unit should be placed on failure");
+    // Unit 99 (leader) is placed; recruited unit must not be
+    assert!(!state.units.contains_key(&1), "recruit unit must not be placed on failure");
 }
 
 #[test]
 fn test_recruit_fails_not_castle_hex() {
     use norrust_core::unit::Unit;
+    // Leader on keep; destination is flat — must fail with DestinationNotCastle
+    let (mut state, _keep, _castle) = setup_recruit_board();
+    state.board.set_terrain(Hex::from_offset(2, 0), "flat");
+    state.gold = [100, 100];
 
+    let result = apply_recruit(&mut state, Unit::new(1, "spearman", 33, 0), Hex::from_offset(2, 0), 14);
+    assert_eq!(result, Err(ActionError::DestinationNotCastle));
+}
+
+#[test]
+fn test_recruit_fails_leader_not_on_keep() {
+    use norrust_core::board::Tile;
+    use norrust_core::unit::Unit;
+    // Castle hex present but no leader on a keep → LeaderNotOnKeep
     let mut board = Board::new(4, 3);
-    board.set_terrain(Hex::from_offset(0, 0), "flat");
+    let castle_hex = Hex::from_offset(0, 0);
+    board.set_tile(castle_hex, Tile {
+        terrain_id: "castle".to_string(), movement_cost: 1, defense: 40, healing: 0,
+        color: "#c8b47a".to_string(),
+    });
     let mut state = GameState::new(board);
     state.gold = [100, 100];
 
-    let unit = Unit::new(1, "spearman", 33, 0);
-    let result = apply_recruit(&mut state, unit, Hex::from_offset(0, 0), 14);
+    let result = apply_recruit(&mut state, Unit::new(1, "spearman", 33, 0), castle_hex, 14);
+    assert_eq!(result, Err(ActionError::LeaderNotOnKeep));
+}
 
-    assert_eq!(result, Err(ActionError::DestinationNotCastle));
+#[test]
+fn test_recruit_fails_non_leader_on_keep() {
+    use norrust_core::board::Tile;
+    use norrust_core::unit::Unit;
+    // A regular unit (no "leader" ability) on a keep must NOT allow recruitment.
+    let keep_hex = Hex::from_offset(0, 0);
+    let castle_hex = Hex::from_offset(1, 0);
+    let mut board = Board::new(4, 3);
+    board.set_tile(keep_hex, Tile {
+        terrain_id: "keep".to_string(), movement_cost: 1, defense: 40, healing: 0,
+        color: "#c8a030".to_string(),
+    });
+    board.set_tile(castle_hex, Tile {
+        terrain_id: "castle".to_string(), movement_cost: 1, defense: 40, healing: 0,
+        color: "#c8b47a".to_string(),
+    });
+    let mut state = GameState::new(board);
+    state.gold = [100, 100];
+    // Non-leader unit on keep — abilities is empty
+    state.place_unit(Unit::new(99, "grunt", 30, 0), keep_hex);
+
+    let result = apply_recruit(&mut state, Unit::new(1, "spearman", 33, 0), castle_hex, 14);
+    assert_eq!(result, Err(ActionError::LeaderNotOnKeep));
 }

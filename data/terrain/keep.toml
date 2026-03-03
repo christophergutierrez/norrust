@@ -1,0 +1,7 @@
+id = "keep"
+name = "Keep"
+symbol = "k"
+default_defense = 40
+default_movement_cost = 1
+healing = 0
+color = "#c8a030"

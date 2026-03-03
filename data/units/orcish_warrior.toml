@@ -8,7 +8,7 @@ movement = 5
 alignment = "chaotic"
 cost = 23
 usage = "fighter"
-abilities = []
+abilities = ["leader"]
 advances_to = ["Orcish Warlord"]
 
 [[attacks]]

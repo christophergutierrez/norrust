@@ -61,6 +61,7 @@ fn action_err_code(e: ActionError) -> i32 {
         ActionError::NotAdjacent            => -7,
         ActionError::NotEnoughGold          => -8,
         ActionError::DestinationNotCastle   => -9,
+        ActionError::LeaderNotOnKeep        => -10,
     }
 }
 
@@ -278,10 +279,10 @@ impl NorRustCore {
 
         // Clone stat fields from UnitDef before mutably borrowing game.
         let def_stats = self.units.as_ref().and_then(|r| r.get(&def_id.to_string())).map(|def| {
-            (def.max_hp, def.movement, def.movement_costs.clone(), def.attacks.clone(), def.defense.clone(), def.resistances.clone(), def.experience, def.alignment.clone())
+            (def.max_hp, def.movement, def.movement_costs.clone(), def.attacks.clone(), def.defense.clone(), def.resistances.clone(), def.experience, def.alignment.clone(), def.abilities.clone())
         });
 
-        if let Some((max_hp, movement, movement_costs, attacks, defense, resistances, experience, alignment)) = def_stats {
+        if let Some((max_hp, movement, movement_costs, attacks, defense, resistances, experience, alignment, abilities)) = def_stats {
             unit.max_hp = max_hp;
             unit.hp = max_hp;
             unit.movement = movement;
@@ -291,6 +292,7 @@ impl NorRustCore {
             unit.resistances = resistances;
             unit.xp_needed = experience;
             unit.alignment = parse_alignment(&alignment);
+            unit.abilities = abilities;
         } else {
             godot_warn!("place_unit_at: UnitDef '{}' not found, unit uses defaults", def_id);
         }
@@ -334,9 +336,10 @@ impl NorRustCore {
                 def.experience,
                 def.alignment.clone(),
                 def.cost,
+                def.abilities.clone(),
             ));
 
-        let Some((max_hp, movement, movement_costs, attacks, defense, resistances, experience, alignment, cost)) = def_data else {
+        let Some((max_hp, movement, movement_costs, attacks, defense, resistances, experience, alignment, cost, abilities)) = def_data else {
             godot_warn!("recruit_unit_at: UnitDef '{}' not found", def_id);
             return -1;
         };
@@ -354,12 +357,74 @@ impl NorRustCore {
         unit.resistances = resistances;
         unit.xp_needed = experience;
         unit.alignment = parse_alignment(&alignment);
+        unit.abilities = abilities;
 
         let destination = Hex::from_offset(col, row);
         match apply_recruit(state, unit, destination, cost) {
             Ok(()) => 0,
             Err(e) => action_err_code(e),
         }
+    }
+
+    /// Recruit units automatically for the AI faction.
+    ///
+    /// Loops: find the keep the active faction's unit stands on → find an empty adjacent
+    /// castle hex → recruit the cheapest affordable unit from the faction's recruit list.
+    /// Repeats until no empty castle hexes remain or gold runs out.
+    ///
+    /// `start_unit_id` is the next free unit ID (from GDScript's _next_unit_id).
+    /// Returns the number of units successfully recruited.
+    #[func]
+    fn ai_recruit(&mut self, faction_id: GString, start_unit_id: i32) -> i32 {
+        let id = faction_id.to_string();
+        let recruits: Vec<String> = match self.factions.iter().find(|(f, _)| f.id == id) {
+            Some((_, r)) => r.clone(),
+            None => return 0,
+        };
+
+        let mut recruited = 0i32;
+        let mut unit_id = start_unit_id;
+
+        // Safety cap: never recruit more units than castle slots can hold
+        for _ in 0..12 {
+            // Collect all needed data immutably, then release the borrow before
+            // calling recruit_unit_at (which needs &mut self).
+            let action: Option<(String, i32, i32)> = self.game.as_ref().and_then(|state| {
+                let active = state.active_faction;
+                // Find the leader (unit with "leader" ability) on a keep tile
+                let keep = state.positions.iter().find_map(|(&uid, &hex)| {
+                    let unit = state.units.get(&uid)?;
+                    if unit.faction != active { return None; }
+                    if !unit.abilities.iter().any(|a| a == "leader") { return None; }
+                    state.board.tile_at(hex).filter(|t| t.terrain_id == "keep").map(|_| hex)
+                })?;
+                // First empty adjacent castle hex
+                let dest = keep.neighbors().iter().copied().find(|&h| {
+                    state.board.contains(h)
+                        && state.board.tile_at(h).map(|t| t.terrain_id == "castle").unwrap_or(false)
+                        && !state.positions.values().any(|&p| p == h)
+                })?;
+                // Cheapest affordable unit from the faction recruit list
+                let def_id = recruits.iter().find(|def_id| {
+                    self.units.as_ref()
+                        .and_then(|r| r.get(def_id.as_str()))
+                        .map(|def| state.gold[active as usize] >= def.cost)
+                        .unwrap_or(false)
+                })?;
+                let (col, row) = dest.to_offset();
+                Some((def_id.clone(), col, row))
+            });
+
+            let Some((def_id, col, row)) = action else { break };
+            let result = self.recruit_unit_at(unit_id, def_id.into(), col, row);
+            if result == 0 {
+                recruited += 1;
+                unit_id += 1;
+            } else {
+                break;
+            }
+        }
+        recruited
     }
 
     /// Returns the gold cost of the unit def, or 0 if not found.

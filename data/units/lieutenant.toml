@@ -8,7 +8,7 @@ movement = 6
 alignment = "lawful"
 cost = 31
 usage = "fighter"
-abilities = ["leadership"]
+abilities = ["leader", "leadership"]
 advances_to = ["General"]
 
 [[attacks]]

@@ -40,6 +40,7 @@ var _next_unit_id: int = 1
 var _recruit_mode: bool = false
 var _recruit_palette: Array = []
 var _selected_recruit_idx: int = 0
+var _recruit_error: String = ""
 
 func _ready() -> void:
 	_setup_rust_core()
@@ -237,29 +238,34 @@ func _draw_setup_hud() -> void:
 				prompt, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color.YELLOW)
 		else:
 			draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, 44),
-				"Click: place / remove",
+				"Leader placed.",
 				HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color.LIGHT_GRAY)
 			draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, 58),
-				"[Enter] Done placing",
-				HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color.LIGHT_GRAY)
-			for i in range(_palette.size()):
-				var y = 84 + i * 22
-				var label = "[%d] %s" % [i + 1, _palette[i]]
-				var col = Color.YELLOW if i == _selected_palette_idx else Color.WHITE
-				draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, y),
-					label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, col)
+				"[Enter] Continue",
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color.YELLOW)
 
 func _draw_recruit_panel(state: Dictionary) -> void:
 	var faction = _core.get_active_faction()
 	var screen_w = ProjectSettings.get_setting("display/window/size/viewport_width")
 	var screen_h = ProjectSettings.get_setting("display/window/size/viewport_height")
 
-	# Highlight castle hexes
+	# Highlight keep hexes (gold) and castle hexes (bright cyan) in recruit mode
 	for tile in state.get("terrain", []):
-		if tile.get("terrain_id", "") == "castle":
-			var center = _tile_map.map_to_local(Vector2i(int(tile["col"]), int(tile["row"]))) \
-						 + _tile_map.position
-			draw_polygon(_hex_polygon(center, HEX_RADIUS), [Color(0.0, 0.8, 0.8, 0.4)])
+		var tid = tile.get("terrain_id", "")
+		var center = _tile_map.map_to_local(Vector2i(int(tile["col"]), int(tile["row"]))) \
+					 + _tile_map.position
+		if tid == "keep":
+			var pts = _hex_polygon(center, HEX_RADIUS)
+			draw_polygon(pts, [Color(1.0, 0.75, 0.0, 0.7)])
+			var border = pts
+			border.append(border[0])
+			draw_polyline(border, Color.YELLOW, 3.0)
+		elif tid == "castle":
+			var pts = _hex_polygon(center, HEX_RADIUS)
+			draw_polygon(pts, [Color(0.0, 0.9, 0.9, 0.65)])
+			var border = pts
+			border.append(border[0])
+			draw_polyline(border, Color.WHITE, 2.5)
 
 	# Sidebar panel
 	draw_rect(Rect2(screen_w - 200, 0, 200, screen_h), Color(0, 0, 0, 0.6))
@@ -269,13 +275,18 @@ func _draw_recruit_panel(state: Dictionary) -> void:
 	draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, 24),
 		"RECRUIT — %dg" % gold, HORIZONTAL_ALIGNMENT_LEFT, -1, 15, faction_color)
 	draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, 44),
-		"Click castle hex to place", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color.LIGHT_GRAY)
+		"Leader must be on gold hex", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color.YELLOW)
 	draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, 58),
+		"Click adjacent blue hex", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color.LIGHT_GRAY)
+	draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, 72),
 		"[R] Cancel", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color.LIGHT_GRAY)
+	if _recruit_error != "":
+		draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, 86),
+			_recruit_error, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color.RED)
 	for i in range(_recruit_palette.size()):
 		var def_id = _recruit_palette[i]
 		var cost = _core.get_unit_cost(def_id)
-		var y = 80 + i * 20
+		var y = 108 + i * 20
 		var label = "[%d] %s (%dg)" % [i + 1, def_id, cost]
 		var col = Color.YELLOW if i == _selected_recruit_idx else Color.WHITE
 		draw_string(ThemeDB.fallback_font, Vector2(screen_w - 190, y),
@@ -332,6 +343,8 @@ func _input(event: InputEvent) -> void:
 			# Auto-play AI for faction 1. ai_take_turn() applies EndTurn internally,
 			# so active faction returns to 0 after this call.
 			if _core.get_active_faction() == 1:
+				var n = _core.ai_recruit(_faction_id[1], _next_unit_id)
+				_next_unit_id += n
 				_core.ai_take_turn(1)
 				_check_game_over()
 			queue_redraw()
@@ -353,6 +366,7 @@ func _input(event: InputEvent) -> void:
 				var raw = _core.get_faction_recruits_json(_faction_id[faction], 0)
 				_recruit_palette = JSON.parse_string(raw) if raw != "" else []
 				_selected_recruit_idx = 0
+				_recruit_error = ""
 				_recruit_mode = true
 				_clear_selection()
 			else:
@@ -393,10 +407,15 @@ func _input(event: InputEvent) -> void:
 			var result = _core.recruit_unit_at(_next_unit_id, def_id, col, row)
 			if result == 0:
 				_next_unit_id += 1
+				_recruit_error = ""
+				_recruit_mode = false
 				print("Recruited %s at (%d,%d)" % [def_id, col, row])
 			else:
-				print("Recruit failed: code %d" % result)
-		_recruit_mode = false
+				# Keep recruit mode open so the player can try a different hex
+				var err_map = {-4: "Hex is occupied", -8: "Not enough gold",
+					-9: "Must click a castle hex", -10: "Move leader to the keep first"}
+				_recruit_error = err_map.get(result, "Recruit failed (code %d)" % result)
+				print("Recruit failed: code %d — %s" % [result, _recruit_error])
 		queue_redraw()
 		return
 
@@ -449,12 +468,6 @@ func _handle_setup_input(event: InputEvent) -> void:
 				return
 
 		# SETUP modes — key input
-		if key >= KEY_1 and key <= KEY_9:
-			var fi = _faction_index_for_mode()
-			if _leader_placed[fi] and _palette.size() > 0:
-				_selected_palette_idx = min(key - KEY_1, _palette.size() - 1)
-			queue_redraw()
-			return
 		if key == KEY_ENTER or key == KEY_KP_ENTER:
 			if _game_mode == GameMode.SETUP_BLUE:
 				_game_mode = GameMode.PICK_FACTION_RED
@@ -488,21 +501,14 @@ func _handle_setup_input(event: InputEvent) -> void:
 	var faction = fi
 
 	if not _leader_placed[fi]:
-		# First placement must be the leader
+		# Place the leader — the only free unit in setup
 		if clicked not in pos_map:
 			var leader_def = _core.get_faction_leader(_faction_id[fi])
 			_core.place_unit_at(_next_unit_id, leader_def, 0, faction, col, row)
 			_next_unit_id += 1
 			_leader_placed[fi] = true
-			_leader_level[fi]  = _core.get_unit_level(leader_def)
-			_reload_palette()
 		queue_redraw()
 		return
 
-	if clicked in pos_map and pos_map[clicked][1] == faction:
-		_core.remove_unit_at(col, row)
-	elif clicked not in pos_map and _palette.size() > 0:
-		var def_id = _palette[_selected_palette_idx]
-		_core.place_unit_at(_next_unit_id, def_id, 0, faction, col, row)
-		_next_unit_id += 1
+	# Leader already placed — clicks do nothing in setup (recruit in battle with R)
 	queue_redraw()

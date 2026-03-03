@@ -55,6 +55,8 @@ pub struct Unit {
     pub xp_needed: u32,
     /// Set true when xp >= xp_needed; cleared by Action::Advance (Phase 8).
     pub advancement_pending: bool,
+    /// Abilities copied from UnitDef at spawn (e.g. "leader", "leadership", "regenerates").
+    pub abilities: Vec<String>,
 }
 
 /// Advance `unit` to the stats defined by `new_def`.
@@ -73,6 +75,7 @@ pub fn advance_unit(unit: &mut Unit, new_def: &UnitDef) {
     unit.resistances = new_def.resistances.clone();
     unit.alignment = parse_alignment(&new_def.alignment);
     unit.xp_needed = new_def.experience;
+    unit.abilities = new_def.abilities.clone();
     unit.xp = 0;
     unit.advancement_pending = false;
 }
@@ -97,6 +100,7 @@ impl Unit {
             xp: 0,
             xp_needed: 0,
             advancement_pending: false,
+            abilities: Vec::new(),
         }
     }
 }

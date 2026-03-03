@@ -1,12 +1,17 @@
-# scenarios/contested.toml
-# 8 columns × 5 rows. Tiles are row-major (left→right, top→bottom).
-# Cols 0-1 and 6-7 are flat spawn zones for each faction.
+# scenarios/contested.toml — 8 columns × 5 rows, row-major (left→right, top→bottom)
+#
+# Castle structure (Wesnoth rules):
+#   Blue keep: (1,2)  — castle hexes: (0,1)(0,2)(0,3)(1,1)(1,3)(2,2)
+#   Red  keep: (6,2)  — castle hexes: (5,1)(5,2)(5,3)(6,1)(6,3)(7,2)
+#
+# Leader must stand on keep to recruit into an adjacent castle hex.
+
 width = 8
 height = 5
 tiles = [
-  "castle", "flat", "forest",    "hills",     "hills",     "forest",    "flat", "castle",
-  "castle", "flat", "forest",    "village",   "mountains", "forest",    "flat", "castle",
-  "castle", "flat", "hills",     "forest",    "forest",    "hills",     "flat", "castle",
-  "castle", "flat", "forest",    "mountains", "village",   "forest",    "flat", "castle",
-  "castle", "flat", "forest",    "hills",     "hills",     "forest",    "flat", "castle",
+  "flat",   "flat",   "forest", "hills",     "hills",     "forest", "flat",   "flat",
+  "castle", "castle", "forest", "village",   "mountains", "castle", "castle", "flat",
+  "castle", "keep",   "castle", "forest",    "forest",    "castle", "keep",   "castle",
+  "castle", "castle", "forest", "mountains", "village",   "castle", "castle", "flat",
+  "flat",   "flat",   "forest", "hills",     "hills",     "forest", "flat",   "flat",
 ]

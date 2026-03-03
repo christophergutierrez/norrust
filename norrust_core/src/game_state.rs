@@ -18,6 +18,7 @@ pub enum ActionError {
     NotAdjacent,
     NotEnoughGold,
     DestinationNotCastle,
+    LeaderNotOnKeep,
 }
 
 /// Discrete state changes that may be applied to a `GameState`.
@@ -365,9 +366,22 @@ pub fn apply_recruit(
     if !state.board.contains(destination) {
         return Err(ActionError::DestinationOutOfBounds);
     }
+    // The active faction's leader (unit with "leader" ability) must be on a keep tile.
+    let active = state.active_faction;
+    let keep_hex = state.positions.iter().find_map(|(&uid, &hex)| {
+        let unit = state.units.get(&uid)?;
+        if unit.faction != active { return None; }
+        if !unit.abilities.iter().any(|a| a == "leader") { return None; }
+        state.board.tile_at(hex).filter(|t| t.terrain_id == "keep").map(|_| hex)
+    });
+    let keep_hex = keep_hex.ok_or(ActionError::LeaderNotOnKeep)?;
+    // Destination must be a castle tile adjacent to the keep.
     match state.board.tile_at(destination) {
         Some(tile) if tile.terrain_id == "castle" => {}
         _ => return Err(ActionError::DestinationNotCastle),
+    }
+    if keep_hex.distance(destination) != 1 {
+        return Err(ActionError::DestinationNotCastle);
     }
     if state.positions.values().any(|&h| h == destination) {
         return Err(ActionError::DestinationOccupied);
