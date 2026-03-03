@@ -28,8 +28,8 @@ Every action variant with concrete examples, common rejection reasons, and the c
 error codes to handle.
 
 ### Terrain and its effects
-How terrain affects movement cost and combat defense. The five terrain types currently
-on the default map (flat, forest, hills, mountains, village) and their practical impact.
+How terrain affects movement cost and combat defense. The terrain types currently
+on the default map (flat, forest, hills, mountains, village, castle, keep) and their practical impact.
 
 ### Combat math
 How hit probability, time-of-day modifiers, and resistances interact. What information
@@ -38,8 +38,12 @@ from the state).
 
 ### The baseline AI
 What the built-in greedy AI does (`ai_take_turn`): N=0 lookahead, expected-damage scoring,
-kill bonus ×3. Its known weaknesses — no positional awareness, doesn't value terrain defense,
+kill bonus x3. Its known weaknesses — no positional awareness, ignores terrain defense,
 doesn't block — which a better agent should exploit or avoid replicating.
 
 ### Advancement
 When `advancement_pending` is true, how to trigger it and what changes on the unit.
+
+### Integration
+How to connect an external agent to the C ABI bridge — either directly via FFI from any
+language with C interop, or via a future TCP/socket transport layer.
