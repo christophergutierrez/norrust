@@ -67,6 +67,12 @@ local recruit_error = ""
 local inspect_unit_id = -1
 local inspect_terrain = nil    -- {col, row, terrain_id, defense, movement_cost, healing, unit_defense, unit_move_cost} or nil
 
+-- Ghost movement
+local ghost_col = nil          -- ghost hex col, or nil if not ghosting
+local ghost_row = nil          -- ghost hex row
+local ghost_unit_id = -1       -- the unit being ghosted
+local ghost_attackable = {}    -- array of {id=N, col=C, row=R} for enemies adjacent to ghost
+
 -- Campaign
 local campaigns_path = ""
 local campaign_active = false
@@ -185,11 +191,19 @@ end
 
 -- ── Game logic helpers ──────────────────────────────────────────────────────
 
+local function cancel_ghost()
+    ghost_col = nil
+    ghost_row = nil
+    ghost_unit_id = -1
+    ghost_attackable = {}
+end
+
 local function clear_selection()
     selected_unit_id = -1
     reachable_cells = {}
     reachable_set = {}
     inspect_unit_id = -1
+    cancel_ghost()
 end
 
 local function build_unit_pos_map(state)
@@ -233,6 +247,55 @@ local function check_game_over()
     end
 end
 
+--- Odd-r offset neighbor table
+local function hex_neighbors(col, row)
+    local neighbors
+    if row % 2 == 0 then
+        neighbors = {{-1,-1},{0,-1},{1,0},{0,1},{-1,1},{-1,0}}
+    else
+        neighbors = {{0,-1},{1,-1},{1,0},{1,1},{0,1},{-1,0}}
+    end
+    local result = {}
+    for _, d in ipairs(neighbors) do
+        result[#result + 1] = {col = col + d[1], row = row + d[2]}
+    end
+    return result
+end
+
+--- Find enemy units adjacent to (col, row) that belong to a different faction than `faction`.
+local function get_adjacent_enemies(pos_map, col, row, faction)
+    local enemies = {}
+    for _, nb in ipairs(hex_neighbors(col, row)) do
+        local key = nb.col .. "," .. nb.row
+        local occ = pos_map[key]
+        if occ and occ.faction ~= faction then
+            enemies[#enemies + 1] = {id = occ.id, col = nb.col, row = nb.row}
+        end
+    end
+    return enemies
+end
+
+--- Build a set of ghost_attackable IDs for fast lookup.
+local function ghost_attackable_set()
+    local s = {}
+    for _, e in ipairs(ghost_attackable) do
+        s[e.id] = true
+    end
+    return s
+end
+
+local function commit_ghost_move()
+    norrust.apply_move(engine, ghost_unit_id, ghost_col, ghost_row)
+    local uid = ghost_unit_id
+    cancel_ghost()
+    -- Keep unit selected after move (for potential attack or re-inspect)
+    selected_unit_id = uid
+    inspect_unit_id = uid
+    reachable_cells = {}
+    reachable_set = {}
+    check_game_over()
+end
+
 local function faction_index_for_mode()
     return game_mode == SETUP_BLUE and 0 or 1
 end
@@ -250,10 +313,21 @@ local function draw_units(state)
         local hp = int(unit.hp)
         local uid = int(unit.id)
         local exhausted = unit.moved or unit.attacked
-        local cx, cy = hex_to_pixel(col, row)
-        local alpha = exhausted and 0.4 or 1.0
 
         alive_ids[uid] = true
+
+        -- Skip ghost unit at original position (drawn separately)
+        if ghost_col ~= nil and uid == ghost_unit_id then
+            -- Draw a dim outline at original position to show "unit was here"
+            local ox, oy = hex_to_pixel(col, row)
+            love.graphics.setColor(0.5, 0.5, 0.5, 0.3)
+            love.graphics.setLineWidth(2)
+            love.graphics.circle("line", ox, oy, HEX_RADIUS * 0.4)
+            goto continue
+        end
+
+        local cx, cy = hex_to_pixel(col, row)
+        local alpha = exhausted and 0.4 or 1.0
 
         -- Get or create animation state for this unit
         local anim_state = unit_anims[uid]
@@ -303,6 +377,7 @@ local function draw_units(state)
             love.graphics.setFont(fonts[14])
             love.graphics.print(int(unit.xp) .. "/" .. int(unit.xp_needed), cx - 15, cy + 14)
         end
+        ::continue::
     end
 
     -- Clean up stale animation states for dead/removed units
@@ -882,15 +957,24 @@ function love.draw()
         end
     end
 
-    -- 3. Selected unit outline
+    -- 3. Selected unit outline (at ghost position if ghosting)
     if game_mode == PLAYING and selected_unit_id ~= -1 then
-        for _, unit in ipairs(state.units or {}) do
-            if int(unit.id) == selected_unit_id then
-                local cx, cy = hex_to_pixel(int(unit.col), int(unit.row))
-                love.graphics.setColor(1, 1, 1, 1)
-                love.graphics.setLineWidth(2.5)
-                love.graphics.polygon("line", hex_polygon(cx, cy, HEX_RADIUS))
-                break
+        if ghost_col ~= nil then
+            -- Outline at ghost position
+            local gx, gy = hex_to_pixel(ghost_col, ghost_row)
+            love.graphics.setColor(1, 1, 1, 0.8)
+            love.graphics.setLineWidth(2.5)
+            love.graphics.polygon("line", hex_polygon(gx, gy, HEX_RADIUS))
+        else
+            -- Outline at real position
+            for _, unit in ipairs(state.units or {}) do
+                if int(unit.id) == selected_unit_id then
+                    local cx, cy = hex_to_pixel(int(unit.col), int(unit.row))
+                    love.graphics.setColor(1, 1, 1, 1)
+                    love.graphics.setLineWidth(2.5)
+                    love.graphics.polygon("line", hex_polygon(cx, cy, HEX_RADIUS))
+                    break
+                end
             end
         end
     end
@@ -911,6 +995,55 @@ function love.draw()
 
     -- 5. Units
     draw_units(state)
+
+    -- 5b. Ghost unit rendering (drawn on top of units)
+    if ghost_col ~= nil then
+        local gx, gy = hex_to_pixel(ghost_col, ghost_row)
+        -- Find the ghost unit data
+        for _, unit in ipairs(state.units or {}) do
+            if int(unit.id) == ghost_unit_id then
+                local faction = int(unit.faction)
+                local hp = int(unit.hp)
+                local ghost_alpha = 0.5
+
+                -- Get animation state
+                local anim_state = unit_anims[ghost_unit_id]
+                if anim_state then
+                    anim_state.facing = ghost_col >= BOARD_COLS / 2 and "left" or "right"
+                end
+
+                -- Try sprite, fallback to circle
+                local drawn = assets.draw_unit_sprite(unit_sprites, unit.def_id, gx, gy, HEX_RADIUS, faction, ghost_alpha, FACTION_COLORS, anim_state)
+                if not drawn then
+                    if faction == 0 then
+                        love.graphics.setColor(BLUE[1], BLUE[2], BLUE[3], ghost_alpha)
+                    else
+                        love.graphics.setColor(RED[1], RED[2], RED[3], ghost_alpha)
+                    end
+                    love.graphics.circle("fill", gx, gy, HEX_RADIUS * 0.45)
+                    local word = (unit.def_id or ""):match("^([^_]+)") or unit.def_id or ""
+                    local abbrev = (word:sub(1, 1):upper() .. word:sub(2):lower()):sub(1, 7)
+                    love.graphics.setColor(1, 1, 1, ghost_alpha)
+                    love.graphics.setFont(fonts[14])
+                    love.graphics.printf(abbrev, gx - 42, gy - 14, 84, "center")
+                end
+
+                -- HP at ghost position
+                love.graphics.setColor(1, 1, 1, ghost_alpha)
+                love.graphics.setFont(fonts[18])
+                love.graphics.print(tostring(hp), gx - 12, gy - 2)
+                break
+            end
+        end
+
+        -- Highlight attackable enemies
+        for _, enemy in ipairs(ghost_attackable) do
+            local ex, ey = hex_to_pixel(enemy.col, enemy.row)
+            love.graphics.setColor(1, 0.4, 0.1, 0.9)
+            love.graphics.setLineWidth(3)
+            love.graphics.polygon("line", hex_polygon(ex, ey, HEX_RADIUS))
+        end
+    end
 
     -- 6. Recruit-mode hex highlights (drawn after units, matching game.gd Z-order)
     if recruit_mode then
@@ -1129,7 +1262,19 @@ function love.keypressed(key)
         return
     end
 
-    if key == "e" then
+    if key == "escape" then
+        -- Cancel ghost or clear selection
+        if ghost_col ~= nil then
+            cancel_ghost()
+        else
+            clear_selection()
+        end
+
+    elseif (key == "return" or key == "kpenter") and ghost_col ~= nil then
+        -- Commit ghost move
+        commit_ghost_move()
+
+    elseif key == "e" then
         -- End turn + AI
         norrust.end_turn(engine)
         clear_selection()
@@ -1300,19 +1445,54 @@ function love.mousepressed(sx, sy, button)
         return
     end
 
-    -- Attack: selected unit + enemy at clicked hex
-    if selected_unit_id ~= -1 and pos_map[clicked_key] and pos_map[clicked_key].faction ~= active then
+    -- Ghost active: handle clicks from ghost state
+    if ghost_col ~= nil then
+        local atk_set = ghost_attackable_set()
+
+        -- Click highlighted enemy → commit move + attack
+        if pos_map[clicked_key] and atk_set[pos_map[clicked_key].id] then
+            local enemy_id = pos_map[clicked_key].id
+            commit_ghost_move()
+            norrust.apply_attack(engine, selected_unit_id, enemy_id)
+            clear_selection()
+            inspect_unit_id = enemy_id
+            check_game_over()
+
+        -- Click the ghost hex itself → commit move only
+        elseif col == ghost_col and row == ghost_row then
+            commit_ghost_move()
+
+        -- Click a different reachable hex → re-ghost
+        elseif reachable_set[clicked_key] and not pos_map[clicked_key] then
+            ghost_col = col
+            ghost_row = row
+            ghost_attackable = get_adjacent_enemies(pos_map, col, row, active)
+
+        -- Click friendly unit → cancel ghost, select new unit
+        elseif pos_map[clicked_key] and pos_map[clicked_key].faction == active then
+            cancel_ghost()
+            select_unit(pos_map[clicked_key].id)
+
+        -- Anything else → cancel ghost and clear
+        else
+            clear_selection()
+        end
+
+    -- No ghost: normal click handling
+    -- Attack: selected unit + adjacent enemy (only when unit already moved or no ghost needed)
+    elseif selected_unit_id ~= -1 and pos_map[clicked_key] and pos_map[clicked_key].faction ~= active then
         local enemy_id = pos_map[clicked_key].id
         norrust.apply_attack(engine, selected_unit_id, enemy_id)
         clear_selection()
         inspect_unit_id = enemy_id
         check_game_over()
 
-    -- Move: selected unit + reachable hex
-    elseif selected_unit_id ~= -1 and reachable_set[clicked_key] then
-        norrust.apply_move(engine, selected_unit_id, col, row)
-        clear_selection()
-        check_game_over()
+    -- Ghost: selected unit + reachable empty hex → enter ghost state
+    elseif selected_unit_id ~= -1 and reachable_set[clicked_key] and not pos_map[clicked_key] then
+        ghost_col = col
+        ghost_row = row
+        ghost_unit_id = selected_unit_id
+        ghost_attackable = get_adjacent_enemies(pos_map, col, row, active)
 
     -- Select friendly unit
     elseif pos_map[clicked_key] and pos_map[clicked_key].faction == active then

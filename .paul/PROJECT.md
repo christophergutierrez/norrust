@@ -137,6 +137,7 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] TileSnapshot includes defense, movement_cost, healing fields in state JSON — Phase 36 (36-01)
 - [x] norrust_get_unit_terrain_info() FFI: unit-specific effective defense/movement cost with fallback chain — Phase 36 (36-01)
 - [x] Right-click terrain inspection panel: terrain type, defense %, movement cost, healing, unit-specific stats — Phase 36 (36-01)
+- [x] Ghost movement: two-step click-to-ghost-to-commit replacing immediate move, with translucent preview and adjacent enemy highlighting — Phase 37 (37-01)
 
 ### Active (In Progress / Deferred)
 
@@ -242,6 +243,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | Veterans placed on leftmost keep + adjacent castles | Player's keep is leftmost; placement skips occupied hexes from preset units | 2026-03-03 | Active |
 | Right-click for terrain inspection (not left-click) | Left-click on empty reachable hex triggers movement; right-click avoids conflict | 2026-03-04 | Active |
 | Dedicated FFI for unit-terrain queries (not UnitSnapshot expansion) | Avoids per-frame bloat; reusable for combat preview | 2026-03-04 | Active |
+| Ghost movement purely client-side (no engine state until commit) | Clean cancel, no rollback needed | 2026-03-04 | Active |
+| Lua-side hex neighbor table (not FFI) for adjacency | Simple odd-r offset lookup, no cross-boundary overhead | 2026-03-04 | Active |
 
 ## Tech Stack
 
@@ -261,4 +264,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-04 after Phase 36 — Terrain info panel with right-click inspection (96 tests pass)*
+*Last updated: 2026-03-04 after Phase 37 — Ghost movement with commit/cancel flow (96 tests pass)*

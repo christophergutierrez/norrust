@@ -8,12 +8,12 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 **v1.5 Tactical Planning**
 Status: 🚧 In Progress
-Phases: 1 of 4 complete
+Phases: 2 of 4 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 36 | Terrain Info Panel | 1/1 | ✅ Complete | 2026-03-04 |
-| 37 | Ghost Movement | TBD | Not started | - |
+| 37 | Ghost Movement | 1/1 | ✅ Complete | 2026-03-04 |
 | 38 | Combat Preview | TBD | Not started | - |
 | 39 | Commit/Cancel Flow | TBD | Not started | - |
 
@@ -34,11 +34,21 @@ Phases: 1 of 4 complete
 - Right-click terrain inspection panel in sidebar (base stats + unit-specific effective stats)
 - 96 tests passing (61 lib + 8 campaign + 3 validation + 23 simulation + 1 FFI)
 
-### Phase 37: Ghost Movement
+### Phase 37: Ghost Movement ✅
 
-**Goal:** Replace immediate move-on-click with tentative "ghost" positioning. When a unit is selected and the player clicks a reachable hex, the unit appears translucently at the new position without committing the move. From the ghost position, attackable enemies are highlighted. Click a different reachable hex to re-ghost. Escape cancels and returns to selection. State machine: Select → Ghost → (Preview Attack) → Commit/Cancel.
+**Goal:** Replace immediate move-on-click with tentative "ghost" positioning. When a unit is selected and the player clicks a reachable hex, the unit appears translucently at the new position without committing the move. From the ghost position, attackable enemies are highlighted. Click a different reachable hex to re-ghost. Escape cancels and returns to selection.
 **Depends on:** Phase 36 (terrain panel shows info for ghost position)
-**Constraints:** Ghost movement is purely client-side — no engine state mutation until commit. Must preserve existing camera, selection, and sidebar behaviors. Current click-to-move behavior replaced by click-to-ghost.
+**Completed:** 2026-03-04
+
+**Plans:**
+- [x] 37-01: Ghost state machine + translucent rendering + commit/cancel flow
+
+**Delivered:**
+- Ghost state machine: Select → Ghost → (Attack/Re-ghost/Cancel/Commit)
+- Translucent unit at ghost position with dim outline at original
+- Adjacent enemy highlighting (red/orange borders) from ghost position
+- Escape cancels, Enter commits, click enemy = move+attack
+- Purely client-side — no Rust changes, 96 tests passing
 
 ### Phase 38: Combat Preview
 
@@ -914,4 +924,4 @@ See MILESTONES.md for full history.
 </details>
 
 ---
-*Roadmap updated: 2026-03-04 — Phase 36 complete (terrain info panel), 1/4 v1.5 phases done*
+*Roadmap updated: 2026-03-04 — Phase 37 complete (ghost movement), 2/4 v1.5 phases done*
