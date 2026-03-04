@@ -27,3 +27,7 @@ REWRITE_PHASE_4.md
 REWRITE_PHASE_5.md
 REWRITE_PLAN.md
 
+# Shared libraries
+*.so
+*.dll
+*.dylib
