@@ -3,6 +3,7 @@
 
 local norrust = require("norrust")
 local assets = require("assets")
+local anim_module = require("animation")
 
 -- ── Constants ───────────────────────────────────────────────────────────────
 
@@ -76,6 +77,7 @@ local campaign_gold = 0          -- carried gold for next scenario
 local terrain_tiles = {}
 local unit_sprites = {}
 local FACTION_COLORS = {[0] = {0.25, 0.42, 0.88}, [1] = {0.80, 0.12, 0.12}}
+local unit_anims = {}  -- unit_id -> animation state (from anim_module.new_state())
 
 -- Camera
 local board_origin_x, board_origin_y = 0, 0
@@ -224,17 +226,34 @@ end
 -- ── Drawing helpers ─────────────────────────────────────────────────────────
 
 local function draw_units(state)
+    -- Track which unit IDs are alive this frame (for cleanup)
+    local alive_ids = {}
+
     for _, unit in ipairs(state.units or {}) do
         local col = int(unit.col)
         local row = int(unit.row)
         local faction = int(unit.faction)
         local hp = int(unit.hp)
+        local uid = int(unit.id)
         local exhausted = unit.moved or unit.attacked
         local cx, cy = hex_to_pixel(col, row)
         local alpha = exhausted and 0.4 or 1.0
 
+        alive_ids[uid] = true
+
+        -- Get or create animation state for this unit
+        local anim_state = unit_anims[uid]
+        if not anim_state then
+            anim_state = anim_module.new_state()
+            anim_state.def_id = unit.def_id
+            unit_anims[uid] = anim_state
+        end
+
+        -- Determine facing based on board position
+        anim_state.facing = col >= BOARD_COLS / 2 and "left" or "right"
+
         -- Try sprite rendering first; fall back to colored circle
-        local drawn = assets.draw_unit_sprite(unit_sprites, unit.def_id, cx, cy, HEX_RADIUS, faction, alpha, FACTION_COLORS)
+        local drawn = assets.draw_unit_sprite(unit_sprites, unit.def_id, cx, cy, HEX_RADIUS, faction, alpha, FACTION_COLORS, anim_state)
         if not drawn then
             -- Fallback: colored circle + abbreviation
             if faction == 0 then
@@ -269,6 +288,13 @@ local function draw_units(state)
             love.graphics.setColor(1, 1, 1, 1)
             love.graphics.setFont(fonts[14])
             love.graphics.print(int(unit.xp) .. "/" .. int(unit.xp_needed), cx - 15, cy + 14)
+        end
+    end
+
+    -- Clean up stale animation states for dead/removed units
+    for uid in pairs(unit_anims) do
+        if not alive_ids[uid] then
+            unit_anims[uid] = nil
         end
     end
 end
@@ -421,6 +447,13 @@ local function draw_unit_panel(unit)
     local fc = faction == 0 and BLUE or RED
 
     local y = 10
+
+    -- Portrait (if available)
+    local portrait_h = assets.draw_portrait(unit_sprites, unit.def_id, vp_w - 195, y, 180, 120)
+    if portrait_h > 0 then
+        y = y + portrait_h + 6
+    end
+
     -- Unit name + faction
     love.graphics.setFont(fonts[15])
     love.graphics.setColor(fc[1], fc[2], fc[3])
@@ -623,10 +656,15 @@ end
 -- ── love.load ───────────────────────────────────────────────────────────────
 
 function love.load()
-    -- Check for --generate-tiles flag
+    -- Check for generation flags
     for _, arg in ipairs(arg or {}) do
         if arg == "--generate-tiles" then
             local gen = require("generate_tiles")
+            gen.run()
+            love.event.quit()
+            return
+        elseif arg == "--generate-sprites" then
+            local gen = require("generate_sprites")
             gen.run()
             love.event.quit()
             return
@@ -669,6 +707,20 @@ end
 -- ── love.update ─────────────────────────────────────────────────────────────
 
 function love.update(dt)
+    -- Update unit animations
+    for uid, anim_state in pairs(unit_anims) do
+        local entry = nil
+        -- Find the unit's def_id to look up anim_data
+        -- We need the state to map uid → def_id; cache is built during draw_units
+        -- For efficiency, store def_id on the anim_state when created
+        if anim_state.def_id then
+            entry = unit_sprites[anim_state.def_id]
+        end
+        if entry and entry.anims then
+            anim_module.update(anim_state, entry.anims, dt)
+        end
+    end
+
     -- Arrow key panning
     local pan_x, pan_y = 0, 0
     if love.keyboard.isDown("left") then pan_x = pan_x + 1 end

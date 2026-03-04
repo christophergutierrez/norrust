@@ -8,13 +8,13 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 **v1.4 Visual Asset System**
 Status: 🚧 In Progress
-Phases: 2 of 5 complete
+Phases: 3 of 5 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 31 | Asset Specification & Infrastructure | 1 | ✅ Complete | 2026-03-03 |
 | 32 | Terrain Art | 1 | ✅ Complete | 2026-03-03 |
-| 33 | Unit Sprite Pipeline | TBD | Not started | - |
+| 33 | Unit Sprite Pipeline | 1 | ✅ Complete | 2026-03-04 |
 | 34 | Asset Viewer | TBD | Not started | - |
 | 35 | Unit Art Expansion | TBD | Not started | - |
 
@@ -58,7 +58,18 @@ Phases: 2 of 5 complete
 **Depends on:** Phase 32 (terrain art proves the loading pipeline)
 **Constraints:** One unit only — validate pipeline before mass production.
 
-**Plans:** TBD (defined during /paul:plan)
+**Completed:** 2026-03-04
+
+**Plans:**
+- [x] 33-01: Spearman sprites + TOML parser + animation module + main.lua wiring + human verification
+
+**Delivered:**
+- Programmatic Spearman spritesheets (idle, attack-melee, attack-ranged, defend, death, portrait)
+- `toml_parser.lua`: minimal TOML parser for sprite.toml metadata
+- `animation.lua`: Quad-based spritesheet animation with per-unit state tracking
+- Animation-aware `assets.lua` with portrait rendering
+- Facing/flip based on board position; fallback preserved for all other units
+- 94 tests passing (no Rust changes)
 
 ### Phase 34: Asset Viewer
 
@@ -837,4 +848,4 @@ See MILESTONES.md for full history.
 </details>
 
 ---
-*Roadmap updated: 2026-03-03 — Phase 32 complete, v1.4 Visual Asset System 2/5 phases done*
+*Roadmap updated: 2026-03-04 — Phase 33 complete, v1.4 Visual Asset System 3/5 phases done*

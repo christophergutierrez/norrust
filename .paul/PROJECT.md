@@ -127,6 +127,10 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Hex stencil masking: terrain images clipped to hex boundary via Love2D stencil API — Phase 32 (32-01)
 - [x] 15 terrain tile PNGs: programmatic textures (grass, trees, peaks, waves, bricks, etc.) replacing colored polygons — Phase 32 (32-01)
 - [x] Terrain tile generator tool: generate_tiles.lua with --generate-tiles CLI flag for on-demand regeneration — Phase 32 (32-01)
+- [x] Unit sprite pipeline: programmatic Spearman spritesheets (idle, attack, defend, death, portrait) with animation state machine — Phase 33 (33-01)
+- [x] Minimal TOML parser for sprite.toml metadata (sections, dotted sections, string/number values) — Phase 33 (33-01)
+- [x] Animation module: Quad-based spritesheet frame cycling, per-unit state tracking, facing/flip logic — Phase 33 (33-01)
+- [x] Portrait rendering in unit panel sidebar with automatic layout adjustment — Phase 33 (33-01)
 
 ### Active (In Progress / Deferred)
 
@@ -249,4 +253,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-03 after Phase 32 — terrain art with hex stencil masking (94 tests pass)*
+*Last updated: 2026-03-04 after Phase 33 — unit sprite pipeline with animation and portrait (94 tests pass)*
