@@ -131,6 +131,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Minimal TOML parser for sprite.toml metadata (sections, dotted sections, string/number values) — Phase 33 (33-01)
 - [x] Animation module: Quad-based spritesheet frame cycling, per-unit state tracking, facing/flip logic — Phase 33 (33-01)
 - [x] Portrait rendering in unit panel sidebar with automatic layout adjustment — Phase 33 (33-01)
+- [x] Standalone asset viewer: browse terrain/unit assets, cycle animations, zoom/flip, metadata display — Phase 34 (34-01)
+- [x] Programmatic sprites for all 16 priority units (3 faction leaders + 13 recruits) with unique weapons, colors, and body scales — Phase 35 (35-01)
+- [x] Generic humanoid drawing system with 8 weapon types and configurable per-unit appearance — Phase 35 (35-01)
 
 ### Active (In Progress / Deferred)
 
@@ -253,4 +256,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-04 after Phase 33 — unit sprite pipeline with animation and portrait (94 tests pass)*
+*Last updated: 2026-03-04 after Phase 35 — v1.4 Visual Asset System complete, 16 units with sprites (94 tests pass)*

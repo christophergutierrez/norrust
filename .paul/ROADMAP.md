@@ -7,8 +7,8 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 ## Current Milestone
 
 **v1.4 Visual Asset System**
-Status: 🚧 In Progress
-Phases: 4 of 5 complete
+Status: ✅ Complete
+Phases: 5 of 5 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
@@ -16,7 +16,7 @@ Phases: 4 of 5 complete
 | 32 | Terrain Art | 1 | ✅ Complete | 2026-03-03 |
 | 33 | Unit Sprite Pipeline | 1 | ✅ Complete | 2026-03-04 |
 | 34 | Asset Viewer | 1 | ✅ Complete | 2026-03-04 |
-| 35 | Unit Art Expansion | TBD | Not started | - |
+| 35 | Unit Art Expansion | 1 | ✅ Complete | 2026-03-04 |
 
 ## v1.4 Phase Details
 
@@ -88,13 +88,22 @@ Phases: 4 of 5 complete
 - Unit animation cycling through all states with spritesheet strip and portrait
 - 94 tests passing (no Rust changes)
 
-### Phase 35: Unit Art Expansion
+### Phase 35: Unit Art Expansion ✅
 
 **Goal:** Generate sprites for remaining priority units (faction leaders, common recruits). Batch generation workflow using Nano Banana. Validate via asset viewer.
 **Depends on:** Phase 34 (asset viewer for validation)
 **Constraints:** Priority units first, not all 322.
+**Completed:** 2026-03-04
 
-**Plans:** TBD (defined during /paul:plan)
+**Plans:**
+- [x] 35-01: Generic humanoid drawing system + 16 unit sprites + human verification
+
+**Delivered:**
+- Generic `draw_humanoid()` with configurable colors, body_scale, weapon callbacks
+- 8 weapon draw functions (spear, sword, greatsword, bow, staff, mace, dagger, crossbow)
+- 16 units with full animation sets (92 PNGs + 16 sprite.toml files)
+- Loyalists (7), Elves (5), Orcs (4) — all leaders and recruits covered
+- 94 tests passing (no Rust changes)
 
 ---
 
@@ -857,4 +866,4 @@ See MILESTONES.md for full history.
 </details>
 
 ---
-*Roadmap updated: 2026-03-04 — Phase 34 complete, v1.4 Visual Asset System 4/5 phases done*
+*Roadmap updated: 2026-03-04 — v1.4 Visual Asset System complete (5/5 phases)*
