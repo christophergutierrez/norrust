@@ -6,6 +6,72 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
+**v1.4 Visual Asset System**
+Status: 🚧 In Progress
+Phases: 1 of 5 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 31 | Asset Specification & Infrastructure | 1 | ✅ Complete | 2026-03-03 |
+| 32 | Terrain Art | TBD | Not started | - |
+| 33 | Unit Sprite Pipeline | TBD | Not started | - |
+| 34 | Asset Viewer | TBD | Not started | - |
+| 35 | Unit Art Expansion | TBD | Not started | - |
+
+## v1.4 Phase Details
+
+### Phase 31: Asset Specification & Infrastructure ✅
+
+**Goal:** Document the asset format specification (sprite.toml schema, directory layout, naming conventions). Create asset loader module in Love2D (`assets.lua`). Fallback rendering: sprite when available, colored circle when not. Terrain tile loading and hex rendering replacement.
+**Depends on:** Phase 30 (campaign system complete, Love2D client stable)
+**Constraints:** No Rust changes expected — sprites are purely client-side. First deliverable is a written spec document.
+**Completed:** 2026-03-03
+
+**Plans:**
+- [x] 31-01: Asset spec document + assets.lua loader + main.lua wiring with fallback
+
+**Delivered:**
+- `docs/ASSET-SPEC.md`: 7-section spec (directory layout, terrain format, sprite.toml schema, team coloring, animation states, naming conventions, pipeline workflow)
+- `norrust_love/assets.lua`: asset loader module (load_terrain_tiles, load_unit_sprites, draw_terrain_hex, draw_unit_sprite with fallback)
+- `norrust_love/main.lua`: wired through assets.lua for terrain + unit rendering; zero visual regression without assets
+- 94 tests passing (unchanged — no Rust changes)
+
+### Phase 32: Terrain Art
+
+**Goal:** Generate hex terrain tiles for all 14 terrain types via Nano Banana. Replace colored hex polygons with textured terrain images. Optional terrain transition edges for smooth blending.
+**Depends on:** Phase 31 (asset spec and loader must exist)
+**Constraints:** 14 terrain types in game. Hex-shaped tiles. Nano Banana for generation.
+
+**Plans:** TBD (defined during /paul:plan)
+
+### Phase 33: Unit Sprite Pipeline
+
+**Goal:** Pick one unit (Spearman) and build complete visual pipeline end-to-end. Generate idle, attack-melee, attack-ranged, defend, death sprites. Create sprite.toml metadata with animation definitions. Implement animation state machine (anim8 integration). Team coloring via colored underlay. Facing/flip logic. Portrait in unit panel sidebar.
+**Depends on:** Phase 32 (terrain art proves the loading pipeline)
+**Constraints:** One unit only — validate pipeline before mass production.
+
+**Plans:** TBD (defined during /paul:plan)
+
+### Phase 34: Asset Viewer
+
+**Goal:** Standalone Love2D app to browse and preview unit/terrain assets. Cycle through animation states, zoom, flip. Validate sprite.toml metadata visually. Test terrain tiles in hex grid context.
+**Depends on:** Phase 33 (unit sprite pipeline must exist to preview)
+**Constraints:** Standalone app, separate from main game.
+
+**Plans:** TBD (defined during /paul:plan)
+
+### Phase 35: Unit Art Expansion
+
+**Goal:** Generate sprites for remaining priority units (faction leaders, common recruits). Batch generation workflow using Nano Banana. Validate via asset viewer.
+**Depends on:** Phase 34 (asset viewer for validation)
+**Constraints:** Priority units first, not all 322.
+
+**Plans:** TBD (defined during /paul:plan)
+
+---
+
+## Previous Milestone
+
 **v1.3 Campaign Mode**
 Status: ✅ Complete
 Phases: 3 of 3 complete
@@ -77,8 +143,6 @@ Phases: 3 of 3 complete
 - 8 campaign integration tests (3 pure Rust + 5 FFI); 94 total tests passing
 
 ---
-
-## Previous Milestone
 
 **v1.2 Love2D Migration**
 Status: ✅ Complete
@@ -765,4 +829,4 @@ See MILESTONES.md for full history.
 </details>
 
 ---
-*Roadmap updated: 2026-03-03 — Phase 30 complete, v1.3 Campaign Mode milestone complete*
+*Roadmap updated: 2026-03-03 — Phase 31 complete, v1.4 Visual Asset System 1/5 phases done*

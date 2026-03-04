@@ -2,7 +2,7 @@
 
 ## Description
 
-A clean-room rewrite of The Battle for Wesnoth — a modern, data-driven hex-based strategy game. The Rust simulation core handles all game logic headlessly; Redot handles presentation and input via GDExtension. Game rules and stats are defined in TOML config files, not hardcoded.
+A clean-room rewrite of The Battle for Wesnoth — a modern, data-driven hex-based strategy game. The Rust simulation core handles all game logic headlessly; Love2D handles presentation and input via LuaJIT FFI. Game rules and stats are defined in TOML config files, not hardcoded.
 
 ## Core Value
 
@@ -121,6 +121,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Gold carry-over calculation: percentage penalty + early finish bonus per remaining turn — Phase 30 (30-01)
 - [x] Love2D campaign flow: campaign selection (C key), scenario auto-progression on victory, veteran placement on keep+castles, carry-over gold injection — Phase 30 (30-01)
 - [x] Tutorial campaign: crossing → ambush with 80% gold carry and 5g/turn early bonus — Phase 30 (30-01)
+- [x] Asset format specification: directory layout, sprite.toml schema, terrain/unit naming conventions, animation states, team coloring approach, pipeline workflow — Phase 31 (31-01)
+- [x] Asset loader module (assets.lua): terrain tile + unit sprite loading with graceful fallback to colored polygon/circle rendering — Phase 31 (31-01)
+- [x] Fallback-aware rendering: main.lua wired through assets.lua; game renders identically when no assets present — Phase 31 (31-01)
 
 ### Active (In Progress / Deferred)
 
@@ -243,4 +246,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-03 after Phase 30 — campaign chain with unit/gold carry-over (94 tests pass)*
+*Last updated: 2026-03-03 after Phase 31 — asset specification & infrastructure (94 tests pass)*

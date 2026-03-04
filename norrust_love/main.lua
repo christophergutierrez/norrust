@@ -2,6 +2,7 @@
 -- Port of norrust_client/scripts/game.gd (706 lines)
 
 local norrust = require("norrust")
+local assets = require("assets")
 
 -- ── Constants ───────────────────────────────────────────────────────────────
 
@@ -70,6 +71,11 @@ local campaign_data = nil        -- parsed JSON from norrust_load_campaign
 local campaign_index = 0         -- 0-indexed current scenario in campaign
 local campaign_veterans = {}     -- array of veteran unit tables from previous scenario
 local campaign_gold = 0          -- carried gold for next scenario
+
+-- Assets (loaded in love.load)
+local terrain_tiles = {}
+local unit_sprites = {}
+local FACTION_COLORS = {[0] = {0.25, 0.42, 0.88}, [1] = {0.80, 0.12, 0.12}}
 
 -- Camera
 local board_origin_x, board_origin_y = 0, 0
@@ -227,22 +233,27 @@ local function draw_units(state)
         local cx, cy = hex_to_pixel(col, row)
         local alpha = exhausted and 0.4 or 1.0
 
-        -- Unit circle
-        if faction == 0 then
-            love.graphics.setColor(BLUE[1], BLUE[2], BLUE[3], alpha)
-        else
-            love.graphics.setColor(RED[1], RED[2], RED[3], alpha)
+        -- Try sprite rendering first; fall back to colored circle
+        local drawn = assets.draw_unit_sprite(unit_sprites, unit.def_id, cx, cy, HEX_RADIUS, faction, alpha, FACTION_COLORS)
+        if not drawn then
+            -- Fallback: colored circle + abbreviation
+            if faction == 0 then
+                love.graphics.setColor(BLUE[1], BLUE[2], BLUE[3], alpha)
+            else
+                love.graphics.setColor(RED[1], RED[2], RED[3], alpha)
+            end
+            love.graphics.circle("fill", cx, cy, HEX_RADIUS * 0.45)
+
+            -- Unit type abbreviation
+            local word = (unit.def_id or ""):match("^([^_]+)") or unit.def_id or ""
+            local abbrev = (word:sub(1, 1):upper() .. word:sub(2):lower()):sub(1, 7)
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.setFont(fonts[14])
+            love.graphics.printf(abbrev, cx - 42, cy - 14, 84, "center")
         end
-        love.graphics.circle("fill", cx, cy, HEX_RADIUS * 0.45)
 
-        -- Unit type abbreviation
-        local word = (unit.def_id or ""):match("^([^_]+)") or unit.def_id or ""
-        local abbrev = (word:sub(1, 1):upper() .. word:sub(2):lower()):sub(1, 7)
+        -- HP (always drawn on top, whether sprite or fallback)
         love.graphics.setColor(1, 1, 1, 1)
-        love.graphics.setFont(fonts[14])
-        love.graphics.printf(abbrev, cx - 42, cy - 14, 84, "center")
-
-        -- HP
         love.graphics.setFont(fonts[18])
         love.graphics.print(tostring(hp), cx - 12, cy - 2)
 
@@ -637,6 +648,10 @@ function love.load()
     -- Parse faction list
     factions = norrust.get_faction_ids(engine)
 
+    -- Load visual assets (graceful fallback if assets/ missing)
+    terrain_tiles = assets.load_terrain_tiles("assets")
+    unit_sprites = assets.load_unit_sprites("assets")
+
     -- Start at scenario selection
     game_mode = PICK_SCENARIO
 end
@@ -688,11 +703,13 @@ function love.draw()
 
     local state = norrust.get_state(engine)
 
-    -- Build tile color map
+    -- Build tile color + terrain_id maps
     local tile_colors = {}
+    local tile_ids = {}
     for _, tile in ipairs(state.terrain or {}) do
         local key = int(tile.col) .. "," .. int(tile.row)
         tile_colors[key] = parse_html_color(tile.color) or COLOR_FLAT
+        tile_ids[key] = tile.terrain_id
     end
 
     -- Board-space drawing (push camera transform)
@@ -707,8 +724,8 @@ function love.draw()
             local cx, cy = hex_to_pixel(col, row)
             local key = col .. "," .. row
             local c = tile_colors[key] or COLOR_FLAT
-            love.graphics.setColor(c[1], c[2], c[3])
-            love.graphics.polygon("fill", hex_polygon(cx, cy, HEX_RADIUS))
+            local tid = tile_ids[key]
+            assets.draw_terrain_hex(terrain_tiles, tid, cx, cy, HEX_RADIUS, c, hex_polygon)
         end
     end
 
