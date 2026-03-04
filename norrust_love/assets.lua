@@ -76,12 +76,21 @@ end
 function assets.draw_terrain_hex(terrain_tiles, terrain_id, cx, cy, hex_radius, fallback_color, hex_polygon_fn)
     local img = terrain_id and terrain_tiles[terrain_id]
     if img then
+        -- Hex stencil mask: clip rectangular image to hex boundary
+        local stencil_fn = function()
+            love.graphics.polygon("fill", hex_polygon_fn(cx, cy, hex_radius))
+        end
+        love.graphics.stencil(stencil_fn, "replace", 1)
+        love.graphics.setStencilTest("greater", 0)
+
         local iw, ih = img:getWidth(), img:getHeight()
         local diameter = hex_radius * 2
         local sx = diameter / iw
         local sy = diameter / ih
         love.graphics.setColor(1, 1, 1, 1)
         love.graphics.draw(img, cx - hex_radius, cy - hex_radius, 0, sx, sy)
+
+        love.graphics.setStencilTest()
     else
         love.graphics.setColor(fallback_color[1], fallback_color[2], fallback_color[3])
         love.graphics.polygon("fill", hex_polygon_fn(cx, cy, hex_radius))

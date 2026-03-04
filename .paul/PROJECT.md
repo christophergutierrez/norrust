@@ -124,6 +124,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Asset format specification: directory layout, sprite.toml schema, terrain/unit naming conventions, animation states, team coloring approach, pipeline workflow — Phase 31 (31-01)
 - [x] Asset loader module (assets.lua): terrain tile + unit sprite loading with graceful fallback to colored polygon/circle rendering — Phase 31 (31-01)
 - [x] Fallback-aware rendering: main.lua wired through assets.lua; game renders identically when no assets present — Phase 31 (31-01)
+- [x] Hex stencil masking: terrain images clipped to hex boundary via Love2D stencil API — Phase 32 (32-01)
+- [x] 15 terrain tile PNGs: programmatic textures (grass, trees, peaks, waves, bricks, etc.) replacing colored polygons — Phase 32 (32-01)
+- [x] Terrain tile generator tool: generate_tiles.lua with --generate-tiles CLI flag for on-demand regeneration — Phase 32 (32-01)
 
 ### Active (In Progress / Deferred)
 
@@ -246,4 +249,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-03 after Phase 31 — asset specification & infrastructure (94 tests pass)*
+*Last updated: 2026-03-03 after Phase 32 — terrain art with hex stencil masking (94 tests pass)*

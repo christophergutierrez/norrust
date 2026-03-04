@@ -8,12 +8,12 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 **v1.4 Visual Asset System**
 Status: 🚧 In Progress
-Phases: 1 of 5 complete
+Phases: 2 of 5 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 31 | Asset Specification & Infrastructure | 1 | ✅ Complete | 2026-03-03 |
-| 32 | Terrain Art | TBD | Not started | - |
+| 32 | Terrain Art | 1 | ✅ Complete | 2026-03-03 |
 | 33 | Unit Sprite Pipeline | TBD | Not started | - |
 | 34 | Asset Viewer | TBD | Not started | - |
 | 35 | Unit Art Expansion | TBD | Not started | - |
@@ -36,13 +36,21 @@ Phases: 1 of 5 complete
 - `norrust_love/main.lua`: wired through assets.lua for terrain + unit rendering; zero visual regression without assets
 - 94 tests passing (unchanged — no Rust changes)
 
-### Phase 32: Terrain Art
+### Phase 32: Terrain Art ✅
 
-**Goal:** Generate hex terrain tiles for all 14 terrain types via Nano Banana. Replace colored hex polygons with textured terrain images. Optional terrain transition edges for smooth blending.
+**Goal:** Generate hex terrain tiles for all 15 terrain types. Replace colored hex polygons with textured terrain images. Add hex stencil masking for proper clipping.
 **Depends on:** Phase 31 (asset spec and loader must exist)
-**Constraints:** 14 terrain types in game. Hex-shaped tiles. Nano Banana for generation.
+**Constraints:** 15 terrain types in game. Hex-shaped tiles via stencil clipping.
+**Completed:** 2026-03-03
 
-**Plans:** TBD (defined during /paul:plan)
+**Plans:**
+- [x] 32-01: Hex stencil masking + 15 programmatic terrain tiles + human verification
+
+**Delivered:**
+- Hex stencil masking in `assets.lua`: stencil(polygon, replace, 1) → draw image → clear
+- 15 terrain tile PNGs (512x512, ~6.3 MB total) with distinct patterns per terrain type
+- `generate_tiles.lua`: programmatic tile generator with `--generate-tiles` CLI flag
+- Colored polygons replaced by textured terrain in all scenarios
 
 ### Phase 33: Unit Sprite Pipeline
 
@@ -829,4 +837,4 @@ See MILESTONES.md for full history.
 </details>
 
 ---
-*Roadmap updated: 2026-03-03 — Phase 31 complete, v1.4 Visual Asset System 1/5 phases done*
+*Roadmap updated: 2026-03-03 — Phase 32 complete, v1.4 Visual Asset System 2/5 phases done*

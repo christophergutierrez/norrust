@@ -623,6 +623,16 @@ end
 -- ── love.load ───────────────────────────────────────────────────────────────
 
 function love.load()
+    -- Check for --generate-tiles flag
+    for _, arg in ipairs(arg or {}) do
+        if arg == "--generate-tiles" then
+            local gen = require("generate_tiles")
+            gen.run()
+            love.event.quit()
+            return
+        end
+    end
+
     love.graphics.setBackgroundColor(0.1, 0.1, 0.12)
 
     -- Create fonts
