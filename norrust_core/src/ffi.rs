@@ -962,3 +962,44 @@ pub unsafe extern "C" fn norrust_set_faction_gold(
         state.gold[faction as usize] = gold.max(0) as u32;
     }
 }
+
+// ── Terrain query ────────────────────────────────────────────────────────────
+
+/// Returns JSON with a unit's effective defense and movement cost on a specific hex.
+///
+/// Fallback chain for defense: unit.defense\[terrain_id\] → tile.defense → unit.default_defense
+/// Fallback chain for movement: unit.movement_costs\[terrain_id\] → tile.movement_cost
+///
+/// Returns empty string on invalid unit_id or hex.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_get_unit_terrain_info(
+    engine: *mut NorRustEngine,
+    unit_id: i32,
+    col: i32,
+    row: i32,
+) -> *mut c_char {
+    let Some(e) = engine.as_ref() else { return to_c_string("") };
+    let Some(state) = e.game.as_ref() else { return to_c_string("") };
+    let uid = unit_id as u32;
+    let Some(unit) = state.units.get(&uid) else { return to_c_string("") };
+    let hex = Hex::from_offset(col, row);
+    let Some(tile) = state.board.tile_at(hex) else { return to_c_string("") };
+
+    let terrain_id = &tile.terrain_id;
+
+    // Defense fallback: unit.defense[terrain_id] → tile.defense → unit.default_defense
+    let effective_defense = unit.defense.get(terrain_id).copied()
+        .unwrap_or(tile.defense);
+    // Note: if neither unit.defense nor tile.defense exist, tile.defense is always present (from Tile struct)
+
+    // Movement cost fallback: unit.movement_costs[terrain_id] → tile.movement_cost
+    let effective_move_cost = unit.movement_costs.get(terrain_id).copied()
+        .unwrap_or(tile.movement_cost);
+
+    let json = format!(
+        "{{\"terrain_id\":\"{}\",\"defense\":{},\"movement_cost\":{},\"base_defense\":{},\"base_movement_cost\":{},\"healing\":{}}}",
+        terrain_id, effective_defense, effective_move_cost,
+        tile.defense, tile.movement_cost, tile.healing
+    );
+    to_c_string(&json)
+}

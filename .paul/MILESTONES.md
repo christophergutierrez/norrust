@@ -16,6 +16,74 @@ Completed milestone log for this project.
 | v1.0 Game Readability | 2026-03-02 | ~1 day | 2 phases, 2 plans |
 | v1.1 Camera & Viewport | 2026-03-03 | ~1 day | 1 phase, 1 plan |
 | v1.2 Love2D Migration | 2026-03-03 | ~1 day | 3 phases, 3 plans |
+| v1.3 Campaign Mode | 2026-03-03 | ~1 day | 3 phases, 3 plans |
+| v1.4 Visual Asset System | 2026-03-04 | ~1 day | 5 phases, 5 plans |
+
+---
+
+## ✅ v1.4 Visual Asset System
+
+**Completed:** 2026-03-04
+**Duration:** ~1 day
+
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 5 |
+| Plans | 5 |
+| Files created | ~100 (sprites, tiles, modules) |
+| Tests | 94 (59 unit + 8 campaign + 3 validation + 23 simulation + 1 FFI) |
+
+### Key Accomplishments
+
+- **Asset format specification** — directory layout, sprite.toml schema, terrain/unit naming conventions, animation states
+- **Asset loader module** (assets.lua) — terrain tile + unit sprite loading with graceful fallback
+- **15 hex-clipped terrain tiles** — programmatic textures via stencil masking
+- **Unit sprite pipeline** — TOML parser, animation module, portrait rendering, facing/flip logic
+- **Standalone asset viewer** — browse terrain/unit assets, cycle animations, zoom/flip, metadata display
+- **16 unit sprites** — generic humanoid drawing system with 8 weapon types covering all priority units
+
+### Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Generic draw_humanoid() with config table | Eliminates per-unit draw functions; config-driven |
+| melee_config/ranged_config overrides | Dual-weapon units use different weapons per animation |
+| Love callback override for --viewer | Cleaner isolation; viewer replaces all love callbacks |
+| Programmatic sprites (not image files) | Generated via Love2D canvas; reproducible, tweakable |
+
+---
+
+## ✅ v1.3 Campaign Mode
+
+**Completed:** 2026-03-03
+**Duration:** ~1 day
+
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 3 |
+| Plans | 3 |
+| Tests | 94 (59 unit + 8 campaign + 3 validation + 23 simulation + 1 FFI) |
+
+### Key Accomplishments
+
+- **Objective hex + turn limit win conditions** — check_winner() with 3-tier priority
+- **TriggerZone system** — enemies spawn when player enters designated areas
+- **Campaign TOML schema** — scenario sequence, gold carry-over, early finish bonus
+- **Veteran carry-over** — surviving units transfer between scenarios with XP/level/abilities
+- **Two scenarios** — Crossing (16x10 reach-the-keep) + Ambush (12x8 trigger zones)
+- **Headless scenario validation** — auto-discovery, 10 structural invariants
+
+### Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| 3-tier check_winner() priority | objective hex → turn limit → elimination; most specific first |
+| Campaign progression client-side | Engine is per-scenario; client manages index, veterans, gold |
+| Two-phase drain for trigger spawns | Avoids mutable borrow conflict on state |
 
 ---
 

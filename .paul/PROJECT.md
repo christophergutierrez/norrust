@@ -134,6 +134,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Standalone asset viewer: browse terrain/unit assets, cycle animations, zoom/flip, metadata display — Phase 34 (34-01)
 - [x] Programmatic sprites for all 16 priority units (3 faction leaders + 13 recruits) with unique weapons, colors, and body scales — Phase 35 (35-01)
 - [x] Generic humanoid drawing system with 8 weapon types and configurable per-unit appearance — Phase 35 (35-01)
+- [x] TileSnapshot includes defense, movement_cost, healing fields in state JSON — Phase 36 (36-01)
+- [x] norrust_get_unit_terrain_info() FFI: unit-specific effective defense/movement cost with fallback chain — Phase 36 (36-01)
+- [x] Right-click terrain inspection panel: terrain type, defense %, movement cost, healing, unit-specific stats — Phase 36 (36-01)
 
 ### Active (In Progress / Deferred)
 
@@ -237,6 +240,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | Engine reuse across campaign scenarios | load_board() creates fresh GameState but keeps registries; avoids re-loading data/factions | 2026-03-03 | Active |
 | unit_from_registry() + field override for veterans | Full combat stats from registry, then override hp/xp/xp_needed/advancement_pending with carried values | 2026-03-03 | Active |
 | Veterans placed on leftmost keep + adjacent castles | Player's keep is leftmost; placement skips occupied hexes from preset units | 2026-03-03 | Active |
+| Right-click for terrain inspection (not left-click) | Left-click on empty reachable hex triggers movement; right-click avoids conflict | 2026-03-04 | Active |
+| Dedicated FFI for unit-terrain queries (not UnitSnapshot expansion) | Avoids per-frame bloat; reusable for combat preview | 2026-03-04 | Active |
 
 ## Tech Stack
 
@@ -256,4 +261,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-04 after Phase 35 — v1.4 Visual Asset System complete, 16 units with sprites (94 tests pass)*
+*Last updated: 2026-03-04 after Phase 36 — Terrain info panel with right-click inspection (96 tests pass)*

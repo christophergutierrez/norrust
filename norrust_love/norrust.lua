@@ -187,6 +187,9 @@ ffi.cdef[[
     int32_t norrust_get_carry_gold(NorRustEngine* engine, int32_t faction, int32_t gold_carry_percent, int32_t early_finish_bonus);
     int32_t norrust_place_veteran_unit(NorRustEngine* engine, int32_t unit_id, const char* def_id, int32_t faction, int32_t col, int32_t row, int32_t hp, int32_t xp, int32_t xp_needed, int32_t advancement_pending);
     void norrust_set_faction_gold(NorRustEngine* engine, int32_t faction, int32_t gold);
+
+    // Terrain query
+    char* norrust_get_unit_terrain_info(NorRustEngine* engine, int32_t unit_id, int32_t col, int32_t row);
 ]]
 
 -- ── Load shared library ─────────────────────────────────────────────────────
@@ -411,6 +414,14 @@ end
 
 function M.set_faction_gold(engine, faction, gold)
     lib.norrust_set_faction_gold(engine, faction, gold)
+end
+
+-- ── Terrain query ─────────────────────────────────────────────────────────
+
+function M.get_unit_terrain_info(engine, unit_id, col, row)
+    local raw = get_string(lib.norrust_get_unit_terrain_info(engine, unit_id, col, row))
+    if raw == "" then return nil end
+    return json_decode(raw)
 end
 
 function M.free(engine)

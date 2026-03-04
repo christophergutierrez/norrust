@@ -6,6 +6,56 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
+**v1.5 Tactical Planning**
+Status: 🚧 In Progress
+Phases: 1 of 4 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 36 | Terrain Info Panel | 1/1 | ✅ Complete | 2026-03-04 |
+| 37 | Ghost Movement | TBD | Not started | - |
+| 38 | Combat Preview | TBD | Not started | - |
+| 39 | Commit/Cancel Flow | TBD | Not started | - |
+
+## v1.5 Phase Details
+
+### Phase 36: Terrain Info Panel ✅
+
+**Goal:** Click any hex to see terrain type, defense %, and movement cost in a sidebar panel. When a unit is selected, show that unit's specific terrain interaction (e.g., "Swordsman on Forest: 50% defense, 2 MP cost"). Foundation for all tactical decision-making.
+**Depends on:** Phase 35 (v1.4 complete, stable Love2D client with sidebar panels)
+**Completed:** 2026-03-04
+
+**Plans:**
+- [x] 36-01: TileSnapshot extension + unit-terrain FFI + right-click terrain panel
+
+**Delivered:**
+- TileSnapshot extended with defense/movement_cost/healing fields
+- `norrust_get_unit_terrain_info()` FFI function with unit.defense[terrain] → tile.defense fallback
+- Right-click terrain inspection panel in sidebar (base stats + unit-specific effective stats)
+- 96 tests passing (61 lib + 8 campaign + 3 validation + 23 simulation + 1 FFI)
+
+### Phase 37: Ghost Movement
+
+**Goal:** Replace immediate move-on-click with tentative "ghost" positioning. When a unit is selected and the player clicks a reachable hex, the unit appears translucently at the new position without committing the move. From the ghost position, attackable enemies are highlighted. Click a different reachable hex to re-ghost. Escape cancels and returns to selection. State machine: Select → Ghost → (Preview Attack) → Commit/Cancel.
+**Depends on:** Phase 36 (terrain panel shows info for ghost position)
+**Constraints:** Ghost movement is purely client-side — no engine state mutation until commit. Must preserve existing camera, selection, and sidebar behaviors. Current click-to-move behavior replaced by click-to-ghost.
+
+### Phase 38: Combat Preview
+
+**Goal:** From a ghost position, clicking a highlighted enemy runs a Monte Carlo simulation (~100 attacks) and displays the outcome distribution: expected damage dealt/received, kill probability for both sides, damage spread (min/median/max). Preview reflects defender terrain defense, resistance modifiers, time of day, and whether retaliation occurs (range matching). New Rust FFI function needed to simulate attacks without mutating game state.
+**Depends on:** Phase 37 (ghost position determines attack range and attacker terrain)
+**Constraints:** Monte Carlo simulation needs a new Rust FFI function (simulate N attacks, return result distribution). Must not mutate GameState. Combat formula: effective_damage = base_damage * (100 + resistance) / 100 * (100 + tod_modifier) / 100; hit chance = 100 - terrain_defense_pct.
+
+### Phase 39: Commit/Cancel Flow
+
+**Goal:** Wire up the full planning loop: confirm = execute move (+ optional attack), cancel = unit returns to original hex. Player can ghost to multiple hexes adjacent to a target and compare combat previews ("attack from" comparison). Different hexes mean different terrain defense for the attacker during retaliation. Complete state machine: Select → Ghost → See Targets → Preview Combat → Commit/Cancel or Re-ghost.
+**Depends on:** Phase 38 (combat preview must exist to make commit meaningful)
+**Constraints:** Replaces current immediate-move behavior entirely. Must handle edge cases: ghost to hex with no enemies adjacent, ghost then cancel, commit move without attack, commit move + attack.
+
+---
+
+## Previous Milestone
+
 **v1.4 Visual Asset System**
 Status: ✅ Complete
 Phases: 5 of 5 complete
@@ -18,7 +68,7 @@ Phases: 5 of 5 complete
 | 34 | Asset Viewer | 1 | ✅ Complete | 2026-03-04 |
 | 35 | Unit Art Expansion | 1 | ✅ Complete | 2026-03-04 |
 
-## v1.4 Phase Details
+## v1.4 Phase Details (Complete)
 
 ### Phase 31: Asset Specification & Infrastructure ✅
 
@@ -106,8 +156,6 @@ Phases: 5 of 5 complete
 - 94 tests passing (no Rust changes)
 
 ---
-
-## Previous Milestone
 
 **v1.3 Campaign Mode**
 Status: ✅ Complete
@@ -866,4 +914,4 @@ See MILESTONES.md for full history.
 </details>
 
 ---
-*Roadmap updated: 2026-03-04 — v1.4 Visual Asset System complete (5/5 phases)*
+*Roadmap updated: 2026-03-04 — Phase 36 complete (terrain info panel), 1/4 v1.5 phases done*

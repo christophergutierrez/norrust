@@ -28,6 +28,18 @@ local SIDEBAR_W = 220
 local ZOOM_MIN = 0.25
 local ZOOM_MAX = 4.0
 
+-- Scale factor (set from main.lua via viewer.set_scale)
+local ui_scale = 1
+
+local function get_viewport()
+    local w, h = love.graphics.getDimensions()
+    return w / ui_scale, h / ui_scale
+end
+
+function viewer.set_scale(s)
+    ui_scale = s or 1
+end
+
 -- ── Hex math (for hex-clipped terrain preview) ─────────────────────────
 
 local function hex_polygon(cx, cy, r)
@@ -147,7 +159,7 @@ end
 -- ── Drawing ────────────────────────────────────────────────────────────
 
 local function draw_sidebar()
-    local vp_w, vp_h = love.graphics.getDimensions()
+    local vp_w, vp_h = get_viewport()
 
     -- Background
     love.graphics.setColor(0.08, 0.08, 0.10, 0.95)
@@ -200,7 +212,7 @@ local function draw_sidebar()
 end
 
 local function draw_terrain_preview(terrain_id)
-    local vp_w, vp_h = love.graphics.getDimensions()
+    local vp_w, vp_h = get_viewport()
     local img = terrain_tiles[terrain_id]
     if not img then return end
 
@@ -261,7 +273,7 @@ local function draw_terrain_preview(terrain_id)
 end
 
 local function draw_unit_preview(def_id)
-    local vp_w, vp_h = love.graphics.getDimensions()
+    local vp_w, vp_h = get_viewport()
     local entry = unit_sprites[def_id]
     if not entry then return end
 
@@ -354,7 +366,7 @@ local function draw_unit_preview(def_id)
 end
 
 local function draw_controls_bar()
-    local vp_w, vp_h = love.graphics.getDimensions()
+    local vp_w, vp_h = get_viewport()
 
     love.graphics.setColor(0.08, 0.08, 0.10, 0.9)
     love.graphics.rectangle("fill", SIDEBAR_W, vp_h - 30, vp_w - SIDEBAR_W, 30)
@@ -423,7 +435,7 @@ function viewer.keypressed(key)
     end
 
     -- Keep sidebar scrolled to show selected item
-    local vp_h = love.graphics.getHeight()
+    local _, vp_h = get_viewport()
     local item_y = 50 + (selected_idx - 1) * 20
     if item_y - scroll_offset > vp_h - 60 then
         scroll_offset = item_y - vp_h + 80

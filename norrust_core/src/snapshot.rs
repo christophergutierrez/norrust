@@ -12,6 +12,12 @@ pub struct TileSnapshot {
     pub color: String,
     /// Owning faction (0 or 1), or -1 if unowned / not a village.
     pub owner: i32,
+    /// Base defense % for this terrain (e.g. 60 for forest).
+    pub defense: u32,
+    /// Base movement cost for this terrain (e.g. 2 for forest).
+    pub movement_cost: u32,
+    /// HP healed per turn on this terrain (0 for most, 8 for village).
+    pub healing: u32,
 }
 
 /// Flat representation of a single attack in a unit's loadout.
@@ -81,6 +87,9 @@ impl StateSnapshot {
                     terrain_id: tile.terrain_id.clone(),
                     color: tile.color.clone(),
                     owner: state.village_owners.get(&hex).copied().map(|o| o as i32).unwrap_or(-1),
+                    defense: tile.defense,
+                    movement_cost: tile.movement_cost,
+                    healing: tile.healing,
                 })
             })
             .collect();
@@ -261,6 +270,53 @@ mod tests {
     }
 
     #[test]
+    fn test_unit_terrain_defense_fallback() {
+        // Verify the defense fallback chain:
+        // unit.defense[terrain_id] → tile.defense → unit.default_defense
+        use crate::board::Tile;
+        use std::collections::HashMap;
+
+        let board = Board::new(4, 3);
+        let mut state = GameState::new(board);
+
+        // Forest tile with 60% default defense
+        state.board.set_tile(Hex::from_offset(0, 0), Tile {
+            terrain_id: "forest".to_string(),
+            movement_cost: 2,
+            defense: 60,
+            healing: 0,
+            color: "#2d5a27".to_string(),
+        });
+
+        // Unit with custom forest defense of 50%
+        let mut unit = Unit::new(1, "swordsman", 55, 0);
+        unit.defense = HashMap::from([("forest".to_string(), 50)]);
+        unit.default_defense = 40;
+        state.place_unit(unit, Hex::from_offset(0, 0));
+
+        // Unit-specific defense should be 50 (from unit.defense["forest"])
+        let unit = state.units.get(&1).unwrap();
+        let tile = state.board.tile_at(Hex::from_offset(0, 0)).unwrap();
+        let effective = unit.defense.get(&tile.terrain_id).copied()
+            .unwrap_or(tile.defense);
+        assert_eq!(effective, 50, "unit.defense[forest] = 50 should override tile.defense = 60");
+
+        // On a terrain not in unit.defense map, falls back to tile.defense
+        state.board.set_tile(Hex::from_offset(1, 0), Tile {
+            terrain_id: "hills".to_string(),
+            movement_cost: 2,
+            defense: 50,
+            healing: 0,
+            color: "#8b7355".to_string(),
+        });
+        let tile_hills = state.board.tile_at(Hex::from_offset(1, 0)).unwrap();
+        let unit = state.units.get(&1).unwrap();
+        let effective_hills = unit.defense.get(&tile_hills.terrain_id).copied()
+            .unwrap_or(tile_hills.defense);
+        assert_eq!(effective_hills, 50, "no unit entry for hills → tile.defense = 50");
+    }
+
+    #[test]
     fn test_action_request_invalid_returns_error() {
         let result: Result<ActionRequest, _> = serde_json::from_str("not valid json");
         assert!(result.is_err());
@@ -332,6 +388,32 @@ mod tests {
         assert!(json.contains("\"movement\":6"), "movement must appear in JSON");
         assert!(json.contains("\"attacks\":["), "attacks array must appear in JSON");
         assert!(json.contains("\"abilities\":["), "abilities array must appear in JSON");
+    }
+
+    #[test]
+    fn test_tile_snapshot_includes_terrain_stats() {
+        use crate::board::Tile;
+
+        let board = Board::new(4, 3);
+        let mut state = GameState::new(board);
+        let tile = Tile {
+            terrain_id: "forest".to_string(),
+            movement_cost: 2,
+            defense: 60,
+            healing: 0,
+            color: "#2d5a27".to_string(),
+        };
+        state.board.set_tile(Hex::from_offset(1, 1), tile);
+
+        let snap = StateSnapshot::from_game_state(&state);
+        let forest = snap.terrain.iter().find(|t| t.terrain_id == "forest").unwrap();
+        assert_eq!(forest.defense, 60);
+        assert_eq!(forest.movement_cost, 2);
+        assert_eq!(forest.healing, 0);
+
+        let json = serde_json::to_string(&snap).expect("serialization must succeed");
+        assert!(json.contains("\"defense\":60"), "defense must appear in JSON");
+        assert!(json.contains("\"movement_cost\":2"), "movement_cost must appear in JSON");
     }
 
     #[test]

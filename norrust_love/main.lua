@@ -13,6 +13,7 @@ local HEX_RADIUS = 96
 local HEX_CELL_W = 166   -- HEX_RADIUS * sqrt(3)
 local HEX_CELL_H = 192   -- HEX_RADIUS * 2
 local COLOR_FLAT = {0.29, 0.49, 0.31}
+local UI_SCALE = 2.5
 local CAMERA_PAN_SPEED = 500
 local CAMERA_LERP_SPEED = 8.0
 local BLUE = {0.25, 0.42, 0.88}
@@ -64,6 +65,7 @@ local recruit_palette = {}
 local selected_recruit_idx = 0
 local recruit_error = ""
 local inspect_unit_id = -1
+local inspect_terrain = nil    -- {col, row, terrain_id, defense, movement_cost, healing, unit_defense, unit_move_cost} or nil
 
 -- Campaign
 local campaigns_path = ""
@@ -92,6 +94,17 @@ local camera_lerping = false
 
 -- Fonts (created in love.load)
 local fonts = {}
+
+-- ── Scale helpers ────────────────────────────────────────────────────────────
+
+local function get_viewport()
+    local w, h = love.graphics.getDimensions()
+    return w / UI_SCALE, h / UI_SCALE
+end
+
+local function screen_to_game(x, y)
+    return x / UI_SCALE, y / UI_SCALE
+end
 
 -- ── Hex math ────────────────────────────────────────────────────────────────
 
@@ -157,7 +170,7 @@ end
 local function center_camera()
     local tlx, tly = hex_to_pixel(0, 0)
     local brx, bry = hex_to_pixel(BOARD_COLS - 1, BOARD_ROWS - 1)
-    local vp_w, vp_h = love.graphics.getDimensions()
+    local vp_w, vp_h = get_viewport()
     board_origin_x = vp_w / 2 - (tlx + brx) / 2
     board_origin_y = vp_h / 2 - (tly + bry) / 2
 
@@ -191,6 +204,7 @@ end
 local function select_unit(uid)
     selected_unit_id = uid
     inspect_unit_id = uid
+    inspect_terrain = nil
     reachable_cells = norrust.get_reachable_hexes(engine, uid)
     reachable_set = {}
     for _, cell in ipairs(reachable_cells) do
@@ -202,7 +216,7 @@ local function select_unit(uid)
     for _, unit in ipairs(state.units or {}) do
         if int(unit.id) == uid then
             local ux, uy = hex_to_pixel(int(unit.col), int(unit.row))
-            local vp_w, vp_h = love.graphics.getDimensions()
+            local vp_w, vp_h = get_viewport()
             camera_target_x = clamp(vp_w / 2 - board_origin_x - ux, camera_min_x, camera_max_x)
             camera_target_y = clamp(vp_h / 2 - board_origin_y - uy, camera_min_y, camera_max_y)
             camera_lerping = true
@@ -300,7 +314,7 @@ local function draw_units(state)
 end
 
 local function draw_setup_hud()
-    local vp_w, vp_h = love.graphics.getDimensions()
+    local vp_w, vp_h = get_viewport()
 
     -- Scenario selection screen (full screen, no sidebar)
     if game_mode == PICK_SCENARIO then
@@ -398,7 +412,7 @@ end
 
 local function draw_recruit_panel(state)
     local faction = norrust.get_active_faction(engine)
-    local vp_w, vp_h = love.graphics.getDimensions()
+    local vp_w, vp_h = get_viewport()
     local fc = faction == 0 and BLUE or RED
     local gold_arr = state.gold or {0, 0}
     local gold = int(gold_arr[faction + 1] or 0)
@@ -437,7 +451,7 @@ local function draw_recruit_panel(state)
 end
 
 local function draw_unit_panel(unit)
-    local vp_w, vp_h = love.graphics.getDimensions()
+    local vp_w, vp_h = get_viewport()
 
     love.graphics.setColor(0, 0, 0, 0.75)
     love.graphics.rectangle("fill", vp_w - 200, 0, 200, vp_h)
@@ -518,6 +532,56 @@ local function draw_unit_panel(unit)
             love.graphics.print(ab, vp_w - 190, y)
             y = y + 14
         end
+    end
+end
+
+local function draw_terrain_panel()
+    local vp_w, vp_h = get_viewport()
+
+    love.graphics.setColor(0, 0, 0, 0.75)
+    love.graphics.rectangle("fill", vp_w - 200, 0, 200, vp_h)
+
+    local y = 10
+
+    -- Terrain name
+    love.graphics.setFont(fonts[15])
+    love.graphics.setColor(0.9, 0.85, 0.6)
+    love.graphics.print(inspect_terrain.terrain_id or "", vp_w - 190, y)
+    y = y + 22
+
+    -- Coordinates
+    love.graphics.setFont(fonts[11])
+    love.graphics.setColor(0.6, 0.6, 0.6)
+    love.graphics.print(string.format("(%d, %d)", inspect_terrain.col, inspect_terrain.row), vp_w - 190, y)
+    y = y + 20
+
+    -- Base stats
+    love.graphics.setFont(fonts[12])
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.print(string.format("Defense: %d%%", inspect_terrain.defense), vp_w - 190, y)
+    y = y + 16
+    love.graphics.print(string.format("Move cost: %d", inspect_terrain.movement_cost), vp_w - 190, y)
+    y = y + 16
+
+    if inspect_terrain.healing and inspect_terrain.healing > 0 then
+        love.graphics.setColor(0.4, 1.0, 0.4)
+        love.graphics.print(string.format("Healing: +%d HP", inspect_terrain.healing), vp_w - 190, y)
+        y = y + 16
+    end
+
+    -- Unit-specific stats (if a unit was selected when terrain was clicked)
+    if inspect_terrain.unit_defense then
+        y = y + 8
+        love.graphics.setFont(fonts[11])
+        love.graphics.setColor(0.83, 0.83, 0.83)
+        love.graphics.print("── Unit on terrain ──", vp_w - 190, y)
+        y = y + 15
+        love.graphics.setFont(fonts[12])
+        love.graphics.setColor(1, 1, 0, 1)
+        love.graphics.print(string.format("Eff. defense: %d%%", inspect_terrain.unit_defense), vp_w - 190, y)
+        y = y + 16
+        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.print(string.format("Eff. move cost: %d", inspect_terrain.unit_move_cost), vp_w - 190, y)
     end
 end
 
@@ -670,9 +734,15 @@ function love.load()
             return
         elseif arg == "--viewer" then
             local viewer = require("viewer")
+            viewer.set_scale(UI_SCALE)
             viewer.load()
             love.update = function(dt) viewer.update(dt) end
-            love.draw = function() viewer.draw() end
+            love.draw = function()
+                love.graphics.push()
+                love.graphics.scale(UI_SCALE, UI_SCALE)
+                viewer.draw()
+                love.graphics.pop()
+            end
             love.keypressed = function(key) viewer.keypressed(key) end
             love.wheelmoved = function(x, y) viewer.wheelmoved(x, y) end
             return
@@ -765,9 +835,13 @@ end
 -- ── love.draw ───────────────────────────────────────────────────────────────
 
 function love.draw()
+    love.graphics.push()
+    love.graphics.scale(UI_SCALE, UI_SCALE)
+
     -- Scenario selection: no board loaded yet
     if game_mode == PICK_SCENARIO then
         draw_setup_hud()
+        love.graphics.pop()
         return
     end
 
@@ -868,7 +942,7 @@ function love.draw()
     else
         -- Win overlay
         if game_over then
-            local vp_w, vp_h = love.graphics.getDimensions()
+            local vp_w, vp_h = get_viewport()
             local winner_name = winner_faction == 0 and "Blue" or "Red"
             local msg, sub_msg
             if winner_faction == 0 then
@@ -940,8 +1014,12 @@ function love.draw()
                     break
                 end
             end
+        elseif inspect_terrain then
+            draw_terrain_panel()
         end
     end
+
+    love.graphics.pop()
 end
 
 -- ── love.keypressed ─────────────────────────────────────────────────────────
@@ -1105,7 +1183,40 @@ end
 
 -- ── love.mousepressed ───────────────────────────────────────────────────────
 
-function love.mousepressed(x, y, button)
+function love.mousepressed(sx, sy, button)
+    local x, y = screen_to_game(sx, sy)
+
+    -- Right-click: terrain inspection (any mode with a board)
+    if button == 2 and game_mode == PLAYING and not game_over then
+        local local_x = x - (board_origin_x + camera_offset_x)
+        local local_y = y - (board_origin_y + camera_offset_y)
+        local col, row = pixel_to_hex(local_x, local_y)
+        if col >= 0 and col < BOARD_COLS and row >= 0 and row < BOARD_ROWS then
+            local state = norrust.get_state(engine)
+            for _, tile in ipairs(state.terrain or {}) do
+                if int(tile.col) == col and int(tile.row) == row then
+                    inspect_terrain = {
+                        col = col, row = row,
+                        terrain_id = tile.terrain_id,
+                        defense = int(tile.defense),
+                        movement_cost = int(tile.movement_cost),
+                        healing = int(tile.healing),
+                    }
+                    if selected_unit_id ~= -1 then
+                        local info = norrust.get_unit_terrain_info(engine, selected_unit_id, col, row)
+                        if info then
+                            inspect_terrain.unit_defense = int(info.defense)
+                            inspect_terrain.unit_move_cost = int(info.movement_cost)
+                        end
+                    end
+                    inspect_unit_id = -1
+                    return
+                end
+            end
+        end
+        return
+    end
+
     if button ~= 1 then return end
     if game_mode == PICK_SCENARIO then return end
 
@@ -1144,7 +1255,7 @@ function love.mousepressed(x, y, button)
     if game_over then return end
 
     -- Sidebar check — don't process board clicks in sidebar area
-    local vp_w = love.graphics.getWidth()
+    local vp_w = love.graphics.getWidth() / UI_SCALE
     if x > vp_w - 200 then return end
 
     -- Convert screen coords to hex
@@ -1210,6 +1321,7 @@ function love.mousepressed(x, y, button)
     -- Inspect enemy unit (no friendly selected)
     elseif pos_map[clicked_key] then
         inspect_unit_id = pos_map[clicked_key].id
+        inspect_terrain = nil
 
     -- Empty hex: start drag
     else
@@ -1231,9 +1343,10 @@ end
 
 -- ── love.mousemoved ─────────────────────────────────────────────────────────
 
-function love.mousemoved(x, y, dx, dy)
+function love.mousemoved(sx, sy, dx, dy)
     if drag_active then
         camera_lerping = false
+        local x, y = screen_to_game(sx, sy)
         camera_offset_x = drag_camera_start_x + (x - drag_start_x)
         camera_offset_y = drag_camera_start_y + (y - drag_start_y)
         apply_camera_offset()
