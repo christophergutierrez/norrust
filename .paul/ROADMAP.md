@@ -7,15 +7,15 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 ## Current Milestone
 
 **v1.5 Tactical Planning**
-Status: 🚧 In Progress
-Phases: 3 of 4 complete
+Status: ✅ Complete
+Phases: 4 of 4 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 36 | Terrain Info Panel | 1/1 | ✅ Complete | 2026-03-04 |
 | 37 | Ghost Movement | 1/1 | ✅ Complete | 2026-03-04 |
 | 38 | Combat Preview | 1/1 | ✅ Complete | 2026-03-04 |
-| 39 | Commit/Cancel Flow | TBD | Not started | - |
+| 39 | Commit/Cancel Flow | 1/1 | ✅ Complete | 2026-03-04 |
 
 ## v1.5 Phase Details
 
@@ -66,11 +66,22 @@ Phases: 3 of 4 complete
 - Preview for both ghost attacks and direct adjacent attacks; double-click or Enter to confirm
 - 97 tests passing (62 unit + 8 campaign + 3 validation + 23 simulation + 1 FFI)
 
-### Phase 39: Commit/Cancel Flow
+### Phase 39: Commit/Cancel Flow ✅
 
 **Goal:** Wire up the full planning loop: confirm = execute move (+ optional attack), cancel = unit returns to original hex. Player can ghost to multiple hexes adjacent to a target and compare combat previews ("attack from" comparison). Different hexes mean different terrain defense for the attacker during retaliation. Complete state machine: Select → Ghost → See Targets → Preview Combat → Commit/Cancel or Re-ghost.
 **Depends on:** Phase 38 (combat preview must exist to make commit meaningful)
 **Constraints:** Replaces current immediate-move behavior entirely. Must handle edge cases: ghost to hex with no enemies adjacent, ghost then cancel, commit move without attack, commit move + attack.
+**Completed:** 2026-03-04
+
+**Plans:**
+- [x] 39-01: Terrain defense in CombatPreview + auto-preview on re-ghost + human verification
+
+**Delivered:**
+- `attacker_terrain_defense` and `defender_terrain_defense` fields on CombatPreview struct and FFI JSON
+- Combat preview panel shows terrain defense % for both attacker and defender positions
+- Auto-preview on re-ghost: moving to hex adjacent to same enemy auto-updates combat preview
+- "Attack from" comparison: player ghosts to different hexes, sees how terrain changes affect combat
+- 97 tests passing (62 unit + 8 campaign + 3 validation + 23 simulation + 1 FFI)
 
 ---
 
@@ -934,4 +945,4 @@ See MILESTONES.md for full history.
 </details>
 
 ---
-*Roadmap updated: 2026-03-04 — Phase 38 complete (combat preview), 3/4 v1.5 phases done*
+*Roadmap updated: 2026-03-04 — v1.5 Tactical Planning complete (4/4 phases), Phase 39 commit/cancel flow done*

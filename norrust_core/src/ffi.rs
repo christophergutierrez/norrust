@@ -1067,7 +1067,8 @@ pub unsafe extern "C" fn norrust_simulate_combat(
             "\"defender_damage_min\":{},\"defender_damage_max\":{},\"defender_damage_mean\":{:.1},",
             "\"attacker_kill_pct\":{:.1},\"defender_kill_pct\":{:.1},",
             "\"attacker_attack_name\":\"{}\",\"defender_attack_name\":\"{}\",",
-            "\"attacker_hp\":{},\"defender_hp\":{}}}"
+            "\"attacker_hp\":{},\"defender_hp\":{},",
+            "\"attacker_terrain_defense\":{},\"defender_terrain_defense\":{}}}"
         ),
         preview.attacker_hit_pct, preview.defender_hit_pct,
         preview.attacker_damage_per_hit, preview.attacker_strikes,
@@ -1077,6 +1078,7 @@ pub unsafe extern "C" fn norrust_simulate_combat(
         preview.attacker_kill_pct, preview.defender_kill_pct,
         preview.attacker_attack_name, preview.defender_attack_name,
         preview.attacker_hp, preview.defender_hp,
+        preview.attacker_terrain_defense, preview.defender_terrain_defense,
     );
     to_c_string(&json)
 }

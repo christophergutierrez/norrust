@@ -141,6 +141,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Monte Carlo combat simulation: simulate_combat() runs 100 trials without mutating state, returns damage distributions and kill probabilities — Phase 38 (38-01)
 - [x] norrust_simulate_combat() FFI: range-aware (melee/ranged) combat preview with terrain defense and ToD modifiers — Phase 38 (38-01)
 - [x] Combat preview panel: click enemy shows damage×strikes, hit %, damage range (min-mean-max), kill % for both sides before committing — Phase 38 (38-01)
+- [x] Terrain defense visibility in combat preview: attacker and defender terrain defense % shown in panel — Phase 39 (39-01)
+- [x] Auto-preview on re-ghost: moving to different hex adjacent to same enemy auto-updates combat preview for "attack from" comparison — Phase 39 (39-01)
 
 ### Active (In Progress / Deferred)
 
@@ -251,6 +253,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | Monte Carlo with independent RNG seeds (i+1) per trial | Reproducible but varied results; no game state mutation | 2026-03-04 | Active |
 | Range-aware combat simulation (melee/ranged from distance) | FFI calculates hex distance to pick correct attack type; melee-only defenders don't retaliate against ranged | 2026-03-04 | Active |
 | Double-click to confirm attack from preview | First click = preview, second click = execute; natural interaction pattern | 2026-03-04 | Active |
+| Terrain defense on CombatPreview struct (not separate query) | Values already computed in FFI; avoids extra round-trip | 2026-03-04 | Active |
+| Auto-preview preserves target across re-ghost | Capture prev_target before cancel, re-check in new adjacency list | 2026-03-04 | Active |
 
 ## Tech Stack
 
@@ -270,4 +274,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-04 after Phase 38 — Combat preview with Monte Carlo simulation (97 tests pass)*
+*Last updated: 2026-03-04 after Phase 39 — Commit/cancel flow with terrain defense visibility and auto-preview (97 tests pass)*

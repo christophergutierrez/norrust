@@ -692,6 +692,10 @@ local function draw_combat_preview()
     love.graphics.print("── Attacker ──", vp_w - 190, y)
     y = y + 16
 
+    love.graphics.setColor(0.6, 0.8, 0.6)
+    love.graphics.print(string.format("Terrain: %d%% def", p.attacker_terrain_defense or 0), vp_w - 190, y)
+    y = y + 14
+
     love.graphics.setColor(1, 1, 1)
     love.graphics.print(string.format("%s", p.attacker_attack_name or "?"), vp_w - 190, y)
     y = y + 14
@@ -728,6 +732,10 @@ local function draw_combat_preview()
     love.graphics.setColor(1.0, 0.5, 0.3)
     love.graphics.print("── Retaliation ──", vp_w - 190, y)
     y = y + 16
+
+    love.graphics.setColor(0.6, 0.8, 0.6)
+    love.graphics.print(string.format("Terrain: %d%% def", p.defender_terrain_defense or 0), vp_w - 190, y)
+    y = y + 14
 
     local def_name = p.defender_attack_name or "none"
     if def_name == "none" then
@@ -1611,12 +1619,24 @@ function love.mousepressed(sx, sy, button)
         elseif col == ghost_col and row == ghost_row then
             commit_ghost_move()
 
-        -- Click a different reachable hex → re-ghost, clear preview
+        -- Click a different reachable hex → re-ghost, auto-preview if same target adjacent
         elseif reachable_set[clicked_key] and not pos_map[clicked_key] then
+            local prev_target = combat_preview_target
             cancel_combat_preview()
             ghost_col = col
             ghost_row = row
             ghost_attackable = get_adjacent_enemies(pos_map, col, row, active)
+            -- Auto-preview: if previously previewed enemy is still adjacent, re-show preview
+            if prev_target ~= -1 then
+                for _, e in ipairs(ghost_attackable) do
+                    if e.id == prev_target then
+                        combat_preview = norrust.simulate_combat(engine, ghost_unit_id, prev_target, ghost_col, ghost_row, 100)
+                        combat_preview_target = prev_target
+                        inspect_unit_id = prev_target
+                        break
+                    end
+                end
+            end
 
         -- Click friendly unit → cancel ghost, select new unit
         elseif pos_map[clicked_key] and pos_map[clicked_key].faction == active then

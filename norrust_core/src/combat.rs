@@ -119,6 +119,8 @@ pub struct CombatPreview {
     pub defender_attack_name: String,
     pub attacker_hp: u32,
     pub defender_hp: u32,
+    pub attacker_terrain_defense: u32,
+    pub defender_terrain_defense: u32,
 }
 
 /// Run `num_simulations` Monte Carlo combat simulations without mutating game state.
@@ -152,6 +154,7 @@ pub fn simulate_combat(
             attacker_attack_name: String::new(),
             defender_attack_name: "none".to_string(),
             attacker_hp: attacker.hp, defender_hp: defender.hp,
+            attacker_terrain_defense, defender_terrain_defense,
         };
     };
 
@@ -243,6 +246,8 @@ pub fn simulate_combat(
         defender_attack_name: def_attack.map(|a| a.name.clone()).unwrap_or_else(|| "none".to_string()),
         attacker_hp: attacker.hp,
         defender_hp: defender.hp,
+        attacker_terrain_defense,
+        defender_terrain_defense,
     }
 }
 
@@ -337,5 +342,9 @@ mod tests {
         // HP values passed through
         assert_eq!(preview.attacker_hp, 38);
         assert_eq!(preview.defender_hp, 36);
+
+        // Terrain defense values passed through
+        assert_eq!(preview.attacker_terrain_defense, 40);
+        assert_eq!(preview.defender_terrain_defense, 50);
     }
 }
