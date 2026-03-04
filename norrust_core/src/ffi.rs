@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use crate::board::Tile;
 use crate::campaign;
-use crate::combat::{time_of_day, TimeOfDay};
+use crate::combat::{simulate_combat, time_of_day, TimeOfDay};
 use crate::game_state::{apply_action, apply_recruit, Action, ActionError, GameState, PendingSpawn, TriggerZone};
 use crate::hex::Hex;
 use crate::loader::Registry;
@@ -1000,6 +1000,83 @@ pub unsafe extern "C" fn norrust_get_unit_terrain_info(
         "{{\"terrain_id\":\"{}\",\"defense\":{},\"movement_cost\":{},\"base_defense\":{},\"base_movement_cost\":{},\"healing\":{}}}",
         terrain_id, effective_defense, effective_move_cost,
         tile.defense, tile.movement_cost, tile.healing
+    );
+    to_c_string(&json)
+}
+
+// ── Combat preview ──────────────────────────────────────────────────────────
+
+/// Run Monte Carlo combat simulation and return JSON with damage distributions.
+///
+/// `attacker_col`/`attacker_row` is the ghost position (where the attacker will be).
+/// Does NOT mutate game state.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_simulate_combat(
+    engine: *mut NorRustEngine,
+    attacker_id: i32,
+    defender_id: i32,
+    attacker_col: i32,
+    attacker_row: i32,
+    num_sims: i32,
+) -> *mut c_char {
+    let Some(e) = engine.as_ref() else { return to_c_string("") };
+    let Some(state) = e.game.as_ref() else { return to_c_string("") };
+
+    let atk_uid = attacker_id as u32;
+    let def_uid = defender_id as u32;
+    let Some(attacker) = state.units.get(&atk_uid) else { return to_c_string("") };
+    let Some(defender) = state.units.get(&def_uid) else { return to_c_string("") };
+
+    // Attacker terrain defense at ghost position
+    let atk_hex = Hex::from_offset(attacker_col, attacker_row);
+    let atk_terrain_defense = if let Some(tile) = state.board.tile_at(atk_hex) {
+        let terrain_id = &tile.terrain_id;
+        attacker.defense.get(terrain_id).copied().unwrap_or(tile.defense)
+    } else {
+        attacker.default_defense
+    };
+
+    // Defender terrain defense at current position
+    let def_pos = match state.positions.get(&def_uid) {
+        Some(p) => *p,
+        None => return to_c_string(""),
+    };
+    let def_terrain_defense = if let Some(tile) = state.board.tile_at(def_pos) {
+        let terrain_id = &tile.terrain_id;
+        defender.defense.get(terrain_id).copied().unwrap_or(tile.defense)
+    } else {
+        defender.default_defense
+    };
+
+    // Determine engagement range from distance
+    let dist = atk_hex.distance(def_pos);
+    let range_needed = match dist {
+        1 => "melee",
+        _ => "ranged",
+    };
+
+    let n = if num_sims > 0 { num_sims as u32 } else { 100 };
+    let preview = simulate_combat(attacker, defender, atk_terrain_defense, def_terrain_defense, state.turn, n, range_needed);
+
+    let json = format!(
+        concat!(
+            "{{\"attacker_hit_pct\":{},\"defender_hit_pct\":{},",
+            "\"attacker_damage_per_hit\":{},\"attacker_strikes\":{},",
+            "\"defender_damage_per_hit\":{},\"defender_strikes\":{},",
+            "\"attacker_damage_min\":{},\"attacker_damage_max\":{},\"attacker_damage_mean\":{:.1},",
+            "\"defender_damage_min\":{},\"defender_damage_max\":{},\"defender_damage_mean\":{:.1},",
+            "\"attacker_kill_pct\":{:.1},\"defender_kill_pct\":{:.1},",
+            "\"attacker_attack_name\":\"{}\",\"defender_attack_name\":\"{}\",",
+            "\"attacker_hp\":{},\"defender_hp\":{}}}"
+        ),
+        preview.attacker_hit_pct, preview.defender_hit_pct,
+        preview.attacker_damage_per_hit, preview.attacker_strikes,
+        preview.defender_damage_per_hit, preview.defender_strikes,
+        preview.attacker_damage_min, preview.attacker_damage_max, preview.attacker_damage_mean,
+        preview.defender_damage_min, preview.defender_damage_max, preview.defender_damage_mean,
+        preview.attacker_kill_pct, preview.defender_kill_pct,
+        preview.attacker_attack_name, preview.defender_attack_name,
+        preview.attacker_hp, preview.defender_hp,
     );
     to_c_string(&json)
 }

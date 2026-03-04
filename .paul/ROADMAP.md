@@ -8,13 +8,13 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 **v1.5 Tactical Planning**
 Status: 🚧 In Progress
-Phases: 2 of 4 complete
+Phases: 3 of 4 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 36 | Terrain Info Panel | 1/1 | ✅ Complete | 2026-03-04 |
 | 37 | Ghost Movement | 1/1 | ✅ Complete | 2026-03-04 |
-| 38 | Combat Preview | TBD | Not started | - |
+| 38 | Combat Preview | 1/1 | ✅ Complete | 2026-03-04 |
 | 39 | Commit/Cancel Flow | TBD | Not started | - |
 
 ## v1.5 Phase Details
@@ -50,11 +50,21 @@ Phases: 2 of 4 complete
 - Escape cancels, Enter commits, click enemy = move+attack
 - Purely client-side — no Rust changes, 96 tests passing
 
-### Phase 38: Combat Preview
+### Phase 38: Combat Preview ✅
 
 **Goal:** From a ghost position, clicking a highlighted enemy runs a Monte Carlo simulation (~100 attacks) and displays the outcome distribution: expected damage dealt/received, kill probability for both sides, damage spread (min/median/max). Preview reflects defender terrain defense, resistance modifiers, time of day, and whether retaliation occurs (range matching). New Rust FFI function needed to simulate attacks without mutating game state.
 **Depends on:** Phase 37 (ghost position determines attack range and attacker terrain)
-**Constraints:** Monte Carlo simulation needs a new Rust FFI function (simulate N attacks, return result distribution). Must not mutate GameState. Combat formula: effective_damage = base_damage * (100 + resistance) / 100 * (100 + tod_modifier) / 100; hit chance = 100 - terrain_defense_pct.
+**Completed:** 2026-03-04
+
+**Plans:**
+- [x] 38-01: simulate_combat() + FFI + combat preview panel + click handler changes
+
+**Delivered:**
+- CombatPreview struct + simulate_combat() pure Rust function (100 Monte Carlo trials, independent RNG per trial)
+- norrust_simulate_combat() FFI: range-aware (distance → melee/ranged), terrain defense fallback, JSON return
+- Combat preview panel: attack name, damage×strikes, hit %, damage range (min-mean-max), kill % with color coding
+- Preview for both ghost attacks and direct adjacent attacks; double-click or Enter to confirm
+- 97 tests passing (62 unit + 8 campaign + 3 validation + 23 simulation + 1 FFI)
 
 ### Phase 39: Commit/Cancel Flow
 
@@ -924,4 +934,4 @@ See MILESTONES.md for full history.
 </details>
 
 ---
-*Roadmap updated: 2026-03-04 — Phase 37 complete (ghost movement), 2/4 v1.5 phases done*
+*Roadmap updated: 2026-03-04 — Phase 38 complete (combat preview), 3/4 v1.5 phases done*

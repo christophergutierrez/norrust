@@ -73,6 +73,10 @@ local ghost_row = nil          -- ghost hex row
 local ghost_unit_id = -1       -- the unit being ghosted
 local ghost_attackable = {}    -- array of {id=N, col=C, row=R} for enemies adjacent to ghost
 
+-- Combat preview
+local combat_preview = nil       -- table from simulate_combat JSON, or nil
+local combat_preview_target = -1 -- defender unit id being previewed
+
 -- Campaign
 local campaigns_path = ""
 local campaign_active = false
@@ -191,11 +195,17 @@ end
 
 -- ── Game logic helpers ──────────────────────────────────────────────────────
 
+local function cancel_combat_preview()
+    combat_preview = nil
+    combat_preview_target = -1
+end
+
 local function cancel_ghost()
     ghost_col = nil
     ghost_row = nil
     ghost_unit_id = -1
     ghost_attackable = {}
+    cancel_combat_preview()
 end
 
 local function clear_selection()
@@ -203,6 +213,7 @@ local function clear_selection()
     reachable_cells = {}
     reachable_set = {}
     inspect_unit_id = -1
+    cancel_combat_preview()
     cancel_ghost()
 end
 
@@ -658,6 +669,112 @@ local function draw_terrain_panel()
         love.graphics.setColor(1, 1, 1, 1)
         love.graphics.print(string.format("Eff. move cost: %d", inspect_terrain.unit_move_cost), vp_w - 190, y)
     end
+end
+
+local function draw_combat_preview()
+    local vp_w, vp_h = get_viewport()
+    local p = combat_preview
+
+    love.graphics.setColor(0, 0, 0, 0.85)
+    love.graphics.rectangle("fill", vp_w - 200, 0, 200, vp_h)
+
+    local y = 10
+
+    -- Header
+    love.graphics.setFont(fonts[15])
+    love.graphics.setColor(1.0, 0.9, 0.3)
+    love.graphics.print("COMBAT PREVIEW", vp_w - 190, y)
+    y = y + 24
+
+    -- Attacker section
+    love.graphics.setFont(fonts[12])
+    love.graphics.setColor(0.5, 0.8, 1.0)
+    love.graphics.print("── Attacker ──", vp_w - 190, y)
+    y = y + 16
+
+    love.graphics.setColor(1, 1, 1)
+    love.graphics.print(string.format("%s", p.attacker_attack_name or "?"), vp_w - 190, y)
+    y = y + 14
+    love.graphics.print(string.format("%dx%d  (max %d)",
+        p.attacker_damage_per_hit or 0, p.attacker_strikes or 0,
+        p.attacker_damage_max or 0), vp_w - 190, y)
+    y = y + 14
+    love.graphics.print(string.format("Hit: %d%%", p.attacker_hit_pct or 0), vp_w - 190, y)
+    y = y + 14
+
+    love.graphics.setColor(0.9, 0.9, 0.9)
+    love.graphics.print(string.format("Dmg: %d - %.1f - %d",
+        p.attacker_damage_min or 0, p.attacker_damage_mean or 0, p.attacker_damage_max or 0), vp_w - 190, y)
+    y = y + 14
+
+    -- Kill % with color
+    local ak = p.attacker_kill_pct or 0
+    if ak >= 30 then
+        love.graphics.setColor(0.3, 1.0, 0.3)
+    elseif ak >= 10 then
+        love.graphics.setColor(1.0, 1.0, 0.3)
+    else
+        love.graphics.setColor(0.7, 0.7, 0.7)
+    end
+    love.graphics.print(string.format("Kill: %.0f%%", ak), vp_w - 190, y)
+    y = y + 14
+
+    love.graphics.setColor(0.6, 0.6, 0.6)
+    love.graphics.print(string.format("Target HP: %d", p.defender_hp or 0), vp_w - 190, y)
+    y = y + 20
+
+    -- Defender retaliation section
+    love.graphics.setFont(fonts[12])
+    love.graphics.setColor(1.0, 0.5, 0.3)
+    love.graphics.print("── Retaliation ──", vp_w - 190, y)
+    y = y + 16
+
+    local def_name = p.defender_attack_name or "none"
+    if def_name == "none" then
+        love.graphics.setColor(0.5, 0.5, 0.5)
+        love.graphics.print("No retaliation", vp_w - 190, y)
+        y = y + 14
+    else
+        love.graphics.setColor(1, 1, 1)
+        love.graphics.print(string.format("%s", def_name), vp_w - 190, y)
+        y = y + 14
+        love.graphics.print(string.format("%dx%d  (max %d)",
+            p.defender_damage_per_hit or 0, p.defender_strikes or 0,
+            p.defender_damage_max or 0), vp_w - 190, y)
+        y = y + 14
+        love.graphics.print(string.format("Hit: %d%%", p.defender_hit_pct or 0), vp_w - 190, y)
+        y = y + 14
+
+        love.graphics.setColor(0.9, 0.9, 0.9)
+        love.graphics.print(string.format("Dmg: %d - %.1f - %d",
+            p.defender_damage_min or 0, p.defender_damage_mean or 0, p.defender_damage_max or 0), vp_w - 190, y)
+        y = y + 14
+
+        -- Defender kill % with danger color
+        local dk = p.defender_kill_pct or 0
+        if dk >= 20 then
+            love.graphics.setColor(1.0, 0.2, 0.2)
+        elseif dk >= 5 then
+            love.graphics.setColor(1.0, 0.7, 0.3)
+        else
+            love.graphics.setColor(0.7, 0.7, 0.7)
+        end
+        love.graphics.print(string.format("Kill: %.0f%%", dk), vp_w - 190, y)
+        y = y + 14
+
+        love.graphics.setColor(0.6, 0.6, 0.6)
+        love.graphics.print(string.format("Your HP: %d", p.attacker_hp or 0), vp_w - 190, y)
+        y = y + 14
+    end
+
+    -- Controls hint
+    y = y + 12
+    love.graphics.setFont(fonts[11])
+    love.graphics.setColor(0.5, 0.8, 0.5)
+    love.graphics.print("[Enter] Attack", vp_w - 190, y)
+    y = y + 14
+    love.graphics.setColor(0.8, 0.5, 0.5)
+    love.graphics.print("[Esc] Cancel", vp_w - 190, y)
 end
 
 -- ── Scenario loading ──────────────────────────────────────────────────────
@@ -1138,7 +1255,9 @@ function love.draw()
             love.graphics.print(hud_text, 10, 6)
         end
 
-        if recruit_mode then
+        if combat_preview ~= nil then
+            draw_combat_preview()
+        elseif recruit_mode then
             draw_recruit_panel(state)
         elseif inspect_unit_id ~= -1 then
             for _, unit in ipairs(state.units or {}) do
@@ -1263,16 +1382,37 @@ function love.keypressed(key)
     end
 
     if key == "escape" then
-        -- Cancel ghost or clear selection
-        if ghost_col ~= nil then
+        -- Cancel combat preview, or ghost, or selection
+        if combat_preview ~= nil then
+            cancel_combat_preview()
+        elseif ghost_col ~= nil then
             cancel_ghost()
         else
             clear_selection()
         end
 
-    elseif (key == "return" or key == "kpenter") and ghost_col ~= nil then
-        -- Commit ghost move
-        commit_ghost_move()
+    elseif (key == "return" or key == "kpenter") then
+        if combat_preview ~= nil and combat_preview_target >= 0 and ghost_col ~= nil then
+            -- Commit ghost move + attack previewed target
+            local enemy_id = combat_preview_target
+            cancel_combat_preview()
+            commit_ghost_move()
+            norrust.apply_attack(engine, selected_unit_id, enemy_id)
+            clear_selection()
+            inspect_unit_id = enemy_id
+            check_game_over()
+        elseif combat_preview ~= nil and combat_preview_target >= 0 and selected_unit_id ~= -1 then
+            -- Direct adjacent attack from preview
+            local enemy_id = combat_preview_target
+            cancel_combat_preview()
+            norrust.apply_attack(engine, selected_unit_id, enemy_id)
+            clear_selection()
+            inspect_unit_id = enemy_id
+            check_game_over()
+        elseif ghost_col ~= nil then
+            -- Commit ghost move only
+            commit_ghost_move()
+        end
 
     elseif key == "e" then
         -- End turn + AI
@@ -1449,21 +1589,31 @@ function love.mousepressed(sx, sy, button)
     if ghost_col ~= nil then
         local atk_set = ghost_attackable_set()
 
-        -- Click highlighted enemy → commit move + attack
+        -- Click highlighted enemy → show combat preview (or execute if same target clicked twice)
         if pos_map[clicked_key] and atk_set[pos_map[clicked_key].id] then
             local enemy_id = pos_map[clicked_key].id
-            commit_ghost_move()
-            norrust.apply_attack(engine, selected_unit_id, enemy_id)
-            clear_selection()
-            inspect_unit_id = enemy_id
-            check_game_over()
+            if combat_preview_target == enemy_id then
+                -- Second click on same enemy → commit move + attack
+                cancel_combat_preview()
+                commit_ghost_move()
+                norrust.apply_attack(engine, selected_unit_id, enemy_id)
+                clear_selection()
+                inspect_unit_id = enemy_id
+                check_game_over()
+            else
+                -- First click (or different enemy) → show combat preview
+                combat_preview = norrust.simulate_combat(engine, ghost_unit_id, enemy_id, ghost_col, ghost_row, 100)
+                combat_preview_target = enemy_id
+                inspect_unit_id = enemy_id
+            end
 
         -- Click the ghost hex itself → commit move only
         elseif col == ghost_col and row == ghost_row then
             commit_ghost_move()
 
-        -- Click a different reachable hex → re-ghost
+        -- Click a different reachable hex → re-ghost, clear preview
         elseif reachable_set[clicked_key] and not pos_map[clicked_key] then
+            cancel_combat_preview()
             ghost_col = col
             ghost_row = row
             ghost_attackable = get_adjacent_enemies(pos_map, col, row, active)
@@ -1478,14 +1628,32 @@ function love.mousepressed(sx, sy, button)
             clear_selection()
         end
 
-    -- No ghost: normal click handling
-    -- Attack: selected unit + adjacent enemy (only when unit already moved or no ghost needed)
+    -- No ghost: direct adjacent attack → show combat preview first
     elseif selected_unit_id ~= -1 and pos_map[clicked_key] and pos_map[clicked_key].faction ~= active then
         local enemy_id = pos_map[clicked_key].id
-        norrust.apply_attack(engine, selected_unit_id, enemy_id)
-        clear_selection()
-        inspect_unit_id = enemy_id
-        check_game_over()
+        if combat_preview_target == enemy_id then
+            -- Second click on same enemy → execute attack
+            cancel_combat_preview()
+            norrust.apply_attack(engine, selected_unit_id, enemy_id)
+            clear_selection()
+            inspect_unit_id = enemy_id
+            check_game_over()
+        else
+            -- First click → show combat preview (attacker at current position)
+            local atk_col, atk_row = nil, nil
+            for _, unit in ipairs(state.units or {}) do
+                if int(unit.id) == selected_unit_id then
+                    atk_col = int(unit.col)
+                    atk_row = int(unit.row)
+                    break
+                end
+            end
+            if atk_col then
+                combat_preview = norrust.simulate_combat(engine, selected_unit_id, enemy_id, atk_col, atk_row, 100)
+                combat_preview_target = enemy_id
+                inspect_unit_id = enemy_id
+            end
+        end
 
     -- Ghost: selected unit + reachable empty hex → enter ghost state
     elseif selected_unit_id ~= -1 and reachable_set[clicked_key] and not pos_map[clicked_key] then

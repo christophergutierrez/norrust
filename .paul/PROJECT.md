@@ -138,6 +138,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] norrust_get_unit_terrain_info() FFI: unit-specific effective defense/movement cost with fallback chain — Phase 36 (36-01)
 - [x] Right-click terrain inspection panel: terrain type, defense %, movement cost, healing, unit-specific stats — Phase 36 (36-01)
 - [x] Ghost movement: two-step click-to-ghost-to-commit replacing immediate move, with translucent preview and adjacent enemy highlighting — Phase 37 (37-01)
+- [x] Monte Carlo combat simulation: simulate_combat() runs 100 trials without mutating state, returns damage distributions and kill probabilities — Phase 38 (38-01)
+- [x] norrust_simulate_combat() FFI: range-aware (melee/ranged) combat preview with terrain defense and ToD modifiers — Phase 38 (38-01)
+- [x] Combat preview panel: click enemy shows damage×strikes, hit %, damage range (min-mean-max), kill % for both sides before committing — Phase 38 (38-01)
 
 ### Active (In Progress / Deferred)
 
@@ -245,6 +248,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | Dedicated FFI for unit-terrain queries (not UnitSnapshot expansion) | Avoids per-frame bloat; reusable for combat preview | 2026-03-04 | Active |
 | Ghost movement purely client-side (no engine state until commit) | Clean cancel, no rollback needed | 2026-03-04 | Active |
 | Lua-side hex neighbor table (not FFI) for adjacency | Simple odd-r offset lookup, no cross-boundary overhead | 2026-03-04 | Active |
+| Monte Carlo with independent RNG seeds (i+1) per trial | Reproducible but varied results; no game state mutation | 2026-03-04 | Active |
+| Range-aware combat simulation (melee/ranged from distance) | FFI calculates hex distance to pick correct attack type; melee-only defenders don't retaliate against ranged | 2026-03-04 | Active |
+| Double-click to confirm attack from preview | First click = preview, second click = execute; natural interaction pattern | 2026-03-04 | Active |
 
 ## Tech Stack
 
@@ -264,4 +270,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-04 after Phase 37 — Ghost movement with commit/cancel flow (96 tests pass)*
+*Last updated: 2026-03-04 after Phase 38 — Combat preview with Monte Carlo simulation (97 tests pass)*

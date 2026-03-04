@@ -190,6 +190,9 @@ ffi.cdef[[
 
     // Terrain query
     char* norrust_get_unit_terrain_info(NorRustEngine* engine, int32_t unit_id, int32_t col, int32_t row);
+
+    // Combat preview
+    char* norrust_simulate_combat(NorRustEngine* engine, int32_t attacker_id, int32_t defender_id, int32_t attacker_col, int32_t attacker_row, int32_t num_sims);
 ]]
 
 -- ── Load shared library ─────────────────────────────────────────────────────
@@ -420,6 +423,14 @@ end
 
 function M.get_unit_terrain_info(engine, unit_id, col, row)
     local raw = get_string(lib.norrust_get_unit_terrain_info(engine, unit_id, col, row))
+    if raw == "" then return nil end
+    return json_decode(raw)
+end
+
+-- ── Combat preview ──────────────────────────────────────────────────────────
+
+function M.simulate_combat(engine, attacker_id, defender_id, attacker_col, attacker_row, num_sims)
+    local raw = get_string(lib.norrust_simulate_combat(engine, attacker_id, defender_id, attacker_col, attacker_row, num_sims or 100))
     if raw == "" then return nil end
     return json_decode(raw)
 end
