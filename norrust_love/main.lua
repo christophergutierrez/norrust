@@ -668,6 +668,14 @@ function love.load()
             gen.run()
             love.event.quit()
             return
+        elseif arg == "--viewer" then
+            local viewer = require("viewer")
+            viewer.load()
+            love.update = function(dt) viewer.update(dt) end
+            love.draw = function() viewer.draw() end
+            love.keypressed = function(key) viewer.keypressed(key) end
+            love.wheelmoved = function(x, y) viewer.wheelmoved(x, y) end
+            return
         end
     end
 

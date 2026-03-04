@@ -8,14 +8,14 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 **v1.4 Visual Asset System**
 Status: 🚧 In Progress
-Phases: 3 of 5 complete
+Phases: 4 of 5 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 31 | Asset Specification & Infrastructure | 1 | ✅ Complete | 2026-03-03 |
 | 32 | Terrain Art | 1 | ✅ Complete | 2026-03-03 |
 | 33 | Unit Sprite Pipeline | 1 | ✅ Complete | 2026-03-04 |
-| 34 | Asset Viewer | TBD | Not started | - |
+| 34 | Asset Viewer | 1 | ✅ Complete | 2026-03-04 |
 | 35 | Unit Art Expansion | TBD | Not started | - |
 
 ## v1.4 Phase Details
@@ -71,13 +71,22 @@ Phases: 3 of 5 complete
 - Facing/flip based on board position; fallback preserved for all other units
 - 94 tests passing (no Rust changes)
 
-### Phase 34: Asset Viewer
+### Phase 34: Asset Viewer ✅
 
 **Goal:** Standalone Love2D app to browse and preview unit/terrain assets. Cycle through animation states, zoom, flip. Validate sprite.toml metadata visually. Test terrain tiles in hex grid context.
 **Depends on:** Phase 33 (unit sprite pipeline must exist to preview)
 **Constraints:** Standalone app, separate from main game.
+**Completed:** 2026-03-04
 
-**Plans:** TBD (defined during /paul:plan)
+**Plans:**
+- [x] 34-01: Standalone viewer.lua + --viewer CLI flag + human verification
+
+**Delivered:**
+- `viewer.lua`: 443-line standalone asset viewer (sidebar, preview, animation, zoom/flip, metadata)
+- `--viewer` CLI flag in main.lua overriding love callbacks
+- Terrain preview with hex-clipped stencil version
+- Unit animation cycling through all states with spritesheet strip and portrait
+- 94 tests passing (no Rust changes)
 
 ### Phase 35: Unit Art Expansion
 
@@ -848,4 +857,4 @@ See MILESTONES.md for full history.
 </details>
 
 ---
-*Roadmap updated: 2026-03-04 — Phase 33 complete, v1.4 Visual Asset System 3/5 phases done*
+*Roadmap updated: 2026-03-04 — Phase 34 complete, v1.4 Visual Asset System 4/5 phases done*
