@@ -31,3 +31,4 @@ REWRITE_PLAN.md
 *.so
 *.dll
 *.dylib
+norrust_love/assets/units/*/tmp/

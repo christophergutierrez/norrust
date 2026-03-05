@@ -18,6 +18,68 @@ Completed milestone log for this project.
 | v1.2 Love2D Migration | 2026-03-03 | ~1 day | 3 phases, 3 plans |
 | v1.3 Campaign Mode | 2026-03-03 | ~1 day | 3 phases, 3 plans |
 | v1.4 Visual Asset System | 2026-03-04 | ~1 day | 5 phases, 5 plans |
+| v1.5 Combat UX | 2026-03-04 | ~1 day | 3 phases, 3 plans |
+| v1.6 Codebase Cleanup | 2026-03-04 | ~1 day | 4 phases, 4 plans |
+
+---
+
+## ✅ v1.6 Codebase Cleanup
+
+**Completed:** 2026-03-04
+**Duration:** ~1 day
+
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 4 |
+| Plans | 4 |
+| Tests | 97 (62 unit + 8 campaign + 3 validation + 23 simulation + 1 FFI) |
+
+### Key Accomplishments
+
+- **Asset directory normalization** — 16 unit directories renamed to snake_case with normalize_unit_dir()
+- **main.lua modularization** — Split into 5 modules (hex.lua, draw.lua, campaign_client.lua); 47% line reduction
+- **Full Rust documentation** — //! module docs on all 15 .rs files, /// docs on all ~27 public items
+- **Full Lua documentation** — --- doc comments on ~120 functions across 12 .lua files
+
+### Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| ctx table pattern for module extraction | Explicit dependencies, per-frame ctx build |
+| One-line docs for FFI wrappers | Clean balance of thoroughness vs readability |
+| Campaign ctx writeback pattern | Bridges state mutations across module boundary |
+
+---
+
+## ✅ v1.5 Combat UX
+
+**Completed:** 2026-03-04
+**Duration:** ~1 day
+
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 3 |
+| Plans | 3 |
+| Tests | 97 (62 unit + 8 campaign + 3 validation + 23 simulation + 1 FFI) |
+
+### Key Accomplishments
+
+- **Terrain inspection panel** — Right-click for terrain type, defense %, movement cost, unit-specific stats via FFI
+- **Ghost movement** — Two-step click-to-ghost-to-commit with translucent preview and adjacent enemy highlighting
+- **Monte Carlo combat preview** — 100-trial simulation with damage distributions, kill probabilities, terrain defense display
+- **Auto-preview on re-ghost** — Moving to different hex adjacent to same enemy auto-updates combat preview
+
+### Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Ghost movement purely client-side | Clean cancel, no engine rollback needed |
+| Monte Carlo with independent RNG seeds | Reproducible varied results; no game state mutation |
+| Double-click to confirm attack from preview | First click = preview, second = execute |
 
 ---
 

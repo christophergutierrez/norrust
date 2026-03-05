@@ -257,6 +257,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | Auto-preview preserves target across re-ghost | Capture prev_target before cancel, re-check in new adjacency list | 2026-03-04 | Active |
 | ctx table pattern for Lua module extraction | Build mutable context table per-frame/per-call; modules access state via ctx.field | 2026-03-04 | Active |
 | Campaign ctx writeback pattern | build_campaign_ctx() → call → apply_campaign_ctx() bridges state mutations across module boundary | 2026-03-04 | Active |
+| Gemini 2.0 Flash for sprite generation (not MCP) | nana-banana MCP returns text, not images; direct API via curl/python | 2026-03-05 | Active |
+| Flood-fill bg removal from corners | Preserves interior detail unlike global color replace; fuzz 20% general, 8% portraits | 2026-03-05 | Active |
+| White background prompts for AI sprites | Green screen unreliable from AI; white background + flood-fill more consistent | 2026-03-05 | Active |
 
 ## Tech Stack
 
@@ -276,4 +279,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-04 after Phase 43 — Lua documentation complete: ~120 functions documented across 6 files. v1.6 Codebase Cleanup milestone complete (97 tests pass)*
+*Last updated: 2026-03-05 after Phase 44 — Mage Pipeline: AI-generated sprites via Gemini 2.0 Flash with ImageMagick post-processing. 6 sprite files replaced for Mage unit.*

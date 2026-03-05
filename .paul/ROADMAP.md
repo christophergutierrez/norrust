@@ -6,6 +6,55 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
+**v1.7 Enhanced Unit Sprites**
+Status: 🚧 In Progress
+Phases: 1 of 4 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 44 | Mage Pipeline | 1 | ✅ Complete | 2026-03-05 |
+| 45 | Pipeline Refinement | TBD | Not started | - |
+| 46 | Full Unit Generation | TBD | Not started | - |
+| 47 | Polish & Verification | TBD | Not started | - |
+
+## v1.7 Phase Details
+
+### Phase 44: Mage Pipeline
+
+**Goal:** Build initial AI sprite generation tooling using Gemini Imagen. Craft prompts, handle background removal, assemble spritesheets. Generate all 6 Mage sprite files as prototype. Human verify.
+**Depends on:** Phase 43 (v1.6 complete, documented codebase)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+### Phase 45: Pipeline Refinement
+
+**Goal:** Fix issues from Phase 44: prompt tuning, style consistency across animation states, post-processing improvements. Re-generate Mage if needed. Human verify.
+**Depends on:** Phase 44 (initial pipeline working)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+### Phase 46: Full Unit Generation
+
+**Goal:** Run the proven pipeline for all 16 units (or remaining 15). Batch generation and integration of all sprite files.
+**Depends on:** Phase 45 (pipeline refined and verified)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+### Phase 47: Polish & Verification
+
+**Goal:** Visual review all units in-game, fix outliers, verify all animations and portraits render correctly in game and viewer.
+**Depends on:** Phase 46 (all units generated)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+---
+
+## Previous Milestone
+
 **v1.6 Codebase Cleanup**
 Status: ✅ Complete
 Phases: 4 of 4 complete
