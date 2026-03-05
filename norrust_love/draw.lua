@@ -28,7 +28,19 @@ function draw.draw_units(ctx, state)
             goto continue
         end
 
-        local cx, cy = ctx.hex.to_pixel(col, row)
+        -- Override position for movement animation (engine already moved, animate visually)
+        local cx, cy
+        if ctx.move_anim and ctx.move_anim.uid == uid then
+            local ma = ctx.move_anim
+            local a = ma.path[ma.seg]
+            local b = ma.path[ma.seg + 1]
+            local ax, ay = ctx.hex.to_pixel(a.col, a.row)
+            local bx, by = ctx.hex.to_pixel(b.col, b.row)
+            cx = ax + (bx - ax) * ma.t
+            cy = ay + (by - ay) * ma.t
+        else
+            cx, cy = ctx.hex.to_pixel(col, row)
+        end
         local alpha = exhausted and 0.4 or 1.0
 
         -- Get or create animation state for this unit

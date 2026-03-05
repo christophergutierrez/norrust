@@ -92,6 +92,8 @@ local unit_sprites = {}
 local FACTION_COLORS = {[0] = {0.25, 0.42, 0.88}, [1] = {0.80, 0.12, 0.12}}
 local unit_anims = {}  -- unit_id -> animation state (from anim_module.new_state())
 local pending_anims = {}  -- array of {uid, end_time, return_to} for combat animations
+-- move_anim stored as pending_anims.move to avoid exceeding LuaJIT 60-upvalue limit
+-- pending_anims.move = {uid, path, seg, t, speed, on_complete} or nil
 
 -- Camera
 local board_origin_x, board_origin_y = 0, 0
@@ -173,7 +175,8 @@ end
 local function play_combat_anim(uid, anim_name, duration)
     local anim_state = unit_anims[uid]
     if not anim_state then return end
-    local entry = unit_sprites[anim_state.def_id]
+    local key = anim_state.def_id and anim_state.def_id:lower():gsub(" ", "_")
+    local entry = key and unit_sprites[key]
     if not entry or not entry.anims or not entry.anims[anim_name] then return end
     anim_module.play(anim_state, anim_name)
     if duration > 0 then
@@ -347,17 +350,39 @@ local function ghost_attackable_set()
     return s
 end
 
+--- Start a movement animation along a path, then run on_complete.
+-- Applies engine move immediately; animation is visual only.
+local function start_move_anim(uid, path, on_complete)
+    norrust.apply_move(engine, uid, path[#path].col, path[#path].row)
+    pending_anims.move = {uid = uid, path = path, seg = 1, t = 0, speed = 10, on_complete = on_complete}
+end
+
 --- Commit the ghost position as an actual move via the engine.
-local function commit_ghost_move()
-    norrust.apply_move(engine, ghost_unit_id, ghost_col, ghost_row)
+-- If a path exists (>= 2 waypoints), animates movement. Otherwise instant.
+local function commit_ghost_move(on_complete)
     local uid = ghost_unit_id
+    local path = ghost_path
+    local dest_col, dest_row = ghost_col, ghost_row
     cancel_ghost()
-    -- Keep unit selected after move (for potential attack or re-inspect)
-    selected_unit_id = uid
-    inspect_unit_id = uid
-    reachable_cells = {}
-    reachable_set = {}
-    check_game_over()
+
+    if path and #path >= 2 then
+        start_move_anim(uid, path, function()
+            selected_unit_id = uid
+            inspect_unit_id = uid
+            reachable_cells = {}
+            reachable_set = {}
+            check_game_over()
+            if on_complete then on_complete() end
+        end)
+    else
+        norrust.apply_move(engine, uid, dest_col, dest_row)
+        selected_unit_id = uid
+        inspect_unit_id = uid
+        reachable_cells = {}
+        reachable_set = {}
+        check_game_over()
+        if on_complete then on_complete() end
+    end
 end
 
 --- Return 0 for blue setup, 1 for red setup.
@@ -508,6 +533,22 @@ function love.update(dt)
         end
     end
 
+    -- Movement interpolation animation
+    local ma = pending_anims.move
+    if ma then
+        ma.t = ma.t + ma.speed * dt
+        while ma and ma.t >= 1.0 do
+            ma.seg = ma.seg + 1
+            ma.t = ma.t - 1.0
+            if ma.seg >= #ma.path then
+                local cb = ma.on_complete
+                pending_anims.move = nil
+                ma = nil
+                if cb then cb() end
+            end
+        end
+    end
+
     -- Arrow key panning
     local pan_x, pan_y = 0, 0
     if love.keyboard.isDown("left") then pan_x = pan_x + 1 end
@@ -543,22 +584,9 @@ end
 
 -- ── love.draw ───────────────────────────────────────────────────────────────
 
---- Build draw context from game state and dispatch to draw module.
-function love.draw()
-    local state = engine and norrust.get_state(engine) or {}
-    local ctx = {
-        -- Modules
-        hex = hex, assets = assets, anim_module = anim_module, norrust = norrust,
-        -- Engine
-        engine = engine,
-        -- Constants
-        BLUE = BLUE, RED = RED, COLOR_FLAT = COLOR_FLAT,
-        UI_SCALE = UI_SCALE, BOARD_COLS = BOARD_COLS, BOARD_ROWS = BOARD_ROWS,
-        FACTION_COLORS = FACTION_COLORS, SCENARIOS = SCENARIOS, CAMPAIGNS = CAMPAIGNS,
-        -- Mode constants
-        PICK_SCENARIO = PICK_SCENARIO, PICK_FACTION_BLUE = PICK_FACTION_BLUE,
-        PICK_FACTION_RED = PICK_FACTION_RED, SETUP_BLUE = SETUP_BLUE,
-        SETUP_RED = SETUP_RED, PLAYING = PLAYING,
+--- Build draw context (split into two functions to stay under LuaJIT 60-upvalue limit).
+local function build_draw_ctx_state()
+    return {
         -- State
         game_mode = game_mode, game_over = game_over, winner_faction = winner_faction,
         selected_unit_id = selected_unit_id, inspect_unit_id = inspect_unit_id,
@@ -567,25 +595,42 @@ function love.draw()
         recruit_error = recruit_error, reachable_cells = reachable_cells,
         reachable_set = reachable_set,
         ghost_col = ghost_col, ghost_row = ghost_row, ghost_unit_id = ghost_unit_id,
-        ghost_attackable = ghost_attackable, ghost_path = ghost_path,
+        ghost_attackable = ghost_attackable, ghost_path = ghost_path, move_anim = pending_anims.move,
         combat_preview = combat_preview, combat_preview_target = combat_preview_target,
         -- Campaign
         campaign_active = campaign_active, campaign_index = campaign_index,
         campaign_data = campaign_data,
-        -- Fonts, sprites
-        fonts = fonts, terrain_tiles = terrain_tiles, unit_sprites = unit_sprites,
-        unit_anims = unit_anims,
-        -- Camera
-        board_origin_x = board_origin_x, board_origin_y = board_origin_y,
-        camera_offset_x = camera_offset_x, camera_offset_y = camera_offset_y,
-        -- Functions from main
-        get_viewport = get_viewport, screen_to_game = screen_to_game,
-        int = int, parse_html_color = parse_html_color,
         -- Setup state
         factions = factions, sel_faction_idx = sel_faction_idx,
         faction_id = faction_id, leader_placed = leader_placed,
         faction_index_for_mode = faction_index_for_mode,
     }
+end
+
+--- Dispatch to draw module with full context.
+function love.draw()
+    local state = engine and norrust.get_state(engine) or {}
+    local ctx = build_draw_ctx_state()
+    -- Modules
+    ctx.hex = hex; ctx.assets = assets; ctx.anim_module = anim_module; ctx.norrust = norrust
+    ctx.engine = engine
+    -- Constants
+    ctx.BLUE = BLUE; ctx.RED = RED; ctx.COLOR_FLAT = COLOR_FLAT
+    ctx.UI_SCALE = UI_SCALE; ctx.BOARD_COLS = BOARD_COLS; ctx.BOARD_ROWS = BOARD_ROWS
+    ctx.FACTION_COLORS = FACTION_COLORS; ctx.SCENARIOS = SCENARIOS; ctx.CAMPAIGNS = CAMPAIGNS
+    -- Mode constants
+    ctx.PICK_SCENARIO = PICK_SCENARIO; ctx.PICK_FACTION_BLUE = PICK_FACTION_BLUE
+    ctx.PICK_FACTION_RED = PICK_FACTION_RED; ctx.SETUP_BLUE = SETUP_BLUE
+    ctx.SETUP_RED = SETUP_RED; ctx.PLAYING = PLAYING
+    -- Fonts, sprites
+    ctx.fonts = fonts; ctx.terrain_tiles = terrain_tiles; ctx.unit_sprites = unit_sprites
+    ctx.unit_anims = unit_anims
+    -- Camera
+    ctx.board_origin_x = board_origin_x; ctx.board_origin_y = board_origin_y
+    ctx.camera_offset_x = camera_offset_x; ctx.camera_offset_y = camera_offset_y
+    -- Functions from main
+    ctx.get_viewport = get_viewport; ctx.screen_to_game = screen_to_game
+    ctx.int = int; ctx.parse_html_color = parse_html_color
     draw_mod.draw_frame(ctx, state)
 end
 
@@ -593,6 +638,9 @@ end
 
 --- Handle keyboard input: scenario selection, setup, and gameplay controls.
 function love.keypressed(key)
+    -- Block input during movement animation
+    if pending_anims.move then return end
+
     -- Scenario selection
     if game_mode == PICK_SCENARIO then
         local num = tonumber(key)
@@ -713,11 +761,12 @@ function love.keypressed(key)
             local enemy_id = combat_preview_target
             local ranged = is_ranged_attack()
             cancel_combat_preview()
-            commit_ghost_move()
-            execute_attack(selected_unit_id, enemy_id, ranged)
-            clear_selection()
-            inspect_unit_id = enemy_id
-            check_game_over()
+            commit_ghost_move(function()
+                execute_attack(selected_unit_id, enemy_id, ranged)
+                clear_selection()
+                inspect_unit_id = enemy_id
+                check_game_over()
+            end)
         elseif combat_preview ~= nil and combat_preview_target >= 0 and selected_unit_id ~= -1 then
             -- Direct adjacent attack from preview
             local enemy_id = combat_preview_target
@@ -788,6 +837,9 @@ end
 
 --- Handle mouse clicks: unit selection, movement, attack, recruitment, and camera drag.
 function love.mousepressed(sx, sy, button)
+    -- Block input during movement animation
+    if pending_anims.move then return end
+
     local x, y = screen_to_game(sx, sy)
 
     -- Right-click: terrain inspection (any mode with a board)
@@ -915,11 +967,12 @@ function love.mousepressed(sx, sy, button)
                 -- Second click on same enemy → commit move + attack
                 local ranged = is_ranged_attack()
                 cancel_combat_preview()
-                commit_ghost_move()
-                execute_attack(selected_unit_id, enemy_id, ranged)
-                clear_selection()
-                inspect_unit_id = enemy_id
-                check_game_over()
+                commit_ghost_move(function()
+                    execute_attack(selected_unit_id, enemy_id, ranged)
+                    clear_selection()
+                    inspect_unit_id = enemy_id
+                    check_game_over()
+                end)
             else
                 -- First click (or different enemy) → show combat preview
                 combat_preview = norrust.simulate_combat(engine, ghost_unit_id, enemy_id, ghost_col, ghost_row, 100)

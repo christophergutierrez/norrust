@@ -11,12 +11,12 @@ See: .paul/PROJECT.md (updated 2026-03-05)
 
 Milestone: v1.8 Movement & Animation Polish
 Phase: 49 of 50 (Movement Interpolation)
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-03-05 — Phase 48 complete, transitioned to Phase 49
+Plan: 49-01 complete
+Status: Phase complete
+Last activity: 2026-03-05 — Phase 49 complete
 
 Progress:
-- v1.8 Movement & Animation Polish: [███░░░░░░░] 33% (1/3 phases)
+- v1.8 Movement & Animation Polish: [██████░░░░] 67% (2/3 phases)
 
 ## Loop Position
 
@@ -33,10 +33,16 @@ PLAN ──▶ APPLY ──▶ UNIFY
    - Added norrust_find_path FFI wrapping Rust A*
    - Ghost path computed and drawn during ghost movement
    - Human verified
+4. Phase 49 Movement Interpolation — complete
+   - Smooth sliding animation along A* path on commit
+   - Callback-based move+attack sequencing
+   - Input blocked during movement
+   - Fixed pre-existing combat animation sprite lookup bug
+   - Human verified
 
 ## Next Action
 
-Run `/paul:plan` for Phase 49 (Movement Interpolation)
+Run `/paul:plan` for Phase 50 (Combat Movement)
 
 ## Accumulated Context
 
@@ -49,6 +55,9 @@ Run `/paul:plan` for Phase 49 (Movement Interpolation)
 | hex.distance() for ranged attack range | Phase 47 | Enables melee+ranged ghost targeting |
 | Reuse existing Rust find_path A* for ghost path | Phase 48 | No new pathfinding logic |
 | White semi-transparent hex fills + line for path | Phase 48 | Visually distinct from reachable/attackable |
+| pending_anims.move for movement anim (upvalue limit) | Phase 49 | Avoids LuaJIT 60-upvalue limit |
+| Apply engine move immediately, animate rendering only | Phase 49 | Keeps engine in sync during animation |
+| Callback on_complete for move+attack sequencing | Phase 49 | Clean separation of movement and follow-up |
 
 ### Deferred Issues
 
@@ -66,15 +75,15 @@ Run `/paul:plan` for Phase 49 (Movement Interpolation)
 None.
 
 ### Git State
-Last commit: ad210e9 (Phase 47 — v1.7 complete)
+Last commit: (pending — Phase 49 commit)
 Branch: master
 Tests: 97 passing (62 unit + 8 campaign + 3 validation + 23 simulation + 1 FFI)
 
 ## Session Continuity
 
 Last session: 2026-03-05
-Stopped at: Phase 48 complete, ready to plan Phase 49
-Next action: /paul:plan for Phase 49
+Stopped at: Phase 49 complete, ready to plan Phase 50
+Next action: /paul:plan for Phase 50
 Resume file: .paul/ROADMAP.md
 
 ---
