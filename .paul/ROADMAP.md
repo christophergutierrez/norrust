@@ -6,6 +6,64 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
+**v1.6 Codebase Cleanup**
+Status: 🚧 In Progress
+Phases: 1 of 4 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 40 | Asset Directory Naming | 1/1 | ✅ Complete | 2026-03-04 |
+| 41 | Split main.lua | TBD | Not started | - |
+| 42 | Rust Documentation | TBD | Not started | - |
+| 43 | Lua Documentation | TBD | Not started | - |
+
+## v1.6 Phase Details
+
+### Phase 40: Asset Directory Naming ✅
+
+**Goal:** Rename 16 unit asset directories from PascalCase (some with spaces) to snake_case. Update all Lua path construction with normalize function. Fix MISSSION_CONTROL.md typo.
+**Depends on:** Phase 39 (v1.5 complete, stable codebase)
+**Completed:** 2026-03-04
+
+**Plans:**
+- [x] 40-01: Directory renames + normalize_unit_dir() + sprite.toml updates + human verification
+
+**Delivered:**
+- 16 unit asset directories renamed to snake_case via git mv
+- `normalize_unit_dir()` in assets.lua: def_id:lower():gsub(" ", "_") for lookup
+- `normalize_dir()` in generate_sprites.lua for output paths
+- sprite.toml id fields updated to match directory names
+- MISSSION_CONTROL.md → MISSION_CONTROL.md typo fix
+- 97 tests passing (no Rust changes)
+
+### Phase 41: Split main.lua
+
+**Goal:** Extract main.lua (~1,728 lines) into focused modules. Separate rendering, UI panels, input handling, hex math, and game state machine into individual Lua files. main.lua becomes a thin Love2D callback dispatcher. Refactor only — identical behavior.
+**Depends on:** Phase 40 (naming cleanup done before restructuring)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+### Phase 42: Rust Documentation
+
+**Goal:** Add doc comments (///) to all ~27 undocumented public items across 10 Rust files. Priority: ffi.rs (C API boundary), game_state.rs, board.rs, snapshot.rs, combat.rs. Follow existing style in hex.rs/pathfinding.rs/ai.rs.
+**Depends on:** Phase 41 (code structure stable before documenting)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+### Phase 43: Lua Documentation
+
+**Goal:** Add function-level documentation (@param, @return, purpose) to all Lua files. Now smaller and cleaner after Phase 41 split. Follow existing style in assets.lua/animation.lua/toml_parser.lua.
+**Depends on:** Phase 42 (Rust docs done; Lua modules in final form after Phase 41)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+---
+
+## Previous Milestone
+
 **v1.5 Tactical Planning**
 Status: ✅ Complete
 Phases: 4 of 4 complete
@@ -945,4 +1003,4 @@ See MILESTONES.md for full history.
 </details>
 
 ---
-*Roadmap updated: 2026-03-04 — v1.5 Tactical Planning complete (4/4 phases), Phase 39 commit/cancel flow done*
+*Roadmap updated: 2026-03-04 — v1.6 Codebase Cleanup created (4 phases: naming, split, Rust docs, Lua docs)*

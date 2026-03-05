@@ -754,6 +754,11 @@ local UNITS = {
     },
 }
 
+--- Normalize a def_id to snake_case directory name.
+local function normalize_dir(def_id)
+    return def_id:lower():gsub(" ", "_")
+end
+
 -- ── Main generator ─────────────────────────────────────────────────────
 
 local function run_generator()
@@ -762,7 +767,7 @@ local function run_generator()
 
     local total = 0
     for _, unit in ipairs(UNITS) do
-        local dir = "assets/units/" .. unit.def_id
+        local dir = "assets/units/" .. normalize_dir(unit.def_id)
         love.filesystem.createDirectory(dir)
 
         for _, anim in ipairs(unit.anims) do

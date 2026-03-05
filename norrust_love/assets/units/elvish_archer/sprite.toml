@@ -1,0 +1,39 @@
+id = "elvish_archer"
+
+[idle]
+file = "idle.png"
+frame_width = 256
+frame_height = 256
+frames = 4
+fps = 4
+
+[attacks.melee]
+file = "attack-melee.png"
+frame_width = 256
+frame_height = 256
+frames = 6
+fps = 8
+
+[attacks.ranged]
+file = "attack-ranged.png"
+frame_width = 256
+frame_height = 256
+frames = 4
+fps = 6
+
+[defend]
+file = "defend.png"
+frame_width = 256
+frame_height = 256
+frames = 3
+fps = 6
+
+[death]
+file = "death.png"
+frame_width = 256
+frame_height = 256
+frames = 4
+fps = 6
+
+[portrait]
+file = "portrait.png"

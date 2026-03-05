@@ -4,7 +4,7 @@
 local animation = {}
 
 --- Load all animation data for a unit from parsed sprite.toml data.
--- @param base_path string: unit asset directory (e.g. "assets/units/Spearman")
+-- @param base_path string: unit asset directory (e.g. "assets/units/spearman")
 -- @param toml_data table: parsed sprite.toml
 -- @return table: anim_data with per-state {img, quads, fps, loop}
 function animation.load_unit_anims(base_path, toml_data)

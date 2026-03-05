@@ -9,6 +9,14 @@ local anim = require("animation")
 
 local assets = {}
 
+--- Normalize a unit def_id to a snake_case directory name.
+-- Converts "Elvish Archer" -> "elvish_archer", "Spearman" -> "spearman".
+-- @param def_id string: unit definition id from game data
+-- @return string: snake_case directory name
+local function normalize_unit_dir(def_id)
+    return def_id:lower():gsub(" ", "_")
+end
+
 --- Load terrain tile PNGs from assets/terrain/.
 -- @param base_path string: root assets directory (e.g. "assets")
 -- @return table: terrain_id -> love.Image
@@ -134,7 +142,8 @@ end
 -- @param anim_state table|nil: per-unit animation state from animation.new_state()
 -- @return boolean: true if sprite was drawn, false if caller should draw fallback
 function assets.draw_unit_sprite(unit_sprites, def_id, cx, cy, hex_radius, faction, alpha, faction_colors, anim_state)
-    local entry = def_id and unit_sprites[def_id]
+    local key = def_id and normalize_unit_dir(def_id)
+    local entry = key and unit_sprites[key]
     if not entry then
         return false
     end
@@ -182,7 +191,8 @@ end
 -- @param max_h number: maximum height
 -- @return number: height used (0 if no portrait)
 function assets.draw_portrait(unit_sprites, def_id, x, y, max_w, max_h)
-    local entry = def_id and unit_sprites[def_id]
+    local key = def_id and normalize_unit_dir(def_id)
+    local entry = key and unit_sprites[key]
     if not entry or not entry.portrait then
         return 0
     end
