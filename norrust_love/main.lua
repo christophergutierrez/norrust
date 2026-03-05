@@ -205,25 +205,39 @@ local function trigger_death_anim(uid)
 end
 
 --- Detect whether current combat preview is a ranged attack.
--- Must be called BEFORE cancel_combat_preview().
+-- Checks hex distance between attacker and defender. Distance > 1 means ranged.
+-- Must be called BEFORE cancel_combat_preview() and while ghost/selection state is valid.
 local function is_ranged_attack()
-    if combat_preview and combat_preview.attacker_attack_name then
-        return combat_preview.attacker_attack_name:lower():find("ranged") ~= nil
+    if not combat_preview or combat_preview_target < 0 then return false end
+    local state = norrust.get_state(engine)
+    local atk_col, atk_row, def_col, def_row
+    -- Attacker position: ghost position if ghosting, else unit state position
+    local atk_id = ghost_col ~= nil and ghost_unit_id or selected_unit_id
+    if ghost_col ~= nil then
+        atk_col, atk_row = ghost_col, ghost_row
+    end
+    for _, unit in ipairs(state.units or {}) do
+        local uid = int(unit.id)
+        if uid == atk_id and not atk_col then
+            atk_col, atk_row = int(unit.col), int(unit.row)
+        end
+        if uid == combat_preview_target then
+            def_col, def_row = int(unit.col), int(unit.row)
+        end
+    end
+    if atk_col and def_col then
+        return hex.distance(atk_col, atk_row, def_col, def_row) > 1
     end
     return false
 end
 
---- Execute an attack with combat animations.
--- Triggers attack anim on attacker, defend/death on defender.
+--- Apply attack damage, trigger anims and check death.
 -- @param attacker_id number: attacking unit id
 -- @param defender_id number: defending unit id
 -- @param is_ranged boolean: true if ranged attack
-local function execute_attack(attacker_id, defender_id, is_ranged)
-    -- Trigger attack + defend anims before state changes
+local function apply_attack_with_anims(attacker_id, defender_id, is_ranged)
     trigger_attack_anims(attacker_id, defender_id, is_ranged)
-    -- Apply the attack (may kill defender)
     norrust.apply_attack(engine, attacker_id, defender_id)
-    -- Check if defender died — trigger death anim
     local new_state = norrust.get_state(engine)
     local defender_alive = false
     for _, unit in ipairs(new_state.units or {}) do
@@ -235,6 +249,55 @@ local function execute_attack(attacker_id, defender_id, is_ranged)
     if not defender_alive then
         trigger_death_anim(defender_id)
     end
+end
+
+--- Execute an attack with combat animations.
+-- Melee: attacker slides toward defender, attacks at contact, slides back.
+-- Ranged: attacks in place (no movement).
+-- @param attacker_id number: attacking unit id
+-- @param defender_id number: defending unit id
+-- @param is_ranged boolean: true if ranged attack
+-- @param on_done function|nil: called after attack fully resolves
+local function execute_attack(attacker_id, defender_id, is_ranged, on_done)
+    if is_ranged then
+        apply_attack_with_anims(attacker_id, defender_id, true)
+        if on_done then on_done() end
+        return
+    end
+
+    -- Melee: look up positions for slide
+    local state = norrust.get_state(engine)
+    local ax, ay, dx, dy
+    for _, unit in ipairs(state.units or {}) do
+        local uid = int(unit.id)
+        if uid == attacker_id then
+            ax, ay = hex.to_pixel(int(unit.col), int(unit.row))
+        elseif uid == defender_id then
+            dx, dy = hex.to_pixel(int(unit.col), int(unit.row))
+        end
+    end
+
+    if not ax or not dx then
+        -- Fallback: can't find positions, attack without slide
+        apply_attack_with_anims(attacker_id, defender_id, false)
+        if on_done then on_done() end
+        return
+    end
+
+    -- Slide 40% toward defender
+    local mid_x = ax + (dx - ax) * 0.4
+    local mid_y = ay + (dy - ay) * 0.4
+
+    pending_anims.combat_slide = {
+        uid = attacker_id,
+        start_x = ax, start_y = ay,
+        target_x = mid_x, target_y = mid_y,
+        t = 0, speed = 6,
+        phase = "approach",
+        defender_id = defender_id,
+        pause_remaining = nil,
+        on_done = on_done,
+    }
 end
 
 -- ── Game logic helpers ──────────────────────────────────────────────────────
@@ -549,6 +612,39 @@ function love.update(dt)
         end
     end
 
+    -- Combat slide animation (melee approach/return)
+    local cs = pending_anims.combat_slide
+    if cs then
+        if cs.pause_remaining then
+            -- Pausing at contact point (attack anims playing)
+            cs.pause_remaining = cs.pause_remaining - dt
+            if cs.pause_remaining <= 0 then
+                -- Start return phase
+                cs.phase = "return"
+                cs.t = 0
+                cs.pause_remaining = nil
+                -- Swap direction: slide back to start
+                cs.target_x, cs.start_x = cs.start_x, cs.target_x
+                cs.target_y, cs.start_y = cs.start_y, cs.target_y
+            end
+        else
+            cs.t = cs.t + cs.speed * dt
+            if cs.t >= 1.0 then
+                cs.t = 1.0
+                if cs.phase == "approach" then
+                    -- At contact: trigger attack, pause for anims
+                    apply_attack_with_anims(cs.uid, cs.defender_id, false)
+                    cs.pause_remaining = 0.3
+                elseif cs.phase == "return" then
+                    -- Back at start: done
+                    local cb = cs.on_done
+                    pending_anims.combat_slide = nil
+                    if cb then cb() end
+                end
+            end
+        end
+    end
+
     -- Arrow key panning
     local pan_x, pan_y = 0, 0
     if love.keyboard.isDown("left") then pan_x = pan_x + 1 end
@@ -595,7 +691,8 @@ local function build_draw_ctx_state()
         recruit_error = recruit_error, reachable_cells = reachable_cells,
         reachable_set = reachable_set,
         ghost_col = ghost_col, ghost_row = ghost_row, ghost_unit_id = ghost_unit_id,
-        ghost_attackable = ghost_attackable, ghost_path = ghost_path, move_anim = pending_anims.move,
+        ghost_attackable = ghost_attackable, ghost_path = ghost_path,
+        move_anim = pending_anims.move, combat_slide = pending_anims.combat_slide,
         combat_preview = combat_preview, combat_preview_target = combat_preview_target,
         -- Campaign
         campaign_active = campaign_active, campaign_index = campaign_index,
@@ -639,7 +736,7 @@ end
 --- Handle keyboard input: scenario selection, setup, and gameplay controls.
 function love.keypressed(key)
     -- Block input during movement animation
-    if pending_anims.move then return end
+    if pending_anims.move or pending_anims.combat_slide then return end
 
     -- Scenario selection
     if game_mode == PICK_SCENARIO then
@@ -762,20 +859,22 @@ function love.keypressed(key)
             local ranged = is_ranged_attack()
             cancel_combat_preview()
             commit_ghost_move(function()
-                execute_attack(selected_unit_id, enemy_id, ranged)
-                clear_selection()
-                inspect_unit_id = enemy_id
-                check_game_over()
+                execute_attack(selected_unit_id, enemy_id, ranged, function()
+                    clear_selection()
+                    inspect_unit_id = enemy_id
+                    check_game_over()
+                end)
             end)
         elseif combat_preview ~= nil and combat_preview_target >= 0 and selected_unit_id ~= -1 then
             -- Direct adjacent attack from preview
             local enemy_id = combat_preview_target
             local ranged = is_ranged_attack()
             cancel_combat_preview()
-            execute_attack(selected_unit_id, enemy_id, ranged)
-            clear_selection()
-            inspect_unit_id = enemy_id
-            check_game_over()
+            execute_attack(selected_unit_id, enemy_id, ranged, function()
+                clear_selection()
+                inspect_unit_id = enemy_id
+                check_game_over()
+            end)
         elseif ghost_col ~= nil then
             -- Commit ghost move only
             commit_ghost_move()
@@ -838,7 +937,7 @@ end
 --- Handle mouse clicks: unit selection, movement, attack, recruitment, and camera drag.
 function love.mousepressed(sx, sy, button)
     -- Block input during movement animation
-    if pending_anims.move then return end
+    if pending_anims.move or pending_anims.combat_slide then return end
 
     local x, y = screen_to_game(sx, sy)
 
@@ -968,10 +1067,11 @@ function love.mousepressed(sx, sy, button)
                 local ranged = is_ranged_attack()
                 cancel_combat_preview()
                 commit_ghost_move(function()
-                    execute_attack(selected_unit_id, enemy_id, ranged)
-                    clear_selection()
-                    inspect_unit_id = enemy_id
-                    check_game_over()
+                    execute_attack(selected_unit_id, enemy_id, ranged, function()
+                        clear_selection()
+                        inspect_unit_id = enemy_id
+                        check_game_over()
+                    end)
                 end)
             else
                 -- First click (or different enemy) → show combat preview
@@ -1021,10 +1121,11 @@ function love.mousepressed(sx, sy, button)
             -- Second click on same enemy → execute attack
             local ranged = is_ranged_attack()
             cancel_combat_preview()
-            execute_attack(selected_unit_id, enemy_id, ranged)
-            clear_selection()
-            inspect_unit_id = enemy_id
-            check_game_over()
+            execute_attack(selected_unit_id, enemy_id, ranged, function()
+                clear_selection()
+                inspect_unit_id = enemy_id
+                check_game_over()
+            end)
         else
             -- First click → show combat preview (attacker at current position)
             local atk_col, atk_row = nil, nil

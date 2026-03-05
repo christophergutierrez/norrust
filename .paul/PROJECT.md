@@ -150,10 +150,12 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Ranged attack support in ghost movement: hex.distance() + get_attackable_enemies() with max_range — Phase 47 (47-01)
 - [x] Ghost path visualization: A* path from unit to ghost position displayed as hex highlights + connecting line — Phase 48 (48-01)
 - [x] norrust_find_path FFI exposing Rust A* pathfinder for Lua path queries — Phase 48 (48-01)
+- [x] Movement interpolation: smooth sliding along A* path when moves committed, replacing teleport — Phase 49 (49-01)
+- [x] Combat movement: melee attackers lunge toward defenders before attack, ranged stay in place — Phase 50 (50-01)
+- [x] Distance-based ranged attack detection using hex.distance() — Phase 50 (50-01)
 
 ### Active (In Progress / Deferred)
 
-- [ ] Movement interpolation — deferred from Phase 4
 - [ ] Socket/TCP server for external Python agents — deferred from Phase 5 (JSON layer complete; transport layer future)
 
 ### Out of Scope
@@ -288,4 +290,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-05 after Phase 48 — Ghost path visualization via A* FFI.*
+*Last updated: 2026-03-05 after Phase 50 — v1.8 Movement & Animation Polish complete.*

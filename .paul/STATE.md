@@ -5,24 +5,24 @@
 See: .paul/PROJECT.md (updated 2026-03-05)
 
 **Core value:** A playable hex-based strategy game where simulation logic is strictly separated from presentation, enabling human players and AI agents to use the same clean engine.
-**Current focus:** v1.8 Movement & Animation Polish
+**Current focus:** v1.8 Movement & Animation Polish — Complete!
 
 ## Current Position
 
 Milestone: v1.8 Movement & Animation Polish
-Phase: 49 of 50 (Movement Interpolation)
-Plan: 49-01 complete
-Status: Phase complete
-Last activity: 2026-03-05 — Phase 49 complete
+Phase: 50 of 50 (Combat Movement)
+Plan: 50-01 complete
+Status: Milestone complete
+Last activity: 2026-03-05 — Phase 50 complete, v1.8 milestone done
 
 Progress:
-- v1.8 Movement & Animation Polish: [██████░░░░] 67% (2/3 phases)
+- v1.8 Movement & Animation Polish: [██████████] 100% (3/3 phases)
 
 ## Loop Position
 
 ```
 PLAN ──▶ APPLY ──▶ UNIFY
-  ✓        ✓        ✓     [Loop complete — ready for next PLAN]
+  ✓        ✓        ✓     [Loop complete — milestone done]
 ```
 
 ## What Happened This Session
@@ -30,19 +30,16 @@ PLAN ──▶ APPLY ──▶ UNIFY
 1. v1.7 Enhanced Unit Sprites milestone completed (Phases 44-47)
 2. v1.8 Movement & Animation Polish milestone created
 3. Phase 48 Ghost Path Visualization — complete
-   - Added norrust_find_path FFI wrapping Rust A*
-   - Ghost path computed and drawn during ghost movement
-   - Human verified
 4. Phase 49 Movement Interpolation — complete
-   - Smooth sliding animation along A* path on commit
-   - Callback-based move+attack sequencing
-   - Input blocked during movement
-   - Fixed pre-existing combat animation sprite lookup bug
-   - Human verified
+   - Smooth sliding along A* path on commit
+   - Fixed combat animation sprite lookup bug
+5. Phase 50 Combat Movement — complete
+   - Melee lunge animation (approach → attack → return)
+   - Fixed ranged detection (hex distance vs name matching)
 
 ## Next Action
 
-Run `/paul:plan` for Phase 50 (Combat Movement)
+Run `/paul:discuss-milestone` for next milestone
 
 ## Accumulated Context
 
@@ -58,6 +55,8 @@ Run `/paul:plan` for Phase 50 (Combat Movement)
 | pending_anims.move for movement anim (upvalue limit) | Phase 49 | Avoids LuaJIT 60-upvalue limit |
 | Apply engine move immediately, animate rendering only | Phase 49 | Keeps engine in sync during animation |
 | Callback on_complete for move+attack sequencing | Phase 49 | Clean separation of movement and follow-up |
+| pending_anims.combat_slide with pixel coords | Phase 50 | Fractional positioning for 40% approach |
+| Distance-based ranged detection via hex.distance | Phase 50 | Replaces broken attack-name check |
 
 ### Deferred Issues
 
@@ -75,15 +74,15 @@ Run `/paul:plan` for Phase 50 (Combat Movement)
 None.
 
 ### Git State
-Last commit: (pending — Phase 49 commit)
+Last commit: (pending — Phase 50 commit)
 Branch: master
 Tests: 97 passing (62 unit + 8 campaign + 3 validation + 23 simulation + 1 FFI)
 
 ## Session Continuity
 
 Last session: 2026-03-05
-Stopped at: Phase 49 complete, ready to plan Phase 50
-Next action: /paul:plan for Phase 50
+Stopped at: v1.8 milestone complete
+Next action: /paul:discuss-milestone for next milestone
 Resume file: .paul/ROADMAP.md
 
 ---

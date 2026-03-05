@@ -28,7 +28,7 @@ function draw.draw_units(ctx, state)
             goto continue
         end
 
-        -- Override position for movement animation (engine already moved, animate visually)
+        -- Override position for movement/combat animation
         local cx, cy
         if ctx.move_anim and ctx.move_anim.uid == uid then
             local ma = ctx.move_anim
@@ -38,6 +38,10 @@ function draw.draw_units(ctx, state)
             local bx, by = ctx.hex.to_pixel(b.col, b.row)
             cx = ax + (bx - ax) * ma.t
             cy = ay + (by - ay) * ma.t
+        elseif ctx.combat_slide and ctx.combat_slide.uid == uid then
+            local cs = ctx.combat_slide
+            cx = cs.start_x + (cs.target_x - cs.start_x) * cs.t
+            cy = cs.start_y + (cs.target_y - cs.start_y) * cs.t
         else
             cx, cy = ctx.hex.to_pixel(col, row)
         end

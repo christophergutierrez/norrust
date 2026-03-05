@@ -7,14 +7,14 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 ## Current Milestone
 
 **v1.8 Movement & Animation Polish**
-Status: 🚧 In Progress
-Phases: 2 of 3 complete
+Status: ✅ Complete
+Phases: 3 of 3 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 48 | Ghost Path Visualization | 1 | ✅ Complete | 2026-03-05 |
 | 49 | Movement Interpolation | 1 | ✅ Complete | 2026-03-05 |
-| 50 | Combat Movement | TBD | Not started | - |
+| 50 | Combat Movement | 1 | ✅ Complete | 2026-03-05 |
 
 ## v1.8 Phase Details
 

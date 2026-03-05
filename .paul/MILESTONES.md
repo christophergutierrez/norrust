@@ -21,6 +21,40 @@ Completed milestone log for this project.
 | v1.5 Combat UX | 2026-03-04 | ~1 day | 3 phases, 3 plans |
 | v1.6 Codebase Cleanup | 2026-03-04 | ~1 day | 4 phases, 4 plans |
 | v1.7 Enhanced Unit Sprites | 2026-03-05 | ~1 day | 4 phases, 4 plans |
+| v1.8 Movement & Animation Polish | 2026-03-05 | ~1 day | 3 phases, 3 plans |
+
+---
+
+## ✅ v1.8 Movement & Animation Polish
+
+**Completed:** 2026-03-05
+**Duration:** ~1 day
+
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 3 |
+| Plans | 3 |
+| Tests | 97 (62 unit + 8 campaign + 3 validation + 23 simulation + 1 FFI) |
+
+### Key Accomplishments
+
+- **Ghost path visualization** — A* path displayed as hex highlights + connecting line during ghost movement
+- **Movement interpolation** — smooth sliding along A* path when moves committed, replacing instant teleport
+- **Combat movement** — melee attackers lunge toward defenders before attack, ranged stay in place
+- **Combat animation bugfix** — sprite key normalization fix (raw def_id vs lowercase directory name)
+- **Ranged detection fix** — hex.distance() replaces broken attack-name matching
+
+### Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| pending_anims.move for movement state | Avoids LuaJIT 60-upvalue limit in love.draw |
+| Apply engine move immediately, animate rendering | Keeps engine in sync; animation is visual only |
+| Callback on_complete for sequencing | Clean move→attack chaining |
+| 40% approach distance for melee lunge | Contact feel without overlapping defender sprite |
+| Distance-based ranged detection | Attack names are weapon names, not range descriptors |
 
 ---
 
@@ -435,4 +469,4 @@ Completed milestone log for this project.
 - Full Wesnoth-style combat: adjacency enforcement, bidirectional retaliation, time-of-day modifiers, resistances
 
 ---
-*MILESTONES.md — Updated: 2026-03-03 (v1.2 Love2D Migration)*
+*MILESTONES.md — Updated: 2026-03-05 (v1.8 Movement & Animation Polish)*
