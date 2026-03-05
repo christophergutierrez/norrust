@@ -260,6 +260,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | Gemini 2.0 Flash for sprite generation (not MCP) | nana-banana MCP returns text, not images; direct API via curl/python | 2026-03-05 | Active |
 | Flood-fill bg removal from corners | Preserves interior detail unlike global color replace; fuzz 20% general, 8% portraits | 2026-03-05 | Active |
 | White background prompts for AI sprites | Green screen unreliable from AI; white background + flood-fill more consistent | 2026-03-05 | Active |
+| Generic animation suffixes + TOML character specifics | Decouples character art from animation logic; adding units = adding TOML entry | 2026-03-05 | Active |
+| Per-unit portrait_fuzz in unit_prompts.toml | White-haired units need lower fuzz; configurable without CLI override | 2026-03-05 | Active |
 
 ## Tech Stack
 
@@ -279,4 +281,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-05 after Phase 44 — Mage Pipeline: AI-generated sprites via Gemini 2.0 Flash with ImageMagick post-processing. 6 sprite files replaced for Mage unit.*
+*Last updated: 2026-03-05 after Phase 45 — Pipeline Refinement: Production Python pipeline + 16 unit prompt definitions. Mage re-generated and verified.*
