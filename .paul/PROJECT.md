@@ -276,4 +276,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-04 after Phase 41 — Split main.lua into 4 modules with ctx table pattern (97 tests pass)*
+*Last updated: 2026-03-04 after Phase 42 — Rust documentation complete: all 15 modules + ~27 public items documented (97 tests pass)*

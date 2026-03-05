@@ -1,3 +1,5 @@
+//! Generic TOML registry loader for game data definitions.
+
 use crate::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
@@ -19,6 +21,7 @@ pub enum RegistryError {
     },
 }
 
+/// Trait for types that have a string ID field, enabling generic registry loading.
 pub trait IdField {
     fn id(&self) -> &str;
 }
@@ -43,6 +46,7 @@ impl IdField for FactionDef {
     fn id(&self) -> &str { &self.id }
 }
 
+/// Generic registry that loads and stores TOML-defined game data by ID.
 pub struct Registry<T> {
     items: HashMap<String, T>,
 }
@@ -87,18 +91,22 @@ where
         Ok(Registry { items })
     }
 
+    /// Look up an entry by its ID. Returns `None` if not found.
     pub fn get(&self, id: &str) -> Option<&T> {
         self.items.get(id)
     }
 
+    /// Return an iterator over all loaded entries.
     pub fn all(&self) -> impl Iterator<Item = &T> {
         self.items.values()
     }
 
+    /// Return the number of loaded entries.
     pub fn len(&self) -> usize {
         self.items.len()
     }
 
+    /// Returns `true` if the registry contains no entries.
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }

@@ -1,3 +1,5 @@
+//! Hex grid coordinate system using cubic coordinates with axial storage.
+
 use std::ops::{Add, Sub};
 
 /// Cubic hex coordinate where x + y + z == 0 always holds.

@@ -1,3 +1,5 @@
+//! Core game state — units, board, turn tracking, and action application.
+
 use std::collections::HashMap;
 
 use crate::board::Board;
@@ -69,6 +71,7 @@ pub struct GameState {
 }
 
 impl GameState {
+    /// Create a new game state with the given board and a random RNG seed.
     pub fn new(board: Board) -> Self {
         Self {
             board,

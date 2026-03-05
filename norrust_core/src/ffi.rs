@@ -21,6 +21,7 @@ use crate::unit::{advance_unit, parse_alignment, Unit};
 
 // ── Engine struct ────────────────────────────────────────────────────────────
 
+/// Opaque engine handle exposed through the C ABI.
 pub struct NorRustEngine {
     units: Option<Registry<UnitDef>>,
     terrain: Option<Registry<TerrainDef>>,

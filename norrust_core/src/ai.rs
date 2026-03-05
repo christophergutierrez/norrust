@@ -1,3 +1,5 @@
+//! AI opponent logic using scored move evaluation with combat and terrain awareness.
+
 use std::collections::HashSet;
 
 use crate::combat::{time_of_day, tod_damage_modifier};

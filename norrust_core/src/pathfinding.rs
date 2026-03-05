@@ -1,3 +1,5 @@
+//! Hex-aware pathfinding using Dijkstra's algorithm with terrain movement costs.
+
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 

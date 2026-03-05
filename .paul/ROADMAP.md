@@ -8,13 +8,13 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 **v1.6 Codebase Cleanup**
 Status: 🚧 In Progress
-Phases: 2 of 4 complete
+Phases: 3 of 4 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 40 | Asset Directory Naming | 1/1 | ✅ Complete | 2026-03-04 |
 | 41 | Split main.lua | 1/1 | ✅ Complete | 2026-03-04 |
-| 42 | Rust Documentation | TBD | Not started | - |
+| 42 | Rust Documentation | 1/1 | ✅ Complete | 2026-03-04 |
 | 43 | Lua Documentation | TBD | Not started | - |
 
 ## v1.6 Phase Details
@@ -53,13 +53,19 @@ Phases: 2 of 4 complete
 - ctx table pattern for cross-module state sharing
 - 97 tests passing (no Rust changes)
 
-### Phase 42: Rust Documentation
+### Phase 42: Rust Documentation ✅
 
 **Goal:** Add doc comments (///) to all ~27 undocumented public items across 10 Rust files. Priority: ffi.rs (C API boundary), game_state.rs, board.rs, snapshot.rs, combat.rs. Follow existing style in hex.rs/pathfinding.rs/ai.rs.
 **Depends on:** Phase 41 (code structure stable before documenting)
+**Completed:** 2026-03-04
 
 **Plans:**
-- TBD (defined during /paul:plan)
+- [x] 42-01: Module-level docs on all 15 files + /// docs on all ~27 undocumented public items
+
+**Delivered:**
+- //! module-level docs on all 15 .rs files
+- /// doc comments on all public items (structs, traits, methods)
+- 97 tests passing (documentation only, no logic changes)
 
 ### Phase 43: Lua Documentation
 

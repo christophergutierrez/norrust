@@ -1,3 +1,6 @@
+//! The Clash for Norrust — headless simulation core.
+//! Provides hex grid, combat, pathfinding, AI, and data loading for the game engine.
+
 pub mod ai;
 pub mod board;
 pub mod campaign;

@@ -1,3 +1,5 @@
+//! Runtime unit instances — mutable per-game state derived from static `UnitDef` blueprints.
+
 use std::collections::HashMap;
 
 use crate::schema::{AttackDef, UnitDef};
@@ -81,6 +83,7 @@ pub fn advance_unit(unit: &mut Unit, new_def: &UnitDef) {
 }
 
 impl Unit {
+    /// Create a new unit with the given ID, definition ID, starting HP, and faction.
     pub fn new(id: u32, def_id: impl Into<String>, hp: u32, faction: u8) -> Self {
         Self {
             id,

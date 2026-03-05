@@ -1,3 +1,5 @@
+//! Scenario loading from TOML files — board, units, triggers, and win conditions.
+
 use std::path::Path;
 
 use crate::board::Board;

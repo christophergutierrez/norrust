@@ -1,3 +1,5 @@
+//! Procedural terrain generation for hex boards using seeded randomization.
+
 use crate::board::Board;
 use crate::hex::Hex;
 

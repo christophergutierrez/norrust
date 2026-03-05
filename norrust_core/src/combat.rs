@@ -1,3 +1,5 @@
+//! Combat resolution with deterministic RNG, time-of-day modifiers, and Monte Carlo simulation.
+
 use crate::schema::AttackDef;
 use crate::unit::{Alignment, Unit};
 
@@ -53,6 +55,7 @@ impl Rng {
         Self { state: seed }
     }
 
+    /// Generate the next pseudorandom u64 using xorshift64.
     pub fn next_u64(&mut self) -> u64 {
         let mut x = self.state;
         x ^= x << 13;
@@ -99,7 +102,7 @@ pub fn resolve_attack(
     total
 }
 
-/// Result of a Monte Carlo combat simulation.
+/// Result of a Monte Carlo combat simulation, containing damage distributions and kill probabilities for both sides.
 pub struct CombatPreview {
     pub attacker_hit_pct: u32,
     pub defender_hit_pct: u32,

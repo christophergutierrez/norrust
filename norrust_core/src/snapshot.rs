@@ -1,3 +1,5 @@
+//! JSON-serializable game state snapshots for the FFI boundary.
+
 use serde::{Deserialize, Serialize};
 
 use crate::game_state::{Action, GameState};
@@ -72,6 +74,7 @@ pub struct StateSnapshot {
 }
 
 impl StateSnapshot {
+    /// Build a snapshot from the current game state, capturing all units, terrain, gold, and win condition data.
     pub fn from_game_state(state: &GameState) -> Self {
         let cols = state.board.width;
         let rows = state.board.height;

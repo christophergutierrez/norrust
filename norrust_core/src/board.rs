@@ -1,3 +1,5 @@
+//! Hex board with tile storage and terrain lookup.
+
 use std::collections::HashMap;
 
 use crate::hex::Hex;
@@ -55,6 +57,7 @@ pub struct Board {
 }
 
 impl Board {
+    /// Create a new empty board with the given dimensions.
     pub fn new(width: u32, height: u32) -> Self {
         assert!(width > 0 && height > 0, "Board dimensions must be positive");
         Self { width, height, tiles: HashMap::new() }

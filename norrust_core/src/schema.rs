@@ -1,3 +1,5 @@
+//! TOML-deserialized data schemas for units, terrain, factions, boards, and scenarios.
+
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -5,6 +7,7 @@ fn default_level() -> u8 { 1 }
 fn default_alignment() -> String { "liminal".to_string() }
 fn default_starting_gold() -> u32 { 100 }
 
+/// Attack definition loaded from TOML unit files.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct AttackDef {
     pub id: String,
@@ -60,6 +63,7 @@ pub struct UnitDef {
     pub alignment: String,
 }
 
+/// Unit placement entry for scenario unit files.
 #[derive(Debug, Clone, Deserialize)]
 pub struct UnitPlacement {
     pub id: u32,
@@ -69,6 +73,7 @@ pub struct UnitPlacement {
     pub row: i32,
 }
 
+/// Spawn definition within a trigger zone.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TriggerSpawnDef {
     pub unit_type: String,
@@ -87,6 +92,7 @@ pub struct TriggerDef {
     pub spawns: Vec<TriggerSpawnDef>,
 }
 
+/// Container for unit placements and trigger zones loaded from scenario TOML.
 #[derive(Debug, Clone, Deserialize)]
 pub struct UnitsDef {
     pub units: Vec<UnitPlacement>,
@@ -111,12 +117,14 @@ pub struct BoardDef {
     pub max_turns: Option<u32>,
 }
 
+/// Named group of recruitable unit types for faction definitions.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RecruitGroup {
     pub id: String,
     pub members: Vec<String>,
 }
 
+/// Faction definition loaded from TOML — leader, recruits, and starting gold.
 #[derive(Debug, Clone, Deserialize)]
 pub struct FactionDef {
     pub id: String,
