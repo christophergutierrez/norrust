@@ -143,10 +143,15 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Combat preview panel: click enemy shows damage×strikes, hit %, damage range (min-mean-max), kill % for both sides before committing — Phase 38 (38-01)
 - [x] Terrain defense visibility in combat preview: attacker and defender terrain defense % shown in panel — Phase 39 (39-01)
 - [x] Auto-preview on re-ghost: moving to different hex adjacent to same enemy auto-updates combat preview for "attack from" comparison — Phase 39 (39-01)
+- [x] AI-generated unit sprites for all 16 priority units via Gemini 2.0 Flash pipeline (92 PNG files) — Phase 44-46 (v1.7)
+- [x] Python sprite generation pipeline (generate_sprites.py + unit_prompts.toml) replacing obsolete Lua generator — Phase 45 (45-01)
+- [x] Combat animations: attack-melee, attack-ranged, defend, death triggered during gameplay with timer-based return to idle — Phase 47 (47-01)
+- [x] Faction-based unit facing (chess-style: faction 0→right, faction 1→left) — Phase 47 (47-01)
+- [x] Ranged attack support in ghost movement: hex.distance() + get_attackable_enemies() with max_range — Phase 47 (47-01)
 
 ### Active (In Progress / Deferred)
 
-- [ ] Movement interpolation and basic attack animations — deferred from Phase 4
+- [ ] Movement interpolation — deferred from Phase 4
 - [ ] Socket/TCP server for external Python agents — deferred from Phase 5 (JSON layer complete; transport layer future)
 
 ### Out of Scope
@@ -281,4 +286,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-05 after Phase 46 — Full Unit Generation: AI-generated sprites for all 16 units (92 PNG files). Batch pipeline proven.*
+*Last updated: 2026-03-05 after Phase 47 — v1.7 complete. AI sprites, combat animations, faction facing, ranged ghost attacks.*

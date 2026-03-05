@@ -61,4 +61,18 @@ function hex.neighbors(col, row)
     return result
 end
 
+--- Hex distance between two offset coordinates (odd-r).
+function hex.distance(c1, r1, c2, r2)
+    -- Convert odd-r offset to cube coordinates
+    local function to_cube(col, row)
+        local x = col - (row - (row % 2)) / 2
+        local z = row
+        local y = -x - z
+        return x, y, z
+    end
+    local x1, y1, z1 = to_cube(c1, r1)
+    local x2, y2, z2 = to_cube(c2, r2)
+    return math.max(math.abs(x1 - x2), math.abs(y1 - y2), math.abs(z1 - z2))
+end
+
 return hex

@@ -90,6 +90,7 @@ local terrain_tiles = {}
 local unit_sprites = {}
 local FACTION_COLORS = {[0] = {0.25, 0.42, 0.88}, [1] = {0.80, 0.12, 0.12}}
 local unit_anims = {}  -- unit_id -> animation state (from anim_module.new_state())
+local pending_anims = {}  -- array of {uid, end_time, return_to} for combat animations
 
 -- Camera
 local board_origin_x, board_origin_y = 0, 0
@@ -162,6 +163,76 @@ local function center_camera()
     apply_camera_offset()
 end
 
+-- ── Animation helpers ─────────────────────────────────────────────────────
+
+--- Play a combat animation on a unit, returning to idle after it finishes.
+-- @param uid number: unit id
+-- @param anim_name string: animation state name (e.g. "attack-melee", "defend", "death")
+-- @param duration number: seconds before returning to idle (0 = hold forever, e.g. death)
+local function play_combat_anim(uid, anim_name, duration)
+    local anim_state = unit_anims[uid]
+    if not anim_state then return end
+    local entry = unit_sprites[anim_state.def_id]
+    if not entry or not entry.anims or not entry.anims[anim_name] then return end
+    anim_module.play(anim_state, anim_name)
+    if duration > 0 then
+        pending_anims[#pending_anims + 1] = {
+            uid = uid,
+            end_time = love.timer.getTime() + duration,
+            return_to = "idle",
+        }
+    end
+end
+
+--- Trigger attack animations on attacker and defender.
+-- Call BEFORE apply_attack so both units are still alive.
+-- @param attacker_id number: attacking unit id
+-- @param defender_id number: defending unit id
+-- @param is_ranged boolean: true if ranged attack
+local function trigger_attack_anims(attacker_id, defender_id, is_ranged)
+    local atk_anim = is_ranged and "attack-ranged" or "attack-melee"
+    play_combat_anim(attacker_id, atk_anim, 0.75)
+    play_combat_anim(defender_id, "defend", 0.5)
+end
+
+--- Play death animation on a unit (holds on last frame, cleaned up when unit removed).
+local function trigger_death_anim(uid)
+    play_combat_anim(uid, "death", 0)  -- 0 = hold forever
+end
+
+--- Detect whether current combat preview is a ranged attack.
+-- Must be called BEFORE cancel_combat_preview().
+local function is_ranged_attack()
+    if combat_preview and combat_preview.attacker_attack_name then
+        return combat_preview.attacker_attack_name:lower():find("ranged") ~= nil
+    end
+    return false
+end
+
+--- Execute an attack with combat animations.
+-- Triggers attack anim on attacker, defend/death on defender.
+-- @param attacker_id number: attacking unit id
+-- @param defender_id number: defending unit id
+-- @param is_ranged boolean: true if ranged attack
+local function execute_attack(attacker_id, defender_id, is_ranged)
+    -- Trigger attack + defend anims before state changes
+    trigger_attack_anims(attacker_id, defender_id, is_ranged)
+    -- Apply the attack (may kill defender)
+    norrust.apply_attack(engine, attacker_id, defender_id)
+    -- Check if defender died — trigger death anim
+    local new_state = norrust.get_state(engine)
+    local defender_alive = false
+    for _, unit in ipairs(new_state.units or {}) do
+        if int(unit.id) == defender_id then
+            defender_alive = true
+            break
+        end
+    end
+    if not defender_alive then
+        trigger_death_anim(defender_id)
+    end
+end
+
 -- ── Game logic helpers ──────────────────────────────────────────────────────
 
 --- Clear the combat preview state.
@@ -193,10 +264,25 @@ end
 local function build_unit_pos_map(state)
     local result = {}
     for _, unit in ipairs(state.units or {}) do
-        local key = int(unit.col) .. "," .. int(unit.row)
-        result[key] = {id = int(unit.id), faction = int(unit.faction)}
+        local c, r = int(unit.col), int(unit.row)
+        local key = c .. "," .. r
+        result[key] = {id = int(unit.id), faction = int(unit.faction), col = c, row = r}
     end
     return result
+end
+
+--- Get the max attack range for a unit (1=melee only, 2=has ranged).
+local function unit_max_range(uid)
+    local s = norrust.get_state(engine)
+    for _, unit in ipairs(s.units or {}) do
+        if int(unit.id) == uid then
+            for _, atk in ipairs(unit.attacks or {}) do
+                if atk.range == "ranged" then return 2 end
+            end
+            return 1
+        end
+    end
+    return 1
 end
 
 --- Select a friendly unit: compute reachable hexes and lerp camera to it.
@@ -234,14 +320,17 @@ local function check_game_over()
 end
 
 --- Odd-r offset neighbor table
---- Find enemy units adjacent to (col, row) that belong to a different faction than `faction`.
-local function get_adjacent_enemies(pos_map, col, row, faction)
+--- Find enemy units within attack range of (col, row).
+-- max_range: 1 for melee-only, 2 if unit has a ranged attack.
+local function get_attackable_enemies(pos_map, col, row, faction, max_range)
+    max_range = max_range or 1
     local enemies = {}
-    for _, nb in ipairs(hex.neighbors(col, row)) do
-        local key = nb.col .. "," .. nb.row
-        local occ = pos_map[key]
-        if occ and occ.faction ~= faction then
-            enemies[#enemies + 1] = {id = occ.id, col = nb.col, row = nb.row}
+    for key, occ in pairs(pos_map) do
+        if occ.faction ~= faction then
+            local dist = hex.distance(col, row, occ.col, occ.row)
+            if dist >= 1 and dist <= max_range then
+                enemies[#enemies + 1] = {id = occ.id, col = occ.col, row = occ.row}
+            end
         end
     end
     return enemies
@@ -316,7 +405,7 @@ local function call_load_scenario()
 end
 
 --- Load the next campaign scenario via campaign_client with ctx writeback.
-local function call_call_load_campaign_scenario()
+local function call_load_campaign_scenario()
     local ctx = build_campaign_ctx()
     campaign_client.load_campaign_scenario(ctx)
     apply_campaign_ctx(ctx)
@@ -330,11 +419,6 @@ function love.load()
     for _, arg in ipairs(arg or {}) do
         if arg == "--generate-tiles" then
             local gen = require("generate_tiles")
-            gen.run()
-            love.event.quit()
-            return
-        elseif arg == "--generate-sprites" then
-            local gen = require("generate_sprites")
             gen.run()
             love.event.quit()
             return
@@ -403,6 +487,22 @@ function love.update(dt)
         end
         if entry and entry.anims then
             anim_module.update(anim_state, entry.anims, dt)
+        end
+    end
+
+    -- Return combat animations to idle when their duration expires
+    local now = love.timer.getTime()
+    local i = 1
+    while i <= #pending_anims do
+        local pa = pending_anims[i]
+        if now >= pa.end_time then
+            local anim_state = unit_anims[pa.uid]
+            if anim_state then
+                anim_module.play(anim_state, pa.return_to)
+            end
+            table.remove(pending_anims, i)
+        else
+            i = i + 1
         end
     end
 
@@ -609,17 +709,19 @@ function love.keypressed(key)
         if combat_preview ~= nil and combat_preview_target >= 0 and ghost_col ~= nil then
             -- Commit ghost move + attack previewed target
             local enemy_id = combat_preview_target
+            local ranged = is_ranged_attack()
             cancel_combat_preview()
             commit_ghost_move()
-            norrust.apply_attack(engine, selected_unit_id, enemy_id)
+            execute_attack(selected_unit_id, enemy_id, ranged)
             clear_selection()
             inspect_unit_id = enemy_id
             check_game_over()
         elseif combat_preview ~= nil and combat_preview_target >= 0 and selected_unit_id ~= -1 then
             -- Direct adjacent attack from preview
             local enemy_id = combat_preview_target
+            local ranged = is_ranged_attack()
             cancel_combat_preview()
-            norrust.apply_attack(engine, selected_unit_id, enemy_id)
+            execute_attack(selected_unit_id, enemy_id, ranged)
             clear_selection()
             inspect_unit_id = enemy_id
             check_game_over()
@@ -809,9 +911,10 @@ function love.mousepressed(sx, sy, button)
             local enemy_id = pos_map[clicked_key].id
             if combat_preview_target == enemy_id then
                 -- Second click on same enemy → commit move + attack
+                local ranged = is_ranged_attack()
                 cancel_combat_preview()
                 commit_ghost_move()
-                norrust.apply_attack(engine, selected_unit_id, enemy_id)
+                execute_attack(selected_unit_id, enemy_id, ranged)
                 clear_selection()
                 inspect_unit_id = enemy_id
                 check_game_over()
@@ -832,8 +935,8 @@ function love.mousepressed(sx, sy, button)
             cancel_combat_preview()
             ghost_col = col
             ghost_row = row
-            ghost_attackable = get_adjacent_enemies(pos_map, col, row, active)
-            -- Auto-preview: if previously previewed enemy is still adjacent, re-show preview
+            ghost_attackable = get_attackable_enemies(pos_map, col, row, active, unit_max_range(ghost_unit_id))
+            -- Auto-preview: if previously previewed enemy is still in range, re-show preview
             if prev_target ~= -1 then
                 for _, e in ipairs(ghost_attackable) do
                     if e.id == prev_target then
@@ -860,8 +963,9 @@ function love.mousepressed(sx, sy, button)
         local enemy_id = pos_map[clicked_key].id
         if combat_preview_target == enemy_id then
             -- Second click on same enemy → execute attack
+            local ranged = is_ranged_attack()
             cancel_combat_preview()
-            norrust.apply_attack(engine, selected_unit_id, enemy_id)
+            execute_attack(selected_unit_id, enemy_id, ranged)
             clear_selection()
             inspect_unit_id = enemy_id
             check_game_over()
@@ -887,7 +991,7 @@ function love.mousepressed(sx, sy, button)
         ghost_col = col
         ghost_row = row
         ghost_unit_id = selected_unit_id
-        ghost_attackable = get_adjacent_enemies(pos_map, col, row, active)
+        ghost_attackable = get_attackable_enemies(pos_map, col, row, active, unit_max_range(selected_unit_id))
 
     -- Select friendly unit
     elseif pos_map[clicked_key] and pos_map[clicked_key].faction == active then

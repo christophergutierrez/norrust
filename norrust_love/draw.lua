@@ -39,8 +39,8 @@ function draw.draw_units(ctx, state)
             ctx.unit_anims[uid] = anim_state
         end
 
-        -- Determine facing based on board position
-        anim_state.facing = col >= ctx.BOARD_COLS / 2 and "left" or "right"
+        -- Determine facing based on faction (like chess: always face opponent)
+        anim_state.facing = faction == 0 and "right" or "left"
 
         -- Try sprite rendering first; fall back to colored circle
         local drawn = ctx.assets.draw_unit_sprite(ctx.unit_sprites, unit.def_id, cx, cy, ctx.hex.RADIUS, faction, alpha, ctx.FACTION_COLORS, anim_state)
@@ -584,7 +584,7 @@ function draw.draw_frame(ctx, state)
 
                 local anim_state = ctx.unit_anims[ctx.ghost_unit_id]
                 if anim_state then
-                    anim_state.facing = ctx.ghost_col >= ctx.BOARD_COLS / 2 and "left" or "right"
+                    anim_state.facing = int(unit.faction) == 0 and "right" or "left"
                 end
 
                 local drawn = ctx.assets.draw_unit_sprite(ctx.unit_sprites, unit.def_id, gx, gy, ctx.hex.RADIUS, faction, ghost_alpha, ctx.FACTION_COLORS, anim_state)

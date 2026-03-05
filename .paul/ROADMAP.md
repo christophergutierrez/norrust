@@ -7,15 +7,15 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 ## Current Milestone
 
 **v1.7 Enhanced Unit Sprites**
-Status: 🚧 In Progress
-Phases: 3 of 4 complete
+Status: ✅ Complete
+Phases: 4 of 4 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 44 | Mage Pipeline | 1 | ✅ Complete | 2026-03-05 |
 | 45 | Pipeline Refinement | 1 | ✅ Complete | 2026-03-05 |
 | 46 | Full Unit Generation | 1 | ✅ Complete | 2026-03-05 |
-| 47 | Polish & Verification | TBD | Not started | - |
+| 47 | Polish & Verification | 1 | ✅ Complete | 2026-03-05 |
 
 ## v1.7 Phase Details
 
