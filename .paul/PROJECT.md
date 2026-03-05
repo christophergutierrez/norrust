@@ -281,4 +281,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-05 after Phase 45 — Pipeline Refinement: Production Python pipeline + 16 unit prompt definitions. Mage re-generated and verified.*
+*Last updated: 2026-03-05 after Phase 46 — Full Unit Generation: AI-generated sprites for all 16 units (92 PNG files). Batch pipeline proven.*

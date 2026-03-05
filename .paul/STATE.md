@@ -10,13 +10,13 @@ See: .paul/PROJECT.md (updated 2026-03-05)
 ## Current Position
 
 Milestone: v1.7 Enhanced Unit Sprites
-Phase: 46 of 47 (Full Unit Generation)
+Phase: 47 of 47 (Polish & Verification)
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-03-05 — Phase 45 complete, transitioned to Phase 46
+Last activity: 2026-03-05 — Phase 46 complete, transitioned to Phase 47
 
 Progress:
-- v1.7 Enhanced Unit Sprites: [█████░░░░░] 50% (2/4 phases)
+- v1.7 Enhanced Unit Sprites: [███████░░░] 75% (3/4 phases)
 
 ## Loop Position
 
@@ -28,15 +28,17 @@ PLAN ──▶ APPLY ──▶ UNIFY
 ## What Happened This Session
 
 1. Phase 45 Pipeline Refinement — complete
-   - Created `generate_sprites.py` production pipeline (Python 3, stdlib only)
-   - Defined prompts for all 16 units in `unit_prompts.toml`
-   - Re-generated Mage sprites via pipeline, all 6 files verified
-   - Fixed viewer duplicate issue: stale Love2D save directory cleared
-2. Key finding: Love2D save dir (`~/.local/share/love/norrust_love/`) merges with game dir via `getDirectoryItems`, causing ghost assets from `generate_sprites.lua`
+   - Created generate_sprites.py + unit_prompts.toml (16 units)
+   - Re-generated Mage, verified
+   - Fixed viewer duplicates (Love2D save dir)
+2. Phase 46 Full Unit Generation — complete
+   - Batch-generated all 16 units (~336 API calls, ~15 min)
+   - 92 PNG files, all dimensions verified
+   - Human approved visual quality
 
 ## Next Action
 
-Run `/paul:plan` for Phase 46 (Full Unit Generation)
+Run `/paul:plan` for Phase 47 (Polish & Verification)
 
 ## Accumulated Context
 
@@ -44,12 +46,13 @@ Run `/paul:plan` for Phase 46 (Full Unit Generation)
 
 | Decision | Phase | Impact |
 |----------|-------|--------|
-| Gemini 2.0 Flash (not MCP nana-banana) for generation | Phase 44 | Direct API calls; MCP tool doesn't generate actual images |
-| Flood-fill background removal (not global color replace) | Phase 44 | Corner flood-fill preserves interior detail; fuzz 20% general, 8% portraits |
-| White background prompts (not green screen) | Phase 44 | AI generates inconsistent green; white more reliable for flood-fill |
-| 256×256 frame format preserved | v1.7 scope | Drop-in replacement, no code changes |
-| Generic animation suffixes + TOML character specifics | Phase 45 | Decouples character art from animation logic |
-| Per-unit portrait_fuzz in unit_prompts.toml | Phase 45 | Fine-grained control for units with white features |
+| Gemini 2.0 Flash (not MCP nana-banana) for generation | Phase 44 | Direct API calls |
+| Flood-fill background removal from corners | Phase 44 | Fuzz 20% general, 8% portraits |
+| White background prompts for AI sprites | Phase 44 | More reliable than green screen |
+| 256×256 frame format preserved | v1.7 scope | Drop-in replacement |
+| Generic animation suffixes + TOML character specifics | Phase 45 | Decoupled pipeline |
+| Per-unit portrait_fuzz in unit_prompts.toml | Phase 45 | Fine-grained control |
+| Batch --all regenerates all units for consistency | Phase 46 | ~336 calls, ~15 min |
 
 ### Deferred Issues
 
@@ -70,15 +73,15 @@ Run `/paul:plan` for Phase 46 (Full Unit Generation)
 None.
 
 ### Git State
-Last commit: 448fb6a (Phase 44 Mage Pipeline — AI-generated sprites)
+Last commit: 514e5d9 (Phase 45 Pipeline Refinement)
 Branch: master
 Tests: 97 passing (62 unit + 8 campaign + 3 validation + 23 simulation + 1 FFI)
 
 ## Session Continuity
 
 Last session: 2026-03-05
-Stopped at: Phase 45 complete, ready to plan Phase 46
-Next action: /paul:plan for Phase 46 (Full Unit Generation)
+Stopped at: Phase 46 complete, ready to plan Phase 47
+Next action: /paul:plan for Phase 47 (Polish & Verification)
 Resume file: .paul/ROADMAP.md
 
 ---
