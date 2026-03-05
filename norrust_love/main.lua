@@ -4,14 +4,14 @@
 local norrust = require("norrust")
 local assets = require("assets")
 local anim_module = require("animation")
+local hex = require("hex")
+local draw_mod = require("draw")
+local campaign_client = require("campaign_client")
 
 -- ── Constants ───────────────────────────────────────────────────────────────
 
 local BOARD_COLS = 8   -- set dynamically after scenario load
 local BOARD_ROWS = 5   -- set dynamically after scenario load
-local HEX_RADIUS = 96
-local HEX_CELL_W = 166   -- HEX_RADIUS * sqrt(3)
-local HEX_CELL_H = 192   -- HEX_RADIUS * 2
 local COLOR_FLAT = {0.29, 0.49, 0.31}
 local UI_SCALE = 2.5
 local CAMERA_PAN_SPEED = 500
@@ -116,44 +116,6 @@ local function screen_to_game(x, y)
     return x / UI_SCALE, y / UI_SCALE
 end
 
--- ── Hex math ────────────────────────────────────────────────────────────────
-
-local function hex_to_pixel(col, row)
-    local x = HEX_CELL_W * (col + 0.5 * (row % 2))
-    local y = HEX_CELL_H * 0.75 * row
-    return x, y
-end
-
-local function pixel_to_hex(px, py)
-    local row_f = py / (HEX_CELL_H * 0.75)
-    local best_col, best_row = 0, 0
-    local best_dist = math.huge
-    for _, r in ipairs({math.floor(row_f), math.ceil(row_f)}) do
-        local col_f = px / HEX_CELL_W - 0.5 * (r % 2)
-        for _, c in ipairs({math.floor(col_f), math.ceil(col_f)}) do
-            local cx = HEX_CELL_W * (c + 0.5 * (r % 2))
-            local cy = HEX_CELL_H * 0.75 * r
-            local dx, dy = px - cx, py - cy
-            local dist = dx * dx + dy * dy
-            if dist < best_dist then
-                best_dist = dist
-                best_col, best_row = c, r
-            end
-        end
-    end
-    return best_col, best_row
-end
-
-local function hex_polygon(cx, cy, radius)
-    local pts = {}
-    for i = 0, 5 do
-        local angle = math.rad(60 * i - 30)
-        pts[#pts + 1] = cx + math.cos(angle) * radius
-        pts[#pts + 1] = cy + math.sin(angle) * radius
-    end
-    return pts
-end
-
 -- ── Utility helpers ─────────────────────────────────────────────────────────
 
 local function clamp(val, lo, hi)
@@ -178,16 +140,16 @@ local function apply_camera_offset()
 end
 
 local function center_camera()
-    local tlx, tly = hex_to_pixel(0, 0)
-    local brx, bry = hex_to_pixel(BOARD_COLS - 1, BOARD_ROWS - 1)
+    local tlx, tly = hex.to_pixel(0, 0)
+    local brx, bry = hex.to_pixel(BOARD_COLS - 1, BOARD_ROWS - 1)
     local vp_w, vp_h = get_viewport()
     board_origin_x = vp_w / 2 - (tlx + brx) / 2
     board_origin_y = vp_h / 2 - (tly + bry) / 2
 
-    local board_half_w = (brx - tlx) / 2 + HEX_RADIUS
-    local board_half_h = (bry - tly) / 2 + HEX_RADIUS
-    local pan_range_x = math.max(board_half_w - vp_w / 2 + HEX_RADIUS, 0)
-    local pan_range_y = math.max(board_half_h - vp_h / 2 + HEX_RADIUS, 0)
+    local board_half_w = (brx - tlx) / 2 + hex.RADIUS
+    local board_half_h = (bry - tly) / 2 + hex.RADIUS
+    local pan_range_x = math.max(board_half_w - vp_w / 2 + hex.RADIUS, 0)
+    local pan_range_y = math.max(board_half_h - vp_h / 2 + hex.RADIUS, 0)
     camera_min_x, camera_min_y = -pan_range_x, -pan_range_y
     camera_max_x, camera_max_y = pan_range_x, pan_range_y
     apply_camera_offset()
@@ -240,7 +202,7 @@ local function select_unit(uid)
     local state = norrust.get_state(engine)
     for _, unit in ipairs(state.units or {}) do
         if int(unit.id) == uid then
-            local ux, uy = hex_to_pixel(int(unit.col), int(unit.row))
+            local ux, uy = hex.to_pixel(int(unit.col), int(unit.row))
             local vp_w, vp_h = get_viewport()
             camera_target_x = clamp(vp_w / 2 - board_origin_x - ux, camera_min_x, camera_max_x)
             camera_target_y = clamp(vp_h / 2 - board_origin_y - uy, camera_min_y, camera_max_y)
@@ -259,24 +221,10 @@ local function check_game_over()
 end
 
 --- Odd-r offset neighbor table
-local function hex_neighbors(col, row)
-    local neighbors
-    if row % 2 == 0 then
-        neighbors = {{-1,-1},{0,-1},{1,0},{0,1},{-1,1},{-1,0}}
-    else
-        neighbors = {{0,-1},{1,-1},{1,0},{1,1},{0,1},{-1,0}}
-    end
-    local result = {}
-    for _, d in ipairs(neighbors) do
-        result[#result + 1] = {col = col + d[1], row = row + d[2]}
-    end
-    return result
-end
-
 --- Find enemy units adjacent to (col, row) that belong to a different faction than `faction`.
 local function get_adjacent_enemies(pos_map, col, row, faction)
     local enemies = {}
-    for _, nb in ipairs(hex_neighbors(col, row)) do
+    for _, nb in ipairs(hex.neighbors(col, row)) do
         local key = nb.col .. "," .. nb.row
         local occ = pos_map[key]
         if occ and occ.faction ~= faction then
@@ -311,610 +259,48 @@ local function faction_index_for_mode()
     return game_mode == SETUP_BLUE and 0 or 1
 end
 
--- ── Drawing helpers ─────────────────────────────────────────────────────────
+-- ── Campaign context helpers ────────────────────────────────────────────────
 
-local function draw_units(state)
-    -- Track which unit IDs are alive this frame (for cleanup)
-    local alive_ids = {}
-
-    for _, unit in ipairs(state.units or {}) do
-        local col = int(unit.col)
-        local row = int(unit.row)
-        local faction = int(unit.faction)
-        local hp = int(unit.hp)
-        local uid = int(unit.id)
-        local exhausted = unit.moved or unit.attacked
-
-        alive_ids[uid] = true
-
-        -- Skip ghost unit at original position (drawn separately)
-        if ghost_col ~= nil and uid == ghost_unit_id then
-            -- Draw a dim outline at original position to show "unit was here"
-            local ox, oy = hex_to_pixel(col, row)
-            love.graphics.setColor(0.5, 0.5, 0.5, 0.3)
-            love.graphics.setLineWidth(2)
-            love.graphics.circle("line", ox, oy, HEX_RADIUS * 0.4)
-            goto continue
-        end
-
-        local cx, cy = hex_to_pixel(col, row)
-        local alpha = exhausted and 0.4 or 1.0
-
-        -- Get or create animation state for this unit
-        local anim_state = unit_anims[uid]
-        if not anim_state then
-            anim_state = anim_module.new_state()
-            anim_state.def_id = unit.def_id
-            unit_anims[uid] = anim_state
-        end
-
-        -- Determine facing based on board position
-        anim_state.facing = col >= BOARD_COLS / 2 and "left" or "right"
-
-        -- Try sprite rendering first; fall back to colored circle
-        local drawn = assets.draw_unit_sprite(unit_sprites, unit.def_id, cx, cy, HEX_RADIUS, faction, alpha, FACTION_COLORS, anim_state)
-        if not drawn then
-            -- Fallback: colored circle + abbreviation
-            if faction == 0 then
-                love.graphics.setColor(BLUE[1], BLUE[2], BLUE[3], alpha)
-            else
-                love.graphics.setColor(RED[1], RED[2], RED[3], alpha)
-            end
-            love.graphics.circle("fill", cx, cy, HEX_RADIUS * 0.45)
-
-            -- Unit type abbreviation
-            local word = (unit.def_id or ""):match("^([^_]+)") or unit.def_id or ""
-            local abbrev = (word:sub(1, 1):upper() .. word:sub(2):lower()):sub(1, 7)
-            love.graphics.setColor(1, 1, 1, 1)
-            love.graphics.setFont(fonts[14])
-            love.graphics.printf(abbrev, cx - 42, cy - 14, 84, "center")
-        end
-
-        -- HP (always drawn on top, whether sprite or fallback)
-        love.graphics.setColor(1, 1, 1, 1)
-        love.graphics.setFont(fonts[18])
-        love.graphics.print(tostring(hp), cx - 12, cy - 2)
-
-        -- Advancement ring
-        if unit.advancement_pending then
-            love.graphics.setColor(1.0, 0.85, 0.0, 1)
-            love.graphics.setLineWidth(3.5)
-            love.graphics.arc("line", "open", cx, cy, HEX_RADIUS * 0.52, 0, math.pi * 2, 24)
-        end
-
-        -- XP text
-        if unit.xp_needed and int(unit.xp_needed) > 0 then
-            love.graphics.setColor(1, 1, 1, 1)
-            love.graphics.setFont(fonts[14])
-            love.graphics.print(int(unit.xp) .. "/" .. int(unit.xp_needed), cx - 15, cy + 14)
-        end
-        ::continue::
-    end
-
-    -- Clean up stale animation states for dead/removed units
-    for uid in pairs(unit_anims) do
-        if not alive_ids[uid] then
-            unit_anims[uid] = nil
-        end
-    end
+local function build_campaign_ctx()
+    return {
+        norrust = norrust, engine = engine, int = int, hex = hex,
+        scenarios_path = scenarios_path, scenario_board = scenario_board,
+        scenario_units = scenario_units, scenario_preset = scenario_preset,
+        BOARD_COLS = BOARD_COLS, BOARD_ROWS = BOARD_ROWS,
+        center_camera = center_camera,
+        campaign_data = campaign_data, campaign_index = campaign_index,
+        campaign_veterans = campaign_veterans, campaign_gold = campaign_gold,
+        faction_id = faction_id, game_over = game_over,
+        winner_faction = winner_faction, recruit_mode = recruit_mode,
+        next_unit_id = next_unit_id, game_mode = game_mode,
+        PLAYING = PLAYING, clear_selection = clear_selection,
+        build_unit_pos_map = build_unit_pos_map,
+    }
 end
 
-local function draw_setup_hud()
-    local vp_w, vp_h = get_viewport()
-
-    -- Scenario selection screen (full screen, no sidebar)
-    if game_mode == PICK_SCENARIO then
-        love.graphics.setFont(fonts[18])
-        love.graphics.setColor(1, 0.85, 0, 1)
-        love.graphics.printf("The Clash for Norrust", 0, vp_h / 2 - 60, vp_w, "center")
-
-        love.graphics.setFont(fonts[14])
-        love.graphics.setColor(0.83, 0.83, 0.83, 1)
-        love.graphics.printf("Select a scenario:", 0, vp_h / 2 - 20, vp_w, "center")
-
-        for i, sc in ipairs(SCENARIOS) do
-            love.graphics.setFont(fonts[15])
-            love.graphics.setColor(1, 1, 1, 1)
-            love.graphics.printf(string.format("[%d] %s", i, sc.name), 0, vp_h / 2 + 10 + (i - 1) * 28, vp_w, "center")
-        end
-
-        -- Campaign section
-        local cy = vp_h / 2 + 10 + #SCENARIOS * 28 + 10
-        love.graphics.setFont(fonts[14])
-        love.graphics.setColor(0.83, 0.83, 0.83, 1)
-        love.graphics.printf("Campaigns:", 0, cy, vp_w, "center")
-        cy = cy + 22
-        for i, camp in ipairs(CAMPAIGNS) do
-            love.graphics.setFont(fonts[15])
-            love.graphics.setColor(1, 0.85, 0, 1)
-            love.graphics.printf(string.format("[C] %s", camp.name), 0, cy + (i - 1) * 28, vp_w, "center")
-        end
-        return
-    end
-
-    local is_blue = (game_mode == PICK_FACTION_BLUE or game_mode == SETUP_BLUE)
-    local faction_name = is_blue and "Blue" or "Red"
-    local fc = is_blue and BLUE or RED
-
-    -- Sidebar background
-    love.graphics.setColor(0, 0, 0, 0.6)
-    love.graphics.rectangle("fill", vp_w - 200, 0, 200, vp_h)
-
-    if game_mode == PICK_FACTION_BLUE or game_mode == PICK_FACTION_RED then
-        love.graphics.setFont(fonts[15])
-        love.graphics.setColor(fc[1], fc[2], fc[3])
-        love.graphics.print("FACTION — " .. faction_name, vp_w - 190, 10)
-
-        love.graphics.setFont(fonts[11])
-        love.graphics.setColor(0.83, 0.83, 0.83)
-        love.graphics.print("Press 1-" .. #factions .. " to pick", vp_w - 190, 30)
-
-        for i, f in ipairs(factions) do
-            local y = 56 + (i - 1) * 22
-            local label = "[" .. i .. "] " .. f.name
-            if (i - 1) == sel_faction_idx then
-                love.graphics.setColor(1, 1, 0, 1)
-            else
-                love.graphics.setColor(1, 1, 1, 1)
-            end
-            love.graphics.setFont(fonts[13])
-            love.graphics.print(label, vp_w - 190, y)
-        end
-    else
-        love.graphics.setFont(fonts[15])
-        love.graphics.setColor(fc[1], fc[2], fc[3])
-        love.graphics.print("SETUP — " .. faction_name, vp_w - 190, 10)
-
-        local fi = faction_index_for_mode()
-        if not leader_placed[fi + 1] then
-            local leader_def = norrust.get_faction_leader(engine, faction_id[fi + 1])
-
-            love.graphics.setFont(fonts[11])
-            love.graphics.setColor(0.83, 0.83, 0.83)
-            love.graphics.print("Place leader:", vp_w - 190, 30)
-            love.graphics.setFont(fonts[14])
-            love.graphics.setColor(1, 1, 0, 1)
-            love.graphics.print(leader_def, vp_w - 190, 48)
-
-            -- Board-center prompt
-            local bx, by = hex_to_pixel(int(BOARD_COLS / 2), int(BOARD_ROWS / 2))
-            local sx = bx + board_origin_x + camera_offset_x
-            local sy = by + board_origin_y + camera_offset_y
-            local prompt = "Click a hex on the board to place " .. leader_def
-            love.graphics.setColor(0, 0, 0, 0.75)
-            love.graphics.rectangle("fill", sx - 200, sy - 14, 400, 24)
-            love.graphics.setFont(fonts[13])
-            love.graphics.setColor(1, 1, 0, 1)
-            love.graphics.print(prompt, sx - 196, sy - 8)
-        else
-            love.graphics.setFont(fonts[11])
-            love.graphics.setColor(0.83, 0.83, 0.83)
-            love.graphics.print("Leader placed.", vp_w - 190, 30)
-            love.graphics.setColor(1, 1, 0, 1)
-            love.graphics.print("[Enter] Continue", vp_w - 190, 44)
-        end
-    end
+local function apply_campaign_ctx(ctx)
+    BOARD_COLS = ctx.BOARD_COLS
+    BOARD_ROWS = ctx.BOARD_ROWS
+    scenario_board = ctx.scenario_board
+    scenario_units = ctx.scenario_units
+    scenario_preset = ctx.scenario_preset
+    game_over = ctx.game_over
+    winner_faction = ctx.winner_faction
+    recruit_mode = ctx.recruit_mode
+    next_unit_id = ctx.next_unit_id
+    game_mode = ctx.game_mode
 end
 
-local function draw_recruit_panel(state)
-    local faction = norrust.get_active_faction(engine)
-    local vp_w, vp_h = get_viewport()
-    local fc = faction == 0 and BLUE or RED
-    local gold_arr = state.gold or {0, 0}
-    local gold = int(gold_arr[faction + 1] or 0)
-
-    -- Sidebar background
-    love.graphics.setColor(0, 0, 0, 0.6)
-    love.graphics.rectangle("fill", vp_w - 200, 0, 200, vp_h)
-
-    love.graphics.setFont(fonts[15])
-    love.graphics.setColor(fc[1], fc[2], fc[3])
-    love.graphics.print(string.format("RECRUIT — %dg", gold), vp_w - 190, 10)
-
-    love.graphics.setFont(fonts[11])
-    love.graphics.setColor(1, 1, 0, 1)
-    love.graphics.print("Leader must be on gold hex", vp_w - 190, 30)
-    love.graphics.setColor(0.83, 0.83, 0.83)
-    love.graphics.print("Click adjacent blue hex", vp_w - 190, 44)
-    love.graphics.print("[R] Cancel", vp_w - 190, 58)
-
-    if recruit_error ~= "" then
-        love.graphics.setColor(1, 0, 0, 1)
-        love.graphics.print(recruit_error, vp_w - 190, 72)
-    end
-
-    for i, def_id in ipairs(recruit_palette) do
-        local cost = norrust.get_unit_cost(engine, def_id)
-        local y = 94 + (i - 1) * 20
-        local label = string.format("[%d] %s (%dg)", i, def_id, cost)
-        if (i - 1) == selected_recruit_idx then
-            love.graphics.setColor(1, 1, 0, 1)
-        else
-            love.graphics.setColor(1, 1, 1, 1)
-        end
-        love.graphics.print(label, vp_w - 190, y)
-    end
+local function call_load_scenario()
+    local ctx = build_campaign_ctx()
+    campaign_client.load_selected_scenario(ctx)
+    apply_campaign_ctx(ctx)
 end
 
-local function draw_unit_panel(unit)
-    local vp_w, vp_h = get_viewport()
-
-    love.graphics.setColor(0, 0, 0, 0.75)
-    love.graphics.rectangle("fill", vp_w - 200, 0, 200, vp_h)
-
-    local faction = int(unit.faction)
-    local faction_name = faction == 0 and "Blue" or "Red"
-    local fc = faction == 0 and BLUE or RED
-
-    local y = 10
-
-    -- Portrait (if available)
-    local portrait_h = assets.draw_portrait(unit_sprites, unit.def_id, vp_w - 195, y, 180, 120)
-    if portrait_h > 0 then
-        y = y + portrait_h + 6
-    end
-
-    -- Unit name + faction
-    love.graphics.setFont(fonts[15])
-    love.graphics.setColor(fc[1], fc[2], fc[3])
-    love.graphics.print(unit.def_id or "", vp_w - 190, y)
-    y = y + 18
-    love.graphics.setFont(fonts[11])
-    love.graphics.print(faction_name, vp_w - 190, y)
-    y = y + 20
-
-    -- HP
-    love.graphics.setColor(1, 1, 1, 1)
-    love.graphics.setFont(fonts[12])
-    love.graphics.print(string.format("HP: %d / %d", int(unit.hp), int(unit.max_hp)), vp_w - 190, y)
-    y = y + 16
-
-    -- XP
-    if unit.xp_needed and int(unit.xp_needed) > 0 then
-        love.graphics.print(string.format("XP: %d / %d", int(unit.xp), int(unit.xp_needed)), vp_w - 190, y)
-        y = y + 16
-    end
-
-    -- Movement
-    local move_status = ""
-    if unit.moved and unit.attacked then
-        move_status = " (done)"
-    elseif unit.moved then
-        move_status = " (moved)"
-    elseif unit.attacked then
-        move_status = " (attacked)"
-    end
-    love.graphics.print(string.format("Move: %d%s", int(unit.movement), move_status), vp_w - 190, y)
-    y = y + 20
-
-    -- Attacks
-    local attacks = unit.attacks or {}
-    if #attacks > 0 then
-        love.graphics.setFont(fonts[11])
-        love.graphics.setColor(0.83, 0.83, 0.83)
-        love.graphics.print("── Attacks ──", vp_w - 190, y)
-        y = y + 15
-        for _, atk in ipairs(attacks) do
-            love.graphics.setColor(1, 1, 0, 1)
-            love.graphics.setFont(fonts[12])
-            love.graphics.print(atk.name or "", vp_w - 190, y)
-            y = y + 14
-            love.graphics.setColor(1, 1, 1, 1)
-            love.graphics.setFont(fonts[11])
-            love.graphics.print(string.format("  %dx%d %s", int(atk.damage), int(atk.strikes), atk.range or ""), vp_w - 190, y)
-            y = y + 15
-        end
-    end
-
-    -- Abilities
-    local abilities = unit.abilities or {}
-    if #abilities > 0 then
-        love.graphics.setFont(fonts[11])
-        love.graphics.setColor(0.83, 0.83, 0.83)
-        love.graphics.print("── Abilities ──", vp_w - 190, y)
-        y = y + 15
-        for _, ab in ipairs(abilities) do
-            love.graphics.setColor(0.6, 1.0, 0.6)
-            love.graphics.print(ab, vp_w - 190, y)
-            y = y + 14
-        end
-    end
-end
-
-local function draw_terrain_panel()
-    local vp_w, vp_h = get_viewport()
-
-    love.graphics.setColor(0, 0, 0, 0.75)
-    love.graphics.rectangle("fill", vp_w - 200, 0, 200, vp_h)
-
-    local y = 10
-
-    -- Terrain name
-    love.graphics.setFont(fonts[15])
-    love.graphics.setColor(0.9, 0.85, 0.6)
-    love.graphics.print(inspect_terrain.terrain_id or "", vp_w - 190, y)
-    y = y + 22
-
-    -- Coordinates
-    love.graphics.setFont(fonts[11])
-    love.graphics.setColor(0.6, 0.6, 0.6)
-    love.graphics.print(string.format("(%d, %d)", inspect_terrain.col, inspect_terrain.row), vp_w - 190, y)
-    y = y + 20
-
-    -- Base stats
-    love.graphics.setFont(fonts[12])
-    love.graphics.setColor(1, 1, 1, 1)
-    love.graphics.print(string.format("Defense: %d%%", inspect_terrain.defense), vp_w - 190, y)
-    y = y + 16
-    love.graphics.print(string.format("Move cost: %d", inspect_terrain.movement_cost), vp_w - 190, y)
-    y = y + 16
-
-    if inspect_terrain.healing and inspect_terrain.healing > 0 then
-        love.graphics.setColor(0.4, 1.0, 0.4)
-        love.graphics.print(string.format("Healing: +%d HP", inspect_terrain.healing), vp_w - 190, y)
-        y = y + 16
-    end
-
-    -- Unit-specific stats (if a unit was selected when terrain was clicked)
-    if inspect_terrain.unit_defense then
-        y = y + 8
-        love.graphics.setFont(fonts[11])
-        love.graphics.setColor(0.83, 0.83, 0.83)
-        love.graphics.print("── Unit on terrain ──", vp_w - 190, y)
-        y = y + 15
-        love.graphics.setFont(fonts[12])
-        love.graphics.setColor(1, 1, 0, 1)
-        love.graphics.print(string.format("Eff. defense: %d%%", inspect_terrain.unit_defense), vp_w - 190, y)
-        y = y + 16
-        love.graphics.setColor(1, 1, 1, 1)
-        love.graphics.print(string.format("Eff. move cost: %d", inspect_terrain.unit_move_cost), vp_w - 190, y)
-    end
-end
-
-local function draw_combat_preview()
-    local vp_w, vp_h = get_viewport()
-    local p = combat_preview
-
-    love.graphics.setColor(0, 0, 0, 0.85)
-    love.graphics.rectangle("fill", vp_w - 200, 0, 200, vp_h)
-
-    local y = 10
-
-    -- Header
-    love.graphics.setFont(fonts[15])
-    love.graphics.setColor(1.0, 0.9, 0.3)
-    love.graphics.print("COMBAT PREVIEW", vp_w - 190, y)
-    y = y + 24
-
-    -- Attacker section
-    love.graphics.setFont(fonts[12])
-    love.graphics.setColor(0.5, 0.8, 1.0)
-    love.graphics.print("── Attacker ──", vp_w - 190, y)
-    y = y + 16
-
-    love.graphics.setColor(0.6, 0.8, 0.6)
-    love.graphics.print(string.format("Terrain: %d%% def", p.attacker_terrain_defense or 0), vp_w - 190, y)
-    y = y + 14
-
-    love.graphics.setColor(1, 1, 1)
-    love.graphics.print(string.format("%s", p.attacker_attack_name or "?"), vp_w - 190, y)
-    y = y + 14
-    love.graphics.print(string.format("%dx%d  (max %d)",
-        p.attacker_damage_per_hit or 0, p.attacker_strikes or 0,
-        p.attacker_damage_max or 0), vp_w - 190, y)
-    y = y + 14
-    love.graphics.print(string.format("Hit: %d%%", p.attacker_hit_pct or 0), vp_w - 190, y)
-    y = y + 14
-
-    love.graphics.setColor(0.9, 0.9, 0.9)
-    love.graphics.print(string.format("Dmg: %d - %.1f - %d",
-        p.attacker_damage_min or 0, p.attacker_damage_mean or 0, p.attacker_damage_max or 0), vp_w - 190, y)
-    y = y + 14
-
-    -- Kill % with color
-    local ak = p.attacker_kill_pct or 0
-    if ak >= 30 then
-        love.graphics.setColor(0.3, 1.0, 0.3)
-    elseif ak >= 10 then
-        love.graphics.setColor(1.0, 1.0, 0.3)
-    else
-        love.graphics.setColor(0.7, 0.7, 0.7)
-    end
-    love.graphics.print(string.format("Kill: %.0f%%", ak), vp_w - 190, y)
-    y = y + 14
-
-    love.graphics.setColor(0.6, 0.6, 0.6)
-    love.graphics.print(string.format("Target HP: %d", p.defender_hp or 0), vp_w - 190, y)
-    y = y + 20
-
-    -- Defender retaliation section
-    love.graphics.setFont(fonts[12])
-    love.graphics.setColor(1.0, 0.5, 0.3)
-    love.graphics.print("── Retaliation ──", vp_w - 190, y)
-    y = y + 16
-
-    love.graphics.setColor(0.6, 0.8, 0.6)
-    love.graphics.print(string.format("Terrain: %d%% def", p.defender_terrain_defense or 0), vp_w - 190, y)
-    y = y + 14
-
-    local def_name = p.defender_attack_name or "none"
-    if def_name == "none" then
-        love.graphics.setColor(0.5, 0.5, 0.5)
-        love.graphics.print("No retaliation", vp_w - 190, y)
-        y = y + 14
-    else
-        love.graphics.setColor(1, 1, 1)
-        love.graphics.print(string.format("%s", def_name), vp_w - 190, y)
-        y = y + 14
-        love.graphics.print(string.format("%dx%d  (max %d)",
-            p.defender_damage_per_hit or 0, p.defender_strikes or 0,
-            p.defender_damage_max or 0), vp_w - 190, y)
-        y = y + 14
-        love.graphics.print(string.format("Hit: %d%%", p.defender_hit_pct or 0), vp_w - 190, y)
-        y = y + 14
-
-        love.graphics.setColor(0.9, 0.9, 0.9)
-        love.graphics.print(string.format("Dmg: %d - %.1f - %d",
-            p.defender_damage_min or 0, p.defender_damage_mean or 0, p.defender_damage_max or 0), vp_w - 190, y)
-        y = y + 14
-
-        -- Defender kill % with danger color
-        local dk = p.defender_kill_pct or 0
-        if dk >= 20 then
-            love.graphics.setColor(1.0, 0.2, 0.2)
-        elseif dk >= 5 then
-            love.graphics.setColor(1.0, 0.7, 0.3)
-        else
-            love.graphics.setColor(0.7, 0.7, 0.7)
-        end
-        love.graphics.print(string.format("Kill: %.0f%%", dk), vp_w - 190, y)
-        y = y + 14
-
-        love.graphics.setColor(0.6, 0.6, 0.6)
-        love.graphics.print(string.format("Your HP: %d", p.attacker_hp or 0), vp_w - 190, y)
-        y = y + 14
-    end
-
-    -- Controls hint
-    y = y + 12
-    love.graphics.setFont(fonts[11])
-    love.graphics.setColor(0.5, 0.8, 0.5)
-    love.graphics.print("[Enter] Attack", vp_w - 190, y)
-    y = y + 14
-    love.graphics.setColor(0.8, 0.5, 0.5)
-    love.graphics.print("[Esc] Cancel", vp_w - 190, y)
-end
-
--- ── Scenario loading ──────────────────────────────────────────────────────
-
-local function load_selected_scenario()
-    assert(norrust.load_board(engine, scenarios_path .. "/" .. scenario_board, 42), "Failed to load board")
-
-    -- Read board dimensions from state
-    local state = norrust.get_state(engine)
-    BOARD_COLS = int(state.cols or 8)
-    BOARD_ROWS = int(state.rows or 5)
-
-    center_camera()
-end
-
--- ── Campaign helpers ─────────────────────────────────────────────────────
-
---- Find the player keep hex and its adjacent castle hexes for veteran placement.
-local function find_keep_and_castles()
-    local state = norrust.get_state(engine)
-    local keep_col, keep_row = nil, nil
-    local castle_hexes = {}
-
-    for _, tile in ipairs(state.terrain or {}) do
-        local tc, tr = int(tile.col), int(tile.row)
-        if tile.terrain_id == "keep" then
-            -- Use leftmost keep (player side)
-            if keep_col == nil or tc < keep_col then
-                keep_col, keep_row = tc, tr
-            end
-        end
-    end
-
-    if keep_col then
-        -- Collect adjacent castle hexes
-        for _, tile in ipairs(state.terrain or {}) do
-            if tile.terrain_id == "castle" then
-                local tc, tr = int(tile.col), int(tile.row)
-                -- Check adjacency (distance ~1 in offset coords via hex neighbors)
-                local dx = math.abs(tc - keep_col)
-                local dy = math.abs(tr - keep_row)
-                if dx <= 1 and dy <= 1 and not (dx == 0 and dy == 0) then
-                    castle_hexes[#castle_hexes + 1] = {col = tc, row = tr}
-                end
-            end
-        end
-    end
-
-    return keep_col, keep_row, castle_hexes
-end
-
---- Place veteran units on keep + adjacent castles, skipping occupied hexes.
-local function place_veterans()
-    if #campaign_veterans == 0 then return end
-
-    local keep_col, keep_row, castle_hexes = find_keep_and_castles()
-    if not keep_col then return end
-
-    local state = norrust.get_state(engine)
-    local pos_map = build_unit_pos_map(state)
-
-    -- Build placement list: keep first, then castles
-    local slots = {{col = keep_col, row = keep_row}}
-    for _, ch in ipairs(castle_hexes) do
-        slots[#slots + 1] = ch
-    end
-
-    local placed = 0
-    for _, vet in ipairs(campaign_veterans) do
-        if placed >= #slots then break end
-
-        -- Find next unoccupied slot
-        local slot = nil
-        for si = placed + 1, #slots do
-            local key = int(slots[si].col) .. "," .. int(slots[si].row)
-            if not pos_map[key] then
-                slot = slots[si]
-                placed = si
-                break
-            end
-        end
-        if not slot then break end
-
-        local uid = norrust.get_next_unit_id(engine)
-        norrust.place_veteran_unit(
-            engine, uid,
-            vet.def_id, 0,
-            int(slot.col), int(slot.row),
-            int(vet.hp), int(vet.xp), int(vet.xp_needed),
-            vet.advancement_pending
-        )
-        -- Update pos_map so next veteran doesn't collide
-        pos_map[int(slot.col) .. "," .. int(slot.row)] = {id = uid, faction = 0}
-    end
-end
-
---- Load the next campaign scenario (or the first one).
---- Engine keeps registries (units, terrain, factions); load_board replaces GameState.
-local function load_campaign_scenario()
-    local sc = campaign_data.scenarios[campaign_index + 1]
-    scenario_board = sc.board
-    scenario_units = sc.units
-    scenario_preset = sc.preset_units
-
-    -- Reset client state for new scenario
-    game_over = false
-    winner_faction = -1
-    clear_selection()
-    recruit_mode = false
-
-    -- Load board (creates fresh GameState; registries stay)
-    load_selected_scenario()
-
-    -- Load preset units + starting gold
-    if scenario_preset then
-        norrust.apply_starting_gold(engine, faction_id[1], faction_id[2])
-        norrust.load_units(engine, scenarios_path .. "/" .. scenario_units)
-        next_unit_id = norrust.get_next_unit_id(engine)
-    end
-
-    -- Place veterans from previous scenario
-    if campaign_index > 0 and #campaign_veterans > 0 then
-        place_veterans()
-        next_unit_id = norrust.get_next_unit_id(engine)
-    end
-
-    -- Apply carry-over gold (override faction 0's starting gold)
-    if campaign_index > 0 and campaign_gold > 0 then
-        norrust.set_faction_gold(engine, 0, campaign_gold)
-    end
-
-    game_mode = PLAYING
+local function call_call_load_campaign_scenario()
+    local ctx = build_campaign_ctx()
+    campaign_client.load_campaign_scenario(ctx)
+    apply_campaign_ctx(ctx)
 end
 
 -- ── love.load ───────────────────────────────────────────────────────────────
@@ -1035,251 +421,48 @@ end
 -- ── love.draw ───────────────────────────────────────────────────────────────
 
 function love.draw()
-    love.graphics.push()
-    love.graphics.scale(UI_SCALE, UI_SCALE)
-
-    -- Scenario selection: no board loaded yet
-    if game_mode == PICK_SCENARIO then
-        draw_setup_hud()
-        love.graphics.pop()
-        return
-    end
-
-    local state = norrust.get_state(engine)
-
-    -- Build tile color + terrain_id maps
-    local tile_colors = {}
-    local tile_ids = {}
-    for _, tile in ipairs(state.terrain or {}) do
-        local key = int(tile.col) .. "," .. int(tile.row)
-        tile_colors[key] = parse_html_color(tile.color) or COLOR_FLAT
-        tile_ids[key] = tile.terrain_id
-    end
-
-    -- Board-space drawing (push camera transform)
-    local tx = board_origin_x + camera_offset_x
-    local ty = board_origin_y + camera_offset_y
-    love.graphics.push()
-    love.graphics.translate(tx, ty)
-
-    -- 1. Terrain hexes
-    for col = 0, BOARD_COLS - 1 do
-        for row = 0, BOARD_ROWS - 1 do
-            local cx, cy = hex_to_pixel(col, row)
-            local key = col .. "," .. row
-            local c = tile_colors[key] or COLOR_FLAT
-            local tid = tile_ids[key]
-            assets.draw_terrain_hex(terrain_tiles, tid, cx, cy, HEX_RADIUS, c, hex_polygon)
-        end
-    end
-
-    -- 2. Reachable hex highlights
-    if game_mode == PLAYING then
-        love.graphics.setColor(1, 1, 0, 0.35)
-        for _, cell in ipairs(reachable_cells) do
-            local cx, cy = hex_to_pixel(cell.col, cell.row)
-            love.graphics.polygon("fill", hex_polygon(cx, cy, HEX_RADIUS))
-        end
-    end
-
-    -- 3. Selected unit outline (at ghost position if ghosting)
-    if game_mode == PLAYING and selected_unit_id ~= -1 then
-        if ghost_col ~= nil then
-            -- Outline at ghost position
-            local gx, gy = hex_to_pixel(ghost_col, ghost_row)
-            love.graphics.setColor(1, 1, 1, 0.8)
-            love.graphics.setLineWidth(2.5)
-            love.graphics.polygon("line", hex_polygon(gx, gy, HEX_RADIUS))
-        else
-            -- Outline at real position
-            for _, unit in ipairs(state.units or {}) do
-                if int(unit.id) == selected_unit_id then
-                    local cx, cy = hex_to_pixel(int(unit.col), int(unit.row))
-                    love.graphics.setColor(1, 1, 1, 1)
-                    love.graphics.setLineWidth(2.5)
-                    love.graphics.polygon("line", hex_polygon(cx, cy, HEX_RADIUS))
-                    break
-                end
-            end
-        end
-    end
-
-    -- 4. Objective hex highlight
-    if state.objective_col and state.objective_row then
-        local ocol = int(state.objective_col)
-        local orow = int(state.objective_row)
-        local ox, oy = hex_to_pixel(ocol, orow)
-        -- Pulsing gold border
-        love.graphics.setColor(1.0, 0.85, 0.0, 0.9)
-        love.graphics.setLineWidth(4.0)
-        love.graphics.polygon("line", hex_polygon(ox, oy, HEX_RADIUS))
-        -- Inner star marker
-        love.graphics.setColor(1.0, 0.85, 0.0, 0.3)
-        love.graphics.polygon("fill", hex_polygon(ox, oy, HEX_RADIUS * 0.3))
-    end
-
-    -- 5. Units
-    draw_units(state)
-
-    -- 5b. Ghost unit rendering (drawn on top of units)
-    if ghost_col ~= nil then
-        local gx, gy = hex_to_pixel(ghost_col, ghost_row)
-        -- Find the ghost unit data
-        for _, unit in ipairs(state.units or {}) do
-            if int(unit.id) == ghost_unit_id then
-                local faction = int(unit.faction)
-                local hp = int(unit.hp)
-                local ghost_alpha = 0.5
-
-                -- Get animation state
-                local anim_state = unit_anims[ghost_unit_id]
-                if anim_state then
-                    anim_state.facing = ghost_col >= BOARD_COLS / 2 and "left" or "right"
-                end
-
-                -- Try sprite, fallback to circle
-                local drawn = assets.draw_unit_sprite(unit_sprites, unit.def_id, gx, gy, HEX_RADIUS, faction, ghost_alpha, FACTION_COLORS, anim_state)
-                if not drawn then
-                    if faction == 0 then
-                        love.graphics.setColor(BLUE[1], BLUE[2], BLUE[3], ghost_alpha)
-                    else
-                        love.graphics.setColor(RED[1], RED[2], RED[3], ghost_alpha)
-                    end
-                    love.graphics.circle("fill", gx, gy, HEX_RADIUS * 0.45)
-                    local word = (unit.def_id or ""):match("^([^_]+)") or unit.def_id or ""
-                    local abbrev = (word:sub(1, 1):upper() .. word:sub(2):lower()):sub(1, 7)
-                    love.graphics.setColor(1, 1, 1, ghost_alpha)
-                    love.graphics.setFont(fonts[14])
-                    love.graphics.printf(abbrev, gx - 42, gy - 14, 84, "center")
-                end
-
-                -- HP at ghost position
-                love.graphics.setColor(1, 1, 1, ghost_alpha)
-                love.graphics.setFont(fonts[18])
-                love.graphics.print(tostring(hp), gx - 12, gy - 2)
-                break
-            end
-        end
-
-        -- Highlight attackable enemies
-        for _, enemy in ipairs(ghost_attackable) do
-            local ex, ey = hex_to_pixel(enemy.col, enemy.row)
-            love.graphics.setColor(1, 0.4, 0.1, 0.9)
-            love.graphics.setLineWidth(3)
-            love.graphics.polygon("line", hex_polygon(ex, ey, HEX_RADIUS))
-        end
-    end
-
-    -- 6. Recruit-mode hex highlights (drawn after units, matching game.gd Z-order)
-    if recruit_mode then
-        for _, tile in ipairs(state.terrain or {}) do
-            local tid = tile.terrain_id or ""
-            local cx, cy = hex_to_pixel(int(tile.col), int(tile.row))
-            if tid == "keep" then
-                love.graphics.setColor(1.0, 0.75, 0.0, 0.7)
-                love.graphics.polygon("fill", hex_polygon(cx, cy, HEX_RADIUS))
-                love.graphics.setColor(1, 1, 0, 1)
-                love.graphics.setLineWidth(3.0)
-                love.graphics.polygon("line", hex_polygon(cx, cy, HEX_RADIUS))
-            elseif tid == "castle" then
-                love.graphics.setColor(0.0, 0.9, 0.9, 0.65)
-                love.graphics.polygon("fill", hex_polygon(cx, cy, HEX_RADIUS))
-                love.graphics.setColor(1, 1, 1, 1)
-                love.graphics.setLineWidth(2.5)
-                love.graphics.polygon("line", hex_polygon(cx, cy, HEX_RADIUS))
-            end
-        end
-    end
-
-    love.graphics.pop() -- back to screen space
-
-    -- ── Screen-space UI ─────────────────────────────────────────────────
-
-    if game_mode ~= PLAYING then
-        draw_setup_hud()
-    else
-        -- Win overlay
-        if game_over then
-            local vp_w, vp_h = get_viewport()
-            local winner_name = winner_faction == 0 and "Blue" or "Red"
-            local msg, sub_msg
-            if winner_faction == 0 then
-                if campaign_active then
-                    if campaign_index + 1 < #campaign_data.scenarios then
-                        msg = "Victory!"
-                        sub_msg = "Press Enter for next battle"
-                    else
-                        msg = "Campaign Victory!"
-                        sub_msg = "Press Enter to continue"
-                    end
-                else
-                    msg = "Victory! " .. winner_name .. " wins!"
-                    sub_msg = "Press Enter to continue"
-                end
-            else
-                -- Check if it was a timeout or elimination
-                local max_t = state.max_turns
-                local cur_t = int(state.turn or 1)
-                if max_t and cur_t > int(max_t) then
-                    msg = "Defeat — Turn limit reached!"
-                else
-                    msg = winner_name .. " wins!"
-                end
-                if campaign_active then
-                    sub_msg = "Campaign over — Press Enter"
-                else
-                    sub_msg = "Press Enter to continue"
-                end
-            end
-            love.graphics.setFont(fonts[32])
-            love.graphics.setColor(1, 1, 0, 1)
-            love.graphics.printf(msg, vp_w / 2 - 240, vp_h / 2 - 16, 480, "center")
-            if sub_msg then
-                love.graphics.setFont(fonts[14])
-                love.graphics.setColor(0.83, 0.83, 0.83, 1)
-                love.graphics.printf(sub_msg, vp_w / 2 - 240, vp_h / 2 + 24, 480, "center")
-            end
-        end
-
-        -- HUD
-        if not game_over then
-            local faction = norrust.get_active_faction(engine)
-            local faction_name = faction == 0 and "Blue" or "Red"
-            local fc = faction == 0 and BLUE or RED
-            local tod = norrust.get_time_of_day_name(engine)
-            local gold_arr = state.gold or {0, 0}
-            local gold = int(gold_arr[faction + 1] or 0)
-            local turn = norrust.get_turn(engine)
-            local turn_str
-            if state.max_turns then
-                turn_str = string.format("Turn %d / %d", turn, int(state.max_turns))
-            else
-                turn_str = string.format("Turn %d", turn)
-            end
-            local hud_text = string.format("%s  ·  %s  ·  %s's Turn  ·  %dg",
-                turn_str, tod, faction_name, gold)
-            love.graphics.setFont(fonts[14])
-            love.graphics.setColor(fc[1], fc[2], fc[3])
-            love.graphics.print(hud_text, 10, 6)
-        end
-
-        if combat_preview ~= nil then
-            draw_combat_preview()
-        elseif recruit_mode then
-            draw_recruit_panel(state)
-        elseif inspect_unit_id ~= -1 then
-            for _, unit in ipairs(state.units or {}) do
-                if int(unit.id) == inspect_unit_id then
-                    draw_unit_panel(unit)
-                    break
-                end
-            end
-        elseif inspect_terrain then
-            draw_terrain_panel()
-        end
-    end
-
-    love.graphics.pop()
+    local state = engine and norrust.get_state(engine) or {}
+    local ctx = {
+        -- Modules
+        hex = hex, assets = assets, anim_module = anim_module, norrust = norrust,
+        -- Engine
+        engine = engine,
+        -- Constants
+        BLUE = BLUE, RED = RED, COLOR_FLAT = COLOR_FLAT,
+        UI_SCALE = UI_SCALE, BOARD_COLS = BOARD_COLS, BOARD_ROWS = BOARD_ROWS,
+        FACTION_COLORS = FACTION_COLORS, SCENARIOS = SCENARIOS, CAMPAIGNS = CAMPAIGNS,
+        -- Mode constants
+        PICK_SCENARIO = PICK_SCENARIO, PICK_FACTION_BLUE = PICK_FACTION_BLUE,
+        PICK_FACTION_RED = PICK_FACTION_RED, SETUP_BLUE = SETUP_BLUE,
+        SETUP_RED = SETUP_RED, PLAYING = PLAYING,
+        -- State
+        game_mode = game_mode, game_over = game_over, winner_faction = winner_faction,
+        selected_unit_id = selected_unit_id, inspect_unit_id = inspect_unit_id,
+        inspect_terrain = inspect_terrain, recruit_mode = recruit_mode,
+        recruit_palette = recruit_palette, selected_recruit_idx = selected_recruit_idx,
+        recruit_error = recruit_error, reachable_cells = reachable_cells,
+        reachable_set = reachable_set,
+        ghost_col = ghost_col, ghost_row = ghost_row, ghost_unit_id = ghost_unit_id,
+        ghost_attackable = ghost_attackable,
+        combat_preview = combat_preview, combat_preview_target = combat_preview_target,
+        -- Campaign
+        campaign_active = campaign_active, campaign_index = campaign_index,
+        campaign_data = campaign_data,
+        -- Fonts, sprites
+        fonts = fonts, terrain_tiles = terrain_tiles, unit_sprites = unit_sprites,
+        unit_anims = unit_anims,
+        -- Camera
+        board_origin_x = board_origin_x, board_origin_y = board_origin_y,
+        camera_offset_x = camera_offset_x, camera_offset_y = camera_offset_y,
+        -- Functions from main
+        get_viewport = get_viewport, screen_to_game = screen_to_game,
+        int = int, parse_html_color = parse_html_color,
+        -- Setup state
+        factions = factions, sel_faction_idx = sel_faction_idx,
+        faction_id = faction_id, leader_placed = leader_placed,
+        faction_index_for_mode = faction_index_for_mode,
+    }
+    draw_mod.draw_frame(ctx, state)
 end
 
 -- ── love.keypressed ─────────────────────────────────────────────────────────
@@ -1293,7 +476,7 @@ function love.keypressed(key)
             scenario_board = SCENARIOS[num].board
             scenario_units = SCENARIOS[num].units
             scenario_preset = SCENARIOS[num].preset_units
-            load_selected_scenario()
+            call_load_scenario()
             game_mode = PICK_FACTION_BLUE
         elseif key == "c" then
             -- Start campaign
@@ -1309,7 +492,7 @@ function love.keypressed(key)
                 scenario_board = sc.board
                 scenario_units = sc.units
                 scenario_preset = sc.preset_units
-                load_selected_scenario()
+                call_load_scenario()
                 game_mode = PICK_FACTION_BLUE
             end
         end
@@ -1332,7 +515,7 @@ function love.keypressed(key)
                         game_mode = PICK_FACTION_RED
                     elseif campaign_active then
                         -- Campaign: use campaign loader (handles gold, veterans)
-                        load_campaign_scenario()
+                        call_load_campaign_scenario()
                     else
                         -- Both factions chosen — load units and start
                         norrust.apply_starting_gold(engine, faction_id[1], faction_id[2])
@@ -1374,7 +557,7 @@ function love.keypressed(key)
                 )
                 campaign_index = campaign_index + 1
                 if campaign_index < #campaign_data.scenarios then
-                    load_campaign_scenario()
+                    call_load_campaign_scenario()
                 else
                     -- Campaign complete — return to scenario selection
                     campaign_active = false
@@ -1483,7 +666,7 @@ function love.mousepressed(sx, sy, button)
     if button == 2 and game_mode == PLAYING and not game_over then
         local local_x = x - (board_origin_x + camera_offset_x)
         local local_y = y - (board_origin_y + camera_offset_y)
-        local col, row = pixel_to_hex(local_x, local_y)
+        local col, row = hex.from_pixel(local_x, local_y)
         if col >= 0 and col < BOARD_COLS and row >= 0 and row < BOARD_ROWS then
             local state = norrust.get_state(engine)
             for _, tile in ipairs(state.terrain or {}) do
@@ -1521,7 +704,7 @@ function love.mousepressed(sx, sy, button)
 
         local local_x = x - (board_origin_x + camera_offset_x)
         local local_y = y - (board_origin_y + camera_offset_y)
-        local col, row = pixel_to_hex(local_x, local_y)
+        local col, row = hex.from_pixel(local_x, local_y)
 
         if col < 0 or col >= BOARD_COLS or row < 0 or row >= BOARD_ROWS then
             return
@@ -1554,7 +737,7 @@ function love.mousepressed(sx, sy, button)
     -- Convert screen coords to hex
     local local_x = x - (board_origin_x + camera_offset_x)
     local local_y = y - (board_origin_y + camera_offset_y)
-    local col, row = pixel_to_hex(local_x, local_y)
+    local col, row = hex.from_pixel(local_x, local_y)
 
     -- Off-board click: start drag
     if col < 0 or col >= BOARD_COLS or row < 0 or row >= BOARD_ROWS then

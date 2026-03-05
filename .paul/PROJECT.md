@@ -255,6 +255,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | Double-click to confirm attack from preview | First click = preview, second click = execute; natural interaction pattern | 2026-03-04 | Active |
 | Terrain defense on CombatPreview struct (not separate query) | Values already computed in FFI; avoids extra round-trip | 2026-03-04 | Active |
 | Auto-preview preserves target across re-ghost | Capture prev_target before cancel, re-check in new adjacency list | 2026-03-04 | Active |
+| ctx table pattern for Lua module extraction | Build mutable context table per-frame/per-call; modules access state via ctx.field | 2026-03-04 | Active |
+| Campaign ctx writeback pattern | build_campaign_ctx() → call → apply_campaign_ctx() bridges state mutations across module boundary | 2026-03-04 | Active |
 
 ## Tech Stack
 
@@ -274,4 +276,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-04 after Phase 39 — Commit/cancel flow with terrain defense visibility and auto-preview (97 tests pass)*
+*Last updated: 2026-03-04 after Phase 41 — Split main.lua into 4 modules with ctx table pattern (97 tests pass)*

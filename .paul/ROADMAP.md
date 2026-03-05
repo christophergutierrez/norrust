@@ -8,12 +8,12 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 **v1.6 Codebase Cleanup**
 Status: 🚧 In Progress
-Phases: 1 of 4 complete
+Phases: 2 of 4 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 40 | Asset Directory Naming | 1/1 | ✅ Complete | 2026-03-04 |
-| 41 | Split main.lua | TBD | Not started | - |
+| 41 | Split main.lua | 1/1 | ✅ Complete | 2026-03-04 |
 | 42 | Rust Documentation | TBD | Not started | - |
 | 43 | Lua Documentation | TBD | Not started | - |
 
@@ -36,13 +36,22 @@ Phases: 1 of 4 complete
 - MISSSION_CONTROL.md → MISSION_CONTROL.md typo fix
 - 97 tests passing (no Rust changes)
 
-### Phase 41: Split main.lua
+### Phase 41: Split main.lua ✅
 
 **Goal:** Extract main.lua (~1,728 lines) into focused modules. Separate rendering, UI panels, input handling, hex math, and game state machine into individual Lua files. main.lua becomes a thin Love2D callback dispatcher. Refactor only — identical behavior.
 **Depends on:** Phase 40 (naming cleanup done before restructuring)
+**Completed:** 2026-03-04
 
 **Plans:**
-- TBD (defined during /paul:plan)
+- [x] 41-01: Extract hex.lua, draw.lua, campaign_client.lua with ctx table pattern
+
+**Delivered:**
+- hex.lua (64 lines): pure hex math — to_pixel, from_pixel, polygon, neighbors + constants
+- draw.lua (732 lines): all rendering — 6 panel functions + draw_frame dispatch
+- campaign_client.lua (141 lines): scenario/campaign loading with mutable ctx writeback
+- main.lua reduced from 1,728 to 911 lines (47% reduction)
+- ctx table pattern for cross-module state sharing
+- 97 tests passing (no Rust changes)
 
 ### Phase 42: Rust Documentation
 
