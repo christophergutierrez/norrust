@@ -74,7 +74,7 @@ Run `/paul:discuss-milestone` for next milestone
 None.
 
 ### Git State
-Last commit: (pending — Phase 50 commit)
+Last commit: 36c30c0 (Phase 50 — Combat Movement, v1.8 complete)
 Branch: master
 Tests: 97 passing (62 unit + 8 campaign + 3 validation + 23 simulation + 1 FFI)
 
