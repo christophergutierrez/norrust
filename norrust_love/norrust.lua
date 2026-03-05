@@ -174,6 +174,7 @@ ffi.cdef[[
 
     // Pathfinding
     int32_t* norrust_get_reachable_hexes(NorRustEngine* engine, int32_t unit_id, int32_t* out_len);
+    int32_t* norrust_find_path(NorRustEngine* engine, int32_t unit_id, int32_t dest_col, int32_t dest_row, int32_t* out_len);
 
     // AI
     void norrust_ai_take_turn(NorRustEngine* engine, int32_t faction);
@@ -406,6 +407,21 @@ end
 function M.get_reachable_hexes(engine, unit_id)
     local out_len = ffi.new("int32_t[1]")
     local arr = lib.norrust_get_reachable_hexes(engine, unit_id, out_len)
+    local len = out_len[0]
+    local result = {}
+    if arr ~= nil and len > 0 then
+        for i = 0, len - 1, 2 do
+            result[#result + 1] = {col = arr[i], row = arr[i + 1]}
+        end
+        lib.norrust_free_int_array(arr, len)
+    end
+    return result
+end
+
+--- Find shortest path from unit's position to destination. Returns {col, row} table or empty.
+function M.find_path(engine, unit_id, dest_col, dest_row)
+    local out_len = ffi.new("int32_t[1]")
+    local arr = lib.norrust_find_path(engine, unit_id, dest_col, dest_row, out_len)
     local len = out_len[0]
     local result = {}
     if arr ~= nil and len > 0 then

@@ -6,6 +6,46 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
+**v1.8 Movement & Animation Polish**
+Status: 🚧 In Progress
+Phases: 1 of 3 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 48 | Ghost Path Visualization | 1 | ✅ Complete | 2026-03-05 |
+| 49 | Movement Interpolation | TBD | Not started | - |
+| 50 | Combat Movement | TBD | Not started | - |
+
+## v1.8 Phase Details
+
+### Phase 48: Ghost Path Visualization
+
+**Goal:** Show the hex-by-hex path from current position to ghost position during ghost movement, so the player sees the route their unit will take.
+**Depends on:** Phase 47 (ghost movement and combat animations working)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+### Phase 49: Movement Interpolation
+
+**Goal:** Smooth sliding animation along the path when a move is committed, replacing the current instant teleport. Lerp unit between hex centers.
+**Depends on:** Phase 48 (path data available)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+### Phase 50: Combat Movement
+
+**Goal:** Melee attackers slide toward defender, ranged attackers animate in place. Integrate with existing pending_anims timer system.
+**Depends on:** Phase 49 (movement interpolation system)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+---
+
+## Previous Milestone
+
 **v1.7 Enhanced Unit Sprites**
 Status: ✅ Complete
 Phases: 4 of 4 complete

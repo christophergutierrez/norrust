@@ -71,7 +71,8 @@ local inspect_terrain = nil    -- {col, row, terrain_id, defense, movement_cost,
 local ghost_col = nil          -- ghost hex col, or nil if not ghosting
 local ghost_row = nil          -- ghost hex row
 local ghost_unit_id = -1       -- the unit being ghosted
-local ghost_attackable = {}    -- array of {id=N, col=C, row=R} for enemies adjacent to ghost
+local ghost_attackable = {}    -- array of {id=N, col=C, row=R} for enemies attackable from ghost
+local ghost_path = {}          -- array of {col=N, row=N} for path from unit to ghost position
 
 -- Combat preview
 local combat_preview = nil       -- table from simulate_combat JSON, or nil
@@ -247,6 +248,7 @@ local function cancel_ghost()
     ghost_row = nil
     ghost_unit_id = -1
     ghost_attackable = {}
+    ghost_path = {}
     cancel_combat_preview()
 end
 
@@ -565,7 +567,7 @@ function love.draw()
         recruit_error = recruit_error, reachable_cells = reachable_cells,
         reachable_set = reachable_set,
         ghost_col = ghost_col, ghost_row = ghost_row, ghost_unit_id = ghost_unit_id,
-        ghost_attackable = ghost_attackable,
+        ghost_attackable = ghost_attackable, ghost_path = ghost_path,
         combat_preview = combat_preview, combat_preview_target = combat_preview_target,
         -- Campaign
         campaign_active = campaign_active, campaign_index = campaign_index,
@@ -936,6 +938,7 @@ function love.mousepressed(sx, sy, button)
             ghost_col = col
             ghost_row = row
             ghost_attackable = get_attackable_enemies(pos_map, col, row, active, unit_max_range(ghost_unit_id))
+            ghost_path = norrust.find_path(engine, ghost_unit_id, col, row)
             -- Auto-preview: if previously previewed enemy is still in range, re-show preview
             if prev_target ~= -1 then
                 for _, e in ipairs(ghost_attackable) do
@@ -992,6 +995,7 @@ function love.mousepressed(sx, sy, button)
         ghost_row = row
         ghost_unit_id = selected_unit_id
         ghost_attackable = get_attackable_enemies(pos_map, col, row, active, unit_max_range(selected_unit_id))
+        ghost_path = norrust.find_path(engine, selected_unit_id, col, row)
 
     -- Select friendly unit
     elseif pos_map[clicked_key] and pos_map[clicked_key].faction == active then

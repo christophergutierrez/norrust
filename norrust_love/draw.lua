@@ -573,7 +573,30 @@ function draw.draw_frame(ctx, state)
     -- 5. Units
     draw.draw_units(ctx, state)
 
-    -- 5b. Ghost unit rendering
+    -- 5b. Ghost path visualization
+    if ctx.ghost_col ~= nil and ctx.ghost_path and #ctx.ghost_path > 2 then
+        -- Draw path hexes (skip first=start and last=destination)
+        for i = 2, #ctx.ghost_path - 1 do
+            local p = ctx.ghost_path[i]
+            local px, py = ctx.hex.to_pixel(p.col, p.row)
+            love.graphics.setColor(1, 1, 1, 0.15)
+            love.graphics.polygon("fill", ctx.hex.polygon(px, py, ctx.hex.RADIUS * 0.85))
+        end
+        -- Draw connecting line through all path hexes
+        if #ctx.ghost_path >= 2 then
+            love.graphics.setColor(1, 1, 1, 0.4)
+            love.graphics.setLineWidth(3)
+            for i = 1, #ctx.ghost_path - 1 do
+                local a = ctx.ghost_path[i]
+                local b = ctx.ghost_path[i + 1]
+                local ax, ay = ctx.hex.to_pixel(a.col, a.row)
+                local bx, by = ctx.hex.to_pixel(b.col, b.row)
+                love.graphics.line(ax, ay, bx, by)
+            end
+        end
+    end
+
+    -- 5c. Ghost unit rendering
     if ctx.ghost_col ~= nil then
         local gx, gy = ctx.hex.to_pixel(ctx.ghost_col, ctx.ghost_row)
         for _, unit in ipairs(state.units or {}) do

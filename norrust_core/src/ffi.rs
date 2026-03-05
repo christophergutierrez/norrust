@@ -14,7 +14,7 @@ use crate::combat::{simulate_combat, time_of_day, TimeOfDay};
 use crate::game_state::{apply_action, apply_recruit, Action, ActionError, GameState, PendingSpawn, TriggerZone};
 use crate::hex::Hex;
 use crate::loader::Registry;
-use crate::pathfinding::{get_zoc_hexes, reachable_hexes};
+use crate::pathfinding::{find_path, get_zoc_hexes, reachable_hexes};
 use crate::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
 use crate::snapshot::{ActionRequest, StateSnapshot};
 use crate::unit::{advance_unit, parse_alignment, Unit};
@@ -811,6 +811,60 @@ pub unsafe extern "C" fn norrust_get_reachable_hexes(
 
     let mut arr: Vec<i32> = Vec::with_capacity(hexes.len() * 2);
     for hex in hexes {
+        let (col, row) = hex.to_offset();
+        arr.push(col);
+        arr.push(row);
+    }
+
+    let len = arr.len() as i32;
+    if !out_len.is_null() { *out_len = len; }
+
+    if arr.is_empty() {
+        return std::ptr::null_mut();
+    }
+
+    let boxed = arr.into_boxed_slice();
+    Box::into_raw(boxed) as *mut i32
+}
+
+/// Find shortest path from a unit's current position to a destination hex.
+/// Returns flat [col, row, col, row, ...] array including start and destination.
+/// Returns null if no path exists.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_find_path(
+    engine: *mut NorRustEngine,
+    unit_id: i32,
+    dest_col: i32,
+    dest_row: i32,
+    out_len: *mut i32,
+) -> *mut i32 {
+    if !out_len.is_null() { *out_len = 0; }
+
+    let Some(e) = engine.as_ref() else { return std::ptr::null_mut() };
+    let Some(state) = e.game.as_ref() else { return std::ptr::null_mut() };
+    let uid = unit_id as u32;
+    let Some(unit) = state.units.get(&uid) else { return std::ptr::null_mut() };
+    let Some(&start) = state.positions.get(&uid) else { return std::ptr::null_mut() };
+
+    let destination = Hex::from_offset(dest_col, dest_row);
+    let zoc = get_zoc_hexes(state, unit.faction);
+    let is_skirmisher = unit.abilities.contains(&"skirmisher".to_string());
+
+    let Some((path, _cost)) = find_path(
+        &state.board,
+        &unit.movement_costs,
+        1,
+        start,
+        destination,
+        unit.movement,
+        &zoc,
+        is_skirmisher,
+    ) else {
+        return std::ptr::null_mut();
+    };
+
+    let mut arr: Vec<i32> = Vec::with_capacity(path.len() * 2);
+    for hex in path {
         let (col, row) = hex.to_offset();
         arr.push(col);
         arr.push(row);

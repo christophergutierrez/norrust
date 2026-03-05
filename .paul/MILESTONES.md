@@ -20,6 +20,39 @@ Completed milestone log for this project.
 | v1.4 Visual Asset System | 2026-03-04 | ~1 day | 5 phases, 5 plans |
 | v1.5 Combat UX | 2026-03-04 | ~1 day | 3 phases, 3 plans |
 | v1.6 Codebase Cleanup | 2026-03-04 | ~1 day | 4 phases, 4 plans |
+| v1.7 Enhanced Unit Sprites | 2026-03-05 | ~1 day | 4 phases, 4 plans |
+
+---
+
+## ✅ v1.7 Enhanced Unit Sprites
+
+**Completed:** 2026-03-05
+**Duration:** ~1 day
+
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 4 |
+| Plans | 4 |
+| Tests | 97 (62 unit + 8 campaign + 3 validation + 23 simulation + 1 FFI) |
+
+### Key Accomplishments
+
+- **AI sprite generation pipeline** — Gemini 2.0 Flash + Python pipeline (generate_sprites.py + unit_prompts.toml) producing 92 PNG sprite files
+- **All 16 unit sprites** — AI-generated spritesheets replacing programmatic stick figures; idle, attack-melee, attack-ranged, defend, death, portrait
+- **Combat animation system** — attack/defend/death animations triggered during gameplay via pending_anims timer
+- **Faction-based unit facing** — chess-style: faction 0 faces right, faction 1 faces left
+- **Ranged ghost attack support** — hex.distance() + get_attackable_enemies() for distance-2 targeting
+
+### Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Gemini 2.0 Flash for sprite generation | Direct API; nana-banana MCP returns text not images |
+| White background + flood-fill removal | More reliable than green screen from AI |
+| Generic animation suffixes + TOML character specifics | Decoupled pipeline; adding units = adding TOML entry |
+| pending_anims timer for animation return | Non-blocking; auto-returns to idle after duration |
 
 ---
 

@@ -148,6 +148,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Combat animations: attack-melee, attack-ranged, defend, death triggered during gameplay with timer-based return to idle — Phase 47 (47-01)
 - [x] Faction-based unit facing (chess-style: faction 0→right, faction 1→left) — Phase 47 (47-01)
 - [x] Ranged attack support in ghost movement: hex.distance() + get_attackable_enemies() with max_range — Phase 47 (47-01)
+- [x] Ghost path visualization: A* path from unit to ghost position displayed as hex highlights + connecting line — Phase 48 (48-01)
+- [x] norrust_find_path FFI exposing Rust A* pathfinder for Lua path queries — Phase 48 (48-01)
 
 ### Active (In Progress / Deferred)
 
@@ -286,4 +288,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-05 after Phase 47 — v1.7 complete. AI sprites, combat animations, faction facing, ranged ghost attacks.*
+*Last updated: 2026-03-05 after Phase 48 — Ghost path visualization via A* FFI.*
