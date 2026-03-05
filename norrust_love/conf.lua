@@ -1,3 +1,6 @@
+-- conf.lua — Love2D configuration: window title, dimensions, and graphics settings.
+
+--- Configure Love2D window and graphics settings.
 function love.conf(t)
     t.window.title = "The Clash for Norrust"
     t.window.width = 1280

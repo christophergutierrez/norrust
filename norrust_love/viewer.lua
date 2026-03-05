@@ -31,17 +31,20 @@ local ZOOM_MAX = 4.0
 -- Scale factor (set from main.lua via viewer.set_scale)
 local ui_scale = 1
 
+--- Return viewport width and height scaled by ui_scale.
 local function get_viewport()
     local w, h = love.graphics.getDimensions()
     return w / ui_scale, h / ui_scale
 end
 
+--- Set the UI scale factor (called from main.lua).
 function viewer.set_scale(s)
     ui_scale = s or 1
 end
 
 -- ── Hex math (for hex-clipped terrain preview) ─────────────────────────
 
+--- Build a flat-top hex polygon vertex list for stencil clipping.
 local function hex_polygon(cx, cy, r)
     local pts = {}
     for i = 0, 5 do
@@ -54,6 +57,7 @@ end
 
 -- ── Build asset list ───────────────────────────────────────────────────
 
+--- Rebuild the sorted asset list from loaded terrain tiles and unit sprites.
 local function build_asset_list()
     asset_list = {}
 
@@ -80,6 +84,7 @@ end
 
 -- ── Select asset ───────────────────────────────────────────────────────
 
+--- Select an asset by index, reset zoom/flip, and initialize animation state.
 local function select_asset(idx)
     if idx < 1 then idx = 1 end
     if idx > #asset_list then idx = #asset_list end
@@ -128,6 +133,7 @@ end
 
 -- ── Lifecycle ──────────────────────────────────────────────────────────
 
+--- Initialize viewer: load fonts, terrain tiles, unit sprites, and select first asset.
 function viewer.load()
     for _, size in ipairs({11, 12, 13, 14, 15, 18, 32}) do
         fonts[size] = love.graphics.newFont(size)
@@ -144,6 +150,7 @@ function viewer.load()
     end
 end
 
+--- Advance the current unit's animation state by dt seconds.
 function viewer.update(dt)
     if anim_state then
         local item = asset_list[selected_idx]
@@ -158,6 +165,7 @@ end
 
 -- ── Drawing ────────────────────────────────────────────────────────────
 
+--- Draw the left sidebar listing all terrain and unit assets.
 local function draw_sidebar()
     local vp_w, vp_h = get_viewport()
 
@@ -211,6 +219,7 @@ local function draw_sidebar()
     love.graphics.line(SIDEBAR_W, 0, SIDEBAR_W, vp_h)
 end
 
+--- Draw the main preview area for a terrain tile (raw image + hex-clipped).
 local function draw_terrain_preview(terrain_id)
     local vp_w, vp_h = get_viewport()
     local img = terrain_tiles[terrain_id]
@@ -272,6 +281,7 @@ local function draw_terrain_preview(terrain_id)
     love.graphics.print(string.format("Zoom: %.0f%%", zoom * 100), SIDEBAR_W + 20, my + 34)
 end
 
+--- Draw the main preview area for a unit sprite (animated frame + spritesheet strip).
 local function draw_unit_preview(def_id)
     local vp_w, vp_h = get_viewport()
     local entry = unit_sprites[def_id]
@@ -365,6 +375,7 @@ local function draw_unit_preview(def_id)
     end
 end
 
+--- Draw the bottom bar showing keyboard controls.
 local function draw_controls_bar()
     local vp_w, vp_h = get_viewport()
 
@@ -376,6 +387,7 @@ local function draw_controls_bar()
     love.graphics.print("Up/Down: select   Left/Right: anim state   +/-: zoom   F: flip   R: reset   Esc: quit", SIDEBAR_W + 10, vp_h - 22)
 end
 
+--- Render the full viewer: sidebar, preview area, and controls bar.
 function viewer.draw()
     draw_sidebar()
 
@@ -393,6 +405,7 @@ end
 
 -- ── Input ──────────────────────────────────────────────────────────────
 
+--- Handle keyboard input: asset selection, animation cycling, zoom, and flip.
 function viewer.keypressed(key)
     if key == "escape" then
         love.event.quit()
@@ -444,6 +457,7 @@ function viewer.keypressed(key)
     end
 end
 
+--- Handle mouse wheel for zoom in/out.
 function viewer.wheelmoved(x, y)
     if y > 0 then
         zoom = math.min(ZOOM_MAX, zoom * 1.15)

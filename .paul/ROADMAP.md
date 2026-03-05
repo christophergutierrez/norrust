@@ -7,15 +7,15 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 ## Current Milestone
 
 **v1.6 Codebase Cleanup**
-Status: 🚧 In Progress
-Phases: 3 of 4 complete
+Status: ✅ Complete
+Phases: 4 of 4 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 40 | Asset Directory Naming | 1/1 | ✅ Complete | 2026-03-04 |
 | 41 | Split main.lua | 1/1 | ✅ Complete | 2026-03-04 |
 | 42 | Rust Documentation | 1/1 | ✅ Complete | 2026-03-04 |
-| 43 | Lua Documentation | TBD | Not started | - |
+| 43 | Lua Documentation | 1/1 | ✅ Complete | 2026-03-04 |
 
 ## v1.6 Phase Details
 
@@ -67,13 +67,20 @@ Phases: 3 of 4 complete
 - /// doc comments on all public items (structs, traits, methods)
 - 97 tests passing (documentation only, no logic changes)
 
-### Phase 43: Lua Documentation
+### Phase 43: Lua Documentation ✅
 
 **Goal:** Add function-level documentation (@param, @return, purpose) to all Lua files. Now smaller and cleaner after Phase 41 split. Follow existing style in assets.lua/animation.lua/toml_parser.lua.
 **Depends on:** Phase 42 (Rust docs done; Lua modules in final form after Phase 41)
+**Completed:** 2026-03-04
 
 **Plans:**
-- TBD (defined during /paul:plan)
+- [x] 43-01: Doc comments on ~120 functions across 6 Lua files
+
+**Delivered:**
+- --- doc comments on all functions in main.lua, conf.lua, norrust.lua, viewer.lua, generate_tiles.lua, generate_sprites.lua
+- draw.lua already documented from Phase 41 extraction
+- Multi-line @param docs for complex functions (draw_humanoid, generate_spritesheet, draw_portrait_generic)
+- 97 tests passing (documentation only, no logic changes)
 
 ---
 

@@ -107,21 +107,25 @@ local fonts = {}
 
 -- ── Scale helpers ────────────────────────────────────────────────────────────
 
+--- Return viewport dimensions scaled by UI_SCALE.
 local function get_viewport()
     local w, h = love.graphics.getDimensions()
     return w / UI_SCALE, h / UI_SCALE
 end
 
+--- Convert screen coordinates to game (viewport) coordinates.
 local function screen_to_game(x, y)
     return x / UI_SCALE, y / UI_SCALE
 end
 
 -- ── Utility helpers ─────────────────────────────────────────────────────────
 
+--- Clamp a value between lo and hi.
 local function clamp(val, lo, hi)
     return math.max(lo, math.min(hi, val))
 end
 
+--- Parse an HTML hex color string (e.g. "#4a7c4e") to {r, g, b} normalized floats.
 local function parse_html_color(hex_str)
     if not hex_str or hex_str == "" then return nil end
     local r = tonumber(hex_str:sub(2, 3), 16) / 255
@@ -130,15 +134,18 @@ local function parse_html_color(hex_str)
     return {r, g, b}
 end
 
+--- Truncate a number to integer (floor).
 local function int(v) return math.floor(v) end
 
 -- ── Camera ──────────────────────────────────────────────────────────────────
 
+--- Clamp camera offset to allowed pan range.
 local function apply_camera_offset()
     camera_offset_x = clamp(camera_offset_x, camera_min_x, camera_max_x)
     camera_offset_y = clamp(camera_offset_y, camera_min_y, camera_max_y)
 end
 
+--- Center camera on the board and compute pan limits.
 local function center_camera()
     local tlx, tly = hex.to_pixel(0, 0)
     local brx, bry = hex.to_pixel(BOARD_COLS - 1, BOARD_ROWS - 1)
@@ -157,11 +164,13 @@ end
 
 -- ── Game logic helpers ──────────────────────────────────────────────────────
 
+--- Clear the combat preview state.
 local function cancel_combat_preview()
     combat_preview = nil
     combat_preview_target = -1
 end
 
+--- Cancel ghost positioning and clear combat preview.
 local function cancel_ghost()
     ghost_col = nil
     ghost_row = nil
@@ -170,6 +179,7 @@ local function cancel_ghost()
     cancel_combat_preview()
 end
 
+--- Deselect everything: unit, reachable hexes, inspection, ghost, and preview.
 local function clear_selection()
     selected_unit_id = -1
     reachable_cells = {}
@@ -179,6 +189,7 @@ local function clear_selection()
     cancel_ghost()
 end
 
+--- Build a "col,row" → {id, faction} lookup from current game state units.
 local function build_unit_pos_map(state)
     local result = {}
     for _, unit in ipairs(state.units or {}) do
@@ -188,6 +199,7 @@ local function build_unit_pos_map(state)
     return result
 end
 
+--- Select a friendly unit: compute reachable hexes and lerp camera to it.
 local function select_unit(uid)
     selected_unit_id = uid
     inspect_unit_id = uid
@@ -212,6 +224,7 @@ local function select_unit(uid)
     end
 end
 
+--- Check if a faction has won and set game_over state.
 local function check_game_over()
     local w = norrust.get_winner(engine)
     if w >= 0 then
@@ -243,6 +256,7 @@ local function ghost_attackable_set()
     return s
 end
 
+--- Commit the ghost position as an actual move via the engine.
 local function commit_ghost_move()
     norrust.apply_move(engine, ghost_unit_id, ghost_col, ghost_row)
     local uid = ghost_unit_id
@@ -255,12 +269,14 @@ local function commit_ghost_move()
     check_game_over()
 end
 
+--- Return 0 for blue setup, 1 for red setup.
 local function faction_index_for_mode()
     return game_mode == SETUP_BLUE and 0 or 1
 end
 
 -- ── Campaign context helpers ────────────────────────────────────────────────
 
+--- Build a mutable context table for campaign_client module calls.
 local function build_campaign_ctx()
     return {
         norrust = norrust, engine = engine, int = int, hex = hex,
@@ -278,6 +294,7 @@ local function build_campaign_ctx()
     }
 end
 
+--- Write back state modified by campaign_client into main.lua locals.
 local function apply_campaign_ctx(ctx)
     BOARD_COLS = ctx.BOARD_COLS
     BOARD_ROWS = ctx.BOARD_ROWS
@@ -291,12 +308,14 @@ local function apply_campaign_ctx(ctx)
     game_mode = ctx.game_mode
 end
 
+--- Load the selected scenario board via campaign_client with ctx writeback.
 local function call_load_scenario()
     local ctx = build_campaign_ctx()
     campaign_client.load_selected_scenario(ctx)
     apply_campaign_ctx(ctx)
 end
 
+--- Load the next campaign scenario via campaign_client with ctx writeback.
 local function call_call_load_campaign_scenario()
     local ctx = build_campaign_ctx()
     campaign_client.load_campaign_scenario(ctx)
@@ -305,6 +324,7 @@ end
 
 -- ── love.load ───────────────────────────────────────────────────────────────
 
+--- Initialize engine, load data/factions/assets, and start at scenario selection.
 function love.load()
     -- Check for generation flags
     for _, arg in ipairs(arg or {}) do
@@ -370,6 +390,7 @@ end
 
 -- ── love.update ─────────────────────────────────────────────────────────────
 
+--- Per-frame update: animate units, handle camera panning and lerp.
 function love.update(dt)
     -- Update unit animations
     for uid, anim_state in pairs(unit_anims) do
@@ -420,6 +441,7 @@ end
 
 -- ── love.draw ───────────────────────────────────────────────────────────────
 
+--- Build draw context from game state and dispatch to draw module.
 function love.draw()
     local state = engine and norrust.get_state(engine) or {}
     local ctx = {
@@ -467,6 +489,7 @@ end
 
 -- ── love.keypressed ─────────────────────────────────────────────────────────
 
+--- Handle keyboard input: scenario selection, setup, and gameplay controls.
 function love.keypressed(key)
     -- Scenario selection
     if game_mode == PICK_SCENARIO then
@@ -659,6 +682,7 @@ end
 
 -- ── love.mousepressed ───────────────────────────────────────────────────────
 
+--- Handle mouse clicks: unit selection, movement, attack, recruitment, and camera drag.
 function love.mousepressed(sx, sy, button)
     local x, y = screen_to_game(sx, sy)
 
@@ -886,6 +910,7 @@ end
 
 -- ── love.mousereleased ──────────────────────────────────────────────────────
 
+--- End camera drag on mouse release.
 function love.mousereleased(x, y, button)
     if button == 1 then
         drag_active = false
@@ -894,6 +919,7 @@ end
 
 -- ── love.mousemoved ─────────────────────────────────────────────────────────
 
+--- Update camera offset during drag.
 function love.mousemoved(sx, sy, dx, dy)
     if drag_active then
         camera_lerping = false
@@ -906,6 +932,7 @@ end
 
 -- ── love.resize ─────────────────────────────────────────────────────────────
 
+--- Re-center camera when window is resized.
 function love.resize(w, h)
     center_camera()
 end

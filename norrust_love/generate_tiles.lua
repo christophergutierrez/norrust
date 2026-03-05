@@ -32,8 +32,12 @@ local function hash(x, y, seed)
     return (n % 1000) / 1000
 end
 
+--- Clamp a value to the 0–1 range.
 local function clamp01(v) return math.max(0, math.min(1, v)) end
 
+--- Generate a single terrain tile image from a terrain definition table.
+--- @param t table Terrain definition with id, r/g/b base color, and pattern type.
+--- @return Image, ImageData The generated Love2D image and raw pixel data.
 local function generate_tile(t)
     local canvas = love.graphics.newCanvas(SIZE, SIZE)
     love.graphics.setCanvas(canvas)
@@ -157,6 +161,7 @@ local function generate_tile(t)
     return love.graphics.newImage(imageData), imageData
 end
 
+--- Generate all terrain tiles and write them as PNGs to assets/terrain/.
 local function run_generator()
     -- Ensure output directory exists
     local dir = "assets/terrain"

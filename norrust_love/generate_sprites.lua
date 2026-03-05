@@ -13,10 +13,12 @@ local function hash(x, y, seed)
     return (n % 1000) / 1000
 end
 
+--- Clamp a value to the 0–1 range.
 local function clamp01(v) return math.max(0, math.min(1, v)) end
 
 -- ── Drawing primitives ─────────────────────────────────────────────────
 
+--- Draw a filled ellipse onto pixel data at (cx, cy) with radii rx, ry.
 local function draw_ellipse(imageData, cx, cy, rx, ry, r, g, b, a)
     a = a or 1
     local x0 = math.max(0, math.floor(cx - rx))
@@ -34,6 +36,7 @@ local function draw_ellipse(imageData, cx, cy, rx, ry, r, g, b, a)
     end
 end
 
+--- Draw a filled rectangle onto pixel data at (x, y) with size w×h.
 local function draw_rect(imageData, x, y, w, h, r, g, b, a)
     a = a or 1
     local x0 = math.max(0, math.floor(x))
@@ -47,6 +50,7 @@ local function draw_rect(imageData, x, y, w, h, r, g, b, a)
     end
 end
 
+--- Draw a thick line between two points using ellipse stamping.
 local function draw_line(imageData, x0, y0, x1, y1, thickness, r, g, b, a)
     a = a or 1
     local dx = x1 - x0
@@ -64,6 +68,7 @@ end
 
 -- ── Weapon drawing functions ─────────────────────────────────────────
 
+--- Draw a spear weapon (shaft + pointed tip) at the hand position.
 local function weapon_spear(imageData, hx, hy, pose, colors, alpha)
     local shaft = colors.shaft or {0.50, 0.38, 0.22}
     local tip   = colors.tip   or {0.70, 0.72, 0.75}
@@ -74,6 +79,7 @@ local function weapon_spear(imageData, hx, hy, pose, colors, alpha)
     draw_ellipse(imageData, ex, ey, 4, 8, tip[1], tip[2], tip[3], alpha)
 end
 
+--- Draw a sword weapon (blade + crossguard) at the hand position.
 local function weapon_sword(imageData, hx, hy, pose, colors, alpha)
     local blade = colors.blade or {0.75, 0.78, 0.80}
     local guard = colors.guard or {0.45, 0.35, 0.20}
@@ -87,6 +93,7 @@ local function weapon_sword(imageData, hx, hy, pose, colors, alpha)
     draw_line(imageData, mx - 8, my, mx + 8, my, 4, guard[1], guard[2], guard[3], alpha)
 end
 
+--- Draw a greatsword weapon (wide blade + large crossguard) at the hand position.
 local function weapon_greatsword(imageData, hx, hy, pose, colors, alpha)
     local blade = colors.blade or {0.65, 0.68, 0.70}
     local guard = colors.guard or {0.40, 0.30, 0.18}
@@ -98,6 +105,7 @@ local function weapon_greatsword(imageData, hx, hy, pose, colors, alpha)
     draw_line(imageData, mx - 10, my, mx + 10, my, 5, guard[1], guard[2], guard[3], alpha)
 end
 
+--- Draw a bow weapon (curved limb + bowstring) at the hand position.
 local function weapon_bow(imageData, hx, hy, pose, colors, alpha)
     local wood   = colors.wood   or {0.55, 0.38, 0.20}
     local string_c = colors.string or {0.80, 0.78, 0.72}
@@ -113,6 +121,7 @@ local function weapon_bow(imageData, hx, hy, pose, colors, alpha)
     draw_line(imageData, top_x, top_y, bot_x, bot_y, 2, string_c[1], string_c[2], string_c[3], alpha)
 end
 
+--- Draw a staff weapon (shaft + glowing orb) at the hand position.
 local function weapon_staff(imageData, hx, hy, pose, colors, alpha)
     local shaft = colors.shaft or {0.45, 0.30, 0.18}
     local orb   = colors.orb   or {0.40, 0.60, 0.90}
@@ -123,6 +132,7 @@ local function weapon_staff(imageData, hx, hy, pose, colors, alpha)
     draw_ellipse(imageData, ex, ey, 7, 7, orb[1], orb[2], orb[3], alpha)
 end
 
+--- Draw a mace weapon (shaft + round head) at the hand position.
 local function weapon_mace(imageData, hx, hy, pose, colors, alpha)
     local shaft = colors.shaft or {0.45, 0.35, 0.22}
     local head  = colors.head  or {0.55, 0.55, 0.58}
@@ -133,6 +143,7 @@ local function weapon_mace(imageData, hx, hy, pose, colors, alpha)
     draw_ellipse(imageData, ex, ey, 8, 8, head[1], head[2], head[3], alpha)
 end
 
+--- Draw a dagger weapon (short blade + small crossguard) at the hand position.
 local function weapon_dagger(imageData, hx, hy, pose, colors, alpha)
     local blade = colors.blade or {0.72, 0.74, 0.76}
     local guard = colors.guard or {0.40, 0.30, 0.18}
@@ -144,6 +155,7 @@ local function weapon_dagger(imageData, hx, hy, pose, colors, alpha)
     draw_line(imageData, mx - 5, my, mx + 5, my, 3, guard[1], guard[2], guard[3], alpha)
 end
 
+--- Draw a crossbow weapon (stock + limbs + string) at the hand position.
 local function weapon_crossbow(imageData, hx, hy, pose, colors, alpha)
     local wood   = colors.wood   or {0.50, 0.35, 0.20}
     local string_c = colors.string or {0.78, 0.76, 0.70}
@@ -161,6 +173,12 @@ end
 
 -- ── Generic humanoid drawing ─────────────────────────────────────────
 
+--- Draw a full humanoid figure (legs, torso, head, arms, weapon) onto pixel data.
+--- @param imageData ImageData Target pixel buffer.
+--- @param ox number Horizontal anchor (center foot).
+--- @param oy number Vertical anchor (ground level).
+--- @param config table Body colors, scale, and weapon draw function.
+--- @param pose table Frame-specific offsets (lean, arm, leg, crouch, weapon).
 local function draw_humanoid(imageData, ox, oy, config, pose)
     local lean = pose.body_lean or 0
     local arm_dx = pose.arm_dx or 0
@@ -224,6 +242,9 @@ end
 
 -- ── Generic portrait drawing ─────────────────────────────────────────
 
+--- Generate a portrait ImageData showing head, shoulders, and optional weapon hint.
+--- @param config table Body colors and optional portrait_weapon draw function.
+--- @return ImageData The rendered portrait pixel data.
 local function draw_portrait_generic(config)
     local size = FRAME_SIZE
     local imageData = love.image.newImageData(size, size)
@@ -262,6 +283,7 @@ end
 
 -- ── Portrait weapon hints ────────────────────────────────────────────
 
+--- Draw a spear hint in the portrait margin.
 local function portrait_spear(imageData, cx, cy, colors)
     local shaft = colors.shaft or {0.50, 0.38, 0.22}
     local tip   = colors.tip   or {0.70, 0.72, 0.75}
@@ -269,6 +291,7 @@ local function portrait_spear(imageData, cx, cy, colors)
     draw_ellipse(imageData, cx + 46, cy - 65, 5, 10, tip[1], tip[2], tip[3])
 end
 
+--- Draw a sword hint in the portrait margin.
 local function portrait_sword(imageData, cx, cy, colors)
     local blade = colors.blade or {0.75, 0.78, 0.80}
     local guard = colors.guard or {0.45, 0.35, 0.20}
@@ -276,6 +299,7 @@ local function portrait_sword(imageData, cx, cy, colors)
     draw_line(imageData, cx + 35, cy + 20, cx + 50, cy + 20, 4, guard[1], guard[2], guard[3])
 end
 
+--- Draw a bow hint in the portrait margin.
 local function portrait_bow(imageData, cx, cy, colors)
     local wood = colors.wood or {0.55, 0.38, 0.20}
     draw_line(imageData, cx + 42, cy - 60, cx + 38, cy + 30, 4, wood[1], wood[2], wood[3])
@@ -283,6 +307,7 @@ local function portrait_bow(imageData, cx, cy, colors)
     draw_line(imageData, cx + 38, cy + 30, cx + 50, cy - 15, 2, 0.80, 0.78, 0.72)
 end
 
+--- Draw a staff hint in the portrait margin.
 local function portrait_staff(imageData, cx, cy, colors)
     local shaft = colors.shaft or {0.45, 0.30, 0.18}
     local orb   = colors.orb   or {0.40, 0.60, 0.90}
@@ -290,6 +315,7 @@ local function portrait_staff(imageData, cx, cy, colors)
     draw_ellipse(imageData, cx + 41, cy - 60, 9, 9, orb[1], orb[2], orb[3])
 end
 
+--- Draw a mace hint in the portrait margin.
 local function portrait_mace(imageData, cx, cy, colors)
     local shaft = colors.shaft or {0.45, 0.35, 0.22}
     local head  = colors.head  or {0.55, 0.55, 0.58}
@@ -297,18 +323,21 @@ local function portrait_mace(imageData, cx, cy, colors)
     draw_ellipse(imageData, cx + 41, cy - 50, 10, 10, head[1], head[2], head[3])
 end
 
+--- Draw a dagger hint in the portrait margin.
 local function portrait_dagger(imageData, cx, cy, colors)
     local blade = colors.blade or {0.72, 0.74, 0.76}
     draw_line(imageData, cx + 42, cy - 20, cx + 45, cy + 15, 4, blade[1], blade[2], blade[3])
     draw_line(imageData, cx + 37, cy + 15, cx + 50, cy + 15, 3, 0.40, 0.30, 0.18)
 end
 
+--- Draw a crossbow hint in the portrait margin.
 local function portrait_crossbow(imageData, cx, cy, colors)
     local wood = colors.wood or {0.50, 0.35, 0.20}
     draw_line(imageData, cx + 30, cy - 10, cx + 55, cy - 10, 5, wood[1], wood[2], wood[3])
     draw_line(imageData, cx + 55, cy - 25, cx + 55, cy + 5, 4, wood[1], wood[2], wood[3])
 end
 
+--- Draw a greatsword hint in the portrait margin.
 local function portrait_greatsword(imageData, cx, cy, colors)
     local blade = colors.blade or {0.65, 0.68, 0.70}
     local guard = colors.guard or {0.40, 0.30, 0.18}
@@ -319,6 +348,7 @@ end
 -- ── Animation frame factories ────────────────────────────────────────
 
 -- Idle: subtle body sway (shared by all)
+--- Return idle animation pose frames (subtle body sway).
 local function make_idle_frames()
     return {
         {body_lean = 0, arm_dx = 0, arm_dy = 0, weapon_dx = 2, weapon_dy = -90, leg_spread = 0, crouch = 0},
@@ -329,6 +359,7 @@ local function make_idle_frames()
 end
 
 -- Defend: brace → shield up → hold (shared by all)
+--- Return defend animation pose frames (brace and shield up).
 local function make_defend_frames()
     return {
         {body_lean = -2, arm_dx = -5, arm_dy = 0, weapon_dx = -10, weapon_dy = -70, leg_spread = 4, crouch = 5},
@@ -338,6 +369,7 @@ local function make_defend_frames()
 end
 
 -- Death: stagger → fall (shared by all)
+--- Return death animation pose frames (stagger and fall with fade).
 local function make_death_frames()
     return {
         {body_lean = 3, arm_dx = 5, arm_dy = 5, weapon_dx = 10, weapon_dy = -70, leg_spread = 2, crouch = 3, alpha = 1},
@@ -348,6 +380,7 @@ local function make_death_frames()
 end
 
 -- Melee thrust: wind up → thrust → recover (spear-style)
+--- Return melee thrust pose frames (wind up, thrust forward, recover).
 local function make_melee_thrust_frames()
     return {
         {body_lean = -3, arm_dx = -8, arm_dy = -5, weapon_dx = -10, weapon_dy = -85, leg_spread = 2, crouch = 0},
@@ -360,6 +393,7 @@ local function make_melee_thrust_frames()
 end
 
 -- Melee swing: wind up → slash → recover (sword/mace/dagger-style)
+--- Return melee swing pose frames (wind up, slash arc, recover).
 local function make_melee_swing_frames()
     return {
         {body_lean = -2, arm_dx = -5, arm_dy = -15, weapon_dx = -5, weapon_dy = -55, leg_spread = 2, crouch = 0},
@@ -372,6 +406,7 @@ local function make_melee_swing_frames()
 end
 
 -- Ranged throw: raise → throw (javelin/knives)
+--- Return ranged throw pose frames (raise and throw javelin/knives).
 local function make_ranged_throw_frames()
     return {
         {body_lean = -2, arm_dx = -5, arm_dy = -15, weapon_dx = 0, weapon_dy = -80, leg_spread = 2, crouch = 0},
@@ -382,6 +417,7 @@ local function make_ranged_throw_frames()
 end
 
 -- Ranged draw: nock → draw → release (bow)
+--- Return ranged bow draw pose frames (nock, draw, release).
 local function make_ranged_draw_frames()
     return {
         {body_lean = -1, arm_dx = 5, arm_dy = -5, weapon_dx = 10, weapon_dy = -50, leg_spread = 2, crouch = 0},
@@ -392,6 +428,7 @@ local function make_ranged_draw_frames()
 end
 
 -- Ranged cast: charge → release (staff/missile)
+--- Return ranged cast pose frames (charge staff and release).
 local function make_ranged_cast_frames()
     return {
         {body_lean = -1, arm_dx = -3, arm_dy = -10, weapon_dx = 0, weapon_dy = -85, leg_spread = 2, crouch = 0},
@@ -402,6 +439,7 @@ local function make_ranged_cast_frames()
 end
 
 -- Ranged crossbow: aim → fire
+--- Return ranged crossbow pose frames (aim and fire).
 local function make_ranged_crossbow_frames()
     return {
         {body_lean = 0, arm_dx = 8, arm_dy = -5, weapon_dx = 20, weapon_dy = -15, leg_spread = 2, crouch = 1},
@@ -413,6 +451,12 @@ end
 
 -- ── Spritesheet generator ──────────────────────────────────────────────
 
+--- Render a horizontal spritesheet from a list of pose frames.
+--- @param frames table List of pose tables for each animation frame.
+--- @param frame_w number Width of each frame in pixels.
+--- @param frame_h number Height of each frame in pixels.
+--- @param config table Humanoid config (colors, scale, weapon).
+--- @return ImageData The rendered spritesheet pixel data.
 local function generate_spritesheet(frames, frame_w, frame_h, config)
     local total_w = frame_w * #frames
     local imageData = love.image.newImageData(total_w, frame_h)
@@ -761,6 +805,7 @@ end
 
 -- ── Main generator ─────────────────────────────────────────────────────
 
+--- Generate all unit spritesheets and portraits, writing PNGs to assets/units/.
 local function run_generator()
     love.filesystem.createDirectory("assets")
     love.filesystem.createDirectory("assets/units")
