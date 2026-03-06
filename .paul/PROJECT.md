@@ -157,6 +157,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Alphabetical faction ordering (Elves, Loyalists, Orcs) in selection screen — Phase 51 (51-01)
 - [x] Scroll wheel board zoom (0.5x to 3.0x) with zoom-aware click, pan, and camera lerp — Phase 52 (52-01)
 - [x] Combat preview damage_per_hit includes ToD modifier for consistent display — Phase 52 (52-01)
+- [x] Board rendering scissor-clipped at right panel edge — no units hidden under sidebar — Phase 53 (53-01)
+- [x] Click input guarded against panel region — clicks in sidebar don't hit board hexes — Phase 53 (53-01)
 
 ### Active (In Progress / Deferred)
 
@@ -279,6 +281,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | table.sort factions by name after engine load | Consistent alphabetical order; Rust returns arbitrary order from Vec | 2026-03-05 | Active |
 | translate→scale→translate for zoom transform | Clean separation: origin centers, zoom scales, offset pans in board-space | 2026-03-05 | Active |
 | Effective viewport = vp/zoom for pan bounds | Zooming in needs more pan range; automatic adjustment | 2026-03-05 | Active |
+| setScissor in pixel coords for board clipping | UI_SCALE-divided coords don't work with Love2D scissor API | 2026-03-05 | Active |
+| Single click guard at top of mousepressed | Covers all click paths (right-click, setup, playing) with one check | 2026-03-05 | Active |
 
 ## Tech Stack
 
@@ -298,4 +302,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-05 after Phase 52 — v1.9 UI Polish in progress.*
+*Last updated: 2026-03-05 after Phase 53 — v1.9 UI Polish complete.*

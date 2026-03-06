@@ -953,6 +953,10 @@ function love.mousepressed(sx, sy, button)
 
     local x, y = screen_to_game(sx, sy)
 
+    -- Ignore clicks in the right panel area (rightmost 200px of viewport)
+    local vp_w = select(1, get_viewport())
+    if x >= vp_w - 200 then return end
+
     -- Right-click: terrain inspection (any mode with a board)
     if button == 2 and game_mode == PLAYING and not game_over then
         local local_x = (x - board_origin_x) / camera_zoom - camera_offset_x

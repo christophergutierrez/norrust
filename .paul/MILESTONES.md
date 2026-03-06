@@ -22,6 +22,39 @@ Completed milestone log for this project.
 | v1.6 Codebase Cleanup | 2026-03-04 | ~1 day | 4 phases, 4 plans |
 | v1.7 Enhanced Unit Sprites | 2026-03-05 | ~1 day | 4 phases, 4 plans |
 | v1.8 Movement & Animation Polish | 2026-03-05 | ~1 day | 3 phases, 3 plans |
+| v1.9 UI Polish | 2026-03-05 | ~1 day | 3 phases, 3 plans |
+
+---
+
+## ✅ v1.9 UI Polish
+
+**Completed:** 2026-03-05
+**Duration:** ~1 day
+
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 3 |
+| Plans | 3 |
+| Tests | 97 (62 unit + 8 campaign + 3 validation + 23 simulation + 1 FFI) |
+
+### Key Accomplishments
+
+- **Maximized window on launch** — love.window.maximize() preserving title bar close button
+- **Alphabetical faction order** — Elves, Loyalists, Orcs consistently sorted
+- **Scroll wheel board zoom** — 0.5x to 3.0x with zoom-aware click, pan, camera lerp
+- **Viewport clipping** — board rendering scissor-clipped at right panel edge; no units hidden under sidebar
+- **Combat preview fix** — damage_per_hit now includes ToD modifier for consistent display
+
+### Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| love.window.maximize() not desktop fullscreen | Preserves title bar with close button |
+| translate→scale→translate zoom transform | Clean separation: origin centers, zoom scales, offset pans |
+| setScissor in pixel coords for clipping | Love2D scissor API uses window pixels, not UI_SCALE coords |
+| Single click guard at top of mousepressed | One check covers all click paths |
 
 ---
 
@@ -469,4 +502,4 @@ Completed milestone log for this project.
 - Full Wesnoth-style combat: adjacency enforcement, bidirectional retaliation, time-of-day modifiers, resistances
 
 ---
-*MILESTONES.md — Updated: 2026-03-05 (v1.8 Movement & Animation Polish)*
+*MILESTONES.md — Updated: 2026-03-05 (v1.9 UI Polish)*

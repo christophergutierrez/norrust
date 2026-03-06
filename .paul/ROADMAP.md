@@ -7,14 +7,14 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 ## Current Milestone
 
 **v1.9 UI Polish**
-Status: 🚧 In Progress
-Phases: 2 of 3 complete
+Status: ✅ Complete
+Phases: 3 of 3 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 51 | Fullscreen & Faction Order | 1 | ✅ Complete | 2026-03-05 |
 | 52 | Board Zoom | 1 | ✅ Complete | 2026-03-05 |
-| 53 | Viewport Clipping | TBD | Not started | - |
+| 53 | Viewport Clipping | 1 | ✅ Complete | 2026-03-05 |
 
 ## v1.9 Phase Details
 

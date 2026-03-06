@@ -528,6 +528,11 @@ function draw.draw_frame(ctx, state)
         tile_ids[key] = tile.terrain_id
     end
 
+    -- Clip board rendering at panel edge (scissor in pixel coords)
+    local panel_w = 200
+    local sw, sh = love.graphics.getDimensions()
+    love.graphics.setScissor(0, 0, sw - panel_w * ctx.UI_SCALE, sh)
+
     -- Board-space drawing (push camera transform with zoom)
     local zoom = ctx.camera_zoom or 1.0
     love.graphics.push()
@@ -680,6 +685,7 @@ function draw.draw_frame(ctx, state)
     end
 
     love.graphics.pop() -- back to screen space
+    love.graphics.setScissor() -- clear scissor for UI drawing
 
     -- ── Screen-space UI ─────────────────────────────────────────────────
 
