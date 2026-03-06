@@ -198,9 +198,15 @@ ffi.cdef[[
     // Combat preview
     char* norrust_simulate_combat(NorRustEngine* engine, int32_t attacker_id, int32_t defender_id, int32_t attacker_col, int32_t attacker_row, int32_t num_sims);
 
+    // Trigger zones
+    char* norrust_get_trigger_zones_fired(NorRustEngine* engine);
+    void norrust_set_trigger_zone_fired(NorRustEngine* engine, int32_t index, int32_t fired);
+
     // Dialogue
     int32_t norrust_load_dialogue(NorRustEngine* engine, const char* path);
     char* norrust_get_dialogue(NorRustEngine* engine, const char* trigger, uint32_t turn, uint8_t faction, int32_t col, int32_t row);
+    char* norrust_get_dialogue_fired(NorRustEngine* engine);
+    void norrust_set_dialogue_fired(NorRustEngine* engine, const char* ids_json);
 ]]
 
 -- ── Load shared library ─────────────────────────────────────────────────────
@@ -517,6 +523,19 @@ function M.simulate_combat(engine, attacker_id, defender_id, attacker_col, attac
     return json_decode(raw)
 end
 
+-- ── Trigger zones ─────────────────────────────────────────────────────────
+
+--- Get fired state of all trigger zones as a table of booleans.
+function M.get_trigger_zones_fired(engine)
+    local raw = get_string(lib.norrust_get_trigger_zones_fired(engine))
+    return json_decode(raw) or {}
+end
+
+--- Set the fired flag on a trigger zone by 0-based index.
+function M.set_trigger_zone_fired(engine, index, fired)
+    lib.norrust_set_trigger_zone_fired(engine, index, fired and 1 or 0)
+end
+
 -- ── Dialogue ──────────────────────────────────────────────────────────────
 
 --- Load a dialogue TOML file for the current scenario.
@@ -529,6 +548,17 @@ end
 function M.get_dialogue(engine, trigger, turn, faction, col, row)
     local raw = get_string(lib.norrust_get_dialogue(engine, trigger, turn, faction, col or -1, row or -1))
     return json_decode(raw) or {}
+end
+
+--- Get fired dialogue IDs as a table of strings.
+function M.get_dialogue_fired(engine)
+    local raw = get_string(lib.norrust_get_dialogue_fired(engine))
+    return json_decode(raw) or {}
+end
+
+--- Mark dialogue entries as fired from a JSON array string.
+function M.set_dialogue_fired(engine, ids_json)
+    lib.norrust_set_dialogue_fired(engine, ids_json)
 end
 
 --- Manually free an engine instance (normally handled by GC).

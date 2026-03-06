@@ -99,6 +99,16 @@ impl DialogueState {
     pub fn reset(&mut self) {
         self.fired.clear();
     }
+
+    /// Return the set of fired dialogue IDs (for save serialization).
+    pub fn fired_ids(&self) -> Vec<&String> {
+        self.fired.iter().collect()
+    }
+
+    /// Mark a dialogue entry as fired by ID (for save restoration).
+    pub fn mark_fired(&mut self, id: &str) {
+        self.fired.insert(id.to_string());
+    }
 }
 
 #[cfg(test)]

@@ -857,9 +857,21 @@ function love.keypressed(key)
     -- Block input during movement animation
     if pending_anims.move or pending_anims.combat_slide then return end
 
+    -- Build campaign context for save (nil if not in campaign)
+    local function build_save_campaign_ctx()
+        if not campaign_active then return nil end
+        return {
+            file = CAMPAIGNS[1].file,
+            index = campaign_index,
+            gold = campaign_gold,
+            veterans = campaign_veterans,
+            faction_id = faction_id,
+        }
+    end
+
     -- Save/Load (available from any mode)
     if key == "f5" and game_mode == PLAYING then
-        local filename = save.write_save(engine, norrust, scenario_board, scenarios_path)
+        local filename = save.write_save(engine, norrust, scenario_board, scenarios_path, build_save_campaign_ctx())
         if filename then
             status_message = "Saved: " .. filename
         else
@@ -883,6 +895,23 @@ function love.keypressed(key)
                 BOARD_COLS = int(state.cols or 8)
                 BOARD_ROWS = int(state.rows or 5)
                 center_camera()
+                -- Restore campaign context if present
+                if data.campaign then
+                    local c = data.campaign
+                    campaign_active = true
+                    campaign_data = norrust.load_campaign(engine, campaigns_path .. "/" .. c.campaign_file)
+                    campaign_index = int(c.campaign_index)
+                    campaign_gold = int(c.campaign_gold)
+                    faction_id = {c.faction_id_0, c.faction_id_1}
+                    -- Restore veterans
+                    campaign_veterans = data.veterans or {}
+                else
+                    campaign_active = false
+                    campaign_data = nil
+                    campaign_index = 0
+                    campaign_veterans = {}
+                    campaign_gold = 0
+                end
                 game_mode = PLAYING
                 status_message = "Loaded: " .. filepath
             else
@@ -990,11 +1019,15 @@ function love.keypressed(key)
                 else
                     -- Campaign complete — return to scenario selection
                     campaign_active = false
+                    game_over = false
+                    winner_faction = -1
                     game_mode = PICK_SCENARIO
                 end
             else
                 -- Individual scenario win/loss, or campaign defeat
                 campaign_active = false
+                game_over = false
+                winner_faction = -1
                 game_mode = PICK_SCENARIO
             end
         end
@@ -1040,6 +1073,9 @@ function love.keypressed(key)
         end
 
     elseif key == "e" then
+        -- Auto-save before ending turn
+        save.write_save(engine, norrust, scenario_board, scenarios_path, build_save_campaign_ctx())
+
         events.emit("dialogue", {trigger = "turn_end"})
 
         -- End turn + AI

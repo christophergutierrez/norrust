@@ -22,6 +22,15 @@ local function toml_value(v)
     return tostring(v)
 end
 
+--- Serialize a Lua array to a TOML inline array string.
+local function toml_array(arr)
+    local items = {}
+    for _, v in ipairs(arr) do
+        items[#items + 1] = toml_value(v)
+    end
+    return "[" .. table.concat(items, ", ") .. "]"
+end
+
 --- Serialize a save data table to TOML string.
 --- Expects: {game = {key=val,...}, units = {{key=val,...}, ...}}
 function save.serialize_toml(data)
@@ -38,11 +47,48 @@ function save.serialize_toml(data)
         lines[#lines + 1] = ""
     end
 
+    -- [campaign] section (optional)
+    if data.campaign then
+        lines[#lines + 1] = "[campaign]"
+        local camp_order = {"campaign_file", "campaign_index", "campaign_gold", "faction_id_0", "faction_id_1"}
+        for _, k in ipairs(camp_order) do
+            if data.campaign[k] ~= nil then
+                lines[#lines + 1] = k .. " = " .. toml_value(data.campaign[k])
+            end
+        end
+        lines[#lines + 1] = ""
+    end
+
+    -- [state] section (trigger zones + dialogue fired)
+    if data.state then
+        lines[#lines + 1] = "[state]"
+        if data.state.trigger_zones_fired then
+            lines[#lines + 1] = "trigger_zones_fired = " .. toml_array(data.state.trigger_zones_fired)
+        end
+        if data.state.dialogue_fired then
+            lines[#lines + 1] = "dialogue_fired = " .. toml_array(data.state.dialogue_fired)
+        end
+        lines[#lines + 1] = ""
+    end
+
+    -- [[veterans]] array-of-tables (campaign carry-over units)
+    if data.veterans then
+        for _, vet in ipairs(data.veterans) do
+            lines[#lines + 1] = "[[veterans]]"
+            local vet_order = {"def_id", "hp", "xp", "xp_needed", "advancement_pending"}
+            for _, k in ipairs(vet_order) do
+                if vet[k] ~= nil then
+                    lines[#lines + 1] = k .. " = " .. toml_value(vet[k])
+                end
+            end
+            lines[#lines + 1] = ""
+        end
+    end
+
     -- [[units]] array-of-tables
     if data.units then
         for _, unit in ipairs(data.units) do
             lines[#lines + 1] = "[[units]]"
-            -- Write fields in a consistent order
             local order = {"id", "def_id", "faction", "col", "row", "hp", "max_hp", "xp", "xp_needed", "moved", "attacked"}
             for _, k in ipairs(order) do
                 if unit[k] ~= nil then
@@ -59,8 +105,9 @@ end
 -- ── Save ────────────────────────────────────────────────────────────────────
 
 --- Save the current game state to a TOML file.
+--- campaign_ctx: nil for standalone, or {file, index, gold, veterans, faction_id}
 --- Returns the filename on success, nil on failure.
-function save.write_save(engine, norrust, scenario_board, scenarios_path)
+function save.write_save(engine, norrust, scenario_board, scenarios_path, campaign_ctx)
     local state = norrust.get_state(engine)
     if not state then return nil end
 
@@ -86,6 +133,41 @@ function save.write_save(engine, norrust, scenario_board, scenarios_path)
     end
     if state.max_turns then
         data.game.max_turns = int(state.max_turns)
+    end
+
+    -- Campaign context
+    if campaign_ctx then
+        data.campaign = {
+            campaign_file = campaign_ctx.file,
+            campaign_index = int(campaign_ctx.index),
+            campaign_gold = int(campaign_ctx.gold),
+            faction_id_0 = campaign_ctx.faction_id[1],
+            faction_id_1 = campaign_ctx.faction_id[2],
+        }
+        -- Veterans from previous scenarios
+        if campaign_ctx.veterans and #campaign_ctx.veterans > 0 then
+            data.veterans = {}
+            for _, vet in ipairs(campaign_ctx.veterans) do
+                data.veterans[#data.veterans + 1] = {
+                    def_id = vet.def_id,
+                    hp = int(vet.hp),
+                    xp = int(vet.xp),
+                    xp_needed = int(vet.xp_needed),
+                    advancement_pending = vet.advancement_pending,
+                }
+            end
+        end
+    end
+
+    -- Trigger zone and dialogue fired state
+    data.state = {}
+    local tz_fired = norrust.get_trigger_zones_fired(engine)
+    if #tz_fired > 0 then
+        data.state.trigger_zones_fired = tz_fired
+    end
+    local dlg_fired = norrust.get_dialogue_fired(engine)
+    if #dlg_fired > 0 then
+        data.state.dialogue_fired = dlg_fired
     end
 
     for _, u in ipairs(state.units or {}) do
@@ -126,12 +208,41 @@ end
 
 -- ── Load ────────────────────────────────────────────────────────────────────
 
---- Parse a TOML save file that uses [[units]] array-of-tables.
---- Returns a table with game={...} and units={{...}, ...}.
+--- Parse a TOML inline array value like [true, false, "hello"].
+local function parse_toml_array(s)
+    local inner = s:match("^%[(.*)%]$")
+    if not inner then return nil end
+    local arr = {}
+    for item in inner:gmatch("[^,]+") do
+        item = item:match("^%s*(.-)%s*$")
+        if item == "true" then
+            arr[#arr + 1] = true
+        elseif item == "false" then
+            arr[#arr + 1] = false
+        else
+            local str = item:match('^"(.*)"$')
+            if str then
+                arr[#arr + 1] = str
+            else
+                local num = tonumber(item)
+                if num then
+                    arr[#arr + 1] = num
+                else
+                    arr[#arr + 1] = item
+                end
+            end
+        end
+    end
+    return arr
+end
+
+--- Parse a TOML save file with [[units]], [[veterans]], and inline arrays.
+--- Returns a table with game={...}, units={{...},...}, campaign={...}, state={...}, veterans={{...},...}.
 local function parse_save_toml(text)
-    local result = {game = {}, units = {}}
-    local current_section = nil  -- "game" or nil
-    local current_unit = nil     -- table being built for current [[units]] block
+    local result = {game = {}, units = {}, veterans = {}}
+    local current_section = nil
+    local current_aot = nil       -- "units" or "veterans"
+    local current_aot_entry = nil  -- table being built for current array-of-tables block
 
     for line in text:gmatch("[^\r\n]+") do
         -- Strip comments
@@ -148,24 +259,28 @@ local function parse_save_toml(text)
         line = line:match("^%s*(.-)%s*$")
 
         if line ~= "" then
-            -- [[units]] array-of-tables
+            -- [[array-of-tables]]
             local aot = line:match("^%[%[([^%]]+)%]%]$")
             if aot then
                 aot = aot:match("^%s*(.-)%s*$")
-                if aot == "units" then
-                    if current_unit then
-                        result.units[#result.units + 1] = current_unit
-                    end
-                    current_unit = {}
-                    current_section = nil
+                -- Flush previous entry
+                if current_aot_entry and current_aot then
+                    if not result[current_aot] then result[current_aot] = {} end
+                    result[current_aot][#result[current_aot] + 1] = current_aot_entry
                 end
+                current_aot = aot
+                current_aot_entry = {}
+                current_section = nil
             else
                 -- [section] header
                 local section = line:match("^%[([^%]]+)%]$")
                 if section then
-                    if current_unit then
-                        result.units[#result.units + 1] = current_unit
-                        current_unit = nil
+                    -- Flush previous array-of-tables entry
+                    if current_aot_entry and current_aot then
+                        if not result[current_aot] then result[current_aot] = {} end
+                        result[current_aot][#result[current_aot] + 1] = current_aot_entry
+                        current_aot_entry = nil
+                        current_aot = nil
                     end
                     section = section:match("^%s*(.-)%s*$")
                     current_section = section
@@ -177,25 +292,30 @@ local function parse_save_toml(text)
                     local key, value = line:match("^([%w_%-]+)%s*=%s*(.+)$")
                     if key and value then
                         local parsed
-                        -- String
-                        local str = value:match('^"(.*)"$')
-                        if str then
-                            parsed = str
+                        -- Inline array
+                        if value:sub(1, 1) == "[" then
+                            parsed = parse_toml_array(value)
                         else
-                            local num = tonumber(value)
-                            if num then
-                                parsed = num
-                            elseif value == "true" then
-                                parsed = true
-                            elseif value == "false" then
-                                parsed = false
+                            -- String
+                            local str = value:match('^"(.*)"$')
+                            if str then
+                                parsed = str
                             else
-                                parsed = value
+                                local num = tonumber(value)
+                                if num then
+                                    parsed = num
+                                elseif value == "true" then
+                                    parsed = true
+                                elseif value == "false" then
+                                    parsed = false
+                                else
+                                    parsed = value
+                                end
                             end
                         end
 
-                        if current_unit then
-                            current_unit[key] = parsed
+                        if current_aot_entry then
+                            current_aot_entry[key] = parsed
                         elseif current_section and result[current_section] then
                             result[current_section][key] = parsed
                         end
@@ -205,9 +325,10 @@ local function parse_save_toml(text)
         end
     end
 
-    -- Flush last unit if any
-    if current_unit then
-        result.units[#result.units + 1] = current_unit
+    -- Flush last array-of-tables entry
+    if current_aot_entry and current_aot then
+        if not result[current_aot] then result[current_aot] = {} end
+        result[current_aot][#result[current_aot] + 1] = current_aot_entry
     end
 
     return result
@@ -260,6 +381,28 @@ function save.load_save(engine, norrust, filepath, center_camera_fn)
     norrust.set_faction_gold(engine, 1, int(g.gold_1))
     norrust.set_turn(engine, int(g.turn))
     norrust.set_active_faction(engine, int(g.active_faction))
+
+    -- Restore trigger zone fired state
+    if data.state and data.state.trigger_zones_fired then
+        for i, fired in ipairs(data.state.trigger_zones_fired) do
+            if fired then
+                norrust.set_trigger_zone_fired(engine, i - 1, true)
+            end
+        end
+    end
+
+    -- Restore dialogue fired state
+    if data.state and data.state.dialogue_fired and #data.state.dialogue_fired > 0 then
+        -- Load dialogue file first (derived from board filename)
+        local dialogue_path = g.scenarios_path .. "/" .. g.board_path:gsub("%.toml$", "_dialogue.toml")
+        norrust.load_dialogue(engine, dialogue_path)
+        -- Build JSON array and pass to FFI
+        local items = {}
+        for _, id in ipairs(data.state.dialogue_fired) do
+            items[#items + 1] = '"' .. id:gsub('\\', '\\\\'):gsub('"', '\\"') .. '"'
+        end
+        norrust.set_dialogue_fired(engine, "[" .. table.concat(items, ",") .. "]")
+    end
 
     print("[LOAD] Loaded: " .. filepath)
     return data

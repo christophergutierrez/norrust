@@ -173,11 +173,14 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] norrust_set_turn + norrust_set_active_faction + norrust_set_unit_combat_state FFI functions — Phase 58 (58-01)
 - [x] Save files in Love2D save directory (~/.local/share/love/norrust/saves/) with date-first naming — Phase 58 (58-01)
 - [x] Combat state preservation in saves: HP, XP, moved, attacked per unit — Phase 59 (58-01)
+- [x] Campaign save/load: [campaign], [[veterans]], [state] sections in save TOML — Phase 60 (60-01)
+- [x] Trigger zone and dialogue fired state preservation across save/load — Phase 60 (60-01)
+- [x] Auto-save on end turn (before AI takes turn) — Phase 60 (60-01)
+- [x] 4 new FFI functions: get/set trigger_zones_fired, get/set dialogue_fired — Phase 60 (60-01)
 
 ### Active (In Progress / Deferred)
 
 - [ ] Socket/TCP server for external Python agents — deferred from Phase 5 (JSON layer complete; transport layer future)
-- [ ] Campaign save/load to disk — Phase 60
 - [ ] UUID + persistent unit roster — Phase 61
 
 ### Out of Scope
@@ -308,6 +311,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | Save files in Love2D save directory | t.identity="norrust" → ~/.local/share/love/norrust/saves/; game data stays read-only | 2026-03-06 | Active |
 | Date-first flat save naming | YYYY-MM-DD_HHMMSS_scenario.toml; chronological sort without subdirectories | 2026-03-06 | Active |
 | F9 works from any game mode | Must load after restart when in PICK_SCENARIO; handler before mode-specific blocks | 2026-03-06 | Active |
+| FFI state query returns JSON, restore takes individual calls or JSON | Consistent pattern for serializable engine state | 2026-03-06 | Active |
+| Auto-save before AI turn (on 'e' key) | Captures player intent before AI moves; player can undo AI by loading | 2026-03-06 | Active |
+| campaign_ctx parameter for optional campaign context in save | nil for standalone, table for campaign; single save function | 2026-03-06 | Active |
 
 ## Tech Stack
 
@@ -327,4 +333,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-06 after Phases 58-59 — Save/Load with combat state.*
+*Last updated: 2026-03-06 after Phase 60 — Campaign save/load with trigger/dialogue state.*

@@ -1181,6 +1181,36 @@ pub unsafe extern "C" fn norrust_simulate_combat(
     to_c_string(&json)
 }
 
+// ── Trigger zones ────────────────────────────────────────────────────────────
+
+/// Returns JSON array of booleans for each trigger zone's fired state.
+/// e.g. [true, false, true]. Returns "[]" if no game state.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_get_trigger_zones_fired(
+    engine: *mut NorRustEngine,
+) -> *mut c_char {
+    let Some(e) = engine.as_ref() else { return to_c_string("[]") };
+    let Some(state) = e.game.as_ref() else { return to_c_string("[]") };
+    let items: Vec<&str> = state.trigger_zones.iter()
+        .map(|tz| if tz.triggered { "true" } else { "false" })
+        .collect();
+    to_c_string(&format!("[{}]", items.join(",")))
+}
+
+/// Set the triggered flag on a specific trigger zone by index.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_set_trigger_zone_fired(
+    engine: *mut NorRustEngine,
+    index: i32,
+    fired: i32,
+) {
+    let Some(e) = engine.as_mut() else { return };
+    let Some(state) = e.game.as_mut() else { return };
+    if let Some(tz) = state.trigger_zones.get_mut(index as usize) {
+        tz.triggered = fired != 0;
+    }
+}
+
 // ── Dialogue ─────────────────────────────────────────────────────────────────
 
 /// Load dialogue entries from a TOML file. Returns 1 on success, 0 on failure.
@@ -1237,4 +1267,38 @@ pub unsafe extern "C" fn norrust_get_dialogue(
         })
         .collect();
     to_c_string(&format!("[{}]", items.join(",")))
+}
+
+/// Returns JSON array of strings for dialogue entries that have fired.
+/// e.g. ["id1","id2"]. Returns "[]" if no dialogue state.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_get_dialogue_fired(
+    engine: *mut NorRustEngine,
+) -> *mut c_char {
+    let Some(e) = engine.as_ref() else { return to_c_string("[]") };
+    let Some(ds) = e.dialogue_state.as_ref() else { return to_c_string("[]") };
+    let items: Vec<String> = ds.fired_ids().iter()
+        .map(|id| format!("\"{}\"", id.replace('\\', "\\\\").replace('"', "\\\"")))
+        .collect();
+    to_c_string(&format!("[{}]", items.join(",")))
+}
+
+/// Mark dialogue entries as fired by passing a JSON array of ID strings.
+/// e.g. "[\"id1\",\"id2\"]"
+#[no_mangle]
+pub unsafe extern "C" fn norrust_set_dialogue_fired(
+    engine: *mut NorRustEngine,
+    ids_json: *const c_char,
+) {
+    let Some(e) = engine.as_mut() else { return };
+    let Some(ds) = e.dialogue_state.as_mut() else { return };
+    let json_str = cstr_to_str(ids_json);
+    // Simple JSON array parser for ["id1","id2",...]
+    let trimmed = json_str.trim().trim_start_matches('[').trim_end_matches(']');
+    for item in trimmed.split(',') {
+        let id = item.trim().trim_matches('"');
+        if !id.is_empty() {
+            ds.mark_fired(id);
+        }
+    }
 }
