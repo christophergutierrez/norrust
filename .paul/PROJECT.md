@@ -169,15 +169,20 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] leader_attacked dialogue trigger firing on first attack against a unit with "leader" ability — Phase 57 (57-01)
 - [x] hex_entered dialogue trigger firing when a unit moves to a specific hex (col/row match) — Phase 57 (57-01)
 - [x] DialogueEntry col/row optional fields for location-based trigger filtering — Phase 57 (57-01)
+- [x] TOML save/load system: save.lua with serializer, custom [[units]] parser, F5/F9 hotkeys — Phase 58 (58-01)
+- [x] norrust_set_turn + norrust_set_active_faction + norrust_set_unit_combat_state FFI functions — Phase 58 (58-01)
+- [x] Save files in Love2D save directory (~/.local/share/love/norrust/saves/) with date-first naming — Phase 58 (58-01)
+- [x] Combat state preservation in saves: HP, XP, moved, attacked per unit — Phase 59 (58-01)
 
 ### Active (In Progress / Deferred)
 
 - [ ] Socket/TCP server for external Python agents — deferred from Phase 5 (JSON layer complete; transport layer future)
+- [ ] Campaign save/load to disk — Phase 60
+- [ ] UUID + persistent unit roster — Phase 61
 
 ### Out of Scope
 
 - TOML editor UI for modding — post-MVP
-- Campaign save/load to disk — post-MVP (in-memory carry-over shipped in Phase 30)
 - Multiplayer — post-MVP (architecture supports it via Action queue)
 
 ## Constraints
@@ -299,6 +304,10 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | Dialogue path derived from board filename | board.toml → board_dialogue.toml; no separate config needed | 2026-03-05 | Active |
 | Narrator panel lowest priority in panel chain | Hidden by combat/recruit/unit/terrain panels; dialogue is ambient | 2026-03-05 | Active |
 | turn_end fires before engine end_turn | Captures ending turn/faction before state advances | 2026-03-05 | Active |
+| Custom parse_save_toml in save.lua | toml_parser.lua doesn't support [[arrays-of-tables]]; save.lua is self-contained | 2026-03-06 | Active |
+| Save files in Love2D save directory | t.identity="norrust" → ~/.local/share/love/norrust/saves/; game data stays read-only | 2026-03-06 | Active |
+| Date-first flat save naming | YYYY-MM-DD_HHMMSS_scenario.toml; chronological sort without subdirectories | 2026-03-06 | Active |
+| F9 works from any game mode | Must load after restart when in PICK_SCENARIO; handler before mode-specific blocks | 2026-03-06 | Active |
 
 ## Tech Stack
 
@@ -318,4 +327,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-05 after Phase 57 — v2.0 Dialogue System milestone complete.*
+*Last updated: 2026-03-06 after Phases 58-59 — Save/Load with combat state.*

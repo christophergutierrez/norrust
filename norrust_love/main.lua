@@ -8,6 +8,7 @@ local hex = require("hex")
 local draw_mod = require("draw")
 local campaign_client = require("campaign_client")
 local events = require("events")
+local save = require("save")
 
 -- ── Constants ───────────────────────────────────────────────────────────────
 
@@ -67,6 +68,8 @@ local selected_recruit_idx = 0
 local recruit_error = ""
 local inspect_unit_id = -1
 local inspect_terrain = nil    -- {col, row, terrain_id, defense, movement_cost, healing, unit_defense, unit_move_cost} or nil
+local status_message = nil     -- temporary flash message (e.g. "Saved!")
+local status_timer = 0         -- seconds remaining for status_message
 
 -- Ghost movement
 local ghost_col = nil          -- ghost hex col, or nil if not ghosting
@@ -655,6 +658,12 @@ end
 
 --- Per-frame update: animate units, handle camera panning and lerp.
 function love.update(dt)
+    -- Status message countdown
+    if status_timer > 0 then
+        status_timer = status_timer - dt
+        if status_timer <= 0 then status_message = nil end
+    end
+
     -- Update unit animations
     for uid, anim_state in pairs(unit_anims) do
         local entry = nil
@@ -788,6 +797,8 @@ local function build_draw_ctx_state()
         dialogue_history = dialogue_history,
         show_dialogue_history = show_dialogue_history,
         history_scroll = history_scroll,
+        -- Status
+        status_message = status_message,
         -- Campaign
         campaign_active = campaign_active, campaign_index = campaign_index,
         campaign_data = campaign_data,
@@ -824,6 +835,19 @@ function love.draw()
     ctx.get_viewport = get_viewport; ctx.screen_to_game = screen_to_game
     ctx.int = int; ctx.parse_html_color = parse_html_color
     draw_mod.draw_frame(ctx, state)
+
+    -- Status flash message (save/load feedback)
+    if status_message then
+        local vp_w = select(1, get_viewport())
+        local f = fonts and fonts.medium or love.graphics.getFont()
+        love.graphics.setFont(f)
+        local tw = f:getWidth(status_message)
+        local x = (vp_w - 200 - tw) / 2
+        love.graphics.setColor(0, 0, 0, 0.7)
+        love.graphics.rectangle("fill", x - 10, 10, tw + 20, f:getHeight() + 10, 6, 6)
+        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.print(status_message, x, 15)
+    end
 end
 
 -- ── love.keypressed ─────────────────────────────────────────────────────────
@@ -832,6 +856,44 @@ end
 function love.keypressed(key)
     -- Block input during movement animation
     if pending_anims.move or pending_anims.combat_slide then return end
+
+    -- Save/Load (available from any mode)
+    if key == "f5" and game_mode == PLAYING then
+        local filename = save.write_save(engine, norrust, scenario_board, scenarios_path)
+        if filename then
+            status_message = "Saved: " .. filename
+        else
+            status_message = "Save failed!"
+        end
+        status_timer = 3.0
+        return
+    elseif key == "f9" then
+        local filepath = save.find_latest()
+        if filepath then
+            local data = save.load_save(engine, norrust, filepath, center_camera)
+            if data then
+                scenario_board = data.game.board_path
+                scenarios_path = data.game.scenarios_path
+                game_over = false
+                winner_faction = -1
+                clear_selection()
+                next_unit_id = norrust.get_next_unit_id(engine)
+                -- Update board dimensions from loaded state
+                local state = norrust.get_state(engine)
+                BOARD_COLS = int(state.cols or 8)
+                BOARD_ROWS = int(state.rows or 5)
+                center_camera()
+                game_mode = PLAYING
+                status_message = "Loaded: " .. filepath
+            else
+                status_message = "Load failed!"
+            end
+        else
+            status_message = "No save files found"
+        end
+        status_timer = 3.0
+        return
+    end
 
     -- Scenario selection
     if game_mode == PICK_SCENARIO then

@@ -6,6 +6,52 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
+**v2.1 Save System**
+Status: In Progress
+Phases: 2 of 4 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 58 | Save/Load Basics | 1/1 | ✅ Complete | 2026-03-06 |
+| 59 | Save/Load Combat State | 0 (folded into 58-01) | ✅ Complete | 2026-03-06 |
+| 60 | Campaign Save/Load | TBD | Not started | - |
+| 61 | UUID + Roster | TBD | Not started | - |
+
+## v2.1 Phase Details
+
+### Phase 58: Save/Load Basics
+
+**Goal:** TOML writer in Lua + save/load for a single scenario. Save unit positions, gold, turn, active faction, board reference. Load reconstructs engine state via existing FFI. Test: place units, move them, save, restart, load — units in correct positions.
+**Depends on:** Phase 57 (v2.0 complete)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+### Phase 59: Save/Load Combat State
+
+**Goal:** Extend save/load to capture combat-related state: HP damage, XP, advancement_pending, unit exhaustion (moved/attacked). Test: fight some battles, save, load — verify HP/XP preserved, damaged units still damaged.
+**Depends on:** Phase 58 (basic save/load working)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+### Phase 60: Campaign Save/Load
+
+**Goal:** Save/load for campaign mode: campaign position (scenario index), carry-over gold, trigger zones fired, dialogue fired sets. Auto-save at turn start. Date-first filename. Continue/New Game flow on campaign start.
+**Depends on:** Phase 59 (single-scenario save/load solid)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+### Phase 61: UUID + Roster
+
+**Goal:** Persistent unit identity (Lua-generated UUIDs) and roster tracking across campaign scenarios. Replace survivors-only carry-over with full persistent roster. Deployed = has col/row, bench = nil.
+**Depends on:** Phase 60 (campaign save/load working)
+
+---
+
+## Previous Milestone
+
 **v2.0 Dialogue System**
 Status: Complete
 Phases: 4 of 4 complete
@@ -16,40 +62,6 @@ Phases: 4 of 4 complete
 | 55 | Dialogue Display | 1 | Complete | 2026-03-05 |
 | 56 | Dialogue History | 1 | Complete | 2026-03-05 |
 | 57 | Gameplay Triggers | 1 | Complete | 2026-03-05 |
-
-## v2.0 Phase Details
-
-### Phase 54: Dialogue Data & Engine
-
-**Goal:** Define a TOML schema for scenario dialogue (trigger type, turn number, text). Rust loader parses dialogue files and exposes FFI queries for retrieving dialogue by turn/phase/event. Tracks which entries have fired (one-shot by default).
-**Depends on:** Phase 53 (v1.9 complete)
-
-**Plans:**
-- TBD (defined during /paul:plan)
-
-### Phase 55: Dialogue Display
-
-**Goal:** Love2D renders narrator dialogue text in the right panel area. Auto-clears when the turn changes. Clean visual styling with text wrapping. Dialogue appears when no unit/terrain panel is active, or in a dedicated sub-region.
-**Depends on:** Phase 54 (dialogue data available via FFI)
-
-**Plans:**
-- TBD (defined during /paul:plan)
-
-### Phase 56: Dialogue History
-
-**Goal:** Log of all triggered dialogue for the current scenario playthrough. Accessible via key press. Scrollable if the log is long. Allows players to re-read any dialogue they missed.
-**Depends on:** Phase 55 (dialogue triggers and renders)
-
-**Plans:**
-- TBD (defined during /paul:plan)
-
-### Phase 57: Gameplay Triggers
-
-**Goal:** Extend dialogue triggers beyond turn-based events: first-attack-on-leader, hex-entry zones. Broadens the trigger vocabulary so campaign authors can attach dialogue to gameplay moments.
-**Depends on:** Phase 56 (dialogue system functional)
-
-**Plans:**
-- TBD (defined during /paul:plan)
 
 ---
 
@@ -1151,4 +1163,4 @@ See MILESTONES.md for full history.
 </details>
 
 ---
-*Roadmap updated: 2026-03-05 — v2.0 Dialogue System created (4 phases: data+engine, display, history, gameplay triggers)*
+*Roadmap updated: 2026-03-06 — v2.1 Save System created (4 phases: UUID+roster, save writer, load game, integration)*

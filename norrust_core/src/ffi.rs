@@ -1021,6 +1021,46 @@ pub unsafe extern "C" fn norrust_set_faction_gold(
     }
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn norrust_set_turn(
+    engine: *mut NorRustEngine,
+    turn: i32,
+) {
+    let Some(e) = engine.as_mut() else { return };
+    let Some(state) = e.game.as_mut() else { return };
+    state.turn = turn.max(1) as u32;
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn norrust_set_active_faction(
+    engine: *mut NorRustEngine,
+    faction: i32,
+) {
+    let Some(e) = engine.as_mut() else { return };
+    let Some(state) = e.game.as_mut() else { return };
+    state.active_faction = faction.max(0) as u8;
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn norrust_set_unit_combat_state(
+    engine: *mut NorRustEngine,
+    unit_id: i32,
+    hp: i32,
+    xp: i32,
+    moved: i32,
+    attacked: i32,
+) {
+    let Some(e) = engine.as_mut() else { return };
+    let Some(state) = e.game.as_mut() else { return };
+    let uid = unit_id as u32;
+    if let Some(unit) = state.units.get_mut(&uid) {
+        unit.hp = hp.max(0) as u32;
+        unit.xp = xp.max(0) as u32;
+        unit.moved = moved != 0;
+        unit.attacked = attacked != 0;
+    }
+}
+
 // ── Terrain query ────────────────────────────────────────────────────────────
 
 /// Returns JSON with a unit's effective defense and movement cost on a specific hex.

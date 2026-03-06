@@ -188,6 +188,9 @@ ffi.cdef[[
     int32_t norrust_get_carry_gold(NorRustEngine* engine, int32_t faction, int32_t gold_carry_percent, int32_t early_finish_bonus);
     int32_t norrust_place_veteran_unit(NorRustEngine* engine, int32_t unit_id, const char* def_id, int32_t faction, int32_t col, int32_t row, int32_t hp, int32_t xp, int32_t xp_needed, int32_t advancement_pending);
     void norrust_set_faction_gold(NorRustEngine* engine, int32_t faction, int32_t gold);
+    void norrust_set_turn(NorRustEngine* engine, int32_t turn);
+    void norrust_set_active_faction(NorRustEngine* engine, int32_t faction);
+    void norrust_set_unit_combat_state(NorRustEngine* engine, int32_t unit_id, int32_t hp, int32_t xp, int32_t moved, int32_t attacked);
 
     // Terrain query
     char* norrust_get_unit_terrain_info(NorRustEngine* engine, int32_t unit_id, int32_t col, int32_t row);
@@ -479,6 +482,21 @@ end
 --- Set the gold amount for a faction.
 function M.set_faction_gold(engine, faction, gold)
     lib.norrust_set_faction_gold(engine, faction, gold)
+end
+
+--- Set the current turn number.
+function M.set_turn(engine, turn)
+    lib.norrust_set_turn(engine, turn)
+end
+
+--- Set the active faction.
+function M.set_active_faction(engine, faction)
+    lib.norrust_set_active_faction(engine, faction)
+end
+
+--- Set a unit's combat state (hp, xp, moved, attacked).
+function M.set_unit_combat_state(engine, unit_id, hp, xp, moved, attacked)
+    lib.norrust_set_unit_combat_state(engine, unit_id, hp, xp, moved and 1 or 0, attacked and 1 or 0)
 end
 
 -- ── Terrain query ─────────────────────────────────────────────────────────

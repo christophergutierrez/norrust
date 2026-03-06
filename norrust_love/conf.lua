@@ -2,6 +2,7 @@
 
 --- Configure Love2D window and graphics settings.
 function love.conf(t)
+    t.identity = "norrust"
     t.window.title = "The Clash for Norrust"
     t.window.width = 1280
     t.window.height = 720
