@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 pub struct DialogueEntry {
     /// Unique identifier within the file.
     pub id: String,
-    /// Trigger type: "scenario_start", "turn_start", "turn_end".
+    /// Trigger type: "scenario_start", "turn_start", "turn_end", "leader_attacked", "hex_entered".
     pub trigger: String,
     /// Which turn this fires on (None = any turn).
     #[serde(default)]
@@ -22,6 +22,12 @@ pub struct DialogueEntry {
     /// Which faction's turn (None = either faction).
     #[serde(default)]
     pub faction: Option<u8>,
+    /// Hex column for location-based triggers (None = any hex).
+    #[serde(default)]
+    pub col: Option<i32>,
+    /// Hex row for location-based triggers (None = any hex).
+    #[serde(default)]
+    pub row: Option<i32>,
     /// Narrator dialogue text.
     pub text: String,
 }
@@ -52,9 +58,16 @@ impl DialogueState {
         })
     }
 
-    /// Return matching unfired entries for the given trigger, turn, and faction.
+    /// Return matching unfired entries for the given trigger, turn, faction, and optional hex.
     /// Matched entries are marked as fired (one-shot semantics).
-    pub fn get_pending(&mut self, trigger: &str, turn: u32, faction: u8) -> Vec<&DialogueEntry> {
+    pub fn get_pending(
+        &mut self,
+        trigger: &str,
+        turn: u32,
+        faction: u8,
+        col: Option<i32>,
+        row: Option<i32>,
+    ) -> Vec<&DialogueEntry> {
         // Collect matching IDs first to avoid borrow issues
         let matching_ids: Vec<String> = self
             .entries
@@ -63,6 +76,8 @@ impl DialogueState {
                 e.trigger == trigger
                     && (e.turn.is_none() || e.turn == Some(turn))
                     && (e.faction.is_none() || e.faction == Some(faction))
+                    && (e.col.is_none() || e.col == col)
+                    && (e.row.is_none() || e.row == row)
                     && !self.fired.contains(&e.id)
             })
             .map(|e| e.id.clone())
@@ -118,7 +133,7 @@ mod tests {
         let mut state = DialogueState::load(&test_dialogue_path()).unwrap();
 
         // scenario_start should match on any turn
-        let results = state.get_pending("scenario_start", 1, 0);
+        let results = state.get_pending("scenario_start", 1, 0, None, None);
         assert!(
             !results.is_empty(),
             "scenario_start should match"
@@ -131,13 +146,13 @@ mod tests {
         state.reset();
 
         // turn_start at turn 3 should match
-        let results = state.get_pending("turn_start", 3, 0);
+        let results = state.get_pending("turn_start", 3, 0, None, None);
         let has_turn_3 = results.iter().any(|e| e.turn == Some(3));
         assert!(has_turn_3, "turn_start at turn 3 should match");
 
         // turn_start at turn 99 should not match turn-specific entries
         state.reset();
-        let results = state.get_pending("turn_start", 99, 0);
+        let results = state.get_pending("turn_start", 99, 0, None, None);
         let has_turn_specific = results.iter().any(|e| e.turn.is_some());
         assert!(!has_turn_specific, "turn 99 should not match turn-specific entries");
     }
@@ -146,10 +161,10 @@ mod tests {
     fn test_one_shot() {
         let mut state = DialogueState::load(&test_dialogue_path()).unwrap();
 
-        let first = state.get_pending("scenario_start", 1, 0);
+        let first = state.get_pending("scenario_start", 1, 0, None, None);
         assert!(!first.is_empty(), "first call should return entries");
 
-        let second = state.get_pending("scenario_start", 1, 0);
+        let second = state.get_pending("scenario_start", 1, 0, None, None);
         assert!(second.is_empty(), "second call should return empty (one-shot)");
     }
 
@@ -157,10 +172,43 @@ mod tests {
     fn test_reset() {
         let mut state = DialogueState::load(&test_dialogue_path()).unwrap();
 
-        let _ = state.get_pending("scenario_start", 1, 0);
+        let _ = state.get_pending("scenario_start", 1, 0, None, None);
         state.reset();
 
-        let after_reset = state.get_pending("scenario_start", 1, 0);
+        let after_reset = state.get_pending("scenario_start", 1, 0, None, None);
         assert!(!after_reset.is_empty(), "after reset, entries should fire again");
+    }
+
+    #[test]
+    fn test_hex_entry_filter() {
+        let mut state = DialogueState::load(&test_dialogue_path()).unwrap();
+
+        // hex_entered with matching col/row should return the bridge entry
+        let results = state.get_pending("hex_entered", 1, 0, Some(8), Some(4));
+        assert!(!results.is_empty(), "hex_entered at (8,4) should match bridge entry");
+        assert!(results.iter().any(|e| e.id == "crossing_bridge"));
+
+        // One-shot: second call should return empty
+        let results2 = state.get_pending("hex_entered", 1, 0, Some(8), Some(4));
+        assert!(results2.is_empty(), "one-shot: second call should be empty");
+
+        // Wrong hex should not match
+        state.reset();
+        let results3 = state.get_pending("hex_entered", 1, 0, Some(0), Some(0));
+        assert!(results3.is_empty(), "wrong hex should not match");
+    }
+
+    #[test]
+    fn test_leader_attacked_trigger() {
+        let mut state = DialogueState::load(&test_dialogue_path()).unwrap();
+
+        // leader_attacked should match without col/row
+        let results = state.get_pending("leader_attacked", 1, 0, None, None);
+        assert!(!results.is_empty(), "leader_attacked should match");
+        assert!(results.iter().any(|e| e.id == "crossing_leader_first"));
+
+        // One-shot
+        let results2 = state.get_pending("leader_attacked", 1, 0, None, None);
+        assert!(results2.is_empty(), "one-shot: second call should be empty");
     }
 }

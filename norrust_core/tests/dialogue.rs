@@ -34,14 +34,14 @@ fn test_dialogue_ffi_round_trip() {
 
         // Query scenario_start — should match the intro entry
         let trigger = c("scenario_start");
-        let json = ffi_string(norrust_get_dialogue(engine, trigger.as_ptr(), 1, 0));
+        let json = ffi_string(norrust_get_dialogue(engine, trigger.as_ptr(), 1, 0, -1, -1));
         assert!(json.starts_with('['), "should return JSON array");
         assert!(json.contains("crossing_intro"), "should contain intro entry id");
         assert!(json.contains("river crossing"), "should contain intro text");
 
         // Query turn_start at turn 3 — should match scouts entry
         let trigger = c("turn_start");
-        let json = ffi_string(norrust_get_dialogue(engine, trigger.as_ptr(), 3, 0));
+        let json = ffi_string(norrust_get_dialogue(engine, trigger.as_ptr(), 3, 0, -1, -1));
         assert!(json.contains("crossing_scouts"), "should contain scouts entry");
 
         norrust_free(engine);
@@ -58,11 +58,11 @@ fn test_dialogue_ffi_one_shot() {
 
         // First call returns entry
         let trigger = c("scenario_start");
-        let json1 = ffi_string(norrust_get_dialogue(engine, trigger.as_ptr(), 1, 0));
+        let json1 = ffi_string(norrust_get_dialogue(engine, trigger.as_ptr(), 1, 0, -1, -1));
         assert!(json1.contains("crossing_intro"), "first call should return entry");
 
         // Second call returns empty array (one-shot)
-        let json2 = ffi_string(norrust_get_dialogue(engine, trigger.as_ptr(), 1, 0));
+        let json2 = ffi_string(norrust_get_dialogue(engine, trigger.as_ptr(), 1, 0, -1, -1));
         assert_eq!(json2, "[]", "second call should return empty (one-shot)");
 
         norrust_free(engine);
@@ -76,7 +76,7 @@ fn test_dialogue_ffi_no_dialogue_loaded() {
 
         // Query without loading — should return empty array, not crash
         let trigger = c("scenario_start");
-        let json = ffi_string(norrust_get_dialogue(engine, trigger.as_ptr(), 1, 0));
+        let json = ffi_string(norrust_get_dialogue(engine, trigger.as_ptr(), 1, 0, -1, -1));
         assert_eq!(json, "[]", "no dialogue loaded should return empty array");
 
         norrust_free(engine);

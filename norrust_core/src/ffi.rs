@@ -1160,7 +1160,8 @@ pub unsafe extern "C" fn norrust_load_dialogue(
     }
 }
 
-/// Query pending dialogue for the given trigger, turn, and faction.
+/// Query pending dialogue for the given trigger, turn, faction, and optional hex.
+/// Use col=-1, row=-1 for "any hex" (no location filter).
 /// Returns a JSON array string: [{"id":"...","text":"..."},...].
 /// Matched entries are marked as fired (one-shot). Caller frees the string.
 #[unsafe(no_mangle)]
@@ -1169,6 +1170,8 @@ pub unsafe extern "C" fn norrust_get_dialogue(
     trigger: *const c_char,
     turn: u32,
     faction: u8,
+    col: i32,
+    row: i32,
 ) -> *mut c_char {
     let engine = unsafe { &mut *engine };
     let trigger_str = unsafe { cstr_to_str(trigger) };
@@ -1176,7 +1179,9 @@ pub unsafe extern "C" fn norrust_get_dialogue(
         Some(ds) => ds,
         None => return to_c_string("[]"),
     };
-    let pending = ds.get_pending(trigger_str, turn, faction);
+    let opt_col = if col >= 0 { Some(col) } else { None };
+    let opt_row = if row >= 0 { Some(row) } else { None };
+    let pending = ds.get_pending(trigger_str, turn, faction, opt_col, opt_row);
     if pending.is_empty() {
         return to_c_string("[]");
     }

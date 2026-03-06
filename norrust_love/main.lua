@@ -272,6 +272,26 @@ end
 -- @param is_ranged boolean: true if ranged attack
 -- @param on_done function|nil: called after attack fully resolves
 local function execute_attack(attacker_id, defender_id, is_ranged, on_done)
+    -- Check if defender is a leader — fire leader_attacked trigger
+    local pre_state = norrust.get_state(engine)
+    for _, unit in ipairs(pre_state.units or {}) do
+        if int(unit.id) == defender_id then
+            for _, ab in ipairs(unit.abilities or {}) do
+                if ab == "leader" then
+                    local turn = norrust.get_turn(engine)
+                    local faction = norrust.get_active_faction(engine)
+                    local msgs = norrust.get_dialogue(engine, "leader_attacked", turn, faction)
+                    if #msgs > 0 then
+                        for _, m in ipairs(msgs) do active_dialogue[#active_dialogue + 1] = m end
+                        append_to_history(msgs)
+                    end
+                    break
+                end
+            end
+            break
+        end
+    end
+
     if is_ranged then
         apply_attack_with_anims(attacker_id, defender_id, true)
         if on_done then on_done() end
@@ -433,6 +453,17 @@ local function start_move_anim(uid, path, on_complete)
     pending_anims.move = {uid = uid, path = path, seg = 1, t = 0, speed = 10, on_complete = on_complete}
 end
 
+--- Fire hex_entered dialogue trigger for a destination hex.
+local function fire_hex_entered(dest_col, dest_row)
+    local turn = norrust.get_turn(engine)
+    local faction = norrust.get_active_faction(engine)
+    local msgs = norrust.get_dialogue(engine, "hex_entered", turn, faction, dest_col, dest_row)
+    if #msgs > 0 then
+        for _, m in ipairs(msgs) do active_dialogue[#active_dialogue + 1] = m end
+        append_to_history(msgs)
+    end
+end
+
 --- Commit the ghost position as an actual move via the engine.
 -- If a path exists (>= 2 waypoints), animates movement. Otherwise instant.
 local function commit_ghost_move(on_complete)
@@ -448,6 +479,7 @@ local function commit_ghost_move(on_complete)
             reachable_cells = {}
             reachable_set = {}
             check_game_over()
+            fire_hex_entered(path[#path].col, path[#path].row)
             if on_complete then on_complete() end
         end)
     else
@@ -457,6 +489,7 @@ local function commit_ghost_move(on_complete)
         reachable_cells = {}
         reachable_set = {}
         check_game_over()
+        fire_hex_entered(dest_col, dest_row)
         if on_complete then on_complete() end
     end
 end

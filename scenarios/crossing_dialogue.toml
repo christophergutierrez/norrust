@@ -22,3 +22,15 @@ trigger = "turn_end"
 turn = 5
 faction = 0
 text = "Dusk approaches. Your troops grow weary, but the enemy keep is within sight."
+
+[[dialogue]]
+id = "crossing_leader_first"
+trigger = "leader_attacked"
+text = "The enemy commander is engaged! Press the attack — if their leader falls, the battle is won."
+
+[[dialogue]]
+id = "crossing_bridge"
+trigger = "hex_entered"
+col = 8
+row = 4
+text = "Your forces have reached the river bridge. The enemy keep lies just beyond."

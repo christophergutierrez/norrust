@@ -7,15 +7,15 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 ## Current Milestone
 
 **v2.0 Dialogue System**
-Status: In Progress
-Phases: 3 of 4 complete
+Status: Complete
+Phases: 4 of 4 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 54 | Dialogue Data & Engine | 1 | Complete | 2026-03-05 |
 | 55 | Dialogue Display | 1 | Complete | 2026-03-05 |
 | 56 | Dialogue History | 1 | Complete | 2026-03-05 |
-| 57 | Gameplay Triggers | TBD | Not started | - |
+| 57 | Gameplay Triggers | 1 | Complete | 2026-03-05 |
 
 ## v2.0 Phase Details
 

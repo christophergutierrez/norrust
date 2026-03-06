@@ -197,7 +197,7 @@ ffi.cdef[[
 
     // Dialogue
     int32_t norrust_load_dialogue(NorRustEngine* engine, const char* path);
-    char* norrust_get_dialogue(NorRustEngine* engine, const char* trigger, uint32_t turn, uint8_t faction);
+    char* norrust_get_dialogue(NorRustEngine* engine, const char* trigger, uint32_t turn, uint8_t faction, int32_t col, int32_t row);
 ]]
 
 -- ── Load shared library ─────────────────────────────────────────────────────
@@ -506,9 +506,10 @@ function M.load_dialogue(engine, path)
     return lib.norrust_load_dialogue(engine, path) == 1
 end
 
---- Query pending dialogue entries for a trigger/turn/faction. Returns array of {id, text}.
-function M.get_dialogue(engine, trigger, turn, faction)
-    local raw = get_string(lib.norrust_get_dialogue(engine, trigger, turn, faction))
+--- Query pending dialogue entries for a trigger/turn/faction/hex. Returns array of {id, text}.
+--- col/row default to -1 (any hex) if not provided.
+function M.get_dialogue(engine, trigger, turn, faction, col, row)
+    local raw = get_string(lib.norrust_get_dialogue(engine, trigger, turn, faction, col or -1, row or -1))
     return json_decode(raw) or {}
 end
 
