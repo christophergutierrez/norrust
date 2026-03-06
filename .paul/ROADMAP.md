@@ -6,6 +6,46 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
+**v1.9 UI Polish**
+Status: 🚧 In Progress
+Phases: 1 of 3 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 51 | Fullscreen & Faction Order | 1 | ✅ Complete | 2026-03-05 |
+| 52 | Board Zoom | TBD | Not started | - |
+| 53 | Viewport Clipping | TBD | Not started | - |
+
+## v1.9 Phase Details
+
+### Phase 51: Fullscreen & Faction Order
+
+**Goal:** Start the Love2D window fullscreen/maximized by default. Sort the faction selection list alphabetically (Elves, Loyalists, Orcs) so the order is consistent.
+**Depends on:** Phase 50 (v1.8 complete)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+### Phase 52: Board Zoom
+
+**Goal:** Scroll wheel (or +/-) zoom in/out on the hex board, composing with existing drag-to-pan and arrow key camera. pixel_to_hex must account for zoom level so clicks remain accurate.
+**Depends on:** Phase 51 (fullscreen may change default viewport size)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+### Phase 53: Viewport Clipping
+
+**Goal:** Board rendering clipped at the right panel edge so no units are hidden under the sidebar panel. Fixes bug where enemies under the panel can't be selected for attack. Must work across all scenarios (8x5, 12x8, 16x10) and account for zoom level.
+**Depends on:** Phase 52 (clipping boundary needs to account for zoom)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+---
+
+## Previous Milestone
+
 **v1.8 Movement & Animation Polish**
 Status: ✅ Complete
 Phases: 3 of 3 complete
@@ -15,32 +55,6 @@ Phases: 3 of 3 complete
 | 48 | Ghost Path Visualization | 1 | ✅ Complete | 2026-03-05 |
 | 49 | Movement Interpolation | 1 | ✅ Complete | 2026-03-05 |
 | 50 | Combat Movement | 1 | ✅ Complete | 2026-03-05 |
-
-## v1.8 Phase Details
-
-### Phase 48: Ghost Path Visualization
-
-**Goal:** Show the hex-by-hex path from current position to ghost position during ghost movement, so the player sees the route their unit will take.
-**Depends on:** Phase 47 (ghost movement and combat animations working)
-
-**Plans:**
-- TBD (defined during /paul:plan)
-
-### Phase 49: Movement Interpolation
-
-**Goal:** Smooth sliding animation along the path when a move is committed, replacing the current instant teleport. Lerp unit between hex centers.
-**Depends on:** Phase 48 (path data available)
-
-**Plans:**
-- TBD (defined during /paul:plan)
-
-### Phase 50: Combat Movement
-
-**Goal:** Melee attackers slide toward defender, ranged attackers animate in place. Integrate with existing pending_anims timer system.
-**Depends on:** Phase 49 (movement interpolation system)
-
-**Plans:**
-- TBD (defined during /paul:plan)
 
 ---
 
@@ -1114,4 +1128,4 @@ See MILESTONES.md for full history.
 </details>
 
 ---
-*Roadmap updated: 2026-03-04 — v1.6 Codebase Cleanup created (4 phases: naming, split, Rust docs, Lua docs)*
+*Roadmap updated: 2026-03-05 — v1.9 UI Polish created (3 phases: fullscreen+faction order, board zoom, viewport clipping)*

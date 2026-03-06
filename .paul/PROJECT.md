@@ -153,6 +153,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Movement interpolation: smooth sliding along A* path when moves committed, replacing teleport — Phase 49 (49-01)
 - [x] Combat movement: melee attackers lunge toward defenders before attack, ranged stay in place — Phase 50 (50-01)
 - [x] Distance-based ranged attack detection using hex.distance() — Phase 50 (50-01)
+- [x] Maximized window on launch via love.window.maximize() — Phase 51 (51-01)
+- [x] Alphabetical faction ordering (Elves, Loyalists, Orcs) in selection screen — Phase 51 (51-01)
 
 ### Active (In Progress / Deferred)
 
@@ -271,6 +273,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | White background prompts for AI sprites | Green screen unreliable from AI; white background + flood-fill more consistent | 2026-03-05 | Active |
 | Generic animation suffixes + TOML character specifics | Decouples character art from animation logic; adding units = adding TOML entry | 2026-03-05 | Active |
 | Per-unit portrait_fuzz in unit_prompts.toml | White-haired units need lower fuzz; configurable without CLI override | 2026-03-05 | Active |
+| love.window.maximize() instead of desktop fullscreen | Desktop fullscreen removes title bar close button; maximize preserves it | 2026-03-05 | Active |
+| table.sort factions by name after engine load | Consistent alphabetical order; Rust returns arbitrary order from Vec | 2026-03-05 | Active |
 
 ## Tech Stack
 
@@ -290,4 +294,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-05 after Phase 50 — v1.8 Movement & Animation Polish complete.*
+*Last updated: 2026-03-05 after Phase 51 — v1.9 UI Polish in progress.*

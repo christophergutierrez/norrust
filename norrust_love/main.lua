@@ -553,10 +553,14 @@ function love.load()
 
     -- Parse faction list
     factions = norrust.get_faction_ids(engine)
+    table.sort(factions, function(a, b) return a.name < b.name end)
 
     -- Load visual assets (graceful fallback if assets/ missing)
     terrain_tiles = assets.load_terrain_tiles("assets")
     unit_sprites = assets.load_unit_sprites("assets")
+
+    -- Maximize window (keeps title bar with close button)
+    love.window.maximize()
 
     -- Start at scenario selection
     game_mode = PICK_SCENARIO

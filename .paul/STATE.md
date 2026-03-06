@@ -5,41 +5,35 @@
 See: .paul/PROJECT.md (updated 2026-03-05)
 
 **Core value:** A playable hex-based strategy game where simulation logic is strictly separated from presentation, enabling human players and AI agents to use the same clean engine.
-**Current focus:** v1.8 Movement & Animation Polish — Complete!
+**Current focus:** v1.9 UI Polish — zoom, viewport clipping (fullscreen + faction order done)
 
 ## Current Position
 
-Milestone: v1.8 Movement & Animation Polish
-Phase: 50 of 50 (Combat Movement)
-Plan: 50-01 complete
-Status: Milestone complete
-Last activity: 2026-03-05 — Phase 50 complete, v1.8 milestone done
+Milestone: v1.9 UI Polish
+Phase: 52 of 53 (Board Zoom)
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-03-05 — Phase 51 complete, transitioned to Phase 52
 
 Progress:
-- v1.8 Movement & Animation Polish: [██████████] 100% (3/3 phases)
+- v1.9 UI Polish: [███░░░░░░░] 33% (1/3 phases)
 
 ## Loop Position
 
 ```
 PLAN ──▶ APPLY ──▶ UNIFY
-  ✓        ✓        ✓     [Loop complete — milestone done]
+  ○        ○        ○     [Ready for Phase 52 PLAN]
 ```
 
 ## What Happened This Session
 
-1. v1.7 Enhanced Unit Sprites milestone completed (Phases 44-47)
-2. v1.8 Movement & Animation Polish milestone created
-3. Phase 48 Ghost Path Visualization — complete
-4. Phase 49 Movement Interpolation — complete
-   - Smooth sliding along A* path on commit
-   - Fixed combat animation sprite lookup bug
-5. Phase 50 Combat Movement — complete
-   - Melee lunge animation (approach → attack → return)
-   - Fixed ranged detection (hex distance vs name matching)
+1. v1.8 Movement & Animation Polish milestone completed
+2. Discussed v1.9 UI Polish milestone scope
+3. v1.9 milestone created with 3 phases
 
 ## Next Action
 
-Run `/paul:discuss-milestone` for next milestone
+Run `/paul:plan` for Phase 51 (Fullscreen & Faction Order)
 
 ## Accumulated Context
 
@@ -47,16 +41,8 @@ Run `/paul:discuss-milestone` for next milestone
 
 | Decision | Phase | Impact |
 |----------|-------|--------|
-| Faction-based facing (faction 0→right, 1→left) | Phase 47 | Chess-style consistent direction |
-| pending_anims timer for combat animation return | Phase 47 | Non-blocking, auto-return to idle |
-| hex.distance() for ranged attack range | Phase 47 | Enables melee+ranged ghost targeting |
-| Reuse existing Rust find_path A* for ghost path | Phase 48 | No new pathfinding logic |
-| White semi-transparent hex fills + line for path | Phase 48 | Visually distinct from reachable/attackable |
-| pending_anims.move for movement anim (upvalue limit) | Phase 49 | Avoids LuaJIT 60-upvalue limit |
-| Apply engine move immediately, animate rendering only | Phase 49 | Keeps engine in sync during animation |
-| Callback on_complete for move+attack sequencing | Phase 49 | Clean separation of movement and follow-up |
-| pending_anims.combat_slide with pixel coords | Phase 50 | Fractional positioning for 40% approach |
-| Distance-based ranged detection via hex.distance | Phase 50 | Replaces broken attack-name check |
+| love.window.maximize() instead of desktop fullscreen | Phase 51 | Keeps title bar X close button |
+| table.sort factions by name after engine load | Phase 51 | Consistent alphabetical order |
 
 ### Deferred Issues
 
@@ -74,15 +60,15 @@ Run `/paul:discuss-milestone` for next milestone
 None.
 
 ### Git State
-Last commit: 36c30c0 (Phase 50 — Combat Movement, v1.8 complete)
+Last commit: b266c7d (chore: update STATE.md with commit hash)
 Branch: master
 Tests: 97 passing (62 unit + 8 campaign + 3 validation + 23 simulation + 1 FFI)
 
 ## Session Continuity
 
 Last session: 2026-03-05
-Stopped at: v1.8 milestone complete
-Next action: /paul:discuss-milestone for next milestone
+Stopped at: Phase 51 complete, ready to plan Phase 52
+Next action: /paul:plan for Phase 52
 Resume file: .paul/ROADMAP.md
 
 ---
