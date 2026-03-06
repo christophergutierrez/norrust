@@ -5,44 +5,40 @@
 See: .paul/PROJECT.md (updated 2026-03-05)
 
 **Core value:** A playable hex-based strategy game where simulation logic is strictly separated from presentation, enabling human players and AI agents to use the same clean engine.
-**Current focus:** v1.9 UI Polish — Complete!
+**Current focus:** v2.0 Dialogue System
 
 ## Current Position
 
-Milestone: v1.9 UI Polish
-Phase: 53 of 53 (Viewport Clipping)
-Plan: 53-01 complete
-Status: Milestone complete
-Last activity: 2026-03-05 — Phase 53 complete, v1.9 milestone done
+Milestone: v2.0 Dialogue System
+Phase: 55 of 57 (Dialogue Display)
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-03-05 — Phase 54 complete, transitioned to Phase 55
 
 Progress:
-- v1.9 UI Polish: [██████████] 100% (3/3 phases)
+- v2.0 Dialogue System: [##░░░░░░░░] 25% (1/4 phases)
 
 ## Loop Position
 
 ```
 PLAN ──▶ APPLY ──▶ UNIFY
-  ✓        ✓        ✓     [Loop complete — milestone done]
+  ○        ○        ○     [Ready for next PLAN]
 ```
 
 ## What Happened This Session
 
-1. v1.8 Movement & Animation Polish milestone completed (prior session)
-2. v1.9 UI Polish milestone created (3 phases)
-3. Phase 51 Fullscreen & Faction Order — complete
-   - love.window.maximize() on launch
-   - Alphabetical faction sorting (Elves, Loyalists, Orcs)
-4. Phase 52 Board Zoom — complete
-   - Scroll wheel zoom 0.5x-3.0x
-   - Zoom-aware click, pan, camera lerp
-   - Combat preview ToD damage fix
-5. Phase 53 Viewport Clipping — complete
-   - Scissor clip at right panel edge
-   - Click guard for panel region
+1. v1.9 UI Polish milestone completed (prior session)
+2. Analyzed Wesnoth "Battle Training" campaign for reference
+3. Discussed dialogue system: narrator-only, scenario-scoped, non-blocking
+4. v2.0 Dialogue System milestone created (4 phases)
+5. Phase 54 Dialogue Data & Engine — complete
+   - dialogue.rs: TOML schema, loader, one-shot runtime
+   - FFI: norrust_load_dialogue + norrust_get_dialogue
+   - 7 new tests, 104 total passing
 
 ## Next Action
 
-Run `/paul:discuss-milestone` for next milestone
+Run `/paul:plan` for Phase 55 (Dialogue Display)
 
 ## Accumulated Context
 
@@ -50,12 +46,12 @@ Run `/paul:discuss-milestone` for next milestone
 
 | Decision | Phase | Impact |
 |----------|-------|--------|
-| love.window.maximize() instead of desktop fullscreen | Phase 51 | Keeps title bar X close button |
-| table.sort factions by name after engine load | Phase 51 | Consistent alphabetical order |
-| translate→scale→translate zoom transform | Phase 52 | Clean board-space zoom composing with pan |
-| damage_per_hit includes ToD modifier | Phase 52 | Fixes display inconsistency in combat preview |
-| setScissor in pixel coords for board clipping | Phase 53 | Correct clipping regardless of UI_SCALE |
-| Single click guard at top of mousepressed | Phase 53 | Covers all click paths with one check |
+| Dialogue tied to scenario (not units) | Discussion | Clean separation; dialogue files per scenario |
+| Narrator voice only (no named characters) | Discussion | Scalable; no per-character assets needed |
+| Auto-clear on turn change | Discussion | Reduces clutter; history log preserves access |
+| DialogueState per-scenario (not Registry) | Phase 54 | Loaded/reset per scenario; simpler than global registry |
+| One-shot via HashSet fired IDs | Phase 54 | Simple tracking; reset clears for restart |
+| FFI returns JSON array of {id, text} | Phase 54 | Minimal payload; client decides rendering |
 
 ### Deferred Issues
 
@@ -74,15 +70,15 @@ Run `/paul:discuss-milestone` for next milestone
 None.
 
 ### Git State
-Last commit: a0a15b2 (Phase 52 — Board Zoom + combat preview fix)
+Last commit: b266c7d (chore: update STATE.md with commit hash)
 Branch: master
-Tests: 97 passing (62 unit + 8 campaign + 3 validation + 23 simulation + 1 FFI)
+Tests: 104 passing (66 unit + 8 campaign + 3 dialogue + 3 validation + 23 simulation + 1 FFI)
 
 ## Session Continuity
 
 Last session: 2026-03-05
-Stopped at: v1.9 milestone complete
-Next action: /paul:discuss-milestone for next milestone
+Stopped at: Phase 54 complete, ready to plan Phase 55
+Next action: /paul:plan for Phase 55
 Resume file: .paul/ROADMAP.md
 
 ---

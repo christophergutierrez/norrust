@@ -159,6 +159,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Combat preview damage_per_hit includes ToD modifier for consistent display — Phase 52 (52-01)
 - [x] Board rendering scissor-clipped at right panel edge — no units hidden under sidebar — Phase 53 (53-01)
 - [x] Click input guarded against panel region — clicks in sidebar don't hit board hexes — Phase 53 (53-01)
+- [x] Dialogue TOML schema (DialogueEntry: id, trigger, turn, faction, text) with per-scenario dialogue files — Phase 54 (54-01)
+- [x] DialogueState runtime with one-shot query semantics and fired-tracking via HashSet — Phase 54 (54-01)
+- [x] norrust_load_dialogue + norrust_get_dialogue FFI functions returning JSON dialogue arrays — Phase 54 (54-01)
 
 ### Active (In Progress / Deferred)
 
@@ -283,6 +286,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | Effective viewport = vp/zoom for pan bounds | Zooming in needs more pan range; automatic adjustment | 2026-03-05 | Active |
 | setScissor in pixel coords for board clipping | UI_SCALE-divided coords don't work with Love2D scissor API | 2026-03-05 | Active |
 | Single click guard at top of mousepressed | Covers all click paths (right-click, setup, playing) with one check | 2026-03-05 | Active |
+| DialogueState per-scenario (not Registry) | Dialogue loaded/reset per scenario; simpler than global registry | 2026-03-05 | Active |
+| One-shot via HashSet fired IDs | Simple fired tracking; reset clears for scenario restart | 2026-03-05 | Active |
+| FFI returns JSON array of {id, text} | Minimal payload; client decides rendering | 2026-03-05 | Active |
 
 ## Tech Stack
 
@@ -302,4 +308,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-05 after Phase 53 — v1.9 UI Polish complete.*
+*Last updated: 2026-03-05 after Phase 54 — v2.0 Dialogue Data & Engine complete.*

@@ -5,6 +5,7 @@ pub mod ai;
 pub mod board;
 pub mod campaign;
 pub mod combat;
+pub mod dialogue;
 pub mod ffi;
 pub mod game_state;
 pub mod hex;

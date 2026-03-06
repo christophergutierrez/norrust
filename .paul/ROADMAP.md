@@ -6,6 +6,55 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
+**v2.0 Dialogue System**
+Status: In Progress
+Phases: 1 of 4 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 54 | Dialogue Data & Engine | 1 | Complete | 2026-03-05 |
+| 55 | Dialogue Display | TBD | Not started | - |
+| 56 | Dialogue History | TBD | Not started | - |
+| 57 | Gameplay Triggers | TBD | Not started | - |
+
+## v2.0 Phase Details
+
+### Phase 54: Dialogue Data & Engine
+
+**Goal:** Define a TOML schema for scenario dialogue (trigger type, turn number, text). Rust loader parses dialogue files and exposes FFI queries for retrieving dialogue by turn/phase/event. Tracks which entries have fired (one-shot by default).
+**Depends on:** Phase 53 (v1.9 complete)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+### Phase 55: Dialogue Display
+
+**Goal:** Love2D renders narrator dialogue text in the right panel area. Auto-clears when the turn changes. Clean visual styling with text wrapping. Dialogue appears when no unit/terrain panel is active, or in a dedicated sub-region.
+**Depends on:** Phase 54 (dialogue data available via FFI)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+### Phase 56: Dialogue History
+
+**Goal:** Log of all triggered dialogue for the current scenario playthrough. Accessible via key press. Scrollable if the log is long. Allows players to re-read any dialogue they missed.
+**Depends on:** Phase 55 (dialogue triggers and renders)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+### Phase 57: Gameplay Triggers
+
+**Goal:** Extend dialogue triggers beyond turn-based events: first-attack-on-leader, hex-entry zones. Broadens the trigger vocabulary so campaign authors can attach dialogue to gameplay moments.
+**Depends on:** Phase 56 (dialogue system functional)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+---
+
+## Previous Milestone
+
 **v1.9 UI Polish**
 Status: ✅ Complete
 Phases: 3 of 3 complete
@@ -15,32 +64,6 @@ Phases: 3 of 3 complete
 | 51 | Fullscreen & Faction Order | 1 | ✅ Complete | 2026-03-05 |
 | 52 | Board Zoom | 1 | ✅ Complete | 2026-03-05 |
 | 53 | Viewport Clipping | 1 | ✅ Complete | 2026-03-05 |
-
-## v1.9 Phase Details
-
-### Phase 51: Fullscreen & Faction Order
-
-**Goal:** Start the Love2D window fullscreen/maximized by default. Sort the faction selection list alphabetically (Elves, Loyalists, Orcs) so the order is consistent.
-**Depends on:** Phase 50 (v1.8 complete)
-
-**Plans:**
-- TBD (defined during /paul:plan)
-
-### Phase 52: Board Zoom
-
-**Goal:** Scroll wheel (or +/-) zoom in/out on the hex board, composing with existing drag-to-pan and arrow key camera. pixel_to_hex must account for zoom level so clicks remain accurate.
-**Depends on:** Phase 51 (fullscreen may change default viewport size)
-
-**Plans:**
-- TBD (defined during /paul:plan)
-
-### Phase 53: Viewport Clipping
-
-**Goal:** Board rendering clipped at the right panel edge so no units are hidden under the sidebar panel. Fixes bug where enemies under the panel can't be selected for attack. Must work across all scenarios (8x5, 12x8, 16x10) and account for zoom level.
-**Depends on:** Phase 52 (clipping boundary needs to account for zoom)
-
-**Plans:**
-- TBD (defined during /paul:plan)
 
 ---
 
@@ -1128,4 +1151,4 @@ See MILESTONES.md for full history.
 </details>
 
 ---
-*Roadmap updated: 2026-03-05 — v1.9 UI Polish created (3 phases: fullscreen+faction order, board zoom, viewport clipping)*
+*Roadmap updated: 2026-03-05 — v2.0 Dialogue System created (4 phases: data+engine, display, history, gameplay triggers)*

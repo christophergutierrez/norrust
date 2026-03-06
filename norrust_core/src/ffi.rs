@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use crate::board::Tile;
 use crate::campaign;
 use crate::combat::{simulate_combat, time_of_day, TimeOfDay};
+use crate::dialogue::DialogueState;
 use crate::game_state::{apply_action, apply_recruit, Action, ActionError, GameState, PendingSpawn, TriggerZone};
 use crate::hex::Hex;
 use crate::loader::Registry;
@@ -27,6 +28,7 @@ pub struct NorRustEngine {
     terrain: Option<Registry<TerrainDef>>,
     game: Option<GameState>,
     factions: Vec<(FactionDef, Vec<String>)>,
+    dialogue_state: Option<DialogueState>,
 }
 
 impl NorRustEngine {
@@ -36,6 +38,7 @@ impl NorRustEngine {
             terrain: None,
             game: None,
             factions: Vec::new(),
+            dialogue_state: None,
         }
     }
 }
@@ -1136,4 +1139,57 @@ pub unsafe extern "C" fn norrust_simulate_combat(
         preview.attacker_terrain_defense, preview.defender_terrain_defense,
     );
     to_c_string(&json)
+}
+
+// ── Dialogue ─────────────────────────────────────────────────────────────────
+
+/// Load dialogue entries from a TOML file. Returns 1 on success, 0 on failure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn norrust_load_dialogue(
+    engine: *mut NorRustEngine,
+    path: *const c_char,
+) -> i32 {
+    let engine = unsafe { &mut *engine };
+    let path_str = unsafe { cstr_to_str(path) };
+    match DialogueState::load(std::path::Path::new(path_str)) {
+        Ok(state) => {
+            engine.dialogue_state = Some(state);
+            1
+        }
+        Err(_) => 0,
+    }
+}
+
+/// Query pending dialogue for the given trigger, turn, and faction.
+/// Returns a JSON array string: [{"id":"...","text":"..."},...].
+/// Matched entries are marked as fired (one-shot). Caller frees the string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn norrust_get_dialogue(
+    engine: *mut NorRustEngine,
+    trigger: *const c_char,
+    turn: u32,
+    faction: u8,
+) -> *mut c_char {
+    let engine = unsafe { &mut *engine };
+    let trigger_str = unsafe { cstr_to_str(trigger) };
+    let ds = match engine.dialogue_state.as_mut() {
+        Some(ds) => ds,
+        None => return to_c_string("[]"),
+    };
+    let pending = ds.get_pending(trigger_str, turn, faction);
+    if pending.is_empty() {
+        return to_c_string("[]");
+    }
+    // Build JSON array manually (same pattern as other FFI functions)
+    let items: Vec<String> = pending
+        .iter()
+        .map(|e| {
+            format!(
+                "{{\"id\":\"{}\",\"text\":\"{}\"}}",
+                e.id,
+                e.text.replace('\\', "\\\\").replace('"', "\\\"")
+            )
+        })
+        .collect();
+    to_c_string(&format!("[{}]", items.join(",")))
 }

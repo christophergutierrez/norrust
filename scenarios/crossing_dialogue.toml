@@ -1,0 +1,24 @@
+# scenarios/crossing_dialogue.toml — Narrator dialogue for the crossing scenario
+#
+# Triggers: scenario_start, turn_start, turn_end
+# turn: which turn number (omit for any turn)
+# faction: which faction's turn (omit for either)
+
+[[dialogue]]
+id = "crossing_intro"
+trigger = "scenario_start"
+text = "Your forces have reached the river crossing. The enemy keep lies to the east — you must reach it before reinforcements arrive."
+
+[[dialogue]]
+id = "crossing_scouts"
+trigger = "turn_start"
+turn = 3
+faction = 0
+text = "Your scouts report enemy patrols moving south. Press forward before they consolidate."
+
+[[dialogue]]
+id = "crossing_dusk"
+trigger = "turn_end"
+turn = 5
+faction = 0
+text = "Dusk approaches. Your troops grow weary, but the enemy keep is within sight."
