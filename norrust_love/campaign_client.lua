@@ -13,7 +13,7 @@ function campaign_client.load_selected_scenario(ctx)
     ctx.BOARD_COLS = ctx.int(state.cols or 8)
     ctx.BOARD_ROWS = ctx.int(state.rows or 5)
 
-    ctx.center_camera()
+    ctx.center_camera(true)
 end
 
 --- Find the player keep hex and its adjacent castle hexes for veteran placement.

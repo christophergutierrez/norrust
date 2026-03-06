@@ -7,6 +7,7 @@ local anim_module = require("animation")
 local hex = require("hex")
 local draw_mod = require("draw")
 local campaign_client = require("campaign_client")
+local events = require("events")
 
 -- ── Constants ───────────────────────────────────────────────────────────────
 
@@ -112,7 +113,7 @@ local drag_camera_start_x, drag_camera_start_y = 0, 0
 local camera_target_x, camera_target_y = 0, 0
 local camera_lerping = false
 local camera_zoom = 1.0
-local ZOOM_MIN = 0.5
+local ZOOM_MIN = 0.15
 local ZOOM_MAX = 3.0
 local ZOOM_STEP = 0.1
 
@@ -160,15 +161,35 @@ local function apply_camera_offset()
 end
 
 --- Center camera on the board and compute pan limits.
-local function center_camera()
+--- If reset is true, auto-fit zoom so the whole board is visible and reset offset.
+--- Called after every zoom change and on window resize.
+local function center_camera(reset)
     local tlx, tly = hex.to_pixel(0, 0)
     local brx, bry = hex.to_pixel(BOARD_COLS - 1, BOARD_ROWS - 1)
     local vp_w, vp_h = get_viewport()
-    board_origin_x = vp_w / 2 - (tlx + brx) / 2
-    board_origin_y = vp_h / 2 - (tly + bry) / 2
+    -- Account for right-side panel (200px in game coords)
+    local usable_w = vp_w - 200
+    local center_px = (tlx + brx) / 2
+    local center_py = (tly + bry) / 2
 
-    -- Effective viewport shrinks when zoomed in, grows when zoomed out
-    local eff_w = vp_w / camera_zoom
+    if reset then
+        -- Auto-fit: compute zoom so the full board fits in the usable viewport
+        local board_w = (brx - tlx) + hex.RADIUS * 2
+        local board_h = (bry - tly) + hex.RADIUS * 2
+        local fit_zoom = math.min(usable_w / board_w, vp_h / board_h)
+        camera_zoom = clamp(fit_zoom, ZOOM_MIN, ZOOM_MAX)
+        camera_offset_x, camera_offset_y = 0, 0
+        camera_lerping = false
+    end
+
+    -- Origin must account for zoom so board center stays at screen center
+    -- Screen position of point px: board_origin_x + zoom * (offset_x + px)
+    -- At offset=0, board center at screen center: origin = usable_w/2 - zoom * center
+    board_origin_x = usable_w / 2 - camera_zoom * center_px
+    board_origin_y = vp_h / 2 - camera_zoom * center_py
+
+    -- Effective viewport in board-space coords (for pan limits)
+    local eff_w = usable_w / camera_zoom
     local eff_h = vp_h / camera_zoom
     local board_half_w = (brx - tlx) / 2 + hex.RADIUS
     local board_half_h = (bry - tly) / 2 + hex.RADIUS
@@ -264,6 +285,34 @@ local function apply_attack_with_anims(attacker_id, defender_id, is_ranged)
     end
 end
 
+-- ── Dialogue helpers ────────────────────────────────────────────────────
+
+-- ── Dialogue subscriber ─────────────────────────────────────────────────
+-- Subscribes to gameplay events and manages dialogue UI state.
+
+events.on("dialogue", function(data)
+    local turn = norrust.get_turn(engine)
+    local faction = norrust.get_active_faction(engine)
+    local msgs = norrust.get_dialogue(engine, data.trigger, turn, faction, data.col, data.row)
+    if #msgs > 0 then
+        for _, m in ipairs(msgs) do active_dialogue[#active_dialogue + 1] = m end
+        for _, m in ipairs(msgs) do
+            dialogue_history[#dialogue_history + 1] = {turn = turn, text = m.text}
+        end
+    end
+end)
+
+events.on("scenario_loaded", function(data)
+    dialogue_history = {}
+    history_scroll = 0
+    show_dialogue_history = false
+    active_dialogue = {}
+
+    local dialogue_path = scenarios_path .. "/" .. data.board:gsub("%.toml$", "_dialogue.toml")
+    norrust.load_dialogue(engine, dialogue_path)
+    events.emit("dialogue", {trigger = "scenario_start"})
+end)
+
 --- Execute an attack with combat animations.
 -- Melee: attacker slides toward defender, attacks at contact, slides back.
 -- Ranged: attacks in place (no movement).
@@ -278,13 +327,7 @@ local function execute_attack(attacker_id, defender_id, is_ranged, on_done)
         if int(unit.id) == defender_id then
             for _, ab in ipairs(unit.abilities or {}) do
                 if ab == "leader" then
-                    local turn = norrust.get_turn(engine)
-                    local faction = norrust.get_active_faction(engine)
-                    local msgs = norrust.get_dialogue(engine, "leader_attacked", turn, faction)
-                    if #msgs > 0 then
-                        for _, m in ipairs(msgs) do active_dialogue[#active_dialogue + 1] = m end
-                        append_to_history(msgs)
-                    end
+                    events.emit("dialogue", {trigger = "leader_attacked"})
                     break
                 end
             end
@@ -403,7 +446,8 @@ local function select_unit(uid)
         if int(unit.id) == uid then
             local ux, uy = hex.to_pixel(int(unit.col), int(unit.row))
             local vp_w, vp_h = get_viewport()
-            camera_target_x = clamp((vp_w / 2 - board_origin_x) / camera_zoom - ux, camera_min_x, camera_max_x)
+            local usable_w = vp_w - 200
+            camera_target_x = clamp((usable_w / 2 - board_origin_x) / camera_zoom - ux, camera_min_x, camera_max_x)
             camera_target_y = clamp((vp_h / 2 - board_origin_y) / camera_zoom - uy, camera_min_y, camera_max_y)
             camera_lerping = true
             break
@@ -453,15 +497,9 @@ local function start_move_anim(uid, path, on_complete)
     pending_anims.move = {uid = uid, path = path, seg = 1, t = 0, speed = 10, on_complete = on_complete}
 end
 
---- Fire hex_entered dialogue trigger for a destination hex.
+--- Emit hex_entered event for a destination hex.
 local function fire_hex_entered(dest_col, dest_row)
-    local turn = norrust.get_turn(engine)
-    local faction = norrust.get_active_faction(engine)
-    local msgs = norrust.get_dialogue(engine, "hex_entered", turn, faction, dest_col, dest_row)
-    if #msgs > 0 then
-        for _, m in ipairs(msgs) do active_dialogue[#active_dialogue + 1] = m end
-        append_to_history(msgs)
-    end
+    events.emit("dialogue", {trigger = "hex_entered", col = dest_col, row = dest_row})
 end
 
 --- Commit the ghost position as an actual move via the engine.
@@ -533,31 +571,6 @@ local function apply_campaign_ctx(ctx)
     game_mode = ctx.game_mode
 end
 
--- ── Dialogue helpers ────────────────────────────────────────────────────
-
---- Append dialogue entries to history with the current turn number.
-local function append_to_history(entries)
-    local turn = norrust.get_turn(engine)
-    for _, e in ipairs(entries) do
-        dialogue_history[#dialogue_history + 1] = {turn = turn, text = e.text}
-    end
-end
-
---- Load dialogue file for the current scenario board (if it exists).
---- Fires scenario_start trigger and populates active_dialogue.
-local function load_and_fire_dialogue()
-    dialogue_history = {}
-    history_scroll = 0
-    show_dialogue_history = false
-
-    local dialogue_path = scenarios_path .. "/" .. scenario_board:gsub("%.toml$", "_dialogue.toml")
-    norrust.load_dialogue(engine, dialogue_path)
-    local turn = norrust.get_turn(engine)
-    local faction = norrust.get_active_faction(engine)
-    active_dialogue = norrust.get_dialogue(engine, "scenario_start", turn, faction)
-    append_to_history(active_dialogue)
-end
-
 --- Load the selected scenario board via campaign_client with ctx writeback.
 local function call_load_scenario()
     local ctx = build_campaign_ctx()
@@ -570,7 +583,7 @@ local function call_load_campaign_scenario()
     local ctx = build_campaign_ctx()
     campaign_client.load_campaign_scenario(ctx)
     apply_campaign_ctx(ctx)
-    load_and_fire_dialogue()
+    events.emit("scenario_loaded", {board = scenario_board})
 end
 
 -- ── love.load ───────────────────────────────────────────────────────────────
@@ -874,7 +887,7 @@ function love.keypressed(key)
                         norrust.load_units(engine, scenarios_path .. "/" .. scenario_units)
                         next_unit_id = norrust.get_next_unit_id(engine)
                         game_mode = PLAYING
-                        load_and_fire_dialogue()
+                        events.emit("scenario_loaded", {board = scenario_board})
                     end
                 else
                     game_mode = game_mode == PICK_FACTION_BLUE and SETUP_BLUE or SETUP_RED
@@ -891,7 +904,7 @@ function love.keypressed(key)
                 -- Both factions chosen — wire starting gold
                 norrust.apply_starting_gold(engine, faction_id[1], faction_id[2])
                 game_mode = PLAYING
-                load_and_fire_dialogue()
+                events.emit("scenario_loaded", {board = scenario_board})
             end
         end
         return
@@ -965,10 +978,7 @@ function love.keypressed(key)
         end
 
     elseif key == "e" then
-        -- Fire turn_end for the ending turn before advancing
-        local end_turn_num = norrust.get_turn(engine)
-        local end_faction = norrust.get_active_faction(engine)
-        local end_msgs = norrust.get_dialogue(engine, "turn_end", end_turn_num, end_faction)
+        events.emit("dialogue", {trigger = "turn_end"})
 
         -- End turn + AI
         norrust.end_turn(engine)
@@ -981,14 +991,9 @@ function love.keypressed(key)
             check_game_over()
         end
 
-        -- Fire turn_start for the new turn and combine with turn_end messages
-        local new_turn = norrust.get_turn(engine)
-        local new_faction = norrust.get_active_faction(engine)
-        local start_msgs = norrust.get_dialogue(engine, "turn_start", new_turn, new_faction)
+        -- New turn dialogue (reset panel so only new messages show)
         active_dialogue = {}
-        for _, m in ipairs(end_msgs) do active_dialogue[#active_dialogue + 1] = m end
-        for _, m in ipairs(start_msgs) do active_dialogue[#active_dialogue + 1] = m end
-        append_to_history(active_dialogue)
+        events.emit("dialogue", {trigger = "turn_start"})
 
     elseif key == "a" then
         -- Advance selected unit
