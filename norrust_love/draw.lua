@@ -389,6 +389,37 @@ function draw.draw_terrain_panel(ctx)
     end
 end
 
+--- Draw the narrator dialogue panel in the right sidebar.
+function draw.draw_dialogue_panel(ctx)
+    local fonts = ctx.fonts
+    local vp_w, vp_h = ctx.get_viewport()
+
+    love.graphics.setColor(0, 0, 0, 0.75)
+    love.graphics.rectangle("fill", vp_w - 200, 0, 200, vp_h)
+
+    local y = 10
+
+    -- Title
+    love.graphics.setFont(fonts[13])
+    love.graphics.setColor(0.9, 0.85, 0.6)
+    love.graphics.print("Narrator", vp_w - 190, y)
+    y = y + 20
+
+    -- Separator
+    love.graphics.setColor(0.5, 0.5, 0.5, 0.6)
+    love.graphics.line(vp_w - 190, y, vp_w - 10, y)
+    y = y + 8
+
+    -- Dialogue entries
+    love.graphics.setFont(fonts[11])
+    love.graphics.setColor(0.85, 0.85, 0.85)
+    for _, entry in ipairs(ctx.active_dialogue) do
+        love.graphics.printf(entry.text, vp_w - 190, y, 180, "left")
+        local _, lines = fonts[11]:getWrap(entry.text, 180)
+        y = y + #lines * fonts[11]:getHeight() + 10
+    end
+end
+
 --- Draw the combat preview panel sidebar.
 function draw.draw_combat_preview(ctx)
     local fonts = ctx.fonts
@@ -769,6 +800,8 @@ function draw.draw_frame(ctx, state)
             end
         elseif ctx.inspect_terrain then
             draw.draw_terrain_panel(ctx)
+        elseif ctx.active_dialogue and #ctx.active_dialogue > 0 then
+            draw.draw_dialogue_panel(ctx)
         end
     end
 

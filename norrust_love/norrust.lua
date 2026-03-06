@@ -194,6 +194,10 @@ ffi.cdef[[
 
     // Combat preview
     char* norrust_simulate_combat(NorRustEngine* engine, int32_t attacker_id, int32_t defender_id, int32_t attacker_col, int32_t attacker_row, int32_t num_sims);
+
+    // Dialogue
+    int32_t norrust_load_dialogue(NorRustEngine* engine, const char* path);
+    char* norrust_get_dialogue(NorRustEngine* engine, const char* trigger, uint32_t turn, uint8_t faction);
 ]]
 
 -- ── Load shared library ─────────────────────────────────────────────────────
@@ -493,6 +497,19 @@ function M.simulate_combat(engine, attacker_id, defender_id, attacker_col, attac
     local raw = get_string(lib.norrust_simulate_combat(engine, attacker_id, defender_id, attacker_col, attacker_row, num_sims or 100))
     if raw == "" then return nil end
     return json_decode(raw)
+end
+
+-- ── Dialogue ──────────────────────────────────────────────────────────────
+
+--- Load a dialogue TOML file for the current scenario.
+function M.load_dialogue(engine, path)
+    return lib.norrust_load_dialogue(engine, path) == 1
+end
+
+--- Query pending dialogue entries for a trigger/turn/faction. Returns array of {id, text}.
+function M.get_dialogue(engine, trigger, turn, faction)
+    local raw = get_string(lib.norrust_get_dialogue(engine, trigger, turn, faction))
+    return json_decode(raw) or {}
 end
 
 --- Manually free an engine instance (normally handled by GC).

@@ -86,6 +86,9 @@ local campaign_index = 0         -- 0-indexed current scenario in campaign
 local campaign_veterans = {}     -- array of veteran unit tables from previous scenario
 local campaign_gold = 0          -- carried gold for next scenario
 
+-- Dialogue
+local active_dialogue = {}     -- array of {id, text} currently displayed
+
 -- Assets (loaded in love.load)
 local terrain_tiles = {}
 local unit_sprites = {}
@@ -494,6 +497,18 @@ local function apply_campaign_ctx(ctx)
     game_mode = ctx.game_mode
 end
 
+-- ── Dialogue helpers ────────────────────────────────────────────────────
+
+--- Load dialogue file for the current scenario board (if it exists).
+--- Fires scenario_start trigger and populates active_dialogue.
+local function load_and_fire_dialogue()
+    local dialogue_path = scenarios_path .. "/" .. scenario_board:gsub("%.toml$", "_dialogue.toml")
+    norrust.load_dialogue(engine, dialogue_path)
+    local turn = norrust.get_turn(engine)
+    local faction = norrust.get_active_faction(engine)
+    active_dialogue = norrust.get_dialogue(engine, "scenario_start", turn, faction)
+end
+
 --- Load the selected scenario board via campaign_client with ctx writeback.
 local function call_load_scenario()
     local ctx = build_campaign_ctx()
@@ -506,6 +521,7 @@ local function call_load_campaign_scenario()
     local ctx = build_campaign_ctx()
     campaign_client.load_campaign_scenario(ctx)
     apply_campaign_ctx(ctx)
+    load_and_fire_dialogue()
 end
 
 -- ── love.load ───────────────────────────────────────────────────────────────
@@ -705,6 +721,8 @@ local function build_draw_ctx_state()
         ghost_attackable = ghost_attackable, ghost_path = ghost_path,
         move_anim = pending_anims.move, combat_slide = pending_anims.combat_slide,
         combat_preview = combat_preview, combat_preview_target = combat_preview_target,
+        -- Dialogue
+        active_dialogue = active_dialogue,
         -- Campaign
         campaign_active = campaign_active, campaign_index = campaign_index,
         campaign_data = campaign_data,
@@ -804,6 +822,7 @@ function love.keypressed(key)
                         norrust.load_units(engine, scenarios_path .. "/" .. scenario_units)
                         next_unit_id = norrust.get_next_unit_id(engine)
                         game_mode = PLAYING
+                        load_and_fire_dialogue()
                     end
                 else
                     game_mode = game_mode == PICK_FACTION_BLUE and SETUP_BLUE or SETUP_RED
@@ -820,6 +839,7 @@ function love.keypressed(key)
                 -- Both factions chosen — wire starting gold
                 norrust.apply_starting_gold(engine, faction_id[1], faction_id[2])
                 game_mode = PLAYING
+                load_and_fire_dialogue()
             end
         end
         return
@@ -893,6 +913,11 @@ function love.keypressed(key)
         end
 
     elseif key == "e" then
+        -- Fire turn_end for the ending turn before advancing
+        local end_turn_num = norrust.get_turn(engine)
+        local end_faction = norrust.get_active_faction(engine)
+        local end_msgs = norrust.get_dialogue(engine, "turn_end", end_turn_num, end_faction)
+
         -- End turn + AI
         norrust.end_turn(engine)
         clear_selection()
@@ -903,6 +928,14 @@ function love.keypressed(key)
             norrust.ai_take_turn(engine, 1)
             check_game_over()
         end
+
+        -- Fire turn_start for the new turn and combine with turn_end messages
+        local new_turn = norrust.get_turn(engine)
+        local new_faction = norrust.get_active_faction(engine)
+        local start_msgs = norrust.get_dialogue(engine, "turn_start", new_turn, new_faction)
+        active_dialogue = {}
+        for _, m in ipairs(end_msgs) do active_dialogue[#active_dialogue + 1] = m end
+        for _, m in ipairs(start_msgs) do active_dialogue[#active_dialogue + 1] = m end
 
     elseif key == "a" then
         -- Advance selected unit

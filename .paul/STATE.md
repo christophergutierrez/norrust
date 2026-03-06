@@ -10,13 +10,13 @@ See: .paul/PROJECT.md (updated 2026-03-05)
 ## Current Position
 
 Milestone: v2.0 Dialogue System
-Phase: 55 of 57 (Dialogue Display)
+Phase: 56 of 57 (Dialogue History)
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-03-05 — Phase 54 complete, transitioned to Phase 55
+Last activity: 2026-03-05 — Phase 55 complete, transitioned to Phase 56
 
 Progress:
-- v2.0 Dialogue System: [##░░░░░░░░] 25% (1/4 phases)
+- v2.0 Dialogue System: [#####░░░░░] 50% (2/4 phases)
 
 ## Loop Position
 
@@ -35,10 +35,15 @@ PLAN ──▶ APPLY ──▶ UNIFY
    - dialogue.rs: TOML schema, loader, one-shot runtime
    - FFI: norrust_load_dialogue + norrust_get_dialogue
    - 7 new tests, 104 total passing
+6. Phase 55 Dialogue Display — complete
+   - Lua FFI wrappers in norrust.lua
+   - Narrator panel in draw.lua with word wrapping
+   - Triggers at scenario_start, turn_start, turn_end
+   - Auto-clear on turn change via panel priority
 
 ## Next Action
 
-Run `/paul:plan` for Phase 55 (Dialogue Display)
+Run `/paul:plan` for Phase 56 (Dialogue History)
 
 ## Accumulated Context
 
@@ -52,6 +57,9 @@ Run `/paul:plan` for Phase 55 (Dialogue Display)
 | DialogueState per-scenario (not Registry) | Phase 54 | Loaded/reset per scenario; simpler than global registry |
 | One-shot via HashSet fired IDs | Phase 54 | Simple tracking; reset clears for restart |
 | FFI returns JSON array of {id, text} | Phase 54 | Minimal payload; client decides rendering |
+| Dialogue path derived from board filename | Phase 55 | board.toml → board_dialogue.toml; no config needed |
+| Narrator panel lowest priority in chain | Phase 55 | Hidden by combat/recruit/unit/terrain panels |
+| turn_end fires before engine end_turn | Phase 55 | Captures ending turn/faction before state advances |
 
 ### Deferred Issues
 
@@ -77,8 +85,8 @@ Tests: 104 passing (66 unit + 8 campaign + 3 dialogue + 3 validation + 23 simula
 ## Session Continuity
 
 Last session: 2026-03-05
-Stopped at: Phase 54 complete, ready to plan Phase 55
-Next action: /paul:plan for Phase 55
+Stopped at: Phase 55 complete, ready to plan Phase 56
+Next action: /paul:plan for Phase 56
 Resume file: .paul/ROADMAP.md
 
 ---

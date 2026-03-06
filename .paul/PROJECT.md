@@ -162,6 +162,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Dialogue TOML schema (DialogueEntry: id, trigger, turn, faction, text) with per-scenario dialogue files — Phase 54 (54-01)
 - [x] DialogueState runtime with one-shot query semantics and fired-tracking via HashSet — Phase 54 (54-01)
 - [x] norrust_load_dialogue + norrust_get_dialogue FFI functions returning JSON dialogue arrays — Phase 54 (54-01)
+- [x] Lua FFI wrappers for dialogue loading and querying in norrust.lua — Phase 55 (55-01)
+- [x] Narrator panel rendering in right sidebar with word-wrapped text and panel priority integration — Phase 55 (55-01)
+- [x] Dialogue triggering at scenario_start, turn_start, turn_end with auto-clear on turn change — Phase 55 (55-01)
 
 ### Active (In Progress / Deferred)
 
@@ -289,6 +292,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | DialogueState per-scenario (not Registry) | Dialogue loaded/reset per scenario; simpler than global registry | 2026-03-05 | Active |
 | One-shot via HashSet fired IDs | Simple fired tracking; reset clears for scenario restart | 2026-03-05 | Active |
 | FFI returns JSON array of {id, text} | Minimal payload; client decides rendering | 2026-03-05 | Active |
+| Dialogue path derived from board filename | board.toml → board_dialogue.toml; no separate config needed | 2026-03-05 | Active |
+| Narrator panel lowest priority in panel chain | Hidden by combat/recruit/unit/terrain panels; dialogue is ambient | 2026-03-05 | Active |
+| turn_end fires before engine end_turn | Captures ending turn/faction before state advances | 2026-03-05 | Active |
 
 ## Tech Stack
 
@@ -308,4 +314,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-05 after Phase 54 — v2.0 Dialogue Data & Engine complete.*
+*Last updated: 2026-03-05 after Phase 55 — v2.0 Dialogue Display complete.*
