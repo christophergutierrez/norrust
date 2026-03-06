@@ -10,13 +10,13 @@ See: .paul/PROJECT.md (updated 2026-03-05)
 ## Current Position
 
 Milestone: v2.0 Dialogue System
-Phase: 56 of 57 (Dialogue History)
+Phase: 57 of 57 (Gameplay Triggers)
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-03-05 — Phase 55 complete, transitioned to Phase 56
+Last activity: 2026-03-05 — Phase 56 complete, transitioned to Phase 57
 
 Progress:
-- v2.0 Dialogue System: [#####░░░░░] 50% (2/4 phases)
+- v2.0 Dialogue System: [#######░░░] 75% (3/4 phases)
 
 ## Loop Position
 
@@ -39,11 +39,14 @@ PLAN ──▶ APPLY ──▶ UNIFY
    - Lua FFI wrappers in norrust.lua
    - Narrator panel in draw.lua with word wrapping
    - Triggers at scenario_start, turn_start, turn_end
-   - Auto-clear on turn change via panel priority
+7. Phase 56 Dialogue History — complete
+   - H key toggles scrollable history panel
+   - Accumulates all triggered dialogue per scenario
+   - Newest-first with turn labels
 
 ## Next Action
 
-Run `/paul:plan` for Phase 56 (Dialogue History)
+Run `/paul:plan` for Phase 57 (Gameplay Triggers)
 
 ## Accumulated Context
 
@@ -60,6 +63,8 @@ Run `/paul:plan` for Phase 56 (Dialogue History)
 | Dialogue path derived from board filename | Phase 55 | board.toml → board_dialogue.toml; no config needed |
 | Narrator panel lowest priority in chain | Phase 55 | Hidden by combat/recruit/unit/terrain panels |
 | turn_end fires before engine end_turn | Phase 55 | Captures ending turn/faction before state advances |
+| History newest-first rendering | Phase 56 | Quick access to recent dialogue |
+| History panel highest priority overlay | Phase 56 | Shows above all other panels when toggled |
 
 ### Deferred Issues
 
@@ -78,15 +83,15 @@ Run `/paul:plan` for Phase 56 (Dialogue History)
 None.
 
 ### Git State
-Last commit: b266c7d (chore: update STATE.md with commit hash)
+Last commit: 32b2b88 feat(55-dialogue-display): narrator panel with turn-boundary triggers
 Branch: master
 Tests: 104 passing (66 unit + 8 campaign + 3 dialogue + 3 validation + 23 simulation + 1 FFI)
 
 ## Session Continuity
 
 Last session: 2026-03-05
-Stopped at: Phase 55 complete, ready to plan Phase 56
-Next action: /paul:plan for Phase 56
+Stopped at: Phase 56 complete, ready to plan Phase 57
+Next action: /paul:plan for Phase 57
 Resume file: .paul/ROADMAP.md
 
 ---

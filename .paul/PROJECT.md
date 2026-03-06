@@ -165,6 +165,7 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Lua FFI wrappers for dialogue loading and querying in norrust.lua — Phase 55 (55-01)
 - [x] Narrator panel rendering in right sidebar with word-wrapped text and panel priority integration — Phase 55 (55-01)
 - [x] Dialogue triggering at scenario_start, turn_start, turn_end with auto-clear on turn change — Phase 55 (55-01)
+- [x] Scrollable dialogue history panel accessible via H key, accumulating all triggered dialogue per scenario — Phase 56 (56-01)
 
 ### Active (In Progress / Deferred)
 
@@ -314,4 +315,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-05 after Phase 55 — v2.0 Dialogue Display complete.*
+*Last updated: 2026-03-05 after Phase 56 — v2.0 Dialogue History complete.*

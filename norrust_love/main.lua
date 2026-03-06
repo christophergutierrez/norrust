@@ -88,6 +88,9 @@ local campaign_gold = 0          -- carried gold for next scenario
 
 -- Dialogue
 local active_dialogue = {}     -- array of {id, text} currently displayed
+local dialogue_history = {}    -- array of {turn, text} — all fired dialogue this scenario
+local show_dialogue_history = false
+local history_scroll = 0
 
 -- Assets (loaded in love.load)
 local terrain_tiles = {}
@@ -499,14 +502,27 @@ end
 
 -- ── Dialogue helpers ────────────────────────────────────────────────────
 
+--- Append dialogue entries to history with the current turn number.
+local function append_to_history(entries)
+    local turn = norrust.get_turn(engine)
+    for _, e in ipairs(entries) do
+        dialogue_history[#dialogue_history + 1] = {turn = turn, text = e.text}
+    end
+end
+
 --- Load dialogue file for the current scenario board (if it exists).
 --- Fires scenario_start trigger and populates active_dialogue.
 local function load_and_fire_dialogue()
+    dialogue_history = {}
+    history_scroll = 0
+    show_dialogue_history = false
+
     local dialogue_path = scenarios_path .. "/" .. scenario_board:gsub("%.toml$", "_dialogue.toml")
     norrust.load_dialogue(engine, dialogue_path)
     local turn = norrust.get_turn(engine)
     local faction = norrust.get_active_faction(engine)
     active_dialogue = norrust.get_dialogue(engine, "scenario_start", turn, faction)
+    append_to_history(active_dialogue)
 end
 
 --- Load the selected scenario board via campaign_client with ctx writeback.
@@ -723,6 +739,9 @@ local function build_draw_ctx_state()
         combat_preview = combat_preview, combat_preview_target = combat_preview_target,
         -- Dialogue
         active_dialogue = active_dialogue,
+        dialogue_history = dialogue_history,
+        show_dialogue_history = show_dialogue_history,
+        history_scroll = history_scroll,
         -- Campaign
         campaign_active = campaign_active, campaign_index = campaign_index,
         campaign_data = campaign_data,
@@ -936,6 +955,7 @@ function love.keypressed(key)
         active_dialogue = {}
         for _, m in ipairs(end_msgs) do active_dialogue[#active_dialogue + 1] = m end
         for _, m in ipairs(start_msgs) do active_dialogue[#active_dialogue + 1] = m end
+        append_to_history(active_dialogue)
 
     elseif key == "a" then
         -- Advance selected unit
@@ -952,6 +972,11 @@ function love.keypressed(key)
                 end
             end
         end
+
+    elseif key == "h" then
+        -- Toggle dialogue history
+        show_dialogue_history = not show_dialogue_history
+        if show_dialogue_history then history_scroll = 0 end
 
     elseif key == "r" then
         -- Toggle recruit mode
@@ -1245,6 +1270,11 @@ end
 
 --- Zoom board in/out with scroll wheel.
 function love.wheelmoved(x, y)
+    if show_dialogue_history then
+        -- Scroll history panel (y > 0 = scroll up = show earlier entries)
+        history_scroll = math.max(0, history_scroll - y * 20)
+        return
+    end
     if y > 0 then
         camera_zoom = math.min(camera_zoom + ZOOM_STEP, ZOOM_MAX)
     elseif y < 0 then

@@ -420,6 +420,70 @@ function draw.draw_dialogue_panel(ctx)
     end
 end
 
+--- Draw the dialogue history overlay panel.
+function draw.draw_dialogue_history(ctx)
+    local fonts = ctx.fonts
+    local vp_w, vp_h = ctx.get_viewport()
+    local panel_x = vp_w - 200
+    local panel_w = 200
+    local text_w = 180
+    local pad = 10
+
+    love.graphics.setColor(0, 0, 0, 0.85)
+    love.graphics.rectangle("fill", panel_x, 0, panel_w, vp_h)
+
+    local y = 10
+
+    -- Title
+    love.graphics.setFont(fonts[13])
+    love.graphics.setColor(0.9, 0.85, 0.6)
+    love.graphics.print("Dialogue History", panel_x + pad, y)
+    y = y + 20
+
+    -- Separator
+    love.graphics.setColor(0.5, 0.5, 0.5, 0.6)
+    love.graphics.line(panel_x + pad, y, vp_w - pad, y)
+    y = y + 8
+
+    local header_h = y
+
+    -- Clip content area
+    local sx, sy = (panel_x + pad) * ctx.UI_SCALE, header_h * ctx.UI_SCALE
+    local sw, sh = text_w * ctx.UI_SCALE, (vp_h - header_h - 20) * ctx.UI_SCALE
+    love.graphics.setScissor(sx, sy, sw, sh)
+
+    -- Apply scroll offset
+    y = y - (ctx.history_scroll or 0)
+
+    -- Render entries newest-first
+    local font11 = fonts[11]
+    local font9 = fonts[9]
+    local line_h = font11:getHeight()
+    for i = #ctx.dialogue_history, 1, -1 do
+        local entry = ctx.dialogue_history[i]
+
+        -- Turn label
+        love.graphics.setFont(font9)
+        love.graphics.setColor(0.6, 0.6, 0.5)
+        love.graphics.print(string.format("Turn %d", entry.turn), panel_x + pad, y)
+        y = y + font9:getHeight() + 2
+
+        -- Text
+        love.graphics.setFont(font11)
+        love.graphics.setColor(0.85, 0.85, 0.85)
+        love.graphics.printf(entry.text, panel_x + pad, y, text_w, "left")
+        local _, lines = font11:getWrap(entry.text, text_w)
+        y = y + #lines * line_h + 12
+    end
+
+    love.graphics.setScissor()
+
+    -- Hint at bottom
+    love.graphics.setFont(font9)
+    love.graphics.setColor(0.5, 0.5, 0.5)
+    love.graphics.printf("[H] Close  [Scroll] Navigate", panel_x + pad, vp_h - 16, text_w, "center")
+end
+
 --- Draw the combat preview panel sidebar.
 function draw.draw_combat_preview(ctx)
     local fonts = ctx.fonts
@@ -787,7 +851,9 @@ function draw.draw_frame(ctx, state)
             love.graphics.print(hud_text, 10, 6)
         end
 
-        if ctx.combat_preview ~= nil then
+        if ctx.show_dialogue_history then
+            draw.draw_dialogue_history(ctx)
+        elseif ctx.combat_preview ~= nil then
             draw.draw_combat_preview(ctx)
         elseif ctx.recruit_mode then
             draw.draw_recruit_panel(ctx, state)
