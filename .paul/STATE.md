@@ -5,24 +5,24 @@
 See: .paul/PROJECT.md (updated 2026-03-05)
 
 **Core value:** A playable hex-based strategy game where simulation logic is strictly separated from presentation, enabling human players and AI agents to use the same clean engine.
-**Current focus:** v1.9 UI Polish — zoom, viewport clipping (fullscreen + faction order done)
+**Current focus:** v1.9 UI Polish — viewport clipping (fullscreen, faction order, zoom done)
 
 ## Current Position
 
 Milestone: v1.9 UI Polish
-Phase: 52 of 53 (Board Zoom)
+Phase: 53 of 53 (Viewport Clipping)
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-03-05 — Phase 51 complete, transitioned to Phase 52
+Last activity: 2026-03-05 — Phase 52 complete, transitioned to Phase 53
 
 Progress:
-- v1.9 UI Polish: [███░░░░░░░] 33% (1/3 phases)
+- v1.9 UI Polish: [██████░░░░] 67% (2/3 phases)
 
 ## Loop Position
 
 ```
 PLAN ──▶ APPLY ──▶ UNIFY
-  ○        ○        ○     [Ready for Phase 52 PLAN]
+  ○        ○        ○     [Ready for Phase 53 PLAN]
 ```
 
 ## What Happened This Session
@@ -43,6 +43,8 @@ Run `/paul:plan` for Phase 51 (Fullscreen & Faction Order)
 |----------|-------|--------|
 | love.window.maximize() instead of desktop fullscreen | Phase 51 | Keeps title bar X close button |
 | table.sort factions by name after engine load | Phase 51 | Consistent alphabetical order |
+| translate→scale→translate zoom transform | Phase 52 | Clean board-space zoom composing with pan |
+| damage_per_hit includes ToD modifier | Phase 52 | Fixes display inconsistency in combat preview |
 
 ### Deferred Issues
 
@@ -60,15 +62,15 @@ Run `/paul:plan` for Phase 51 (Fullscreen & Faction Order)
 None.
 
 ### Git State
-Last commit: b266c7d (chore: update STATE.md with commit hash)
+Last commit: 8c7c9db (Phase 51 — Fullscreen & Faction Order)
 Branch: master
 Tests: 97 passing (62 unit + 8 campaign + 3 validation + 23 simulation + 1 FFI)
 
 ## Session Continuity
 
 Last session: 2026-03-05
-Stopped at: Phase 51 complete, ready to plan Phase 52
-Next action: /paul:plan for Phase 52
+Stopped at: Phase 52 complete, ready to plan Phase 53
+Next action: /paul:plan for Phase 53
 Resume file: .paul/ROADMAP.md
 
 ---

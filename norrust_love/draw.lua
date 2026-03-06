@@ -528,11 +528,12 @@ function draw.draw_frame(ctx, state)
         tile_ids[key] = tile.terrain_id
     end
 
-    -- Board-space drawing (push camera transform)
-    local tx = ctx.board_origin_x + ctx.camera_offset_x
-    local ty = ctx.board_origin_y + ctx.camera_offset_y
+    -- Board-space drawing (push camera transform with zoom)
+    local zoom = ctx.camera_zoom or 1.0
     love.graphics.push()
-    love.graphics.translate(tx, ty)
+    love.graphics.translate(ctx.board_origin_x, ctx.board_origin_y)
+    love.graphics.scale(zoom, zoom)
+    love.graphics.translate(ctx.camera_offset_x, ctx.camera_offset_y)
 
     -- 1. Terrain hexes
     for col = 0, ctx.BOARD_COLS - 1 do

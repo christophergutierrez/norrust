@@ -233,9 +233,9 @@ pub fn simulate_combat(
     CombatPreview {
         attacker_hit_pct: atk_hit_pct,
         defender_hit_pct: def_hit_pct,
-        attacker_damage_per_hit: atk_effective_dmg,
+        attacker_damage_per_hit: ((atk_effective_dmg as i64 * (100 + atk_tod as i64)) / 100).max(0) as u32,
         attacker_strikes: atk_attack.strikes,
-        defender_damage_per_hit: def_effective_dmg,
+        defender_damage_per_hit: ((def_effective_dmg as i64 * (100 + def_tod as i64)) / 100).max(0) as u32,
         defender_strikes: def_attack.map(|a| a.strikes).unwrap_or(0),
         attacker_damage_min: atk_dmg_min,
         attacker_damage_max: atk_dmg_max,

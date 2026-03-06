@@ -105,6 +105,10 @@ local drag_start_x, drag_start_y = 0, 0
 local drag_camera_start_x, drag_camera_start_y = 0, 0
 local camera_target_x, camera_target_y = 0, 0
 local camera_lerping = false
+local camera_zoom = 1.0
+local ZOOM_MIN = 0.5
+local ZOOM_MAX = 3.0
+local ZOOM_STEP = 0.1
 
 -- Fonts (created in love.load)
 local fonts = {}
@@ -157,10 +161,13 @@ local function center_camera()
     board_origin_x = vp_w / 2 - (tlx + brx) / 2
     board_origin_y = vp_h / 2 - (tly + bry) / 2
 
+    -- Effective viewport shrinks when zoomed in, grows when zoomed out
+    local eff_w = vp_w / camera_zoom
+    local eff_h = vp_h / camera_zoom
     local board_half_w = (brx - tlx) / 2 + hex.RADIUS
     local board_half_h = (bry - tly) / 2 + hex.RADIUS
-    local pan_range_x = math.max(board_half_w - vp_w / 2 + hex.RADIUS, 0)
-    local pan_range_y = math.max(board_half_h - vp_h / 2 + hex.RADIUS, 0)
+    local pan_range_x = math.max(board_half_w - eff_w / 2 + hex.RADIUS, 0)
+    local pan_range_y = math.max(board_half_h - eff_h / 2 + hex.RADIUS, 0)
     camera_min_x, camera_min_y = -pan_range_x, -pan_range_y
     camera_max_x, camera_max_y = pan_range_x, pan_range_y
     apply_camera_offset()
@@ -370,8 +377,8 @@ local function select_unit(uid)
         if int(unit.id) == uid then
             local ux, uy = hex.to_pixel(int(unit.col), int(unit.row))
             local vp_w, vp_h = get_viewport()
-            camera_target_x = clamp(vp_w / 2 - board_origin_x - ux, camera_min_x, camera_max_x)
-            camera_target_y = clamp(vp_h / 2 - board_origin_y - uy, camera_min_y, camera_max_y)
+            camera_target_x = clamp((vp_w / 2 - board_origin_x) / camera_zoom - ux, camera_min_x, camera_max_x)
+            camera_target_y = clamp((vp_h / 2 - board_origin_y) / camera_zoom - uy, camera_min_y, camera_max_y)
             camera_lerping = true
             break
         end
@@ -729,6 +736,7 @@ function love.draw()
     -- Camera
     ctx.board_origin_x = board_origin_x; ctx.board_origin_y = board_origin_y
     ctx.camera_offset_x = camera_offset_x; ctx.camera_offset_y = camera_offset_y
+    ctx.camera_zoom = camera_zoom
     -- Functions from main
     ctx.get_viewport = get_viewport; ctx.screen_to_game = screen_to_game
     ctx.int = int; ctx.parse_html_color = parse_html_color
@@ -947,8 +955,8 @@ function love.mousepressed(sx, sy, button)
 
     -- Right-click: terrain inspection (any mode with a board)
     if button == 2 and game_mode == PLAYING and not game_over then
-        local local_x = x - (board_origin_x + camera_offset_x)
-        local local_y = y - (board_origin_y + camera_offset_y)
+        local local_x = (x - board_origin_x) / camera_zoom - camera_offset_x
+        local local_y = (y - board_origin_y) / camera_zoom - camera_offset_y
         local col, row = hex.from_pixel(local_x, local_y)
         if col >= 0 and col < BOARD_COLS and row >= 0 and row < BOARD_ROWS then
             local state = norrust.get_state(engine)
@@ -985,8 +993,8 @@ function love.mousepressed(sx, sy, button)
             return
         end
 
-        local local_x = x - (board_origin_x + camera_offset_x)
-        local local_y = y - (board_origin_y + camera_offset_y)
+        local local_x = (x - board_origin_x) / camera_zoom - camera_offset_x
+        local local_y = (y - board_origin_y) / camera_zoom - camera_offset_y
         local col, row = hex.from_pixel(local_x, local_y)
 
         if col < 0 or col >= BOARD_COLS or row < 0 or row >= BOARD_ROWS then
@@ -1018,8 +1026,8 @@ function love.mousepressed(sx, sy, button)
     if x > vp_w - 200 then return end
 
     -- Convert screen coords to hex
-    local local_x = x - (board_origin_x + camera_offset_x)
-    local local_y = y - (board_origin_y + camera_offset_y)
+    local local_x = (x - board_origin_x) / camera_zoom - camera_offset_x
+    local local_y = (y - board_origin_y) / camera_zoom - camera_offset_y
     local col, row = hex.from_pixel(local_x, local_y)
 
     -- Off-board click: start drag
@@ -1190,10 +1198,22 @@ function love.mousemoved(sx, sy, dx, dy)
     if drag_active then
         camera_lerping = false
         local x, y = screen_to_game(sx, sy)
-        camera_offset_x = drag_camera_start_x + (x - drag_start_x)
-        camera_offset_y = drag_camera_start_y + (y - drag_start_y)
+        camera_offset_x = drag_camera_start_x + (x - drag_start_x) / camera_zoom
+        camera_offset_y = drag_camera_start_y + (y - drag_start_y) / camera_zoom
         apply_camera_offset()
     end
+end
+
+-- ── love.wheelmoved ─────────────────────────────────────────────────────────
+
+--- Zoom board in/out with scroll wheel.
+function love.wheelmoved(x, y)
+    if y > 0 then
+        camera_zoom = math.min(camera_zoom + ZOOM_STEP, ZOOM_MAX)
+    elseif y < 0 then
+        camera_zoom = math.max(camera_zoom - ZOOM_STEP, ZOOM_MIN)
+    end
+    center_camera()
 end
 
 -- ── love.resize ─────────────────────────────────────────────────────────────
