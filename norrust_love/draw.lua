@@ -936,12 +936,67 @@ function draw.draw_frame(ctx, state)
         end
     end
 
+    -- Sidebar buttons (bottom of sidebar, always rendered)
+    draw.draw_sidebar_buttons(ctx)
+
     -- Help overlay (drawn on top of everything)
     if ctx.show_help then
         draw.draw_help_overlay(ctx)
     end
 
     love.graphics.pop()
+end
+
+--- Draw clickable buttons at the bottom of the sidebar.
+function draw.draw_sidebar_buttons(ctx)
+    local vp_w, vp_h = ctx.get_viewport()
+    local sb_x = vp_w - 200
+    local btn_w = 180
+    local btn_h = 32
+    local btn_x = sb_x + 10
+    local gap = 8
+    local bottom_y = vp_h - 10
+
+    -- Initialize buttons table for click detection
+    ctx.buttons = {}
+
+    -- Help button (always visible, small)
+    local help_y = bottom_y - btn_h
+    ctx.buttons.help = {x = btn_x, y = help_y, w = btn_w, h = btn_h}
+    love.graphics.setColor(0.3, 0.3, 0.35, 0.9)
+    love.graphics.rectangle("fill", btn_x, help_y, btn_w, btn_h, 4, 4)
+    love.graphics.setColor(0.7, 0.7, 0.7, 1)
+    love.graphics.rectangle("line", btn_x, help_y, btn_w, btn_h, 4, 4)
+    love.graphics.setFont(ctx.fonts[13])
+    love.graphics.setColor(0.9, 0.9, 0.9, 1)
+    love.graphics.printf("?  Help", btn_x, help_y + 8, btn_w, "center")
+
+    if ctx.game_mode == ctx.PLAYING and not ctx.game_over then
+        local faction = ctx.norrust.get_active_faction(ctx.engine)
+        local fc = faction == 0 and ctx.BLUE or ctx.RED
+
+        -- Recruit button
+        local recruit_y = help_y - btn_h - gap
+        ctx.buttons.recruit = {x = btn_x, y = recruit_y, w = btn_w, h = btn_h}
+        love.graphics.setColor(0.2, 0.35, 0.2, 0.9)
+        love.graphics.rectangle("fill", btn_x, recruit_y, btn_w, btn_h, 4, 4)
+        love.graphics.setColor(0.4, 0.7, 0.4, 1)
+        love.graphics.rectangle("line", btn_x, recruit_y, btn_w, btn_h, 4, 4)
+        love.graphics.setFont(ctx.fonts[13])
+        love.graphics.setColor(0.85, 1, 0.85, 1)
+        love.graphics.printf("R  Recruit", btn_x, recruit_y + 8, btn_w, "center")
+
+        -- End Turn button
+        local end_y = recruit_y - btn_h - gap
+        ctx.buttons.end_turn = {x = btn_x, y = end_y, w = btn_w, h = btn_h}
+        love.graphics.setColor(fc[1] * 0.5, fc[2] * 0.5, fc[3] * 0.5, 0.9)
+        love.graphics.rectangle("fill", btn_x, end_y, btn_w, btn_h, 4, 4)
+        love.graphics.setColor(fc[1], fc[2], fc[3], 1)
+        love.graphics.rectangle("line", btn_x, end_y, btn_w, btn_h, 4, 4)
+        love.graphics.setFont(ctx.fonts[13])
+        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.printf("E  End Turn", btn_x, end_y + 8, btn_w, "center")
+    end
 end
 
 --- Draw a semi-transparent help overlay showing all keybindings.

@@ -198,6 +198,7 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Menu music looping on scenario select with transitions to/from gameplay — Phase 75 (75-01)
 - [x] Global sound controls (mute/volume) accessible from all game screens — Phase 75 (75-01)
 - [x] Help overlay showing all keybindings, toggled with ? key — Phase 76 (76-01)
+- [x] Clickable sidebar buttons (End Turn, Recruit, Help) for mouse-only play — Phase 77 (77-01)
 
 ### Active (In Progress / Deferred)
 
@@ -339,6 +340,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | Local uid tracking in veteran placement loop | Engine's place_unit doesn't increment next_unit_id | 2026-03-06 | Active |
 | Global sound controls before mode-specific blocks | M/-/= must work from any screen including menu where music plays | 2026-03-07 | Active |
 | Explicit stop_music() on scenario/campaign selection | Belt-and-suspenders: don't rely solely on scenario_loaded event timing | 2026-03-07 | Active |
+| Sidebar buttons via shared.buttons coordinate table | Draw sets coordinates, mousepressed reads them; avoids upvalue overflow | 2026-03-07 | Active |
+| Auto-save on player win only (not every end turn) | Less aggressive; F5 manual save available anytime | 2026-03-07 | Active |
 
 ## Tech Stack
 
@@ -358,4 +361,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-07 after Phase 76 — Help Overlay.*
+*Last updated: 2026-03-07 after Phase 77 — Mouse Actions (v2.7 complete).*

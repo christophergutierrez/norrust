@@ -7,13 +7,13 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 ## Current Milestone
 
 **v2.7 Controls & Help**
-Status: In progress
-Phases: 1 of 2 complete
+Status: Complete
+Phases: 2 of 2 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 76 | Help Overlay | 1/1 | Complete | 2026-03-07 |
-| 77 | Mouse Actions | TBD | Not started | - |
+| 77 | Mouse Actions | 1/1 | Complete | 2026-03-07 |
 
 ## v2.7 Phase Details
 
@@ -31,7 +31,7 @@ Phases: 1 of 2 complete
 **Depends on:** Phase 76 (help overlay shows available actions)
 
 **Plans:**
-- TBD (defined during /paul:plan)
+- 77-01: Sidebar buttons + auto-save reduction (complete)
 
 ---
 

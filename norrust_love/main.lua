@@ -67,7 +67,7 @@ local leader_placed = {false, false}
 local leader_level = {1, 1}
 local next_unit_id = 1
 local recruit_mode = false
-local recruit_palette = {}
+-- recruit_palette stored in shared.recruit_palette
 local selected_recruit_idx = 0
 local recruit_error = ""
 local recruit_state = {veterans = {}}  -- veterans: living roster entries available for recruitment
@@ -104,7 +104,7 @@ local history_scroll = 0
 -- Shared state table for overflow upvalues (LuaJIT 60-upvalue limit)
 -- .agent = agent_server handle or nil
 -- .ai_vs_ai = true when both factions are AI-controlled
-local shared = {agent = nil, agent_mod = agent_server, ai_vs_ai = false, ai_delay = 0.5, ai_timer = 0, sound = require("sound"), show_help = false}
+local shared = {agent = nil, agent_mod = agent_server, ai_vs_ai = false, ai_delay = 0.5, ai_timer = 0, sound = require("sound"), show_help = false, recruit_palette = {}}
 
 -- Assets (loaded in love.load)
 local terrain_tiles = {}
@@ -502,6 +502,9 @@ local function check_game_over()
     if w >= 0 then
         game_over = true
         winner_faction = w
+        if w == 0 then
+            save.write_save(engine, norrust, scenario_board, scenarios_path, nil)
+        end
     end
 end
 
@@ -880,7 +883,7 @@ local function build_draw_ctx_state()
         game_mode = game_mode, game_over = game_over, winner_faction = winner_faction,
         selected_unit_id = selected_unit_id, inspect_unit_id = inspect_unit_id,
         inspect_terrain = inspect_terrain, recruit_mode = recruit_mode,
-        recruit_palette = recruit_palette, recruit_veterans = recruit_state.veterans,
+        recruit_palette = shared.recruit_palette, recruit_veterans = recruit_state.veterans,
         selected_recruit_idx = selected_recruit_idx,
         recruit_error = recruit_error, reachable_cells = reachable_cells,
         reachable_set = reachable_set,
@@ -933,6 +936,7 @@ function love.draw()
     ctx.get_viewport = get_viewport; ctx.screen_to_game = screen_to_game
     ctx.int = int; ctx.parse_html_color = parse_html_color
     draw_mod.draw_frame(ctx, state)
+    shared.buttons = ctx.buttons or {}
 
     -- Status flash message (save/load feedback)
     if status_message then
@@ -1245,9 +1249,6 @@ function love.keypressed(key)
         end
 
     elseif key == "e" then
-        -- Auto-save before ending turn
-        save.write_save(engine, norrust, scenario_board, scenarios_path, build_save_campaign_ctx())
-
         events.emit("dialogue", {trigger = "turn_end"})
         shared.sound.play("turn_end")
 
@@ -1303,7 +1304,7 @@ function love.keypressed(key)
         -- Toggle recruit mode
         if not recruit_mode then
             local faction = norrust.get_active_faction(engine)
-            recruit_palette = norrust.get_faction_recruits(engine, faction_id[faction + 1], 0)
+            shared.recruit_palette = norrust.get_faction_recruits(engine, faction_id[faction + 1], 0)
             -- Build veteran recruit list from roster (campaign only)
             recruit_state.veterans = {}
             if campaign_active and campaign_roster then
@@ -1331,11 +1332,28 @@ function love.keypressed(key)
         -- Number keys for recruit selection
         local num = tonumber(key)
         if num and num >= 1 and num <= 9 then
-            local total = #recruit_state.veterans + #recruit_palette
+            local total = #recruit_state.veterans + #shared.recruit_palette
             if recruit_mode and total > 0 then
                 selected_recruit_idx = math.min(num - 1, total - 1)
             end
         end
+    end
+end
+
+--- Check if a sidebar button was clicked and handle it.
+shared.handle_sidebar_button = function(x, y, button, gm, go)
+    if button ~= 1 then return end
+    local btns = shared.buttons
+    if not btns then return end
+    local function hit(b)
+        return b and x >= b.x and x <= b.x + b.w and y >= b.y and y <= b.y + b.h
+    end
+    if hit(btns.help) then
+        shared.show_help = not shared.show_help
+    elseif hit(btns.end_turn) and gm == PLAYING and not go then
+        love.keypressed("e")
+    elseif hit(btns.recruit) and gm == PLAYING and not go then
+        love.keypressed("r")
     end
 end
 
@@ -1348,9 +1366,12 @@ function love.mousepressed(sx, sy, button)
 
     local x, y = screen_to_game(sx, sy)
 
-    -- Ignore clicks in the right panel area (rightmost 200px of viewport)
+    -- Sidebar: check button clicks, otherwise ignore panel area
     local vp_w = select(1, get_viewport())
-    if x >= vp_w - 200 then return end
+    if x >= vp_w - 200 then
+        shared.handle_sidebar_button(x, y, button, game_mode, game_over)
+        return
+    end
 
     -- Right-click: terrain inspection (any mode with a board)
     if button == 2 and game_mode == PLAYING and not game_over then
@@ -1462,8 +1483,8 @@ function love.mousepressed(sx, sy, button)
                 next_unit_id = next_unit_id + 1
                 recruit_state.play_sfx("recruit")
                 table.remove(recruit_state.veterans, selected_recruit_idx + 1)
-                if selected_recruit_idx >= #recruit_state.veterans + #recruit_palette then
-                    selected_recruit_idx = math.max(0, #recruit_state.veterans + #recruit_palette - 1)
+                if selected_recruit_idx >= #recruit_state.veterans + #shared.recruit_palette then
+                    selected_recruit_idx = math.max(0, #recruit_state.veterans + #shared.recruit_palette - 1)
                 end
                 recruit_error = ""
             else
@@ -1476,7 +1497,7 @@ function love.mousepressed(sx, sy, button)
         else
             -- Normal recruitment from palette
             local palette_idx = selected_recruit_idx - vet_count
-            local def_id = recruit_palette[palette_idx + 1] or ""
+            local def_id = shared.recruit_palette[palette_idx + 1] or ""
             if def_id ~= "" then
                 local result = norrust.recruit_unit_at(engine, next_unit_id, def_id, col, row)
                 if result == 0 then

@@ -29,6 +29,66 @@ Completed milestone log for this project.
 | v2.3 Combat Depth & Campaign | 2026-03-07 | ~1 day | 5 phases, 5 plans |
 | v2.4 Content Organization | 2026-03-07 | ~1 day | 4 phases, 4 plans |
 | v2.5 Animation Fixes | 2026-03-07 | ~10min | 1 phase, 1 plan |
+| v2.6 Music | 2026-03-07 | ~15min | 1 phase, 1 plan |
+| v2.7 Controls & Help | 2026-03-07 | ~30min | 2 phases, 2 plans |
+
+---
+
+## v2.7 Controls & Help
+
+**Completed:** 2026-03-07
+**Duration:** ~30min
+
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 2 |
+| Plans | 2 |
+| Tests | 121 Rust |
+
+### Key Accomplishments
+
+- **Help overlay** — ? key toggles keybinding overlay showing all controls in 3 columns
+- **Sidebar buttons** — clickable End Turn, Recruit, Help buttons at bottom of sidebar
+- **Auto-save reduction** — saves only on player win instead of every end turn
+
+### Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| show_help in shared table | LuaJIT 60-upvalue limit avoidance |
+| shared.buttons coordinate table | Draw sets positions, mousepressed reads them; no upvalue overflow |
+| love.keypressed() delegation for button clicks | Reuses existing key handler logic |
+| Auto-save on win only | User preference; F5 manual save still available |
+
+---
+
+## v2.6 Music
+
+**Completed:** 2026-03-07
+**Duration:** ~15min
+
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 1 |
+| Plans | 1 |
+| Tests | 121 Rust |
+
+### Key Accomplishments
+
+- **Menu music** — battle_background.ogg loops on scenario select screen as menu_music.ogg
+- **Music transitions** — stops on scenario/campaign start, resumes on return to menu
+- **Global sound controls** — M (mute), - (volume down), = (volume up) work from any screen
+
+### Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Global sound controls before mode-specific blocks | M/-/= must work from menu where music plays |
+| Explicit stop_music() on scenario/campaign selection | Belt-and-suspenders; don't rely on event timing |
 
 ---
 
@@ -693,4 +753,4 @@ Completed milestone log for this project.
 - Full Wesnoth-style combat: adjacency enforcement, bidirectional retaliation, time-of-day modifiers, resistances
 
 ---
-*MILESTONES.md — Updated: 2026-03-05 (v1.9 UI Polish)*
+*MILESTONES.md — Updated: 2026-03-07 (v2.7 Controls & Help)*
