@@ -193,6 +193,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] File-first sound loading from data/sounds/ with procedural SoundData fallback — Phase 72 (72-01)
 - [x] Per-scenario music support via optional music.ogg in scenario directories — Phase 72 (72-01)
 - [x] CONTRIBUTING.md with content authoring guides for non-programmer contributors — Phase 73 (73-01)
+- [x] Idle animation frame cycling (sprite key normalization fix) — Phase 74 (74-01)
+- [x] Death animation visibility with timed cleanup — Phase 74 (74-01)
 
 ### Active (In Progress / Deferred)
 
@@ -351,4 +353,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-07 after Phase 73 — Contributor Guides (v2.4 Content Organization complete).*
+*Last updated: 2026-03-07 after Phase 74 — Animation Fixes (v2.5 complete).*

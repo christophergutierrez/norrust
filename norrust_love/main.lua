@@ -111,6 +111,7 @@ local terrain_tiles = {}
 local unit_sprites = {}
 local FACTION_COLORS = {[0] = {0.25, 0.42, 0.88}, [1] = {0.80, 0.12, 0.12}}
 local unit_anims = {}  -- unit_id -> animation state (from anim_module.new_state())
+local dying_units = {}  -- uid -> {def_id, col, row, faction, timer} for death animation rendering
 local pending_anims = {}  -- array of {uid, end_time, return_to} for combat animations
 -- move_anim stored as pending_anims.move to avoid exceeding LuaJIT 60-upvalue limit
 -- pending_anims.move = {uid, path, seg, t, speed, on_complete} or nil
@@ -283,6 +284,16 @@ end
 -- @param defender_id number: defending unit id
 -- @param is_ranged boolean: true if ranged attack
 local function apply_attack_with_anims(attacker_id, defender_id, is_ranged)
+    -- Capture defender position before attack (engine removes dead units)
+    local pre_state = norrust.get_state(engine)
+    local def_info = nil
+    for _, unit in ipairs(pre_state.units or {}) do
+        if int(unit.id) == defender_id then
+            def_info = {def_id = unit.def_id, col = int(unit.col), row = int(unit.row), faction = int(unit.faction)}
+            break
+        end
+    end
+
     trigger_attack_anims(attacker_id, defender_id, is_ranged)
     norrust.apply_attack(engine, attacker_id, defender_id)
     local new_state = norrust.get_state(engine)
@@ -295,6 +306,12 @@ local function apply_attack_with_anims(attacker_id, defender_id, is_ranged)
     end
     if not defender_alive then
         trigger_death_anim(defender_id)
+        if def_info then
+            dying_units[defender_id] = {
+                def_id = def_info.def_id, col = def_info.col, row = def_info.row,
+                faction = def_info.faction, timer = 1.0,
+            }
+        end
         shared.sound.play("death")
     else
         shared.sound.play("hit")
@@ -739,7 +756,7 @@ function love.update(dt)
         -- We need the state to map uid → def_id; cache is built during draw_units
         -- For efficiency, store def_id on the anim_state when created
         if anim_state.def_id then
-            entry = unit_sprites[anim_state.def_id]
+            entry = unit_sprites[anim_state.def_id:lower():gsub(" ", "_")]
         end
         if entry and entry.anims then
             anim_module.update(anim_state, entry.anims, dt)
@@ -759,6 +776,15 @@ function love.update(dt)
             table.remove(pending_anims, i)
         else
             i = i + 1
+        end
+    end
+
+    -- Tick down dying unit timers
+    for uid, info in pairs(dying_units) do
+        info.timer = info.timer - dt
+        if info.timer <= 0 then
+            dying_units[uid] = nil
+            unit_anims[uid] = nil
         end
     end
 
@@ -896,6 +922,7 @@ function love.draw()
     -- Fonts, sprites
     ctx.fonts = fonts; ctx.terrain_tiles = terrain_tiles; ctx.unit_sprites = unit_sprites
     ctx.unit_anims = unit_anims
+    ctx.dying_units = dying_units
     -- Camera
     ctx.board_origin_x = board_origin_x; ctx.board_origin_y = board_origin_y
     ctx.camera_offset_x = camera_offset_x; ctx.camera_offset_y = camera_offset_y

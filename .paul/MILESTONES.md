@@ -27,6 +27,67 @@ Completed milestone log for this project.
 | v2.1 Save System | 2026-03-06 | ~1 day | 4 phases, 3 plans |
 | v2.2 AI & Agents | 2026-03-06 | ~1 day | 3 phases, 3 plans |
 | v2.3 Combat Depth & Campaign | 2026-03-07 | ~1 day | 5 phases, 5 plans |
+| v2.4 Content Organization | 2026-03-07 | ~1 day | 4 phases, 4 plans |
+| v2.5 Animation Fixes | 2026-03-07 | ~10min | 1 phase, 1 plan |
+
+---
+
+## v2.5 Animation Fixes
+
+**Completed:** 2026-03-07
+**Duration:** ~10min
+
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 1 |
+| Plans | 1 |
+| Tests | 121 Rust |
+
+### Key Accomplishments
+
+- **Idle animation fix** — sprite key normalization in love.update (`:lower():gsub(" ", "_")`)
+- **Death animation fix** — dying_units table renders dead units for 1s during death animation before cleanup
+
+### Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| dying_units table with timed cleanup | Decouples visual rendering from engine state; dead units visible during animation |
+| 1.0 second death timer | Matches typical death animation duration |
+
+---
+
+## v2.4 Content Organization
+
+**Completed:** 2026-03-07
+**Duration:** ~1 day
+
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 4 |
+| Plans | 4 |
+| Tests | 121 Rust |
+
+### Key Accomplishments
+
+- **Unit content directories** — data/units/<name>/ with TOML + sprites together; Registry loader scans subdirs
+- **Scenario directories** — scenarios/<name>/ with board.toml, units.toml, dialogue.toml per scenario
+- **Sound asset loading** — file-first (.ogg/.wav) from data/sounds/ with procedural SoundData fallback
+- **Per-scenario music** — optional music.ogg in scenario directories, loaded automatically
+- **Symlink pattern** — norrust_love/<dir> -> ../<dir> + setSymlinksEnabled for Love2D VFS access
+- **CONTRIBUTING.md** — content authoring guides for non-programmer contributors
+
+### Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Symlink pattern for Love2D VFS | love.filesystem.mount doesn't work for plain dirs (physfs limitation) |
+| Registry loader scans subdirs | <dirname>/<dirname>.toml convention for self-contained unit dirs |
+| Single CONTRIBUTING.md | Covers all content types in one place vs per-directory READMEs |
 
 ---
 

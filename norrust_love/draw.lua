@@ -107,9 +107,20 @@ function draw.draw_units(ctx, state)
         ::continue::
     end
 
-    -- Clean up stale animation states for dead/removed units
+    -- Draw dying units (death animation still playing)
+    for uid, info in pairs(ctx.dying_units or {}) do
+        local anim_state = ctx.unit_anims[uid]
+        if anim_state then
+            local cx, cy = ctx.hex.to_pixel(info.col, info.row)
+            local faction = info.faction
+            anim_state.facing = faction == 0 and "right" or "left"
+            ctx.assets.draw_unit_sprite(ctx.unit_sprites, info.def_id, cx, cy, ctx.hex.RADIUS, faction, 1.0, ctx.FACTION_COLORS, anim_state)
+        end
+    end
+
+    -- Clean up stale animation states for dead/removed units (skip dying units)
     for uid in pairs(ctx.unit_anims) do
-        if not alive_ids[uid] then
+        if not alive_ids[uid] and not (ctx.dying_units and ctx.dying_units[uid]) then
             ctx.unit_anims[uid] = nil
         end
     end

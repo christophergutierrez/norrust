@@ -6,6 +6,28 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
+**v2.5 Animation Fixes**
+Status: Complete
+Phases: 1 of 1 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 74 | Idle & Death Animation Fixes | 1/1 | Complete | 2026-03-07 |
+
+## v2.5 Phase Details
+
+### Phase 74: Idle & Death Animation Fixes
+
+**Goal:** Fix idle animation frame cycling (sprite key normalization) and death animation visibility (keep dead units rendered during death animation before cleanup).
+**Depends on:** None
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+---
+
+## Previous Milestone
+
 **v2.4 Content Organization**
 Status: Complete
 Phases: 4 of 4 complete
