@@ -292,7 +292,7 @@ pub unsafe extern "C" fn norrust_load_units(
         for tdef in trigger_defs {
             let mut spawns = Vec::new();
             for s in &tdef.spawns {
-                let state = e.game.as_mut().unwrap();
+                let Some(state) = e.game.as_mut() else { continue };
                 let uid = state.next_unit_id;
                 state.next_unit_id += 1;
                 let unit = unit_from_registry(e, uid, &s.unit_type, s.faction);
@@ -410,13 +410,14 @@ pub unsafe extern "C" fn norrust_recruit_unit_at(
         None => return -1,
     };
 
-    let unit = unit_from_registry(e, unit_id as u32, &did, {
-        let state = e.game.as_ref().unwrap();
+    let faction = {
+        let Some(state) = e.game.as_ref() else { return -1 };
         state.active_faction
-    });
+    };
+    let unit = unit_from_registry(e, unit_id as u32, &did, faction);
 
     let destination = Hex::from_offset(col, row);
-    let state = e.game.as_mut().unwrap();
+    let Some(state) = e.game.as_mut() else { return -1 };
     match apply_recruit(state, unit, destination, cost) {
         Ok(()) => 0,
         Err(err) => action_err_code(err),
@@ -469,11 +470,12 @@ pub unsafe extern "C" fn norrust_ai_recruit(
             Some(def) => def.cost,
             None => break,
         };
-        let faction = e.game.as_ref().unwrap().active_faction;
+        let Some(game_ref) = e.game.as_ref() else { break };
+        let faction = game_ref.active_faction;
         let unit = unit_from_registry(e, uid as u32, &did, faction);
         let destination = Hex::from_offset(col, row);
 
-        let state = e.game.as_mut().unwrap();
+        let Some(state) = e.game.as_mut() else { break };
         match apply_recruit(state, unit, destination, cost) {
             Ok(()) => { recruited += 1; uid += 1; }
             Err(_) => break,
@@ -541,7 +543,11 @@ pub unsafe extern "C" fn norrust_get_faction_ids_json(
 ) -> *mut c_char {
     let Some(e) = engine.as_ref() else { return to_c_string("[]") };
     let arr: Vec<String> = e.factions.iter()
-        .map(|(f, _)| format!("{{\"id\":\"{}\",\"name\":\"{}\"}}", f.id, f.name))
+        .map(|(f, _)| {
+            let id = f.id.replace('\\', "\\\\").replace('"', "\\\"");
+            let name = f.name.replace('\\', "\\\\").replace('"', "\\\"");
+            format!("{{\"id\":\"{}\",\"name\":\"{}\"}}", id, name)
+        })
         .collect();
     to_c_string(&format!("[{}]", arr.join(",")))
 }
@@ -579,7 +585,7 @@ pub unsafe extern "C" fn norrust_get_faction_recruits_json(
                 .map(|u| u.level as i32 <= max_level)
                 .unwrap_or(true)
         })
-        .map(|id| format!("\"{}\"", id))
+        .map(|id| format!("\"{}\"", id.replace('\\', "\\\\").replace('"', "\\\"")))
         .collect();
     to_c_string(&format!("[{}]", filtered.join(",")))
 }
@@ -741,8 +747,9 @@ pub unsafe extern "C" fn norrust_apply_advance(
         None => return -10,
     };
 
-    let state = e.game.as_mut().unwrap();
-    advance_unit(state.units.get_mut(&uid).unwrap(), &new_def);
+    let Some(state) = e.game.as_mut() else { return -1 };
+    let Some(unit) = state.units.get_mut(&uid) else { return -11 };
+    advance_unit(unit, &new_def);
     0
 }
 
