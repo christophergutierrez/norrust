@@ -343,6 +343,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | Sidebar buttons via shared.buttons coordinate table | Draw sets coordinates, mousepressed reads them; avoids upvalue overflow | 2026-03-07 | Active |
 | Auto-save on player win only (not every end turn) | Less aggressive; F5 manual save available anytime | 2026-03-07 | Active |
 | Context tables for LuaJIT upvalue management | Group related locals into tables (scn, sel, ghost, campaign, dlg, camera); structural fix for 60-upvalue limit | 2026-03-07 | Active |
+| vars table for mutable scalar sharing | Wraps game_mode, game_over, etc. in table so mutations propagate between modules | 2026-03-07 | Active |
+| Module context passing via ctx table | Build ctx in love.load with all state/helpers, pass to module.init(); clean module boundary | 2026-03-07 | Active |
 
 ## Tech Stack
 
@@ -362,4 +364,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-07 after Phase 78 — Upvalue Contexts (v2.8 started).*
+*Last updated: 2026-03-07 after Phase 79 — Input Handlers.*
