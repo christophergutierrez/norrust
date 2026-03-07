@@ -9,6 +9,7 @@ local draw_mod = require("draw")
 local campaign_client = require("campaign_client")
 local events = require("events")
 local save = require("save")
+local roster_mod = require("roster")
 
 -- ── Constants ───────────────────────────────────────────────────────────────
 
@@ -89,6 +90,7 @@ local campaign_data = nil        -- parsed JSON from norrust_load_campaign
 local campaign_index = 0         -- 0-indexed current scenario in campaign
 local campaign_veterans = {}     -- array of veteran unit tables from previous scenario
 local campaign_gold = 0          -- carried gold for next scenario
+local campaign_roster = nil      -- roster table (roster_mod) or nil when no campaign
 
 -- Dialogue
 local active_dialogue = {}     -- array of {id, text} currently displayed
@@ -552,6 +554,7 @@ local function build_campaign_ctx()
         center_camera = center_camera,
         campaign_data = campaign_data, campaign_index = campaign_index,
         campaign_veterans = campaign_veterans, campaign_gold = campaign_gold,
+        campaign_roster = campaign_roster, roster_mod = roster_mod,
         faction_id = faction_id, game_over = game_over,
         winner_faction = winner_faction, recruit_mode = recruit_mode,
         next_unit_id = next_unit_id, game_mode = game_mode,
@@ -866,6 +869,7 @@ function love.keypressed(key)
             gold = campaign_gold,
             veterans = campaign_veterans,
             faction_id = faction_id,
+            roster = campaign_roster and roster_mod.to_save_array(campaign_roster) or nil,
         }
     end
 
@@ -905,12 +909,39 @@ function love.keypressed(key)
                     faction_id = {c.faction_id_0, c.faction_id_1}
                     -- Restore veterans
                     campaign_veterans = data.veterans or {}
+                    -- Restore roster
+                    if data.roster and #data.roster > 0 then
+                        campaign_roster = roster_mod.from_save_array(data.roster)
+                        -- Re-map engine IDs to roster UUIDs by matching def_id
+                        local st = norrust.get_state(engine)
+                        for _, u in ipairs(st.units or {}) do
+                            if int(u.faction) == 0 then
+                                for uuid, entry in pairs(campaign_roster.entries) do
+                                    if entry.status == "alive" and not campaign_roster.id_map[int(u.id)]
+                                       and entry.def_id == u.def_id then
+                                        -- Check no other engine_id already maps to this uuid
+                                        local already_mapped = false
+                                        for _, mapped_uuid in pairs(campaign_roster.id_map) do
+                                            if mapped_uuid == uuid then already_mapped = true; break end
+                                        end
+                                        if not already_mapped then
+                                            roster_mod.map_id(campaign_roster, int(u.id), uuid)
+                                            break
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    else
+                        campaign_roster = roster_mod.new()
+                    end
                 else
                     campaign_active = false
                     campaign_data = nil
                     campaign_index = 0
                     campaign_veterans = {}
                     campaign_gold = 0
+                    campaign_roster = nil
                 end
                 game_mode = PLAYING
                 status_message = "Loaded: " .. filepath
@@ -943,6 +974,7 @@ function love.keypressed(key)
                 campaign_index = 0
                 campaign_veterans = {}
                 campaign_gold = 0
+                campaign_roster = roster_mod.new()
                 -- Load first scenario's board for faction selection
                 local sc = campaign_data.scenarios[1]
                 scenario_board = sc.board
@@ -1005,9 +1037,24 @@ function love.keypressed(key)
     if game_over then
         if key == "return" or key == "kpenter" then
             if campaign_active and winner_faction == 0 then
-                -- Player won — check if more scenarios remain
-                local survivors = norrust.get_survivors(engine, 0)
-                campaign_veterans = survivors
+                -- Player won — sync roster then derive veterans
+                if campaign_roster then
+                    roster_mod.sync_from_engine(campaign_roster, norrust.get_state(engine))
+                    local living = roster_mod.get_living(campaign_roster)
+                    campaign_veterans = {}
+                    for _, entry in ipairs(living) do
+                        campaign_veterans[#campaign_veterans + 1] = {
+                            def_id = entry.def_id,
+                            hp = entry.hp,
+                            max_hp = entry.max_hp,
+                            xp = entry.xp,
+                            xp_needed = entry.xp_needed,
+                            advancement_pending = entry.advancement_pending,
+                        }
+                    end
+                else
+                    campaign_veterans = norrust.get_survivors(engine, 0)
+                end
                 campaign_gold = norrust.get_carry_gold(
                     engine, 0,
                     campaign_data.gold_carry_percent,
@@ -1019,6 +1066,7 @@ function love.keypressed(key)
                 else
                     -- Campaign complete — return to scenario selection
                     campaign_active = false
+                    campaign_roster = nil
                     game_over = false
                     winner_faction = -1
                     game_mode = PICK_SCENARIO
@@ -1026,6 +1074,7 @@ function love.keypressed(key)
             else
                 -- Individual scenario win/loss, or campaign defeat
                 campaign_active = false
+                campaign_roster = nil
                 game_over = false
                 winner_faction = -1
                 game_mode = PICK_SCENARIO
@@ -1249,6 +1298,18 @@ function love.mousepressed(sx, sy, button)
         if def_id ~= "" then
             local result = norrust.recruit_unit_at(engine, next_unit_id, def_id, col, row)
             if result == 0 then
+                -- Add recruited unit to campaign roster
+                if campaign_active and campaign_roster then
+                    local st = norrust.get_state(engine)
+                    for _, u in ipairs(st.units or {}) do
+                        if int(u.id) == next_unit_id then
+                            roster_mod.add(campaign_roster, u.def_id, next_unit_id,
+                                int(u.hp), int(u.max_hp), int(u.xp), int(u.xp_needed),
+                                u.advancement_pending or false)
+                            break
+                        end
+                    end
+                end
                 next_unit_id = next_unit_id + 1
                 recruit_error = ""
                 recruit_mode = false

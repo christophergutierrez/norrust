@@ -85,6 +85,20 @@ function save.serialize_toml(data)
         end
     end
 
+    -- [[roster]] array-of-tables (campaign persistent unit roster)
+    if data.roster then
+        for _, entry in ipairs(data.roster) do
+            lines[#lines + 1] = "[[roster]]"
+            local roster_order = {"uuid", "def_id", "hp", "max_hp", "xp", "xp_needed", "advancement_pending", "status"}
+            for _, k in ipairs(roster_order) do
+                if entry[k] ~= nil then
+                    lines[#lines + 1] = k .. " = " .. toml_value(entry[k])
+                end
+            end
+            lines[#lines + 1] = ""
+        end
+    end
+
     -- [[units]] array-of-tables
     if data.units then
         for _, unit in ipairs(data.units) do
@@ -156,6 +170,10 @@ function save.write_save(engine, norrust, scenario_board, scenarios_path, campai
                     advancement_pending = vet.advancement_pending,
                 }
             end
+        end
+        -- Roster (persistent unit identity)
+        if campaign_ctx.roster and #campaign_ctx.roster > 0 then
+            data.roster = campaign_ctx.roster
         end
     end
 

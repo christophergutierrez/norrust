@@ -7,15 +7,15 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 ## Current Milestone
 
 **v2.1 Save System**
-Status: In Progress
-Phases: 3 of 4 complete
+Status: Complete
+Phases: 4 of 4 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 58 | Save/Load Basics | 1/1 | ✅ Complete | 2026-03-06 |
 | 59 | Save/Load Combat State | 0 (folded into 58-01) | ✅ Complete | 2026-03-06 |
 | 60 | Campaign Save/Load | 1/1 | ✅ Complete | 2026-03-06 |
-| 61 | UUID + Roster | TBD | Not started | - |
+| 61 | UUID + Roster | 1/1 | ✅ Complete | 2026-03-06 |
 
 ## v2.1 Phase Details
 

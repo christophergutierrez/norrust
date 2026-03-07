@@ -177,11 +177,13 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Trigger zone and dialogue fired state preservation across save/load — Phase 60 (60-01)
 - [x] Auto-save on end turn (before AI takes turn) — Phase 60 (60-01)
 - [x] 4 new FFI functions: get/set trigger_zones_fired, get/set dialogue_fired — Phase 60 (60-01)
+- [x] Persistent unit identity via Lua-generated 8-char hex UUIDs — Phase 61 (61-01)
+- [x] Campaign roster tracking all units (alive/dead) across scenarios with TOML serialization — Phase 61 (61-01)
+- [x] Fixed veteran placement uid collision (pre-existing: engine doesn't auto-increment on place_unit) — Phase 61 (61-01)
 
 ### Active (In Progress / Deferred)
 
 - [ ] Socket/TCP server for external Python agents — deferred from Phase 5 (JSON layer complete; transport layer future)
-- [ ] UUID + persistent unit roster — Phase 61
 
 ### Out of Scope
 
@@ -314,6 +316,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | FFI state query returns JSON, restore takes individual calls or JSON | Consistent pattern for serializable engine state | 2026-03-06 | Active |
 | Auto-save before AI turn (on 'e' key) | Captures player intent before AI moves; player can undo AI by loading | 2026-03-06 | Active |
 | campaign_ctx parameter for optional campaign context in save | nil for standalone, table for campaign; single save function | 2026-03-06 | Active |
+| 8-char hex UUID for unit identity (not RFC 4122) | Sufficient for campaign scope; no external deps | 2026-03-06 | Active |
+| Roster is campaign-only (nil for standalone) | Standalone scenarios don't need identity tracking | 2026-03-06 | Active |
+| Local uid tracking in veteran placement loop | Engine's place_unit doesn't increment next_unit_id | 2026-03-06 | Active |
 
 ## Tech Stack
 
@@ -333,4 +338,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-06 after Phase 60 — Campaign save/load with trigger/dialogue state.*
+*Last updated: 2026-03-06 after Phase 61 — UUID + Roster (v2.1 Save System milestone complete).*

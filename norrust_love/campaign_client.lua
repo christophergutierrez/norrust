@@ -52,6 +52,7 @@ function campaign_client.find_keep_and_castles(ctx)
 end
 
 --- Place veteran units on keep + adjacent castles, skipping occupied hexes.
+--- If roster is available, maps engine IDs to existing UUIDs.
 function campaign_client.place_veterans(ctx)
     if #ctx.campaign_veterans == 0 then return end
 
@@ -68,8 +69,24 @@ function campaign_client.place_veterans(ctx)
         slots[#slots + 1] = ch
     end
 
+    -- Clear roster id_map for new scenario
+    if ctx.campaign_roster and ctx.roster_mod then
+        ctx.roster_mod.clear_id_map(ctx.campaign_roster)
+    end
+
+    -- Build UUID list from living roster entries (parallel to campaign_veterans)
+    local vet_uuids = {}
+    if ctx.campaign_roster then
+        local living = ctx.roster_mod.get_living(ctx.campaign_roster)
+        for i, entry in ipairs(living) do
+            vet_uuids[i] = entry.uuid
+        end
+    end
+
+
+    local uid = ctx.norrust.get_next_unit_id(ctx.engine)
     local placed = 0
-    for _, vet in ipairs(ctx.campaign_veterans) do
+    for vi, vet in ipairs(ctx.campaign_veterans) do
         if placed >= #slots then break end
 
         -- Find next unoccupied slot
@@ -84,16 +101,21 @@ function campaign_client.place_veterans(ctx)
         end
         if not slot then break end
 
-        local uid = ctx.norrust.get_next_unit_id(ctx.engine)
-        ctx.norrust.place_veteran_unit(
+        local rc = ctx.norrust.place_veteran_unit(
             ctx.engine, uid,
             vet.def_id, 0,
             int(slot.col), int(slot.row),
             int(vet.hp), int(vet.xp), int(vet.xp_needed),
             vet.advancement_pending
         )
+        -- Map engine ID to roster UUID
+        if ctx.campaign_roster and vet_uuids[vi] then
+            ctx.roster_mod.map_id(ctx.campaign_roster, uid, vet_uuids[vi])
+        end
+
         -- Update pos_map so next veteran doesn't collide
         pos_map[int(slot.col) .. "," .. int(slot.row)] = {id = uid, faction = 0}
+        uid = uid + 1
     end
 end
 
@@ -122,6 +144,19 @@ function campaign_client.load_campaign_scenario(ctx)
         ctx.norrust.apply_starting_gold(ctx.engine, ctx.faction_id[1], ctx.faction_id[2])
         ctx.norrust.load_units(ctx.engine, ctx.scenarios_path .. "/" .. ctx.scenario_units)
         ctx.next_unit_id = ctx.norrust.get_next_unit_id(ctx.engine)
+    end
+
+    -- Populate roster from preset units on first scenario
+    if ctx.campaign_index == 0 and ctx.campaign_roster and ctx.roster_mod then
+        local state = ctx.norrust.get_state(ctx.engine)
+        local int = ctx.int
+        for _, u in ipairs(state.units or {}) do
+            if int(u.faction) == 0 then
+                ctx.roster_mod.add(ctx.campaign_roster, u.def_id, int(u.id),
+                    int(u.hp), int(u.max_hp), int(u.xp), int(u.xp_needed),
+                    u.advancement_pending or false)
+            end
+        end
     end
 
     -- Place veterans from previous scenario
