@@ -936,7 +936,79 @@ function draw.draw_frame(ctx, state)
         end
     end
 
+    -- Help overlay (drawn on top of everything)
+    if ctx.show_help then
+        draw.draw_help_overlay(ctx)
+    end
+
     love.graphics.pop()
+end
+
+--- Draw a semi-transparent help overlay showing all keybindings.
+function draw.draw_help_overlay(ctx)
+    local vp_w, vp_h = ctx.get_viewport()
+    local panel_w = 200
+    local board_w = vp_w - panel_w
+
+    -- Semi-transparent background over board area
+    love.graphics.setColor(0, 0, 0, 0.85)
+    love.graphics.rectangle("fill", 0, 0, board_w, vp_h)
+
+    -- Title
+    love.graphics.setFont(ctx.fonts[32])
+    love.graphics.setColor(1, 1, 0.7, 1)
+    love.graphics.printf("Controls", 0, 30, board_w, "center")
+
+    local col_w = math.floor(board_w / 3)
+    local y_start = 90
+    local line_h = 24
+
+    local function draw_section(x, title, bindings)
+        love.graphics.setFont(ctx.fonts[15])
+        love.graphics.setColor(0.9, 0.8, 0.3, 1)
+        love.graphics.print(title, x + 20, y_start)
+        love.graphics.setFont(ctx.fonts[13])
+        for i, b in ipairs(bindings) do
+            local y = y_start + 30 + (i - 1) * line_h
+            love.graphics.setColor(0.6, 0.85, 1.0, 1)
+            love.graphics.print(b[1], x + 20, y)
+            love.graphics.setColor(0.85, 0.85, 0.85, 1)
+            love.graphics.print(b[2], x + 100, y)
+        end
+    end
+
+    draw_section(0, "Global", {
+        {"?", "Toggle this help"},
+        {"M", "Mute / unmute"},
+        {"- / =", "Volume down / up"},
+        {"F5", "Save game"},
+        {"F9", "Load last save"},
+        {"Scroll", "Zoom in / out"},
+        {"Drag", "Pan the board"},
+    })
+
+    draw_section(col_w, "Gameplay", {
+        {"Click", "Select unit"},
+        {"Click", "Move / ghost"},
+        {"Right-click", "Inspect terrain"},
+        {"Enter", "Confirm move / attack"},
+        {"Escape", "Cancel selection"},
+        {"E", "End turn"},
+        {"R", "Recruit units"},
+        {"A", "Advance unit (when ready)"},
+        {"H", "Dialogue history"},
+        {"P", "Toggle agent server"},
+    })
+
+    draw_section(col_w * 2, "Menu", {
+        {"1-9", "Select scenario"},
+        {"C", "Start campaign"},
+    })
+
+    -- Footer
+    love.graphics.setFont(ctx.fonts[11])
+    love.graphics.setColor(0.5, 0.5, 0.5, 1)
+    love.graphics.printf("Press ? to close  ·  Any key dismisses", 0, vp_h - 30, board_w, "center")
 end
 
 return draw

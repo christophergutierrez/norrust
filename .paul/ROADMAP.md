@@ -6,7 +6,32 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
-**v2.7 Controls & Help** (not started)
+**v2.7 Controls & Help**
+Status: In progress
+Phases: 1 of 2 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 76 | Help Overlay | 1/1 | Complete | 2026-03-07 |
+| 77 | Mouse Actions | TBD | Not started | - |
+
+## v2.7 Phase Details
+
+### Phase 76: Help Overlay
+
+**Goal:** Display keybindings on screen — either always visible or toggled via a key. Show all keyboard controls so players don't need to memorize them.
+**Depends on:** None
+
+**Plans:**
+- 76-01: Help overlay with ? toggle (complete)
+
+### Phase 77: Mouse Actions
+
+**Goal:** Add mouse-based interactions for common actions (end turn, recruit, etc.) to complement keyboard controls.
+**Depends on:** Phase 76 (help overlay shows available actions)
+
+**Plans:**
+- TBD (defined during /paul:plan)
 
 ---
 

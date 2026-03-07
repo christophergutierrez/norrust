@@ -197,6 +197,7 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Death animation visibility with timed cleanup — Phase 74 (74-01)
 - [x] Menu music looping on scenario select with transitions to/from gameplay — Phase 75 (75-01)
 - [x] Global sound controls (mute/volume) accessible from all game screens — Phase 75 (75-01)
+- [x] Help overlay showing all keybindings, toggled with ? key — Phase 76 (76-01)
 
 ### Active (In Progress / Deferred)
 
@@ -357,4 +358,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-07 after Phase 75 — Background Music (v2.6 complete).*
+*Last updated: 2026-03-07 after Phase 76 — Help Overlay.*

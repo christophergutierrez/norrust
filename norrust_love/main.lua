@@ -104,7 +104,7 @@ local history_scroll = 0
 -- Shared state table for overflow upvalues (LuaJIT 60-upvalue limit)
 -- .agent = agent_server handle or nil
 -- .ai_vs_ai = true when both factions are AI-controlled
-local shared = {agent = nil, agent_mod = agent_server, ai_vs_ai = false, ai_delay = 0.5, ai_timer = 0, sound = require("sound")}
+local shared = {agent = nil, agent_mod = agent_server, ai_vs_ai = false, ai_delay = 0.5, ai_timer = 0, sound = require("sound"), show_help = false}
 
 -- Assets (loaded in love.load)
 local terrain_tiles = {}
@@ -924,6 +924,7 @@ function love.draw()
     ctx.fonts = fonts; ctx.terrain_tiles = terrain_tiles; ctx.unit_sprites = unit_sprites
     ctx.unit_anims = unit_anims
     ctx.dying_units = dying_units
+    ctx.show_help = shared.show_help
     -- Camera
     ctx.board_origin_x = board_origin_x; ctx.board_origin_y = board_origin_y
     ctx.camera_offset_x = camera_offset_x; ctx.camera_offset_y = camera_offset_y
@@ -1047,6 +1048,17 @@ function love.keypressed(key)
         end
         status_timer = 3.0
         return
+    end
+
+    -- Help overlay (available from any mode)
+    if key == "/" then
+        shared.show_help = not shared.show_help
+        return
+    end
+
+    -- Close help overlay on any other key
+    if shared.show_help then
+        shared.show_help = false
     end
 
     -- Sound controls (available from any mode)
