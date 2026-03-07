@@ -3,6 +3,31 @@
 
 local draw = {}
 
+-- ── Layout constants ────────────────────────────────────────────────────────
+local SIDEBAR_W = 200
+local SIDEBAR_PAD = 10
+local SIDEBAR_X_OFF = SIDEBAR_W - SIDEBAR_PAD  -- 190, content inset from right edge
+
+-- ── Frequently used colors ──────────────────────────────────────────────────
+local C_GRAY       = {0.83, 0.83, 0.83}
+local C_GOLD       = {1, 0.85, 0}
+local C_WARM_TITLE = {0.9, 0.85, 0.6}
+local C_WHITE      = {1, 1, 1}
+local C_YELLOW     = {1, 1, 0}
+
+-- ── Helpers ─────────────────────────────────────────────────────────────────
+
+--- Draw a full-height sidebar background panel.
+local function draw_sidebar_bg(vp_w, vp_h, alpha)
+    love.graphics.setColor(0, 0, 0, alpha or 0.6)
+    love.graphics.rectangle("fill", vp_w - SIDEBAR_W, 0, SIDEBAR_W, vp_h)
+end
+
+--- Get faction color table from ctx.
+local function faction_color(ctx, faction)
+    return faction == 0 and ctx.BLUE or ctx.RED
+end
+
 --- Draw all units on the board.
 function draw.draw_units(ctx, state)
     local int = ctx.int
@@ -70,13 +95,13 @@ function draw.draw_units(ctx, state)
 
             local word = (unit.def_id or ""):match("^([^_]+)") or unit.def_id or ""
             local abbrev = (word:sub(1, 1):upper() .. word:sub(2):lower()):sub(1, 7)
-            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
             love.graphics.setFont(fonts[14])
             love.graphics.printf(abbrev, cx - 42, cy - 14, 84, "center")
         end
 
         -- HP (always drawn on top)
-        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
         love.graphics.setFont(fonts[18])
         love.graphics.print(tostring(hp), cx - 12, cy - 2)
 
@@ -89,7 +114,7 @@ function draw.draw_units(ctx, state)
 
         -- XP text
         if unit.xp_needed and int(unit.xp_needed) > 0 then
-            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
             love.graphics.setFont(fonts[14])
             love.graphics.print(int(unit.xp) .. "/" .. int(unit.xp_needed), cx - 15, cy + 14)
         end
@@ -135,28 +160,28 @@ function draw.draw_setup_hud(ctx)
     -- Scenario selection screen
     if ctx.game_mode == ctx.PICK_SCENARIO then
         love.graphics.setFont(fonts[18])
-        love.graphics.setColor(1, 0.85, 0, 1)
+        love.graphics.setColor(C_GOLD[1], C_GOLD[2], C_GOLD[3], 1)
         love.graphics.printf("The Clash for Norrust", 0, vp_h / 2 - 60, vp_w, "center")
 
         love.graphics.setFont(fonts[14])
-        love.graphics.setColor(0.83, 0.83, 0.83, 1)
+        love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3], 1)
         love.graphics.printf("Select a scenario:", 0, vp_h / 2 - 20, vp_w, "center")
 
         for i, sc in ipairs(ctx.SCENARIOS) do
             love.graphics.setFont(fonts[15])
-            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
             love.graphics.printf(string.format("[%d] %s", i, sc.name), 0, vp_h / 2 + 10 + (i - 1) * 28, vp_w, "center")
         end
 
         -- Campaign section
         local cy = vp_h / 2 + 10 + #ctx.SCENARIOS * 28 + 10
         love.graphics.setFont(fonts[14])
-        love.graphics.setColor(0.83, 0.83, 0.83, 1)
+        love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3], 1)
         love.graphics.printf("Campaigns:", 0, cy, vp_w, "center")
         cy = cy + 22
         for i, camp in ipairs(ctx.CAMPAIGNS) do
             love.graphics.setFont(fonts[15])
-            love.graphics.setColor(1, 0.85, 0, 1)
+            love.graphics.setColor(C_GOLD[1], C_GOLD[2], C_GOLD[3], 1)
             love.graphics.printf(string.format("[C] %s", camp.name), 0, cy + (i - 1) * 28, vp_w, "center")
         end
         return
@@ -167,44 +192,43 @@ function draw.draw_setup_hud(ctx)
     local fc = is_blue and ctx.BLUE or ctx.RED
 
     -- Sidebar background
-    love.graphics.setColor(0, 0, 0, 0.6)
-    love.graphics.rectangle("fill", vp_w - 200, 0, 200, vp_h)
+    draw_sidebar_bg(vp_w, vp_h)
 
     if ctx.game_mode == ctx.PICK_FACTION_BLUE or ctx.game_mode == ctx.PICK_FACTION_RED then
         love.graphics.setFont(fonts[15])
         love.graphics.setColor(fc[1], fc[2], fc[3])
-        love.graphics.print("FACTION — " .. faction_name, vp_w - 190, 10)
+        love.graphics.print("FACTION — " .. faction_name, vp_w - SIDEBAR_X_OFF, SIDEBAR_PAD)
 
         love.graphics.setFont(fonts[11])
-        love.graphics.setColor(0.83, 0.83, 0.83)
-        love.graphics.print("Press 1-" .. #ctx.factions .. " to pick", vp_w - 190, 30)
+        love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3])
+        love.graphics.print("Press 1-" .. #ctx.factions .. " to pick", vp_w - SIDEBAR_X_OFF, 30)
 
         for i, f in ipairs(ctx.factions) do
             local y = 56 + (i - 1) * 22
             local label = "[" .. i .. "] " .. f.name
             if (i - 1) == ctx.sel_faction_idx then
-                love.graphics.setColor(1, 1, 0, 1)
+                love.graphics.setColor(C_YELLOW[1], C_YELLOW[2], C_YELLOW[3], 1)
             else
-                love.graphics.setColor(1, 1, 1, 1)
+                love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
             end
             love.graphics.setFont(fonts[13])
-            love.graphics.print(label, vp_w - 190, y)
+            love.graphics.print(label, vp_w - SIDEBAR_X_OFF, y)
         end
     else
         love.graphics.setFont(fonts[15])
         love.graphics.setColor(fc[1], fc[2], fc[3])
-        love.graphics.print("SETUP — " .. faction_name, vp_w - 190, 10)
+        love.graphics.print("SETUP — " .. faction_name, vp_w - SIDEBAR_X_OFF, SIDEBAR_PAD)
 
         local fi = ctx.faction_index_for_mode()
         if not ctx.leader_placed[fi + 1] then
             local leader_def = ctx.norrust.get_faction_leader(ctx.engine, ctx.faction_id[fi + 1])
 
             love.graphics.setFont(fonts[11])
-            love.graphics.setColor(0.83, 0.83, 0.83)
-            love.graphics.print("Place leader:", vp_w - 190, 30)
+            love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3])
+            love.graphics.print("Place leader:", vp_w - SIDEBAR_X_OFF, 30)
             love.graphics.setFont(fonts[14])
-            love.graphics.setColor(1, 1, 0, 1)
-            love.graphics.print(leader_def, vp_w - 190, 48)
+            love.graphics.setColor(C_YELLOW[1], C_YELLOW[2], C_YELLOW[3], 1)
+            love.graphics.print(leader_def, vp_w - SIDEBAR_X_OFF, 48)
 
             -- Board-center prompt
             local bx, by = ctx.hex.to_pixel(int(ctx.BOARD_COLS / 2), int(ctx.BOARD_ROWS / 2))
@@ -214,14 +238,14 @@ function draw.draw_setup_hud(ctx)
             love.graphics.setColor(0, 0, 0, 0.75)
             love.graphics.rectangle("fill", sx - 200, sy - 14, 400, 24)
             love.graphics.setFont(fonts[13])
-            love.graphics.setColor(1, 1, 0, 1)
+            love.graphics.setColor(C_YELLOW[1], C_YELLOW[2], C_YELLOW[3], 1)
             love.graphics.print(prompt, sx - 196, sy - 8)
         else
             love.graphics.setFont(fonts[11])
-            love.graphics.setColor(0.83, 0.83, 0.83)
-            love.graphics.print("Leader placed.", vp_w - 190, 30)
-            love.graphics.setColor(1, 1, 0, 1)
-            love.graphics.print("[Enter] Continue", vp_w - 190, 44)
+            love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3])
+            love.graphics.print("Leader placed.", vp_w - SIDEBAR_X_OFF, 30)
+            love.graphics.setColor(C_YELLOW[1], C_YELLOW[2], C_YELLOW[3], 1)
+            love.graphics.print("[Enter] Continue", vp_w - SIDEBAR_X_OFF, 44)
         end
     end
 end
@@ -232,28 +256,27 @@ function draw.draw_recruit_panel(ctx, state)
     local fonts = ctx.fonts
     local faction = ctx.norrust.get_active_faction(ctx.engine)
     local vp_w, vp_h = ctx.get_viewport()
-    local fc = faction == 0 and ctx.BLUE or ctx.RED
+    local fc = faction_color(ctx, faction)
     local gold_arr = state.gold or {0, 0}
     local gold = int(gold_arr[faction + 1] or 0)
 
     -- Sidebar background
-    love.graphics.setColor(0, 0, 0, 0.6)
-    love.graphics.rectangle("fill", vp_w - 200, 0, 200, vp_h)
+    draw_sidebar_bg(vp_w, vp_h)
 
     love.graphics.setFont(fonts[15])
     love.graphics.setColor(fc[1], fc[2], fc[3])
-    love.graphics.print(string.format("RECRUIT — %dg", gold), vp_w - 190, 10)
+    love.graphics.print(string.format("RECRUIT — %dg", gold), vp_w - SIDEBAR_X_OFF, SIDEBAR_PAD)
 
     love.graphics.setFont(fonts[11])
-    love.graphics.setColor(1, 1, 0, 1)
-    love.graphics.print("Leader must be on gold hex", vp_w - 190, 30)
-    love.graphics.setColor(0.83, 0.83, 0.83)
-    love.graphics.print("Click adjacent blue hex", vp_w - 190, 44)
-    love.graphics.print("[R] Cancel", vp_w - 190, 58)
+    love.graphics.setColor(C_YELLOW[1], C_YELLOW[2], C_YELLOW[3], 1)
+    love.graphics.print("Leader must be on gold hex", vp_w - SIDEBAR_X_OFF, 30)
+    love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3])
+    love.graphics.print("Click adjacent blue hex", vp_w - SIDEBAR_X_OFF, 44)
+    love.graphics.print("[R] Cancel", vp_w - SIDEBAR_X_OFF, 58)
 
     if ctx.recruit_error ~= "" then
         love.graphics.setColor(1, 0, 0, 1)
-        love.graphics.print(ctx.recruit_error, vp_w - 190, 72)
+        love.graphics.print(ctx.recruit_error, vp_w - SIDEBAR_X_OFF, 72)
     end
 
     local idx = 0
@@ -265,11 +288,11 @@ function draw.draw_recruit_panel(ctx, state)
         local y = y_start + (idx) * 20
         local label = string.format("[%d] [V] %s (free)", idx + 1, vet.def_id)
         if idx == ctx.selected_recruit_idx then
-            love.graphics.setColor(1, 1, 0, 1)
+            love.graphics.setColor(C_YELLOW[1], C_YELLOW[2], C_YELLOW[3], 1)
         else
             love.graphics.setColor(0.5, 1, 0.5, 1)
         end
-        love.graphics.print(label, vp_w - 190, y)
+        love.graphics.print(label, vp_w - SIDEBAR_X_OFF, y)
         idx = idx + 1
     end
 
@@ -279,11 +302,11 @@ function draw.draw_recruit_panel(ctx, state)
         local y = y_start + (idx) * 20
         local label = string.format("[%d] %s (%dg)", idx + 1, def_id, cost)
         if idx == ctx.selected_recruit_idx then
-            love.graphics.setColor(1, 1, 0, 1)
+            love.graphics.setColor(C_YELLOW[1], C_YELLOW[2], C_YELLOW[3], 1)
         else
-            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
         end
-        love.graphics.print(label, vp_w - 190, y)
+        love.graphics.print(label, vp_w - SIDEBAR_X_OFF, y)
         idx = idx + 1
     end
 end
@@ -294,14 +317,13 @@ function draw.draw_unit_panel(ctx, unit)
     local fonts = ctx.fonts
     local vp_w, vp_h = ctx.get_viewport()
 
-    love.graphics.setColor(0, 0, 0, 0.75)
-    love.graphics.rectangle("fill", vp_w - 200, 0, 200, vp_h)
+    draw_sidebar_bg(vp_w, vp_h, 0.75)
 
     local faction = int(unit.faction)
     local faction_name = faction == 0 and "Blue" or "Red"
-    local fc = faction == 0 and ctx.BLUE or ctx.RED
+    local fc = faction_color(ctx, faction)
 
-    local y = 10
+    local y = SIDEBAR_PAD
 
     -- Portrait
     local portrait_h = ctx.assets.draw_portrait(ctx.unit_sprites, unit.def_id, vp_w - 195, y, 180, 120)
@@ -312,39 +334,39 @@ function draw.draw_unit_panel(ctx, unit)
     -- Unit name + faction
     love.graphics.setFont(fonts[15])
     love.graphics.setColor(fc[1], fc[2], fc[3])
-    love.graphics.print(unit.def_id or "", vp_w - 190, y)
+    love.graphics.print(unit.def_id or "", vp_w - SIDEBAR_X_OFF, y)
     y = y + 18
     love.graphics.setFont(fonts[11])
-    love.graphics.print(faction_name, vp_w - 190, y)
+    love.graphics.print(faction_name, vp_w - SIDEBAR_X_OFF, y)
     y = y + 14
     if unit.level then
         love.graphics.setColor(0.8, 0.8, 0.8)
-        love.graphics.print("Level " .. int(unit.level), vp_w - 190, y)
+        love.graphics.print("Level " .. int(unit.level), vp_w - SIDEBAR_X_OFF, y)
         y = y + 14
     end
     y = y + 4
 
     -- HP
-    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
     love.graphics.setFont(fonts[12])
-    love.graphics.print(string.format("HP: %d / %d", int(unit.hp), int(unit.max_hp)), vp_w - 190, y)
+    love.graphics.print(string.format("HP: %d / %d", int(unit.hp), int(unit.max_hp)), vp_w - SIDEBAR_X_OFF, y)
     y = y + 16
 
     -- XP
     if unit.xp_needed and int(unit.xp_needed) > 0 then
-        love.graphics.print(string.format("XP: %d / %d", int(unit.xp), int(unit.xp_needed)), vp_w - 190, y)
+        love.graphics.print(string.format("XP: %d / %d", int(unit.xp), int(unit.xp_needed)), vp_w - SIDEBAR_X_OFF, y)
         y = y + 16
     end
 
     -- Status effects
     if unit.poisoned then
         love.graphics.setColor(0.2, 0.9, 0.2)
-        love.graphics.print("Poisoned", vp_w - 190, y)
+        love.graphics.print("Poisoned", vp_w - SIDEBAR_X_OFF, y)
         y = y + 14
     end
     if unit.slowed then
         love.graphics.setColor(0.3, 0.6, 1.0)
-        love.graphics.print("Slowed", vp_w - 190, y)
+        love.graphics.print("Slowed", vp_w - SIDEBAR_X_OFF, y)
         y = y + 14
     end
 
@@ -357,29 +379,29 @@ function draw.draw_unit_panel(ctx, unit)
     elseif unit.attacked then
         move_status = " (attacked)"
     end
-    love.graphics.print(string.format("Move: %d%s", int(unit.movement), move_status), vp_w - 190, y)
+    love.graphics.print(string.format("Move: %d%s", int(unit.movement), move_status), vp_w - SIDEBAR_X_OFF, y)
     y = y + 20
 
     -- Attacks
     local attacks = unit.attacks or {}
     if #attacks > 0 then
         love.graphics.setFont(fonts[11])
-        love.graphics.setColor(0.83, 0.83, 0.83)
-        love.graphics.print("── Attacks ──", vp_w - 190, y)
+        love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3])
+        love.graphics.print("── Attacks ──", vp_w - SIDEBAR_X_OFF, y)
         y = y + 15
         for _, atk in ipairs(attacks) do
-            love.graphics.setColor(1, 1, 0, 1)
+            love.graphics.setColor(C_YELLOW[1], C_YELLOW[2], C_YELLOW[3], 1)
             love.graphics.setFont(fonts[12])
-            love.graphics.print(atk.name or "", vp_w - 190, y)
+            love.graphics.print(atk.name or "", vp_w - SIDEBAR_X_OFF, y)
             y = y + 14
-            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
             love.graphics.setFont(fonts[11])
-            love.graphics.print(string.format("  %dx%d %s", int(atk.damage), int(atk.strikes), atk.range or ""), vp_w - 190, y)
+            love.graphics.print(string.format("  %dx%d %s", int(atk.damage), int(atk.strikes), atk.range or ""), vp_w - SIDEBAR_X_OFF, y)
             y = y + 15
             local specials = atk.specials
             if specials and #specials > 0 then
                 love.graphics.setColor(0.7, 0.85, 1.0)
-                love.graphics.print("  (" .. table.concat(specials, ", ") .. ")", vp_w - 190, y)
+                love.graphics.print("  (" .. table.concat(specials, ", ") .. ")", vp_w - SIDEBAR_X_OFF, y)
                 y = y + 14
             end
         end
@@ -389,12 +411,12 @@ function draw.draw_unit_panel(ctx, unit)
     local abilities = unit.abilities or {}
     if #abilities > 0 then
         love.graphics.setFont(fonts[11])
-        love.graphics.setColor(0.83, 0.83, 0.83)
-        love.graphics.print("── Abilities ──", vp_w - 190, y)
+        love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3])
+        love.graphics.print("── Abilities ──", vp_w - SIDEBAR_X_OFF, y)
         y = y + 15
         for _, ab in ipairs(abilities) do
             love.graphics.setColor(0.6, 1.0, 0.6)
-            love.graphics.print(ab, vp_w - 190, y)
+            love.graphics.print(ab, vp_w - SIDEBAR_X_OFF, y)
             y = y + 14
         end
     end
@@ -407,34 +429,33 @@ function draw.draw_terrain_panel(ctx)
     local vp_w, vp_h = ctx.get_viewport()
     local t = ctx.inspect_terrain
 
-    love.graphics.setColor(0, 0, 0, 0.75)
-    love.graphics.rectangle("fill", vp_w - 200, 0, 200, vp_h)
+    draw_sidebar_bg(vp_w, vp_h, 0.75)
 
-    local y = 10
+    local y = SIDEBAR_PAD
 
     -- Terrain name
     love.graphics.setFont(fonts[15])
-    love.graphics.setColor(0.9, 0.85, 0.6)
-    love.graphics.print(t.terrain_id or "", vp_w - 190, y)
+    love.graphics.setColor(C_WARM_TITLE[1], C_WARM_TITLE[2], C_WARM_TITLE[3])
+    love.graphics.print(t.terrain_id or "", vp_w - SIDEBAR_X_OFF, y)
     y = y + 22
 
     -- Coordinates
     love.graphics.setFont(fonts[11])
     love.graphics.setColor(0.6, 0.6, 0.6)
-    love.graphics.print(string.format("(%d, %d)", t.col, t.row), vp_w - 190, y)
+    love.graphics.print(string.format("(%d, %d)", t.col, t.row), vp_w - SIDEBAR_X_OFF, y)
     y = y + 20
 
     -- Base stats
     love.graphics.setFont(fonts[12])
-    love.graphics.setColor(1, 1, 1, 1)
-    love.graphics.print(string.format("Defense: %d%%", t.defense), vp_w - 190, y)
+    love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
+    love.graphics.print(string.format("Defense: %d%%", t.defense), vp_w - SIDEBAR_X_OFF, y)
     y = y + 16
-    love.graphics.print(string.format("Move cost: %d", t.movement_cost), vp_w - 190, y)
+    love.graphics.print(string.format("Move cost: %d", t.movement_cost), vp_w - SIDEBAR_X_OFF, y)
     y = y + 16
 
     if t.healing and t.healing > 0 then
         love.graphics.setColor(0.4, 1.0, 0.4)
-        love.graphics.print(string.format("Healing: +%d HP", t.healing), vp_w - 190, y)
+        love.graphics.print(string.format("Healing: +%d HP", t.healing), vp_w - SIDEBAR_X_OFF, y)
         y = y + 16
     end
 
@@ -442,15 +463,15 @@ function draw.draw_terrain_panel(ctx)
     if t.unit_defense then
         y = y + 8
         love.graphics.setFont(fonts[11])
-        love.graphics.setColor(0.83, 0.83, 0.83)
-        love.graphics.print("── Unit on terrain ──", vp_w - 190, y)
+        love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3])
+        love.graphics.print("── Unit on terrain ──", vp_w - SIDEBAR_X_OFF, y)
         y = y + 15
         love.graphics.setFont(fonts[12])
-        love.graphics.setColor(1, 1, 0, 1)
-        love.graphics.print(string.format("Eff. defense: %d%%", t.unit_defense), vp_w - 190, y)
+        love.graphics.setColor(C_YELLOW[1], C_YELLOW[2], C_YELLOW[3], 1)
+        love.graphics.print(string.format("Eff. defense: %d%%", t.unit_defense), vp_w - SIDEBAR_X_OFF, y)
         y = y + 16
-        love.graphics.setColor(1, 1, 1, 1)
-        love.graphics.print(string.format("Eff. move cost: %d", t.unit_move_cost), vp_w - 190, y)
+        love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
+        love.graphics.print(string.format("Eff. move cost: %d", t.unit_move_cost), vp_w - SIDEBAR_X_OFF, y)
     end
 end
 
@@ -459,27 +480,26 @@ function draw.draw_dialogue_panel(ctx)
     local fonts = ctx.fonts
     local vp_w, vp_h = ctx.get_viewport()
 
-    love.graphics.setColor(0, 0, 0, 0.75)
-    love.graphics.rectangle("fill", vp_w - 200, 0, 200, vp_h)
+    draw_sidebar_bg(vp_w, vp_h, 0.75)
 
-    local y = 10
+    local y = SIDEBAR_PAD
 
     -- Title
     love.graphics.setFont(fonts[13])
-    love.graphics.setColor(0.9, 0.85, 0.6)
-    love.graphics.print("Narrator", vp_w - 190, y)
+    love.graphics.setColor(C_WARM_TITLE[1], C_WARM_TITLE[2], C_WARM_TITLE[3])
+    love.graphics.print("Narrator", vp_w - SIDEBAR_X_OFF, y)
     y = y + 20
 
     -- Separator
     love.graphics.setColor(0.5, 0.5, 0.5, 0.6)
-    love.graphics.line(vp_w - 190, y, vp_w - 10, y)
+    love.graphics.line(vp_w - SIDEBAR_X_OFF, y, vp_w - 10, y)
     y = y + 8
 
     -- Dialogue entries
     love.graphics.setFont(fonts[11])
     love.graphics.setColor(0.85, 0.85, 0.85)
     for _, entry in ipairs(ctx.active_dialogue) do
-        love.graphics.printf(entry.text, vp_w - 190, y, 180, "left")
+        love.graphics.printf(entry.text, vp_w - SIDEBAR_X_OFF, y, 180, "left")
         local _, lines = fonts[11]:getWrap(entry.text, 180)
         y = y + #lines * fonts[11]:getHeight() + 10
     end
@@ -489,19 +509,18 @@ end
 function draw.draw_dialogue_history(ctx)
     local fonts = ctx.fonts
     local vp_w, vp_h = ctx.get_viewport()
-    local panel_x = vp_w - 200
-    local panel_w = 200
+    local panel_x = vp_w - SIDEBAR_W
+    local panel_w = SIDEBAR_W
     local text_w = 180
     local pad = 10
 
-    love.graphics.setColor(0, 0, 0, 0.85)
-    love.graphics.rectangle("fill", panel_x, 0, panel_w, vp_h)
+    draw_sidebar_bg(vp_w, vp_h, 0.85)
 
-    local y = 10
+    local y = SIDEBAR_PAD
 
     -- Title
     love.graphics.setFont(fonts[13])
-    love.graphics.setColor(0.9, 0.85, 0.6)
+    love.graphics.setColor(C_WARM_TITLE[1], C_WARM_TITLE[2], C_WARM_TITLE[3])
     love.graphics.print("Dialogue History", panel_x + pad, y)
     y = y + 20
 
@@ -555,40 +574,39 @@ function draw.draw_combat_preview(ctx)
     local vp_w, vp_h = ctx.get_viewport()
     local p = ctx.combat_preview
 
-    love.graphics.setColor(0, 0, 0, 0.85)
-    love.graphics.rectangle("fill", vp_w - 200, 0, 200, vp_h)
+    draw_sidebar_bg(vp_w, vp_h, 0.85)
 
-    local y = 10
+    local y = SIDEBAR_PAD
 
     -- Header
     love.graphics.setFont(fonts[15])
     love.graphics.setColor(1.0, 0.9, 0.3)
-    love.graphics.print("COMBAT PREVIEW", vp_w - 190, y)
+    love.graphics.print("COMBAT PREVIEW", vp_w - SIDEBAR_X_OFF, y)
     y = y + 24
 
     -- Attacker section
     love.graphics.setFont(fonts[12])
     love.graphics.setColor(0.5, 0.8, 1.0)
-    love.graphics.print("── Attacker ──", vp_w - 190, y)
+    love.graphics.print("── Attacker ──", vp_w - SIDEBAR_X_OFF, y)
     y = y + 16
 
     love.graphics.setColor(0.6, 0.8, 0.6)
-    love.graphics.print(string.format("Terrain: %d%% def", p.attacker_terrain_defense or 0), vp_w - 190, y)
+    love.graphics.print(string.format("Terrain: %d%% def", p.attacker_terrain_defense or 0), vp_w - SIDEBAR_X_OFF, y)
     y = y + 14
 
     love.graphics.setColor(1, 1, 1)
-    love.graphics.print(string.format("%s", p.attacker_attack_name or "?"), vp_w - 190, y)
+    love.graphics.print(string.format("%s", p.attacker_attack_name or "?"), vp_w - SIDEBAR_X_OFF, y)
     y = y + 14
     love.graphics.print(string.format("%dx%d  (max %d)",
         p.attacker_damage_per_hit or 0, p.attacker_strikes or 0,
-        p.attacker_damage_max or 0), vp_w - 190, y)
+        p.attacker_damage_max or 0), vp_w - SIDEBAR_X_OFF, y)
     y = y + 14
-    love.graphics.print(string.format("Hit: %d%%", p.attacker_hit_pct or 0), vp_w - 190, y)
+    love.graphics.print(string.format("Hit: %d%%", p.attacker_hit_pct or 0), vp_w - SIDEBAR_X_OFF, y)
     y = y + 14
 
     love.graphics.setColor(0.9, 0.9, 0.9)
     love.graphics.print(string.format("Dmg: %d - %.1f - %d",
-        p.attacker_damage_min or 0, p.attacker_damage_mean or 0, p.attacker_damage_max or 0), vp_w - 190, y)
+        p.attacker_damage_min or 0, p.attacker_damage_mean or 0, p.attacker_damage_max or 0), vp_w - SIDEBAR_X_OFF, y)
     y = y + 14
 
     -- Kill % with color
@@ -600,42 +618,42 @@ function draw.draw_combat_preview(ctx)
     else
         love.graphics.setColor(0.7, 0.7, 0.7)
     end
-    love.graphics.print(string.format("Kill: %.0f%%", ak), vp_w - 190, y)
+    love.graphics.print(string.format("Kill: %.0f%%", ak), vp_w - SIDEBAR_X_OFF, y)
     y = y + 14
 
     love.graphics.setColor(0.6, 0.6, 0.6)
-    love.graphics.print(string.format("Target HP: %d", p.defender_hp or 0), vp_w - 190, y)
+    love.graphics.print(string.format("Target HP: %d", p.defender_hp or 0), vp_w - SIDEBAR_X_OFF, y)
     y = y + 20
 
     -- Defender retaliation section
     love.graphics.setFont(fonts[12])
     love.graphics.setColor(1.0, 0.5, 0.3)
-    love.graphics.print("── Retaliation ──", vp_w - 190, y)
+    love.graphics.print("── Retaliation ──", vp_w - SIDEBAR_X_OFF, y)
     y = y + 16
 
     love.graphics.setColor(0.6, 0.8, 0.6)
-    love.graphics.print(string.format("Terrain: %d%% def", p.defender_terrain_defense or 0), vp_w - 190, y)
+    love.graphics.print(string.format("Terrain: %d%% def", p.defender_terrain_defense or 0), vp_w - SIDEBAR_X_OFF, y)
     y = y + 14
 
     local def_name = p.defender_attack_name or "none"
     if def_name == "none" then
         love.graphics.setColor(0.5, 0.5, 0.5)
-        love.graphics.print("No retaliation", vp_w - 190, y)
+        love.graphics.print("No retaliation", vp_w - SIDEBAR_X_OFF, y)
         y = y + 14
     else
         love.graphics.setColor(1, 1, 1)
-        love.graphics.print(string.format("%s", def_name), vp_w - 190, y)
+        love.graphics.print(string.format("%s", def_name), vp_w - SIDEBAR_X_OFF, y)
         y = y + 14
         love.graphics.print(string.format("%dx%d  (max %d)",
             p.defender_damage_per_hit or 0, p.defender_strikes or 0,
-            p.defender_damage_max or 0), vp_w - 190, y)
+            p.defender_damage_max or 0), vp_w - SIDEBAR_X_OFF, y)
         y = y + 14
-        love.graphics.print(string.format("Hit: %d%%", p.defender_hit_pct or 0), vp_w - 190, y)
+        love.graphics.print(string.format("Hit: %d%%", p.defender_hit_pct or 0), vp_w - SIDEBAR_X_OFF, y)
         y = y + 14
 
         love.graphics.setColor(0.9, 0.9, 0.9)
         love.graphics.print(string.format("Dmg: %d - %.1f - %d",
-            p.defender_damage_min or 0, p.defender_damage_mean or 0, p.defender_damage_max or 0), vp_w - 190, y)
+            p.defender_damage_min or 0, p.defender_damage_mean or 0, p.defender_damage_max or 0), vp_w - SIDEBAR_X_OFF, y)
         y = y + 14
 
         -- Defender kill % with danger color
@@ -647,11 +665,11 @@ function draw.draw_combat_preview(ctx)
         else
             love.graphics.setColor(0.7, 0.7, 0.7)
         end
-        love.graphics.print(string.format("Kill: %.0f%%", dk), vp_w - 190, y)
+        love.graphics.print(string.format("Kill: %.0f%%", dk), vp_w - SIDEBAR_X_OFF, y)
         y = y + 14
 
         love.graphics.setColor(0.6, 0.6, 0.6)
-        love.graphics.print(string.format("Your HP: %d", p.attacker_hp or 0), vp_w - 190, y)
+        love.graphics.print(string.format("Your HP: %d", p.attacker_hp or 0), vp_w - SIDEBAR_X_OFF, y)
         y = y + 14
     end
 
@@ -659,10 +677,10 @@ function draw.draw_combat_preview(ctx)
     y = y + 12
     love.graphics.setFont(fonts[11])
     love.graphics.setColor(0.5, 0.8, 0.5)
-    love.graphics.print("[Enter] Attack", vp_w - 190, y)
+    love.graphics.print("[Enter] Attack", vp_w - SIDEBAR_X_OFF, y)
     y = y + 14
     love.graphics.setColor(0.8, 0.5, 0.5)
-    love.graphics.print("[Esc] Cancel", vp_w - 190, y)
+    love.graphics.print("[Esc] Cancel", vp_w - SIDEBAR_X_OFF, y)
 end
 
 --- Main draw dispatch — contains the love.draw body logic.
@@ -679,17 +697,16 @@ function draw.draw_frame(ctx, state)
 
     local int = ctx.int
 
-    -- Build tile color + terrain_id maps
-    local tile_colors = {}
+    -- Tile colors cached at scenario load; terrain_ids built per-frame for asset lookup
+    local tile_colors = ctx.tile_color_cache or {}
     local tile_ids = {}
     for _, tile in ipairs(state.terrain or {}) do
         local key = int(tile.col) .. "," .. int(tile.row)
-        tile_colors[key] = ctx.parse_html_color(tile.color) or ctx.COLOR_FLAT
         tile_ids[key] = tile.terrain_id
     end
 
     -- Clip board rendering at panel edge (scissor in pixel coords)
-    local panel_w = 200
+    local panel_w = SIDEBAR_W
     local sw, sh = love.graphics.getDimensions()
     love.graphics.setScissor(0, 0, sw - panel_w * ctx.UI_SCALE, sh)
 
@@ -731,7 +748,7 @@ function draw.draw_frame(ctx, state)
             for _, unit in ipairs(state.units or {}) do
                 if int(unit.id) == ctx.selected_unit_id then
                     local cx, cy = ctx.hex.to_pixel(int(unit.col), int(unit.row))
-                    love.graphics.setColor(1, 1, 1, 1)
+                    love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
                     love.graphics.setLineWidth(2.5)
                     love.graphics.polygon("line", ctx.hex.polygon(cx, cy, ctx.hex.RADIUS))
                     break
@@ -831,13 +848,13 @@ function draw.draw_frame(ctx, state)
             if tid == "keep" then
                 love.graphics.setColor(1.0, 0.75, 0.0, 0.7)
                 love.graphics.polygon("fill", ctx.hex.polygon(cx, cy, ctx.hex.RADIUS))
-                love.graphics.setColor(1, 1, 0, 1)
+                love.graphics.setColor(C_YELLOW[1], C_YELLOW[2], C_YELLOW[3], 1)
                 love.graphics.setLineWidth(3.0)
                 love.graphics.polygon("line", ctx.hex.polygon(cx, cy, ctx.hex.RADIUS))
             elseif tid == "castle" then
                 love.graphics.setColor(0.0, 0.9, 0.9, 0.65)
                 love.graphics.polygon("fill", ctx.hex.polygon(cx, cy, ctx.hex.RADIUS))
-                love.graphics.setColor(1, 1, 1, 1)
+                love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
                 love.graphics.setLineWidth(2.5)
                 love.graphics.polygon("line", ctx.hex.polygon(cx, cy, ctx.hex.RADIUS))
             end
@@ -885,11 +902,11 @@ function draw.draw_frame(ctx, state)
                 end
             end
             love.graphics.setFont(ctx.fonts[32])
-            love.graphics.setColor(1, 1, 0, 1)
+            love.graphics.setColor(C_YELLOW[1], C_YELLOW[2], C_YELLOW[3], 1)
             love.graphics.printf(msg, vp_w / 2 - 240, vp_h / 2 - 16, 480, "center")
             if sub_msg then
                 love.graphics.setFont(ctx.fonts[14])
-                love.graphics.setColor(0.83, 0.83, 0.83, 1)
+                love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3], 1)
                 love.graphics.printf(sub_msg, vp_w / 2 - 240, vp_h / 2 + 24, 480, "center")
             end
         end
@@ -898,7 +915,7 @@ function draw.draw_frame(ctx, state)
         if not ctx.game_over then
             local faction = ctx.norrust.get_active_faction(ctx.engine)
             local faction_name = faction == 0 and "Blue" or "Red"
-            local fc = faction == 0 and ctx.BLUE or ctx.RED
+            local fc = faction_color(ctx, faction)
             local tod = ctx.norrust.get_time_of_day_name(ctx.engine)
             local gold_arr = state.gold or {0, 0}
             local gold = int(gold_arr[faction + 1] or 0)
@@ -950,12 +967,12 @@ end
 --- Draw clickable buttons at the bottom of the sidebar.
 function draw.draw_sidebar_buttons(ctx)
     local vp_w, vp_h = ctx.get_viewport()
-    local sb_x = vp_w - 200
+    local sb_x = vp_w - SIDEBAR_W
     local btn_w = 180
     local btn_h = 32
-    local btn_x = sb_x + 10
+    local btn_x = sb_x + SIDEBAR_PAD
     local gap = 8
-    local bottom_y = vp_h - 10
+    local bottom_y = vp_h - SIDEBAR_PAD
 
     -- Initialize buttons table for click detection
     ctx.buttons = {}
@@ -973,7 +990,7 @@ function draw.draw_sidebar_buttons(ctx)
 
     if ctx.game_mode == ctx.PLAYING and not ctx.game_over then
         local faction = ctx.norrust.get_active_faction(ctx.engine)
-        local fc = faction == 0 and ctx.BLUE or ctx.RED
+        local fc = faction_color(ctx, faction)
 
         -- Recruit button
         local recruit_y = help_y - btn_h - gap
@@ -994,7 +1011,7 @@ function draw.draw_sidebar_buttons(ctx)
         love.graphics.setColor(fc[1], fc[2], fc[3], 1)
         love.graphics.rectangle("line", btn_x, end_y, btn_w, btn_h, 4, 4)
         love.graphics.setFont(ctx.fonts[13])
-        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
         love.graphics.printf("E  End Turn", btn_x, end_y + 8, btn_w, "center")
     end
 end
@@ -1002,7 +1019,7 @@ end
 --- Draw a semi-transparent help overlay showing all keybindings.
 function draw.draw_help_overlay(ctx)
     local vp_w, vp_h = ctx.get_viewport()
-    local panel_w = 200
+    local panel_w = SIDEBAR_W
     local board_w = vp_w - panel_w
 
     -- Semi-transparent background over board area

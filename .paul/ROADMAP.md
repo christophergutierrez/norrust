@@ -8,13 +8,13 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 **v2.8 Code Cleanup & Architecture**
 Status: In Progress
-Phases: 2 of 5 complete
+Phases: 3 of 5 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 78 | Upvalue Contexts | 1/1 | ✅ Complete | 2026-03-07 |
 | 79 | Input Handlers | 1/1 | ✅ Complete | 2026-03-07 |
-| 80 | Draw Constants | TBD | Not started | - |
+| 80 | Draw Constants | 1/1 | ✅ Complete | 2026-03-07 |
 | 81 | FFI Hardening | TBD | Not started | - |
 | 82 | Shared Table Split | TBD | Not started | - |
 

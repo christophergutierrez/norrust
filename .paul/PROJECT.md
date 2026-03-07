@@ -345,6 +345,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | Context tables for LuaJIT upvalue management | Group related locals into tables (scn, sel, ghost, campaign, dlg, camera); structural fix for 60-upvalue limit | 2026-03-07 | Active |
 | vars table for mutable scalar sharing | Wraps game_mode, game_over, etc. in table so mutations propagate between modules | 2026-03-07 | Active |
 | Module context passing via ctx table | Build ctx in love.load with all state/helpers, pass to module.init(); clean module boundary | 2026-03-07 | Active |
+| Named draw constants for sidebar geometry | SIDEBAR_W/PAD/X_OFF + color constants replace 100+ magic number sites in draw.lua | 2026-03-07 | Active |
+| Tile color cache at scenario load | build_tile_color_cache() avoids per-frame parse_html_color; rebuilt on scenario load | 2026-03-07 | Active |
 
 ## Tech Stack
 
@@ -364,4 +366,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-07 after Phase 79 — Input Handlers.*
+*Last updated: 2026-03-07 after Phase 80 — Draw Constants.*

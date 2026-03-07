@@ -66,6 +66,7 @@ local shared = {agent = nil, agent_mod = agent_server, ai_vs_ai = false, ai_dela
 
 local terrain_tiles = {}
 local unit_sprites = {}
+local tile_color_cache = {}
 local FACTION_COLORS = {[0] = {0.25, 0.42, 0.88}, [1] = {0.80, 0.12, 0.12}}
 local unit_anims = {}
 local dying_units = {}
@@ -139,6 +140,17 @@ end
 
 --- Truncate a number to integer (floor).
 local function int(v) return math.floor(v) end
+
+--- Build tile color cache from current engine state.
+local function build_tile_color_cache()
+    tile_color_cache = {}
+    if not vars.engine then return end
+    local state = norrust.get_state(vars.engine)
+    for _, tile in ipairs(state.terrain or {}) do
+        local key = int(tile.col) .. "," .. int(tile.row)
+        tile_color_cache[key] = parse_html_color(tile.color) or COLOR_FLAT
+    end
+end
 
 -- ── Camera ──────────────────────────────────────────────────────────────────
 
@@ -596,6 +608,7 @@ local function call_load_scenario()
     local ctx = build_campaign_ctx()
     campaign_client.load_selected_scenario(ctx)
     apply_campaign_ctx(ctx)
+    build_tile_color_cache()
 end
 
 --- Load the next campaign scenario via campaign_client with ctx writeback.
@@ -603,6 +616,7 @@ local function call_load_campaign_scenario()
     local ctx = build_campaign_ctx()
     campaign_client.load_campaign_scenario(ctx)
     apply_campaign_ctx(ctx)
+    build_tile_color_cache()
     events.emit("scenario_loaded", {board = scn.board})
 end
 
@@ -932,6 +946,7 @@ function love.draw()
     -- Functions from main
     ctx.get_viewport = get_viewport; ctx.screen_to_game = screen_to_game
     ctx.int = int; ctx.parse_html_color = parse_html_color
+    ctx.tile_color_cache = tile_color_cache
     draw_mod.draw_frame(ctx, state)
     shared.buttons = ctx.buttons or {}
 
