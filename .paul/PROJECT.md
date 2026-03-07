@@ -183,9 +183,11 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Veteran recruitment in recruit panel (roster entries as free options with [V] prefix) — Phase 62 (62-01)
 - [x] Preset/campaign scenarios skip faction picker (auto-assign factions) — Phase 62 (62-01)
 
+- [x] TCP agent server on localhost:9876 with line-based protocol (LuaSocket in Love2D) — Phase 63 (63-01)
+- [x] Python agent client library (tools/agent_client.py, stdlib only) — Phase 63 (63-01)
+
 ### Active (In Progress / Deferred)
 
-- [ ] Socket/TCP server for external Python agents — deferred from Phase 5 (JSON layer complete; transport layer future)
 - [ ] AI vs AI mode for automated testing — planned Phase 64
 
 ### Out of Scope
@@ -341,4 +343,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-06 after Phase 62 — Campaign UX Polish (v2.2 AI & Agents).*
+*Last updated: 2026-03-06 after Phase 63 — TCP Agent Server (v2.2 AI & Agents).*

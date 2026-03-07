@@ -10,6 +10,7 @@ local campaign_client = require("campaign_client")
 local events = require("events")
 local save = require("save")
 local roster_mod = require("roster")
+local agent_server = require("agent_server")
 
 -- ── Constants ───────────────────────────────────────────────────────────────
 
@@ -97,6 +98,10 @@ local active_dialogue = {}     -- array of {id, text} currently displayed
 local dialogue_history = {}    -- array of {turn, text} — all fired dialogue this scenario
 local show_dialogue_history = false
 local history_scroll = 0
+
+-- Shared state table for overflow upvalues (LuaJIT 60-upvalue limit)
+-- .agent = agent_server handle or nil
+local shared = {agent = nil, agent_mod = agent_server}
 
 -- Assets (loaded in love.load)
 local terrain_tiles = {}
@@ -653,6 +658,17 @@ function love.load()
     -- Maximize window (keeps title bar with close button)
     love.window.maximize()
 
+    -- Check for --agent-server flag
+    for _, a in ipairs(arg or {}) do
+        if a == "--agent-server" then
+            shared.agent = agent_server.new(9876)
+            if shared.agent then
+                status_message = "Agent server on port 9876"
+                status_timer = 5.0
+            end
+        end
+    end
+
     -- Start at scenario selection
     game_mode = PICK_SCENARIO
 end
@@ -661,6 +677,11 @@ end
 
 --- Per-frame update: animate units, handle camera panning and lerp.
 function love.update(dt)
+    -- Agent server: process TCP commands
+    if shared.agent then
+        agent_server.update(shared.agent, norrust, engine)
+    end
+
     -- Status message countdown
     if status_timer > 0 then
         status_timer = status_timer - dt
@@ -1159,6 +1180,18 @@ function love.keypressed(key)
         show_dialogue_history = not show_dialogue_history
         if show_dialogue_history then history_scroll = 0 end
 
+    elseif key == "p" then
+        -- Toggle agent server
+        if shared.agent then
+            shared.agent_mod.stop(shared.agent)
+            shared.agent = nil
+            status_message = "Agent server stopped"
+        else
+            shared.agent = shared.agent_mod.new(9876)
+            status_message = shared.agent and "Agent server on port 9876" or "Failed to start server"
+        end
+        status_timer = 3.0
+
     elseif key == "r" then
         -- Toggle recruit mode
         if not recruit_mode then
@@ -1527,4 +1560,14 @@ end
 --- Re-center camera when window is resized.
 function love.resize(w, h)
     center_camera()
+end
+
+-- ── love.quit ───────────────────────────────────────────────────────────────
+
+--- Clean up agent server on exit.
+function love.quit()
+    if shared.agent then
+        agent_server.stop(shared.agent)
+        shared.agent = nil
+    end
 end

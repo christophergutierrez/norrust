@@ -8,12 +8,12 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 **v2.2 AI & Agents**
 Status: In Progress
-Phases: 1 of 3 complete
+Phases: 2 of 3 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 62 | Campaign UX Polish | 1/1 | Complete | 2026-03-06 |
-| 63 | TCP Agent Server | TBD | Not started | - |
+| 63 | TCP Agent Server | 1/1 | Complete | 2026-03-06 |
 | 64 | AI vs AI Mode | TBD | Not started | - |
 
 ## v2.2 Phase Details

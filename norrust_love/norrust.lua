@@ -377,6 +377,11 @@ function M.get_state(engine)
     return json_decode(raw) or {}
 end
 
+--- Return the full game state as raw JSON string (for TCP relay).
+function M.get_state_raw(engine)
+    return get_string(lib.norrust_get_state_json(engine))
+end
+
 --- Set the objective hex for win-condition evaluation.
 function M.set_objective_hex(engine, col, row)
     lib.norrust_set_objective_hex(engine, col, row)
