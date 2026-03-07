@@ -234,16 +234,35 @@ function draw.draw_recruit_panel(ctx, state)
         love.graphics.print(ctx.recruit_error, vp_w - 190, 72)
     end
 
+    local idx = 0
+    local y_start = 94
+
+    -- Veterans first (free, from roster)
+    local vets = ctx.recruit_veterans or {}
+    for i, vet in ipairs(vets) do
+        local y = y_start + (idx) * 20
+        local label = string.format("[%d] [V] %s (free)", idx + 1, vet.def_id)
+        if idx == ctx.selected_recruit_idx then
+            love.graphics.setColor(1, 1, 0, 1)
+        else
+            love.graphics.setColor(0.5, 1, 0.5, 1)
+        end
+        love.graphics.print(label, vp_w - 190, y)
+        idx = idx + 1
+    end
+
+    -- Normal recruits
     for i, def_id in ipairs(ctx.recruit_palette) do
         local cost = ctx.norrust.get_unit_cost(ctx.engine, def_id)
-        local y = 94 + (i - 1) * 20
-        local label = string.format("[%d] %s (%dg)", i, def_id, cost)
-        if (i - 1) == ctx.selected_recruit_idx then
+        local y = y_start + (idx) * 20
+        local label = string.format("[%d] %s (%dg)", idx + 1, def_id, cost)
+        if idx == ctx.selected_recruit_idx then
             love.graphics.setColor(1, 1, 0, 1)
         else
             love.graphics.setColor(1, 1, 1, 1)
         end
         love.graphics.print(label, vp_w - 190, y)
+        idx = idx + 1
     end
 end
 

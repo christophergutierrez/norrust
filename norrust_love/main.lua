@@ -67,6 +67,7 @@ local recruit_mode = false
 local recruit_palette = {}
 local selected_recruit_idx = 0
 local recruit_error = ""
+local recruit_state = {veterans = {}}  -- veterans: living roster entries available for recruitment
 local inspect_unit_id = -1
 local inspect_terrain = nil    -- {col, row, terrain_id, defense, movement_cost, healing, unit_defense, unit_move_cost} or nil
 local status_message = nil     -- temporary flash message (e.g. "Saved!")
@@ -80,8 +81,7 @@ local ghost_attackable = {}    -- array of {id=N, col=C, row=R} for enemies atta
 local ghost_path = {}          -- array of {col=N, row=N} for path from unit to ghost position
 
 -- Combat preview
-local combat_preview = nil       -- table from simulate_combat JSON, or nil
-local combat_preview_target = -1 -- defender unit id being previewed
+local combat_state = {preview = nil, target = -1}  -- preview: simulate_combat result, target: defender id
 
 -- Campaign
 local campaigns_path = ""
@@ -247,7 +247,7 @@ end
 -- Checks hex distance between attacker and defender. Distance > 1 means ranged.
 -- Must be called BEFORE cancel_combat_preview() and while ghost/selection state is valid.
 local function is_ranged_attack()
-    if not combat_preview or combat_preview_target < 0 then return false end
+    if not combat_state.preview or combat_state.target < 0 then return false end
     local state = norrust.get_state(engine)
     local atk_col, atk_row, def_col, def_row
     -- Attacker position: ghost position if ghosting, else unit state position
@@ -260,7 +260,7 @@ local function is_ranged_attack()
         if uid == atk_id and not atk_col then
             atk_col, atk_row = int(unit.col), int(unit.row)
         end
-        if uid == combat_preview_target then
+        if uid == combat_state.target then
             def_col, def_row = int(unit.col), int(unit.row)
         end
     end
@@ -385,8 +385,8 @@ end
 
 --- Clear the combat preview state.
 local function cancel_combat_preview()
-    combat_preview = nil
-    combat_preview_target = -1
+    combat_state.preview = nil
+    combat_state.target = -1
 end
 
 --- Cancel ghost positioning and clear combat preview.
@@ -788,13 +788,14 @@ local function build_draw_ctx_state()
         game_mode = game_mode, game_over = game_over, winner_faction = winner_faction,
         selected_unit_id = selected_unit_id, inspect_unit_id = inspect_unit_id,
         inspect_terrain = inspect_terrain, recruit_mode = recruit_mode,
-        recruit_palette = recruit_palette, selected_recruit_idx = selected_recruit_idx,
+        recruit_palette = recruit_palette, recruit_veterans = recruit_state.veterans,
+        selected_recruit_idx = selected_recruit_idx,
         recruit_error = recruit_error, reachable_cells = reachable_cells,
         reachable_set = reachable_set,
         ghost_col = ghost_col, ghost_row = ghost_row, ghost_unit_id = ghost_unit_id,
         ghost_attackable = ghost_attackable, ghost_path = ghost_path,
         move_anim = pending_anims.move, combat_slide = pending_anims.combat_slide,
-        combat_preview = combat_preview, combat_preview_target = combat_preview_target,
+        combat_preview = combat_state.preview, combat_preview_target = combat_state.target,
         -- Dialogue
         active_dialogue = active_dialogue,
         dialogue_history = dialogue_history,
@@ -964,7 +965,18 @@ function love.keypressed(key)
             scenario_units = SCENARIOS[num].units
             scenario_preset = SCENARIOS[num].preset_units
             call_load_scenario()
-            game_mode = PICK_FACTION_BLUE
+            if scenario_preset then
+                -- Preset scenarios: auto-assign factions and start directly
+                faction_id[1] = factions[1].id
+                faction_id[2] = factions[2].id
+                norrust.apply_starting_gold(engine, faction_id[1], faction_id[2])
+                norrust.load_units(engine, scenarios_path .. "/" .. scenario_units)
+                next_unit_id = norrust.get_next_unit_id(engine)
+                game_mode = PLAYING
+                events.emit("scenario_loaded", {board = scenario_board})
+            else
+                game_mode = PICK_FACTION_BLUE
+            end
         elseif key == "c" then
             -- Start campaign
             local camp = CAMPAIGNS[1]
@@ -975,13 +987,15 @@ function love.keypressed(key)
                 campaign_veterans = {}
                 campaign_gold = 0
                 campaign_roster = roster_mod.new()
-                -- Load first scenario's board for faction selection
+                -- Auto-assign factions and load first scenario
+                faction_id[1] = factions[1].id
+                faction_id[2] = factions[2].id
                 local sc = campaign_data.scenarios[1]
                 scenario_board = sc.board
                 scenario_units = sc.units
                 scenario_preset = sc.preset_units
                 call_load_scenario()
-                game_mode = PICK_FACTION_BLUE
+                call_load_campaign_scenario()
             end
         end
         return
@@ -989,32 +1003,14 @@ function love.keypressed(key)
 
     -- Setup mode
     if game_mode ~= PLAYING then
-        -- Faction picker: number keys
+        -- Faction picker: number keys (non-preset scenarios only)
         if game_mode == PICK_FACTION_BLUE or game_mode == PICK_FACTION_RED then
             local num = tonumber(key)
             if num and num >= 1 and num <= #factions then
                 local fi = game_mode == PICK_FACTION_BLUE and 0 or 1
                 faction_id[fi + 1] = factions[num].id
                 sel_faction_idx = 0
-
-                if scenario_preset then
-                    -- Preset scenarios: skip manual setup, go straight through
-                    if game_mode == PICK_FACTION_BLUE then
-                        game_mode = PICK_FACTION_RED
-                    elseif campaign_active then
-                        -- Campaign: use campaign loader (handles gold, veterans)
-                        call_load_campaign_scenario()
-                    else
-                        -- Both factions chosen — load units and start
-                        norrust.apply_starting_gold(engine, faction_id[1], faction_id[2])
-                        norrust.load_units(engine, scenarios_path .. "/" .. scenario_units)
-                        next_unit_id = norrust.get_next_unit_id(engine)
-                        game_mode = PLAYING
-                        events.emit("scenario_loaded", {board = scenario_board})
-                    end
-                else
-                    game_mode = game_mode == PICK_FACTION_BLUE and SETUP_BLUE or SETUP_RED
-                end
+                game_mode = game_mode == PICK_FACTION_BLUE and SETUP_BLUE or SETUP_RED
             end
             return
         end
@@ -1085,7 +1081,7 @@ function love.keypressed(key)
 
     if key == "escape" then
         -- Cancel combat preview, or ghost, or selection
-        if combat_preview ~= nil then
+        if combat_state.preview ~= nil then
             cancel_combat_preview()
         elseif ghost_col ~= nil then
             cancel_ghost()
@@ -1094,9 +1090,9 @@ function love.keypressed(key)
         end
 
     elseif (key == "return" or key == "kpenter") then
-        if combat_preview ~= nil and combat_preview_target >= 0 and ghost_col ~= nil then
+        if combat_state.preview ~= nil and combat_state.target >= 0 and ghost_col ~= nil then
             -- Commit ghost move + attack previewed target
-            local enemy_id = combat_preview_target
+            local enemy_id = combat_state.target
             local ranged = is_ranged_attack()
             cancel_combat_preview()
             commit_ghost_move(function()
@@ -1106,9 +1102,9 @@ function love.keypressed(key)
                     check_game_over()
                 end)
             end)
-        elseif combat_preview ~= nil and combat_preview_target >= 0 and selected_unit_id ~= -1 then
+        elseif combat_state.preview ~= nil and combat_state.target >= 0 and selected_unit_id ~= -1 then
             -- Direct adjacent attack from preview
-            local enemy_id = combat_preview_target
+            local enemy_id = combat_state.target
             local ranged = is_ranged_attack()
             cancel_combat_preview()
             execute_attack(selected_unit_id, enemy_id, ranged, function()
@@ -1168,6 +1164,21 @@ function love.keypressed(key)
         if not recruit_mode then
             local faction = norrust.get_active_faction(engine)
             recruit_palette = norrust.get_faction_recruits(engine, faction_id[faction + 1], 0)
+            -- Build veteran recruit list from roster (campaign only)
+            recruit_state.veterans = {}
+            if campaign_active and campaign_roster then
+                local living = roster_mod.get_living(campaign_roster)
+                -- Filter out veterans already on the board (have engine_id mapped)
+                local mapped = {}
+                for _, uuid in pairs(campaign_roster.id_map) do
+                    mapped[uuid] = true
+                end
+                for _, entry in ipairs(living) do
+                    if not mapped[entry.uuid] then
+                        recruit_state.veterans[#recruit_state.veterans + 1] = entry
+                    end
+                end
+            end
             selected_recruit_idx = 0
             recruit_error = ""
             recruit_mode = true
@@ -1180,8 +1191,9 @@ function love.keypressed(key)
         -- Number keys for recruit selection
         local num = tonumber(key)
         if num and num >= 1 and num <= 9 then
-            if recruit_mode and #recruit_palette > 0 then
-                selected_recruit_idx = math.min(num - 1, #recruit_palette - 1)
+            local total = #recruit_state.veterans + #recruit_palette
+            if recruit_mode and total > 0 then
+                selected_recruit_idx = math.min(num - 1, total - 1)
             end
         end
     end
@@ -1294,33 +1306,63 @@ function love.mousepressed(sx, sy, button)
 
     -- Recruit mode click
     if recruit_mode then
-        local def_id = recruit_palette[selected_recruit_idx + 1] or ""
-        if def_id ~= "" then
-            local result = norrust.recruit_unit_at(engine, next_unit_id, def_id, col, row)
-            if result == 0 then
-                -- Add recruited unit to campaign roster
-                if campaign_active and campaign_roster then
-                    local st = norrust.get_state(engine)
-                    for _, u in ipairs(st.units or {}) do
-                        if int(u.id) == next_unit_id then
-                            roster_mod.add(campaign_roster, u.def_id, next_unit_id,
-                                int(u.hp), int(u.max_hp), int(u.xp), int(u.xp_needed),
-                                u.advancement_pending or false)
-                            break
-                        end
-                    end
-                end
+        local vet_count = #recruit_state.veterans
+        if selected_recruit_idx < vet_count then
+            -- Veteran recruitment: place veteran unit from roster
+            local vet = recruit_state.veterans[selected_recruit_idx + 1]
+            local rc = norrust.place_veteran_unit(
+                engine, next_unit_id,
+                vet.def_id, 0,
+                col, row,
+                int(vet.hp), int(vet.xp), int(vet.xp_needed),
+                vet.advancement_pending
+            )
+            if rc == 0 then
+                roster_mod.map_id(campaign_roster, next_unit_id, vet.uuid)
                 next_unit_id = next_unit_id + 1
+                table.remove(recruit_state.veterans, selected_recruit_idx + 1)
+                if selected_recruit_idx >= #recruit_state.veterans + #recruit_palette then
+                    selected_recruit_idx = math.max(0, #recruit_state.veterans + #recruit_palette - 1)
+                end
                 recruit_error = ""
-                recruit_mode = false
             else
                 local err_map = {
                     [-4] = "Hex is occupied",
-                    [-8] = "Not enough gold",
                     [-9] = "Must click a castle hex",
-                    [-10] = "Move leader to the keep first",
                 }
-                recruit_error = err_map[result] or string.format("Recruit failed (code %d)", result)
+                recruit_error = err_map[rc] or string.format("Place failed (code %d)", rc)
+            end
+        else
+            -- Normal recruitment from palette
+            local palette_idx = selected_recruit_idx - vet_count
+            local def_id = recruit_palette[palette_idx + 1] or ""
+            if def_id ~= "" then
+                local result = norrust.recruit_unit_at(engine, next_unit_id, def_id, col, row)
+                if result == 0 then
+                    -- Add recruited unit to campaign roster
+                    if campaign_active and campaign_roster then
+                        local st = norrust.get_state(engine)
+                        for _, u in ipairs(st.units or {}) do
+                            if int(u.id) == next_unit_id then
+                                roster_mod.add(campaign_roster, u.def_id, next_unit_id,
+                                    int(u.hp), int(u.max_hp), int(u.xp), int(u.xp_needed),
+                                    u.advancement_pending or false)
+                                break
+                            end
+                        end
+                    end
+                    next_unit_id = next_unit_id + 1
+                    recruit_error = ""
+                    recruit_mode = false
+                else
+                    local err_map = {
+                        [-4] = "Hex is occupied",
+                        [-8] = "Not enough gold",
+                        [-9] = "Must click a castle hex",
+                        [-10] = "Move leader to the keep first",
+                    }
+                    recruit_error = err_map[result] or string.format("Recruit failed (code %d)", result)
+                end
             end
         end
         return
@@ -1333,7 +1375,7 @@ function love.mousepressed(sx, sy, button)
         -- Click highlighted enemy → show combat preview (or execute if same target clicked twice)
         if pos_map[clicked_key] and atk_set[pos_map[clicked_key].id] then
             local enemy_id = pos_map[clicked_key].id
-            if combat_preview_target == enemy_id then
+            if combat_state.target == enemy_id then
                 -- Second click on same enemy → commit move + attack
                 local ranged = is_ranged_attack()
                 cancel_combat_preview()
@@ -1346,8 +1388,8 @@ function love.mousepressed(sx, sy, button)
                 end)
             else
                 -- First click (or different enemy) → show combat preview
-                combat_preview = norrust.simulate_combat(engine, ghost_unit_id, enemy_id, ghost_col, ghost_row, 100)
-                combat_preview_target = enemy_id
+                combat_state.preview = norrust.simulate_combat(engine, ghost_unit_id, enemy_id, ghost_col, ghost_row, 100)
+                combat_state.target = enemy_id
                 inspect_unit_id = enemy_id
             end
 
@@ -1357,7 +1399,7 @@ function love.mousepressed(sx, sy, button)
 
         -- Click a different reachable hex → re-ghost, auto-preview if same target adjacent
         elseif reachable_set[clicked_key] and not pos_map[clicked_key] then
-            local prev_target = combat_preview_target
+            local prev_target = combat_state.target
             cancel_combat_preview()
             ghost_col = col
             ghost_row = row
@@ -1367,8 +1409,8 @@ function love.mousepressed(sx, sy, button)
             if prev_target ~= -1 then
                 for _, e in ipairs(ghost_attackable) do
                     if e.id == prev_target then
-                        combat_preview = norrust.simulate_combat(engine, ghost_unit_id, prev_target, ghost_col, ghost_row, 100)
-                        combat_preview_target = prev_target
+                        combat_state.preview = norrust.simulate_combat(engine, ghost_unit_id, prev_target, ghost_col, ghost_row, 100)
+                        combat_state.target = prev_target
                         inspect_unit_id = prev_target
                         break
                     end
@@ -1388,7 +1430,7 @@ function love.mousepressed(sx, sy, button)
     -- No ghost: direct adjacent attack → show combat preview first
     elseif selected_unit_id ~= -1 and pos_map[clicked_key] and pos_map[clicked_key].faction ~= active then
         local enemy_id = pos_map[clicked_key].id
-        if combat_preview_target == enemy_id then
+        if combat_state.target == enemy_id then
             -- Second click on same enemy → execute attack
             local ranged = is_ranged_attack()
             cancel_combat_preview()
@@ -1408,8 +1450,8 @@ function love.mousepressed(sx, sy, button)
                 end
             end
             if atk_col then
-                combat_preview = norrust.simulate_combat(engine, selected_unit_id, enemy_id, atk_col, atk_row, 100)
-                combat_preview_target = enemy_id
+                combat_state.preview = norrust.simulate_combat(engine, selected_unit_id, enemy_id, atk_col, atk_row, 100)
+                combat_state.target = enemy_id
                 inspect_unit_id = enemy_id
             end
         end

@@ -180,10 +180,13 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Persistent unit identity via Lua-generated 8-char hex UUIDs — Phase 61 (61-01)
 - [x] Campaign roster tracking all units (alive/dead) across scenarios with TOML serialization — Phase 61 (61-01)
 - [x] Fixed veteran placement uid collision (pre-existing: engine doesn't auto-increment on place_unit) — Phase 61 (61-01)
+- [x] Veteran recruitment in recruit panel (roster entries as free options with [V] prefix) — Phase 62 (62-01)
+- [x] Preset/campaign scenarios skip faction picker (auto-assign factions) — Phase 62 (62-01)
 
 ### Active (In Progress / Deferred)
 
 - [ ] Socket/TCP server for external Python agents — deferred from Phase 5 (JSON layer complete; transport layer future)
+- [ ] AI vs AI mode for automated testing — planned Phase 64
 
 ### Out of Scope
 
@@ -338,4 +341,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-06 after Phase 61 — UUID + Roster (v2.1 Save System milestone complete).*
+*Last updated: 2026-03-06 after Phase 62 — Campaign UX Polish (v2.2 AI & Agents).*

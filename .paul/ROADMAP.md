@@ -6,47 +6,56 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
+**v2.2 AI & Agents**
+Status: In Progress
+Phases: 1 of 3 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 62 | Campaign UX Polish | 1/1 | Complete | 2026-03-06 |
+| 63 | TCP Agent Server | TBD | Not started | - |
+| 64 | AI vs AI Mode | TBD | Not started | - |
+
+## v2.2 Phase Details
+
+### Phase 62: Campaign UX Polish
+
+**Goal:** Veteran recruitment in the recruit panel (living roster entries as recruitable options) and fix enemy faction picker (always selects Loyalists regardless of user choice).
+**Depends on:** Phase 61 (roster system working)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+### Phase 63: TCP Agent Server
+
+**Goal:** Socket/TCP server exposing the existing JSON action API (ActionRequest/StateSnapshot) to external Python agents. Python client library for programmatic play.
+**Depends on:** Phase 62 (campaign UX solid)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+### Phase 64: AI vs AI Mode
+
+**Goal:** Automated games where both factions are AI-controlled. Works both headless (Rust-only) and visual (Love2D with accelerated turns). Enables Claude to test gameplay directly.
+**Depends on:** Phase 63 (TCP server working)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+---
+
+## Previous Milestone
+
 **v2.1 Save System**
 Status: Complete
 Phases: 4 of 4 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
-| 58 | Save/Load Basics | 1/1 | ✅ Complete | 2026-03-06 |
-| 59 | Save/Load Combat State | 0 (folded into 58-01) | ✅ Complete | 2026-03-06 |
-| 60 | Campaign Save/Load | 1/1 | ✅ Complete | 2026-03-06 |
-| 61 | UUID + Roster | 1/1 | ✅ Complete | 2026-03-06 |
-
-## v2.1 Phase Details
-
-### Phase 58: Save/Load Basics
-
-**Goal:** TOML writer in Lua + save/load for a single scenario. Save unit positions, gold, turn, active faction, board reference. Load reconstructs engine state via existing FFI. Test: place units, move them, save, restart, load — units in correct positions.
-**Depends on:** Phase 57 (v2.0 complete)
-
-**Plans:**
-- TBD (defined during /paul:plan)
-
-### Phase 59: Save/Load Combat State
-
-**Goal:** Extend save/load to capture combat-related state: HP damage, XP, advancement_pending, unit exhaustion (moved/attacked). Test: fight some battles, save, load — verify HP/XP preserved, damaged units still damaged.
-**Depends on:** Phase 58 (basic save/load working)
-
-**Plans:**
-- TBD (defined during /paul:plan)
-
-### Phase 60: Campaign Save/Load
-
-**Goal:** Save/load for campaign mode: campaign position (scenario index), carry-over gold, trigger zones fired, dialogue fired sets. Auto-save at turn start. Date-first filename. Continue/New Game flow on campaign start.
-**Depends on:** Phase 59 (single-scenario save/load solid)
-
-**Plans:**
-- TBD (defined during /paul:plan)
-
-### Phase 61: UUID + Roster
-
-**Goal:** Persistent unit identity (Lua-generated UUIDs) and roster tracking across campaign scenarios. Replace survivors-only carry-over with full persistent roster. Deployed = has col/row, bench = nil.
-**Depends on:** Phase 60 (campaign save/load working)
+| 58 | Save/Load Basics | 1/1 | Complete | 2026-03-06 |
+| 59 | Save/Load Combat State | 0 (folded into 58-01) | Complete | 2026-03-06 |
+| 60 | Campaign Save/Load | 1/1 | Complete | 2026-03-06 |
+| 61 | UUID + Roster | 1/1 | Complete | 2026-03-06 |
 
 ---
 
