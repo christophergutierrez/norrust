@@ -101,7 +101,8 @@ local history_scroll = 0
 
 -- Shared state table for overflow upvalues (LuaJIT 60-upvalue limit)
 -- .agent = agent_server handle or nil
-local shared = {agent = nil, agent_mod = agent_server}
+-- .ai_vs_ai = true when both factions are AI-controlled
+local shared = {agent = nil, agent_mod = agent_server, ai_vs_ai = false, ai_delay = 0.5, ai_timer = 0}
 
 -- Assets (loaded in love.load)
 local terrain_tiles = {}
@@ -658,14 +659,23 @@ function love.load()
     -- Maximize window (keeps title bar with close button)
     love.window.maximize()
 
-    -- Check for --agent-server flag
-    for _, a in ipairs(arg or {}) do
+    -- Check for CLI flags
+    local args = arg or {}
+    for i, a in ipairs(args) do
         if a == "--agent-server" then
             shared.agent = agent_server.new(9876)
             if shared.agent then
                 status_message = "Agent server on port 9876"
                 status_timer = 5.0
             end
+        elseif a == "--ai-vs-ai" then
+            shared.ai_vs_ai = true
+            -- Also start agent server for external observation
+            if not shared.agent then
+                shared.agent = agent_server.new(9876)
+            end
+        elseif a == "--ai-delay" and args[i + 1] then
+            shared.ai_delay = tonumber(args[i + 1]) or 0.5
         end
     end
 
@@ -680,6 +690,23 @@ function love.update(dt)
     -- Agent server: process TCP commands
     if shared.agent then
         agent_server.update(shared.agent, norrust, engine)
+    end
+
+    -- AI vs AI: auto-play both factions
+    if shared.ai_vs_ai and game_mode == PLAYING and not game_over
+       and not pending_anims.move and #pending_anims == 0 and not pending_anims.combat_slide then
+        shared.ai_timer = shared.ai_timer - dt
+        if shared.ai_timer <= 0 then
+            local f = norrust.get_active_faction(engine)
+            local fid = faction_id[f + 1]
+            if fid and fid ~= "" then
+                local n = norrust.ai_recruit(engine, fid, next_unit_id)
+                next_unit_id = next_unit_id + n
+                norrust.ai_take_turn(engine, f)
+                check_game_over()
+            end
+            shared.ai_timer = shared.ai_delay
+        end
     end
 
     -- Status message countdown

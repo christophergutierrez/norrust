@@ -185,10 +185,11 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 - [x] TCP agent server on localhost:9876 with line-based protocol (LuaSocket in Love2D) — Phase 63 (63-01)
 - [x] Python agent client library (tools/agent_client.py, stdlib only) — Phase 63 (63-01)
+- [x] AI vs AI mode: Python script + Love2D --ai-vs-ai for automated testing — Phase 64 (64-01)
 
 ### Active (In Progress / Deferred)
 
-- [ ] AI vs AI mode for automated testing — planned Phase 64
+(none)
 
 ### Out of Scope
 
@@ -343,4 +344,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-06 after Phase 63 — TCP Agent Server (v2.2 AI & Agents).*
+*Last updated: 2026-03-06 after Phase 64 — AI vs AI Mode (v2.2 AI & Agents complete).*

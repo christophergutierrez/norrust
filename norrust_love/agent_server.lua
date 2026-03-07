@@ -35,7 +35,8 @@ end
 local function process_command(line, norrust, engine)
     if line == "get_state" then
         local state_json = norrust.get_state_raw(engine)
-        return state_json or "{}"
+        if not state_json or state_json == "" then return "{}" end
+        return state_json
     elseif line == "get_faction" then
         local f = norrust.get_active_faction(engine)
         return tostring(f)
