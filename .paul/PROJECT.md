@@ -195,6 +195,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] CONTRIBUTING.md with content authoring guides for non-programmer contributors — Phase 73 (73-01)
 - [x] Idle animation frame cycling (sprite key normalization fix) — Phase 74 (74-01)
 - [x] Death animation visibility with timed cleanup — Phase 74 (74-01)
+- [x] Menu music looping on scenario select with transitions to/from gameplay — Phase 75 (75-01)
+- [x] Global sound controls (mute/volume) accessible from all game screens — Phase 75 (75-01)
 
 ### Active (In Progress / Deferred)
 
@@ -334,6 +336,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | 8-char hex UUID for unit identity (not RFC 4122) | Sufficient for campaign scope; no external deps | 2026-03-06 | Active |
 | Roster is campaign-only (nil for standalone) | Standalone scenarios don't need identity tracking | 2026-03-06 | Active |
 | Local uid tracking in veteran placement loop | Engine's place_unit doesn't increment next_unit_id | 2026-03-06 | Active |
+| Global sound controls before mode-specific blocks | M/-/= must work from any screen including menu where music plays | 2026-03-07 | Active |
+| Explicit stop_music() on scenario/campaign selection | Belt-and-suspenders: don't rely solely on scenario_loaded event timing | 2026-03-07 | Active |
 
 ## Tech Stack
 
@@ -353,4 +357,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-07 after Phase 74 — Animation Fixes (v2.5 complete).*
+*Last updated: 2026-03-07 after Phase 75 — Background Music (v2.6 complete).*

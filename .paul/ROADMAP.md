@@ -6,6 +6,34 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
+**v2.7 Controls & Help** (not started)
+
+---
+
+## Previous Milestone
+
+**v2.6 Music**
+Status: Complete
+Phases: 1 of 1 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 75 | Background Music | 1/1 | Complete | 2026-03-07 |
+
+## v2.6 Phase Details
+
+### Phase 75: Background Music
+
+**Goal:** Add menu music (battle_background.ogg loops on scenario select screen), per-scenario music transitions (stop menu music when scenario starts, resume when returning to menu).
+**Depends on:** Phase 72 (sound.lua play_music/stop_music infrastructure)
+
+**Plans:**
+- 75-01: Menu music + transitions (complete)
+
+---
+
+## Previous Milestone
+
 **v2.5 Animation Fixes**
 Status: Complete
 Phases: 1 of 1 complete

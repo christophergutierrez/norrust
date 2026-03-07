@@ -687,8 +687,9 @@ function love.load()
     terrain_tiles = assets.load_terrain_tiles("data")
     unit_sprites = assets.load_unit_sprites("data")
 
-    -- Load sound effects
+    -- Load sound effects and start menu music
     shared.sound.load()
+    shared.sound.play_music("data/sounds/menu_music.ogg")
 
     -- Maximize window (keeps title bar with close button)
     love.window.maximize()
@@ -1048,10 +1049,29 @@ function love.keypressed(key)
         return
     end
 
+    -- Sound controls (available from any mode)
+    if key == "m" then
+        shared.sound.toggle_mute()
+        status_message = shared.sound.is_muted() and "Sound muted" or "Sound unmuted"
+        status_timer = 1.5
+        return
+    elseif key == "-" then
+        shared.sound.set_volume(shared.sound.get_volume() - 0.1)
+        status_message = string.format("Volume: %d%%", math.floor(shared.sound.get_volume() * 100 + 0.5))
+        status_timer = 1.5
+        return
+    elseif key == "=" then
+        shared.sound.set_volume(shared.sound.get_volume() + 0.1)
+        status_message = string.format("Volume: %d%%", math.floor(shared.sound.get_volume() * 100 + 0.5))
+        status_timer = 1.5
+        return
+    end
+
     -- Scenario selection
     if game_mode == PICK_SCENARIO then
         local num = tonumber(key)
         if num and num >= 1 and num <= #SCENARIOS then
+            shared.sound.stop_music()
             campaign_active = false
             scenario_board = SCENARIOS[num].board
             scenario_units = SCENARIOS[num].units
@@ -1071,6 +1091,7 @@ function love.keypressed(key)
             end
         elseif key == "c" then
             -- Start campaign
+            shared.sound.stop_music()
             local camp = CAMPAIGNS[1]
             campaign_data = norrust.load_campaign(engine, campaigns_path .. "/" .. camp.file)
             if campaign_data then
@@ -1158,6 +1179,7 @@ function love.keypressed(key)
                     game_over = false
                     winner_faction = -1
                     game_mode = PICK_SCENARIO
+                    shared.sound.play_music("data/sounds/menu_music.ogg")
                 end
             else
                 -- Individual scenario win/loss, or campaign defeat
@@ -1166,6 +1188,7 @@ function love.keypressed(key)
                 game_over = false
                 winner_faction = -1
                 game_mode = PICK_SCENARIO
+                shared.sound.play_music("data/sounds/menu_music.ogg")
             end
         end
         return
@@ -1291,21 +1314,6 @@ function love.keypressed(key)
         else
             recruit_mode = false
         end
-
-    elseif key == "m" then
-        shared.sound.toggle_mute()
-        status_message = shared.sound.is_muted() and "Sound muted" or "Sound unmuted"
-        status_timer = 1.5
-
-    elseif key == "-" then
-        shared.sound.set_volume(shared.sound.get_volume() - 0.1)
-        status_message = string.format("Volume: %d%%", math.floor(shared.sound.get_volume() * 100 + 0.5))
-        status_timer = 1.5
-
-    elseif key == "=" then
-        shared.sound.set_volume(shared.sound.get_volume() + 0.1)
-        status_message = string.format("Volume: %d%%", math.floor(shared.sound.get_volume() * 100 + 0.5))
-        status_timer = 1.5
 
     else
         -- Number keys for recruit selection
