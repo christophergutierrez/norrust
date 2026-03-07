@@ -192,6 +192,7 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Symlink pattern for Love2D VFS: norrust_love/<dir> -> ../<dir> + setSymlinksEnabled — Phase 71 (71-01)
 - [x] File-first sound loading from data/sounds/ with procedural SoundData fallback — Phase 72 (72-01)
 - [x] Per-scenario music support via optional music.ogg in scenario directories — Phase 72 (72-01)
+- [x] CONTRIBUTING.md with content authoring guides for non-programmer contributors — Phase 73 (73-01)
 
 ### Active (In Progress / Deferred)
 
@@ -350,4 +351,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-07 after Phase 72 — Sound Assets (v2.4 Content Organization in progress).*
+*Last updated: 2026-03-07 after Phase 73 — Contributor Guides (v2.4 Content Organization complete).*
