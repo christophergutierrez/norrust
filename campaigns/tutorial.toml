@@ -5,11 +5,21 @@ gold_carry_percent = 80
 early_finish_bonus = 5
 
 [[scenarios]]
-board = "crossing.toml"
-units = "crossing_units.toml"
+board = "crossing/board.toml"
+units = "crossing/units.toml"
 preset_units = true
 
 [[scenarios]]
-board = "ambush.toml"
-units = "ambush_units.toml"
+board = "ambush/board.toml"
+units = "ambush/units.toml"
+preset_units = true
+
+[[scenarios]]
+board = "night_orcs/board.toml"
+units = "night_orcs/units.toml"
+preset_units = true
+
+[[scenarios]]
+board = "final_battle/board.toml"
+units = "final_battle/units.toml"
 preset_units = true

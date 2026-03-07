@@ -1,0 +1,142 @@
+# scenarios/final_battle_units.toml — Unit placements + trigger zones for final battle
+#
+# Blue: Lieutenant leader on keep (2,7) + 3 units on adjacent castles
+# Red (Orcs): Orcish Warrior leader on keep (21,7) + 4 units on adjacent castles
+# Triggers: 4 zones across the map spawning orc reinforcements
+
+# ── Blue Forces (Loyalists) ────────────────────────────────────────────────
+
+[[units]]
+id = 1
+unit_type = "Lieutenant"
+faction = 0
+col = 2
+row = 7
+
+[[units]]
+id = 2
+unit_type = "Spearman"
+faction = 0
+col = 1
+row = 6
+
+[[units]]
+id = 3
+unit_type = "Bowman"
+faction = 0
+col = 3
+row = 7
+
+[[units]]
+id = 4
+unit_type = "Cavalryman"
+faction = 0
+col = 2
+row = 6
+
+# ── Red Forces (Orcs) ─────────────────────────────────────────────────────
+
+[[units]]
+id = 5
+unit_type = "Orcish Warrior"
+faction = 1
+col = 21
+row = 7
+
+[[units]]
+id = 6
+unit_type = "Orcish Grunt"
+faction = 1
+col = 20
+row = 7
+
+[[units]]
+id = 7
+unit_type = "Orcish Archer"
+faction = 1
+col = 22
+row = 7
+
+[[units]]
+id = 8
+unit_type = "Orcish Assassin"
+faction = 1
+col = 21
+row = 6
+
+[[units]]
+id = 9
+unit_type = "Orcish Grunt"
+faction = 1
+col = 20
+row = 8
+
+# ── Trigger Zones ──────────────────────────────────────────────────────────
+
+# Trigger 1: forest ambush at (8,5) — spawns Orcish Grunt + Orcish Archer
+[[triggers]]
+trigger_col = 8
+trigger_row = 5
+
+[[triggers.spawns]]
+unit_type = "Orcish Grunt"
+faction = 1
+col = 9
+row = 5
+
+[[triggers.spawns]]
+unit_type = "Orcish Archer"
+faction = 1
+col = 8
+row = 4
+
+# Trigger 2: swamp trap at (12,9) — spawns Orcish Assassin + Orcish Grunt
+[[triggers]]
+trigger_col = 12
+trigger_row = 9
+
+[[triggers.spawns]]
+unit_type = "Orcish Assassin"
+faction = 1
+col = 13
+row = 9
+
+[[triggers.spawns]]
+unit_type = "Orcish Grunt"
+faction = 1
+col = 12
+row = 10
+
+# Trigger 3: hill counter-attack at (15,4) — spawns 2 Orcish Grunts
+[[triggers]]
+trigger_col = 15
+trigger_row = 4
+
+[[triggers.spawns]]
+unit_type = "Orcish Grunt"
+faction = 1
+col = 16
+row = 4
+
+[[triggers.spawns]]
+unit_type = "Orcish Grunt"
+faction = 1
+col = 15
+row = 3
+
+# Trigger 4: final defense line at (18,7) — spawns Orcish Archer + Orcish Grunt
+[[triggers]]
+trigger_col = 18
+trigger_row = 7
+
+[[triggers.spawns]]
+unit_type = "Orcish Archer"
+faction = 1
+col = 19
+row = 7
+
+[[triggers.spawns]]
+unit_type = "Orcish Grunt"
+faction = 1
+col = 18
+row = 8

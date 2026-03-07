@@ -1,0 +1,43 @@
+# scenarios/final_battle_dialogue.toml — Narrator dialogue for the final battle scenario
+#
+# Triggers: scenario_start, turn_start, turn_end, hex_entered, leader_attacked
+# turn: which turn number (omit for any turn)
+# faction: which faction's turn (omit for either)
+
+[[dialogue]]
+id = "final_intro"
+trigger = "scenario_start"
+text = "The road to Norrust ends here. The orc stronghold looms ahead — their warlord has gathered every warrior for a final stand. Break through their lines and take the fortress. Victory awaits."
+
+[[dialogue]]
+id = "final_nightfall"
+trigger = "turn_start"
+turn = 4
+faction = 0
+text = "Night descends on the battlefield. The orcs howl with renewed fury — press forward before darkness emboldens them further."
+
+[[dialogue]]
+id = "final_dawn"
+trigger = "turn_start"
+turn = 7
+faction = 0
+text = "The sun rises over the hills. Your soldiers draw strength from the light — now is the time to strike."
+
+[[dialogue]]
+id = "final_midpoint"
+trigger = "hex_entered"
+col = 12
+row = 7
+text = "Your forces reach the central ridge. The orc fortress is visible through the haze — one final push remains."
+
+[[dialogue]]
+id = "final_leader"
+trigger = "leader_attacked"
+text = "The orc warlord fights desperately! Do not relent — the fate of Norrust hangs in the balance!"
+
+[[dialogue]]
+id = "final_urgency"
+trigger = "turn_end"
+turn = 20
+faction = 0
+text = "Time grows short. The orcs are rallying for a counter-attack — you must reach their fortress soon."

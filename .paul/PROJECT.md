@@ -186,6 +186,12 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] TCP agent server on localhost:9876 with line-based protocol (LuaSocket in Love2D) — Phase 63 (63-01)
 - [x] Python agent client library (tools/agent_client.py, stdlib only) — Phase 63 (63-01)
 - [x] AI vs AI mode: Python script + Love2D --ai-vs-ai for automated testing — Phase 64 (64-01)
+- [x] Unit content directories: data/units/<name>/ with TOML + sprites together — Phase 70 (70-01)
+- [x] Registry loader subdirectory scanning: <dirname>/<dirname>.toml convention — Phase 70 (70-01)
+- [x] Scenario directories: scenarios/<name>/ with board.toml, units.toml, dialogue.toml — Phase 71 (71-01)
+- [x] Symlink pattern for Love2D VFS: norrust_love/<dir> -> ../<dir> + setSymlinksEnabled — Phase 71 (71-01)
+- [x] File-first sound loading from data/sounds/ with procedural SoundData fallback — Phase 72 (72-01)
+- [x] Per-scenario music support via optional music.ogg in scenario directories — Phase 72 (72-01)
 
 ### Active (In Progress / Deferred)
 
@@ -344,4 +350,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-06 after Phase 64 — AI vs AI Mode (v2.2 AI & Agents complete).*
+*Last updated: 2026-03-07 after Phase 72 — Sound Assets (v2.4 Content Organization in progress).*

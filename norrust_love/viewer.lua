@@ -141,8 +141,8 @@ function viewer.load()
 
     love.graphics.setBackgroundColor(0.12, 0.12, 0.14)
 
-    terrain_tiles = assets.load_terrain_tiles("assets")
-    unit_sprites = assets.load_unit_sprites("assets")
+    terrain_tiles = assets.load_terrain_tiles("data")
+    unit_sprites = assets.load_unit_sprites("data")
     build_asset_list()
 
     if #asset_list > 0 then

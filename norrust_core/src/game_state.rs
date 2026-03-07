@@ -6,7 +6,7 @@ use crate::board::Board;
 use crate::combat::{resolve_attack, time_of_day, tod_damage_modifier, Rng};
 use crate::hex::Hex;
 use crate::pathfinding::{find_path, get_zoc_hexes};
-use crate::unit::Unit;
+use crate::unit::{has_special, Unit};
 
 /// Errors returned by `apply_action` and `apply_recruit` when an action is invalid.
 #[derive(Debug, PartialEq, Eq)]
@@ -146,6 +146,40 @@ impl GameState {
     }
 }
 
+/// Compute leadership damage bonus for a unit (percentage: 0, 25, 50, etc.).
+///
+/// Checks adjacent hexes for allies with "leadership" ability at a higher level.
+/// Returns 25 * max_level_diff, or 0 if no leadership ally found.
+pub fn leadership_bonus(state: &GameState, unit_id: u32) -> u32 {
+    let unit = match state.units.get(&unit_id) {
+        Some(u) => u,
+        None => return 0,
+    };
+    let unit_level = unit.level;
+    let unit_faction = unit.faction;
+    let pos = match state.positions.get(&unit_id) {
+        Some(&p) => p,
+        None => return 0,
+    };
+    let mut best_diff: u32 = 0;
+    for (&uid, &hex) in &state.positions {
+        if uid == unit_id { continue; }
+        if pos.distance(hex) != 1 { continue; }
+        if let Some(ally) = state.units.get(&uid) {
+            if ally.faction == unit_faction
+                && ally.level > unit_level
+                && ally.abilities.iter().any(|a| a == "leadership")
+            {
+                let diff = (ally.level - unit_level) as u32;
+                if diff > best_diff {
+                    best_diff = diff;
+                }
+            }
+        }
+    }
+    best_diff * 25
+}
+
 /// Validate and apply `action` to `state`, mutating it in place.
 ///
 /// Returns `Ok(())` on success or an `ActionError` describing why the
@@ -172,7 +206,10 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
             }
 
             // Pathfinding validation — only when unit has a movement budget
-            let movement = state.units[&unit_id].movement;
+            let mut movement = state.units[&unit_id].movement;
+            if state.units[&unit_id].slowed {
+                movement /= 2;
+            }
             if movement > 0 {
                 let zoc = get_zoc_hexes(state, state.units[&unit_id].faction);
                 let costs = state.units[&unit_id].movement_costs.clone();
@@ -281,12 +318,51 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
             };
 
             // Resistance modifier: defender's resistance to the attacker's attack type
+            // Steadfast: double positive resistances when defending
             let resistance = {
                 let defender = state.units.get(&defender_id).unwrap();
-                defender.resistances.get(&attack.attack_type).copied().unwrap_or(0)
+                let mut r = defender.resistances.get(&attack.attack_type).copied().unwrap_or(0);
+                if r < 0 && defender.abilities.iter().any(|a| a == "steadfast") {
+                    r = (r * 2).max(-100);
+                }
+                r
             };
-            let effective_damage =
+            let mut effective_damage =
                 ((attack.damage as i64 * (100 + resistance as i64)) / 100).max(0) as u32;
+
+            // Slow: slowed attacker deals half damage
+            if state.units.get(&attacker_id).unwrap().slowed {
+                effective_damage /= 2;
+            }
+
+            // Leadership: adjacent ally with "leadership" at higher level boosts damage
+            {
+                let bonus = leadership_bonus(state, attacker_id);
+                if bonus > 0 {
+                    effective_damage = (effective_damage as u64 * (100 + bonus as u64) / 100) as u32;
+                }
+            }
+
+            // Charge: double damage on melee attacks with charge special
+            if has_special(&attack, "charge") && range_needed == "melee" {
+                effective_damage *= 2;
+            }
+
+            // Backstab: double damage when defender is flanked
+            if has_special(&attack, "backstab") {
+                let opposite = Hex {
+                    x: defender_pos.x + (defender_pos.x - attacker_pos.x),
+                    y: defender_pos.y + (defender_pos.y - attacker_pos.y),
+                    z: defender_pos.z + (defender_pos.z - attacker_pos.z),
+                };
+                let flanked = state.positions.iter().any(|(&uid, &hex)| {
+                    hex == opposite && uid != attacker_id
+                        && state.units.get(&uid).map(|u| u.faction == state.active_faction).unwrap_or(false)
+                });
+                if flanked {
+                    effective_damage *= 2;
+                }
+            }
 
             // Resolve — requires mutable borrow of rng only
             let damage =
@@ -299,6 +375,22 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                 def.hp = def.hp.saturating_sub(damage);
                 def.hp
             };
+
+            // Drain: heal attacker for damage dealt
+            if has_special(&attack, "drain") && damage > 0 {
+                let a = state.units.get_mut(&attacker_id).unwrap();
+                a.hp = (a.hp + damage).min(a.max_hp);
+            }
+
+            // Poison: apply poisoned status on hit (if defender survived)
+            if has_special(&attack, "poison") && damage > 0 && defender_hp > 0 {
+                state.units.get_mut(&defender_id).unwrap().poisoned = true;
+            }
+
+            // Slow: apply slowed status on hit (if defender survived)
+            if has_special(&attack, "slow") && damage > 0 && defender_hp > 0 {
+                state.units.get_mut(&defender_id).unwrap().slowed = true;
+            }
 
             // Purge dead defender
             if defender_hp == 0 {
@@ -340,12 +432,36 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                         let d = state.units.get(&defender_id).unwrap();
                         tod_damage_modifier(d.alignment, time_of_day(state.turn))
                     };
+                    // Steadfast: double positive resistances for attacker when being retaliated against
                     let ret_resistance = {
                         let a = state.units.get(&attacker_id).unwrap();
-                        a.resistances.get(&def_attack.attack_type).copied().unwrap_or(0)
+                        let mut r = a.resistances.get(&def_attack.attack_type).copied().unwrap_or(0);
+                        if r < 0 && a.abilities.iter().any(|ab| ab == "steadfast") {
+                            r = (r * 2).max(-100);
+                        }
+                        r
                     };
-                    let ret_effective_damage =
+                    let mut ret_effective_damage =
                         ((def_attack.damage as i64 * (100 + ret_resistance as i64)) / 100).max(0) as u32;
+
+                    // Slow: slowed defender deals half retaliation damage
+                    if state.units.get(&defender_id).unwrap().slowed {
+                        ret_effective_damage /= 2;
+                    }
+
+                    // Leadership: adjacent ally with "leadership" boosts defender's retaliation
+                    {
+                        let bonus = leadership_bonus(state, defender_id);
+                        if bonus > 0 {
+                            ret_effective_damage = (ret_effective_damage as u64 * (100 + bonus as u64) / 100) as u32;
+                        }
+                    }
+
+                    // Charge: double retaliation damage against charge attacker
+                    if has_special(&attack, "charge") && range_needed == "melee" {
+                        ret_effective_damage *= 2;
+                    }
+
                     let ret_damage = resolve_attack(
                         &mut state.rng,
                         ret_effective_damage,
@@ -354,12 +470,30 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                         ret_tod,
                     );
                     state.units.get_mut(&defender_id).unwrap().attacked = true;
+
+                    // Drain: heal defender for retaliation damage dealt
+                    if has_special(&def_attack, "drain") && ret_damage > 0 {
+                        let d = state.units.get_mut(&defender_id).unwrap();
+                        d.hp = (d.hp + ret_damage).min(d.max_hp);
+                    }
+
                     let attacker_killed = if state.units.contains_key(&attacker_id) {
                         let attacker_hp = {
                             let a = state.units.get_mut(&attacker_id).unwrap();
                             a.hp = a.hp.saturating_sub(ret_damage);
                             a.hp
                         };
+
+                        // Poison: apply poisoned status on retaliation hit (if attacker survived)
+                        if has_special(&def_attack, "poison") && ret_damage > 0 && attacker_hp > 0 {
+                            state.units.get_mut(&attacker_id).unwrap().poisoned = true;
+                        }
+
+                        // Slow: apply slowed status on retaliation hit (if attacker survived)
+                        if has_special(&def_attack, "slow") && ret_damage > 0 && attacker_hp > 0 {
+                            state.units.get_mut(&attacker_id).unwrap().slowed = true;
+                        }
+
                         if attacker_hp == 0 {
                             state.units.remove(&attacker_id);
                             state.positions.remove(&attacker_id);
@@ -399,9 +533,43 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                 state.village_owners.insert(hex, ending_faction);
             }
 
+            // Poison tick for ending faction: village cures, otherwise 8 damage
+            let ending = state.active_faction;
+            let poisoned_units: Vec<u32> = state.units.iter()
+                .filter(|(_, u)| u.faction == ending && u.poisoned)
+                .map(|(id, _)| *id)
+                .collect();
+            let mut poison_dead: Vec<u32> = Vec::new();
+            for uid in poisoned_units {
+                let on_village = state.positions.get(&uid)
+                    .and_then(|&hex| state.board.tile_at(hex))
+                    .map(|t| t.healing > 0)
+                    .unwrap_or(false);
+                let unit = state.units.get_mut(&uid).unwrap();
+                if on_village {
+                    unit.poisoned = false;
+                } else {
+                    unit.hp = unit.hp.saturating_sub(8);
+                    if unit.hp == 0 {
+                        poison_dead.push(uid);
+                    }
+                }
+            }
+            for uid in poison_dead {
+                state.units.remove(&uid);
+                state.positions.remove(&uid);
+            }
+
             state.active_faction = 1 - state.active_faction;
             if state.active_faction == 0 {
                 state.turn += 1;
+            }
+
+            // Clear slowed for newly active faction (slow wears off at start of your turn)
+            for unit in state.units.values_mut() {
+                if unit.faction == state.active_faction && unit.slowed {
+                    unit.slowed = false;
+                }
             }
 
             // Village income: newly-active faction earns 2 gold per owned village
@@ -430,6 +598,26 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                         unit.hp = (unit.hp + healing).min(unit.max_hp);
                     }
                 }
+            }
+
+            // Regenerates: units with "regenerates_N" ability heal N HP and cure poison
+            let regen_units: Vec<(u32, u32)> = state.units.iter()
+                .filter(|(_, u)| u.faction == active)
+                .filter_map(|(&id, u)| {
+                    for ab in &u.abilities {
+                        if let Some(n_str) = ab.strip_prefix("regenerates_") {
+                            if let Ok(n) = n_str.parse::<u32>() {
+                                return Some((id, n));
+                            }
+                        }
+                    }
+                    None
+                })
+                .collect();
+            for (uid, heal_amount) in regen_units {
+                let unit = state.units.get_mut(&uid).unwrap();
+                unit.hp = (unit.hp + heal_amount).min(unit.max_hp);
+                unit.poisoned = false;
             }
 
             Ok(())
@@ -923,5 +1111,289 @@ mod tests {
         apply_action(&mut state, Action::EndTurn).unwrap();
         assert_eq!(state.active_faction, 0);
         assert_eq!(state.gold[0], 12, "faction 0 owns 1 village: 10 + 2 = 12");
+    }
+
+    // ── Weapon specials tests ──────────────────────────────────────────────
+
+    fn make_attack(specials: Vec<&str>) -> AttackDef {
+        AttackDef {
+            id: "sword".to_string(), name: "Sword".to_string(),
+            damage: 10, strikes: 1,
+            attack_type: "blade".to_string(), range: "melee".to_string(),
+            specials: specials.into_iter().map(String::from).collect(),
+        }
+    }
+
+    #[test]
+    fn test_drain_heals_attacker() {
+        let board = Board::new(10, 10);
+        let mut state = GameState::new_seeded(board, 42);
+        let mut attacker = Unit::new(1, "fighter", 30, 0);
+        attacker.hp = 20; // wounded
+        attacker.attacks = vec![make_attack(vec!["drain"])];
+        let mut defender = Unit::new(2, "grunt", 30, 1);
+        defender.default_defense = 0;
+        state.place_unit(attacker, Hex::ORIGIN);
+        state.place_unit(defender, Hex::from_offset(1, 0));
+
+        apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+
+        assert!(state.units[&1].hp > 20, "drain should heal attacker");
+        assert!(state.units[&1].hp <= 30, "drain cannot exceed max_hp");
+    }
+
+    #[test]
+    fn test_poison_applies_on_hit() {
+        let board = Board::new(10, 10);
+        let mut state = GameState::new_seeded(board, 42);
+        let mut attacker = Unit::new(1, "fighter", 30, 0);
+        attacker.attacks = vec![make_attack(vec!["poison"])];
+        let mut defender = Unit::new(2, "grunt", 50, 1);
+        defender.default_defense = 0;
+        state.place_unit(attacker, Hex::ORIGIN);
+        state.place_unit(defender, Hex::from_offset(1, 0));
+
+        apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+
+        assert!(state.units[&2].poisoned, "defender should be poisoned after hit");
+    }
+
+    #[test]
+    fn test_poison_damage_on_endturn() {
+        let board = Board::new(10, 10);
+        let mut state = GameState::new(board);
+        let mut unit = Unit::new(1, "fighter", 30, 0);
+        unit.poisoned = true;
+        state.place_unit(unit, Hex::ORIGIN);
+
+        // Faction 0 ends turn → poison ticks for ending faction (0)
+        apply_action(&mut state, Action::EndTurn).unwrap();
+
+        assert_eq!(state.units[&1].hp, 22, "poisoned unit should take 8 damage: 30 - 8 = 22");
+    }
+
+    #[test]
+    fn test_poison_cured_at_village() {
+        use crate::board::Tile;
+        let board = Board::new(10, 10);
+        let mut state = GameState::new(board);
+        let village_hex = Hex::from_offset(1, 1);
+        state.board.set_tile(village_hex, Tile {
+            terrain_id: "village".to_string(),
+            movement_cost: 1, defense: 40, healing: 8,
+            color: "#8b7355".to_string(),
+        });
+        let mut unit = Unit::new(1, "fighter", 30, 0);
+        unit.poisoned = true;
+        state.place_unit(unit, village_hex);
+
+        apply_action(&mut state, Action::EndTurn).unwrap();
+
+        assert!(!state.units[&1].poisoned, "poison should be cured at village");
+        assert_eq!(state.units[&1].hp, 30, "unit should not take poison damage when cured");
+    }
+
+    #[test]
+    fn test_charge_doubles_damage() {
+        let board = Board::new(10, 10);
+        let mut state = GameState::new_seeded(board, 42);
+        // Normal attack: 10 damage
+        let mut attacker = Unit::new(1, "rider", 30, 0);
+        attacker.attacks = vec![make_attack(vec!["charge"])];
+        let mut defender = Unit::new(2, "grunt", 50, 1);
+        defender.default_defense = 0; // always hit
+        state.place_unit(attacker, Hex::ORIGIN);
+        state.place_unit(defender, Hex::from_offset(1, 0));
+
+        apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+
+        // Charge doubles 10 → 20 per hit, 1 strike, defender takes 20
+        assert_eq!(state.units[&2].hp, 30, "charge should double damage: 50 - 20 = 30");
+    }
+
+    #[test]
+    fn test_backstab_doubles_when_flanked() {
+        let board = Board::new(10, 10);
+        let mut state = GameState::new_seeded(board, 42);
+        let mut attacker = Unit::new(1, "thief", 30, 0);
+        attacker.attacks = vec![make_attack(vec!["backstab"])];
+        let mut defender = Unit::new(2, "grunt", 50, 1);
+        defender.default_defense = 0;
+        // Ally on opposite side of defender: attacker at (0,0), defender at (1,0), ally at (2,0)
+        let ally = Unit::new(3, "fighter", 30, 0);
+        state.place_unit(attacker, Hex::ORIGIN);
+        state.place_unit(defender, Hex::from_offset(1, 0));
+        state.place_unit(ally, Hex::from_offset(2, 0));
+
+        apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+
+        // Backstab doubles 10 → 20, 1 strike → defender takes 20
+        assert_eq!(state.units[&2].hp, 30, "backstab should double damage when flanked: 50 - 20 = 30");
+    }
+
+    #[test]
+    fn test_slow_halves_movement() {
+        let board = Board::new(10, 10);
+        let mut state = GameState::new(board);
+        let mut unit = Unit::new(1, "fighter", 30, 0);
+        unit.movement = 6;
+        unit.slowed = true;
+        state.place_unit(unit, Hex::ORIGIN);
+
+        // Try to move 4 hexes — should fail because slowed movement = 3
+        let far = Hex::from_offset(0, 4);
+        let result = apply_action(&mut state, Action::Move { unit_id: 1, destination: far });
+        assert_eq!(result, Err(ActionError::DestinationUnreachable), "slowed unit with movement 6 should only reach 3 hexes");
+    }
+
+    #[test]
+    fn test_slow_halves_damage() {
+        let board = Board::new(10, 10);
+        let mut state = GameState::new_seeded(board, 42);
+        let mut attacker = Unit::new(1, "fighter", 30, 0);
+        attacker.attacks = vec![make_attack(vec![])];
+        attacker.slowed = true;
+        let mut defender = Unit::new(2, "grunt", 50, 1);
+        defender.default_defense = 0;
+        state.place_unit(attacker, Hex::ORIGIN);
+        state.place_unit(defender, Hex::from_offset(1, 0));
+
+        apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+
+        // Slowed: 10 / 2 = 5 per hit, 1 strike → defender takes 5
+        assert_eq!(state.units[&2].hp, 45, "slowed attacker should deal half damage: 50 - 5 = 45");
+    }
+
+    #[test]
+    fn test_slow_cleared_on_turn_start() {
+        let board = Board::new(10, 10);
+        let mut state = GameState::new(board);
+        // Faction 1 unit is slowed
+        let mut unit = Unit::new(2, "grunt", 30, 1);
+        unit.slowed = true;
+        state.place_unit(unit, Hex::from_offset(1, 0));
+
+        // Faction 0 ends turn → faction 1 becomes active → slowed cleared for faction 1
+        apply_action(&mut state, Action::EndTurn).unwrap();
+        assert_eq!(state.active_faction, 1);
+        assert!(!state.units[&2].slowed, "slowed should be cleared at start of faction's turn");
+    }
+
+    // ── Unit abilities tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_leadership_boosts_adjacent_lower_level() {
+        let board = Board::new(10, 10);
+        let mut state = GameState::new_seeded(board, 42);
+        // Level 1 attacker with 10 damage
+        let mut attacker = Unit::new(1, "fighter", 30, 0);
+        attacker.attacks = vec![make_attack(vec![])];
+        attacker.level = 1;
+        // Level 2 leadership ally adjacent to attacker
+        let mut leader = Unit::new(3, "lieutenant", 40, 0);
+        leader.level = 2;
+        leader.abilities = vec!["leader".to_string(), "leadership".to_string()];
+        // Defender
+        let mut defender = Unit::new(2, "grunt", 50, 1);
+        defender.default_defense = 0;
+
+        state.place_unit(attacker, Hex::ORIGIN);
+        state.place_unit(leader, Hex::from_offset(0, 1)); // adjacent to attacker
+        state.place_unit(defender, Hex::from_offset(1, 0)); // adjacent to attacker
+
+        apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+
+        // Leadership: +25% on 10 = 12 (integer), 1 strike → defender takes 12
+        assert_eq!(state.units[&2].hp, 38, "leadership should boost damage: 10 * 1.25 = 12, 50 - 12 = 38");
+    }
+
+    #[test]
+    fn test_regenerates_heals_per_turn() {
+        let board = Board::new(10, 10);
+        let mut state = GameState::new(board);
+        let mut unit = Unit::new(2, "troll", 40, 1);
+        unit.hp = 25;
+        unit.abilities = vec!["regenerates_8".to_string()];
+        state.place_unit(unit, Hex::from_offset(1, 0));
+
+        // Faction 0 ends turn → faction 1 active → regenerates heals
+        apply_action(&mut state, Action::EndTurn).unwrap();
+
+        assert_eq!(state.units[&2].hp, 33, "regenerates_8 should heal 8: 25 + 8 = 33");
+    }
+
+    #[test]
+    fn test_regenerates_cures_poison() {
+        let board = Board::new(10, 10);
+        let mut state = GameState::new(board);
+        let mut unit = Unit::new(2, "troll", 40, 1);
+        unit.hp = 30;
+        unit.poisoned = true;
+        unit.abilities = vec!["regenerates_8".to_string()];
+        state.place_unit(unit, Hex::from_offset(1, 0));
+
+        // Faction 0 ends turn → faction 1 active
+        apply_action(&mut state, Action::EndTurn).unwrap();
+
+        assert!(!state.units[&2].poisoned, "regenerates should cure poison");
+        // Regeneration heals 8 HP; poison should NOT have ticked
+        // Poison ticks for ending faction (0), but unit is faction 1 so no poison tick
+        // Then regenerates heals when faction 1 becomes active
+        assert_eq!(state.units[&2].hp, 38, "regenerates should heal: 30 + 8 = 38");
+    }
+
+    #[test]
+    fn test_steadfast_doubles_resistance() {
+        // Negative resistance = takes less damage (resistance)
+        // Steadfast doubles negative values
+        let board = Board::new(10, 10);
+        let mut state = GameState::new_seeded(board, 42);
+        let mut attacker = Unit::new(1, "fighter", 30, 0);
+        attacker.attacks = vec![make_attack(vec![])]; // 10 damage blade
+        let mut defender = Unit::new(2, "guardsman", 50, 1);
+        defender.default_defense = 0;
+        defender.resistances.insert("blade".to_string(), -20); // 20% resistance
+        defender.abilities = vec!["steadfast".to_string()];
+        state.place_unit(attacker, Hex::ORIGIN);
+        state.place_unit(defender, Hex::from_offset(1, 0));
+
+        apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+
+        // Steadfast doubles -20 → -40 resistance
+        // effective_damage = 10 * (100 + (-40)) / 100 = 10 * 60/100 = 6
+        assert_eq!(state.units[&2].hp, 44, "steadfast should double resistance: 10 * 60% = 6, 50 - 6 = 44");
+    }
+
+    #[test]
+    fn test_steadfast_no_effect_on_weakness() {
+        // Positive resistance = weakness (takes more damage) — steadfast should NOT double
+        let board = Board::new(10, 10);
+        let mut state = GameState::new_seeded(board, 42);
+        let mut attacker = Unit::new(1, "fighter", 30, 0);
+        attacker.attacks = vec![make_attack(vec![])]; // 10 damage blade
+        let mut defender = Unit::new(2, "guardsman", 50, 1);
+        defender.default_defense = 0;
+        defender.resistances.insert("blade".to_string(), 10); // weakness
+        defender.abilities = vec!["steadfast".to_string()];
+        state.place_unit(attacker, Hex::ORIGIN);
+        state.place_unit(defender, Hex::from_offset(1, 0));
+
+        apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+
+        // Weakness not doubled: 10 * (100 + 10) / 100 = 11 damage
+        assert_eq!(state.units[&2].hp, 39, "steadfast should not double weakness: 50 - 11 = 39");
+    }
+
+    #[test]
+    fn test_level_on_snapshot() {
+        use crate::snapshot::StateSnapshot;
+        let board = Board::new(4, 3);
+        let mut state = GameState::new(board);
+        let mut unit = Unit::new(1, "hero", 45, 0);
+        unit.level = 2;
+        state.place_unit(unit, Hex::from_offset(0, 0));
+
+        let snap = StateSnapshot::from_game_state(&state);
+        assert_eq!(snap.units[0].level, 2);
     }
 }

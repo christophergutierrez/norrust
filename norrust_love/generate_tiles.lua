@@ -1,6 +1,6 @@
 -- generate_tiles.lua — Programmatic terrain tile generator
 -- Run with: cd norrust_love && love . --generate-tiles
--- Generates 15 terrain tiles as textured PNGs in assets/terrain/
+-- Generates 15 terrain tiles as textured PNGs in data/terrain/
 
 -- Terrain definitions: id, base color (RGB 0-1), pattern type
 local TERRAINS = {
@@ -161,11 +161,11 @@ local function generate_tile(t)
     return love.graphics.newImage(imageData), imageData
 end
 
---- Generate all terrain tiles and write them as PNGs to assets/terrain/.
+--- Generate all terrain tiles and write them as PNGs to data/terrain/.
 local function run_generator()
     -- Ensure output directory exists
-    local dir = "assets/terrain"
-    love.filesystem.createDirectory("assets")
+    local dir = "data/terrain"
+    love.filesystem.createDirectory("data")
     love.filesystem.createDirectory(dir)
 
     local count = 0

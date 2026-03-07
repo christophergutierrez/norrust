@@ -29,7 +29,7 @@ fn test_dialogue_ffi_round_trip() {
         let engine = norrust_new();
 
         // Load dialogue
-        let dialogue_path = c(&project_root().join("scenarios/crossing_dialogue.toml").to_string_lossy());
+        let dialogue_path = c(&project_root().join("scenarios/crossing/dialogue.toml").to_string_lossy());
         assert_eq!(norrust_load_dialogue(engine, dialogue_path.as_ptr()), 1);
 
         // Query scenario_start — should match the intro entry
@@ -53,7 +53,7 @@ fn test_dialogue_ffi_one_shot() {
     unsafe {
         let engine = norrust_new();
 
-        let dialogue_path = c(&project_root().join("scenarios/crossing_dialogue.toml").to_string_lossy());
+        let dialogue_path = c(&project_root().join("scenarios/crossing/dialogue.toml").to_string_lossy());
         assert_eq!(norrust_load_dialogue(engine, dialogue_path.as_ptr()), 1);
 
         // First call returns entry

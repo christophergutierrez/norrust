@@ -49,7 +49,7 @@ pub struct Unit {
     /// Terrain movement costs: terrain_id → movement point cost.
     pub movement_costs: HashMap<String, u32>,
     /// Damage type resistance modifiers: attack_type → modifier in percent.
-    /// Negative = weakness (more damage taken), positive = resistance (less damage taken).
+    /// Negative = resistance (less damage taken), positive = weakness (more damage taken).
     pub resistances: HashMap<String, i32>,
     /// Current experience points earned through combat.
     pub xp: u32,
@@ -57,8 +57,14 @@ pub struct Unit {
     pub xp_needed: u32,
     /// Set true when xp >= xp_needed; cleared by Action::Advance (Phase 8).
     pub advancement_pending: bool,
+    /// Unit tier — 1 = base, 2 = advanced, etc. Used for leadership level comparison.
+    pub level: u8,
     /// Abilities copied from UnitDef at spawn (e.g. "leader", "leadership", "regenerates").
     pub abilities: Vec<String>,
+    /// Poisoned status — takes 8 damage per turn, cured at villages.
+    pub poisoned: bool,
+    /// Slowed status — halves movement and damage, cleared at start of faction turn.
+    pub slowed: bool,
 }
 
 /// Advance `unit` to the stats defined by `new_def`.
@@ -77,9 +83,12 @@ pub fn advance_unit(unit: &mut Unit, new_def: &UnitDef) {
     unit.resistances = new_def.resistances.clone();
     unit.alignment = parse_alignment(&new_def.alignment);
     unit.xp_needed = new_def.experience;
+    unit.level = new_def.level;
     unit.abilities = new_def.abilities.clone();
     unit.xp = 0;
     unit.advancement_pending = false;
+    unit.poisoned = false;
+    unit.slowed = false;
 }
 
 impl Unit {
@@ -103,9 +112,17 @@ impl Unit {
             xp: 0,
             xp_needed: 0,
             advancement_pending: false,
+            level: 1,
             abilities: Vec::new(),
+            poisoned: false,
+            slowed: false,
         }
     }
+}
+
+/// Check if an attack definition has a named special (e.g. "drain", "poison").
+pub fn has_special(attack: &AttackDef, name: &str) -> bool {
+    attack.specials.iter().any(|s| s == name)
 }
 
 #[cfg(test)]

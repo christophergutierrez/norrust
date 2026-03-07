@@ -34,9 +34,11 @@ local PLAYING    = 4
 -- Available scenarios
 -- preset_units: if true, units come from TOML file — skip manual leader placement
 local SCENARIOS = {
-    {name = "Contested (8x5)",  board = "contested.toml",  units = "contested_units.toml", preset_units = false},
-    {name = "Crossing (16x10)", board = "crossing.toml",   units = "crossing_units.toml",  preset_units = true},
-    {name = "Ambush (12x8)",    board = "ambush.toml",     units = "ambush_units.toml",    preset_units = true},
+    {name = "Contested (8x5)",  board = "contested/board.toml",  units = "contested/units.toml", preset_units = false},
+    {name = "Crossing (16x10)", board = "crossing/board.toml",   units = "crossing/units.toml",  preset_units = true},
+    {name = "Ambush (12x8)",    board = "ambush/board.toml",     units = "ambush/units.toml",    preset_units = true},
+    {name = "Night Orcs (20x12)", board = "night_orcs/board.toml", units = "night_orcs/units.toml", preset_units = true},
+    {name = "Final Battle (24x14)", board = "final_battle/board.toml", units = "final_battle/units.toml", preset_units = true},
 }
 
 -- Available campaigns
@@ -102,7 +104,7 @@ local history_scroll = 0
 -- Shared state table for overflow upvalues (LuaJIT 60-upvalue limit)
 -- .agent = agent_server handle or nil
 -- .ai_vs_ai = true when both factions are AI-controlled
-local shared = {agent = nil, agent_mod = agent_server, ai_vs_ai = false, ai_delay = 0.5, ai_timer = 0}
+local shared = {agent = nil, agent_mod = agent_server, ai_vs_ai = false, ai_delay = 0.5, ai_timer = 0, sound = require("sound")}
 
 -- Assets (loaded in love.load)
 local terrain_tiles = {}
@@ -293,6 +295,9 @@ local function apply_attack_with_anims(attacker_id, defender_id, is_ranged)
     end
     if not defender_alive then
         trigger_death_anim(defender_id)
+        shared.sound.play("death")
+    else
+        shared.sound.play("hit")
     end
 end
 
@@ -313,15 +318,22 @@ events.on("dialogue", function(data)
     end
 end)
 
+-- Stash play_sfx in recruit_state to avoid adding upvalues to mousepressed
+recruit_state.play_sfx = function(name) shared.sound.play(name) end
+
 events.on("scenario_loaded", function(data)
     dialogue_history = {}
     history_scroll = 0
     show_dialogue_history = false
     active_dialogue = {}
 
-    local dialogue_path = scenarios_path .. "/" .. data.board:gsub("%.toml$", "_dialogue.toml")
+    local dialogue_path = scenarios_path .. "/" .. data.board:gsub("board%.toml$", "dialogue.toml")
     norrust.load_dialogue(engine, dialogue_path)
     events.emit("dialogue", {trigger = "scenario_start"})
+
+    -- Per-scenario music (optional music.ogg in scenario directory)
+    local music_vfs = "scenarios/" .. data.board:gsub("board%.toml$", "music.ogg")
+    shared.sound.play_music(music_vfs)
 end)
 
 --- Execute an attack with combat animations.
@@ -442,6 +454,7 @@ end
 
 --- Select a friendly unit: compute reachable hexes and lerp camera to it.
 local function select_unit(uid)
+    shared.sound.play("select")
     selected_unit_id = uid
     inspect_unit_id = uid
     inspect_terrain = nil
@@ -505,6 +518,7 @@ end
 -- Applies engine move immediately; animation is visual only.
 local function start_move_anim(uid, path, on_complete)
     norrust.apply_move(engine, uid, path[#path].col, path[#path].row)
+    shared.sound.play("move")
     pending_anims.move = {uid = uid, path = path, seg = 1, t = 0, speed = 10, on_complete = on_complete}
 end
 
@@ -652,9 +666,12 @@ function love.load()
     factions = norrust.get_faction_ids(engine)
     table.sort(factions, function(a, b) return a.name < b.name end)
 
-    -- Load visual assets (graceful fallback if assets/ missing)
-    terrain_tiles = assets.load_terrain_tiles("assets")
-    unit_sprites = assets.load_unit_sprites("assets")
+    -- Load visual assets from data/ via symlink (data -> ../data)
+    terrain_tiles = assets.load_terrain_tiles("data")
+    unit_sprites = assets.load_unit_sprites("data")
+
+    -- Load sound effects
+    shared.sound.load()
 
     -- Maximize window (keeps title bar with close button)
     love.window.maximize()
@@ -1170,6 +1187,7 @@ function love.keypressed(key)
         save.write_save(engine, norrust, scenario_board, scenarios_path, build_save_campaign_ctx())
 
         events.emit("dialogue", {trigger = "turn_end"})
+        shared.sound.play("turn_end")
 
         -- End turn + AI
         norrust.end_turn(engine)
@@ -1246,6 +1264,21 @@ function love.keypressed(key)
         else
             recruit_mode = false
         end
+
+    elseif key == "m" then
+        shared.sound.toggle_mute()
+        status_message = shared.sound.is_muted() and "Sound muted" or "Sound unmuted"
+        status_timer = 1.5
+
+    elseif key == "-" then
+        shared.sound.set_volume(shared.sound.get_volume() - 0.1)
+        status_message = string.format("Volume: %d%%", math.floor(shared.sound.get_volume() * 100 + 0.5))
+        status_timer = 1.5
+
+    elseif key == "=" then
+        shared.sound.set_volume(shared.sound.get_volume() + 0.1)
+        status_message = string.format("Volume: %d%%", math.floor(shared.sound.get_volume() * 100 + 0.5))
+        status_timer = 1.5
 
     else
         -- Number keys for recruit selection
@@ -1380,6 +1413,7 @@ function love.mousepressed(sx, sy, button)
             if rc == 0 then
                 roster_mod.map_id(campaign_roster, next_unit_id, vet.uuid)
                 next_unit_id = next_unit_id + 1
+                recruit_state.play_sfx("recruit")
                 table.remove(recruit_state.veterans, selected_recruit_idx + 1)
                 if selected_recruit_idx >= #recruit_state.veterans + #recruit_palette then
                     selected_recruit_idx = math.max(0, #recruit_state.veterans + #recruit_palette - 1)
@@ -1414,6 +1448,7 @@ function love.mousepressed(sx, sy, button)
                     next_unit_id = next_unit_id + 1
                     recruit_error = ""
                     recruit_mode = false
+                    recruit_state.play_sfx("recruit")
                 else
                     local err_map = {
                         [-4] = "Hex is occupied",

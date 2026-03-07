@@ -408,7 +408,7 @@ fn test_load_board_from_file() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("norrust_core has a parent dir")
-        .join("scenarios/contested.toml");
+        .join("scenarios/contested/board.toml");
 
     let loaded = load_board(&path).expect("contested.toml must load without error");
     let board = &loaded.board;
@@ -472,7 +472,7 @@ fn test_load_units_from_file() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("norrust_core has a parent dir")
-        .join("scenarios/contested_units.toml");
+        .join("scenarios/contested/units.toml");
 
     let placements = load_units(&path).expect("contested_units.toml must load");
 

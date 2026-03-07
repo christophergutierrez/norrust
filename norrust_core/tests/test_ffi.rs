@@ -15,8 +15,8 @@ fn test_ffi_full_game_cycle() {
         .expect("norrust_core has a parent dir");
 
     let data_path = project_root.join("data");
-    let board_path = project_root.join("scenarios/contested.toml");
-    let units_path = project_root.join("scenarios/contested_units.toml");
+    let board_path = project_root.join("scenarios/contested/board.toml");
+    let units_path = project_root.join("scenarios/contested/units.toml");
 
     let c_data = c(data_path.to_str().unwrap());
     let c_board = c(board_path.to_str().unwrap());

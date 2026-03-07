@@ -42,8 +42,8 @@ struct ScenarioPair {
     units_path: PathBuf,
 }
 
-/// Find all scenario TOML pairs in `scenarios/`.
-/// Each scenario has a `<name>.toml` board file and a `<name>_units.toml` units file.
+/// Find all scenario pairs in `scenarios/`.
+/// Each scenario is a subdirectory containing `board.toml` and `units.toml`.
 fn discover_scenarios() -> Vec<ScenarioPair> {
     let dir = scenario_dir();
     let mut pairs = Vec::new();
@@ -51,19 +51,18 @@ fn discover_scenarios() -> Vec<ScenarioPair> {
     for entry in std::fs::read_dir(&dir).expect("cannot read scenarios/") {
         let entry = entry.unwrap();
         let path = entry.path();
-        if path.extension().map(|e| e == "toml").unwrap_or(false) {
-            let name = path.file_stem().unwrap().to_str().unwrap().to_string();
-            if name.ends_with("_units") {
-                continue;
-            }
-            let units_path = dir.join(format!("{}_units.toml", name));
-            if units_path.exists() {
-                pairs.push(ScenarioPair {
-                    name,
-                    board_path: path.clone(),
-                    units_path,
-                });
-            }
+        if !path.is_dir() {
+            continue;
+        }
+        let board_path = path.join("board.toml");
+        let units_path = path.join("units.toml");
+        if board_path.exists() && units_path.exists() {
+            let name = path.file_name().unwrap().to_str().unwrap().to_string();
+            pairs.push(ScenarioPair {
+                name,
+                board_path,
+                units_path,
+            });
         }
     }
 

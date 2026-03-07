@@ -1,0 +1,32 @@
+# scenarios/final_battle.toml — 24 columns x 14 rows, row-major (left->right, top->bottom)
+#
+# Campaign scenario 4 (finale): The assault on the orc stronghold at Norrust.
+# Largest board — diverse terrain with mountains, forests, swamps, and villages.
+#
+# Blue keep: (2,7) — 6 adjacent castle hexes: (1,6),(2,6),(3,6),(1,7),(3,7),(2,8)
+# Red  keep: (21,7) — 6 adjacent castle hexes: (21,6),(20,7),(22,7),(20,8),(21,8),(22,8)
+#
+# Objective: Blue must reach (21,7) within 35 turns.
+
+width = 24
+height = 14
+objective_col = 21
+objective_row = 7
+max_turns = 35
+
+tiles = [
+  "forest",      "hills",       "forest",      "flat",        "hills",       "mountains",   "forest",      "flat",        "hills",       "forest",      "flat",        "mountains",   "hills",       "forest",      "flat",        "hills",       "forest",      "flat",        "mountains",   "hills",       "forest",      "flat",        "hills",       "forest",
+  "flat",        "forest",      "hills",       "forest",      "flat",        "hills",       "flat",        "village",     "forest",      "hills",       "mountains",   "forest",      "flat",        "hills",       "village",     "forest",      "flat",        "hills",       "forest",      "flat",        "forest",      "hills",       "forest",      "flat",
+  "hills",       "flat",        "forest",      "mountains",   "forest",      "flat",        "village",     "flat",        "hills",       "flat",        "forest",      "flat",        "hills",       "forest",      "flat",        "swamp_water", "forest",      "village",     "flat",        "hills",       "forest",      "flat",        "flat",        "hills",
+  "forest",      "hills",       "flat",        "forest",      "hills",       "forest",      "flat",        "hills",       "forest",      "swamp_water", "flat",        "village",     "forest",      "flat",        "hills",       "forest",      "flat",        "hills",       "forest",      "flat",        "hills",       "forest",      "hills",       "forest",
+  "flat",        "forest",      "village",     "flat",        "forest",      "swamp_water", "hills",       "forest",      "flat",        "forest",      "hills",       "flat",        "swamp_water", "hills",       "forest",      "flat",        "village",     "forest",      "flat",        "hills",       "forest",      "flat",        "forest",      "flat",
+  "hills",       "flat",        "hills",       "forest",      "flat",        "hills",       "forest",      "flat",        "village",     "hills",       "forest",      "flat",        "forest",      "flat",        "hills",       "forest",      "flat",        "hills",       "forest",      "flat",        "forest",      "hills",       "flat",        "hills",
+  "castle",      "castle",      "castle",      "castle",      "hills",       "forest",      "flat",        "swamp_water", "forest",      "flat",        "village",     "hills",       "flat",        "forest",      "flat",        "swamp_water", "hills",       "forest",      "flat",        "hills",       "castle",      "castle",      "castle",      "forest",
+  "castle",      "castle",      "keep",        "castle",      "flat",        "swamp_water", "hills",       "forest",      "flat",        "hills",       "forest",      "flat",        "mountains",   "hills",       "forest",      "flat",        "forest",      "flat",        "hills",       "forest",      "castle",      "keep",        "castle",      "flat",
+  "castle",      "castle",      "castle",      "castle",      "forest",      "flat",        "forest",      "flat",        "hills",       "forest",      "flat",        "forest",      "flat",        "village",     "hills",       "forest",      "flat",        "village",     "forest",      "flat",        "castle",      "castle",      "castle",      "hills",
+  "flat",        "forest",      "hills",       "forest",      "flat",        "village",     "flat",        "hills",       "swamp_water", "flat",        "hills",       "forest",      "hills",       "flat",        "forest",      "flat",        "hills",       "forest",      "flat",        "hills",       "forest",      "flat",        "forest",      "flat",
+  "hills",       "flat",        "forest",      "swamp_water", "hills",       "forest",      "flat",        "forest",      "flat",        "village",     "forest",      "swamp_water", "flat",        "hills",       "forest",      "village",     "forest",      "flat",        "hills",       "forest",      "flat",        "hills",       "flat",        "hills",
+  "forest",      "hills",       "flat",        "forest",      "flat",        "hills",       "village",     "flat",        "hills",       "forest",      "flat",        "forest",      "hills",       "forest",      "flat",        "hills",       "flat",        "hills",       "forest",      "flat",        "hills",       "forest",      "hills",       "forest",
+  "flat",        "forest",      "hills",       "flat",        "forest",      "flat",        "hills",       "mountains",   "forest",      "flat",        "hills",       "flat",        "forest",      "flat",        "mountains",   "forest",      "hills",       "forest",      "flat",        "hills",       "forest",      "flat",        "forest",      "flat",
+  "hills",       "flat",        "forest",      "hills",       "mountains",   "forest",      "flat",        "hills",       "flat",        "forest",      "flat",        "hills",       "flat",        "hills",       "forest",      "flat",        "forest",      "flat",        "hills",       "forest",      "flat",        "hills",       "flat",        "hills",
+]

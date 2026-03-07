@@ -1,0 +1,30 @@
+# scenarios/night_orcs.toml — 20 columns x 12 rows, row-major (left->right, top->bottom)
+#
+# Campaign scenario 3: Night battle against orc warband in swampy marshlands.
+# Chaotic orcs gain +25% damage at night (turns 4-5 of each 6-turn cycle).
+#
+# Blue keep: (2,6) — 6 adjacent castle hexes
+# Red  keep: (17,6) — 6 adjacent castle hexes
+#
+# Objective: Blue must reach (17,6) within 30 turns.
+
+width = 20
+height = 12
+objective_col = 17
+objective_row = 6
+max_turns = 30
+
+tiles = [
+  "forest",      "hills",       "forest",      "flat",        "swamp_water", "forest",      "hills",       "forest",      "flat",        "forest",      "hills",       "forest",      "flat",        "swamp_water", "forest",      "hills",       "forest",      "flat",        "forest",      "hills",
+  "forest",      "forest",      "flat",        "swamp_water", "flat",        "forest",      "forest",      "swamp_water", "forest",      "flat",        "forest",      "swamp_water", "forest",      "flat",        "forest",      "forest",      "flat",        "forest",      "forest",      "forest",
+  "hills",       "flat",        "forest",      "flat",        "village",     "flat",        "hills",       "flat",        "forest",      "swamp_water", "flat",        "forest",      "hills",       "flat",        "village",     "flat",        "forest",      "flat",        "hills",       "forest",
+  "flat",        "forest",      "hills",       "forest",      "flat",        "swamp_water", "forest",      "village",     "flat",        "forest",      "hills",       "flat",        "swamp_water", "forest",      "flat",        "forest",      "hills",       "forest",      "flat",        "forest",
+  "forest",      "flat",        "village",     "flat",        "hills",       "forest",      "flat",        "swamp_water", "hills",       "flat",        "forest",      "village",     "flat",        "hills",       "forest",      "flat",        "forest",      "flat",        "forest",      "flat",
+  "castle",      "castle",      "castle",      "castle",      "forest",      "flat",        "village",     "forest",      "flat",        "hills",       "flat",        "forest",      "flat",        "swamp_water", "hills",       "forest",      "castle",      "castle",      "castle",      "forest",
+  "castle",      "castle",      "keep",        "castle",      "flat",        "hills",       "forest",      "flat",        "swamp_water", "forest",      "village",     "flat",        "hills",       "forest",      "flat",        "forest",      "castle",      "keep",        "castle",      "forest",
+  "castle",      "castle",      "castle",      "flat",        "hills",       "forest",      "flat",        "swamp_water", "forest",      "flat",        "forest",      "hills",       "forest",      "flat",        "village",     "flat",        "castle",      "castle",      "castle",      "flat",
+  "flat",        "forest",      "hills",       "forest",      "flat",        "swamp_water", "hills",       "forest",      "village",     "flat",        "hills",       "swamp_water", "flat",        "forest",      "flat",        "hills",       "forest",      "flat",        "forest",      "hills",
+  "forest",      "flat",        "forest",      "swamp_water", "forest",      "flat",        "forest",      "flat",        "hills",       "forest",      "flat",        "forest",      "village",     "flat",        "forest",      "swamp_water", "flat",        "forest",      "flat",        "forest",
+  "hills",       "forest",      "flat",        "forest",      "hills",       "forest",      "swamp_water", "forest",      "flat",        "village",     "forest",      "hills",       "flat",        "forest",      "hills",       "forest",      "flat",        "hills",       "forest",      "flat",
+  "forest",      "hills",       "forest",      "flat",        "forest",      "hills",       "forest",      "flat",        "forest",      "hills",       "flat",        "forest",      "hills",       "forest",      "flat",        "forest",      "hills",       "forest",      "hills",       "forest",
+]

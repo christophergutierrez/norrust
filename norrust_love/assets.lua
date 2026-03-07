@@ -1,6 +1,6 @@
 -- norrust_love/assets.lua — Asset loader with fallback rendering
 --
--- Loads terrain tiles and unit sprites from assets/ directory.
+-- Loads terrain tiles and unit sprites from data/ directory.
 -- When an asset is missing, rendering falls back to the existing
 -- colored polygon / circle behavior.
 
@@ -17,8 +17,8 @@ local function normalize_unit_dir(def_id)
     return def_id:lower():gsub(" ", "_")
 end
 
---- Load terrain tile PNGs from assets/terrain/.
--- @param base_path string: root assets directory (e.g. "assets")
+--- Load terrain tile PNGs from data/terrain/.
+-- @param base_path string: root data directory (e.g. "data")
 -- @return table: terrain_id -> love.Image
 function assets.load_terrain_tiles(base_path)
     local tiles = {}
@@ -42,7 +42,7 @@ end
 --- Load unit sprites from assets/units/{def_id}/.
 -- If sprite.toml exists, loads full animation data via animation module.
 -- Otherwise falls back to static idle.png loading.
--- @param base_path string: root assets directory (e.g. "assets")
+-- @param base_path string: root data directory (e.g. "data")
 -- @return table: def_id -> { anims = anim_data|nil, idle = Image|nil, portrait = Image|nil }
 function assets.load_unit_sprites(base_path)
     local sprites = {}

@@ -1,7 +1,7 @@
 //! Combat resolution with deterministic RNG, time-of-day modifiers, and Monte Carlo simulation.
 
 use crate::schema::AttackDef;
-use crate::unit::{Alignment, Unit};
+use crate::unit::{has_special, Alignment, Unit};
 
 /// Time of day phase — drives alignment-based damage modifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,6 +131,8 @@ pub struct CombatPreview {
 /// Simulates combat between attacker and defender, including retaliation.
 /// `range_needed` is "melee" (distance 1) or "ranged" (distance 2).
 /// Each simulation uses an independent RNG seed for reproducibility.
+/// `flanked` indicates whether the defender has an enemy on the opposite hex (for backstab).
+/// `atk_leadership_pct` / `def_leadership_pct` are leadership bonuses (0, 25, 50, etc.).
 pub fn simulate_combat(
     attacker: &Unit,
     defender: &Unit,
@@ -139,6 +141,9 @@ pub fn simulate_combat(
     turn: u32,
     num_simulations: u32,
     range_needed: &str,
+    flanked: bool,
+    atk_leadership_pct: u32,
+    def_leadership_pct: u32,
 ) -> CombatPreview {
     let tod = time_of_day(turn);
 
@@ -161,20 +166,39 @@ pub fn simulate_combat(
         };
     };
 
-    // Attacker effective damage (resistance + ToD)
+    // Attacker effective damage (resistance + steadfast + ToD + specials + leadership)
     let atk_tod = tod_damage_modifier(attacker.alignment, tod);
-    let atk_resistance = defender.resistances.get(&atk_attack.attack_type).copied().unwrap_or(0);
-    let atk_effective_dmg = ((atk_attack.damage as i64 * (100 + atk_resistance as i64)) / 100).max(0) as u32;
+    let mut atk_resistance = defender.resistances.get(&atk_attack.attack_type).copied().unwrap_or(0);
+    // Steadfast: double positive resistances when defending
+    if atk_resistance < 0 && defender.abilities.iter().any(|a| a == "steadfast") {
+        atk_resistance = (atk_resistance * 2).max(-100);
+    }
+    let mut atk_effective_dmg = ((atk_attack.damage as i64 * (100 + atk_resistance as i64)) / 100).max(0) as u32;
+    if attacker.slowed { atk_effective_dmg /= 2; }
+    if has_special(atk_attack, "charge") && range_needed == "melee" { atk_effective_dmg *= 2; }
+    if has_special(atk_attack, "backstab") && flanked { atk_effective_dmg *= 2; }
+    if atk_leadership_pct > 0 {
+        atk_effective_dmg = (atk_effective_dmg as u64 * (100 + atk_leadership_pct as u64) / 100) as u32;
+    }
     let atk_hit_pct = 100u32.saturating_sub(defender_terrain_defense);
 
-    // Find defender's melee retaliation attack
+    // Find defender's retaliation attack
     let def_attack: Option<&AttackDef> = defender.attacks.iter()
         .find(|a| a.range == range_needed);
 
     let (def_effective_dmg, def_hit_pct, def_tod) = if let Some(da) = def_attack {
         let dt = tod_damage_modifier(defender.alignment, tod);
-        let dr = attacker.resistances.get(&da.attack_type).copied().unwrap_or(0);
-        let de = ((da.damage as i64 * (100 + dr as i64)) / 100).max(0) as u32;
+        let mut dr = attacker.resistances.get(&da.attack_type).copied().unwrap_or(0);
+        // Steadfast: double positive resistances for attacker when being retaliated against
+        if dr < 0 && attacker.abilities.iter().any(|a| a == "steadfast") {
+            dr = (dr * 2).max(-100);
+        }
+        let mut de = ((da.damage as i64 * (100 + dr as i64)) / 100).max(0) as u32;
+        if defender.slowed { de /= 2; }
+        if has_special(atk_attack, "charge") && range_needed == "melee" { de *= 2; }
+        if def_leadership_pct > 0 {
+            de = (de as u64 * (100 + def_leadership_pct as u64) / 100) as u32;
+        }
         let dh = 100u32.saturating_sub(attacker_terrain_defense);
         (de, dh, dt)
     } else {
@@ -310,7 +334,7 @@ mod tests {
             defense: HashMap::new(), default_defense: 40,
             movement: 6, movement_costs: HashMap::new(),
             xp: 0, xp_needed: 40, advancement_pending: false,
-            abilities: vec![],
+            level: 1, abilities: vec![], poisoned: false, slowed: false,
         };
         let defender = Unit {
             id: 2, def_id: "spearman".into(), hp: 36, max_hp: 36,
@@ -320,9 +344,9 @@ mod tests {
             defense: HashMap::new(), default_defense: 40,
             movement: 5, movement_costs: HashMap::new(),
             xp: 0, xp_needed: 40, advancement_pending: false,
-            abilities: vec![],
+            level: 1, abilities: vec![], poisoned: false, slowed: false,
         };
-        let preview = simulate_combat(&attacker, &defender, 40, 50, 1, 1000, "melee");
+        let preview = simulate_combat(&attacker, &defender, 40, 50, 1, 1000, "melee", false, 0, 0);
 
         // Hit percentages match terrain defense
         assert_eq!(preview.attacker_hit_pct, 50); // 100 - 50 defender defense

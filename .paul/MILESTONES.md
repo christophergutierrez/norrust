@@ -23,6 +23,136 @@ Completed milestone log for this project.
 | v1.7 Enhanced Unit Sprites | 2026-03-05 | ~1 day | 4 phases, 4 plans |
 | v1.8 Movement & Animation Polish | 2026-03-05 | ~1 day | 3 phases, 3 plans |
 | v1.9 UI Polish | 2026-03-05 | ~1 day | 3 phases, 3 plans |
+| v2.0 Dialogue System | 2026-03-05 | ~1 day | 4 phases, 4 plans |
+| v2.1 Save System | 2026-03-06 | ~1 day | 4 phases, 3 plans |
+| v2.2 AI & Agents | 2026-03-06 | ~1 day | 3 phases, 3 plans |
+| v2.3 Combat Depth & Campaign | 2026-03-07 | ~1 day | 5 phases, 5 plans |
+
+---
+
+## ✅ v2.3 Combat Depth & Campaign
+
+**Completed:** 2026-03-07
+**Duration:** ~1 day
+
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 5 |
+| Plans | 5 |
+| Tests | 121 Rust |
+
+### Key Accomplishments
+
+- **Combat specials** — poison, charge, backstab, slow, drain, magical, marksman, firststrike with full integration
+- **Unit abilities** — steadfast, regenerates, skirmisher, leadership with stacking and ToD interaction
+- **Procedural sound system** — SoundData-based SFX (hit, miss, death, move, recruit, select, turn_end) + music API
+- **Night Orcs scenario** — 20x12 board, orc faction, 3 trigger zones, 30-turn limit
+- **Final Battle scenario** — 24x14 board (largest), 4 trigger zones, 35-turn limit, campaign finale with 4 scenarios
+
+### Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Poison ticks for ending faction | Consistent with Wesnoth; damage before opponent acts |
+| Charge doubles retaliation via attacker's special | Attacker chose to charge; both sides pay the price |
+| Resistance: negative=resistant, positive=weak | Matches Wesnoth convention; steadfast doubles negative only |
+| Sound in shared table (not local) | LuaJIT 60-upvalue limit; shared already captured |
+| Odd-r offset hex neighbors | Must match engine's Hex::from_offset() coordinate system |
+
+---
+
+## ✅ v2.2 AI & Agents
+
+**Completed:** 2026-03-06
+**Duration:** ~1 day
+
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 3 |
+| Plans | 3 |
+| Tests | 106 Rust + 6 Lua roster tests |
+
+### Key Accomplishments
+
+- **Veteran recruitment** — living roster entries as free recruitable options with [V] prefix in recruit panel
+- **Preset scenario faction auto-assignment** — skip misleading faction picker for scenarios with hardcoded units
+- **TCP agent server** — non-blocking LuaSocket server on localhost:9876 with line-based JSON protocol
+- **Python agent client** — stdlib-only TCP client library for programmatic game control
+- **AI vs AI mode** — Python script and Love2D --ai-vs-ai flag for automated testing
+
+### Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Lua-side TCP server (not Rust) | Keeps simulation core pure; avoids threading |
+| Line-based protocol | Simple, debuggable with nc/telnet |
+| shared table for upvalue overflow | Reusable pattern for LuaJIT 60-upvalue limit |
+| ai_take_turn only (no explicit end_turn) | AI calls EndTurn internally; simpler loop |
+
+---
+
+## ✅ v2.1 Save System
+
+**Completed:** 2026-03-06
+**Duration:** ~1 day
+
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 4 |
+| Plans | 3 |
+| Tests | 106 Rust + 6 Lua roster tests |
+
+### Key Accomplishments
+
+- **TOML save/load** — F5/F9 hotkeys, custom [[units]] parser, saves in Love2D save directory
+- **Combat state preservation** — HP, XP, moved, attacked per unit in saves
+- **Campaign save/load** — campaign context, veterans, trigger zones, dialogue state
+- **Auto-save on end turn** — before AI takes turn for undo capability
+- **Persistent unit identity** — 8-char hex UUIDs, campaign roster tracking alive/dead
+
+### Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Custom parse_save_toml | toml_parser.lua doesn't support [[arrays-of-tables]] |
+| Date-first flat save naming | Chronological sort without subdirectories |
+| 8-char hex UUID | Sufficient for campaign scope; no external deps |
+
+---
+
+## ✅ v2.0 Dialogue System
+
+**Completed:** 2026-03-05
+**Duration:** ~1 day
+
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 4 |
+| Plans | 4 |
+| Tests | 97 (62 unit + 8 campaign + 3 validation + 23 simulation + 1 FFI) |
+
+### Key Accomplishments
+
+- **Dialogue TOML schema** — per-scenario dialogue files with trigger types and one-shot semantics
+- **Narrator panel** — right sidebar with word-wrapped text and panel priority integration
+- **Scrollable dialogue history** — H key toggle, accumulating all triggered dialogue per scenario
+- **Gameplay triggers** — leader_attacked and hex_entered dialogue triggers during combat/movement
+
+### Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| DialogueState per-scenario | Simpler than global registry; reset on scenario change |
+| One-shot via HashSet fired IDs | Simple tracking; reset clears for restart |
+| Dialogue path derived from board filename | No separate config needed |
 
 ---
 

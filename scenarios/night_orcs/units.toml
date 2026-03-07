@@ -1,0 +1,105 @@
+# scenarios/night_orcs_units.toml — Unit placements + trigger zones for night orcs scenario
+#
+# Blue: Lieutenant leader on keep (2,6) + 2 units on adjacent castles
+# Red (Orcs): Orcish Warrior leader on keep (17,6) + 3 units on adjacent castles
+# Triggers: 3 hidden zones that spawn orc reinforcements when player enters
+
+# ── Blue Forces (Loyalists) ────────────────────────────────────────────────
+
+[[units]]
+id = 1
+unit_type = "Lieutenant"
+faction = 0
+col = 2
+row = 6
+
+[[units]]
+id = 2
+unit_type = "Spearman"
+faction = 0
+col = 1
+row = 5
+
+[[units]]
+id = 3
+unit_type = "Bowman"
+faction = 0
+col = 2
+row = 7
+
+# ── Red Forces (Orcs) ─────────────────────────────────────────────────────
+
+[[units]]
+id = 4
+unit_type = "Orcish Warrior"
+faction = 1
+col = 17
+row = 6
+
+[[units]]
+id = 5
+unit_type = "Orcish Grunt"
+faction = 1
+col = 16
+row = 5
+
+[[units]]
+id = 6
+unit_type = "Orcish Archer"
+faction = 1
+col = 18
+row = 6
+
+[[units]]
+id = 7
+unit_type = "Orcish Assassin"
+faction = 1
+col = 17
+row = 5
+
+# ── Trigger Zones ──────────────────────────────────────────────────────────
+
+# Trigger 1: marsh ambush at (8,4) — spawns Orcish Grunt + Orcish Archer
+[[triggers]]
+trigger_col = 8
+trigger_row = 4
+
+[[triggers.spawns]]
+unit_type = "Orcish Grunt"
+faction = 1
+col = 9
+row = 4
+
+[[triggers.spawns]]
+unit_type = "Orcish Archer"
+faction = 1
+col = 8
+row = 3
+
+# Trigger 2: swamp trap at (10,8) — spawns Orcish Assassin
+[[triggers]]
+trigger_col = 10
+trigger_row = 8
+
+[[triggers.spawns]]
+unit_type = "Orcish Assassin"
+faction = 1
+col = 11
+row = 8
+
+# Trigger 3: orc counter-attack at (13,5) — spawns 2 Orcish Grunts
+[[triggers]]
+trigger_col = 13
+trigger_row = 5
+
+[[triggers.spawns]]
+unit_type = "Orcish Grunt"
+faction = 1
+col = 14
+row = 5
+
+[[triggers.spawns]]
+unit_type = "Orcish Grunt"
+faction = 1
+col = 13
+row = 6

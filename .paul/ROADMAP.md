@@ -6,6 +6,113 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
+**v2.4 Content Organization**
+Status: In progress
+Phases: 3 of 4 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 70 | Unit Content Merge | 1/1 | Complete | 2026-03-07 |
+| 71 | Scenario Directories | 1/1 | Complete | 2026-03-07 |
+| 72 | Sound Assets | 1/1 | Complete | 2026-03-07 |
+| 73 | Contributor Guides | TBD | Not started | - |
+
+## v2.4 Phase Details
+
+### Phase 70: Unit Content Merge
+
+**Goal:** Move sprite assets from `norrust_love/assets/units/` into `data/units/<name>/` alongside each unit's TOML. Update `assets.lua` loader to read from the new location. A unit becomes fully self-contained in one directory.
+**Depends on:** None
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+### Phase 71: Scenario Directories
+
+**Goal:** Convert flat `scenarios/*.toml` files into per-scenario directories (`scenarios/<name>/board.toml`, `units.toml`, `dialogue.toml`). Update Rust loaders, Lua references, and campaign TOML paths.
+**Depends on:** Phase 70 (content layout pattern established)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+### Phase 72: Sound Assets
+
+**Goal:** Create `data/sounds/` for global SFX files. Update `sound.lua` to load audio files with procedural fallback when files are missing. Support per-scenario music path in scenario directories.
+**Depends on:** Phase 71 (scenario directories established for per-scenario music)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+### Phase 73: Contributor Guides
+
+**Goal:** Write CONTRIBUTING.md with how-to guides for non-programmers: add a unit, create a scenario, define a faction, add sounds. Reference the new content layout.
+**Depends on:** Phase 72 (all content reorganization complete)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+---
+
+## Previous Milestone
+
+**v2.3 Combat Depth & Campaign**
+Status: Complete
+Phases: 5 of 5 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 65 | Weapon Specials | 1/1 | Complete | 2026-03-07 |
+| 66 | Unit Abilities | 1/1 | Complete | 2026-03-07 |
+| 67 | Sound & Music | 1/1 | Complete | 2026-03-07 |
+| 68 | Scenario 3: Night Orcs | 1/1 | Complete | 2026-03-07 |
+| 69 | Scenario 4: Final Battle | 1/1 | Complete | 2026-03-07 |
+
+## v2.3 Phase Details
+
+### Phase 65: Weapon Specials
+
+**Goal:** Implement 6 weapon specials in Rust combat system: drain, poison, charge, backstab, slow, first strike. Add status effect tracking (poisoned, slowed) on Unit with per-turn resolution and village curing.
+**Depends on:** Phase 64 (v2.2 complete)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+### Phase 66: Unit Abilities
+
+**Goal:** Implement 3 unit abilities in Rust: leadership (+25% damage to adjacent lower-level allies), regenerates (self-heal per turn), steadfast (double resistances on defense). Add UI indicators for status effects and active abilities.
+**Depends on:** Phase 65 (status effect system from weapon specials)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+### Phase 67: Sound & Music
+
+**Goal:** Add sound effects (combat hit/miss/death, movement, recruitment, turn end) and optional background music per scenario via love.audio. Volume/mute control.
+**Depends on:** Phase 66 (all mechanics complete before audio)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+### Phase 68: Scenario 3: Night Orcs
+
+**Goal:** Large night board (20x12+) vs orc faction. Showcases ToD alignment advantage, poison, leadership. Dialogue about orc night advantage. Extends tutorial campaign as 3rd scenario.
+**Depends on:** Phase 67 (sound available for new scenarios)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+### Phase 69: Scenario 4: Final Battle
+
+**Goal:** Largest board yet — campaign finale using full mechanic set. Extends tutorial campaign to 4 scenarios total (crossing → ambush → night orcs → final battle).
+**Depends on:** Phase 68 (scenario 3 complete)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+---
+
+## Previous Milestone
+
 **v2.2 AI & Agents**
 Status: Complete
 Phases: 3 of 3 complete

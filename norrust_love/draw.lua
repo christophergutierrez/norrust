@@ -93,6 +93,17 @@ function draw.draw_units(ctx, state)
             love.graphics.setFont(fonts[14])
             love.graphics.print(int(unit.xp) .. "/" .. int(unit.xp_needed), cx - 15, cy + 14)
         end
+
+        -- Status effect indicators
+        local r = ctx.hex.RADIUS * 0.35
+        if unit.poisoned then
+            love.graphics.setColor(0.2, 0.9, 0.2, 0.9)
+            love.graphics.circle("fill", cx - r, cy + r, 4)
+        end
+        if unit.slowed then
+            love.graphics.setColor(0.3, 0.6, 1.0, 0.9)
+            love.graphics.circle("fill", cx + r, cy + r, 4)
+        end
         ::continue::
     end
 
@@ -294,7 +305,13 @@ function draw.draw_unit_panel(ctx, unit)
     y = y + 18
     love.graphics.setFont(fonts[11])
     love.graphics.print(faction_name, vp_w - 190, y)
-    y = y + 20
+    y = y + 14
+    if unit.level then
+        love.graphics.setColor(0.8, 0.8, 0.8)
+        love.graphics.print("Level " .. int(unit.level), vp_w - 190, y)
+        y = y + 14
+    end
+    y = y + 4
 
     -- HP
     love.graphics.setColor(1, 1, 1, 1)
@@ -306,6 +323,18 @@ function draw.draw_unit_panel(ctx, unit)
     if unit.xp_needed and int(unit.xp_needed) > 0 then
         love.graphics.print(string.format("XP: %d / %d", int(unit.xp), int(unit.xp_needed)), vp_w - 190, y)
         y = y + 16
+    end
+
+    -- Status effects
+    if unit.poisoned then
+        love.graphics.setColor(0.2, 0.9, 0.2)
+        love.graphics.print("Poisoned", vp_w - 190, y)
+        y = y + 14
+    end
+    if unit.slowed then
+        love.graphics.setColor(0.3, 0.6, 1.0)
+        love.graphics.print("Slowed", vp_w - 190, y)
+        y = y + 14
     end
 
     -- Movement
@@ -336,6 +365,12 @@ function draw.draw_unit_panel(ctx, unit)
             love.graphics.setFont(fonts[11])
             love.graphics.print(string.format("  %dx%d %s", int(atk.damage), int(atk.strikes), atk.range or ""), vp_w - 190, y)
             y = y + 15
+            local specials = atk.specials
+            if specials and #specials > 0 then
+                love.graphics.setColor(0.7, 0.85, 1.0)
+                love.graphics.print("  (" .. table.concat(specials, ", ") .. ")", vp_w - 190, y)
+                y = y + 14
+            end
         end
     end
 

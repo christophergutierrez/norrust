@@ -18,7 +18,7 @@ pub struct AttackDef {
     pub attack_type: String,
     /// melee | ranged
     pub range: String,
-    /// Attack specials (e.g. "poison", "slow") — stored, no gameplay effect yet.
+    /// Attack specials (e.g. "poison", "slow", "drain", "charge", "backstab", "first_strike").
     #[serde(default)]
     pub specials: Vec<String>,
 }

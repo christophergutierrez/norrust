@@ -21,11 +21,15 @@ fn test_load_campaign_toml() {
     assert_eq!(campaign.name, "The Road to Norrust");
     assert_eq!(campaign.gold_carry_percent, 80);
     assert_eq!(campaign.early_finish_bonus, 5);
-    assert_eq!(campaign.scenarios.len(), 2);
-    assert_eq!(campaign.scenarios[0].board, "crossing.toml");
+    assert_eq!(campaign.scenarios.len(), 4);
+    assert_eq!(campaign.scenarios[0].board, "crossing/board.toml");
     assert!(campaign.scenarios[0].preset_units);
-    assert_eq!(campaign.scenarios[1].board, "ambush.toml");
+    assert_eq!(campaign.scenarios[1].board, "ambush/board.toml");
     assert!(campaign.scenarios[1].preset_units);
+    assert_eq!(campaign.scenarios[2].board, "night_orcs/board.toml");
+    assert!(campaign.scenarios[2].preset_units);
+    assert_eq!(campaign.scenarios[3].board, "final_battle/board.toml");
+    assert!(campaign.scenarios[3].preset_units);
 }
 
 #[test]
@@ -34,8 +38,8 @@ fn test_campaign_scenario_sequence() {
     let campaign = load_campaign(&path).unwrap();
 
     let expected = vec![
-        ("crossing.toml", "crossing_units.toml"),
-        ("ambush.toml", "ambush_units.toml"),
+        ("crossing/board.toml", "crossing/units.toml"),
+        ("ambush/board.toml", "ambush/units.toml"),
     ];
     for (i, (board, units)) in expected.iter().enumerate() {
         assert_eq!(campaign.scenarios[i].board, *board);
@@ -124,7 +128,7 @@ fn test_veteran_placement_via_ffi() {
         assert_eq!(norrust_load_data(engine, data_path.as_ptr()), 1);
 
         // Load a board
-        let board_path = c(&project_root().join("scenarios/contested.toml").to_string_lossy());
+        let board_path = c(&project_root().join("scenarios/contested/board.toml").to_string_lossy());
         assert_eq!(norrust_load_board(engine, board_path.as_ptr(), 42), 1);
 
         // Place a veteran fighter with custom stats
@@ -164,8 +168,8 @@ fn test_load_campaign_via_ffi() {
         assert!(json_str.contains("\"id\":\"tutorial\""));
         assert!(json_str.contains("\"gold_carry_percent\":80"));
         assert!(json_str.contains("\"early_finish_bonus\":5"));
-        assert!(json_str.contains("\"crossing.toml\""));
-        assert!(json_str.contains("\"ambush.toml\""));
+        assert!(json_str.contains("\"crossing/board.toml\""));
+        assert!(json_str.contains("\"ambush/board.toml\""));
 
         norrust_free(engine);
     }
@@ -179,10 +183,10 @@ fn test_survivors_and_carry_gold_via_ffi() {
         assert_eq!(norrust_load_data(engine, data_path.as_ptr()), 1);
 
         // Load crossing scenario
-        let board_path = c(&project_root().join("scenarios/crossing.toml").to_string_lossy());
+        let board_path = c(&project_root().join("scenarios/crossing/board.toml").to_string_lossy());
         assert_eq!(norrust_load_board(engine, board_path.as_ptr(), 42), 1);
 
-        let units_path = c(&project_root().join("scenarios/crossing_units.toml").to_string_lossy());
+        let units_path = c(&project_root().join("scenarios/crossing/units.toml").to_string_lossy());
         assert_eq!(norrust_load_units(engine, units_path.as_ptr()), 1);
 
         // Get survivors for faction 0

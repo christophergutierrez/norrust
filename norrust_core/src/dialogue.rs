@@ -119,7 +119,7 @@ mod tests {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
-            .join("scenarios/crossing_dialogue.toml")
+            .join("scenarios/crossing/dialogue.toml")
     }
 
     #[test]

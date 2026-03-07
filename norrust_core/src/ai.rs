@@ -122,7 +122,10 @@ pub fn ai_take_turn(state: &mut GameState, faction: u8) {
 
         // Clone movement data before any other borrows of state.
         let movement_costs = state.units[&uid].movement_costs.clone();
-        let movement = state.units[&uid].movement;
+        let movement = {
+            let m = state.units[&uid].movement;
+            if state.units[&uid].slowed { m / 2 } else { m }
+        };
 
         let zoc = get_zoc_hexes(state, faction);
         let candidates_raw =

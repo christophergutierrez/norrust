@@ -56,6 +56,7 @@ where
     T: DeserializeOwned + IdField,
 {
     /// Load all `.toml` files from `dir` into a Registry keyed by each item's `id` field.
+    /// Also scans immediate subdirectories for a `<dirname>.toml` file (e.g. `units/bowman/bowman.toml`).
     pub fn load_from_dir(dir: &Path) -> Result<Self, RegistryError> {
         let mut items = HashMap::new();
 
@@ -71,21 +72,38 @@ where
             })?;
 
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+
+            // Flat .toml file in directory root
+            if path.extension().and_then(|e| e.to_str()) == Some("toml") {
+                let content = std::fs::read_to_string(&path).map_err(|e| RegistryError::Io {
+                    path: path.display().to_string(),
+                    source: e,
+                })?;
+                let item: T = toml::from_str(&content).map_err(|e| RegistryError::Toml {
+                    path: path.display().to_string(),
+                    source: e,
+                })?;
+                items.insert(item.id().to_owned(), item);
                 continue;
             }
 
-            let content = std::fs::read_to_string(&path).map_err(|e| RegistryError::Io {
-                path: path.display().to_string(),
-                source: e,
-            })?;
-
-            let item: T = toml::from_str(&content).map_err(|e| RegistryError::Toml {
-                path: path.display().to_string(),
-                source: e,
-            })?;
-
-            items.insert(item.id().to_owned(), item);
+            // Subdirectory: look for <dirname>.toml inside
+            if path.is_dir() {
+                if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
+                    let toml_path = path.join(format!("{}.toml", dir_name));
+                    if toml_path.exists() {
+                        let content = std::fs::read_to_string(&toml_path).map_err(|e| RegistryError::Io {
+                            path: toml_path.display().to_string(),
+                            source: e,
+                        })?;
+                        let item: T = toml::from_str(&content).map_err(|e| RegistryError::Toml {
+                            path: toml_path.display().to_string(),
+                            source: e,
+                        })?;
+                        items.insert(item.id().to_owned(), item);
+                    }
+                }
+            }
         }
 
         Ok(Registry { items })

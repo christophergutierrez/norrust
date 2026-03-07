@@ -1,0 +1,43 @@
+# scenarios/night_orcs_dialogue.toml — Narrator dialogue for the night orcs scenario
+#
+# Triggers: scenario_start, turn_start, turn_end, hex_entered, leader_attacked
+# turn: which turn number (omit for any turn)
+# faction: which faction's turn (omit for either)
+
+[[dialogue]]
+id = "night_orcs_intro"
+trigger = "scenario_start"
+text = "Your scouts report an orc warband camped in the marshes ahead. Their leader — an Orcish Warrior — commands from a fortress to the east. Beware: the orcs fight fiercest at night."
+
+[[dialogue]]
+id = "night_orcs_nightfall"
+trigger = "turn_start"
+turn = 4
+faction = 0
+text = "Darkness falls. The orcs grow stronger under the night sky — their chaotic nature feeds on shadow. Tread carefully."
+
+[[dialogue]]
+id = "night_orcs_dawn"
+trigger = "turn_start"
+turn = 7
+faction = 0
+text = "Dawn approaches. Use the daylight to press your advantage — your troops fight better under the sun."
+
+[[dialogue]]
+id = "night_orcs_midpoint"
+trigger = "hex_entered"
+col = 10
+row = 6
+text = "You've reached the heart of the marshlands. The orc fortress lies to the east."
+
+[[dialogue]]
+id = "night_orcs_leader"
+trigger = "leader_attacked"
+text = "The orc warlord is under attack! Strike now — end this before nightfall!"
+
+[[dialogue]]
+id = "night_orcs_warning"
+trigger = "turn_end"
+turn = 15
+faction = 0
+text = "The battle drags on. You must reach the orc fortress before they overwhelm you with reinforcements."

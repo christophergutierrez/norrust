@@ -136,9 +136,11 @@ mod tests {
         assert_eq!(campaign.name, "The Road to Norrust");
         assert_eq!(campaign.gold_carry_percent, 80);
         assert_eq!(campaign.early_finish_bonus, 5);
-        assert_eq!(campaign.scenarios.len(), 2);
-        assert_eq!(campaign.scenarios[0].board, "crossing.toml");
-        assert_eq!(campaign.scenarios[1].board, "ambush.toml");
+        assert_eq!(campaign.scenarios.len(), 4);
+        assert_eq!(campaign.scenarios[0].board, "crossing/board.toml");
+        assert_eq!(campaign.scenarios[1].board, "ambush/board.toml");
+        assert_eq!(campaign.scenarios[2].board, "night_orcs/board.toml");
+        assert_eq!(campaign.scenarios[3].board, "final_battle/board.toml");
     }
 
     #[test]

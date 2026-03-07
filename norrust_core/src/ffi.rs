@@ -92,6 +92,7 @@ fn unit_from_registry(
         unit.resistances = def.resistances.clone();
         unit.xp_needed = def.experience;
         unit.alignment = parse_alignment(&def.alignment);
+        unit.level = def.level;
         unit.abilities = def.abilities.clone();
     }
 
@@ -802,12 +803,13 @@ pub unsafe extern "C" fn norrust_get_reachable_hexes(
     let Some(&start) = state.positions.get(&uid) else { return std::ptr::null_mut() };
 
     let zoc = get_zoc_hexes(state, unit.faction);
+    let movement = if unit.slowed { unit.movement / 2 } else { unit.movement };
     let hexes = reachable_hexes(
         &state.board,
         &unit.movement_costs,
         1,
         start,
-        unit.movement,
+        movement,
         &zoc,
         false,
     );
@@ -1153,8 +1155,30 @@ pub unsafe extern "C" fn norrust_simulate_combat(
         _ => "ranged",
     };
 
+    // Backstab flanking check: is there an ally of the attacker on the opposite side of the defender?
+    let flanked = {
+        let atk_attack = attacker.attacks.iter().find(|a| a.range == range_needed);
+        if atk_attack.map(|a| crate::unit::has_special(a, "backstab")).unwrap_or(false) {
+            let opposite = Hex {
+                x: def_pos.x + (def_pos.x - atk_hex.x),
+                y: def_pos.y + (def_pos.y - atk_hex.y),
+                z: def_pos.z + (def_pos.z - atk_hex.z),
+            };
+            state.positions.iter().any(|(&uid, &hex)| {
+                hex == opposite && uid != atk_uid
+                    && state.units.get(&uid).map(|u| u.faction == attacker.faction).unwrap_or(false)
+            })
+        } else {
+            false
+        }
+    };
+
+    // Leadership bonuses
+    let atk_leadership = crate::game_state::leadership_bonus(state, atk_uid);
+    let def_leadership = crate::game_state::leadership_bonus(state, def_uid);
+
     let n = if num_sims > 0 { num_sims as u32 } else { 100 };
-    let preview = simulate_combat(attacker, defender, atk_terrain_defense, def_terrain_defense, state.turn, n, range_needed);
+    let preview = simulate_combat(attacker, defender, atk_terrain_defense, def_terrain_defense, state.turn, n, range_needed, flanked, atk_leadership, def_leadership);
 
     let json = format!(
         concat!(

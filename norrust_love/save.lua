@@ -211,7 +211,7 @@ function save.write_save(engine, norrust, scenario_board, scenarios_path, campai
 
     -- Generate filename: YYYY-MM-DD_HHMMSS_scenario.toml
     local date = os.date("%Y-%m-%d_%H%M%S")
-    local scenario_name = scenario_board:gsub("%.toml$", "")
+    local scenario_name = scenario_board:match("^(.+)/board%.toml$") or scenario_board:gsub("%.toml$", "")
     local filename = "saves/" .. date .. "_" .. scenario_name .. ".toml"
 
     local ok, err = love.filesystem.write(filename, toml_str)

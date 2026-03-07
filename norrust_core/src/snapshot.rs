@@ -30,6 +30,8 @@ pub struct AttackSnapshot {
     pub damage:  u32,
     pub strikes: u32,
     pub range:   String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub specials: Vec<String>,
 }
 
 /// Flat representation of a single runtime unit.
@@ -48,8 +50,11 @@ pub struct UnitSnapshot {
     pub xp_needed: u32,
     pub advancement_pending: bool,
     pub movement: u32,
+    pub level: u8,
     pub attacks: Vec<AttackSnapshot>,
     pub abilities: Vec<String>,
+    pub poisoned: bool,
+    pub slowed: bool,
 }
 
 /// Complete serializable snapshot of a GameState for external consumers.
@@ -118,14 +123,18 @@ impl StateSnapshot {
                     xp_needed: unit.xp_needed,
                     advancement_pending: unit.advancement_pending,
                     movement: unit.movement,
+                    level: unit.level,
                     attacks: unit.attacks.iter().map(|a| AttackSnapshot {
                         id:      a.id.clone(),
                         name:    a.name.clone(),
                         damage:  a.damage,
                         strikes: a.strikes,
                         range:   a.range.clone(),
+                        specials: a.specials.clone(),
                     }).collect(),
                     abilities: unit.abilities.clone(),
+                    poisoned: unit.poisoned,
+                    slowed: unit.slowed,
                 })
             })
             .collect();
