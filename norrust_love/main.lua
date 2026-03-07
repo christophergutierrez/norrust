@@ -14,12 +14,8 @@ local agent_server = require("agent_server")
 
 -- ── Constants ───────────────────────────────────────────────────────────────
 
-local BOARD_COLS = 8   -- set dynamically after scenario load
-local BOARD_ROWS = 5   -- set dynamically after scenario load
 local COLOR_FLAT = {0.29, 0.49, 0.31}
 local UI_SCALE = 2.5
-local CAMERA_PAN_SPEED = 500
-local CAMERA_LERP_SPEED = 8.0
 local BLUE = {0.25, 0.42, 0.88}
 local RED  = {0.80, 0.12, 0.12}
 
@@ -49,90 +45,63 @@ local CAMPAIGNS = {
 -- ── State variables ─────────────────────────────────────────────────────────
 
 local engine
-local scenarios_path = ""
-local scenario_board = ""
-local scenario_units = ""
-local scenario_preset = false
-local selected_unit_id = -1
-local reachable_cells = {}     -- array of {col=N, row=N}
-local reachable_set = {}       -- "col,row" -> true for fast lookup
 local game_over = false
 local winner_faction = -1
-
 local game_mode = PICK_SCENARIO
-local factions = {}            -- [{id, name}, ...]
-local sel_faction_idx = 0      -- 0-indexed (matches game.gd)
-local faction_id = {"", ""}    -- Lua 1-indexed: [1]=blue, [2]=red
+local factions = {}
+local sel_faction_idx = 0
+local faction_id = {"", ""}
 local leader_placed = {false, false}
-local leader_level = {1, 1}
 local next_unit_id = 1
-local recruit_mode = false
--- recruit_palette stored in shared.recruit_palette
-local selected_recruit_idx = 0
-local recruit_error = ""
-local recruit_state = {veterans = {}}  -- veterans: living roster entries available for recruitment
-local inspect_unit_id = -1
-local inspect_terrain = nil    -- {col, row, terrain_id, defense, movement_cost, healing, unit_defense, unit_move_cost} or nil
-local status_message = nil     -- temporary flash message (e.g. "Saved!")
-local status_timer = 0         -- seconds remaining for status_message
+local status_message = nil
+local status_timer = 0
+local combat_state = {preview = nil, target = -1}
 
--- Ghost movement
-local ghost_col = nil          -- ghost hex col, or nil if not ghosting
-local ghost_row = nil          -- ghost hex row
-local ghost_unit_id = -1       -- the unit being ghosted
-local ghost_attackable = {}    -- array of {id=N, col=C, row=R} for enemies attackable from ghost
-local ghost_path = {}          -- array of {col=N, row=N} for path from unit to ghost position
-
--- Combat preview
-local combat_state = {preview = nil, target = -1}  -- preview: simulate_combat result, target: defender id
-
--- Campaign
-local campaigns_path = ""
-local campaign_active = false
-local campaign_data = nil        -- parsed JSON from norrust_load_campaign
-local campaign_index = 0         -- 0-indexed current scenario in campaign
-local campaign_veterans = {}     -- array of veteran unit tables from previous scenario
-local campaign_gold = 0          -- carried gold for next scenario
-local campaign_roster = nil      -- roster table (roster_mod) or nil when no campaign
-
--- Dialogue
-local active_dialogue = {}     -- array of {id, text} currently displayed
-local dialogue_history = {}    -- array of {turn, text} — all fired dialogue this scenario
-local show_dialogue_history = false
-local history_scroll = 0
-
--- Shared state table for overflow upvalues (LuaJIT 60-upvalue limit)
--- .agent = agent_server handle or nil
--- .ai_vs_ai = true when both factions are AI-controlled
 local shared = {agent = nil, agent_mod = agent_server, ai_vs_ai = false, ai_delay = 0.5, ai_timer = 0, sound = require("sound"), show_help = false, recruit_palette = {}}
 
--- Assets (loaded in love.load)
 local terrain_tiles = {}
 local unit_sprites = {}
 local FACTION_COLORS = {[0] = {0.25, 0.42, 0.88}, [1] = {0.80, 0.12, 0.12}}
-local unit_anims = {}  -- unit_id -> animation state (from anim_module.new_state())
-local dying_units = {}  -- uid -> {def_id, col, row, faction, timer} for death animation rendering
-local pending_anims = {}  -- array of {uid, end_time, return_to} for combat animations
--- move_anim stored as pending_anims.move to avoid exceeding LuaJIT 60-upvalue limit
--- pending_anims.move = {uid, path, seg, t, speed, on_complete} or nil
-
--- Camera
-local board_origin_x, board_origin_y = 0, 0
-local camera_offset_x, camera_offset_y = 0, 0
-local camera_min_x, camera_min_y = 0, 0
-local camera_max_x, camera_max_y = 0, 0
-local drag_active = false
-local drag_start_x, drag_start_y = 0, 0
-local drag_camera_start_x, drag_camera_start_y = 0, 0
-local camera_target_x, camera_target_y = 0, 0
-local camera_lerping = false
-local camera_zoom = 1.0
-local ZOOM_MIN = 0.15
-local ZOOM_MAX = 3.0
-local ZOOM_STEP = 0.1
-
--- Fonts (created in love.load)
+local unit_anims = {}
+local dying_units = {}
+local pending_anims = {}
 local fonts = {}
+
+-- ── Context tables (grouped to reduce LuaJIT upvalue pressure) ────────────
+
+local scn = {
+    path = "", board = "", units = "", preset = false,
+    COLS = 8, ROWS = 5,
+}
+
+local sel = {
+    unit_id = -1, reachable_cells = {}, reachable_set = {},
+    recruit_idx = 0, recruit_mode = false, recruit_error = "",
+    recruit_state = {veterans = {}},
+    inspect_id = -1, inspect_terrain = nil,
+}
+
+local ghost = {col = nil, row = nil, unit_id = -1, attackable = {}, path = {}}
+
+local campaign = {
+    path = "", active = false, data = nil,
+    index = 0, veterans = {}, gold = 0, roster = nil,
+}
+
+local dlg = {active = {}, history = {}, show_history = false, scroll = 0}
+
+local camera = {
+    origin_x = 0, origin_y = 0,
+    offset_x = 0, offset_y = 0,
+    min_x = 0, min_y = 0, max_x = 0, max_y = 0,
+    drag_active = false,
+    drag_start_x = 0, drag_start_y = 0,
+    drag_cam_x = 0, drag_cam_y = 0,
+    target_x = 0, target_y = 0,
+    lerping = false, zoom = 1.0,
+    ZOOM_MIN = 0.15, ZOOM_MAX = 3.0, ZOOM_STEP = 0.1,
+    PAN_SPEED = 500, LERP_SPEED = 8.0,
+}
 
 -- ── Scale helpers ────────────────────────────────────────────────────────────
 
@@ -170,8 +139,8 @@ local function int(v) return math.floor(v) end
 
 --- Clamp camera offset to allowed pan range.
 local function apply_camera_offset()
-    camera_offset_x = clamp(camera_offset_x, camera_min_x, camera_max_x)
-    camera_offset_y = clamp(camera_offset_y, camera_min_y, camera_max_y)
+    camera.offset_x = clamp(camera.offset_x, camera.min_x, camera.max_x)
+    camera.offset_y = clamp(camera.offset_y, camera.min_y, camera.max_y)
 end
 
 --- Center camera on the board and compute pan limits.
@@ -179,7 +148,7 @@ end
 --- Called after every zoom change and on window resize.
 local function center_camera(reset)
     local tlx, tly = hex.to_pixel(0, 0)
-    local brx, bry = hex.to_pixel(BOARD_COLS - 1, BOARD_ROWS - 1)
+    local brx, bry = hex.to_pixel(scn.COLS - 1, scn.ROWS - 1)
     local vp_w, vp_h = get_viewport()
     -- Account for right-side panel (200px in game coords)
     local usable_w = vp_w - 200
@@ -191,26 +160,26 @@ local function center_camera(reset)
         local board_w = (brx - tlx) + hex.RADIUS * 2
         local board_h = (bry - tly) + hex.RADIUS * 2
         local fit_zoom = math.min(usable_w / board_w, vp_h / board_h)
-        camera_zoom = clamp(fit_zoom, ZOOM_MIN, ZOOM_MAX)
-        camera_offset_x, camera_offset_y = 0, 0
-        camera_lerping = false
+        camera.zoom = clamp(fit_zoom, camera.ZOOM_MIN, camera.ZOOM_MAX)
+        camera.offset_x, camera.offset_y = 0, 0
+        camera.lerping = false
     end
 
     -- Origin must account for zoom so board center stays at screen center
-    -- Screen position of point px: board_origin_x + zoom * (offset_x + px)
+    -- Screen position of point px: camera.origin_x + zoom * (offset_x + px)
     -- At offset=0, board center at screen center: origin = usable_w/2 - zoom * center
-    board_origin_x = usable_w / 2 - camera_zoom * center_px
-    board_origin_y = vp_h / 2 - camera_zoom * center_py
+    camera.origin_x = usable_w / 2 - camera.zoom * center_px
+    camera.origin_y = vp_h / 2 - camera.zoom * center_py
 
     -- Effective viewport in board-space coords (for pan limits)
-    local eff_w = usable_w / camera_zoom
-    local eff_h = vp_h / camera_zoom
+    local eff_w = usable_w / camera.zoom
+    local eff_h = vp_h / camera.zoom
     local board_half_w = (brx - tlx) / 2 + hex.RADIUS
     local board_half_h = (bry - tly) / 2 + hex.RADIUS
     local pan_range_x = math.max(board_half_w - eff_w / 2 + hex.RADIUS, 0)
     local pan_range_y = math.max(board_half_h - eff_h / 2 + hex.RADIUS, 0)
-    camera_min_x, camera_min_y = -pan_range_x, -pan_range_y
-    camera_max_x, camera_max_y = pan_range_x, pan_range_y
+    camera.min_x, camera.min_y = -pan_range_x, -pan_range_y
+    camera.max_x, camera.max_y = pan_range_x, pan_range_y
     apply_camera_offset()
 end
 
@@ -260,9 +229,9 @@ local function is_ranged_attack()
     local state = norrust.get_state(engine)
     local atk_col, atk_row, def_col, def_row
     -- Attacker position: ghost position if ghosting, else unit state position
-    local atk_id = ghost_col ~= nil and ghost_unit_id or selected_unit_id
-    if ghost_col ~= nil then
-        atk_col, atk_row = ghost_col, ghost_row
+    local atk_id = ghost.col ~= nil and ghost.unit_id or sel.unit_id
+    if ghost.col ~= nil then
+        atk_col, atk_row = ghost.col, ghost.row
     end
     for _, unit in ipairs(state.units or {}) do
         local uid = int(unit.id)
@@ -328,23 +297,23 @@ events.on("dialogue", function(data)
     local faction = norrust.get_active_faction(engine)
     local msgs = norrust.get_dialogue(engine, data.trigger, turn, faction, data.col, data.row)
     if #msgs > 0 then
-        for _, m in ipairs(msgs) do active_dialogue[#active_dialogue + 1] = m end
+        for _, m in ipairs(msgs) do dlg.active[#dlg.active + 1] = m end
         for _, m in ipairs(msgs) do
-            dialogue_history[#dialogue_history + 1] = {turn = turn, text = m.text}
+            dlg.history[#dlg.history + 1] = {turn = turn, text = m.text}
         end
     end
 end)
 
--- Stash play_sfx in recruit_state to avoid adding upvalues to mousepressed
-recruit_state.play_sfx = function(name) shared.sound.play(name) end
+-- Stash play_sfx in sel.recruit_state to avoid adding upvalues to mousepressed
+sel.recruit_state.play_sfx = function(name) shared.sound.play(name) end
 
 events.on("scenario_loaded", function(data)
-    dialogue_history = {}
-    history_scroll = 0
-    show_dialogue_history = false
-    active_dialogue = {}
+    dlg.history = {}
+    dlg.scroll = 0
+    dlg.show_history = false
+    dlg.active = {}
 
-    local dialogue_path = scenarios_path .. "/" .. data.board:gsub("board%.toml$", "dialogue.toml")
+    local dialogue_path = scn.path .. "/" .. data.board:gsub("board%.toml$", "dialogue.toml")
     norrust.load_dialogue(engine, dialogue_path)
     events.emit("dialogue", {trigger = "scenario_start"})
 
@@ -426,20 +395,20 @@ end
 
 --- Cancel ghost positioning and clear combat preview.
 local function cancel_ghost()
-    ghost_col = nil
-    ghost_row = nil
-    ghost_unit_id = -1
-    ghost_attackable = {}
-    ghost_path = {}
+    ghost.col = nil
+    ghost.row = nil
+    ghost.unit_id = -1
+    ghost.attackable = {}
+    ghost.path = {}
     cancel_combat_preview()
 end
 
 --- Deselect everything: unit, reachable hexes, inspection, ghost, and preview.
 local function clear_selection()
-    selected_unit_id = -1
-    reachable_cells = {}
-    reachable_set = {}
-    inspect_unit_id = -1
+    sel.unit_id = -1
+    sel.reachable_cells = {}
+    sel.reachable_set = {}
+    sel.inspect_id = -1
     cancel_combat_preview()
     cancel_ghost()
 end
@@ -472,13 +441,13 @@ end
 --- Select a friendly unit: compute reachable hexes and lerp camera to it.
 local function select_unit(uid)
     shared.sound.play("select")
-    selected_unit_id = uid
-    inspect_unit_id = uid
-    inspect_terrain = nil
-    reachable_cells = norrust.get_reachable_hexes(engine, uid)
-    reachable_set = {}
-    for _, cell in ipairs(reachable_cells) do
-        reachable_set[cell.col .. "," .. cell.row] = true
+    sel.unit_id = uid
+    sel.inspect_id = uid
+    sel.inspect_terrain = nil
+    sel.reachable_cells = norrust.get_reachable_hexes(engine, uid)
+    sel.reachable_set = {}
+    for _, cell in ipairs(sel.reachable_cells) do
+        sel.reachable_set[cell.col .. "," .. cell.row] = true
     end
 
     -- Camera follow: center unit in viewport
@@ -488,9 +457,9 @@ local function select_unit(uid)
             local ux, uy = hex.to_pixel(int(unit.col), int(unit.row))
             local vp_w, vp_h = get_viewport()
             local usable_w = vp_w - 200
-            camera_target_x = clamp((usable_w / 2 - board_origin_x) / camera_zoom - ux, camera_min_x, camera_max_x)
-            camera_target_y = clamp((vp_h / 2 - board_origin_y) / camera_zoom - uy, camera_min_y, camera_max_y)
-            camera_lerping = true
+            camera.target_x = clamp((usable_w / 2 - camera.origin_x) / camera.zoom - ux, camera.min_x, camera.max_x)
+            camera.target_y = clamp((vp_h / 2 - camera.origin_y) / camera.zoom - uy, camera.min_y, camera.max_y)
+            camera.lerping = true
             break
         end
     end
@@ -503,7 +472,7 @@ local function check_game_over()
         game_over = true
         winner_faction = w
         if w == 0 then
-            save.write_save(engine, norrust, scenario_board, scenarios_path, nil)
+            save.write_save(engine, norrust, scn.board, scn.path, nil)
         end
     end
 end
@@ -525,10 +494,10 @@ local function get_attackable_enemies(pos_map, col, row, faction, max_range)
     return enemies
 end
 
---- Build a set of ghost_attackable IDs for fast lookup.
+--- Build a set of ghost.attackable IDs for fast lookup.
 local function ghost_attackable_set()
     local s = {}
-    for _, e in ipairs(ghost_attackable) do
+    for _, e in ipairs(ghost.attackable) do
         s[e.id] = true
     end
     return s
@@ -550,27 +519,27 @@ end
 --- Commit the ghost position as an actual move via the engine.
 -- If a path exists (>= 2 waypoints), animates movement. Otherwise instant.
 local function commit_ghost_move(on_complete)
-    local uid = ghost_unit_id
-    local path = ghost_path
-    local dest_col, dest_row = ghost_col, ghost_row
+    local uid = ghost.unit_id
+    local path = ghost.path
+    local dest_col, dest_row = ghost.col, ghost.row
     cancel_ghost()
 
     if path and #path >= 2 then
         start_move_anim(uid, path, function()
-            selected_unit_id = uid
-            inspect_unit_id = uid
-            reachable_cells = {}
-            reachable_set = {}
+            sel.unit_id = uid
+            sel.inspect_id = uid
+            sel.reachable_cells = {}
+            sel.reachable_set = {}
             check_game_over()
             fire_hex_entered(path[#path].col, path[#path].row)
             if on_complete then on_complete() end
         end)
     else
         norrust.apply_move(engine, uid, dest_col, dest_row)
-        selected_unit_id = uid
-        inspect_unit_id = uid
-        reachable_cells = {}
-        reachable_set = {}
+        sel.unit_id = uid
+        sel.inspect_id = uid
+        sel.reachable_cells = {}
+        sel.reachable_set = {}
         check_game_over()
         fire_hex_entered(dest_col, dest_row)
         if on_complete then on_complete() end
@@ -588,15 +557,15 @@ end
 local function build_campaign_ctx()
     return {
         norrust = norrust, engine = engine, int = int, hex = hex,
-        scenarios_path = scenarios_path, scenario_board = scenario_board,
-        scenario_units = scenario_units, scenario_preset = scenario_preset,
-        BOARD_COLS = BOARD_COLS, BOARD_ROWS = BOARD_ROWS,
+        scenarios_path = scn.path, scenario_board = scn.board,
+        scenario_units = scn.units, scenario_preset = scn.preset,
+        BOARD_COLS = scn.COLS, BOARD_ROWS = scn.ROWS,
         center_camera = center_camera,
-        campaign_data = campaign_data, campaign_index = campaign_index,
-        campaign_veterans = campaign_veterans, campaign_gold = campaign_gold,
-        campaign_roster = campaign_roster, roster_mod = roster_mod,
+        campaign_data = campaign.data, campaign_index = campaign.index,
+        campaign_veterans = campaign.veterans, campaign_gold = campaign.gold,
+        campaign_roster = campaign.roster, roster_mod = roster_mod,
         faction_id = faction_id, game_over = game_over,
-        winner_faction = winner_faction, recruit_mode = recruit_mode,
+        winner_faction = winner_faction, recruit_mode = sel.recruit_mode,
         next_unit_id = next_unit_id, game_mode = game_mode,
         PLAYING = PLAYING, clear_selection = clear_selection,
         build_unit_pos_map = build_unit_pos_map,
@@ -605,14 +574,14 @@ end
 
 --- Write back state modified by campaign_client into main.lua locals.
 local function apply_campaign_ctx(ctx)
-    BOARD_COLS = ctx.BOARD_COLS
-    BOARD_ROWS = ctx.BOARD_ROWS
-    scenario_board = ctx.scenario_board
-    scenario_units = ctx.scenario_units
-    scenario_preset = ctx.scenario_preset
+    scn.COLS = ctx.BOARD_COLS
+    scn.ROWS = ctx.BOARD_ROWS
+    scn.board = ctx.scenario_board
+    scn.units = ctx.scenario_units
+    scn.preset = ctx.scenario_preset
     game_over = ctx.game_over
     winner_faction = ctx.winner_faction
-    recruit_mode = ctx.recruit_mode
+    sel.recruit_mode = ctx.recruit_mode
     next_unit_id = ctx.next_unit_id
     game_mode = ctx.game_mode
 end
@@ -629,7 +598,7 @@ local function call_load_campaign_scenario()
     local ctx = build_campaign_ctx()
     campaign_client.load_campaign_scenario(ctx)
     apply_campaign_ctx(ctx)
-    events.emit("scenario_loaded", {board = scenario_board})
+    events.emit("scenario_loaded", {board = scn.board})
 end
 
 -- ── love.load ───────────────────────────────────────────────────────────────
@@ -674,9 +643,9 @@ function love.load()
     local source = love.filesystem.getSource()
     local project_root = source .. "/.."
     local data_path = project_root .. "/data"
-    scenarios_path = project_root .. "/scenarios"
+    scn.path = project_root .. "/scenarios"
 
-    campaigns_path = project_root .. "/campaigns"
+    campaign.path = project_root .. "/campaigns"
 
     -- Load data + factions (scenario loaded after selection)
     assert(norrust.load_data(engine, data_path), "Failed to load data")
@@ -849,27 +818,27 @@ function love.update(dt)
     if love.keyboard.isDown("down") then pan_y = pan_y - 1 end
 
     if pan_x ~= 0 or pan_y ~= 0 then
-        camera_lerping = false
+        camera.lerping = false
         local len = math.sqrt(pan_x * pan_x + pan_y * pan_y)
-        camera_offset_x = camera_offset_x + (pan_x / len) * CAMERA_PAN_SPEED * dt
-        camera_offset_y = camera_offset_y + (pan_y / len) * CAMERA_PAN_SPEED * dt
+        camera.offset_x = camera.offset_x + (pan_x / len) * camera.PAN_SPEED * dt
+        camera.offset_y = camera.offset_y + (pan_y / len) * camera.PAN_SPEED * dt
         apply_camera_offset()
         return
     end
 
     -- Camera lerp toward selection target
-    if camera_lerping then
-        local t = CAMERA_LERP_SPEED * dt
-        camera_offset_x = camera_offset_x + (camera_target_x - camera_offset_x) * t
-        camera_offset_y = camera_offset_y + (camera_target_y - camera_offset_y) * t
+    if camera.lerping then
+        local t = camera.LERP_SPEED * dt
+        camera.offset_x = camera.offset_x + (camera.target_x - camera.offset_x) * t
+        camera.offset_y = camera.offset_y + (camera.target_y - camera.offset_y) * t
         apply_camera_offset()
-        local dx = camera_offset_x - camera_target_x
-        local dy = camera_offset_y - camera_target_y
+        local dx = camera.offset_x - camera.target_x
+        local dy = camera.offset_y - camera.target_y
         if math.sqrt(dx * dx + dy * dy) < 1.0 then
-            camera_offset_x = camera_target_x
-            camera_offset_y = camera_target_y
+            camera.offset_x = camera.target_x
+            camera.offset_y = camera.target_y
             apply_camera_offset()
-            camera_lerping = false
+            camera.lerping = false
         end
     end
 end
@@ -879,29 +848,24 @@ end
 --- Build draw context (split into two functions to stay under LuaJIT 60-upvalue limit).
 local function build_draw_ctx_state()
     return {
-        -- State
         game_mode = game_mode, game_over = game_over, winner_faction = winner_faction,
-        selected_unit_id = selected_unit_id, inspect_unit_id = inspect_unit_id,
-        inspect_terrain = inspect_terrain, recruit_mode = recruit_mode,
-        recruit_palette = shared.recruit_palette, recruit_veterans = recruit_state.veterans,
-        selected_recruit_idx = selected_recruit_idx,
-        recruit_error = recruit_error, reachable_cells = reachable_cells,
-        reachable_set = reachable_set,
-        ghost_col = ghost_col, ghost_row = ghost_row, ghost_unit_id = ghost_unit_id,
-        ghost_attackable = ghost_attackable, ghost_path = ghost_path,
+        selected_unit_id = sel.unit_id, inspect_unit_id = sel.inspect_id,
+        inspect_terrain = sel.inspect_terrain, recruit_mode = sel.recruit_mode,
+        recruit_palette = shared.recruit_palette, recruit_veterans = sel.recruit_state.veterans,
+        selected_recruit_idx = sel.recruit_idx,
+        recruit_error = sel.recruit_error, reachable_cells = sel.reachable_cells,
+        reachable_set = sel.reachable_set,
+        ghost_col = ghost.col, ghost_row = ghost.row, ghost_unit_id = ghost.unit_id,
+        ghost_attackable = ghost.attackable, ghost_path = ghost.path,
         move_anim = pending_anims.move, combat_slide = pending_anims.combat_slide,
         combat_preview = combat_state.preview, combat_preview_target = combat_state.target,
-        -- Dialogue
-        active_dialogue = active_dialogue,
-        dialogue_history = dialogue_history,
-        show_dialogue_history = show_dialogue_history,
-        history_scroll = history_scroll,
-        -- Status
+        active_dialogue = dlg.active,
+        dialogue_history = dlg.history,
+        show_dialogue_history = dlg.show_history,
+        history_scroll = dlg.scroll,
         status_message = status_message,
-        -- Campaign
-        campaign_active = campaign_active, campaign_index = campaign_index,
-        campaign_data = campaign_data,
-        -- Setup state
+        campaign_active = campaign.active, campaign_index = campaign.index,
+        campaign_data = campaign.data,
         factions = factions, sel_faction_idx = sel_faction_idx,
         faction_id = faction_id, leader_placed = leader_placed,
         faction_index_for_mode = faction_index_for_mode,
@@ -917,7 +881,7 @@ function love.draw()
     ctx.engine = engine
     -- Constants
     ctx.BLUE = BLUE; ctx.RED = RED; ctx.COLOR_FLAT = COLOR_FLAT
-    ctx.UI_SCALE = UI_SCALE; ctx.BOARD_COLS = BOARD_COLS; ctx.BOARD_ROWS = BOARD_ROWS
+    ctx.UI_SCALE = UI_SCALE; ctx.BOARD_COLS = scn.COLS; ctx.BOARD_ROWS = scn.ROWS
     ctx.FACTION_COLORS = FACTION_COLORS; ctx.SCENARIOS = SCENARIOS; ctx.CAMPAIGNS = CAMPAIGNS
     -- Mode constants
     ctx.PICK_SCENARIO = PICK_SCENARIO; ctx.PICK_FACTION_BLUE = PICK_FACTION_BLUE
@@ -929,9 +893,9 @@ function love.draw()
     ctx.dying_units = dying_units
     ctx.show_help = shared.show_help
     -- Camera
-    ctx.board_origin_x = board_origin_x; ctx.board_origin_y = board_origin_y
-    ctx.camera_offset_x = camera_offset_x; ctx.camera_offset_y = camera_offset_y
-    ctx.camera_zoom = camera_zoom
+    ctx.board_origin_x = camera.origin_x; ctx.board_origin_y = camera.origin_y
+    ctx.camera_offset_x = camera.offset_x; ctx.camera_offset_y = camera.offset_y
+    ctx.camera_zoom = camera.zoom
     -- Functions from main
     ctx.get_viewport = get_viewport; ctx.screen_to_game = screen_to_game
     ctx.int = int; ctx.parse_html_color = parse_html_color
@@ -961,20 +925,20 @@ function love.keypressed(key)
 
     -- Build campaign context for save (nil if not in campaign)
     local function build_save_campaign_ctx()
-        if not campaign_active then return nil end
+        if not campaign.active then return nil end
         return {
             file = CAMPAIGNS[1].file,
-            index = campaign_index,
-            gold = campaign_gold,
-            veterans = campaign_veterans,
+            index = campaign.index,
+            gold = campaign.gold,
+            veterans = campaign.veterans,
             faction_id = faction_id,
-            roster = campaign_roster and roster_mod.to_save_array(campaign_roster) or nil,
+            roster = campaign.roster and roster_mod.to_save_array(campaign.roster) or nil,
         }
     end
 
     -- Save/Load (available from any mode)
     if key == "f5" and game_mode == PLAYING then
-        local filename = save.write_save(engine, norrust, scenario_board, scenarios_path, build_save_campaign_ctx())
+        local filename = save.write_save(engine, norrust, scn.board, scn.path, build_save_campaign_ctx())
         if filename then
             status_message = "Saved: " .. filename
         else
@@ -987,44 +951,44 @@ function love.keypressed(key)
         if filepath then
             local data = save.load_save(engine, norrust, filepath, center_camera)
             if data then
-                scenario_board = data.game.board_path
-                scenarios_path = data.game.scenarios_path
+                scn.board = data.game.board_path
+                scn.path = data.game.scenarios_path
                 game_over = false
                 winner_faction = -1
                 clear_selection()
                 next_unit_id = norrust.get_next_unit_id(engine)
                 -- Update board dimensions from loaded state
                 local state = norrust.get_state(engine)
-                BOARD_COLS = int(state.cols or 8)
-                BOARD_ROWS = int(state.rows or 5)
+                scn.COLS = int(state.cols or 8)
+                scn.ROWS = int(state.rows or 5)
                 center_camera()
                 -- Restore campaign context if present
                 if data.campaign then
                     local c = data.campaign
-                    campaign_active = true
-                    campaign_data = norrust.load_campaign(engine, campaigns_path .. "/" .. c.campaign_file)
-                    campaign_index = int(c.campaign_index)
-                    campaign_gold = int(c.campaign_gold)
+                    campaign.active = true
+                    campaign.data = norrust.load_campaign(engine, campaign.path .. "/" .. c.campaign_file)
+                    campaign.index = int(c.campaign_index)
+                    campaign.gold = int(c.campaign_gold)
                     faction_id = {c.faction_id_0, c.faction_id_1}
                     -- Restore veterans
-                    campaign_veterans = data.veterans or {}
+                    campaign.veterans = data.veterans or {}
                     -- Restore roster
                     if data.roster and #data.roster > 0 then
-                        campaign_roster = roster_mod.from_save_array(data.roster)
+                        campaign.roster = roster_mod.from_save_array(data.roster)
                         -- Re-map engine IDs to roster UUIDs by matching def_id
                         local st = norrust.get_state(engine)
                         for _, u in ipairs(st.units or {}) do
                             if int(u.faction) == 0 then
-                                for uuid, entry in pairs(campaign_roster.entries) do
-                                    if entry.status == "alive" and not campaign_roster.id_map[int(u.id)]
+                                for uuid, entry in pairs(campaign.roster.entries) do
+                                    if entry.status == "alive" and not campaign.roster.id_map[int(u.id)]
                                        and entry.def_id == u.def_id then
                                         -- Check no other engine_id already maps to this uuid
                                         local already_mapped = false
-                                        for _, mapped_uuid in pairs(campaign_roster.id_map) do
+                                        for _, mapped_uuid in pairs(campaign.roster.id_map) do
                                             if mapped_uuid == uuid then already_mapped = true; break end
                                         end
                                         if not already_mapped then
-                                            roster_mod.map_id(campaign_roster, int(u.id), uuid)
+                                            roster_mod.map_id(campaign.roster, int(u.id), uuid)
                                             break
                                         end
                                     end
@@ -1032,15 +996,15 @@ function love.keypressed(key)
                             end
                         end
                     else
-                        campaign_roster = roster_mod.new()
+                        campaign.roster = roster_mod.new()
                     end
                 else
-                    campaign_active = false
-                    campaign_data = nil
-                    campaign_index = 0
-                    campaign_veterans = {}
-                    campaign_gold = 0
-                    campaign_roster = nil
+                    campaign.active = false
+                    campaign.data = nil
+                    campaign.index = 0
+                    campaign.veterans = {}
+                    campaign.gold = 0
+                    campaign.roster = nil
                 end
                 game_mode = PLAYING
                 status_message = "Loaded: " .. filepath
@@ -1088,20 +1052,20 @@ function love.keypressed(key)
         local num = tonumber(key)
         if num and num >= 1 and num <= #SCENARIOS then
             shared.sound.stop_music()
-            campaign_active = false
-            scenario_board = SCENARIOS[num].board
-            scenario_units = SCENARIOS[num].units
-            scenario_preset = SCENARIOS[num].preset_units
+            campaign.active = false
+            scn.board = SCENARIOS[num].board
+            scn.units = SCENARIOS[num].units
+            scn.preset = SCENARIOS[num].preset_units
             call_load_scenario()
-            if scenario_preset then
+            if scn.preset then
                 -- Preset scenarios: auto-assign factions and start directly
                 faction_id[1] = factions[1].id
                 faction_id[2] = factions[2].id
                 norrust.apply_starting_gold(engine, faction_id[1], faction_id[2])
-                norrust.load_units(engine, scenarios_path .. "/" .. scenario_units)
+                norrust.load_units(engine, scn.path .. "/" .. scn.units)
                 next_unit_id = norrust.get_next_unit_id(engine)
                 game_mode = PLAYING
-                events.emit("scenario_loaded", {board = scenario_board})
+                events.emit("scenario_loaded", {board = scn.board})
             else
                 game_mode = PICK_FACTION_BLUE
             end
@@ -1109,20 +1073,20 @@ function love.keypressed(key)
             -- Start campaign
             shared.sound.stop_music()
             local camp = CAMPAIGNS[1]
-            campaign_data = norrust.load_campaign(engine, campaigns_path .. "/" .. camp.file)
-            if campaign_data then
-                campaign_active = true
-                campaign_index = 0
-                campaign_veterans = {}
-                campaign_gold = 0
-                campaign_roster = roster_mod.new()
+            campaign.data = norrust.load_campaign(engine, campaign.path .. "/" .. camp.file)
+            if campaign.data then
+                campaign.active = true
+                campaign.index = 0
+                campaign.veterans = {}
+                campaign.gold = 0
+                campaign.roster = roster_mod.new()
                 -- Auto-assign factions and load first scenario
                 faction_id[1] = factions[1].id
                 faction_id[2] = factions[2].id
-                local sc = campaign_data.scenarios[1]
-                scenario_board = sc.board
-                scenario_units = sc.units
-                scenario_preset = sc.preset_units
+                local sc = campaign.data.scenarios[1]
+                scn.board = sc.board
+                scn.units = sc.units
+                scn.preset = sc.preset_units
                 call_load_scenario()
                 call_load_campaign_scenario()
             end
@@ -1152,7 +1116,7 @@ function love.keypressed(key)
                 -- Both factions chosen — wire starting gold
                 norrust.apply_starting_gold(engine, faction_id[1], faction_id[2])
                 game_mode = PLAYING
-                events.emit("scenario_loaded", {board = scenario_board})
+                events.emit("scenario_loaded", {board = scn.board})
             end
         end
         return
@@ -1161,14 +1125,14 @@ function love.keypressed(key)
     -- Playing mode
     if game_over then
         if key == "return" or key == "kpenter" then
-            if campaign_active and winner_faction == 0 then
+            if campaign.active and winner_faction == 0 then
                 -- Player won — sync roster then derive veterans
-                if campaign_roster then
-                    roster_mod.sync_from_engine(campaign_roster, norrust.get_state(engine))
-                    local living = roster_mod.get_living(campaign_roster)
-                    campaign_veterans = {}
+                if campaign.roster then
+                    roster_mod.sync_from_engine(campaign.roster, norrust.get_state(engine))
+                    local living = roster_mod.get_living(campaign.roster)
+                    campaign.veterans = {}
                     for _, entry in ipairs(living) do
-                        campaign_veterans[#campaign_veterans + 1] = {
+                        campaign.veterans[#campaign.veterans + 1] = {
                             def_id = entry.def_id,
                             hp = entry.hp,
                             max_hp = entry.max_hp,
@@ -1178,20 +1142,20 @@ function love.keypressed(key)
                         }
                     end
                 else
-                    campaign_veterans = norrust.get_survivors(engine, 0)
+                    campaign.veterans = norrust.get_survivors(engine, 0)
                 end
-                campaign_gold = norrust.get_carry_gold(
+                campaign.gold = norrust.get_carry_gold(
                     engine, 0,
-                    campaign_data.gold_carry_percent,
-                    campaign_data.early_finish_bonus
+                    campaign.data.gold_carry_percent,
+                    campaign.data.early_finish_bonus
                 )
-                campaign_index = campaign_index + 1
-                if campaign_index < #campaign_data.scenarios then
+                campaign.index = campaign.index + 1
+                if campaign.index < #campaign.data.scenarios then
                     call_load_campaign_scenario()
                 else
                     -- Campaign complete — return to scenario selection
-                    campaign_active = false
-                    campaign_roster = nil
+                    campaign.active = false
+                    campaign.roster = nil
                     game_over = false
                     winner_faction = -1
                     game_mode = PICK_SCENARIO
@@ -1199,8 +1163,8 @@ function love.keypressed(key)
                 end
             else
                 -- Individual scenario win/loss, or campaign defeat
-                campaign_active = false
-                campaign_roster = nil
+                campaign.active = false
+                campaign.roster = nil
                 game_over = false
                 winner_faction = -1
                 game_mode = PICK_SCENARIO
@@ -1214,36 +1178,36 @@ function love.keypressed(key)
         -- Cancel combat preview, or ghost, or selection
         if combat_state.preview ~= nil then
             cancel_combat_preview()
-        elseif ghost_col ~= nil then
+        elseif ghost.col ~= nil then
             cancel_ghost()
         else
             clear_selection()
         end
 
     elseif (key == "return" or key == "kpenter") then
-        if combat_state.preview ~= nil and combat_state.target >= 0 and ghost_col ~= nil then
+        if combat_state.preview ~= nil and combat_state.target >= 0 and ghost.col ~= nil then
             -- Commit ghost move + attack previewed target
             local enemy_id = combat_state.target
             local ranged = is_ranged_attack()
             cancel_combat_preview()
             commit_ghost_move(function()
-                execute_attack(selected_unit_id, enemy_id, ranged, function()
+                execute_attack(sel.unit_id, enemy_id, ranged, function()
                     clear_selection()
-                    inspect_unit_id = enemy_id
+                    sel.inspect_id = enemy_id
                     check_game_over()
                 end)
             end)
-        elseif combat_state.preview ~= nil and combat_state.target >= 0 and selected_unit_id ~= -1 then
+        elseif combat_state.preview ~= nil and combat_state.target >= 0 and sel.unit_id ~= -1 then
             -- Direct adjacent attack from preview
             local enemy_id = combat_state.target
             local ranged = is_ranged_attack()
             cancel_combat_preview()
-            execute_attack(selected_unit_id, enemy_id, ranged, function()
+            execute_attack(sel.unit_id, enemy_id, ranged, function()
                 clear_selection()
-                inspect_unit_id = enemy_id
+                sel.inspect_id = enemy_id
                 check_game_over()
             end)
-        elseif ghost_col ~= nil then
+        elseif ghost.col ~= nil then
             -- Commit ghost move only
             commit_ghost_move()
         end
@@ -1264,19 +1228,19 @@ function love.keypressed(key)
         end
 
         -- New turn dialogue (reset panel so only new messages show)
-        active_dialogue = {}
+        dlg.active = {}
         events.emit("dialogue", {trigger = "turn_start"})
 
     elseif key == "a" then
         -- Advance selected unit
-        if selected_unit_id ~= -1 then
+        if sel.unit_id ~= -1 then
             local state = norrust.get_state(engine)
             local active = norrust.get_active_faction(engine)
             for _, unit in ipairs(state.units or {}) do
-                if int(unit.id) == selected_unit_id
+                if int(unit.id) == sel.unit_id
                     and int(unit.faction) == active
                     and unit.advancement_pending then
-                    norrust.apply_advance(engine, selected_unit_id)
+                    norrust.apply_advance(engine, sel.unit_id)
                     clear_selection()
                     break
                 end
@@ -1285,8 +1249,8 @@ function love.keypressed(key)
 
     elseif key == "h" then
         -- Toggle dialogue history
-        show_dialogue_history = not show_dialogue_history
-        if show_dialogue_history then history_scroll = 0 end
+        dlg.show_history = not dlg.show_history
+        if dlg.show_history then dlg.scroll = 0 end
 
     elseif key == "p" then
         -- Toggle agent server
@@ -1302,39 +1266,39 @@ function love.keypressed(key)
 
     elseif key == "r" then
         -- Toggle recruit mode
-        if not recruit_mode then
+        if not sel.recruit_mode then
             local faction = norrust.get_active_faction(engine)
             shared.recruit_palette = norrust.get_faction_recruits(engine, faction_id[faction + 1], 0)
             -- Build veteran recruit list from roster (campaign only)
-            recruit_state.veterans = {}
-            if campaign_active and campaign_roster then
-                local living = roster_mod.get_living(campaign_roster)
+            sel.recruit_state.veterans = {}
+            if campaign.active and campaign.roster then
+                local living = roster_mod.get_living(campaign.roster)
                 -- Filter out veterans already on the board (have engine_id mapped)
                 local mapped = {}
-                for _, uuid in pairs(campaign_roster.id_map) do
+                for _, uuid in pairs(campaign.roster.id_map) do
                     mapped[uuid] = true
                 end
                 for _, entry in ipairs(living) do
                     if not mapped[entry.uuid] then
-                        recruit_state.veterans[#recruit_state.veterans + 1] = entry
+                        sel.recruit_state.veterans[#sel.recruit_state.veterans + 1] = entry
                     end
                 end
             end
-            selected_recruit_idx = 0
-            recruit_error = ""
-            recruit_mode = true
+            sel.recruit_idx = 0
+            sel.recruit_error = ""
+            sel.recruit_mode = true
             clear_selection()
         else
-            recruit_mode = false
+            sel.recruit_mode = false
         end
 
     else
         -- Number keys for recruit selection
         local num = tonumber(key)
         if num and num >= 1 and num <= 9 then
-            local total = #recruit_state.veterans + #shared.recruit_palette
-            if recruit_mode and total > 0 then
-                selected_recruit_idx = math.min(num - 1, total - 1)
+            local total = #sel.recruit_state.veterans + #shared.recruit_palette
+            if sel.recruit_mode and total > 0 then
+                sel.recruit_idx = math.min(num - 1, total - 1)
             end
         end
     end
@@ -1375,28 +1339,28 @@ function love.mousepressed(sx, sy, button)
 
     -- Right-click: terrain inspection (any mode with a board)
     if button == 2 and game_mode == PLAYING and not game_over then
-        local local_x = (x - board_origin_x) / camera_zoom - camera_offset_x
-        local local_y = (y - board_origin_y) / camera_zoom - camera_offset_y
+        local local_x = (x - camera.origin_x) / camera.zoom - camera.offset_x
+        local local_y = (y - camera.origin_y) / camera.zoom - camera.offset_y
         local col, row = hex.from_pixel(local_x, local_y)
-        if col >= 0 and col < BOARD_COLS and row >= 0 and row < BOARD_ROWS then
+        if col >= 0 and col < scn.COLS and row >= 0 and row < scn.ROWS then
             local state = norrust.get_state(engine)
             for _, tile in ipairs(state.terrain or {}) do
                 if int(tile.col) == col and int(tile.row) == row then
-                    inspect_terrain = {
+                    sel.inspect_terrain = {
                         col = col, row = row,
                         terrain_id = tile.terrain_id,
                         defense = int(tile.defense),
                         movement_cost = int(tile.movement_cost),
                         healing = int(tile.healing),
                     }
-                    if selected_unit_id ~= -1 then
-                        local info = norrust.get_unit_terrain_info(engine, selected_unit_id, col, row)
+                    if sel.unit_id ~= -1 then
+                        local info = norrust.get_unit_terrain_info(engine, sel.unit_id, col, row)
                         if info then
-                            inspect_terrain.unit_defense = int(info.defense)
-                            inspect_terrain.unit_move_cost = int(info.movement_cost)
+                            sel.inspect_terrain.unit_defense = int(info.defense)
+                            sel.inspect_terrain.unit_move_cost = int(info.movement_cost)
                         end
                     end
-                    inspect_unit_id = -1
+                    sel.inspect_id = -1
                     return
                 end
             end
@@ -1413,11 +1377,11 @@ function love.mousepressed(sx, sy, button)
             return
         end
 
-        local local_x = (x - board_origin_x) / camera_zoom - camera_offset_x
-        local local_y = (y - board_origin_y) / camera_zoom - camera_offset_y
+        local local_x = (x - camera.origin_x) / camera.zoom - camera.offset_x
+        local local_y = (y - camera.origin_y) / camera.zoom - camera.offset_y
         local col, row = hex.from_pixel(local_x, local_y)
 
-        if col < 0 or col >= BOARD_COLS or row < 0 or row >= BOARD_ROWS then
+        if col < 0 or col >= scn.COLS or row < 0 or row >= scn.ROWS then
             return
         end
 
@@ -1446,16 +1410,16 @@ function love.mousepressed(sx, sy, button)
     if x > vp_w - 200 then return end
 
     -- Convert screen coords to hex
-    local local_x = (x - board_origin_x) / camera_zoom - camera_offset_x
-    local local_y = (y - board_origin_y) / camera_zoom - camera_offset_y
+    local local_x = (x - camera.origin_x) / camera.zoom - camera.offset_x
+    local local_y = (y - camera.origin_y) / camera.zoom - camera.offset_y
     local col, row = hex.from_pixel(local_x, local_y)
 
     -- Off-board click: start drag
-    if col < 0 or col >= BOARD_COLS or row < 0 or row >= BOARD_ROWS then
-        drag_active = true
-        drag_start_x, drag_start_y = x, y
-        drag_camera_start_x = camera_offset_x
-        drag_camera_start_y = camera_offset_y
+    if col < 0 or col >= scn.COLS or row < 0 or row >= scn.ROWS then
+        camera.drag_active = true
+        camera.drag_start_x, camera.drag_start_y = x, y
+        camera.drag_cam_x = camera.offset_x
+        camera.drag_cam_y = camera.offset_y
         clear_selection()
         return
     end
@@ -1466,11 +1430,11 @@ function love.mousepressed(sx, sy, button)
     local active = norrust.get_active_faction(engine)
 
     -- Recruit mode click
-    if recruit_mode then
-        local vet_count = #recruit_state.veterans
-        if selected_recruit_idx < vet_count then
+    if sel.recruit_mode then
+        local vet_count = #sel.recruit_state.veterans
+        if sel.recruit_idx < vet_count then
             -- Veteran recruitment: place veteran unit from roster
-            local vet = recruit_state.veterans[selected_recruit_idx + 1]
+            local vet = sel.recruit_state.veterans[sel.recruit_idx + 1]
             local rc = norrust.place_veteran_unit(
                 engine, next_unit_id,
                 vet.def_id, 0,
@@ -1479,34 +1443,34 @@ function love.mousepressed(sx, sy, button)
                 vet.advancement_pending
             )
             if rc == 0 then
-                roster_mod.map_id(campaign_roster, next_unit_id, vet.uuid)
+                roster_mod.map_id(campaign.roster, next_unit_id, vet.uuid)
                 next_unit_id = next_unit_id + 1
-                recruit_state.play_sfx("recruit")
-                table.remove(recruit_state.veterans, selected_recruit_idx + 1)
-                if selected_recruit_idx >= #recruit_state.veterans + #shared.recruit_palette then
-                    selected_recruit_idx = math.max(0, #recruit_state.veterans + #shared.recruit_palette - 1)
+                sel.recruit_state.play_sfx("recruit")
+                table.remove(sel.recruit_state.veterans, sel.recruit_idx + 1)
+                if sel.recruit_idx >= #sel.recruit_state.veterans + #shared.recruit_palette then
+                    sel.recruit_idx = math.max(0, #sel.recruit_state.veterans + #shared.recruit_palette - 1)
                 end
-                recruit_error = ""
+                sel.recruit_error = ""
             else
                 local err_map = {
                     [-4] = "Hex is occupied",
                     [-9] = "Must click a castle hex",
                 }
-                recruit_error = err_map[rc] or string.format("Place failed (code %d)", rc)
+                sel.recruit_error = err_map[rc] or string.format("Place failed (code %d)", rc)
             end
         else
             -- Normal recruitment from palette
-            local palette_idx = selected_recruit_idx - vet_count
+            local palette_idx = sel.recruit_idx - vet_count
             local def_id = shared.recruit_palette[palette_idx + 1] or ""
             if def_id ~= "" then
                 local result = norrust.recruit_unit_at(engine, next_unit_id, def_id, col, row)
                 if result == 0 then
                     -- Add recruited unit to campaign roster
-                    if campaign_active and campaign_roster then
+                    if campaign.active and campaign.roster then
                         local st = norrust.get_state(engine)
                         for _, u in ipairs(st.units or {}) do
                             if int(u.id) == next_unit_id then
-                                roster_mod.add(campaign_roster, u.def_id, next_unit_id,
+                                roster_mod.add(campaign.roster, u.def_id, next_unit_id,
                                     int(u.hp), int(u.max_hp), int(u.xp), int(u.xp_needed),
                                     u.advancement_pending or false)
                                 break
@@ -1514,9 +1478,9 @@ function love.mousepressed(sx, sy, button)
                         end
                     end
                     next_unit_id = next_unit_id + 1
-                    recruit_error = ""
-                    recruit_mode = false
-                    recruit_state.play_sfx("recruit")
+                    sel.recruit_error = ""
+                    sel.recruit_mode = false
+                    sel.recruit_state.play_sfx("recruit")
                 else
                     local err_map = {
                         [-4] = "Hex is occupied",
@@ -1524,7 +1488,7 @@ function love.mousepressed(sx, sy, button)
                         [-9] = "Must click a castle hex",
                         [-10] = "Move leader to the keep first",
                     }
-                    recruit_error = err_map[result] or string.format("Recruit failed (code %d)", result)
+                    sel.recruit_error = err_map[result] or string.format("Recruit failed (code %d)", result)
                 end
             end
         end
@@ -1532,7 +1496,7 @@ function love.mousepressed(sx, sy, button)
     end
 
     -- Ghost active: handle clicks from ghost state
-    if ghost_col ~= nil then
+    if ghost.col ~= nil then
         local atk_set = ghost_attackable_set()
 
         -- Click highlighted enemy → show combat preview (or execute if same target clicked twice)
@@ -1543,38 +1507,38 @@ function love.mousepressed(sx, sy, button)
                 local ranged = is_ranged_attack()
                 cancel_combat_preview()
                 commit_ghost_move(function()
-                    execute_attack(selected_unit_id, enemy_id, ranged, function()
+                    execute_attack(sel.unit_id, enemy_id, ranged, function()
                         clear_selection()
-                        inspect_unit_id = enemy_id
+                        sel.inspect_id = enemy_id
                         check_game_over()
                     end)
                 end)
             else
                 -- First click (or different enemy) → show combat preview
-                combat_state.preview = norrust.simulate_combat(engine, ghost_unit_id, enemy_id, ghost_col, ghost_row, 100)
+                combat_state.preview = norrust.simulate_combat(engine, ghost.unit_id, enemy_id, ghost.col, ghost.row, 100)
                 combat_state.target = enemy_id
-                inspect_unit_id = enemy_id
+                sel.inspect_id = enemy_id
             end
 
         -- Click the ghost hex itself → commit move only
-        elseif col == ghost_col and row == ghost_row then
+        elseif col == ghost.col and row == ghost.row then
             commit_ghost_move()
 
         -- Click a different reachable hex → re-ghost, auto-preview if same target adjacent
-        elseif reachable_set[clicked_key] and not pos_map[clicked_key] then
+        elseif sel.reachable_set[clicked_key] and not pos_map[clicked_key] then
             local prev_target = combat_state.target
             cancel_combat_preview()
-            ghost_col = col
-            ghost_row = row
-            ghost_attackable = get_attackable_enemies(pos_map, col, row, active, unit_max_range(ghost_unit_id))
-            ghost_path = norrust.find_path(engine, ghost_unit_id, col, row)
+            ghost.col = col
+            ghost.row = row
+            ghost.attackable = get_attackable_enemies(pos_map, col, row, active, unit_max_range(ghost.unit_id))
+            ghost.path = norrust.find_path(engine, ghost.unit_id, col, row)
             -- Auto-preview: if previously previewed enemy is still in range, re-show preview
             if prev_target ~= -1 then
-                for _, e in ipairs(ghost_attackable) do
+                for _, e in ipairs(ghost.attackable) do
                     if e.id == prev_target then
-                        combat_state.preview = norrust.simulate_combat(engine, ghost_unit_id, prev_target, ghost_col, ghost_row, 100)
+                        combat_state.preview = norrust.simulate_combat(engine, ghost.unit_id, prev_target, ghost.col, ghost.row, 100)
                         combat_state.target = prev_target
-                        inspect_unit_id = prev_target
+                        sel.inspect_id = prev_target
                         break
                     end
                 end
@@ -1591,41 +1555,41 @@ function love.mousepressed(sx, sy, button)
         end
 
     -- No ghost: direct adjacent attack → show combat preview first
-    elseif selected_unit_id ~= -1 and pos_map[clicked_key] and pos_map[clicked_key].faction ~= active then
+    elseif sel.unit_id ~= -1 and pos_map[clicked_key] and pos_map[clicked_key].faction ~= active then
         local enemy_id = pos_map[clicked_key].id
         if combat_state.target == enemy_id then
             -- Second click on same enemy → execute attack
             local ranged = is_ranged_attack()
             cancel_combat_preview()
-            execute_attack(selected_unit_id, enemy_id, ranged, function()
+            execute_attack(sel.unit_id, enemy_id, ranged, function()
                 clear_selection()
-                inspect_unit_id = enemy_id
+                sel.inspect_id = enemy_id
                 check_game_over()
             end)
         else
             -- First click → show combat preview (attacker at current position)
             local atk_col, atk_row = nil, nil
             for _, unit in ipairs(state.units or {}) do
-                if int(unit.id) == selected_unit_id then
+                if int(unit.id) == sel.unit_id then
                     atk_col = int(unit.col)
                     atk_row = int(unit.row)
                     break
                 end
             end
             if atk_col then
-                combat_state.preview = norrust.simulate_combat(engine, selected_unit_id, enemy_id, atk_col, atk_row, 100)
+                combat_state.preview = norrust.simulate_combat(engine, sel.unit_id, enemy_id, atk_col, atk_row, 100)
                 combat_state.target = enemy_id
-                inspect_unit_id = enemy_id
+                sel.inspect_id = enemy_id
             end
         end
 
     -- Ghost: selected unit + reachable empty hex → enter ghost state
-    elseif selected_unit_id ~= -1 and reachable_set[clicked_key] and not pos_map[clicked_key] then
-        ghost_col = col
-        ghost_row = row
-        ghost_unit_id = selected_unit_id
-        ghost_attackable = get_attackable_enemies(pos_map, col, row, active, unit_max_range(selected_unit_id))
-        ghost_path = norrust.find_path(engine, selected_unit_id, col, row)
+    elseif sel.unit_id ~= -1 and sel.reachable_set[clicked_key] and not pos_map[clicked_key] then
+        ghost.col = col
+        ghost.row = row
+        ghost.unit_id = sel.unit_id
+        ghost.attackable = get_attackable_enemies(pos_map, col, row, active, unit_max_range(sel.unit_id))
+        ghost.path = norrust.find_path(engine, sel.unit_id, col, row)
 
     -- Select friendly unit
     elseif pos_map[clicked_key] and pos_map[clicked_key].faction == active then
@@ -1633,15 +1597,15 @@ function love.mousepressed(sx, sy, button)
 
     -- Inspect enemy unit (no friendly selected)
     elseif pos_map[clicked_key] then
-        inspect_unit_id = pos_map[clicked_key].id
-        inspect_terrain = nil
+        sel.inspect_id = pos_map[clicked_key].id
+        sel.inspect_terrain = nil
 
     -- Empty hex: start drag
     else
-        drag_active = true
-        drag_start_x, drag_start_y = x, y
-        drag_camera_start_x = camera_offset_x
-        drag_camera_start_y = camera_offset_y
+        camera.drag_active = true
+        camera.drag_start_x, camera.drag_start_y = x, y
+        camera.drag_cam_x = camera.offset_x
+        camera.drag_cam_y = camera.offset_y
         clear_selection()
     end
 end
@@ -1651,7 +1615,7 @@ end
 --- End camera drag on mouse release.
 function love.mousereleased(x, y, button)
     if button == 1 then
-        drag_active = false
+        camera.drag_active = false
     end
 end
 
@@ -1659,11 +1623,11 @@ end
 
 --- Update camera offset during drag.
 function love.mousemoved(sx, sy, dx, dy)
-    if drag_active then
-        camera_lerping = false
+    if camera.drag_active then
+        camera.lerping = false
         local x, y = screen_to_game(sx, sy)
-        camera_offset_x = drag_camera_start_x + (x - drag_start_x) / camera_zoom
-        camera_offset_y = drag_camera_start_y + (y - drag_start_y) / camera_zoom
+        camera.offset_x = camera.drag_cam_x + (x - camera.drag_start_x) / camera.zoom
+        camera.offset_y = camera.drag_cam_y + (y - camera.drag_start_y) / camera.zoom
         apply_camera_offset()
     end
 end
@@ -1672,15 +1636,15 @@ end
 
 --- Zoom board in/out with scroll wheel.
 function love.wheelmoved(x, y)
-    if show_dialogue_history then
+    if dlg.show_history then
         -- Scroll history panel (y > 0 = scroll up = show earlier entries)
-        history_scroll = math.max(0, history_scroll - y * 20)
+        dlg.scroll = math.max(0, dlg.scroll - y * 20)
         return
     end
     if y > 0 then
-        camera_zoom = math.min(camera_zoom + ZOOM_STEP, ZOOM_MAX)
+        camera.zoom = math.min(camera.zoom + camera.ZOOM_STEP, camera.ZOOM_MAX)
     elseif y < 0 then
-        camera_zoom = math.max(camera_zoom - ZOOM_STEP, ZOOM_MIN)
+        camera.zoom = math.max(camera.zoom - camera.ZOOM_STEP, camera.ZOOM_MIN)
     end
     center_camera()
 end

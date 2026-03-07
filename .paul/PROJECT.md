@@ -342,6 +342,7 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | Explicit stop_music() on scenario/campaign selection | Belt-and-suspenders: don't rely solely on scenario_loaded event timing | 2026-03-07 | Active |
 | Sidebar buttons via shared.buttons coordinate table | Draw sets coordinates, mousepressed reads them; avoids upvalue overflow | 2026-03-07 | Active |
 | Auto-save on player win only (not every end turn) | Less aggressive; F5 manual save available anytime | 2026-03-07 | Active |
+| Context tables for LuaJIT upvalue management | Group related locals into tables (scn, sel, ghost, campaign, dlg, camera); structural fix for 60-upvalue limit | 2026-03-07 | Active |
 
 ## Tech Stack
 
@@ -361,4 +362,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-07 after Phase 77 — Mouse Actions (v2.7 complete).*
+*Last updated: 2026-03-07 after Phase 78 — Upvalue Contexts (v2.8 started).*

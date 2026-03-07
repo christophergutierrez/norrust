@@ -31,6 +31,22 @@ Completed milestone log for this project.
 | v2.5 Animation Fixes | 2026-03-07 | ~10min | 1 phase, 1 plan |
 | v2.6 Music | 2026-03-07 | ~15min | 1 phase, 1 plan |
 | v2.7 Controls & Help | 2026-03-07 | ~30min | 2 phases, 2 plans |
+| v2.8 Code Cleanup & Architecture | In Progress | - | 5 phases |
+
+---
+
+## v2.8 Code Cleanup & Architecture (In Progress)
+
+**Theme:** Refactor main.lua monolith, consolidate draw.lua constants, harden FFI boundary, split shared table.
+
+**Phases:**
+| Phase | Name | Status |
+|-------|------|--------|
+| 78 | Upvalue Contexts | Not started |
+| 79 | Input Handlers | Not started |
+| 80 | Draw Constants | Not started |
+| 81 | FFI Hardening | Not started |
+| 82 | Shared Table Split | Not started |
 
 ---
 

@@ -6,6 +6,49 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
+**v2.8 Code Cleanup & Architecture**
+Status: In Progress
+Phases: 1 of 5 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 78 | Upvalue Contexts | 1/1 | ✅ Complete | 2026-03-07 |
+| 79 | Input Handlers | TBD | Not started | - |
+| 80 | Draw Constants | TBD | Not started | - |
+| 81 | FFI Hardening | TBD | Not started | - |
+| 82 | Shared Table Split | TBD | Not started | - |
+
+## v2.8 Phase Details
+
+### Phase 78: Upvalue Contexts
+
+**Goal:** Group main.lua's 62 local variables into context tables by concern (camera_ctx, ghost_ctx, campaign_ctx, dialogue_ctx, scenario_ctx, selection_ctx). Reduces upvalue pressure from 62 to ~20, eliminating the recurring LuaJIT 60-upvalue limit problem.
+**Depends on:** None
+
+### Phase 79: Input Handlers
+
+**Goal:** Extract love.keypressed (403 lines) and love.mousepressed (286 lines) into handler modules. Create handlers for global hotkeys, mode selection, gameplay actions, combat, and recruitment. main.lua becomes a dispatcher.
+**Depends on:** Phase 78 (context tables are what handlers receive)
+
+### Phase 80: Draw Constants
+
+**Goal:** Consolidate draw.lua magic numbers and duplication. Extract sidebar width (200), colors (73 hardcoded RGB tuples), font size constants, and repeated patterns (faction color selection x8, sidebar background x6, unit rendering duplication). Cache tile colors at load time instead of per-frame.
+**Depends on:** None
+
+### Phase 81: FFI Hardening
+
+**Goal:** Replace 6 unsafe unwrap() calls in ffi.rs with proper error returns (lines 295, 414, 419, 472, 476, 744). Add bounds checking on array index parameters. Unify manual JSON construction with consistent quote escaping.
+**Depends on:** None
+
+### Phase 82: Shared Table Split
+
+**Goal:** Split the shared table (8+ unrelated concerns) into focused modules: ui_state (help, buttons, recruit_palette), ai_controller (ai_vs_ai, ai_delay, ai_timer), and keep agent/sound as direct requires. Clean module boundaries instead of a catch-all table.
+**Depends on:** Phase 78 (upvalue contexts reduce what shared needs to hold), Phase 79 (handlers define what state they need)
+
+---
+
+## Previous Milestone
+
 **v2.7 Controls & Help**
 Status: Complete
 Phases: 2 of 2 complete
@@ -14,26 +57,6 @@ Phases: 2 of 2 complete
 |-------|------|-------|--------|-----------|
 | 76 | Help Overlay | 1/1 | Complete | 2026-03-07 |
 | 77 | Mouse Actions | 1/1 | Complete | 2026-03-07 |
-
-## v2.7 Phase Details
-
-### Phase 76: Help Overlay
-
-**Goal:** Display keybindings on screen — either always visible or toggled via a key. Show all keyboard controls so players don't need to memorize them.
-**Depends on:** None
-
-**Plans:**
-- 76-01: Help overlay with ? toggle (complete)
-
-### Phase 77: Mouse Actions
-
-**Goal:** Add mouse-based interactions for common actions (end turn, recruit, etc.) to complement keyboard controls.
-**Depends on:** Phase 76 (help overlay shows available actions)
-
-**Plans:**
-- 77-01: Sidebar buttons + auto-save reduction (complete)
-
----
 
 ## Previous Milestone
 
