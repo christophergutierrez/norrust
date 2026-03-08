@@ -245,7 +245,7 @@ function M.keypressed(key)
             if num and num >= 1 and num <= #game_data.factions then
                 local fi = vars.game_mode == MODES.PICK_FACTION_BLUE and 0 or 1
                 game_data.faction_id[fi + 1] = game_data.factions[num].id
-                vars.sel_game_data.faction_idx = 0
+                vars.sel_faction_idx = 0
                 vars.game_mode = vars.game_mode == MODES.PICK_FACTION_BLUE and MODES.SETUP_BLUE or MODES.SETUP_RED
             end
             return
