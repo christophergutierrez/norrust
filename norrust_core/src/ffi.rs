@@ -18,7 +18,7 @@ use crate::loader::Registry;
 use crate::pathfinding::{find_path, get_zoc_hexes, reachable_hexes};
 use crate::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
 use crate::snapshot::{ActionRequest, StateSnapshot};
-use crate::unit::{advance_unit, parse_alignment, Unit};
+use crate::unit::{advance_unit, Unit};
 
 // ── Engine struct ────────────────────────────────────────────────────────────
 
@@ -80,23 +80,11 @@ fn unit_from_registry(
     def_id: &str,
     faction: u8,
 ) -> Unit {
-    let mut unit = Unit::new(unit_id, def_id.to_string(), 0, faction);
-
     if let Some(def) = engine.units.as_ref().and_then(|r| r.get(def_id)) {
-        unit.max_hp = def.max_hp;
-        unit.hp = def.max_hp;
-        unit.movement = def.movement;
-        unit.movement_costs = def.movement_costs.clone();
-        unit.attacks = def.attacks.clone();
-        unit.defense = def.defense.clone();
-        unit.resistances = def.resistances.clone();
-        unit.xp_needed = def.experience;
-        unit.alignment = parse_alignment(&def.alignment);
-        unit.level = def.level;
-        unit.abilities = def.abilities.clone();
+        Unit::from_def(unit_id, def, faction)
+    } else {
+        Unit::new(unit_id, def_id.to_string(), 0, faction)
     }
-
-    unit
 }
 
 /// Upgrade all board tiles from the terrain registry (collect-then-apply pattern).
