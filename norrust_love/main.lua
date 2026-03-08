@@ -12,6 +12,7 @@ local save = require("save")
 local roster_mod = require("roster")
 local agent_server = require("agent_server")
 local input = require("input")
+local state_mod = require("state")
 
 -- ── Constants ───────────────────────────────────────────────────────────────
 
@@ -45,69 +46,29 @@ local game_data = {
     leader_placed = {false, false},
 }
 
--- ── State variables ─────────────────────────────────────────────────────────
+-- ── State (from state.lua) ────────────────────────────────────────────────
 
--- Mutable scalars grouped for module sharing (input.lua reads/writes these)
-local vars = {
-    engine = nil,
-    game_mode = MODES.PICK_SCENARIO,
-    game_over = false,
-    winner_faction = -1,
-    next_unit_id = 1,
-    status_message = nil,
-    status_timer = 0,
-    sel_faction_idx = 0,
-}
-local combat_state = {preview = nil, target = -1}
+local vars = state_mod.vars
+local combat_state = state_mod.combat_state
+local ai = state_mod.ai
+local shared = state_mod.shared
+local terrain_tiles = state_mod.terrain_tiles
+local unit_sprites = state_mod.unit_sprites
+local tile_color_cache = state_mod.tile_color_cache
+local FACTION_COLORS = state_mod.FACTION_COLORS
+local unit_anims = state_mod.unit_anims
+local dying_units = state_mod.dying_units
+local pending_anims = state_mod.pending_anims
+local fonts = state_mod.fonts
+local scn = state_mod.scn
+local sel = state_mod.sel
+local ghost = state_mod.ghost
+local campaign = state_mod.campaign
+local dlg = state_mod.dlg
+local camera = state_mod.camera
 
 local sound = require("sound")
-local ai = {vs_ai = false, delay = 0.5, timer = 0}
-local shared = {agent = nil, agent_mod = agent_server, show_help = false, buttons = {}}
-
-local terrain_tiles = {}
-local unit_sprites = {}
-local tile_color_cache = {}
-local FACTION_COLORS = {[0] = {0.25, 0.42, 0.88}, [1] = {0.80, 0.12, 0.12}}
-local unit_anims = {}
-local dying_units = {}
-local pending_anims = {}
-local fonts = {}
-
--- ── Context tables (grouped to reduce LuaJIT upvalue pressure) ────────────
-
-local scn = {
-    path = "", board = "", units = "", preset = false,
-    COLS = 8, ROWS = 5,
-}
-
-local sel = {
-    unit_id = -1, reachable_cells = {}, reachable_set = {},
-    recruit_idx = 0, recruit_mode = false, recruit_error = "",
-    recruit_state = {veterans = {}}, recruit_palette = {},
-    inspect_id = -1, inspect_terrain = nil,
-}
-
-local ghost = {col = nil, row = nil, unit_id = -1, attackable = {}, path = {}}
-
-local campaign = {
-    path = "", active = false, data = nil,
-    index = 0, veterans = {}, gold = 0, roster = nil,
-}
-
-local dlg = {active = {}, history = {}, show_history = false, scroll = 0}
-
-local camera = {
-    origin_x = 0, origin_y = 0,
-    offset_x = 0, offset_y = 0,
-    min_x = 0, min_y = 0, max_x = 0, max_y = 0,
-    drag_active = false,
-    drag_start_x = 0, drag_start_y = 0,
-    drag_cam_x = 0, drag_cam_y = 0,
-    target_x = 0, target_y = 0,
-    lerping = false, zoom = 1.0,
-    ZOOM_MIN = 0.15, ZOOM_MAX = 3.0, ZOOM_STEP = 0.1,
-    PAN_SPEED = 500, LERP_SPEED = 8.0,
-}
+shared.agent_mod = agent_server
 
 -- ── Scale helpers ────────────────────────────────────────────────────────────
 
