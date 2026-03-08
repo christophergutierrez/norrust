@@ -494,6 +494,7 @@ function M.mousepressed(sx, sy, button)
                         defense = int(tile.defense),
                         movement_cost = int(tile.movement_cost),
                         healing = int(tile.healing),
+                        owner = tile.owner and int(tile.owner) or -1,
                     }
                     if sel.unit_id ~= -1 then
                         local info = mods.norrust.get_unit_terrain_info(vars.engine, sel.unit_id, col, row)

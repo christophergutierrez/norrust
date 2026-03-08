@@ -466,6 +466,12 @@ function draw.draw_terrain_panel(ctx)
         love.graphics.setColor(0.4, 1.0, 0.4)
         love.graphics.print(string.format("Healing: +%d HP", t.healing), vp_w - SIDEBAR_X_OFF, y)
         y = y + 16
+        if t.owner and t.owner >= 0 then
+            local fc = faction_color(ctx, t.owner)
+            love.graphics.setColor(fc[1], fc[2], fc[3])
+            love.graphics.print(t.owner == 0 and "Owner: Blue" or "Owner: Red", vp_w - SIDEBAR_X_OFF, y)
+            y = y + 16
+        end
     end
 
     -- Unit-specific stats
@@ -714,9 +720,13 @@ function draw.draw_frame(ctx, state)
     -- Tile colors cached at scenario load; terrain_ids built per-frame for asset lookup
     local tile_colors = ctx.tile_color_cache or {}
     local tile_ids = {}
+    local village_owners = {}
     for _, tile in ipairs(state.terrain or {}) do
         local key = int(tile.col) .. "," .. int(tile.row)
         tile_ids[key] = tile.terrain_id
+        if tile.owner and int(tile.owner) >= 0 then
+            village_owners[key] = int(tile.owner)
+        end
     end
 
     -- Clip board rendering at panel edge (scissor in pixel coords)
@@ -740,6 +750,16 @@ function draw.draw_frame(ctx, state)
             local tid = tile_ids[key]
             ctx.assets.draw_terrain_hex(ctx.terrain_tiles, tid, cx, cy, ctx.hex.RADIUS, c, ctx.hex.polygon)
         end
+    end
+
+    -- 1b. Village ownership borders
+    love.graphics.setLineWidth(2.5)
+    for key, owner in pairs(village_owners) do
+        local col_str, row_str = key:match("^(%d+),(%d+)$")
+        local cx, cy = ctx.hex.to_pixel(tonumber(col_str), tonumber(row_str))
+        local fc = faction_color(ctx, owner)
+        love.graphics.setColor(fc[1], fc[2], fc[3], 0.7)
+        love.graphics.polygon("line", ctx.hex.polygon(cx, cy, ctx.hex.RADIUS * 0.85))
     end
 
     -- 2. Reachable hex highlights
