@@ -6,6 +6,31 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
+**v2.9 Audit Fixes**
+Status: In Progress
+Phases: 1 of 2 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 83 | Bug Fixes & Dead Code | 1/1 | ✅ Complete | 2026-03-07 |
+| 84 | Draw Cleanup | TBD | Not started | - |
+
+## v2.9 Phase Details
+
+### Phase 83: Bug Fixes & Dead Code
+
+**Goal:** Fix fonts.medium bug (nil key), status message UI_SCALE transform, remove dead code (shared.handle_sidebar_button, unused input.lua locals, redundant sidebar check), clean stale comments.
+**Depends on:** None
+
+### Phase 84: Draw Cleanup
+
+**Goal:** Use C_GOLD constant for inline gold color tuples, deduplicate ghost unit fallback rendering (~25 lines), simplify play_sfx indirection to direct sound.play, expand faction_color() usage.
+**Depends on:** Phase 83
+
+---
+
+## Previous Milestone
+
 **v2.8 Code Cleanup & Architecture**
 Status: Complete
 Phases: 5 of 5 complete

@@ -1,5 +1,5 @@
 -- norrust_love/main.lua — The Clash for Norrust — Love2D client
--- Port of norrust_client/scripts/game.gd (706 lines)
+-- Main game module: love.load, love.update, love.draw, context tables, event wiring
 
 local norrust = require("norrust")
 local assets = require("assets")
@@ -305,8 +305,6 @@ local function apply_attack_with_anims(attacker_id, defender_id, is_ranged)
         sound.play("hit")
     end
 end
-
--- ── Dialogue helpers ────────────────────────────────────────────────────
 
 -- ── Dialogue subscriber ─────────────────────────────────────────────────
 -- Subscribes to gameplay events and manages dialogue UI state.
@@ -722,9 +720,9 @@ function love.load()
         PICK_SCENARIO = PICK_SCENARIO, PICK_FACTION_BLUE = PICK_FACTION_BLUE,
         PICK_FACTION_RED = PICK_FACTION_RED, SETUP_BLUE = SETUP_BLUE,
         SETUP_RED = SETUP_RED, PLAYING = PLAYING,
-        UI_SCALE = UI_SCALE, FACTION_COLORS = FACTION_COLORS,
+        UI_SCALE = UI_SCALE,
         get_viewport = get_viewport, screen_to_game = screen_to_game,
-        int = int, clamp = clamp,
+        int = int,
         center_camera = center_camera, clear_selection = clear_selection,
         cancel_ghost = cancel_ghost, cancel_combat_preview = cancel_combat_preview,
         is_ranged_attack = is_ranged_attack, commit_ghost_move = commit_ghost_move,
@@ -734,7 +732,7 @@ function love.load()
         ghost_attackable_set = ghost_attackable_set,
         call_load_scenario = call_load_scenario,
         call_load_campaign_scenario = call_load_campaign_scenario,
-        fire_hex_entered = fire_hex_entered, faction_index_for_mode = faction_index_for_mode,
+        faction_index_for_mode = faction_index_for_mode,
         apply_camera_offset = apply_camera_offset,
     })
 end
@@ -894,7 +892,7 @@ end
 
 -- ── love.draw ───────────────────────────────────────────────────────────────
 
---- Build draw context (split into two functions to stay under LuaJIT 60-upvalue limit).
+--- Build draw context state table.
 local function build_draw_ctx_state()
     return {
         game_mode = vars.game_mode, game_over = vars.game_over, winner_faction = vars.winner_faction,
@@ -954,8 +952,10 @@ function love.draw()
 
     -- Status flash message (save/load feedback)
     if vars.status_message then
+        love.graphics.push()
+        love.graphics.scale(UI_SCALE)
         local vp_w = select(1, get_viewport())
-        local f = fonts and fonts.medium or love.graphics.getFont()
+        local f = fonts[14] or love.graphics.getFont()
         love.graphics.setFont(f)
         local tw = f:getWidth(vars.status_message)
         local x = (vp_w - 200 - tw) / 2
@@ -963,6 +963,7 @@ function love.draw()
         love.graphics.rectangle("fill", x - 10, 10, tw + 20, f:getHeight() + 10, 6, 6)
         love.graphics.setColor(1, 1, 1, 1)
         love.graphics.print(vars.status_message, x, 15)
+        love.graphics.pop()
     end
 end
 
@@ -973,11 +974,6 @@ function love.mousepressed(sx, sy, button) input.mousepressed(sx, sy, button) en
 function love.mousereleased(x, y, button) input.mousereleased(x, y, button) end
 function love.mousemoved(sx, sy, dx, dy) input.mousemoved(sx, sy, dx, dy) end
 function love.wheelmoved(x, y) input.wheelmoved(x, y) end
-
--- Wire sidebar button handler through input module
-shared.handle_sidebar_button = function(x, y, button, gm, go)
-    input.handle_sidebar_button(x, y, button, gm, go)
-end
 
 -- ── love.resize ─────────────────────────────────────────────────────────────
 

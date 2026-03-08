@@ -10,15 +10,15 @@ local factions, faction_id, leader_placed
 local norrust, hex, events, save, roster_mod
 local SCENARIOS, CAMPAIGNS
 local PICK_SCENARIO, PICK_FACTION_BLUE, PICK_FACTION_RED, SETUP_BLUE, SETUP_RED, PLAYING
-local UI_SCALE, FACTION_COLORS
+local UI_SCALE
 -- Helper functions from main.lua
-local get_viewport, screen_to_game, int, clamp
+local get_viewport, screen_to_game, int
 local center_camera, clear_selection, cancel_ghost, cancel_combat_preview
 local is_ranged_attack, commit_ghost_move, execute_attack, check_game_over
 local build_unit_pos_map, unit_max_range, select_unit
 local get_attackable_enemies, ghost_attackable_set
 local call_load_scenario, call_load_campaign_scenario
-local fire_hex_entered, faction_index_for_mode
+local faction_index_for_mode
 local apply_camera_offset
 
 --- Initialize the input module with context from main.lua.
@@ -52,11 +52,9 @@ function M.init(ctx)
     SETUP_RED = ctx.SETUP_RED
     PLAYING = ctx.PLAYING
     UI_SCALE = ctx.UI_SCALE
-    FACTION_COLORS = ctx.FACTION_COLORS
     get_viewport = ctx.get_viewport
     screen_to_game = ctx.screen_to_game
     int = ctx.int
-    clamp = ctx.clamp
     center_camera = ctx.center_camera
     clear_selection = ctx.clear_selection
     cancel_ghost = ctx.cancel_ghost
@@ -72,7 +70,6 @@ function M.init(ctx)
     ghost_attackable_set = ctx.ghost_attackable_set
     call_load_scenario = ctx.call_load_scenario
     call_load_campaign_scenario = ctx.call_load_campaign_scenario
-    fire_hex_entered = ctx.fire_hex_entered
     faction_index_for_mode = ctx.faction_index_for_mode
     apply_camera_offset = ctx.apply_camera_offset
 end
@@ -564,10 +561,6 @@ function M.mousepressed(sx, sy, button)
 
     -- Playing mode
     if vars.game_over then return end
-
-    -- Sidebar check — don't process board clicks in sidebar area
-    local vp_w2 = love.graphics.getWidth() / UI_SCALE
-    if x > vp_w2 - 200 then return end
 
     -- Convert screen coords to hex
     local local_x = (x - camera.origin_x) / camera.zoom - camera.offset_x
