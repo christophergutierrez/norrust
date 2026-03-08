@@ -9,7 +9,7 @@ alignment = "chaotic"
 cost = 21
 usage = "archer"
 abilities = []
-advances_to = ["Huntsman", "Ranger"]
+advances_to = ["Huntsman", "ranger"]
 
 [[attacks]]
 id = "dagger"

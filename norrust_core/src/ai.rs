@@ -48,19 +48,15 @@ fn score_attack(
         None => return 0.0,
     };
 
-    let defender_terrain = state.board.terrain_at(defender_hex).unwrap_or("");
-    let attacker_terrain = state.board.terrain_at(attacker_hex).unwrap_or("");
+    let defender_tile = state.board.tile_at(defender_hex);
+    let attacker_tile = state.board.tile_at(attacker_hex);
 
-    let defender_defense = defender
-        .defense
-        .get(defender_terrain)
-        .copied()
-        .unwrap_or(defender.default_defense) as u32;
-    let attacker_defense = attacker
-        .defense
-        .get(attacker_terrain)
-        .copied()
-        .unwrap_or(attacker.default_defense) as u32;
+    let defender_defense = defender_tile
+        .and_then(|t| defender.defense.get(&t.terrain_id).copied().or(Some(t.defense)))
+        .unwrap_or(defender.default_defense);
+    let attacker_defense = attacker_tile
+        .and_then(|t| attacker.defense.get(&t.terrain_id).copied().or(Some(t.defense)))
+        .unwrap_or(attacker.default_defense);
 
     let atk_resistance = defender
         .resistances
