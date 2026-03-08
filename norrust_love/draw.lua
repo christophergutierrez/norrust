@@ -233,10 +233,11 @@ function draw.draw_setup_hud(ctx)
             love.graphics.setColor(C_YELLOW[1], C_YELLOW[2], C_YELLOW[3], 1)
             love.graphics.print(leader_def, vp_w - SIDEBAR_X_OFF, 48)
 
-            -- Board-center prompt
+            -- Board-center prompt (account for zoom in position)
             local bx, by = ctx.hex.to_pixel(int(ctx.BOARD_COLS / 2), int(ctx.BOARD_ROWS / 2))
-            local sx = bx + ctx.board_origin_x + ctx.camera_offset_x
-            local sy = by + ctx.board_origin_y + ctx.camera_offset_y
+            local zoom = ctx.camera_zoom or 1
+            local sx = ctx.board_origin_x + zoom * (bx + ctx.camera_offset_x)
+            local sy = ctx.board_origin_y + zoom * (by + ctx.camera_offset_y)
             local prompt = "Click a hex on the board to place " .. leader_def
             love.graphics.setColor(0, 0, 0, 0.75)
             love.graphics.rectangle("fill", sx - 200, sy - 14, 400, 24)
@@ -358,6 +359,11 @@ function draw.draw_unit_panel(ctx, unit)
     -- XP
     if unit.xp_needed and int(unit.xp_needed) > 0 then
         love.graphics.print(string.format("XP: %d / %d", int(unit.xp), int(unit.xp_needed)), vp_w - SIDEBAR_X_OFF, y)
+        y = y + 16
+    end
+    if unit.advancement_pending then
+        love.graphics.setColor(C_GOLD[1], C_GOLD[2], C_GOLD[3], 1)
+        love.graphics.print("Ready to advance! [A]", vp_w - SIDEBAR_X_OFF, y)
         y = y + 16
     end
 
@@ -585,7 +591,12 @@ function draw.draw_combat_preview(ctx)
     love.graphics.setFont(fonts[15])
     love.graphics.setColor(1.0, 0.9, 0.3)
     love.graphics.print("COMBAT PREVIEW", vp_w - SIDEBAR_X_OFF, y)
-    y = y + 24
+    y = y + 18
+    local tod = ctx.norrust.get_time_of_day_name(ctx.engine)
+    love.graphics.setFont(fonts[11])
+    love.graphics.setColor(0.7, 0.7, 0.9)
+    love.graphics.print("Time: " .. (tod or "?"), vp_w - SIDEBAR_X_OFF, y)
+    y = y + 16
 
     -- Attacker section
     love.graphics.setFont(fonts[12])
@@ -833,11 +844,19 @@ function draw.draw_frame(ctx, state)
         end
     end
 
-    -- 6. Recruit-mode hex highlights
+    -- 6. Recruit-mode hex highlights (only castles adjacent to a keep)
     if ctx.recruit_mode then
+        -- Collect keep positions
+        local keeps = {}
+        for _, tile in ipairs(state.terrain or {}) do
+            if (tile.terrain_id or "") == "keep" then
+                keeps[#keeps + 1] = {col = int(tile.col), row = int(tile.row)}
+            end
+        end
         for _, tile in ipairs(state.terrain or {}) do
             local tid = tile.terrain_id or ""
-            local cx, cy = ctx.hex.to_pixel(int(tile.col), int(tile.row))
+            local tc, tr = int(tile.col), int(tile.row)
+            local cx, cy = ctx.hex.to_pixel(tc, tr)
             if tid == "keep" then
                 love.graphics.setColor(1.0, 0.75, 0.0, 0.7)
                 love.graphics.polygon("fill", ctx.hex.polygon(cx, cy, ctx.hex.RADIUS))
@@ -845,11 +864,20 @@ function draw.draw_frame(ctx, state)
                 love.graphics.setLineWidth(3.0)
                 love.graphics.polygon("line", ctx.hex.polygon(cx, cy, ctx.hex.RADIUS))
             elseif tid == "castle" then
-                love.graphics.setColor(0.0, 0.9, 0.9, 0.65)
-                love.graphics.polygon("fill", ctx.hex.polygon(cx, cy, ctx.hex.RADIUS))
-                love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
-                love.graphics.setLineWidth(2.5)
-                love.graphics.polygon("line", ctx.hex.polygon(cx, cy, ctx.hex.RADIUS))
+                -- Only highlight castles adjacent to a keep (hex distance 1)
+                local adjacent = false
+                for _, k in ipairs(keeps) do
+                    if ctx.hex.distance(tc, tr, k.col, k.row) == 1 then
+                        adjacent = true; break
+                    end
+                end
+                if adjacent then
+                    love.graphics.setColor(0.0, 0.9, 0.9, 0.65)
+                    love.graphics.polygon("fill", ctx.hex.polygon(cx, cy, ctx.hex.RADIUS))
+                    love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
+                    love.graphics.setLineWidth(2.5)
+                    love.graphics.polygon("line", ctx.hex.polygon(cx, cy, ctx.hex.RADIUS))
+                end
             end
         end
     end

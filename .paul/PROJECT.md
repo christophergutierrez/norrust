@@ -368,4 +368,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-07 after Phase 85 — Upvalue Reduction.*
+*Last updated: 2026-03-07 after Phase 86 — UX Fixes.*

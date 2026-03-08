@@ -7,13 +7,13 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 ## Current Milestone
 
 **v3.0 Upvalue Reduction & UX Polish**
-Status: In Progress
-Phases: 1 of 2 complete
+Status: Complete
+Phases: 2 of 2 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 85 | Upvalue Reduction | 1/1 | ✅ Complete | 2026-03-07 |
-| 86 | UX Fixes | TBD | Not started | - |
+| 86 | UX Fixes | 1/1 | ✅ Complete | 2026-03-07 |
 
 ## v3.0 Phase Details
 
