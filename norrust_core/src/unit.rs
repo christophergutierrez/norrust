@@ -92,6 +92,23 @@ pub fn advance_unit(unit: &mut Unit, new_def: &UnitDef) {
 }
 
 impl Unit {
+    /// Create a unit from a UnitDef blueprint, fully populated with stats.
+    pub fn from_def(id: u32, def: &UnitDef, faction: u8) -> Self {
+        let mut u = Self::new(id, &def.id, def.max_hp, faction);
+        u.max_hp = def.max_hp;
+        u.hp = def.max_hp;
+        u.movement = def.movement;
+        u.movement_costs = def.movement_costs.clone();
+        u.attacks = def.attacks.clone();
+        u.defense = def.defense.clone();
+        u.resistances = def.resistances.clone();
+        u.xp_needed = def.experience;
+        u.alignment = parse_alignment(&def.alignment);
+        u.level = def.level;
+        u.abilities = def.abilities.clone();
+        u
+    }
+
     /// Create a new unit with the given ID, definition ID, starting HP, and faction.
     pub fn new(id: u32, def_id: impl Into<String>, hp: u32, faction: u8) -> Self {
         Self {
