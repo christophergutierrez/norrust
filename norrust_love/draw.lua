@@ -15,6 +15,9 @@ local C_WARM_TITLE = {0.9, 0.85, 0.6}
 local C_WHITE      = {1, 1, 1}
 local C_YELLOW     = {1, 1, 0}
 
+-- Move-status lookup: key = (moved and 1 or 0) + (attacked and 2 or 0)
+local MOVE_STATUS = { [0] = "", [1] = " (moved)", [2] = " (attacked)", [3] = " (done)" }
+
 -- ── Helpers ─────────────────────────────────────────────────────────────────
 
 --- Draw a full-height sidebar background panel.
@@ -158,7 +161,7 @@ end
 function draw.draw_setup_hud(ctx)
     local int = ctx.int
     local fonts = ctx.fonts
-    local vp_w, vp_h = ctx.get_viewport()
+    local vp_w, vp_h = ctx.vp_w, ctx.vp_h
 
     -- Scenario selection screen
     if ctx.game_mode == ctx.PICK_SCENARIO then
@@ -193,6 +196,9 @@ function draw.draw_setup_hud(ctx)
         love.graphics.setFont(fonts[14])
         love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3], 1)
         love.graphics.printf("[L] Load Game", 0, ly, vp_w, "center")
+
+        -- Quit hint
+        love.graphics.printf("[Q] Quit", 0, ly + 24, vp_w, "center")
         return
     end
 
@@ -394,12 +400,6 @@ function draw.draw_setup_hud(ctx)
             love.graphics.setFont(fonts[13])
             love.graphics.setColor(C_YELLOW[1], C_YELLOW[2], C_YELLOW[3], 1)
             love.graphics.print(prompt, sx - 196, sy - 8)
-        else
-            love.graphics.setFont(fonts[11])
-            love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3])
-            love.graphics.print("Leader placed.", vp_w - SIDEBAR_X_OFF, 30)
-            love.graphics.setColor(C_YELLOW[1], C_YELLOW[2], C_YELLOW[3], 1)
-            love.graphics.print("[Enter] Continue", vp_w - SIDEBAR_X_OFF, 44)
         end
     end
 end
@@ -409,7 +409,7 @@ function draw.draw_recruit_panel(ctx, state)
     local int = ctx.int
     local fonts = ctx.fonts
     local faction = ctx.norrust.get_active_faction(ctx.engine)
-    local vp_w, vp_h = ctx.get_viewport()
+    local vp_w, vp_h = ctx.vp_w, ctx.vp_h
     local fc = faction_color(ctx, faction)
     local gold_arr = state.gold or {0, 0}
     local gold = int(gold_arr[faction + 1] or 0)
@@ -469,7 +469,7 @@ end
 function draw.draw_unit_panel(ctx, unit)
     local int = ctx.int
     local fonts = ctx.fonts
-    local vp_w, vp_h = ctx.get_viewport()
+    local vp_w, vp_h = ctx.vp_w, ctx.vp_h
 
     draw_sidebar_bg(vp_w, vp_h, 0.75)
 
@@ -530,14 +530,8 @@ function draw.draw_unit_panel(ctx, unit)
     end
 
     -- Movement
-    local move_status = ""
-    if unit.moved and unit.attacked then
-        move_status = " (done)"
-    elseif unit.moved then
-        move_status = " (moved)"
-    elseif unit.attacked then
-        move_status = " (attacked)"
-    end
+    local key = (unit.moved and 1 or 0) + (unit.attacked and 2 or 0)
+    local move_status = MOVE_STATUS[key]
     love.graphics.print(string.format("Move: %d%s", int(unit.movement), move_status), vp_w - SIDEBAR_X_OFF, y)
     y = y + 20
 
@@ -585,7 +579,7 @@ end
 function draw.draw_terrain_panel(ctx)
     local fonts = ctx.fonts
     local int = ctx.int
-    local vp_w, vp_h = ctx.get_viewport()
+    local vp_w, vp_h = ctx.vp_w, ctx.vp_h
     local t = ctx.inspect_terrain
 
     draw_sidebar_bg(vp_w, vp_h, 0.75)
@@ -643,7 +637,7 @@ end
 --- Draw the narrator dialogue panel in the right sidebar.
 function draw.draw_dialogue_panel(ctx)
     local fonts = ctx.fonts
-    local vp_w, vp_h = ctx.get_viewport()
+    local vp_w, vp_h = ctx.vp_w, ctx.vp_h
 
     draw_sidebar_bg(vp_w, vp_h, 0.75)
 
@@ -673,7 +667,7 @@ end
 --- Draw the dialogue history overlay panel.
 function draw.draw_dialogue_history(ctx)
     local fonts = ctx.fonts
-    local vp_w, vp_h = ctx.get_viewport()
+    local vp_w, vp_h = ctx.vp_w, ctx.vp_h
     local panel_x = vp_w - SIDEBAR_W
     local panel_w = SIDEBAR_W
     local text_w = 180
@@ -736,7 +730,7 @@ end
 --- Draw the combat preview panel sidebar.
 function draw.draw_combat_preview(ctx)
     local fonts = ctx.fonts
-    local vp_w, vp_h = ctx.get_viewport()
+    local vp_w, vp_h = ctx.vp_w, ctx.vp_h
     local p = ctx.combat_preview
 
     draw_sidebar_bg(vp_w, vp_h, 0.85)
@@ -855,6 +849,9 @@ end
 
 --- Main draw dispatch — contains the love.draw body logic.
 function draw.draw_frame(ctx, state)
+    -- Cache viewport dimensions for the entire frame
+    ctx.vp_w, ctx.vp_h = ctx.get_viewport()
+
     love.graphics.push()
     love.graphics.scale(ctx.UI_SCALE, ctx.UI_SCALE)
 
@@ -1062,7 +1059,7 @@ function draw.draw_frame(ctx, state)
     else
         -- Win overlay
         if ctx.game_over then
-            local vp_w, vp_h = ctx.get_viewport()
+            local vp_w, vp_h = ctx.vp_w, ctx.vp_h
             local winner_name = ctx.winner_faction == 0 and "Blue" or "Red"
             local msg, sub_msg
             if ctx.winner_faction == 0 then
@@ -1157,7 +1154,7 @@ end
 
 --- Draw clickable buttons at the bottom of the sidebar.
 function draw.draw_sidebar_buttons(ctx)
-    local vp_w, vp_h = ctx.get_viewport()
+    local vp_w, vp_h = ctx.vp_w, ctx.vp_h
     local sb_x = vp_w - SIDEBAR_W
     local btn_w = 180
     local btn_h = 32
@@ -1179,37 +1176,60 @@ function draw.draw_sidebar_buttons(ctx)
     love.graphics.setColor(0.9, 0.9, 0.9, 1)
     love.graphics.printf("?  Help", btn_x, help_y + 8, btn_w, "center")
 
-    if ctx.game_mode == ctx.PLAYING and not ctx.game_over then
-        local faction = ctx.norrust.get_active_faction(ctx.engine)
-        local fc = faction_color(ctx, faction)
+    if not ctx.game_over then
+        -- Exit button (visible in all board modes: setup, faction pick, playing)
+        local exit_y = help_y - btn_h - gap
+        ctx.buttons.exit = {x = btn_x, y = exit_y, w = btn_w, h = btn_h}
+        if ctx.exit_confirm then
+            love.graphics.setColor(0.5, 0.2, 0.2, 0.95)
+            love.graphics.rectangle("fill", btn_x, exit_y, btn_w, btn_h, 4, 4)
+            love.graphics.setColor(1, 0.4, 0.4, 1)
+            love.graphics.rectangle("line", btn_x, exit_y, btn_w, btn_h, 4, 4)
+            love.graphics.setFont(ctx.fonts[13])
+            love.graphics.setColor(1, 0.9, 0.9, 1)
+            love.graphics.printf("Save? Y / N / Esc", btn_x, exit_y + 8, btn_w, "center")
+        else
+            love.graphics.setColor(0.35, 0.15, 0.15, 0.9)
+            love.graphics.rectangle("fill", btn_x, exit_y, btn_w, btn_h, 4, 4)
+            love.graphics.setColor(0.6, 0.3, 0.3, 1)
+            love.graphics.rectangle("line", btn_x, exit_y, btn_w, btn_h, 4, 4)
+            love.graphics.setFont(ctx.fonts[13])
+            love.graphics.setColor(0.9, 0.7, 0.7, 1)
+            love.graphics.printf("Exit", btn_x, exit_y + 8, btn_w, "center")
+        end
 
-        -- Recruit button
-        local recruit_y = help_y - btn_h - gap
-        ctx.buttons.recruit = {x = btn_x, y = recruit_y, w = btn_w, h = btn_h}
-        love.graphics.setColor(0.2, 0.35, 0.2, 0.9)
-        love.graphics.rectangle("fill", btn_x, recruit_y, btn_w, btn_h, 4, 4)
-        love.graphics.setColor(0.4, 0.7, 0.4, 1)
-        love.graphics.rectangle("line", btn_x, recruit_y, btn_w, btn_h, 4, 4)
-        love.graphics.setFont(ctx.fonts[13])
-        love.graphics.setColor(0.85, 1, 0.85, 1)
-        love.graphics.printf("R  Recruit", btn_x, recruit_y + 8, btn_w, "center")
+        if ctx.game_mode == ctx.PLAYING then
+            local faction = ctx.norrust.get_active_faction(ctx.engine)
+            local fc = faction_color(ctx, faction)
 
-        -- End Turn button
-        local end_y = recruit_y - btn_h - gap
-        ctx.buttons.end_turn = {x = btn_x, y = end_y, w = btn_w, h = btn_h}
-        love.graphics.setColor(fc[1] * 0.5, fc[2] * 0.5, fc[3] * 0.5, 0.9)
-        love.graphics.rectangle("fill", btn_x, end_y, btn_w, btn_h, 4, 4)
-        love.graphics.setColor(fc[1], fc[2], fc[3], 1)
-        love.graphics.rectangle("line", btn_x, end_y, btn_w, btn_h, 4, 4)
-        love.graphics.setFont(ctx.fonts[13])
-        love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
-        love.graphics.printf("E  End Turn", btn_x, end_y + 8, btn_w, "center")
+            -- Recruit button
+            local recruit_y = exit_y - btn_h - gap
+            ctx.buttons.recruit = {x = btn_x, y = recruit_y, w = btn_w, h = btn_h}
+            love.graphics.setColor(0.2, 0.35, 0.2, 0.9)
+            love.graphics.rectangle("fill", btn_x, recruit_y, btn_w, btn_h, 4, 4)
+            love.graphics.setColor(0.4, 0.7, 0.4, 1)
+            love.graphics.rectangle("line", btn_x, recruit_y, btn_w, btn_h, 4, 4)
+            love.graphics.setFont(ctx.fonts[13])
+            love.graphics.setColor(0.85, 1, 0.85, 1)
+            love.graphics.printf("R  Recruit", btn_x, recruit_y + 8, btn_w, "center")
+
+            -- End Turn button
+            local end_y = recruit_y - btn_h - gap
+            ctx.buttons.end_turn = {x = btn_x, y = end_y, w = btn_w, h = btn_h}
+            love.graphics.setColor(fc[1] * 0.5, fc[2] * 0.5, fc[3] * 0.5, 0.9)
+            love.graphics.rectangle("fill", btn_x, end_y, btn_w, btn_h, 4, 4)
+            love.graphics.setColor(fc[1], fc[2], fc[3], 1)
+            love.graphics.rectangle("line", btn_x, end_y, btn_w, btn_h, 4, 4)
+            love.graphics.setFont(ctx.fonts[13])
+            love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
+            love.graphics.printf("E  End Turn", btn_x, end_y + 8, btn_w, "center")
+        end
     end
 end
 
 --- Draw a semi-transparent help overlay showing all keybindings.
 function draw.draw_help_overlay(ctx)
-    local vp_w, vp_h = ctx.get_viewport()
+    local vp_w, vp_h = ctx.vp_w, ctx.vp_h
     local panel_w = SIDEBAR_W
     local board_w = vp_w - panel_w
 

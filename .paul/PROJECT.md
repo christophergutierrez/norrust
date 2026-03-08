@@ -207,6 +207,15 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Campaign faction assignment from TOML config (faction_0/faction_1) — Phase 92 (92-01)
 - [x] Veterans healed to full HP on scenario carry-over — Phase 92 (92-01)
 
+- [x] Exit button with inline save confirmation (Y save+exit, N exit, Esc cancel) on game board — Phase 93 (93-01)
+- [x] Q/Escape quit from main menu (PICK_SCENARIO) — Phase 93 (93-01)
+- [x] Escape from setup/faction-pick modes returns to menu — Phase 93 (93-01)
+- [x] Mode-dispatch table for input handling (keypressed refactor from 530→30 lines) — Phase 93 (93-01)
+- [x] json_escape() helper for all FFI JSON serialization (3 critical null/escape fixes) — Phase 93 (93-01)
+- [x] Reverse hex→unit index (HashMap<Hex, u32>) for O(1) position lookups — Phase 93 (93-01)
+- [x] State cache with dirty-flag invalidation on NorRustEngine — Phase 93 (93-01)
+- [x] Rust sole authority for next_unit_id (removed Lua dual-tracking) — Phase 93 (93-01)
+
 ### Active (In Progress / Deferred)
 
 (none)
@@ -375,4 +384,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-08 after Phase 92 — Veteran Deployment (v3.2 complete).*
+*Last updated: 2026-03-08 after Phase 93 — Exit Buttons + Code Review (v3.3 complete).*

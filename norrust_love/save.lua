@@ -413,7 +413,7 @@ function save.load_save(engine, norrust, filepath, center_camera_fn)
     -- Restore dialogue fired state
     if data.state and data.state.dialogue_fired and #data.state.dialogue_fired > 0 then
         -- Load dialogue file first (derived from board filename)
-        local dialogue_path = g.scenarios_path .. "/" .. g.board_path:gsub("%.toml$", "_dialogue.toml")
+        local dialogue_path = g.scenarios_path .. "/" .. g.board_path:gsub("board%.toml$", "dialogue.toml")
         norrust.load_dialogue(engine, dialogue_path)
         -- Build JSON array and pass to FFI
         local items = {}

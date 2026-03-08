@@ -35,20 +35,40 @@ Completed milestone log for this project.
 | v2.9 Audit Fixes | 2026-03-07 | ~15min | 2 phases, 2 plans |
 | v3.0 Upvalue Reduction & UX Polish | 2026-03-07 | ~20min | 2 phases, 2 plans |
 | v3.1 Main.lua Modularization | 2026-03-07 | ~1 day | 3 phases, 3 plans |
-| v3.2 Campaign Management | In Progress | - | 3 phases |
+| v3.2 Campaign Management | 2026-03-08 | ~2 days | 3 phases, 3 plans |
 
 ---
 
-## v3.2 Campaign Management (In Progress)
+## v3.2 Campaign Management
 
-**Theme:** Give players control over their campaign progression — choose saves, label them, and manage veteran rosters.
+**Completed:** 2026-03-08
+**Duration:** ~2 days
 
-**Phases:**
-| Phase | Name | Status |
-|-------|------|--------|
-| 90 | Save Management UI | Not started |
-| 91 | Save Naming | Not started |
-| 92 | Veteran Deployment | Not started |
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 3 |
+| Plans | 3 |
+| Tests | 122 Rust |
+
+### Key Accomplishments
+
+- **Save management UI** — list/load/delete saves from main menu with metadata display
+- **Save naming** — display_name field with UI prompt for editing labels
+- **Veteran deployment** — deploy/bench selection screen for campaign overflow
+- **Castle hex validation** — veteran placement restricted to castle hexes (FFI matches apply_recruit)
+- **Campaign factions** — faction_0/faction_1 fields in campaign TOML
+- **Veteran healing** — full HP restored on scenario carry-over
+
+### Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| LOAD_SAVE = 5 / DEPLOY_VETERANS = 6 game modes | Consistent pattern with existing mode screens |
+| Save display_name as data field | Stored in TOML, not derived from filename |
+| Deploy screen same UI pattern as save list | Consistent look and feel |
+| Castle validation in place_veteran_unit FFI | Matches apply_recruit rules; prevents placement on any hex |
 
 ---
 
@@ -895,4 +915,4 @@ Completed milestone log for this project.
 - Full Wesnoth-style combat: adjacency enforcement, bidirectional retaliation, time-of-day modifiers, resistances
 
 ---
-*MILESTONES.md — Updated: 2026-03-07 (v2.7 Controls & Help)*
+*MILESTONES.md — Updated: 2026-03-08 (v3.2 Campaign Management)*

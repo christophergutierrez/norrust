@@ -73,18 +73,7 @@ pub struct Unit {
 /// clears advancement_pending, and updates def_id. Registry-free: caller
 /// resolves the target UnitDef before calling.
 pub fn advance_unit(unit: &mut Unit, new_def: &UnitDef) {
-    unit.def_id = new_def.id.clone();
-    unit.max_hp = new_def.max_hp;
-    unit.hp = new_def.max_hp;
-    unit.movement = new_def.movement;
-    unit.movement_costs = new_def.movement_costs.clone();
-    unit.attacks = new_def.attacks.clone();
-    unit.defense = new_def.defense.clone();
-    unit.resistances = new_def.resistances.clone();
-    unit.alignment = parse_alignment(&new_def.alignment);
-    unit.xp_needed = new_def.experience;
-    unit.level = new_def.level;
-    unit.abilities = new_def.abilities.clone();
+    unit.apply_def(new_def);
     unit.xp = 0;
     unit.advancement_pending = false;
     unit.poisoned = false;
@@ -92,20 +81,29 @@ pub fn advance_unit(unit: &mut Unit, new_def: &UnitDef) {
 }
 
 impl Unit {
+    /// Copy all stat fields from a `UnitDef` onto this unit.
+    ///
+    /// Sets def_id, max_hp, hp (healed to full), movement, movement_costs,
+    /// attacks, defense, resistances, alignment, xp_needed, level, and abilities.
+    pub fn apply_def(&mut self, def: &UnitDef) {
+        self.def_id = def.id.clone();
+        self.max_hp = def.max_hp;
+        self.hp = def.max_hp;
+        self.movement = def.movement;
+        self.movement_costs = def.movement_costs.clone();
+        self.attacks = def.attacks.clone();
+        self.defense = def.defense.clone();
+        self.resistances = def.resistances.clone();
+        self.alignment = parse_alignment(&def.alignment);
+        self.xp_needed = def.experience;
+        self.level = def.level;
+        self.abilities = def.abilities.clone();
+    }
+
     /// Create a unit from a UnitDef blueprint, fully populated with stats.
     pub fn from_def(id: u32, def: &UnitDef, faction: u8) -> Self {
         let mut u = Self::new(id, &def.id, def.max_hp, faction);
-        u.max_hp = def.max_hp;
-        u.hp = def.max_hp;
-        u.movement = def.movement;
-        u.movement_costs = def.movement_costs.clone();
-        u.attacks = def.attacks.clone();
-        u.defense = def.defense.clone();
-        u.resistances = def.resistances.clone();
-        u.xp_needed = def.experience;
-        u.alignment = parse_alignment(&def.alignment);
-        u.level = def.level;
-        u.abilities = def.abilities.clone();
+        u.apply_def(def);
         u
     }
 

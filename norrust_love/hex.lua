@@ -35,13 +35,20 @@ function hex.from_pixel(px, py)
     return best_col, best_row
 end
 
+--- Precomputed unit hex vertices (pointy-top, radius=1).
+local HEX_UNIT = {}
+for i = 0, 5 do
+    local angle = math.rad(60 * i - 30)
+    HEX_UNIT[i*2 + 1] = math.cos(angle)
+    HEX_UNIT[i*2 + 2] = math.sin(angle)
+end
+
 --- Generate pointy-top hex polygon vertices.
 function hex.polygon(cx, cy, radius)
     local pts = {}
-    for i = 0, 5 do
-        local angle = math.rad(60 * i - 30)
-        pts[#pts + 1] = cx + math.cos(angle) * radius
-        pts[#pts + 1] = cy + math.sin(angle) * radius
+    for i = 1, 12, 2 do
+        pts[i]     = cx + HEX_UNIT[i] * radius
+        pts[i + 1] = cy + HEX_UNIT[i + 1] * radius
     end
     return pts
 end
@@ -61,15 +68,16 @@ function hex.neighbors(col, row)
     return result
 end
 
+--- Convert odd-r offset to cube coordinates.
+local function to_cube(col, row)
+    local x = col - (row - (row % 2)) / 2
+    local z = row
+    local y = -x - z
+    return x, y, z
+end
+
 --- Hex distance between two offset coordinates (odd-r).
 function hex.distance(c1, r1, c2, r2)
-    -- Convert odd-r offset to cube coordinates
-    local function to_cube(col, row)
-        local x = col - (row - (row % 2)) / 2
-        local z = row
-        local y = -x - z
-        return x, y, z
-    end
     local x1, y1, z1 = to_cube(c1, r1)
     local x2, y2, z2 = to_cube(c2, r2)
     return math.max(math.abs(x1 - x2), math.abs(y1 - y2), math.abs(z1 - z2))

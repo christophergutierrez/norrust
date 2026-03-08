@@ -6,6 +6,31 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
+(none — v3.3 complete, next milestone not yet defined)
+
+---
+
+## Previous Milestone
+
+**v3.3 Exit Buttons**
+Status: ✅ Complete
+Phases: 1 of 1 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 93 | Exit Buttons | 1/1 | ✅ Complete | 2026-03-08 |
+
+## Previous v3.3 Phase Details
+
+### Phase 93: Exit Buttons
+
+**Goal:** Clean exit paths — exit button on game board sidebar (with save prompt) and exit button on main menu screen (quit app). Plus 26 code review fixes from three-agent architectural review.
+**Depends on:** None
+
+---
+
+## Previous Milestone
+
 **v3.2 Campaign Management**
 Status: ✅ Complete
 Phases: 3 of 3 complete
@@ -16,7 +41,7 @@ Phases: 3 of 3 complete
 | 91 | Save Naming | 1/1 | ✅ Complete | 2026-03-08 |
 | 92 | Veteran Deployment | 1/1 | ✅ Complete | 2026-03-08 |
 
-## v3.2 Phase Details
+## Previous v3.2 Phase Details
 
 ### Phase 90: Save Management UI
 

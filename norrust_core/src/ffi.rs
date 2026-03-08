@@ -29,6 +29,8 @@ pub struct NorRustEngine {
     game: Option<GameState>,
     factions: Vec<(FactionDef, Vec<String>)>,
     dialogue_state: Option<DialogueState>,
+    /// Cached JSON from `norrust_get_state_json`. `None` means dirty.
+    state_cache: Option<String>,
 }
 
 impl NorRustEngine {
@@ -39,6 +41,7 @@ impl NorRustEngine {
             game: None,
             factions: Vec::new(),
             dialogue_state: None,
+            state_cache: None,
         }
     }
 }
@@ -71,6 +74,25 @@ unsafe fn cstr_to_str<'a>(s: *const c_char) -> &'a str {
 /// Allocate a C string from a Rust string. Caller must free with norrust_free_string.
 fn to_c_string(s: &str) -> *mut c_char {
     CString::new(s).unwrap_or_default().into_raw()
+}
+
+/// Escape a string for safe embedding in JSON. Handles backslash, quote, and control chars.
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Build a fully populated Unit from the registry, same as gdext_node place_unit_at.
@@ -133,8 +155,7 @@ pub unsafe extern "C" fn norrust_free_string(s: *mut c_char) {
 #[no_mangle]
 pub unsafe extern "C" fn norrust_free_int_array(arr: *mut i32, len: i32) {
     if !arr.is_null() && len > 0 {
-        let slice = std::slice::from_raw_parts_mut(arr, len as usize);
-        drop(Box::from_raw(slice as *mut [i32]));
+        drop(Vec::from_raw_parts(arr, len as usize, len as usize));
     }
 }
 
@@ -190,6 +211,7 @@ pub unsafe extern "C" fn norrust_create_game(
     if cols <= 0 || rows <= 0 || seed <= 0 { return 0; }
     let board = crate::board::Board::new(cols as u32, rows as u32);
     e.game = Some(GameState::new_seeded(board, seed as u64));
+    e.state_cache = None;
     1
 }
 
@@ -210,6 +232,7 @@ pub unsafe extern "C" fn norrust_set_terrain_at(
     } else {
         state.board.set_terrain(hex, tid);
     }
+    e.state_cache = None;
 }
 
 #[no_mangle]
@@ -222,6 +245,7 @@ pub unsafe extern "C" fn norrust_generate_map(
     let Some(state) = e.game.as_mut() else { return 0 };
     crate::mapgen::generate_map(&mut state.board, seed as u64);
     upgrade_tiles_mut(e);
+    e.state_cache = None;
     1
 }
 
@@ -243,6 +267,7 @@ pub unsafe extern "C" fn norrust_load_board(
     state.max_turns = loaded.max_turns;
     e.game = Some(state);
     upgrade_tiles_mut(e);
+    e.state_cache = None;
     1
 }
 
@@ -254,14 +279,14 @@ pub unsafe extern "C" fn norrust_load_units(
     let Some(e) = engine.as_mut() else { return 0 };
     if e.game.is_none() { return 0; }
     let path = PathBuf::from(cstr_to_str(units_path));
-    let placements = match crate::scenario::load_units(&path) {
-        Ok(p) => p,
+    let units_def = match crate::scenario::load_units_file(&path) {
+        Ok(d) => d,
         Err(_) => return 0,
     };
 
     // Place units and track highest ID
     let mut max_id: u32 = 0;
-    for p in &placements {
+    for p in &units_def.units {
         let unit = unit_from_registry(e, p.id, &p.unit_type, p.faction as u8);
         let hex = Hex::from_offset(p.col, p.row);
         if let Some(state) = e.game.as_mut() {
@@ -275,31 +300,30 @@ pub unsafe extern "C" fn norrust_load_units(
         state.next_unit_id = max_id + 1;
     }
 
-    // Load and resolve trigger zones from the same file
-    if let Ok(trigger_defs) = crate::scenario::load_triggers(&path) {
-        for tdef in trigger_defs {
-            let mut spawns = Vec::new();
-            for s in &tdef.spawns {
-                let Some(state) = e.game.as_mut() else { continue };
-                let uid = state.next_unit_id;
-                state.next_unit_id += 1;
-                let unit = unit_from_registry(e, uid, &s.unit_type, s.faction);
-                spawns.push(PendingSpawn {
-                    unit,
-                    destination: Hex::from_offset(s.col, s.row),
-                });
-            }
-            if let Some(state) = e.game.as_mut() {
-                state.trigger_zones.push(TriggerZone {
-                    trigger_hex: Hex::from_offset(tdef.trigger_col, tdef.trigger_row),
-                    trigger_faction: tdef.trigger_faction,
-                    spawns,
-                    triggered: false,
-                });
-            }
+    // Resolve trigger zones from the parsed file
+    for tdef in units_def.triggers {
+        let mut spawns = Vec::new();
+        for s in &tdef.spawns {
+            let Some(state) = e.game.as_mut() else { continue };
+            let uid = state.next_unit_id;
+            state.next_unit_id += 1;
+            let unit = unit_from_registry(e, uid, &s.unit_type, s.faction);
+            spawns.push(PendingSpawn {
+                unit,
+                destination: Hex::from_offset(s.col, s.row),
+            });
+        }
+        if let Some(state) = e.game.as_mut() {
+            state.trigger_zones.push(TriggerZone {
+                trigger_hex: Hex::from_offset(tdef.trigger_col, tdef.trigger_row),
+                trigger_faction: tdef.trigger_faction,
+                spawns,
+                triggered: false,
+            });
         }
     }
 
+    e.state_cache = None;
     1
 }
 
@@ -333,6 +357,7 @@ pub unsafe extern "C" fn norrust_place_unit_at(
     if let Some(state) = e.game.as_mut() {
         state.place_unit(unit, Hex::from_offset(col, row));
     }
+    e.state_cache = None;
 }
 
 #[no_mangle]
@@ -344,12 +369,10 @@ pub unsafe extern "C" fn norrust_remove_unit_at(
     let Some(e) = engine.as_mut() else { return 0 };
     let Some(state) = e.game.as_mut() else { return 0 };
     let target = Hex::from_offset(col, row);
-    let uid = state.positions.iter()
-        .find(|(_, &hex)| hex == target)
-        .map(|(&id, _)| id);
-    let Some(uid) = uid else { return 0 };
+    let Some(uid) = state.hex_to_unit.remove(&target) else { return 0 };
     state.units.remove(&uid);
     state.positions.remove(&uid);
+    e.state_cache = None;
     1
 }
 
@@ -406,10 +429,12 @@ pub unsafe extern "C" fn norrust_recruit_unit_at(
 
     let destination = Hex::from_offset(col, row);
     let Some(state) = e.game.as_mut() else { return -1 };
-    match apply_recruit(state, unit, destination, cost) {
+    let result = match apply_recruit(state, unit, destination, cost) {
         Ok(()) => 0,
         Err(err) => action_err_code(err),
-    }
+    };
+    e.state_cache = None;
+    result
 }
 
 #[no_mangle]
@@ -440,7 +465,7 @@ pub unsafe extern "C" fn norrust_ai_recruit(
             let dest = keep.neighbors().iter().copied().find(|&h| {
                 state.board.contains(h)
                     && state.board.tile_at(h).map(|t| t.terrain_id == "castle").unwrap_or(false)
-                    && !state.positions.values().any(|&p| p == h)
+                    && !state.hex_to_unit.contains_key(&h)
             })?;
             let def_id = recruits.iter().find(|did| {
                 e.units.as_ref()
@@ -469,6 +494,7 @@ pub unsafe extern "C" fn norrust_ai_recruit(
             Err(_) => break,
         }
     }
+    e.state_cache = None;
     recruited
 }
 
@@ -485,7 +511,7 @@ pub unsafe extern "C" fn norrust_apply_starting_gold(
     let gold0 = e.factions.iter().find(|(f, _)| f.id == f0).map(|(f, _)| f.starting_gold);
     let gold1 = e.factions.iter().find(|(f, _)| f.id == f1).map(|(f, _)| f.starting_gold);
     match (gold0, gold1) {
-        (Some(g0), Some(g1)) => { state.gold = [g0, g1]; 1 }
+        (Some(g0), Some(g1)) => { state.gold = [g0, g1]; e.state_cache = None; 1 }
         _ => 0,
     }
 }
@@ -532,9 +558,7 @@ pub unsafe extern "C" fn norrust_get_faction_ids_json(
     let Some(e) = engine.as_ref() else { return to_c_string("[]") };
     let arr: Vec<String> = e.factions.iter()
         .map(|(f, _)| {
-            let id = f.id.replace('\\', "\\\\").replace('"', "\\\"");
-            let name = f.name.replace('\\', "\\\\").replace('"', "\\\"");
-            format!("{{\"id\":\"{}\",\"name\":\"{}\"}}", id, name)
+            format!("{{\"id\":\"{}\",\"name\":\"{}\"}}", json_escape(&f.id), json_escape(&f.name))
         })
         .collect();
     to_c_string(&format!("[{}]", arr.join(",")))
@@ -573,7 +597,7 @@ pub unsafe extern "C" fn norrust_get_faction_recruits_json(
                 .map(|u| u.level as i32 <= max_level)
                 .unwrap_or(true)
         })
-        .map(|id| format!("\"{}\"", id.replace('\\', "\\\\").replace('"', "\\\"")))
+        .map(|id| format!("\"{}\"", json_escape(id)))
         .collect();
     to_c_string(&format!("[{}]", filtered.join(",")))
 }
@@ -631,6 +655,7 @@ pub unsafe extern "C" fn norrust_set_objective_hex(
     let Some(e) = engine.as_mut() else { return };
     let Some(state) = e.game.as_mut() else { return };
     state.objective_hex = Some(Hex::from_offset(col, row));
+    e.state_cache = None;
 }
 
 #[no_mangle]
@@ -641,16 +666,23 @@ pub unsafe extern "C" fn norrust_set_max_turns(
     let Some(e) = engine.as_mut() else { return };
     let Some(state) = e.game.as_mut() else { return };
     state.max_turns = if max_turns > 0 { Some(max_turns as u32) } else { None };
+    e.state_cache = None;
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn norrust_get_state_json(
     engine: *mut NorRustEngine,
 ) -> *mut c_char {
-    let Some(e) = engine.as_ref() else { return to_c_string("") };
+    let Some(e) = engine.as_mut() else { return to_c_string("") };
     let Some(state) = e.game.as_ref() else { return to_c_string("") };
+    if let Some(cached) = &e.state_cache {
+        return to_c_string(cached);
+    }
     match serde_json::to_string(&StateSnapshot::from_game_state(state)) {
-        Ok(s) => to_c_string(&s),
+        Ok(s) => {
+            e.state_cache = Some(s.clone());
+            to_c_string(&s)
+        }
         Err(_) => to_c_string(""),
     }
 }
@@ -676,13 +708,15 @@ pub unsafe extern "C" fn norrust_apply_move(
 ) -> i32 {
     let Some(e) = engine.as_mut() else { return -1 };
     let Some(state) = e.game.as_mut() else { return -1 };
-    match apply_action(state, Action::Move {
+    let result = match apply_action(state, Action::Move {
         unit_id: unit_id as u32,
         destination: Hex::from_offset(col, row),
     }) {
         Ok(()) => 0,
         Err(err) => action_err_code(err),
-    }
+    };
+    e.state_cache = None;
+    result
 }
 
 #[no_mangle]
@@ -693,13 +727,15 @@ pub unsafe extern "C" fn norrust_apply_attack(
 ) -> i32 {
     let Some(e) = engine.as_mut() else { return -1 };
     let Some(state) = e.game.as_mut() else { return -1 };
-    match apply_action(state, Action::Attack {
+    let result = match apply_action(state, Action::Attack {
         attacker_id: attacker_id as u32,
         defender_id: defender_id as u32,
     }) {
         Ok(()) => 0,
         Err(err) => action_err_code(err),
-    }
+    };
+    e.state_cache = None;
+    result
 }
 
 #[no_mangle]
@@ -738,6 +774,7 @@ pub unsafe extern "C" fn norrust_apply_advance(
     let Some(state) = e.game.as_mut() else { return -1 };
     let Some(unit) = state.units.get_mut(&uid) else { return -11 };
     advance_unit(unit, &new_def);
+    e.state_cache = None;
     0
 }
 
@@ -745,10 +782,12 @@ pub unsafe extern "C" fn norrust_apply_advance(
 pub unsafe extern "C" fn norrust_end_turn(engine: *mut NorRustEngine) -> i32 {
     let Some(e) = engine.as_mut() else { return -1 };
     let Some(state) = e.game.as_mut() else { return -1 };
-    match apply_action(state, Action::EndTurn) {
+    let result = match apply_action(state, Action::EndTurn) {
         Ok(()) => 0,
         Err(err) => action_err_code(err),
-    }
+    };
+    e.state_cache = None;
+    result
 }
 
 #[no_mangle]
@@ -773,10 +812,12 @@ pub unsafe extern "C" fn norrust_apply_action_json(
         }
         other => {
             let Some(state) = e.game.as_mut() else { return -1 };
-            match apply_action(state, other.into()) {
+            let result = match apply_action(state, other.into()) {
                 Ok(()) => 0,
                 Err(err) => action_err_code(err),
-            }
+            };
+            e.state_cache = None;
+            result
         }
     }
 }
@@ -848,7 +889,7 @@ pub unsafe extern "C" fn norrust_find_path(
 
     let destination = Hex::from_offset(dest_col, dest_row);
     let zoc = get_zoc_hexes(state, unit.faction);
-    let is_skirmisher = unit.abilities.contains(&"skirmisher".to_string());
+    let is_skirmisher = unit.abilities.iter().any(|a| a == "skirmisher");
 
     let Some((path, _cost)) = find_path(
         &state.board,
@@ -892,6 +933,7 @@ pub unsafe extern "C" fn norrust_ai_take_turn(
     if faction < 0 || faction > 1 { return; }
     let Some(state) = e.game.as_mut() else { return };
     crate::ai::ai_take_turn(state, faction as u8);
+    e.state_cache = None;
 }
 
 // ── Campaign ─────────────────────────────────────────────────────────────────
@@ -914,17 +956,17 @@ pub unsafe extern "C" fn norrust_load_campaign(
         .map(|s| {
             format!(
                 "{{\"board\":\"{}\",\"units\":\"{}\",\"preset_units\":{}}}",
-                s.board, s.units, s.preset_units
+                json_escape(&s.board), json_escape(&s.units), s.preset_units
             )
         })
         .collect();
 
     let json = format!(
         "{{\"id\":\"{}\",\"name\":\"{}\",\"faction_0\":\"{}\",\"faction_1\":\"{}\",\"gold_carry_percent\":{},\"early_finish_bonus\":{},\"scenarios\":[{}]}}",
-        campaign.id,
-        campaign.name,
-        campaign.faction_0,
-        campaign.faction_1,
+        json_escape(&campaign.id),
+        json_escape(&campaign.name),
+        json_escape(&campaign.faction_0),
+        json_escape(&campaign.faction_1),
         campaign.gold_carry_percent,
         campaign.early_finish_bonus,
         scenarios_json.join(",")
@@ -1017,10 +1059,11 @@ pub unsafe extern "C" fn norrust_place_veteran_unit(
     if keep_hex.distance(destination) != 1 {
         return -9;
     }
-    if state.positions.values().any(|&h| h == destination) {
+    if state.hex_to_unit.contains_key(&destination) {
         return -4;
     }
     state.place_unit(unit, destination);
+    e.state_cache = None;
     0
 }
 
@@ -1035,6 +1078,7 @@ pub unsafe extern "C" fn norrust_set_faction_gold(
     if faction >= 0 && (faction as usize) < state.gold.len() {
         state.gold[faction as usize] = gold.max(0) as u32;
     }
+    e.state_cache = None;
 }
 
 #[no_mangle]
@@ -1045,6 +1089,7 @@ pub unsafe extern "C" fn norrust_set_turn(
     let Some(e) = engine.as_mut() else { return };
     let Some(state) = e.game.as_mut() else { return };
     state.turn = turn.max(1) as u32;
+    e.state_cache = None;
 }
 
 #[no_mangle]
@@ -1055,6 +1100,7 @@ pub unsafe extern "C" fn norrust_set_active_faction(
     let Some(e) = engine.as_mut() else { return };
     let Some(state) = e.game.as_mut() else { return };
     state.active_faction = faction.max(0) as u8;
+    e.state_cache = None;
 }
 
 #[no_mangle]
@@ -1075,6 +1121,7 @@ pub unsafe extern "C" fn norrust_set_unit_combat_state(
         unit.moved = moved != 0;
         unit.attacked = attacked != 0;
     }
+    e.state_cache = None;
 }
 
 // ── Terrain query ────────────────────────────────────────────────────────────
@@ -1112,7 +1159,7 @@ pub unsafe extern "C" fn norrust_get_unit_terrain_info(
 
     let json = format!(
         "{{\"terrain_id\":\"{}\",\"defense\":{},\"movement_cost\":{},\"base_defense\":{},\"base_movement_cost\":{},\"healing\":{}}}",
-        terrain_id, effective_defense, effective_move_cost,
+        json_escape(terrain_id), effective_defense, effective_move_cost,
         tile.defense, tile.movement_cost, tile.healing
     );
     to_c_string(&json)
@@ -1178,10 +1225,11 @@ pub unsafe extern "C" fn norrust_simulate_combat(
                 y: def_pos.y + (def_pos.y - atk_hex.y),
                 z: def_pos.z + (def_pos.z - atk_hex.z),
             };
-            state.positions.iter().any(|(&uid, &hex)| {
-                hex == opposite && uid != atk_uid
-                    && state.units.get(&uid).map(|u| u.faction == attacker.faction).unwrap_or(false)
-            })
+            state.hex_to_unit.get(&opposite)
+                .filter(|&&uid| uid != atk_uid)
+                .and_then(|&uid| state.units.get(&uid))
+                .map(|u| u.faction == attacker.faction)
+                .unwrap_or(false)
         } else {
             false
         }
@@ -1212,7 +1260,7 @@ pub unsafe extern "C" fn norrust_simulate_combat(
         preview.attacker_damage_min, preview.attacker_damage_max, preview.attacker_damage_mean,
         preview.defender_damage_min, preview.defender_damage_max, preview.defender_damage_mean,
         preview.attacker_kill_pct, preview.defender_kill_pct,
-        preview.attacker_attack_name, preview.defender_attack_name,
+        json_escape(&preview.attacker_attack_name), json_escape(&preview.defender_attack_name),
         preview.attacker_hp, preview.defender_hp,
         preview.attacker_terrain_defense, preview.defender_terrain_defense,
     );
@@ -1247,6 +1295,7 @@ pub unsafe extern "C" fn norrust_set_trigger_zone_fired(
     if let Some(tz) = state.trigger_zones.get_mut(index as usize) {
         tz.triggered = fired != 0;
     }
+    e.state_cache = None;
 }
 
 // ── Dialogue ─────────────────────────────────────────────────────────────────
@@ -1257,7 +1306,7 @@ pub unsafe extern "C" fn norrust_load_dialogue(
     engine: *mut NorRustEngine,
     path: *const c_char,
 ) -> i32 {
-    let engine = unsafe { &mut *engine };
+    let Some(engine) = engine.as_mut() else { return 0 };
     let path_str = unsafe { cstr_to_str(path) };
     match DialogueState::load(std::path::Path::new(path_str)) {
         Ok(state) => {
@@ -1281,7 +1330,7 @@ pub unsafe extern "C" fn norrust_get_dialogue(
     col: i32,
     row: i32,
 ) -> *mut c_char {
-    let engine = unsafe { &mut *engine };
+    let Some(engine) = engine.as_mut() else { return to_c_string("[]") };
     let trigger_str = unsafe { cstr_to_str(trigger) };
     let ds = match engine.dialogue_state.as_mut() {
         Some(ds) => ds,
@@ -1299,8 +1348,8 @@ pub unsafe extern "C" fn norrust_get_dialogue(
         .map(|e| {
             format!(
                 "{{\"id\":\"{}\",\"text\":\"{}\"}}",
-                e.id,
-                e.text.replace('\\', "\\\\").replace('"', "\\\"")
+                json_escape(&e.id),
+                json_escape(&e.text)
             )
         })
         .collect();
@@ -1316,7 +1365,7 @@ pub unsafe extern "C" fn norrust_get_dialogue_fired(
     let Some(e) = engine.as_ref() else { return to_c_string("[]") };
     let Some(ds) = e.dialogue_state.as_ref() else { return to_c_string("[]") };
     let items: Vec<String> = ds.fired_ids().iter()
-        .map(|id| format!("\"{}\"", id.replace('\\', "\\\\").replace('"', "\\\"")))
+        .map(|id| format!("\"{}\"", json_escape(id)))
         .collect();
     to_c_string(&format!("[{}]", items.join(",")))
 }
@@ -1339,4 +1388,5 @@ pub unsafe extern "C" fn norrust_set_dialogue_fired(
             ds.mark_fired(id);
         }
     }
+    e.state_cache = None;
 }

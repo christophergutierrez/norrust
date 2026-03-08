@@ -108,6 +108,14 @@ pub fn ai_take_turn(state: &mut GameState, faction: u8) {
         .map(|(id, _)| *id)
         .collect();
 
+    // Collect enemy IDs once before the loop; filter out dead ones each iteration.
+    let enemy_ids: Vec<u32> = state
+        .units
+        .iter()
+        .filter(|(_, u)| u.faction != faction)
+        .map(|(id, _)| *id)
+        .collect();
+
     for uid in unit_ids {
         // Unit may have been killed by retaliation from a prior action this turn.
         if !state.units.contains_key(&uid) || state.units[&uid].attacked {
@@ -116,23 +124,20 @@ pub fn ai_take_turn(state: &mut GameState, faction: u8) {
 
         let start = state.positions[&uid];
 
-        // Clone movement data before any other borrows of state.
-        let movement_costs = state.units[&uid].movement_costs.clone();
-        let movement = {
-            let m = state.units[&uid].movement;
-            if state.units[&uid].slowed { m / 2 } else { m }
-        };
+        // Extract unit data before pathfinding to avoid cloning movement_costs.
+        let unit_ref = &state.units[&uid];
+        let movement = if unit_ref.slowed { unit_ref.movement / 2 } else { unit_ref.movement };
 
         let zoc = get_zoc_hexes(state, faction);
         let candidates_raw =
-            reachable_hexes(&state.board, &movement_costs, 1, start, movement, &zoc, false);
+            reachable_hexes(&state.board, &state.units[&uid].movement_costs, 1, start, movement, &zoc, false);
 
         // Build the occupied set (everyone except this unit).
         let all_occupied: HashSet<Hex> = state
-            .positions
+            .hex_to_unit
             .iter()
-            .filter(|(&id, _)| id != uid)
-            .map(|(_, &h)| h)
+            .filter(|(_, &id)| id != uid)
+            .map(|(&h, _)| h)
             .collect();
 
         // Reachable hexes the unit can actually land on.
@@ -141,16 +146,11 @@ pub fn ai_take_turn(state: &mut GameState, faction: u8) {
             .filter(|&h| h == start || !all_occupied.contains(&h))
             .collect();
 
-        // Collect enemy data as owned values to avoid borrow conflicts.
-        let enemy_ids_units: Vec<(u32, Unit)> = state
-            .units
+        // Build enemy data from pre-collected IDs, skipping any killed by retaliation.
+        let enemies: Vec<(u32, Hex, Unit)> = enemy_ids
             .iter()
-            .filter(|(_, u)| u.faction != faction)
-            .map(|(id, u)| (*id, u.clone()))
-            .collect();
-        let enemies: Vec<(u32, Hex, Unit)> = enemy_ids_units
-            .into_iter()
-            .map(|(id, u)| (id, state.positions[&id], u))
+            .filter(|id| state.units.contains_key(id))
+            .map(|&id| (id, state.positions[&id], state.units[&id].clone()))
             .collect();
 
         // Score all (destination, enemy) pairs — keep all borrows in this block.

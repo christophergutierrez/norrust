@@ -122,7 +122,7 @@ end
 --- Load the next campaign scenario (or the first one).
 --- Engine keeps registries (units, terrain, factions); load_board replaces GameState.
 --- Modifies ctx: scenario_board, scenario_units, scenario_preset, game_over,
---- winner_faction, recruit_mode, next_unit_id, game_mode.
+--- winner_faction, recruit_mode, game_mode.
 function campaign_client.load_campaign_scenario(ctx)
     local int = ctx.int
     local sc = ctx.campaign_data.scenarios[ctx.campaign_index + 1]
@@ -143,7 +143,6 @@ function campaign_client.load_campaign_scenario(ctx)
     if ctx.scenario_preset then
         ctx.norrust.apply_starting_gold(ctx.engine, ctx.faction_id[1], ctx.faction_id[2])
         ctx.norrust.load_units(ctx.engine, ctx.scenarios_path .. "/" .. ctx.scenario_units)
-        ctx.next_unit_id = ctx.norrust.get_next_unit_id(ctx.engine)
     end
 
     -- Populate roster from preset units on first scenario
@@ -208,7 +207,6 @@ function campaign_client.load_campaign_scenario(ctx)
         end
 
         campaign_client.place_veterans(ctx)
-        ctx.next_unit_id = ctx.norrust.get_next_unit_id(ctx.engine)
     end
 
     -- Apply carry-over gold (override faction 0's starting gold)
@@ -243,7 +241,6 @@ function campaign_client.commit_deployment(ctx)
     campaign_client.place_veterans(ctx)
     ctx.campaign_veterans = orig
 
-    ctx.next_unit_id = ctx.norrust.get_next_unit_id(ctx.engine)
     deploy.active = false
     ctx.game_mode = ctx.PLAYING
 end

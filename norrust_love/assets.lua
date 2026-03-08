@@ -9,6 +9,12 @@ local anim = require("animation")
 
 local assets = {}
 
+-- Shared upvalue for stencil closure reuse (avoids per-call closure allocation)
+local stencil_pts = nil
+local function stencil_fn()
+    love.graphics.polygon("fill", stencil_pts)
+end
+
 --- Normalize a unit def_id to a snake_case directory name.
 -- Converts "Elvish Archer" -> "elvish_archer", "Spearman" -> "spearman".
 -- @param def_id string: unit definition id from game data
@@ -110,9 +116,7 @@ function assets.draw_terrain_hex(terrain_tiles, terrain_id, cx, cy, hex_radius, 
     local img = terrain_id and terrain_tiles[terrain_id]
     if img then
         -- Hex stencil mask: clip rectangular image to hex boundary
-        local stencil_fn = function()
-            love.graphics.polygon("fill", hex_polygon_fn(cx, cy, hex_radius))
-        end
+        stencil_pts = hex_polygon_fn(cx, cy, hex_radius)
         love.graphics.stencil(stencil_fn, "replace", 1)
         love.graphics.setStencilTest("greater", 0)
 

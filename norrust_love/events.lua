@@ -20,7 +20,10 @@ end
 
 function events.emit(topic, data)
     for _, fn in ipairs(listeners[topic] or {}) do
-        fn(data)
+        local ok, err = pcall(fn, data)
+        if not ok then
+            print("[events] error in '" .. topic .. "' listener: " .. tostring(err))
+        end
     end
 end
 

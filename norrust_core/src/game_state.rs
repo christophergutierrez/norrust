@@ -53,6 +53,8 @@ pub struct GameState {
     pub board: Board,
     pub units: HashMap<u32, Unit>,
     pub positions: HashMap<u32, Hex>,
+    /// Reverse index: hex → unit ID for O(1) occupancy checks.
+    pub hex_to_unit: HashMap<Hex, u32>,
     pub turn: u32,
     pub active_faction: u8,
     pub rng: Rng,
@@ -77,6 +79,7 @@ impl GameState {
             board,
             units: HashMap::new(),
             positions: HashMap::new(),
+            hex_to_unit: HashMap::new(),
             turn: 1,
             active_faction: 0,
             rng: Rng::new(12345),
@@ -103,12 +106,10 @@ impl GameState {
         // 1. Objective hex: attacker (faction 0) wins by reaching it.
         //    Defender units already on the objective don't count.
         if let Some(obj) = self.objective_hex {
-            for (&uid, &hex) in &self.positions {
-                if hex == obj {
-                    if let Some(unit) = self.units.get(&uid) {
-                        if unit.faction == 0 {
-                            return Some(0);
-                        }
+            if let Some(&uid) = self.hex_to_unit.get(&obj) {
+                if let Some(unit) = self.units.get(&uid) {
+                    if unit.faction == 0 {
+                        return Some(0);
                     }
                 }
             }
@@ -137,11 +138,12 @@ impl GameState {
     pub fn place_unit(&mut self, unit: Unit, hex: Hex) {
         assert!(self.board.contains(hex), "place_unit: hex out of bounds");
         assert!(
-            !self.positions.values().any(|&h| h == hex),
+            !self.hex_to_unit.contains_key(&hex),
             "place_unit: hex already occupied"
         );
         let id = unit.id;
         self.positions.insert(id, hex);
+        self.hex_to_unit.insert(hex, id);
         self.units.insert(id, unit);
     }
 }
@@ -201,22 +203,23 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
             if !state.board.contains(destination) {
                 return Err(ActionError::DestinationOutOfBounds);
             }
-            if state.positions.values().any(|&h| h == destination) {
+            if state.hex_to_unit.contains_key(&destination) {
                 return Err(ActionError::DestinationOccupied);
             }
 
-            // Pathfinding validation — only when unit has a movement budget
-            let mut movement = state.units[&unit_id].movement;
-            if state.units[&unit_id].slowed {
+            // Extract unit data before pathfinding to avoid cloning movement_costs.
+            let unit_ref = &state.units[&unit_id];
+            let mut movement = unit_ref.movement;
+            if unit_ref.slowed {
                 movement /= 2;
             }
+            let faction = unit_ref.faction;
             if movement > 0 {
-                let zoc = get_zoc_hexes(state, state.units[&unit_id].faction);
-                let costs = state.units[&unit_id].movement_costs.clone();
+                let zoc = get_zoc_hexes(state, faction);
                 let start = state.positions[&unit_id];
                 let reachable = find_path(
                     &state.board,
-                    &costs,
+                    &state.units[&unit_id].movement_costs,
                     1,
                     start,
                     destination,
@@ -229,7 +232,11 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                 }
             }
 
+            if let Some(&old_hex) = state.positions.get(&unit_id) {
+                state.hex_to_unit.remove(&old_hex);
+            }
             state.positions.insert(unit_id, destination);
+            state.hex_to_unit.insert(destination, unit_id);
             state.units.get_mut(&unit_id).unwrap().moved = true;
 
             // Check trigger zones: spawn enemies if a matching zone is entered
@@ -243,7 +250,7 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
             }
             for spawn in spawns_to_place {
                 if state.board.contains(spawn.destination)
-                    && !state.positions.values().any(|&h| h == spawn.destination)
+                    && !state.hex_to_unit.contains_key(&spawn.destination)
                 {
                     state.place_unit(spawn.unit, spawn.destination);
                 }
@@ -355,10 +362,11 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                     y: defender_pos.y + (defender_pos.y - attacker_pos.y),
                     z: defender_pos.z + (defender_pos.z - attacker_pos.z),
                 };
-                let flanked = state.positions.iter().any(|(&uid, &hex)| {
-                    hex == opposite && uid != attacker_id
-                        && state.units.get(&uid).map(|u| u.faction == state.active_faction).unwrap_or(false)
-                });
+                let flanked = state.hex_to_unit.get(&opposite)
+                    .filter(|&&uid| uid != attacker_id)
+                    .and_then(|&uid| state.units.get(&uid))
+                    .map(|u| u.faction == state.active_faction)
+                    .unwrap_or(false);
                 if flanked {
                     effective_damage *= 2;
                 }
@@ -394,8 +402,10 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
 
             // Purge dead defender
             if defender_hp == 0 {
+                if let Some(hex) = state.positions.remove(&defender_id) {
+                    state.hex_to_unit.remove(&hex);
+                }
                 state.units.remove(&defender_id);
-                state.positions.remove(&defender_id);
             }
 
             // XP grant: attacker earns 1 for a hit, +8 bonus for a kill.
@@ -495,8 +505,10 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                         }
 
                         if attacker_hp == 0 {
+                            if let Some(hex) = state.positions.remove(&attacker_id) {
+                                state.hex_to_unit.remove(&hex);
+                            }
                             state.units.remove(&attacker_id);
-                            state.positions.remove(&attacker_id);
                         }
                         attacker_hp == 0
                     } else {
@@ -556,8 +568,10 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                 }
             }
             for uid in poison_dead {
+                if let Some(hex) = state.positions.remove(&uid) {
+                    state.hex_to_unit.remove(&hex);
+                }
                 state.units.remove(&uid);
-                state.positions.remove(&uid);
             }
 
             state.active_faction = 1 - state.active_faction;
@@ -655,7 +669,7 @@ pub fn apply_recruit(
     if keep_hex.distance(destination) != 1 {
         return Err(ActionError::DestinationNotCastle);
     }
-    if state.positions.values().any(|&h| h == destination) {
+    if state.hex_to_unit.contains_key(&destination) {
         return Err(ActionError::DestinationOccupied);
     }
     let faction = unit.faction as usize;
@@ -958,8 +972,14 @@ mod tests {
         // Faction 1 moves in and captures on their turn
         state.place_unit(Unit::new(2, "archer", 25, 1), Hex::from_offset(3, 2));
         // Move unit 1 away so faction 1 can capture
+        let old_hex_1 = state.positions[&1];
+        state.hex_to_unit.remove(&old_hex_1);
         state.positions.insert(1, Hex::from_offset(0, 0));
+        state.hex_to_unit.insert(Hex::from_offset(0, 0), 1);
+        let old_hex_2 = state.positions[&2];
+        state.hex_to_unit.remove(&old_hex_2);
         state.positions.insert(2, village_hex);
+        state.hex_to_unit.insert(village_hex, 2);
         apply_action(&mut state, Action::EndTurn).unwrap();
         assert_eq!(state.village_owners.get(&village_hex).copied(), Some(1i8));
     }

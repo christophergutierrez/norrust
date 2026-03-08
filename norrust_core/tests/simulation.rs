@@ -684,9 +684,15 @@ fn test_objective_hex_win() {
     // Defender on objective does NOT trigger a win
     assert_eq!(state.check_winner(), None, "defender on objective must not win");
 
-    // Move attacker to objective hex
+    // Move attacker to objective hex (update both forward and reverse maps)
+    let old1 = state.positions[&1];
+    state.hex_to_unit.remove(&old1);
+    let old2 = state.positions[&2];
+    state.hex_to_unit.remove(&old2);
     state.positions.insert(1, Hex::from_offset(4, 0));
+    state.hex_to_unit.insert(Hex::from_offset(4, 0), 1);
     state.positions.insert(2, Hex::from_offset(3, 0)); // move defender off
+    state.hex_to_unit.insert(Hex::from_offset(3, 0), 2);
 
     // Faction 0 should win
     assert_eq!(state.check_winner(), Some(0), "faction 0 unit on objective hex must win");
@@ -884,6 +890,8 @@ fn test_elimination_still_works() {
 
     // Remove faction 1 unit — faction 0 wins by elimination
     state.units.remove(&2);
-    state.positions.remove(&2);
+    if let Some(hex) = state.positions.remove(&2) {
+        state.hex_to_unit.remove(&hex);
+    }
     assert_eq!(state.check_winner(), Some(0), "faction 0 wins by elimination");
 }

@@ -61,26 +61,87 @@ function M.init(ctx)
     campaign_client = ctx.campaign_client
 end
 
+--- Restore game state after loading a save file.
+-- @param data  The table returned by save.load_save
+local function restore_from_save(data)
+    scn.board = data.game.board_path
+    scn.path = data.game.scenarios_path
+    vars.game_over = false
+    vars.winner_faction = -1
+    clear_selection()
+    -- Update board dimensions from loaded state
+    local state = mods.norrust.get_state(vars.engine)
+    scn.COLS = int(state.cols or 8)
+    scn.ROWS = int(state.rows or 5)
+    center_camera()
+    -- Restore campaign context if present
+    if data.campaign then
+        local c = data.campaign
+        campaign.active = true
+        campaign.data = mods.norrust.load_campaign(vars.engine, campaign.path .. "/" .. c.campaign_file)
+        campaign.index = int(c.campaign_index)
+        campaign.gold = int(c.campaign_gold)
+        game_data.faction_id[1] = c.faction_id_0
+        game_data.faction_id[2] = c.faction_id_1
+        -- Restore veterans
+        campaign.veterans = data.veterans or {}
+        -- Restore roster
+        if data.roster and #data.roster > 0 then
+            campaign.roster = mods.roster_mod.from_save_array(data.roster)
+            -- Re-map engine IDs to roster UUIDs by matching def_id
+            local st = mods.norrust.get_state(vars.engine)
+            for _, u in ipairs(st.units or {}) do
+                if int(u.faction) == 0 then
+                    for uuid, entry in pairs(campaign.roster.entries) do
+                        if entry.status == "alive" and not campaign.roster.id_map[int(u.id)]
+                           and entry.def_id == u.def_id then
+                            -- Check no other engine_id already maps to this uuid
+                            local already_mapped = false
+                            for _, mapped_uuid in pairs(campaign.roster.id_map) do
+                                if mapped_uuid == uuid then already_mapped = true; break end
+                            end
+                            if not already_mapped then
+                                mods.roster_mod.map_id(campaign.roster, int(u.id), uuid)
+                                break
+                            end
+                        end
+                    end
+                end
+            end
+        else
+            campaign.roster = mods.roster_mod.new()
+        end
+    else
+        campaign.active = false
+        campaign.data = nil
+        campaign.index = 0
+        campaign.veterans = {}
+        campaign.gold = 0
+        campaign.roster = nil
+    end
+    vars.game_mode = MODES.PLAYING
+end
+
 -- ── Keyboard input ────────────────────────────────────────────────────────
 
-function M.keypressed(key)
-    -- Block input during movement animation
-    if pending_anims.move or pending_anims.combat_slide then return end
+-- Build campaign context for save (nil if not in campaign).
+-- Module-scope so both F5 and exit_confirm handlers can use it.
+local function build_save_campaign_ctx()
+    if not campaign.active then return nil end
+    return {
+        file = game_data.CAMPAIGNS[1].file,
+        index = campaign.index,
+        gold = campaign.gold,
+        veterans = campaign.veterans,
+        faction_id = game_data.faction_id,
+        roster = campaign.roster and mods.roster_mod.to_save_array(campaign.roster) or nil,
+    }
+end
 
-    -- Build campaign context for save (nil if not in campaign)
-    local function build_save_campaign_ctx()
-        if not campaign.active then return nil end
-        return {
-            file = game_data.CAMPAIGNS[1].file,
-            index = campaign.index,
-            gold = campaign.gold,
-            veterans = campaign.veterans,
-            faction_id = game_data.faction_id,
-            roster = campaign.roster and mods.roster_mod.to_save_array(campaign.roster) or nil,
-        }
-    end
-
-    -- Save/Load (available from any mode)
+-- Handle global keys (F5, F9, /, m, -, =).
+-- Returns true if the key was consumed.
+local function handle_global_keys(key)
+    -- Save (F5, playing only)
     if key == "f5" and vars.game_mode == MODES.PLAYING then
         local filename = mods.save.write_save(vars.engine, mods.norrust, scn.board, scn.path, build_save_campaign_ctx())
         if filename then
@@ -89,69 +150,16 @@ function M.keypressed(key)
             vars.status_message = "Save failed!"
         end
         vars.status_timer = 3.0
-        return
-    elseif key == "f9" then
+        return true
+    end
+
+    -- Quick-load (F9)
+    if key == "f9" then
         local filepath = mods.save.find_latest()
         if filepath then
             local data = mods.save.load_save(vars.engine, mods.norrust, filepath, center_camera)
             if data then
-                scn.board = data.game.board_path
-                scn.path = data.game.scenarios_path
-                vars.game_over = false
-                vars.winner_faction = -1
-                clear_selection()
-                vars.next_unit_id = mods.norrust.get_next_unit_id(vars.engine)
-                -- Update board dimensions from loaded state
-                local state = mods.norrust.get_state(vars.engine)
-                scn.COLS = int(state.cols or 8)
-                scn.ROWS = int(state.rows or 5)
-                center_camera()
-                -- Restore campaign context if present
-                if data.campaign then
-                    local c = data.campaign
-                    campaign.active = true
-                    campaign.data = mods.norrust.load_campaign(vars.engine, campaign.path .. "/" .. c.campaign_file)
-                    campaign.index = int(c.campaign_index)
-                    campaign.gold = int(c.campaign_gold)
-                    game_data.faction_id[1] = c.faction_id_0
-                    game_data.faction_id[2] = c.faction_id_1
-                    -- Restore veterans
-                    campaign.veterans = data.veterans or {}
-                    -- Restore roster
-                    if data.roster and #data.roster > 0 then
-                        campaign.roster = mods.roster_mod.from_save_array(data.roster)
-                        -- Re-map engine IDs to roster UUIDs by matching def_id
-                        local st = mods.norrust.get_state(vars.engine)
-                        for _, u in ipairs(st.units or {}) do
-                            if int(u.faction) == 0 then
-                                for uuid, entry in pairs(campaign.roster.entries) do
-                                    if entry.status == "alive" and not campaign.roster.id_map[int(u.id)]
-                                       and entry.def_id == u.def_id then
-                                        -- Check no other engine_id already maps to this uuid
-                                        local already_mapped = false
-                                        for _, mapped_uuid in pairs(campaign.roster.id_map) do
-                                            if mapped_uuid == uuid then already_mapped = true; break end
-                                        end
-                                        if not already_mapped then
-                                            mods.roster_mod.map_id(campaign.roster, int(u.id), uuid)
-                                            break
-                                        end
-                                    end
-                                end
-                            end
-                        end
-                    else
-                        campaign.roster = mods.roster_mod.new()
-                    end
-                else
-                    campaign.active = false
-                    campaign.data = nil
-                    campaign.index = 0
-                    campaign.veterans = {}
-                    campaign.gold = 0
-                    campaign.roster = nil
-                end
-                vars.game_mode = MODES.PLAYING
+                restore_from_save(data)
                 vars.status_message = "Loaded: " .. filepath
             else
                 vars.status_message = "Load failed!"
@@ -160,335 +168,301 @@ function M.keypressed(key)
             vars.status_message = "No save files found"
         end
         vars.status_timer = 3.0
-        return
+        return true
     end
 
-    -- Help overlay (available from any mode)
+    -- Help overlay toggle
     if key == "/" then
         shared.show_help = not shared.show_help
-        return
+        return true
     end
 
-    -- Close help overlay on any other key
-    if shared.show_help then
-        shared.show_help = false
-    end
-
-    -- Sound controls (available from any mode)
+    -- Sound controls
     if key == "m" then
         sound.toggle_mute()
         vars.status_message = sound.is_muted() and "Sound muted" or "Sound unmuted"
         vars.status_timer = 1.5
-        return
+        return true
     elseif key == "-" then
         sound.set_volume(sound.get_volume() - 0.1)
         vars.status_message = string.format("Volume: %d%%", math.floor(sound.get_volume() * 100 + 0.5))
         vars.status_timer = 1.5
-        return
+        return true
     elseif key == "=" then
         sound.set_volume(sound.get_volume() + 0.1)
         vars.status_message = string.format("Volume: %d%%", math.floor(sound.get_volume() * 100 + 0.5))
         vars.status_timer = 1.5
-        return
+        return true
     end
 
-    -- Scenario selection
-    if vars.game_mode == MODES.PICK_SCENARIO then
-        local num = tonumber(key)
-        if num and num >= 1 and num <= #game_data.SCENARIOS then
-            sound.stop_music()
-            campaign.active = false
-            scn.board = game_data.SCENARIOS[num].board
-            scn.units = game_data.SCENARIOS[num].units
-            scn.preset = game_data.SCENARIOS[num].preset_units
-            call_load_scenario()
-            if scn.preset then
-                -- Preset scenarios: auto-assign factions and start directly
-                game_data.faction_id[1] = game_data.factions[1].id
-                game_data.faction_id[2] = game_data.factions[2].id
-                mods.norrust.apply_starting_gold(vars.engine, game_data.faction_id[1], game_data.faction_id[2])
-                mods.norrust.load_units(vars.engine, scn.path .. "/" .. scn.units)
-                vars.next_unit_id = mods.norrust.get_next_unit_id(vars.engine)
-                vars.game_mode = MODES.PLAYING
-                mods.events.emit("scenario_loaded", {board = scn.board})
-            else
-                vars.game_mode = MODES.PICK_FACTION_BLUE
-            end
-        elseif key == "l" then
-            -- Open save list screen
-            game_data.save_list = mods.save.list_saves()
-            game_data.save_idx = 1
-            vars.game_mode = MODES.LOAD_SAVE
-        elseif key == "c" then
-            -- Start campaign
-            sound.stop_music()
-            local camp = game_data.CAMPAIGNS[1]
-            campaign.data = mods.norrust.load_campaign(vars.engine, campaign.path .. "/" .. camp.file)
-            if campaign.data then
-                campaign.active = true
-                campaign.index = 0
-                campaign.veterans = {}
-                campaign.gold = 0
-                campaign.roster = mods.roster_mod.new()
-                -- Assign factions from campaign data, or fall back to auto-assign
-                if campaign.data.faction_0 and campaign.data.faction_0 ~= "" then
-                    game_data.faction_id[1] = campaign.data.faction_0
-                else
-                    game_data.faction_id[1] = game_data.factions[1].id
-                end
-                if campaign.data.faction_1 and campaign.data.faction_1 ~= "" then
-                    game_data.faction_id[2] = campaign.data.faction_1
-                else
-                    game_data.faction_id[2] = game_data.factions[2].id
-                end
-                local sc = campaign.data.scenarios[1]
-                scn.board = sc.board
-                scn.units = sc.units
-                scn.preset = sc.preset_units
-                call_load_scenario()
-                call_load_campaign_scenario()
-            end
-        end
-        return
+    return false
+end
+
+-- Handle exit confirmation (Y/N/Escape during PLAYING).
+local function handle_exit_confirm(key)
+    if key == "y" then
+        -- Save and return to menu
+        mods.save.write_save(vars.engine, mods.norrust, scn.board, scn.path, build_save_campaign_ctx())
+        shared.exit_confirm = false
+        campaign.active = false
+        campaign.roster = nil
+        vars.game_over = false
+        vars.winner_faction = -1
+        vars.game_mode = MODES.PICK_SCENARIO
+        sound.play_music("data/sounds/menu_music.ogg")
+    elseif key == "n" then
+        -- Return to menu without saving
+        shared.exit_confirm = false
+        campaign.active = false
+        campaign.roster = nil
+        vars.game_over = false
+        vars.winner_faction = -1
+        vars.game_mode = MODES.PICK_SCENARIO
+        sound.play_music("data/sounds/menu_music.ogg")
+    elseif key == "escape" then
+        shared.exit_confirm = false
     end
+end
 
-    -- Veteran deployment screen
-    if vars.game_mode == MODES.DEPLOY_VETERANS then
-        local deploy = campaign.deploy
-        local dvets = deploy.veterans or {}
+-- ── Mode-specific key handlers ───────────────────────────────────────────
 
-        if key == "up" then
-            if deploy.selected > 1 then deploy.selected = deploy.selected - 1 end
-        elseif key == "down" then
-            if deploy.selected < #dvets then deploy.selected = deploy.selected + 1 end
-        elseif key == "space" then
-            local dv = dvets[deploy.selected]
-            if dv then
-                if dv.deployed then
-                    dv.deployed = false
-                else
-                    -- Count currently deployed
-                    local count = 0
-                    for _, v in ipairs(dvets) do
-                        if v.deployed then count = count + 1 end
-                    end
-                    if count < deploy.slots then
-                        dv.deployed = true
-                    else
-                        vars.status_message = "All " .. deploy.slots .. " slots full"
-                        vars.status_timer = 2.0
-                    end
-                end
-            end
-        elseif key == "return" or key == "kpenter" then
-            -- Build campaign ctx and commit
-            local ctx = {
-                norrust = mods.norrust, engine = vars.engine, int = int,
-                hex = mods.hex, scenarios_path = scn.path,
-                campaign_veterans = campaign.veterans,
-                campaign_roster = campaign.roster, roster_mod = mods.roster_mod,
-                campaign_deploy = campaign.deploy,
-                build_unit_pos_map = build_unit_pos_map,
-                PLAYING = MODES.PLAYING,
-            }
-            campaign_client.commit_deployment(ctx)
-            vars.next_unit_id = ctx.next_unit_id or mods.norrust.get_next_unit_id(vars.engine)
-            vars.game_mode = ctx.game_mode
-            mods.events.emit("scenario_loaded", {board = scn.board})
-        elseif key == "escape" then
-            -- Deploy all (up to slot limit)
-            local count = 0
-            for _, dv in ipairs(dvets) do
-                if count < deploy.slots then
-                    dv.deployed = true
-                    count = count + 1
-                else
-                    dv.deployed = false
-                end
-            end
-            local ctx = {
-                norrust = mods.norrust, engine = vars.engine, int = int,
-                hex = mods.hex, scenarios_path = scn.path,
-                campaign_veterans = campaign.veterans,
-                campaign_roster = campaign.roster, roster_mod = mods.roster_mod,
-                campaign_deploy = campaign.deploy,
-                build_unit_pos_map = build_unit_pos_map,
-                PLAYING = MODES.PLAYING,
-            }
-            campaign_client.commit_deployment(ctx)
-            vars.next_unit_id = ctx.next_unit_id or mods.norrust.get_next_unit_id(vars.engine)
-            vars.game_mode = ctx.game_mode
+local function handle_pick_scenario(key)
+    local num = tonumber(key)
+    if num and num >= 1 and num <= #game_data.SCENARIOS then
+        sound.stop_music()
+        campaign.active = false
+        scn.board = game_data.SCENARIOS[num].board
+        scn.units = game_data.SCENARIOS[num].units
+        scn.preset = game_data.SCENARIOS[num].preset_units
+        call_load_scenario()
+        if scn.preset then
+            -- Preset scenarios: auto-assign factions and start directly
+            game_data.faction_id[1] = game_data.factions[1].id
+            game_data.faction_id[2] = game_data.factions[2].id
+            mods.norrust.apply_starting_gold(vars.engine, game_data.faction_id[1], game_data.faction_id[2])
+            mods.norrust.load_units(vars.engine, scn.path .. "/" .. scn.units)
+            vars.game_mode = MODES.PLAYING
             mods.events.emit("scenario_loaded", {board = scn.board})
         else
-            -- Number keys 1-9 toggle deploy
-            local num = tonumber(key)
-            if num and num >= 1 and num <= #dvets then
-                local dv = dvets[num]
-                if dv.deployed then
-                    dv.deployed = false
-                else
-                    local count = 0
-                    for _, v in ipairs(dvets) do
-                        if v.deployed then count = count + 1 end
-                    end
-                    if count < deploy.slots then
-                        dv.deployed = true
-                    else
-                        vars.status_message = "All " .. deploy.slots .. " slots full"
-                        vars.status_timer = 2.0
-                    end
+            vars.game_mode = MODES.PICK_FACTION_BLUE
+        end
+    elseif key == "l" then
+        -- Open save list screen
+        game_data.save_list = mods.save.list_saves()
+        game_data.save_idx = 1
+        vars.game_mode = MODES.LOAD_SAVE
+    elseif key == "c" then
+        -- Start campaign
+        sound.stop_music()
+        local camp = game_data.CAMPAIGNS[1]
+        campaign.data = mods.norrust.load_campaign(vars.engine, campaign.path .. "/" .. camp.file)
+        if campaign.data then
+            campaign.active = true
+            campaign.index = 0
+            campaign.veterans = {}
+            campaign.gold = 0
+            campaign.roster = mods.roster_mod.new()
+            -- Assign factions from campaign data, or fall back to auto-assign
+            if campaign.data.faction_0 and campaign.data.faction_0 ~= "" then
+                game_data.faction_id[1] = campaign.data.faction_0
+            else
+                game_data.faction_id[1] = game_data.factions[1].id
+            end
+            if campaign.data.faction_1 and campaign.data.faction_1 ~= "" then
+                game_data.faction_id[2] = campaign.data.faction_1
+            else
+                game_data.faction_id[2] = game_data.factions[2].id
+            end
+            local sc = campaign.data.scenarios[1]
+            scn.board = sc.board
+            scn.units = sc.units
+            scn.preset = sc.preset_units
+            call_load_scenario()
+            call_load_campaign_scenario()
+        end
+    elseif key == "q" or key == "escape" then
+        love.event.quit()
+    end
+end
+
+local function handle_deploy_veterans(key)
+    local deploy = campaign.deploy
+    local dvets = deploy.veterans or {}
+
+    if key == "up" then
+        if deploy.selected > 1 then deploy.selected = deploy.selected - 1 end
+    elseif key == "down" then
+        if deploy.selected < #dvets then deploy.selected = deploy.selected + 1 end
+    elseif key == "space" then
+        local dv = dvets[deploy.selected]
+        if dv then
+            if dv.deployed then
+                dv.deployed = false
+            else
+                -- Count currently deployed
+                local count = 0
+                for _, v in ipairs(dvets) do
+                    if v.deployed then count = count + 1 end
                 end
+                if count < deploy.slots then
+                    dv.deployed = true
+                else
+                    vars.status_message = "All " .. deploy.slots .. " slots full"
+                    vars.status_timer = 2.0
+                end
+            end
+        end
+    elseif key == "return" or key == "kpenter" then
+        -- Build campaign ctx and commit
+        local ctx = {
+            norrust = mods.norrust, engine = vars.engine, int = int,
+            hex = mods.hex, scenarios_path = scn.path,
+            campaign_veterans = campaign.veterans,
+            campaign_roster = campaign.roster, roster_mod = mods.roster_mod,
+            campaign_deploy = campaign.deploy,
+            build_unit_pos_map = build_unit_pos_map,
+            PLAYING = MODES.PLAYING,
+        }
+        campaign_client.commit_deployment(ctx)
+        vars.game_mode = ctx.game_mode
+        mods.events.emit("scenario_loaded", {board = scn.board})
+    elseif key == "escape" then
+        -- Deploy all (up to slot limit)
+        local count = 0
+        for _, dv in ipairs(dvets) do
+            if count < deploy.slots then
+                dv.deployed = true
+                count = count + 1
+            else
+                dv.deployed = false
+            end
+        end
+        local ctx = {
+            norrust = mods.norrust, engine = vars.engine, int = int,
+            hex = mods.hex, scenarios_path = scn.path,
+            campaign_veterans = campaign.veterans,
+            campaign_roster = campaign.roster, roster_mod = mods.roster_mod,
+            campaign_deploy = campaign.deploy,
+            build_unit_pos_map = build_unit_pos_map,
+            PLAYING = MODES.PLAYING,
+        }
+        campaign_client.commit_deployment(ctx)
+        vars.game_mode = ctx.game_mode
+        mods.events.emit("scenario_loaded", {board = scn.board})
+    else
+        -- Number keys 1-9 toggle deploy
+        local num = tonumber(key)
+        if num and num >= 1 and num <= #dvets then
+            local dv = dvets[num]
+            if dv.deployed then
+                dv.deployed = false
+            else
+                local count = 0
+                for _, v in ipairs(dvets) do
+                    if v.deployed then count = count + 1 end
+                end
+                if count < deploy.slots then
+                    dv.deployed = true
+                else
+                    vars.status_message = "All " .. deploy.slots .. " slots full"
+                    vars.status_timer = 2.0
+                end
+            end
+        end
+    end
+end
+
+local function handle_load_save(key)
+    local saves = game_data.save_list or {}
+
+    -- Rename mode intercepts keys
+    if game_data.save_renaming then
+        if key == "return" or key == "kpenter" then
+            local selected = saves[game_data.save_idx]
+            if selected then
+                mods.save.update_display_name(selected.filepath, game_data.save_rename_text)
+                game_data.save_list = mods.save.list_saves()
+            end
+            game_data.save_renaming = false
+        elseif key == "escape" then
+            game_data.save_renaming = false
+        elseif key == "backspace" then
+            local t = game_data.save_rename_text
+            if #t > 0 then
+                -- Remove last byte (ASCII-safe; UTF-8 multi-byte unlikely in save names)
+                game_data.save_rename_text = t:sub(1, #t - 1)
             end
         end
         return
     end
 
-    -- Save management screen
-    if vars.game_mode == MODES.LOAD_SAVE then
-        local saves = game_data.save_list or {}
-
-        -- Rename mode intercepts keys
-        if game_data.save_renaming then
-            if key == "return" or key == "kpenter" then
-                local selected = saves[game_data.save_idx]
-                if selected then
-                    mods.save.update_display_name(selected.filepath, game_data.save_rename_text)
-                    game_data.save_list = mods.save.list_saves()
-                end
-                game_data.save_renaming = false
-            elseif key == "escape" then
-                game_data.save_renaming = false
-            elseif key == "backspace" then
-                local t = game_data.save_rename_text
-                if #t > 0 then
-                    -- Remove last byte (ASCII-safe; UTF-8 multi-byte unlikely in save names)
-                    game_data.save_rename_text = t:sub(1, #t - 1)
-                end
-            end
-            return
+    if key == "escape" then
+        vars.game_mode = MODES.PICK_SCENARIO
+    elseif key == "up" then
+        if game_data.save_idx > 1 then
+            game_data.save_idx = game_data.save_idx - 1
         end
+    elseif key == "down" then
+        if game_data.save_idx < #saves then
+            game_data.save_idx = game_data.save_idx + 1
+        end
+    elseif key == "return" and #saves > 0 then
+        local selected = saves[game_data.save_idx]
+        if selected then
+            local data = mods.save.load_save(vars.engine, mods.norrust, selected.filepath, center_camera)
+            if data then
+                restore_from_save(data)
+                vars.status_message = "Loaded: " .. selected.filepath
+            else
+                vars.status_message = "Load failed!"
+            end
+            vars.status_timer = 3.0
+        end
+    elseif key == "d" and #saves > 0 then
+        local selected = saves[game_data.save_idx]
+        if selected then
+            mods.save.delete_save(selected.filepath)
+            game_data.save_list = mods.save.list_saves()
+            if game_data.save_idx > #game_data.save_list then
+                game_data.save_idx = math.max(1, #game_data.save_list)
+            end
+        end
+    elseif key == "r" and #saves > 0 then
+        local selected = saves[game_data.save_idx]
+        if selected then
+            game_data.save_renaming = true
+            game_data.save_rename_skip = true
+            game_data.save_rename_text = selected.display_name or ""
+        end
+    end
+end
 
+local function handle_setup(key)
+    -- Faction picker: number keys (non-preset scenarios only)
+    if vars.game_mode == MODES.PICK_FACTION_BLUE or vars.game_mode == MODES.PICK_FACTION_RED then
         if key == "escape" then
             vars.game_mode = MODES.PICK_SCENARIO
-        elseif key == "up" then
-            if game_data.save_idx > 1 then
-                game_data.save_idx = game_data.save_idx - 1
-            end
-        elseif key == "down" then
-            if game_data.save_idx < #saves then
-                game_data.save_idx = game_data.save_idx + 1
-            end
-        elseif key == "return" and #saves > 0 then
-            local selected = saves[game_data.save_idx]
-            if selected then
-                local data = mods.save.load_save(vars.engine, mods.norrust, selected.filepath, center_camera)
-                if data then
-                    scn.board = data.game.board_path
-                    scn.path = data.game.scenarios_path
-                    vars.game_over = false
-                    vars.winner_faction = -1
-                    clear_selection()
-                    vars.next_unit_id = mods.norrust.get_next_unit_id(vars.engine)
-                    local state = mods.norrust.get_state(vars.engine)
-                    scn.COLS = int(state.cols or 8)
-                    scn.ROWS = int(state.rows or 5)
-                    center_camera()
-                    if data.campaign then
-                        local c = data.campaign
-                        campaign.active = true
-                        campaign.data = mods.norrust.load_campaign(vars.engine, campaign.path .. "/" .. c.campaign_file)
-                        campaign.index = int(c.campaign_index)
-                        campaign.gold = int(c.campaign_gold)
-                        game_data.faction_id[1] = c.faction_id_0
-                        game_data.faction_id[2] = c.faction_id_1
-                        campaign.veterans = data.veterans or {}
-                        if data.roster and #data.roster > 0 then
-                            campaign.roster = mods.roster_mod.from_save_array(data.roster)
-                            local st = mods.norrust.get_state(vars.engine)
-                            for _, u in ipairs(st.units or {}) do
-                                if int(u.faction) == 0 then
-                                    for uuid, entry in pairs(campaign.roster.entries) do
-                                        if entry.status == "alive" and not campaign.roster.id_map[int(u.id)]
-                                           and entry.def_id == u.def_id then
-                                            local already_mapped = false
-                                            for _, mapped_uuid in pairs(campaign.roster.id_map) do
-                                                if mapped_uuid == uuid then already_mapped = true; break end
-                                            end
-                                            if not already_mapped then
-                                                mods.roster_mod.map_id(campaign.roster, int(u.id), uuid)
-                                                break
-                                            end
-                                        end
-                                    end
-                                end
-                            end
-                        else
-                            campaign.roster = mods.roster_mod.new()
-                        end
-                    else
-                        campaign.active = false
-                        campaign.data = nil
-                        campaign.index = 0
-                        campaign.veterans = {}
-                        campaign.gold = 0
-                        campaign.roster = nil
-                    end
-                    vars.game_mode = MODES.PLAYING
-                    vars.status_message = "Loaded: " .. selected.filepath
-                else
-                    vars.status_message = "Load failed!"
-                end
-                vars.status_timer = 3.0
-            end
-        elseif key == "d" and #saves > 0 then
-            local selected = saves[game_data.save_idx]
-            if selected then
-                mods.save.delete_save(selected.filepath)
-                game_data.save_list = mods.save.list_saves()
-                if game_data.save_idx > #game_data.save_list then
-                    game_data.save_idx = math.max(1, #game_data.save_list)
-                end
-            end
-        elseif key == "r" and #saves > 0 then
-            local selected = saves[game_data.save_idx]
-            if selected then
-                game_data.save_renaming = true
-                game_data.save_rename_skip = true
-                game_data.save_rename_text = selected.display_name or ""
-            end
-        end
-        return
-    end
-
-    -- Setup mode
-    if vars.game_mode ~= MODES.PLAYING then
-        -- Faction picker: number keys (non-preset scenarios only)
-        if vars.game_mode == MODES.PICK_FACTION_BLUE or vars.game_mode == MODES.PICK_FACTION_RED then
-            local num = tonumber(key)
-            if num and num >= 1 and num <= #game_data.factions then
-                local fi = vars.game_mode == MODES.PICK_FACTION_BLUE and 0 or 1
-                game_data.faction_id[fi + 1] = game_data.factions[num].id
-                vars.sel_faction_idx = 0
-                vars.game_mode = vars.game_mode == MODES.PICK_FACTION_BLUE and MODES.SETUP_BLUE or MODES.SETUP_RED
-            end
+            sound.play_music("data/sounds/menu_music.ogg")
             return
         end
-
-        -- Setup: Enter to continue (manual placement scenarios only)
-        if key == "return" or key == "kpenter" then
-            if vars.game_mode == MODES.SETUP_BLUE then
-                vars.game_mode = MODES.PICK_FACTION_RED
-            else
-                -- Both factions chosen — wire starting gold
-                mods.norrust.apply_starting_gold(vars.engine, game_data.faction_id[1], game_data.faction_id[2])
-                vars.game_mode = MODES.PLAYING
-                mods.events.emit("scenario_loaded", {board = scn.board})
-            end
+        local num = tonumber(key)
+        if num and num >= 1 and num <= #game_data.factions then
+            local fi = vars.game_mode == MODES.PICK_FACTION_BLUE and 0 or 1
+            game_data.faction_id[fi + 1] = game_data.factions[num].id
+            vars.sel_faction_idx = 0
+            vars.game_mode = vars.game_mode == MODES.PICK_FACTION_BLUE and MODES.SETUP_BLUE or MODES.SETUP_RED
         end
         return
     end
 
-    -- Playing mode
+    -- Setup: Escape to return to menu
+    if key == "escape" then
+        vars.game_mode = MODES.PICK_SCENARIO
+        sound.play_music("data/sounds/menu_music.ogg")
+    end
+end
+
+local function handle_playing(key)
     if vars.game_over then
         if key == "return" or key == "kpenter" then
             if campaign.active and vars.winner_faction == 0 then
@@ -589,8 +563,7 @@ function M.keypressed(key)
         clear_selection()
         check_game_over()
         if not vars.game_over and mods.norrust.get_active_faction(vars.engine) == 1 then
-            local n = mods.norrust.ai_recruit(vars.engine, game_data.faction_id[2], vars.next_unit_id)
-            vars.next_unit_id = vars.next_unit_id + n
+            mods.norrust.ai_recruit(vars.engine, game_data.faction_id[2], mods.norrust.get_next_unit_id(vars.engine))
             mods.norrust.ai_take_turn(vars.engine, 1)
             check_game_over()
         end
@@ -672,6 +645,42 @@ function M.keypressed(key)
     end
 end
 
+-- ── Mode dispatch table (populated by M.init once MODES is available) ────
+
+local mode_handlers
+
+function M.keypressed(key)
+    -- Block input during movement animation
+    if pending_anims.move or pending_anims.combat_slide then return end
+
+    -- Build mode dispatch table on first call (MODES not available at load time)
+    if not mode_handlers then
+        mode_handlers = {
+            [MODES.PICK_SCENARIO]    = handle_pick_scenario,
+            [MODES.DEPLOY_VETERANS]  = handle_deploy_veterans,
+            [MODES.LOAD_SAVE]        = handle_load_save,
+            [MODES.PICK_FACTION_BLUE] = handle_setup,
+            [MODES.PICK_FACTION_RED]  = handle_setup,
+            [MODES.SETUP_BLUE]       = handle_setup,
+            [MODES.SETUP_RED]        = handle_setup,
+            [MODES.PLAYING]          = handle_playing,
+        }
+    end
+
+    -- Global keys (F5, F9, /, m, -, =)
+    if handle_global_keys(key) then return end
+
+    -- Close help on any key
+    if shared.show_help then shared.show_help = false end
+
+    -- Exit confirmation interceptor
+    if shared.exit_confirm then handle_exit_confirm(key); return end
+
+    -- Mode dispatch
+    local handler = mode_handlers[vars.game_mode]
+    if handler then handler(key) end
+end
+
 --- Check if a sidebar button was clicked and handle it.
 function M.handle_sidebar_button(x, y, button, gm, go)
     if button ~= 1 then return end
@@ -682,6 +691,16 @@ function M.handle_sidebar_button(x, y, button, gm, go)
     end
     if hit(btns.help) then
         shared.show_help = not shared.show_help
+    elseif hit(btns.exit) and not go then
+        if gm == MODES.PLAYING then
+            shared.exit_confirm = true
+        else
+            -- During setup/faction-pick: no save needed, return to menu
+            vars.game_over = false
+            vars.winner_faction = -1
+            vars.game_mode = MODES.PICK_SCENARIO
+            sound.play_music("data/sounds/menu_music.ogg")
+        end
     elseif hit(btns.end_turn) and gm == MODES.PLAYING and not go then
         M.keypressed("e")
     elseif hit(btns.recruit) and gm == MODES.PLAYING and not go then
@@ -764,9 +783,16 @@ function M.mousepressed(sx, sy, button)
             local key = col .. "," .. row
             if not pos_map[key] then
                 local leader_def = mods.norrust.get_faction_leader(vars.engine, game_data.faction_id[fi + 1])
-                mods.norrust.place_unit_at(vars.engine, vars.next_unit_id, leader_def, 0, faction, col, row)
-                vars.next_unit_id = vars.next_unit_id + 1
+                mods.norrust.place_unit_at(vars.engine, mods.norrust.get_next_unit_id(vars.engine), leader_def, 0, faction, col, row)
                 game_data.leader_placed[fi + 1] = true
+                -- Auto-advance after leader placement
+                if vars.game_mode == MODES.SETUP_BLUE then
+                    vars.game_mode = MODES.PICK_FACTION_RED
+                else
+                    mods.norrust.apply_starting_gold(vars.engine, game_data.faction_id[1], game_data.faction_id[2])
+                    vars.game_mode = MODES.PLAYING
+                    mods.events.emit("scenario_loaded", {board = scn.board})
+                end
             end
         end
         return
@@ -801,16 +827,16 @@ function M.mousepressed(sx, sy, button)
         if sel.recruit_idx < vet_count then
             -- Veteran recruitment: place veteran unit from roster
             local vet = sel.recruit_state.veterans[sel.recruit_idx + 1]
+            local uid = mods.norrust.get_next_unit_id(vars.engine)
             local rc = mods.norrust.place_veteran_unit(
-                vars.engine, vars.next_unit_id,
+                vars.engine, uid,
                 vet.def_id, 0,
                 col, row,
                 int(vet.hp), int(vet.xp), int(vet.xp_needed),
                 vet.advancement_pending
             )
             if rc == 0 then
-                mods.roster_mod.map_id(campaign.roster, vars.next_unit_id, vet.uuid)
-                vars.next_unit_id = vars.next_unit_id + 1
+                mods.roster_mod.map_id(campaign.roster, uid, vet.uuid)
                 sound.play("recruit")
                 table.remove(sel.recruit_state.veterans, sel.recruit_idx + 1)
                 if sel.recruit_idx >= #sel.recruit_state.veterans + #sel.recruit_palette then
@@ -830,21 +856,21 @@ function M.mousepressed(sx, sy, button)
             local palette_idx = sel.recruit_idx - vet_count
             local def_id = sel.recruit_palette[palette_idx + 1] or ""
             if def_id ~= "" then
-                local result = mods.norrust.recruit_unit_at(vars.engine, vars.next_unit_id, def_id, col, row)
+                local uid = mods.norrust.get_next_unit_id(vars.engine)
+                local result = mods.norrust.recruit_unit_at(vars.engine, uid, def_id, col, row)
                 if result == 0 then
                     -- Add recruited unit to campaign roster
                     if campaign.active and campaign.roster then
                         local st = mods.norrust.get_state(vars.engine)
                         for _, u in ipairs(st.units or {}) do
-                            if int(u.id) == vars.next_unit_id then
-                                mods.roster_mod.add(campaign.roster, u.def_id, vars.next_unit_id,
+                            if int(u.id) == uid then
+                                mods.roster_mod.add(campaign.roster, u.def_id, uid,
                                     int(u.hp), int(u.max_hp), int(u.xp), int(u.xp_needed),
                                     u.advancement_pending or false)
                                 break
                             end
                         end
                     end
-                    vars.next_unit_id = vars.next_unit_id + 1
                     sel.recruit_error = ""
                     sel.recruit_mode = false
                     sound.play("recruit")

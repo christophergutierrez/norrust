@@ -4,6 +4,8 @@
 local sound = {}
 
 local effects = {}      -- name -> love.Source
+local pools = {}        -- name -> {sources={}, idx=0}
+local POOL_SIZE = 3
 local volume = 0.5      -- master volume 0.0-1.0
 local muted = false
 local current_music = nil  -- love.Source or nil
@@ -80,9 +82,20 @@ function sound.play(name)
     if muted then return end
     local src = effects[name]
     if not src then return end
-    local clone = src:clone()
-    clone:setVolume(volume)
-    clone:play()
+    local pool = pools[name]
+    if not pool then
+        local sources = {}
+        for i = 1, POOL_SIZE do
+            sources[i] = src:clone()
+        end
+        pool = {sources = sources, idx = 0}
+        pools[name] = pool
+    end
+    pool.idx = pool.idx % POOL_SIZE + 1
+    local s = pool.sources[pool.idx]
+    s:stop()
+    s:setVolume(volume)
+    s:play()
 end
 
 function sound.set_volume(v)

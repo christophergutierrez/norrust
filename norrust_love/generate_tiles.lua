@@ -35,6 +35,109 @@ end
 --- Clamp a value to the 0–1 range.
 local function clamp01(v) return math.max(0, math.min(1, v)) end
 
+-- Pattern dispatch table: each entry takes (r, g, b, x, y, noise, noise2) and returns r, g, b.
+local pattern_fns = {
+    grass = function(r, g, b, x, y, noise, noise2)
+        local blade = hash(x, y, 7) * 0.12 - 0.06
+        local clump = hash(math.floor(x / 8), math.floor(y / 8), 13) * 0.08 - 0.04
+        return clamp01(r + noise + blade * 0.3),
+               clamp01(g + noise * 1.5 + blade + clump),
+               clamp01(b + noise * 0.5)
+    end,
+
+    trees = function(r, g, b, x, y, noise, noise2)
+        local tx = math.floor(x / 24)
+        local ty = math.floor(y / 24)
+        local cx = tx * 24 + hash(tx, ty, 5) * 16
+        local cy = ty * 24 + hash(tx, ty, 6) * 16
+        local dx, dy = x - cx, y - cy
+        local dist = math.sqrt(dx * dx + dy * dy)
+        local tree_r = 8 + hash(tx, ty, 7) * 8
+        if dist < tree_r then
+            local shade = 0.7 + 0.3 * (dist / tree_r)
+            return clamp01(r * shade + noise * 0.5),
+                   clamp01(g * shade + noise),
+                   clamp01(b * shade + noise * 0.3)
+        else
+            return clamp01(r * 1.1 + noise),
+                   clamp01(g * 1.1 + noise),
+                   clamp01(b * 0.9 + noise)
+        end
+    end,
+
+    bumps = function(r, g, b, x, y, noise, noise2)
+        local hill = math.sin(x * 0.04 + hash(0, math.floor(y / 32), 3) * 6) *
+                     math.cos(y * 0.05 + hash(math.floor(x / 32), 0, 4) * 6) * 0.12
+        return clamp01(r + noise + hill),
+               clamp01(g + noise + hill * 0.8),
+               clamp01(b + noise * 0.5 + hill * 0.5)
+    end,
+
+    peaks = function(r, g, b, x, y, noise, noise2)
+        local ridge = math.abs(math.sin(x * 0.08 + y * 0.06)) * 0.15
+        local snow = (y < SIZE * 0.3 or hash(x, y, 11) > 0.7) and 0.1 or 0
+        return clamp01(r + noise + ridge + snow),
+               clamp01(g + noise + ridge + snow),
+               clamp01(b + noise + ridge * 0.5 + snow * 1.2)
+    end,
+
+    waves = function(r, g, b, x, y, noise, noise2)
+        local wave = math.sin(x * 0.06 + y * 0.03 + hash(0, math.floor(y / 16), 8) * 3) * 0.08
+        local sparkle = hash(x * 7, y * 7, 55) > 0.95 and 0.15 or 0
+        return clamp01(r + noise + wave * 0.5 + sparkle),
+               clamp01(g + noise + wave * 0.7 + sparkle),
+               clamp01(b + noise + wave + sparkle)
+    end,
+
+    dots = function(r, g, b, x, y, noise, noise2)
+        local dot = hash(math.floor(x / 6), math.floor(y / 6), 9) > 0.7 and 0.08 or 0
+        return clamp01(r + noise + dot),
+               clamp01(g + noise + dot * 0.8),
+               clamp01(b + noise * 0.5)
+    end,
+
+    cracks = function(r, g, b, x, y, noise, noise2)
+        local crack = (math.abs(math.sin(x * 0.1 + hash(0, math.floor(y / 12), 10) * 10)) < 0.05) and -0.15 or 0
+        return clamp01(r + noise + crack),
+               clamp01(g + noise + crack),
+               clamp01(b + noise + crack)
+    end,
+
+    crystals = function(r, g, b, x, y, noise, noise2)
+        local facet = math.abs(math.sin(x * 0.12) * math.cos(y * 0.12)) * 0.1
+        local shimmer = hash(x * 5, y * 5, 44) > 0.9 and 0.12 or 0
+        return clamp01(r + noise + facet + shimmer * 0.5),
+               clamp01(g + noise + facet + shimmer * 0.7),
+               clamp01(b + noise + facet + shimmer)
+    end,
+
+    bricks = function(r, g, b, x, y, noise, noise2)
+        local bx = x % 32
+        local by = (y + (math.floor(x / 32) % 2) * 16) % 32
+        local mortar = (bx < 2 or by < 2) and -0.12 or 0
+        local brick_var = hash(math.floor(x / 32), math.floor(y / 32), 15) * 0.06
+        return clamp01(r + noise + mortar + brick_var),
+               clamp01(g + noise + mortar + brick_var),
+               clamp01(b + noise * 0.5 + mortar)
+    end,
+
+    roofs = function(r, g, b, x, y, noise, noise2)
+        local rx = math.floor(x / 40)
+        local ry = math.floor(y / 40)
+        local in_roof = (x % 40 > 4 and x % 40 < 36 and y % 40 > 4 and y % 40 < 36)
+        if in_roof and hash(rx, ry, 20) > 0.3 then
+            local roof_hue = hash(rx, ry, 21) * 0.1
+            return clamp01(0.6 + roof_hue + noise),
+                   clamp01(0.35 + roof_hue * 0.5 + noise),
+                   clamp01(0.2 + noise)
+        else
+            return clamp01(0.5 + noise),
+                   clamp01(0.45 + noise),
+                   clamp01(0.35 + noise)
+        end
+    end,
+}
+
 --- Generate a single terrain tile image from a terrain definition table.
 --- @param t table Terrain definition with id, r/g/b base color, and pattern type.
 --- @return Image, ImageData The generated Love2D image and raw pixel data.
@@ -44,6 +147,7 @@ local function generate_tile(t)
     love.graphics.clear(0, 0, 0, 0)
 
     local imageData = love.image.newImageData(SIZE, SIZE)
+    local fn = pattern_fns[t.pattern]
 
     for y = 0, SIZE - 1 do
         for x = 0, SIZE - 1 do
@@ -51,106 +155,8 @@ local function generate_tile(t)
             local noise = hash(x, y, 42) * 0.15 - 0.075
             local noise2 = hash(x * 3, y * 3, 99) * 0.1 - 0.05
 
-            if t.pattern == "grass" then
-                -- Fine grass-like variation
-                local blade = hash(x, y, 7) * 0.12 - 0.06
-                local clump = hash(math.floor(x / 8), math.floor(y / 8), 13) * 0.08 - 0.04
-                r = clamp01(r + noise + blade * 0.3)
-                g = clamp01(g + noise * 1.5 + blade + clump)
-                b = clamp01(b + noise * 0.5)
-
-            elseif t.pattern == "trees" then
-                -- Dark circles for tree canopy
-                local tx = math.floor(x / 24)
-                local ty = math.floor(y / 24)
-                local cx = tx * 24 + hash(tx, ty, 5) * 16
-                local cy = ty * 24 + hash(tx, ty, 6) * 16
-                local dx, dy = x - cx, y - cy
-                local dist = math.sqrt(dx * dx + dy * dy)
-                local tree_r = 8 + hash(tx, ty, 7) * 8
-                if dist < tree_r then
-                    local shade = 0.7 + 0.3 * (dist / tree_r)
-                    r = clamp01(r * shade + noise * 0.5)
-                    g = clamp01(g * shade + noise)
-                    b = clamp01(b * shade + noise * 0.3)
-                else
-                    r = clamp01(r * 1.1 + noise)
-                    g = clamp01(g * 1.1 + noise)
-                    b = clamp01(b * 0.9 + noise)
-                end
-
-            elseif t.pattern == "bumps" then
-                -- Rolling hill contours
-                local hill = math.sin(x * 0.04 + hash(0, math.floor(y / 32), 3) * 6) *
-                             math.cos(y * 0.05 + hash(math.floor(x / 32), 0, 4) * 6) * 0.12
-                r = clamp01(r + noise + hill)
-                g = clamp01(g + noise + hill * 0.8)
-                b = clamp01(b + noise * 0.5 + hill * 0.5)
-
-            elseif t.pattern == "peaks" then
-                -- Angular rocky peaks
-                local ridge = math.abs(math.sin(x * 0.08 + y * 0.06)) * 0.15
-                local snow = (y < SIZE * 0.3 or hash(x, y, 11) > 0.7) and 0.1 or 0
-                r = clamp01(r + noise + ridge + snow)
-                g = clamp01(g + noise + ridge + snow)
-                b = clamp01(b + noise + ridge * 0.5 + snow * 1.2)
-
-            elseif t.pattern == "waves" then
-                -- Wavy water pattern
-                local wave = math.sin(x * 0.06 + y * 0.03 + hash(0, math.floor(y / 16), 8) * 3) * 0.08
-                local sparkle = hash(x * 7, y * 7, 55) > 0.95 and 0.15 or 0
-                r = clamp01(r + noise + wave * 0.5 + sparkle)
-                g = clamp01(g + noise + wave * 0.7 + sparkle)
-                b = clamp01(b + noise + wave + sparkle)
-
-            elseif t.pattern == "dots" then
-                -- Scattered dots / pebbles
-                local dot = hash(math.floor(x / 6), math.floor(y / 6), 9) > 0.7 and 0.08 or 0
-                r = clamp01(r + noise + dot)
-                g = clamp01(g + noise + dot * 0.8)
-                b = clamp01(b + noise * 0.5)
-
-            elseif t.pattern == "cracks" then
-                -- Dark cracks on grey surface
-                local crack = (math.abs(math.sin(x * 0.1 + hash(0, math.floor(y / 12), 10) * 10)) < 0.05) and -0.15 or 0
-                r = clamp01(r + noise + crack)
-                g = clamp01(g + noise + crack)
-                b = clamp01(b + noise + crack)
-
-            elseif t.pattern == "crystals" then
-                -- Ice crystal facets
-                local facet = math.abs(math.sin(x * 0.12) * math.cos(y * 0.12)) * 0.1
-                local shimmer = hash(x * 5, y * 5, 44) > 0.9 and 0.12 or 0
-                r = clamp01(r + noise + facet + shimmer * 0.5)
-                g = clamp01(g + noise + facet + shimmer * 0.7)
-                b = clamp01(b + noise + facet + shimmer)
-
-            elseif t.pattern == "bricks" then
-                -- Stone brick pattern
-                local bx = x % 32
-                local by = (y + (math.floor(x / 32) % 2) * 16) % 32
-                local mortar = (bx < 2 or by < 2) and -0.12 or 0
-                local brick_var = hash(math.floor(x / 32), math.floor(y / 32), 15) * 0.06
-                r = clamp01(r + noise + mortar + brick_var)
-                g = clamp01(g + noise + mortar + brick_var)
-                b = clamp01(b + noise * 0.5 + mortar)
-
-            elseif t.pattern == "roofs" then
-                -- Small rooftop rectangles
-                local rx = math.floor(x / 40)
-                local ry = math.floor(y / 40)
-                local in_roof = (x % 40 > 4 and x % 40 < 36 and y % 40 > 4 and y % 40 < 36)
-                if in_roof and hash(rx, ry, 20) > 0.3 then
-                    local roof_hue = hash(rx, ry, 21) * 0.1
-                    r = clamp01(0.6 + roof_hue + noise)
-                    g = clamp01(0.35 + roof_hue * 0.5 + noise)
-                    b = clamp01(0.2 + noise)
-                else
-                    -- Path between buildings
-                    r = clamp01(0.5 + noise)
-                    g = clamp01(0.45 + noise)
-                    b = clamp01(0.35 + noise)
-                end
+            if fn then
+                r, g, b = fn(r, g, b, x, y, noise, noise2)
             end
 
             imageData:setPixel(x, y, r, g, b, 1)

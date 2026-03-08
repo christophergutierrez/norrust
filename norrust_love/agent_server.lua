@@ -32,17 +32,26 @@ end
 
 --- Process a single command line from a client.
 --- Returns the response string (without trailing newline).
-local function process_command(line, norrust, engine)
-    if line == "get_state" then
+local command_handlers = {
+    get_state = function(norrust, engine)
         local state_json = norrust.get_state_raw(engine)
         if not state_json or state_json == "" then return "{}" end
         return state_json
-    elseif line == "get_faction" then
+    end,
+    get_faction = function(norrust, engine)
         local f = norrust.get_active_faction(engine)
         return tostring(f)
-    elseif line == "check_winner" then
+    end,
+    check_winner = function(norrust, engine)
         local w = norrust.get_winner(engine)
         return tostring(w)
+    end,
+}
+
+local function process_command(line, norrust, engine)
+    local handler = command_handlers[line]
+    if handler then
+        return handler(norrust, engine)
     elseif line:sub(1, 8) == "ai_turn " then
         local faction = tonumber(line:sub(9))
         if faction then

@@ -7,7 +7,6 @@ local vars = {
     game_mode = -1,  -- MODES.PICK_SCENARIO; set properly in love.load
     game_over = false,
     winner_faction = -1,
-    next_unit_id = 1,
     status_message = nil,
     status_timer = 0,
     sel_faction_idx = 0,

@@ -112,7 +112,7 @@ local function int(v) return math.floor(v) end
 
 --- Build tile color cache from current engine state.
 local function build_tile_color_cache()
-    tile_color_cache = {}
+    for k in pairs(tile_color_cache) do tile_color_cache[k] = nil end
     if not vars.engine then return end
     local state = norrust.get_state(vars.engine)
     for _, tile in ipairs(state.terrain or {}) do
@@ -342,7 +342,7 @@ local function build_campaign_ctx()
         campaign_roster = campaign.roster, roster_mod = roster_mod,
         faction_id = game_data.faction_id, game_over = vars.game_over,
         winner_faction = vars.winner_faction, recruit_mode = sel.recruit_mode,
-        next_unit_id = vars.next_unit_id, game_mode = vars.game_mode,
+        game_mode = vars.game_mode,
         PLAYING = MODES.PLAYING, DEPLOY_VETERANS = MODES.DEPLOY_VETERANS,
         clear_selection = clear_selection,
         build_unit_pos_map = build_unit_pos_map,
@@ -360,7 +360,6 @@ local function apply_campaign_ctx(ctx)
     vars.game_over = ctx.game_over
     vars.winner_faction = ctx.winner_faction
     sel.recruit_mode = ctx.recruit_mode
-    vars.next_unit_id = ctx.next_unit_id
     vars.game_mode = ctx.game_mode
 end
 
@@ -525,8 +524,7 @@ function love.update(dt)
             local f = norrust.get_active_faction(vars.engine)
             local fid = game_data.faction_id[f + 1]
             if fid and fid ~= "" then
-                local n = norrust.ai_recruit(vars.engine, fid, vars.next_unit_id)
-                vars.next_unit_id = vars.next_unit_id + n
+                norrust.ai_recruit(vars.engine, fid, norrust.get_next_unit_id(vars.engine))
                 norrust.ai_take_turn(vars.engine, f)
                 check_game_over()
             end
@@ -599,6 +597,7 @@ function love.draw()
     ctx.unit_anims = unit_anims
     ctx.dying_units = dying_units
     ctx.show_help = shared.show_help
+    ctx.exit_confirm = shared.exit_confirm
     -- Camera
     ctx.board_origin_x = camera.origin_x; ctx.board_origin_y = camera.origin_y
     ctx.camera_offset_x = camera.offset_x; ctx.camera_offset_y = camera.offset_y

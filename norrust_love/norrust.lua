@@ -4,6 +4,8 @@ local M = {}
 
 -- ── Minimal JSON decoder ────────────────────────────────────────────────────
 
+local ESC_MAP = {['"']='"', ['\\']='\\', ['/']='/', n='\n', t='\t', r='\r', b='\b', f='\f'}
+
 local function json_decode(str)
     local pos = 1
 
@@ -22,15 +24,7 @@ local function json_decode(str)
             elseif c == '\\' then
                 pos = pos + 1
                 local esc = str:sub(pos, pos)
-                if esc == '"' then parts[#parts + 1] = '"'
-                elseif esc == '\\' then parts[#parts + 1] = '\\'
-                elseif esc == '/' then parts[#parts + 1] = '/'
-                elseif esc == 'n' then parts[#parts + 1] = '\n'
-                elseif esc == 't' then parts[#parts + 1] = '\t'
-                elseif esc == 'r' then parts[#parts + 1] = '\r'
-                elseif esc == 'b' then parts[#parts + 1] = '\b'
-                elseif esc == 'f' then parts[#parts + 1] = '\f'
-                else parts[#parts + 1] = esc end
+                parts[#parts + 1] = ESC_MAP[esc] or esc
                 pos = pos + 1
             else
                 parts[#parts + 1] = c

@@ -57,17 +57,24 @@ pub fn load_board(path: &Path) -> Result<LoadedBoard, String> {
     })
 }
 
+/// Read and parse a TOML units file into a `UnitsDef` (units + triggers).
+///
+/// Call this once and extract `.units` / `.triggers` to avoid reading the file twice.
+pub fn load_units_file(path: &Path) -> Result<UnitsDef, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("load_units_file: cannot read {:?}: {}", path, e))?;
+    let def: UnitsDef = toml::from_str(&text)
+        .map_err(|e| format!("load_units_file: parse error in {:?}: {}", path, e))?;
+    Ok(def)
+}
+
 /// Load unit placements from a TOML units file.
 ///
 /// The file must contain one or more `[[units]]` entries, each with
 /// `id`, `unit_type`, `faction`, `col`, `row` fields.
 /// Returns Err if the file cannot be read or parsed.
 pub fn load_units(path: &Path) -> Result<Vec<UnitPlacement>, String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("load_units: cannot read {:?}: {}", path, e))?;
-    let def: UnitsDef = toml::from_str(&text)
-        .map_err(|e| format!("load_units: parse error in {:?}: {}", path, e))?;
-    Ok(def.units)
+    load_units_file(path).map(|def| def.units)
 }
 
 /// Load trigger zone definitions from a TOML units file.
@@ -75,11 +82,7 @@ pub fn load_units(path: &Path) -> Result<Vec<UnitPlacement>, String> {
 /// Parses the same file as `load_units()` but extracts the optional `[[triggers]]`
 /// section. Returns an empty vec if no triggers are defined.
 pub fn load_triggers(path: &Path) -> Result<Vec<TriggerDef>, String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("load_triggers: cannot read {:?}: {}", path, e))?;
-    let def: UnitsDef = toml::from_str(&text)
-        .map_err(|e| format!("load_triggers: parse error in {:?}: {}", path, e))?;
-    Ok(def.triggers)
+    load_units_file(path).map(|def| def.triggers)
 }
 
 #[cfg(test)]
