@@ -5,7 +5,7 @@ local M = {}
 
 -- Context references (set by M.init)
 local vars, scn, sel, ghost, campaign, dlg, camera
-local shared, combat_state, pending_anims
+local shared, combat_state, pending_anims, sound
 local factions, faction_id, leader_placed
 local norrust, hex, events, save, roster_mod
 local SCENARIOS, CAMPAIGNS
@@ -32,6 +32,7 @@ function M.init(ctx)
     dlg = ctx.dlg
     camera = ctx.camera
     shared = ctx.shared
+    sound = ctx.sound
     combat_state = ctx.combat_state
     pending_anims = ctx.pending_anims
     factions = ctx.factions
@@ -191,18 +192,18 @@ function M.keypressed(key)
 
     -- Sound controls (available from any mode)
     if key == "m" then
-        shared.sound.toggle_mute()
-        vars.status_message = shared.sound.is_muted() and "Sound muted" or "Sound unmuted"
+        sound.toggle_mute()
+        vars.status_message = sound.is_muted() and "Sound muted" or "Sound unmuted"
         vars.status_timer = 1.5
         return
     elseif key == "-" then
-        shared.sound.set_volume(shared.sound.get_volume() - 0.1)
-        vars.status_message = string.format("Volume: %d%%", math.floor(shared.sound.get_volume() * 100 + 0.5))
+        sound.set_volume(sound.get_volume() - 0.1)
+        vars.status_message = string.format("Volume: %d%%", math.floor(sound.get_volume() * 100 + 0.5))
         vars.status_timer = 1.5
         return
     elseif key == "=" then
-        shared.sound.set_volume(shared.sound.get_volume() + 0.1)
-        vars.status_message = string.format("Volume: %d%%", math.floor(shared.sound.get_volume() * 100 + 0.5))
+        sound.set_volume(sound.get_volume() + 0.1)
+        vars.status_message = string.format("Volume: %d%%", math.floor(sound.get_volume() * 100 + 0.5))
         vars.status_timer = 1.5
         return
     end
@@ -211,7 +212,7 @@ function M.keypressed(key)
     if vars.game_mode == PICK_SCENARIO then
         local num = tonumber(key)
         if num and num >= 1 and num <= #SCENARIOS then
-            shared.sound.stop_music()
+            sound.stop_music()
             campaign.active = false
             scn.board = SCENARIOS[num].board
             scn.units = SCENARIOS[num].units
@@ -231,7 +232,7 @@ function M.keypressed(key)
             end
         elseif key == "c" then
             -- Start campaign
-            shared.sound.stop_music()
+            sound.stop_music()
             local camp = CAMPAIGNS[1]
             campaign.data = norrust.load_campaign(vars.engine, campaign.path .. "/" .. camp.file)
             if campaign.data then
@@ -319,7 +320,7 @@ function M.keypressed(key)
                     vars.game_over = false
                     vars.winner_faction = -1
                     vars.game_mode = PICK_SCENARIO
-                    shared.sound.play_music("data/sounds/menu_music.ogg")
+                    sound.play_music("data/sounds/menu_music.ogg")
                 end
             else
                 -- Individual scenario win/loss, or campaign defeat
@@ -328,7 +329,7 @@ function M.keypressed(key)
                 vars.game_over = false
                 vars.winner_faction = -1
                 vars.game_mode = PICK_SCENARIO
-                shared.sound.play_music("data/sounds/menu_music.ogg")
+                sound.play_music("data/sounds/menu_music.ogg")
             end
         end
         return
@@ -374,7 +375,7 @@ function M.keypressed(key)
 
     elseif key == "e" then
         events.emit("dialogue", {trigger = "turn_end"})
-        shared.sound.play("turn_end")
+        sound.play("turn_end")
 
         -- End turn + AI
         norrust.end_turn(vars.engine)
@@ -428,7 +429,7 @@ function M.keypressed(key)
         -- Toggle recruit mode
         if not sel.recruit_mode then
             local faction = norrust.get_active_faction(vars.engine)
-            shared.recruit_palette = norrust.get_faction_recruits(vars.engine, faction_id[faction + 1], 0)
+            sel.recruit_palette = norrust.get_faction_recruits(vars.engine, faction_id[faction + 1], 0)
             -- Build veteran recruit list from roster (campaign only)
             sel.recruit_state.veterans = {}
             if campaign.active and campaign.roster then
@@ -456,7 +457,7 @@ function M.keypressed(key)
         -- Number keys for recruit selection
         local num = tonumber(key)
         if num and num >= 1 and num <= 9 then
-            local total = #sel.recruit_state.veterans + #shared.recruit_palette
+            local total = #sel.recruit_state.veterans + #sel.recruit_palette
             if sel.recruit_mode and total > 0 then
                 sel.recruit_idx = math.min(num - 1, total - 1)
             end
@@ -606,8 +607,8 @@ function M.mousepressed(sx, sy, button)
                 vars.next_unit_id = vars.next_unit_id + 1
                 sel.recruit_state.play_sfx("recruit")
                 table.remove(sel.recruit_state.veterans, sel.recruit_idx + 1)
-                if sel.recruit_idx >= #sel.recruit_state.veterans + #shared.recruit_palette then
-                    sel.recruit_idx = math.max(0, #sel.recruit_state.veterans + #shared.recruit_palette - 1)
+                if sel.recruit_idx >= #sel.recruit_state.veterans + #sel.recruit_palette then
+                    sel.recruit_idx = math.max(0, #sel.recruit_state.veterans + #sel.recruit_palette - 1)
                 end
                 sel.recruit_error = ""
             else
@@ -620,7 +621,7 @@ function M.mousepressed(sx, sy, button)
         else
             -- Normal recruitment from palette
             local palette_idx = sel.recruit_idx - vet_count
-            local def_id = shared.recruit_palette[palette_idx + 1] or ""
+            local def_id = sel.recruit_palette[palette_idx + 1] or ""
             if def_id ~= "" then
                 local result = norrust.recruit_unit_at(vars.engine, vars.next_unit_id, def_id, col, row)
                 if result == 0 then

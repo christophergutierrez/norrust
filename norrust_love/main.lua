@@ -62,7 +62,9 @@ local vars = {
 }
 local combat_state = {preview = nil, target = -1}
 
-local shared = {agent = nil, agent_mod = agent_server, ai_vs_ai = false, ai_delay = 0.5, ai_timer = 0, sound = require("sound"), show_help = false, recruit_palette = {}}
+local sound = require("sound")
+local ai = {vs_ai = false, delay = 0.5, timer = 0}
+local shared = {agent = nil, agent_mod = agent_server, show_help = false, buttons = {}}
 
 local terrain_tiles = {}
 local unit_sprites = {}
@@ -83,7 +85,7 @@ local scn = {
 local sel = {
     unit_id = -1, reachable_cells = {}, reachable_set = {},
     recruit_idx = 0, recruit_mode = false, recruit_error = "",
-    recruit_state = {veterans = {}},
+    recruit_state = {veterans = {}}, recruit_palette = {},
     inspect_id = -1, inspect_terrain = nil,
 }
 
@@ -298,9 +300,9 @@ local function apply_attack_with_anims(attacker_id, defender_id, is_ranged)
                 faction = def_info.faction, timer = 1.0,
             }
         end
-        shared.sound.play("death")
+        sound.play("death")
     else
-        shared.sound.play("hit")
+        sound.play("hit")
     end
 end
 
@@ -322,7 +324,7 @@ events.on("dialogue", function(data)
 end)
 
 -- Stash play_sfx in sel.recruit_state to avoid adding upvalues to mousepressed
-sel.recruit_state.play_sfx = function(name) shared.sound.play(name) end
+sel.recruit_state.play_sfx = function(name) sound.play(name) end
 
 events.on("scenario_loaded", function(data)
     dlg.history = {}
@@ -336,7 +338,7 @@ events.on("scenario_loaded", function(data)
 
     -- Per-scenario music (optional music.ogg in scenario directory)
     local music_vfs = "scenarios/" .. data.board:gsub("board%.toml$", "music.ogg")
-    shared.sound.play_music(music_vfs)
+    sound.play_music(music_vfs)
 end)
 
 --- Execute an attack with combat animations.
@@ -457,7 +459,7 @@ end
 
 --- Select a friendly unit: compute reachable hexes and lerp camera to it.
 local function select_unit(uid)
-    shared.sound.play("select")
+    sound.play("select")
     sel.unit_id = uid
     sel.inspect_id = uid
     sel.inspect_terrain = nil
@@ -524,7 +526,7 @@ end
 -- Applies vars.engine move immediately; animation is visual only.
 local function start_move_anim(uid, path, on_complete)
     norrust.apply_move(vars.engine, uid, path[#path].col, path[#path].row)
-    shared.sound.play("move")
+    sound.play("move")
     pending_anims.move = {uid = uid, path = path, seg = 1, t = 0, speed = 10, on_complete = on_complete}
 end
 
@@ -679,8 +681,8 @@ function love.load()
     unit_sprites = assets.load_unit_sprites("data")
 
     -- Load sound effects and start menu music
-    shared.sound.load()
-    shared.sound.play_music("data/sounds/menu_music.ogg")
+    sound.load()
+    sound.play_music("data/sounds/menu_music.ogg")
 
     -- Maximize window (keeps title bar with close button)
     love.window.maximize()
@@ -695,13 +697,13 @@ function love.load()
                 vars.status_timer = 5.0
             end
         elseif a == "--ai-vs-ai" then
-            shared.ai_vs_ai = true
+            ai.vs_ai = true
             -- Also start agent server for external observation
             if not shared.agent then
                 shared.agent = agent_server.new(9876)
             end
         elseif a == "--ai-delay" and args[i + 1] then
-            shared.ai_delay = tonumber(args[i + 1]) or 0.5
+            ai.delay = tonumber(args[i + 1]) or 0.5
         end
     end
 
@@ -712,7 +714,7 @@ function love.load()
     input.init({
         vars = vars, scn = scn, sel = sel, ghost = ghost,
         campaign = campaign, dlg = dlg, camera = camera,
-        shared = shared, combat_state = combat_state,
+        shared = shared, combat_state = combat_state, sound = sound,
         pending_anims = pending_anims,
         factions = factions, faction_id = faction_id, leader_placed = leader_placed,
         norrust = norrust, hex = hex, events = events, save = save, roster_mod = roster_mod,
@@ -747,10 +749,10 @@ function love.update(dt)
     end
 
     -- AI vs AI: auto-play both factions
-    if shared.ai_vs_ai and vars.game_mode == PLAYING and not vars.game_over
+    if ai.vs_ai and vars.game_mode == PLAYING and not vars.game_over
        and not pending_anims.move and #pending_anims == 0 and not pending_anims.combat_slide then
-        shared.ai_timer = shared.ai_timer - dt
-        if shared.ai_timer <= 0 then
+        ai.timer = ai.timer - dt
+        if ai.timer <= 0 then
             local f = norrust.get_active_faction(vars.engine)
             local fid = faction_id[f + 1]
             if fid and fid ~= "" then
@@ -759,7 +761,7 @@ function love.update(dt)
                 norrust.ai_take_turn(vars.engine, f)
                 check_game_over()
             end
-            shared.ai_timer = shared.ai_delay
+            ai.timer = ai.delay
         end
     end
 
@@ -898,7 +900,7 @@ local function build_draw_ctx_state()
         game_mode = vars.game_mode, game_over = vars.game_over, winner_faction = vars.winner_faction,
         selected_unit_id = sel.unit_id, inspect_unit_id = sel.inspect_id,
         inspect_terrain = sel.inspect_terrain, recruit_mode = sel.recruit_mode,
-        recruit_palette = shared.recruit_palette, recruit_veterans = sel.recruit_state.veterans,
+        recruit_palette = sel.recruit_palette, recruit_veterans = sel.recruit_state.veterans,
         selected_recruit_idx = sel.recruit_idx,
         recruit_error = sel.recruit_error, reachable_cells = sel.reachable_cells,
         reachable_set = sel.reachable_set,
