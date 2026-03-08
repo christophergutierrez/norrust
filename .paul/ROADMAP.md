@@ -7,13 +7,13 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 ## Current Milestone
 
 **v2.9 Audit Fixes**
-Status: In Progress
-Phases: 1 of 2 complete
+Status: Complete
+Phases: 2 of 2 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 83 | Bug Fixes & Dead Code | 1/1 | ✅ Complete | 2026-03-07 |
-| 84 | Draw Cleanup | TBD | Not started | - |
+| 84 | Draw Cleanup | 1/1 | ✅ Complete | 2026-03-07 |
 
 ## v2.9 Phase Details
 

@@ -321,9 +321,6 @@ events.on("dialogue", function(data)
     end
 end)
 
--- Stash play_sfx in sel.recruit_state to avoid adding upvalues to mousepressed
-sel.recruit_state.play_sfx = function(name) sound.play(name) end
-
 events.on("scenario_loaded", function(data)
     dlg.history = {}
     dlg.scroll = 0

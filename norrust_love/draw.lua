@@ -28,6 +28,21 @@ local function faction_color(ctx, faction)
     return faction == 0 and ctx.BLUE or ctx.RED
 end
 
+--- Draw a unit as a colored circle with abbreviation and HP (fallback when no sprite).
+local function draw_unit_fallback(ctx, cx, cy, faction, alpha, def_id, hp)
+    local color = faction == 0 and ctx.BLUE or ctx.RED
+    love.graphics.setColor(color[1], color[2], color[3], alpha)
+    love.graphics.circle("fill", cx, cy, ctx.hex.RADIUS * 0.45)
+    local word = (def_id or ""):match("^([^_]+)") or def_id or ""
+    local abbrev = (word:sub(1,1):upper() .. word:sub(2):lower()):sub(1, 7)
+    love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], alpha)
+    love.graphics.setFont(ctx.fonts[14])
+    love.graphics.printf(abbrev, cx - 42, cy - 14, 84, "center")
+    love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], alpha)
+    love.graphics.setFont(ctx.fonts[18])
+    love.graphics.print(tostring(hp), cx - 12, cy - 2)
+end
+
 --- Draw all units on the board.
 function draw.draw_units(ctx, state)
     local int = ctx.int
@@ -86,28 +101,16 @@ function draw.draw_units(ctx, state)
         -- Try sprite rendering first; fall back to colored circle
         local drawn = ctx.assets.draw_unit_sprite(ctx.unit_sprites, unit.def_id, cx, cy, ctx.hex.RADIUS, faction, alpha, ctx.FACTION_COLORS, anim_state)
         if not drawn then
-            if faction == 0 then
-                love.graphics.setColor(ctx.BLUE[1], ctx.BLUE[2], ctx.BLUE[3], alpha)
-            else
-                love.graphics.setColor(ctx.RED[1], ctx.RED[2], ctx.RED[3], alpha)
-            end
-            love.graphics.circle("fill", cx, cy, ctx.hex.RADIUS * 0.45)
-
-            local word = (unit.def_id or ""):match("^([^_]+)") or unit.def_id or ""
-            local abbrev = (word:sub(1, 1):upper() .. word:sub(2):lower()):sub(1, 7)
+            draw_unit_fallback(ctx, cx, cy, faction, alpha, unit.def_id, hp)
+        else
             love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
-            love.graphics.setFont(fonts[14])
-            love.graphics.printf(abbrev, cx - 42, cy - 14, 84, "center")
+            love.graphics.setFont(fonts[18])
+            love.graphics.print(tostring(hp), cx - 12, cy - 2)
         end
-
-        -- HP (always drawn on top)
-        love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
-        love.graphics.setFont(fonts[18])
-        love.graphics.print(tostring(hp), cx - 12, cy - 2)
 
         -- Advancement ring
         if unit.advancement_pending then
-            love.graphics.setColor(1.0, 0.85, 0.0, 1)
+            love.graphics.setColor(C_GOLD[1], C_GOLD[2], C_GOLD[3], 1)
             love.graphics.setLineWidth(3.5)
             love.graphics.arc("line", "open", cx, cy, ctx.hex.RADIUS * 0.52, 0, math.pi * 2, 24)
         end
@@ -762,10 +765,10 @@ function draw.draw_frame(ctx, state)
         local ocol = int(state.objective_col)
         local orow = int(state.objective_row)
         local ox, oy = ctx.hex.to_pixel(ocol, orow)
-        love.graphics.setColor(1.0, 0.85, 0.0, 0.9)
+        love.graphics.setColor(C_GOLD[1], C_GOLD[2], C_GOLD[3], 0.9)
         love.graphics.setLineWidth(4.0)
         love.graphics.polygon("line", ctx.hex.polygon(ox, oy, ctx.hex.RADIUS))
-        love.graphics.setColor(1.0, 0.85, 0.0, 0.3)
+        love.graphics.setColor(C_GOLD[1], C_GOLD[2], C_GOLD[3], 0.3)
         love.graphics.polygon("fill", ctx.hex.polygon(ox, oy, ctx.hex.RADIUS * 0.3))
     end
 
@@ -811,22 +814,12 @@ function draw.draw_frame(ctx, state)
 
                 local drawn = ctx.assets.draw_unit_sprite(ctx.unit_sprites, unit.def_id, gx, gy, ctx.hex.RADIUS, faction, ghost_alpha, ctx.FACTION_COLORS, anim_state)
                 if not drawn then
-                    if faction == 0 then
-                        love.graphics.setColor(ctx.BLUE[1], ctx.BLUE[2], ctx.BLUE[3], ghost_alpha)
-                    else
-                        love.graphics.setColor(ctx.RED[1], ctx.RED[2], ctx.RED[3], ghost_alpha)
-                    end
-                    love.graphics.circle("fill", gx, gy, ctx.hex.RADIUS * 0.45)
-                    local word = (unit.def_id or ""):match("^([^_]+)") or unit.def_id or ""
-                    local abbrev = (word:sub(1, 1):upper() .. word:sub(2):lower()):sub(1, 7)
+                    draw_unit_fallback(ctx, gx, gy, faction, ghost_alpha, unit.def_id, hp)
+                else
                     love.graphics.setColor(1, 1, 1, ghost_alpha)
-                    love.graphics.setFont(ctx.fonts[14])
-                    love.graphics.printf(abbrev, gx - 42, gy - 14, 84, "center")
+                    love.graphics.setFont(ctx.fonts[18])
+                    love.graphics.print(tostring(hp), gx - 12, gy - 2)
                 end
-
-                love.graphics.setColor(1, 1, 1, ghost_alpha)
-                love.graphics.setFont(ctx.fonts[18])
-                love.graphics.print(tostring(hp), gx - 12, gy - 2)
                 break
             end
         end

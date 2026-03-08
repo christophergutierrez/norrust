@@ -598,7 +598,7 @@ function M.mousepressed(sx, sy, button)
             if rc == 0 then
                 roster_mod.map_id(campaign.roster, vars.next_unit_id, vet.uuid)
                 vars.next_unit_id = vars.next_unit_id + 1
-                sel.recruit_state.play_sfx("recruit")
+                sound.play("recruit")
                 table.remove(sel.recruit_state.veterans, sel.recruit_idx + 1)
                 if sel.recruit_idx >= #sel.recruit_state.veterans + #sel.recruit_palette then
                     sel.recruit_idx = math.max(0, #sel.recruit_state.veterans + #sel.recruit_palette - 1)
@@ -633,7 +633,7 @@ function M.mousepressed(sx, sy, button)
                     vars.next_unit_id = vars.next_unit_id + 1
                     sel.recruit_error = ""
                     sel.recruit_mode = false
-                    sel.recruit_state.play_sfx("recruit")
+                    sound.play("recruit")
                 else
                     local err_map = {
                         [-4] = "Hex is occupied",

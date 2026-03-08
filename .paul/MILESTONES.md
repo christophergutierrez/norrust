@@ -31,22 +31,74 @@ Completed milestone log for this project.
 | v2.5 Animation Fixes | 2026-03-07 | ~10min | 1 phase, 1 plan |
 | v2.6 Music | 2026-03-07 | ~15min | 1 phase, 1 plan |
 | v2.7 Controls & Help | 2026-03-07 | ~30min | 2 phases, 2 plans |
-| v2.8 Code Cleanup & Architecture | In Progress | - | 5 phases |
+| v2.8 Code Cleanup & Architecture | 2026-03-07 | ~1 day | 5 phases, 5 plans |
+| v2.9 Audit Fixes | 2026-03-07 | ~15min | 2 phases, 2 plans |
 
 ---
 
-## v2.8 Code Cleanup & Architecture (In Progress)
+## v2.9 Audit Fixes
 
-**Theme:** Refactor main.lua monolith, consolidate draw.lua constants, harden FFI boundary, split shared table.
+**Completed:** 2026-03-07
+**Duration:** ~15min
 
-**Phases:**
-| Phase | Name | Status |
-|-------|------|--------|
-| 78 | Upvalue Contexts | Not started |
-| 79 | Input Handlers | Not started |
-| 80 | Draw Constants | Not started |
-| 81 | FFI Hardening | Not started |
-| 82 | Shared Table Split | Not started |
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 2 |
+| Plans | 2 |
+| Tests | 121 Rust |
+
+### Key Accomplishments
+
+- **Bug fixes** — fonts.medium nil key, status message UI_SCALE transform
+- **Dead code removal** — shared.handle_sidebar_button, 3 unused input.lua locals, redundant sidebar check
+- **Draw dedup** — draw_unit_fallback() helper eliminates ~20 lines of copy-paste
+- **Constants** — C_GOLD replaces 3 inline gold color tuples
+- **Indirection cleanup** — play_sfx removed, direct sound.play
+- **Stale comments** — 3 outdated comments corrected
+- **Upvalue reduction** — love.load from ~59 to 55 upvalues
+
+### Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| fonts[14] for status messages | Font table is integer-keyed, not name-keyed |
+| draw_unit_fallback includes HP | Both fallback sites fully replaced; sprite path keeps own HP |
+| Direct sound.play in input.lua | sound available as local after Phase 82 split |
+
+---
+
+## v2.8 Code Cleanup & Architecture
+
+**Completed:** 2026-03-07
+**Duration:** ~1 day
+
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 5 |
+| Plans | 5 |
+| Tests | 121 Rust |
+
+### Key Accomplishments
+
+- **Upvalue contexts** — grouped 62 locals into 6 context tables (scn, sel, ghost, campaign, dlg, camera)
+- **Input handlers** — extracted love.keypressed/mousepressed into input.lua module
+- **Draw constants** — SIDEBAR_W, color constants, draw_sidebar_bg(), faction_color(), tile color caching
+- **FFI hardening** — zero unwrap(), let-else pattern, JSON escaping
+- **Shared table split** — AI/sound/recruit_palette out of shared; reduced to 5 cross-module bridge items
+
+### Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Context tables for upvalue management | Structural fix for 60-upvalue limit |
+| Module context passing via ctx table | Clean module boundary with explicit deps |
+| Named draw constants for 3+ use values | Balance clarity vs constant proliferation |
+| let-else error returns in FFI | Zero panic paths; graceful degradation |
+| shared reserved for cross-module bridge only | Clear ownership boundaries |
 
 ---
 
