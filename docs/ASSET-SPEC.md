@@ -99,7 +99,7 @@ id = "spearman"
 file = "idle.png"           # spritesheet or single image
 frame_width = 256            # width of each frame in pixels
 frame_height = 256           # height of each frame in pixels
-frames = 4                   # number of frames (1 = static image)
+frames = 6                   # number of frames (standard: 6 per animation)
 fps = 4                      # frames per second for animation
 anchor_x = 128               # x offset for centering (from left edge of frame)
 anchor_y = 200               # y offset for ground point (from top of frame)
@@ -265,13 +265,55 @@ Units cycle through these animation states during gameplay:
 7. Iterate        →  Adjust and re-generate if needed
 ```
 
-### Generation Guidelines (Nano Banana)
+### Generation Guidelines (Nano Banana / Gemini)
 
-- Request consistent fantasy art style across all units
-- Specify transparent background
-- Request front-facing pose for idle sprites
-- Generate at 512x512 or higher, scale down to 256x256 for spritesheets
-- For spritesheets: generate individual frames, then composite into horizontal strip
+#### Sprite Sheet Format: 6x5 Grid
+
+AI-generated sprite sheets use a **6 column x 5 row** uniform grid layout:
+
+| Row | Animation |
+|-----|-----------|
+| 1 | Idle (6 frames) |
+| 2 | Melee attack (6 frames) |
+| 3 | Ranged attack (6 frames) — or standing ready for melee-only units |
+| 4 | Defend (6 frames) |
+| 5 | Death (6 frames) |
+
+- **Background:** Solid magenta (#FF00FF) — easy to chroma-key out
+- **No borders or grid lines** — the uniform grid allows mathematical slicing
+- **Aspect ratio:** 6:5 (landscape)
+- All 30 frames must show the same character with consistent design
+- Portrait is generated separately as a single image
+
+#### Prompt Template
+
+```
+Pixel art sprite sheet on a solid magenta (#FF00FF) background.
+6 columns, 5 rows, uniform grid, no borders or grid lines.
+Each cell contains one frame of the same character facing right.
+16-bit retro pixel art style, dark outlines, clean readable
+silhouette. Landscape orientation, 6:5 aspect ratio.
+
+The character is [CHARACTER DESCRIPTION]. Armed with [WEAPON].
+
+Row 1 - Idle: [idle description], 6 frames.
+  Loop-ready (frame 6 flows back to frame 1).
+Row 2 - Melee attack: [melee description], 6 frames.
+Row 3 - Ranged attack: [ranged description], 6 frames.
+  (For melee-only: "Standing ready, holding [weapon] at side, 6 frames")
+Row 4 - Defend: [defend description], 6 frames.
+Row 5 - Death: [death description, progressing left to right], 6 frames.
+
+The character must look identical in every frame — same outfit,
+same equipment, same colors. Only the pose changes.
+```
+
+#### Processing Pipeline
+
+1. Generate sprite sheet via Nano Banana (outputs high-res PNG)
+2. Run `process_spritesheet.py` to resize to 1536x1280, remove magenta, slice into strips
+3. Generate portrait separately
+4. Output: 5 horizontal strip PNGs (1536x256 each) + portrait.png (256x256)
 
 ### Quality Checklist
 
