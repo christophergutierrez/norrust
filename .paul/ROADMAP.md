@@ -6,6 +6,31 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
+**v3.0 Upvalue Reduction & UX Polish**
+Status: In Progress
+Phases: 1 of 2 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 85 | Upvalue Reduction | 1/1 | ✅ Complete | 2026-03-07 |
+| 86 | UX Fixes | TBD | Not started | - |
+
+## v3.0 Phase Details
+
+### Phase 85: Upvalue Reduction
+
+**Goal:** Bundle mode constants into MODES table, helper functions into helpers table, and module references into mods table. Reduce love.load upvalues from 55 to ~28, giving permanent headroom for future features.
+**Depends on:** None
+
+### Phase 86: UX Fixes
+
+**Goal:** Fix 4 small UX issues: recruit castle highlight (only adjacent), combat preview ToD modifier label, 'A' key advancement UI hint, setup placement prompt zoom position.
+**Depends on:** Phase 85 (input.lua references change)
+
+---
+
+## Previous Milestone
+
 **v2.9 Audit Fixes**
 Status: Complete
 Phases: 2 of 2 complete

@@ -6,10 +6,8 @@ local M = {}
 -- Context references (set by M.init)
 local vars, scn, sel, ghost, campaign, dlg, camera
 local shared, combat_state, pending_anims, sound
-local factions, faction_id, leader_placed
-local norrust, hex, events, save, roster_mod
-local SCENARIOS, CAMPAIGNS
-local PICK_SCENARIO, PICK_FACTION_BLUE, PICK_FACTION_RED, SETUP_BLUE, SETUP_RED, PLAYING
+local game_data, mods
+local MODES
 local UI_SCALE
 -- Helper functions from main.lua
 local get_viewport, screen_to_game, int
@@ -35,22 +33,9 @@ function M.init(ctx)
     sound = ctx.sound
     combat_state = ctx.combat_state
     pending_anims = ctx.pending_anims
-    factions = ctx.factions
-    faction_id = ctx.faction_id
-    leader_placed = ctx.leader_placed
-    norrust = ctx.norrust
-    hex = ctx.hex
-    events = ctx.events
-    save = ctx.save
-    roster_mod = ctx.roster_mod
-    SCENARIOS = ctx.SCENARIOS
-    CAMPAIGNS = ctx.CAMPAIGNS
-    PICK_SCENARIO = ctx.PICK_SCENARIO
-    PICK_FACTION_BLUE = ctx.PICK_FACTION_BLUE
-    PICK_FACTION_RED = ctx.PICK_FACTION_RED
-    SETUP_BLUE = ctx.SETUP_BLUE
-    SETUP_RED = ctx.SETUP_RED
-    PLAYING = ctx.PLAYING
+    game_data = ctx.game_data
+    mods = ctx.mods
+    MODES = ctx.MODES
     UI_SCALE = ctx.UI_SCALE
     get_viewport = ctx.get_viewport
     screen_to_game = ctx.screen_to_game
@@ -84,18 +69,18 @@ function M.keypressed(key)
     local function build_save_campaign_ctx()
         if not campaign.active then return nil end
         return {
-            file = CAMPAIGNS[1].file,
+            file = game_data.CAMPAIGNS[1].file,
             index = campaign.index,
             gold = campaign.gold,
             veterans = campaign.veterans,
-            faction_id = faction_id,
-            roster = campaign.roster and roster_mod.to_save_array(campaign.roster) or nil,
+            faction_id = game_data.faction_id,
+            roster = campaign.roster and mods.roster_mod.to_save_array(campaign.roster) or nil,
         }
     end
 
     -- Save/Load (available from any mode)
-    if key == "f5" and vars.game_mode == PLAYING then
-        local filename = save.write_save(vars.engine, norrust, scn.board, scn.path, build_save_campaign_ctx())
+    if key == "f5" and vars.game_mode == MODES.PLAYING then
+        local filename = mods.save.write_save(vars.engine, mods.norrust, scn.board, scn.path, build_save_campaign_ctx())
         if filename then
             vars.status_message = "Saved: " .. filename
         else
@@ -104,18 +89,18 @@ function M.keypressed(key)
         vars.status_timer = 3.0
         return
     elseif key == "f9" then
-        local filepath = save.find_latest()
+        local filepath = mods.save.find_latest()
         if filepath then
-            local data = save.load_save(vars.engine, norrust, filepath, center_camera)
+            local data = mods.save.load_save(vars.engine, mods.norrust, filepath, center_camera)
             if data then
                 scn.board = data.game.board_path
                 scn.path = data.game.scenarios_path
                 vars.game_over = false
                 vars.winner_faction = -1
                 clear_selection()
-                vars.next_unit_id = norrust.get_next_unit_id(vars.engine)
+                vars.next_unit_id = mods.norrust.get_next_unit_id(vars.engine)
                 -- Update board dimensions from loaded state
-                local state = norrust.get_state(vars.engine)
+                local state = mods.norrust.get_state(vars.engine)
                 scn.COLS = int(state.cols or 8)
                 scn.ROWS = int(state.rows or 5)
                 center_camera()
@@ -123,18 +108,18 @@ function M.keypressed(key)
                 if data.campaign then
                     local c = data.campaign
                     campaign.active = true
-                    campaign.data = norrust.load_campaign(vars.engine, campaign.path .. "/" .. c.campaign_file)
+                    campaign.data = mods.norrust.load_campaign(vars.engine, campaign.path .. "/" .. c.campaign_file)
                     campaign.index = int(c.campaign_index)
                     campaign.gold = int(c.campaign_gold)
-                    faction_id[1] = c.faction_id_0
-                    faction_id[2] = c.faction_id_1
+                    game_data.faction_id[1] = c.faction_id_0
+                    game_data.faction_id[2] = c.faction_id_1
                     -- Restore veterans
                     campaign.veterans = data.veterans or {}
                     -- Restore roster
                     if data.roster and #data.roster > 0 then
-                        campaign.roster = roster_mod.from_save_array(data.roster)
+                        campaign.roster = mods.roster_mod.from_save_array(data.roster)
                         -- Re-map engine IDs to roster UUIDs by matching def_id
-                        local st = norrust.get_state(vars.engine)
+                        local st = mods.norrust.get_state(vars.engine)
                         for _, u in ipairs(st.units or {}) do
                             if int(u.faction) == 0 then
                                 for uuid, entry in pairs(campaign.roster.entries) do
@@ -146,7 +131,7 @@ function M.keypressed(key)
                                             if mapped_uuid == uuid then already_mapped = true; break end
                                         end
                                         if not already_mapped then
-                                            roster_mod.map_id(campaign.roster, int(u.id), uuid)
+                                            mods.roster_mod.map_id(campaign.roster, int(u.id), uuid)
                                             break
                                         end
                                     end
@@ -154,7 +139,7 @@ function M.keypressed(key)
                             end
                         end
                     else
-                        campaign.roster = roster_mod.new()
+                        campaign.roster = mods.roster_mod.new()
                     end
                 else
                     campaign.active = false
@@ -164,7 +149,7 @@ function M.keypressed(key)
                     campaign.gold = 0
                     campaign.roster = nil
                 end
-                vars.game_mode = PLAYING
+                vars.game_mode = MODES.PLAYING
                 vars.status_message = "Loaded: " .. filepath
             else
                 vars.status_message = "Load failed!"
@@ -206,41 +191,41 @@ function M.keypressed(key)
     end
 
     -- Scenario selection
-    if vars.game_mode == PICK_SCENARIO then
+    if vars.game_mode == MODES.PICK_SCENARIO then
         local num = tonumber(key)
-        if num and num >= 1 and num <= #SCENARIOS then
+        if num and num >= 1 and num <= #game_data.SCENARIOS then
             sound.stop_music()
             campaign.active = false
-            scn.board = SCENARIOS[num].board
-            scn.units = SCENARIOS[num].units
-            scn.preset = SCENARIOS[num].preset_units
+            scn.board = game_data.SCENARIOS[num].board
+            scn.units = game_data.SCENARIOS[num].units
+            scn.preset = game_data.SCENARIOS[num].preset_units
             call_load_scenario()
             if scn.preset then
                 -- Preset scenarios: auto-assign factions and start directly
-                faction_id[1] = factions[1].id
-                faction_id[2] = factions[2].id
-                norrust.apply_starting_gold(vars.engine, faction_id[1], faction_id[2])
-                norrust.load_units(vars.engine, scn.path .. "/" .. scn.units)
-                vars.next_unit_id = norrust.get_next_unit_id(vars.engine)
-                vars.game_mode = PLAYING
-                events.emit("scenario_loaded", {board = scn.board})
+                game_data.faction_id[1] = game_data.factions[1].id
+                game_data.faction_id[2] = game_data.factions[2].id
+                mods.norrust.apply_starting_gold(vars.engine, game_data.faction_id[1], game_data.faction_id[2])
+                mods.norrust.load_units(vars.engine, scn.path .. "/" .. scn.units)
+                vars.next_unit_id = mods.norrust.get_next_unit_id(vars.engine)
+                vars.game_mode = MODES.PLAYING
+                mods.events.emit("scenario_loaded", {board = scn.board})
             else
-                vars.game_mode = PICK_FACTION_BLUE
+                vars.game_mode = MODES.PICK_FACTION_BLUE
             end
         elseif key == "c" then
             -- Start campaign
             sound.stop_music()
-            local camp = CAMPAIGNS[1]
-            campaign.data = norrust.load_campaign(vars.engine, campaign.path .. "/" .. camp.file)
+            local camp = game_data.CAMPAIGNS[1]
+            campaign.data = mods.norrust.load_campaign(vars.engine, campaign.path .. "/" .. camp.file)
             if campaign.data then
                 campaign.active = true
                 campaign.index = 0
                 campaign.veterans = {}
                 campaign.gold = 0
-                campaign.roster = roster_mod.new()
+                campaign.roster = mods.roster_mod.new()
                 -- Auto-assign factions and load first scenario
-                faction_id[1] = factions[1].id
-                faction_id[2] = factions[2].id
+                game_data.faction_id[1] = game_data.factions[1].id
+                game_data.faction_id[2] = game_data.factions[2].id
                 local sc = campaign.data.scenarios[1]
                 scn.board = sc.board
                 scn.units = sc.units
@@ -253,28 +238,28 @@ function M.keypressed(key)
     end
 
     -- Setup mode
-    if vars.game_mode ~= PLAYING then
+    if vars.game_mode ~= MODES.PLAYING then
         -- Faction picker: number keys (non-preset scenarios only)
-        if vars.game_mode == PICK_FACTION_BLUE or vars.game_mode == PICK_FACTION_RED then
+        if vars.game_mode == MODES.PICK_FACTION_BLUE or vars.game_mode == MODES.PICK_FACTION_RED then
             local num = tonumber(key)
-            if num and num >= 1 and num <= #factions then
-                local fi = vars.game_mode == PICK_FACTION_BLUE and 0 or 1
-                faction_id[fi + 1] = factions[num].id
-                vars.sel_faction_idx = 0
-                vars.game_mode = vars.game_mode == PICK_FACTION_BLUE and SETUP_BLUE or SETUP_RED
+            if num and num >= 1 and num <= #game_data.factions then
+                local fi = vars.game_mode == MODES.PICK_FACTION_BLUE and 0 or 1
+                game_data.faction_id[fi + 1] = game_data.factions[num].id
+                vars.sel_game_data.faction_idx = 0
+                vars.game_mode = vars.game_mode == MODES.PICK_FACTION_BLUE and MODES.SETUP_BLUE or MODES.SETUP_RED
             end
             return
         end
 
         -- Setup: Enter to continue (manual placement scenarios only)
         if key == "return" or key == "kpenter" then
-            if vars.game_mode == SETUP_BLUE then
-                vars.game_mode = PICK_FACTION_RED
+            if vars.game_mode == MODES.SETUP_BLUE then
+                vars.game_mode = MODES.PICK_FACTION_RED
             else
                 -- Both factions chosen — wire starting gold
-                norrust.apply_starting_gold(vars.engine, faction_id[1], faction_id[2])
-                vars.game_mode = PLAYING
-                events.emit("scenario_loaded", {board = scn.board})
+                mods.norrust.apply_starting_gold(vars.engine, game_data.faction_id[1], game_data.faction_id[2])
+                vars.game_mode = MODES.PLAYING
+                mods.events.emit("scenario_loaded", {board = scn.board})
             end
         end
         return
@@ -286,8 +271,8 @@ function M.keypressed(key)
             if campaign.active and vars.winner_faction == 0 then
                 -- Player won — sync roster then derive veterans
                 if campaign.roster then
-                    roster_mod.sync_from_engine(campaign.roster, norrust.get_state(vars.engine))
-                    local living = roster_mod.get_living(campaign.roster)
+                    mods.roster_mod.sync_from_engine(campaign.roster, mods.norrust.get_state(vars.engine))
+                    local living = mods.roster_mod.get_living(campaign.roster)
                     campaign.veterans = {}
                     for _, entry in ipairs(living) do
                         campaign.veterans[#campaign.veterans + 1] = {
@@ -300,9 +285,9 @@ function M.keypressed(key)
                         }
                     end
                 else
-                    campaign.veterans = norrust.get_survivors(vars.engine, 0)
+                    campaign.veterans = mods.norrust.get_survivors(vars.engine, 0)
                 end
-                campaign.gold = norrust.get_carry_gold(
+                campaign.gold = mods.norrust.get_carry_gold(
                     vars.engine, 0,
                     campaign.data.gold_carry_percent,
                     campaign.data.early_finish_bonus
@@ -316,7 +301,7 @@ function M.keypressed(key)
                     campaign.roster = nil
                     vars.game_over = false
                     vars.winner_faction = -1
-                    vars.game_mode = PICK_SCENARIO
+                    vars.game_mode = MODES.PICK_SCENARIO
                     sound.play_music("data/sounds/menu_music.ogg")
                 end
             else
@@ -325,7 +310,7 @@ function M.keypressed(key)
                 campaign.roster = nil
                 vars.game_over = false
                 vars.winner_faction = -1
-                vars.game_mode = PICK_SCENARIO
+                vars.game_mode = MODES.PICK_SCENARIO
                 sound.play_music("data/sounds/menu_music.ogg")
             end
         end
@@ -371,34 +356,34 @@ function M.keypressed(key)
         end
 
     elseif key == "e" then
-        events.emit("dialogue", {trigger = "turn_end"})
+        mods.events.emit("dialogue", {trigger = "turn_end"})
         sound.play("turn_end")
 
         -- End turn + AI
-        norrust.end_turn(vars.engine)
+        mods.norrust.end_turn(vars.engine)
         clear_selection()
         check_game_over()
-        if not vars.game_over and norrust.get_active_faction(vars.engine) == 1 then
-            local n = norrust.ai_recruit(vars.engine, faction_id[2], vars.next_unit_id)
+        if not vars.game_over and mods.norrust.get_active_faction(vars.engine) == 1 then
+            local n = mods.norrust.ai_recruit(vars.engine, game_data.faction_id[2], vars.next_unit_id)
             vars.next_unit_id = vars.next_unit_id + n
-            norrust.ai_take_turn(vars.engine, 1)
+            mods.norrust.ai_take_turn(vars.engine, 1)
             check_game_over()
         end
 
         -- New turn dialogue (reset panel so only new messages show)
         dlg.active = {}
-        events.emit("dialogue", {trigger = "turn_start"})
+        mods.events.emit("dialogue", {trigger = "turn_start"})
 
     elseif key == "a" then
         -- Advance selected unit
         if sel.unit_id ~= -1 then
-            local state = norrust.get_state(vars.engine)
-            local active = norrust.get_active_faction(vars.engine)
+            local state = mods.norrust.get_state(vars.engine)
+            local active = mods.norrust.get_active_faction(vars.engine)
             for _, unit in ipairs(state.units or {}) do
                 if int(unit.id) == sel.unit_id
                     and int(unit.faction) == active
                     and unit.advancement_pending then
-                    norrust.apply_advance(vars.engine, sel.unit_id)
+                    mods.norrust.apply_advance(vars.engine, sel.unit_id)
                     clear_selection()
                     break
                 end
@@ -425,12 +410,12 @@ function M.keypressed(key)
     elseif key == "r" then
         -- Toggle recruit mode
         if not sel.recruit_mode then
-            local faction = norrust.get_active_faction(vars.engine)
-            sel.recruit_palette = norrust.get_faction_recruits(vars.engine, faction_id[faction + 1], 0)
+            local faction = mods.norrust.get_active_faction(vars.engine)
+            sel.recruit_palette = mods.norrust.get_faction_recruits(vars.engine, game_data.faction_id[faction + 1], 0)
             -- Build veteran recruit list from roster (campaign only)
             sel.recruit_state.veterans = {}
             if campaign.active and campaign.roster then
-                local living = roster_mod.get_living(campaign.roster)
+                local living = mods.roster_mod.get_living(campaign.roster)
                 -- Filter out veterans already on the board (have engine_id mapped)
                 local mapped = {}
                 for _, uuid in pairs(campaign.roster.id_map) do
@@ -472,9 +457,9 @@ function M.handle_sidebar_button(x, y, button, gm, go)
     end
     if hit(btns.help) then
         shared.show_help = not shared.show_help
-    elseif hit(btns.end_turn) and gm == PLAYING and not go then
+    elseif hit(btns.end_turn) and gm == MODES.PLAYING and not go then
         M.keypressed("e")
-    elseif hit(btns.recruit) and gm == PLAYING and not go then
+    elseif hit(btns.recruit) and gm == MODES.PLAYING and not go then
         M.keypressed("r")
     end
 end
@@ -495,12 +480,12 @@ function M.mousepressed(sx, sy, button)
     end
 
     -- Right-click: terrain inspection (any mode with a board)
-    if button == 2 and vars.game_mode == PLAYING and not vars.game_over then
+    if button == 2 and vars.game_mode == MODES.PLAYING and not vars.game_over then
         local local_x = (x - camera.origin_x) / camera.zoom - camera.offset_x
         local local_y = (y - camera.origin_y) / camera.zoom - camera.offset_y
-        local col, row = hex.from_pixel(local_x, local_y)
+        local col, row = mods.hex.from_pixel(local_x, local_y)
         if col >= 0 and col < scn.COLS and row >= 0 and row < scn.ROWS then
-            local state = norrust.get_state(vars.engine)
+            local state = mods.norrust.get_state(vars.engine)
             for _, tile in ipairs(state.terrain or {}) do
                 if int(tile.col) == col and int(tile.row) == row then
                     sel.inspect_terrain = {
@@ -511,7 +496,7 @@ function M.mousepressed(sx, sy, button)
                         healing = int(tile.healing),
                     }
                     if sel.unit_id ~= -1 then
-                        local info = norrust.get_unit_terrain_info(vars.engine, sel.unit_id, col, row)
+                        local info = mods.norrust.get_unit_terrain_info(vars.engine, sel.unit_id, col, row)
                         if info then
                             sel.inspect_terrain.unit_defense = int(info.defense)
                             sel.inspect_terrain.unit_move_cost = int(info.movement_cost)
@@ -526,34 +511,34 @@ function M.mousepressed(sx, sy, button)
     end
 
     if button ~= 1 then return end
-    if vars.game_mode == PICK_SCENARIO then return end
+    if vars.game_mode == MODES.PICK_SCENARIO then return end
 
     -- Setup mode click
-    if vars.game_mode ~= PLAYING then
-        if vars.game_mode == PICK_FACTION_BLUE or vars.game_mode == PICK_FACTION_RED then
+    if vars.game_mode ~= MODES.PLAYING then
+        if vars.game_mode == MODES.PICK_FACTION_BLUE or vars.game_mode == MODES.PICK_FACTION_RED then
             return
         end
 
         local local_x = (x - camera.origin_x) / camera.zoom - camera.offset_x
         local local_y = (y - camera.origin_y) / camera.zoom - camera.offset_y
-        local col, row = hex.from_pixel(local_x, local_y)
+        local col, row = mods.hex.from_pixel(local_x, local_y)
 
         if col < 0 or col >= scn.COLS or row < 0 or row >= scn.ROWS then
             return
         end
 
-        local state = norrust.get_state(vars.engine)
+        local state = mods.norrust.get_state(vars.engine)
         local pos_map = build_unit_pos_map(state)
         local fi = faction_index_for_mode()
         local faction = fi
 
-        if not leader_placed[fi + 1] then
+        if not game_data.leader_placed[fi + 1] then
             local key = col .. "," .. row
             if not pos_map[key] then
-                local leader_def = norrust.get_faction_leader(vars.engine, faction_id[fi + 1])
-                norrust.place_unit_at(vars.engine, vars.next_unit_id, leader_def, 0, faction, col, row)
+                local leader_def = mods.norrust.get_faction_leader(vars.engine, game_data.faction_id[fi + 1])
+                mods.norrust.place_unit_at(vars.engine, vars.next_unit_id, leader_def, 0, faction, col, row)
                 vars.next_unit_id = vars.next_unit_id + 1
-                leader_placed[fi + 1] = true
+                game_data.leader_placed[fi + 1] = true
             end
         end
         return
@@ -565,7 +550,7 @@ function M.mousepressed(sx, sy, button)
     -- Convert screen coords to hex
     local local_x = (x - camera.origin_x) / camera.zoom - camera.offset_x
     local local_y = (y - camera.origin_y) / camera.zoom - camera.offset_y
-    local col, row = hex.from_pixel(local_x, local_y)
+    local col, row = mods.hex.from_pixel(local_x, local_y)
 
     -- Off-board click: start drag
     if col < 0 or col >= scn.COLS or row < 0 or row >= scn.ROWS then
@@ -578,9 +563,9 @@ function M.mousepressed(sx, sy, button)
     end
 
     local clicked_key = col .. "," .. row
-    local state = norrust.get_state(vars.engine)
+    local state = mods.norrust.get_state(vars.engine)
     local pos_map = build_unit_pos_map(state)
-    local active = norrust.get_active_faction(vars.engine)
+    local active = mods.norrust.get_active_faction(vars.engine)
 
     -- Recruit mode click
     if sel.recruit_mode then
@@ -588,7 +573,7 @@ function M.mousepressed(sx, sy, button)
         if sel.recruit_idx < vet_count then
             -- Veteran recruitment: place veteran unit from roster
             local vet = sel.recruit_state.veterans[sel.recruit_idx + 1]
-            local rc = norrust.place_veteran_unit(
+            local rc = mods.norrust.place_veteran_unit(
                 vars.engine, vars.next_unit_id,
                 vet.def_id, 0,
                 col, row,
@@ -596,7 +581,7 @@ function M.mousepressed(sx, sy, button)
                 vet.advancement_pending
             )
             if rc == 0 then
-                roster_mod.map_id(campaign.roster, vars.next_unit_id, vet.uuid)
+                mods.roster_mod.map_id(campaign.roster, vars.next_unit_id, vet.uuid)
                 vars.next_unit_id = vars.next_unit_id + 1
                 sound.play("recruit")
                 table.remove(sel.recruit_state.veterans, sel.recruit_idx + 1)
@@ -616,14 +601,14 @@ function M.mousepressed(sx, sy, button)
             local palette_idx = sel.recruit_idx - vet_count
             local def_id = sel.recruit_palette[palette_idx + 1] or ""
             if def_id ~= "" then
-                local result = norrust.recruit_unit_at(vars.engine, vars.next_unit_id, def_id, col, row)
+                local result = mods.norrust.recruit_unit_at(vars.engine, vars.next_unit_id, def_id, col, row)
                 if result == 0 then
                     -- Add recruited unit to campaign roster
                     if campaign.active and campaign.roster then
-                        local st = norrust.get_state(vars.engine)
+                        local st = mods.norrust.get_state(vars.engine)
                         for _, u in ipairs(st.units or {}) do
                             if int(u.id) == vars.next_unit_id then
-                                roster_mod.add(campaign.roster, u.def_id, vars.next_unit_id,
+                                mods.roster_mod.add(campaign.roster, u.def_id, vars.next_unit_id,
                                     int(u.hp), int(u.max_hp), int(u.xp), int(u.xp_needed),
                                     u.advancement_pending or false)
                                 break
@@ -668,7 +653,7 @@ function M.mousepressed(sx, sy, button)
                 end)
             else
                 -- First click (or different enemy) → show combat preview
-                combat_state.preview = norrust.simulate_combat(vars.engine, ghost.unit_id, enemy_id, ghost.col, ghost.row, 100)
+                combat_state.preview = mods.norrust.simulate_combat(vars.engine, ghost.unit_id, enemy_id, ghost.col, ghost.row, 100)
                 combat_state.target = enemy_id
                 sel.inspect_id = enemy_id
             end
@@ -684,12 +669,12 @@ function M.mousepressed(sx, sy, button)
             ghost.col = col
             ghost.row = row
             ghost.attackable = get_attackable_enemies(pos_map, col, row, active, unit_max_range(ghost.unit_id))
-            ghost.path = norrust.find_path(vars.engine, ghost.unit_id, col, row)
+            ghost.path = mods.norrust.find_path(vars.engine, ghost.unit_id, col, row)
             -- Auto-preview: if previously previewed enemy is still in range, re-show preview
             if prev_target ~= -1 then
                 for _, e in ipairs(ghost.attackable) do
                     if e.id == prev_target then
-                        combat_state.preview = norrust.simulate_combat(vars.engine, ghost.unit_id, prev_target, ghost.col, ghost.row, 100)
+                        combat_state.preview = mods.norrust.simulate_combat(vars.engine, ghost.unit_id, prev_target, ghost.col, ghost.row, 100)
                         combat_state.target = prev_target
                         sel.inspect_id = prev_target
                         break
@@ -730,7 +715,7 @@ function M.mousepressed(sx, sy, button)
                 end
             end
             if atk_col then
-                combat_state.preview = norrust.simulate_combat(vars.engine, sel.unit_id, enemy_id, atk_col, atk_row, 100)
+                combat_state.preview = mods.norrust.simulate_combat(vars.engine, sel.unit_id, enemy_id, atk_col, atk_row, 100)
                 combat_state.target = enemy_id
                 sel.inspect_id = enemy_id
             end
@@ -742,7 +727,7 @@ function M.mousepressed(sx, sy, button)
         ghost.row = row
         ghost.unit_id = sel.unit_id
         ghost.attackable = get_attackable_enemies(pos_map, col, row, active, unit_max_range(sel.unit_id))
-        ghost.path = norrust.find_path(vars.engine, sel.unit_id, col, row)
+        ghost.path = mods.norrust.find_path(vars.engine, sel.unit_id, col, row)
 
     -- Select friendly unit
     elseif pos_map[clicked_key] and pos_map[clicked_key].faction == active then

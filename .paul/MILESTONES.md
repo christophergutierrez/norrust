@@ -33,6 +33,19 @@ Completed milestone log for this project.
 | v2.7 Controls & Help | 2026-03-07 | ~30min | 2 phases, 2 plans |
 | v2.8 Code Cleanup & Architecture | 2026-03-07 | ~1 day | 5 phases, 5 plans |
 | v2.9 Audit Fixes | 2026-03-07 | ~15min | 2 phases, 2 plans |
+| v3.0 Upvalue Reduction & UX Polish | In Progress | - | 2 phases |
+
+---
+
+## v3.0 Upvalue Reduction & UX Polish (In Progress)
+
+**Theme:** Eliminate upvalue pressure permanently, fix small UX issues from backlog.
+
+**Phases:**
+| Phase | Name | Status |
+|-------|------|--------|
+| 85 | Upvalue Reduction | Not started |
+| 86 | UX Fixes | Not started |
 
 ---
 

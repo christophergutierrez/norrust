@@ -21,38 +21,36 @@ local BLUE = {0.25, 0.42, 0.88}
 local RED  = {0.80, 0.12, 0.12}
 
 -- Game modes
-local PICK_SCENARIO     = -1
-local PICK_FACTION_BLUE = 0
-local PICK_FACTION_RED  = 1
-local SETUP_BLUE = 2
-local SETUP_RED  = 3
-local PLAYING    = 4
-
--- Available scenarios
--- preset_units: if true, units come from TOML file — skip manual leader placement
-local SCENARIOS = {
-    {name = "Contested (8x5)",  board = "contested/board.toml",  units = "contested/units.toml", preset_units = false},
-    {name = "Crossing (16x10)", board = "crossing/board.toml",   units = "crossing/units.toml",  preset_units = true},
-    {name = "Ambush (12x8)",    board = "ambush/board.toml",     units = "ambush/units.toml",    preset_units = true},
-    {name = "Night Orcs (20x12)", board = "night_orcs/board.toml", units = "night_orcs/units.toml", preset_units = true},
-    {name = "Final Battle (24x14)", board = "final_battle/board.toml", units = "final_battle/units.toml", preset_units = true},
+local MODES = {
+    PICK_SCENARIO = -1,
+    PICK_FACTION_BLUE = 0, PICK_FACTION_RED = 1,
+    SETUP_BLUE = 2, SETUP_RED = 3,
+    PLAYING = 4,
 }
 
--- Available campaigns
-local CAMPAIGNS = {
-    {name = "The Road to Norrust", file = "tutorial.toml"},
+-- Game data: scenarios, campaigns, faction state
+local game_data = {
+    SCENARIOS = {
+        {name = "Contested (8x5)",  board = "contested/board.toml",  units = "contested/units.toml", preset_units = false},
+        {name = "Crossing (16x10)", board = "crossing/board.toml",   units = "crossing/units.toml",  preset_units = true},
+        {name = "Ambush (12x8)",    board = "ambush/board.toml",     units = "ambush/units.toml",    preset_units = true},
+        {name = "Night Orcs (20x12)", board = "night_orcs/board.toml", units = "night_orcs/units.toml", preset_units = true},
+        {name = "Final Battle (24x14)", board = "final_battle/board.toml", units = "final_battle/units.toml", preset_units = true},
+    },
+    CAMPAIGNS = {
+        {name = "The Road to Norrust", file = "tutorial.toml"},
+    },
+    factions = {},
+    faction_id = {"", ""},
+    leader_placed = {false, false},
 }
 
 -- ── State variables ─────────────────────────────────────────────────────────
 
-local factions = {}
-local faction_id = {"", ""}
-local leader_placed = {false, false}
-
 -- Mutable scalars grouped for module sharing (input.lua reads/writes these)
 local vars = {
     engine = nil,
-    game_mode = PICK_SCENARIO,
+    game_mode = MODES.PICK_SCENARIO,
     game_over = false,
     winner_faction = -1,
     next_unit_id = 1,
@@ -562,7 +560,7 @@ end
 
 --- Return 0 for blue setup, 1 for red setup.
 local function faction_index_for_mode()
-    return vars.game_mode == SETUP_BLUE and 0 or 1
+    return vars.game_mode == MODES.SETUP_BLUE and 0 or 1
 end
 
 -- ── Campaign context helpers ────────────────────────────────────────────────
@@ -578,10 +576,10 @@ local function build_campaign_ctx()
         campaign_data = campaign.data, campaign_index = campaign.index,
         campaign_veterans = campaign.veterans, campaign_gold = campaign.gold,
         campaign_roster = campaign.roster, roster_mod = roster_mod,
-        faction_id = faction_id, game_over = vars.game_over,
+        faction_id = game_data.faction_id, game_over = vars.game_over,
         winner_faction = vars.winner_faction, recruit_mode = sel.recruit_mode,
         next_unit_id = vars.next_unit_id, game_mode = vars.game_mode,
-        PLAYING = PLAYING, clear_selection = clear_selection,
+        PLAYING = MODES.PLAYING, clear_selection = clear_selection,
         build_unit_pos_map = build_unit_pos_map,
     }
 end
@@ -668,8 +666,8 @@ function love.load()
     assert(norrust.load_factions(vars.engine, data_path), "Failed to load factions")
 
     -- Parse faction list
-    factions = norrust.get_faction_ids(vars.engine)
-    table.sort(factions, function(a, b) return a.name < b.name end)
+    game_data.factions = norrust.get_faction_ids(vars.engine)
+    table.sort(game_data.factions, function(a, b) return a.name < b.name end)
 
     -- Load visual assets from data/ via symlink (data -> ../data)
     terrain_tiles = assets.load_terrain_tiles("data")
@@ -703,7 +701,7 @@ function love.load()
     end
 
     -- Start at scenario selection
-    vars.game_mode = PICK_SCENARIO
+    vars.game_mode = MODES.PICK_SCENARIO
 
     -- Initialize input handler module with all context references
     input.init({
@@ -711,12 +709,9 @@ function love.load()
         campaign = campaign, dlg = dlg, camera = camera,
         shared = shared, combat_state = combat_state, sound = sound,
         pending_anims = pending_anims,
-        factions = factions, faction_id = faction_id, leader_placed = leader_placed,
-        norrust = norrust, hex = hex, events = events, save = save, roster_mod = roster_mod,
-        SCENARIOS = SCENARIOS, CAMPAIGNS = CAMPAIGNS,
-        PICK_SCENARIO = PICK_SCENARIO, PICK_FACTION_BLUE = PICK_FACTION_BLUE,
-        PICK_FACTION_RED = PICK_FACTION_RED, SETUP_BLUE = SETUP_BLUE,
-        SETUP_RED = SETUP_RED, PLAYING = PLAYING,
+        game_data = game_data,
+        mods = {norrust = norrust, hex = hex, events = events, save = save, roster_mod = roster_mod},
+        MODES = MODES,
         UI_SCALE = UI_SCALE,
         get_viewport = get_viewport, screen_to_game = screen_to_game,
         int = int,
@@ -744,12 +739,12 @@ function love.update(dt)
     end
 
     -- AI vs AI: auto-play both factions
-    if ai.vs_ai and vars.game_mode == PLAYING and not vars.game_over
+    if ai.vs_ai and vars.game_mode == MODES.PLAYING and not vars.game_over
        and not pending_anims.move and #pending_anims == 0 and not pending_anims.combat_slide then
         ai.timer = ai.timer - dt
         if ai.timer <= 0 then
             local f = norrust.get_active_faction(vars.engine)
-            local fid = faction_id[f + 1]
+            local fid = game_data.faction_id[f + 1]
             if fid and fid ~= "" then
                 local n = norrust.ai_recruit(vars.engine, fid, vars.next_unit_id)
                 vars.next_unit_id = vars.next_unit_id + n
@@ -910,8 +905,8 @@ local function build_draw_ctx_state()
         status_message = vars.status_message,
         campaign_active = campaign.active, campaign_index = campaign.index,
         campaign_data = campaign.data,
-        factions = factions, sel_faction_idx = vars.sel_faction_idx,
-        faction_id = faction_id, leader_placed = leader_placed,
+        factions = game_data.factions, sel_faction_idx = vars.sel_faction_idx,
+        faction_id = game_data.faction_id, leader_placed = game_data.leader_placed,
         faction_index_for_mode = faction_index_for_mode,
     }
 end
@@ -926,11 +921,11 @@ function love.draw()
     -- Constants
     ctx.BLUE = BLUE; ctx.RED = RED; ctx.COLOR_FLAT = COLOR_FLAT
     ctx.UI_SCALE = UI_SCALE; ctx.BOARD_COLS = scn.COLS; ctx.BOARD_ROWS = scn.ROWS
-    ctx.FACTION_COLORS = FACTION_COLORS; ctx.SCENARIOS = SCENARIOS; ctx.CAMPAIGNS = CAMPAIGNS
+    ctx.FACTION_COLORS = FACTION_COLORS; ctx.SCENARIOS = game_data.SCENARIOS; ctx.CAMPAIGNS = game_data.CAMPAIGNS
     -- Mode constants
-    ctx.PICK_SCENARIO = PICK_SCENARIO; ctx.PICK_FACTION_BLUE = PICK_FACTION_BLUE
-    ctx.PICK_FACTION_RED = PICK_FACTION_RED; ctx.SETUP_BLUE = SETUP_BLUE
-    ctx.SETUP_RED = SETUP_RED; ctx.PLAYING = PLAYING
+    ctx.PICK_SCENARIO = MODES.PICK_SCENARIO; ctx.PICK_FACTION_BLUE = MODES.PICK_FACTION_BLUE
+    ctx.PICK_FACTION_RED = MODES.PICK_FACTION_RED; ctx.SETUP_BLUE = MODES.SETUP_BLUE
+    ctx.SETUP_RED = MODES.SETUP_RED; ctx.PLAYING = MODES.PLAYING
     -- Fonts, sprites
     ctx.fonts = fonts; ctx.terrain_tiles = terrain_tiles; ctx.unit_sprites = unit_sprites
     ctx.unit_anims = unit_anims
