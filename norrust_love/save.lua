@@ -438,4 +438,79 @@ function save.find_latest()
     return "saves/" .. items[#items]
 end
 
+--- List all save files with metadata, reverse-chronological.
+--- Returns array of {filepath, date_str, scenario, turn, campaign}.
+function save.list_saves()
+    local items = love.filesystem.getDirectoryItems("saves")
+    if not items or #items == 0 then return {} end
+
+    -- Sort reverse-alphabetical (date-first naming = reverse-chronological)
+    table.sort(items, function(a, b) return a > b end)
+
+    local saves = {}
+    for _, filename in ipairs(items) do
+        if filename:match("%.toml$") then
+            local filepath = "saves/" .. filename
+            -- Parse date and scenario from filename: YYYY-MM-DD_HHMMSS_scenario.toml
+            local year, month, day, hour, min, sec, scen_name =
+                filename:match("^(%d+)-(%d+)-(%d+)_(%d%d)(%d%d)(%d%d)_(.+)%.toml$")
+
+            local date_str = "Unknown"
+            local scenario = scen_name or filename
+            if year then
+                date_str = string.format("%s-%s-%s %s:%s:%s", year, month, day, hour, min, sec)
+            end
+
+            -- Read header lines to extract turn and campaign info
+            local turn = "?"
+            local campaign_name = nil
+            local text = love.filesystem.read(filepath)
+            if text then
+                local in_game = false
+                local in_campaign = false
+                for line in text:gmatch("[^\r\n]+") do
+                    if line:match("^%[game%]") then
+                        in_game = true; in_campaign = false
+                    elseif line:match("^%[campaign%]") then
+                        in_campaign = true; in_game = false
+                    elseif line:match("^%[") then
+                        -- Any other section — stop scanning headers
+                        if not in_game and not in_campaign then break end
+                        in_game = false; in_campaign = false
+                    end
+                    if in_game then
+                        local t = line:match("^turn%s*=%s*(%d+)")
+                        if t then turn = t end
+                    end
+                    if in_campaign then
+                        local cf = line:match('^campaign_file%s*=%s*"([^"]+)"')
+                        if cf then campaign_name = cf:gsub("%.toml$", "") end
+                    end
+                end
+            end
+
+            saves[#saves + 1] = {
+                filepath = filepath,
+                date_str = date_str,
+                scenario = scenario,
+                turn = turn,
+                campaign = campaign_name,
+            }
+        end
+    end
+
+    return saves
+end
+
+--- Delete a save file.
+function save.delete_save(filepath)
+    local ok = love.filesystem.remove(filepath)
+    if ok then
+        print("[SAVE] Deleted: " .. filepath)
+    else
+        print("[SAVE] Failed to delete: " .. filepath)
+    end
+    return ok
+end
+
 return save

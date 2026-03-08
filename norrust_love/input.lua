@@ -212,6 +212,11 @@ function M.keypressed(key)
             else
                 vars.game_mode = MODES.PICK_FACTION_BLUE
             end
+        elseif key == "l" then
+            -- Open save list screen
+            game_data.save_list = mods.save.list_saves()
+            game_data.save_idx = 1
+            vars.game_mode = MODES.LOAD_SAVE
         elseif key == "c" then
             -- Start campaign
             sound.stop_music()
@@ -232,6 +237,94 @@ function M.keypressed(key)
                 scn.preset = sc.preset_units
                 call_load_scenario()
                 call_load_campaign_scenario()
+            end
+        end
+        return
+    end
+
+    -- Save management screen
+    if vars.game_mode == MODES.LOAD_SAVE then
+        local saves = game_data.save_list or {}
+        if key == "escape" then
+            vars.game_mode = MODES.PICK_SCENARIO
+        elseif key == "up" then
+            if game_data.save_idx > 1 then
+                game_data.save_idx = game_data.save_idx - 1
+            end
+        elseif key == "down" then
+            if game_data.save_idx < #saves then
+                game_data.save_idx = game_data.save_idx + 1
+            end
+        elseif key == "return" and #saves > 0 then
+            local selected = saves[game_data.save_idx]
+            if selected then
+                local data = mods.save.load_save(vars.engine, mods.norrust, selected.filepath, center_camera)
+                if data then
+                    scn.board = data.game.board_path
+                    scn.path = data.game.scenarios_path
+                    vars.game_over = false
+                    vars.winner_faction = -1
+                    clear_selection()
+                    vars.next_unit_id = mods.norrust.get_next_unit_id(vars.engine)
+                    local state = mods.norrust.get_state(vars.engine)
+                    scn.COLS = int(state.cols or 8)
+                    scn.ROWS = int(state.rows or 5)
+                    center_camera()
+                    if data.campaign then
+                        local c = data.campaign
+                        campaign.active = true
+                        campaign.data = mods.norrust.load_campaign(vars.engine, campaign.path .. "/" .. c.campaign_file)
+                        campaign.index = int(c.campaign_index)
+                        campaign.gold = int(c.campaign_gold)
+                        game_data.faction_id[1] = c.faction_id_0
+                        game_data.faction_id[2] = c.faction_id_1
+                        campaign.veterans = data.veterans or {}
+                        if data.roster and #data.roster > 0 then
+                            campaign.roster = mods.roster_mod.from_save_array(data.roster)
+                            local st = mods.norrust.get_state(vars.engine)
+                            for _, u in ipairs(st.units or {}) do
+                                if int(u.faction) == 0 then
+                                    for uuid, entry in pairs(campaign.roster.entries) do
+                                        if entry.status == "alive" and not campaign.roster.id_map[int(u.id)]
+                                           and entry.def_id == u.def_id then
+                                            local already_mapped = false
+                                            for _, mapped_uuid in pairs(campaign.roster.id_map) do
+                                                if mapped_uuid == uuid then already_mapped = true; break end
+                                            end
+                                            if not already_mapped then
+                                                mods.roster_mod.map_id(campaign.roster, int(u.id), uuid)
+                                                break
+                                            end
+                                        end
+                                    end
+                                end
+                            end
+                        else
+                            campaign.roster = mods.roster_mod.new()
+                        end
+                    else
+                        campaign.active = false
+                        campaign.data = nil
+                        campaign.index = 0
+                        campaign.veterans = {}
+                        campaign.gold = 0
+                        campaign.roster = nil
+                    end
+                    vars.game_mode = MODES.PLAYING
+                    vars.status_message = "Loaded: " .. selected.filepath
+                else
+                    vars.status_message = "Load failed!"
+                end
+                vars.status_timer = 3.0
+            end
+        elseif key == "d" and #saves > 0 then
+            local selected = saves[game_data.save_idx]
+            if selected then
+                mods.save.delete_save(selected.filepath)
+                game_data.save_list = mods.save.list_saves()
+                if game_data.save_idx > #game_data.save_list then
+                    game_data.save_idx = math.max(1, #game_data.save_list)
+                end
             end
         end
         return
@@ -513,6 +606,7 @@ function M.mousepressed(sx, sy, button)
 
     if button ~= 1 then return end
     if vars.game_mode == MODES.PICK_SCENARIO then return end
+    if vars.game_mode == MODES.LOAD_SAVE then return end
 
     -- Setup mode click
     if vars.game_mode ~= MODES.PLAYING then

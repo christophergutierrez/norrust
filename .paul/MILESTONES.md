@@ -34,20 +34,52 @@ Completed milestone log for this project.
 | v2.8 Code Cleanup & Architecture | 2026-03-07 | ~1 day | 5 phases, 5 plans |
 | v2.9 Audit Fixes | 2026-03-07 | ~15min | 2 phases, 2 plans |
 | v3.0 Upvalue Reduction & UX Polish | 2026-03-07 | ~20min | 2 phases, 2 plans |
-| v3.1 Main.lua Modularization | In Progress | - | 3 phases |
+| v3.1 Main.lua Modularization | 2026-03-07 | ~1 day | 3 phases, 3 plans |
+| v3.2 Campaign Management | In Progress | - | 3 phases |
 
 ---
 
-## v3.1 Main.lua Modularization (In Progress)
+## v3.2 Campaign Management (In Progress)
 
-**Theme:** Split main.lua (~985 lines) into 3 focused modules + leaner hub.
+**Theme:** Give players control over their campaign progression — choose saves, label them, and manage veteran rosters.
 
 **Phases:**
 | Phase | Name | Status |
 |-------|------|--------|
-| 87 | Extract State | Not started |
-| 88 | Extract Camera | Not started |
-| 89 | Extract Combat | Not started |
+| 90 | Save Management UI | Not started |
+| 91 | Save Naming | Not started |
+| 92 | Veteran Deployment | Not started |
+
+---
+
+## v3.1 Main.lua Modularization
+
+**Completed:** 2026-03-07
+**Duration:** ~1 day
+
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 3 |
+| Plans | 3 |
+| Tests | 121 Rust |
+
+### Key Accomplishments
+
+- **state.lua extraction** — pure state declarations (vars, pending_anims, unit_anims, dying_units, sel, ghost, camera, dlg, AI, recruit) into standalone module
+- **camera_mod.lua extraction** — camera helpers (update, center_on, handle_zoom) with clean API
+- **combat_mod.lua extraction** — combat resolution, animation tick, advancement check into ctx-receiving module
+- **main.lua reduced** from ~985 to ~641 lines (35% reduction)
+
+### Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Module init(deps) dependency injection | Clean module boundary with explicit deps via ctx table |
+| camera_mod.lua naming (not camera.lua) | Avoids collision with camera state table |
+| combat_mod.lua consistent naming | Same pattern as camera_mod |
+| Sound promoted to top-level local | Not in shared; direct access in main.lua |
 
 ---
 

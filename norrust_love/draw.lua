@@ -187,6 +187,69 @@ function draw.draw_setup_hud(ctx)
             love.graphics.setColor(C_GOLD[1], C_GOLD[2], C_GOLD[3], 1)
             love.graphics.printf(string.format("[C] %s", camp.name), 0, cy + (i - 1) * 28, vp_w, "center")
         end
+
+        -- Load game hint
+        local ly = cy + #ctx.CAMPAIGNS * 28 + 16
+        love.graphics.setFont(fonts[14])
+        love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3], 1)
+        love.graphics.printf("[L] Load Game", 0, ly, vp_w, "center")
+        return
+    end
+
+    -- Save management screen
+    if ctx.game_mode == ctx.LOAD_SAVE then
+        love.graphics.setFont(fonts[18])
+        love.graphics.setColor(C_GOLD[1], C_GOLD[2], C_GOLD[3], 1)
+        love.graphics.printf("Load Game", 0, 30, vp_w, "center")
+
+        local saves = ctx.save_list or {}
+        if #saves == 0 then
+            love.graphics.setFont(fonts[14])
+            love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3], 1)
+            love.graphics.printf("No save files found", 0, vp_h / 2 - 10, vp_w, "center")
+        else
+            local max_visible = math.floor((vp_h - 120) / 26)
+            local idx = ctx.save_idx or 1
+            -- Scroll window: keep selected item visible
+            local scroll_top = 1
+            if idx > max_visible then
+                scroll_top = idx - max_visible + 1
+            end
+            local scroll_end = math.min(#saves, scroll_top + max_visible - 1)
+
+            for i = scroll_top, scroll_end do
+                local s = saves[i]
+                local y = 70 + (i - scroll_top) * 26
+                local label = s.date_str .. "  —  " .. s.scenario .. "  —  Turn " .. s.turn
+                if s.campaign then
+                    label = label .. "  [" .. s.campaign .. "]"
+                end
+
+                love.graphics.setFont(fonts[13])
+                if i == idx then
+                    love.graphics.setColor(C_YELLOW[1], C_YELLOW[2], C_YELLOW[3], 1)
+                    love.graphics.printf("> " .. label, 20, y, vp_w - 40, "left")
+                else
+                    love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
+                    love.graphics.printf("  " .. label, 20, y, vp_w - 40, "left")
+                end
+            end
+
+            -- Scroll indicators
+            if scroll_top > 1 then
+                love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3], 1)
+                love.graphics.printf("▲ more", 0, 58, vp_w, "center")
+            end
+            if scroll_end < #saves then
+                love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3], 1)
+                love.graphics.printf("▼ more", 0, 70 + (scroll_end - scroll_top + 1) * 26, vp_w, "center")
+            end
+        end
+
+        -- Controls hint at bottom
+        love.graphics.setFont(fonts[12])
+        love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3], 1)
+        love.graphics.printf("[Enter] Load    [D] Delete    [Esc] Back", 0, vp_h - 30, vp_w, "center")
         return
     end
 
@@ -708,8 +771,8 @@ function draw.draw_frame(ctx, state)
     love.graphics.push()
     love.graphics.scale(ctx.UI_SCALE, ctx.UI_SCALE)
 
-    -- Scenario selection: no board loaded yet
-    if ctx.game_mode == ctx.PICK_SCENARIO then
+    -- Scenario selection or save list: no board loaded yet
+    if ctx.game_mode == ctx.PICK_SCENARIO or ctx.game_mode == ctx.LOAD_SAVE then
         draw.draw_setup_hud(ctx)
         love.graphics.pop()
         return

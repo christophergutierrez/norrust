@@ -29,6 +29,7 @@ local MODES = {
     PICK_FACTION_BLUE = 0, PICK_FACTION_RED = 1,
     SETUP_BLUE = 2, SETUP_RED = 3,
     PLAYING = 4,
+    LOAD_SAVE = 5,
 }
 
 -- Game data: scenarios, campaigns, faction state
@@ -46,6 +47,8 @@ local game_data = {
     factions = {},
     faction_id = {"", ""},
     leader_placed = {false, false},
+    save_list = {},
+    save_idx = 1,
 }
 
 -- ── State (from state.lua) ────────────────────────────────────────────────
@@ -581,7 +584,8 @@ function love.draw()
     -- Mode constants
     ctx.PICK_SCENARIO = MODES.PICK_SCENARIO; ctx.PICK_FACTION_BLUE = MODES.PICK_FACTION_BLUE
     ctx.PICK_FACTION_RED = MODES.PICK_FACTION_RED; ctx.SETUP_BLUE = MODES.SETUP_BLUE
-    ctx.SETUP_RED = MODES.SETUP_RED; ctx.PLAYING = MODES.PLAYING
+    ctx.SETUP_RED = MODES.SETUP_RED; ctx.PLAYING = MODES.PLAYING; ctx.LOAD_SAVE = MODES.LOAD_SAVE
+    ctx.save_list = game_data.save_list; ctx.save_idx = game_data.save_idx
     -- Fonts, sprites
     ctx.fonts = fonts; ctx.terrain_tiles = terrain_tiles; ctx.unit_sprites = unit_sprites
     ctx.unit_anims = unit_anims
