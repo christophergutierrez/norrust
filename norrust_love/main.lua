@@ -14,6 +14,7 @@ local agent_server = require("agent_server")
 local input = require("input")
 local state_mod = require("state")
 local camera_mod = require("camera_mod")
+local combat_mod = require("combat_mod")
 
 -- ── Constants ───────────────────────────────────────────────────────────────
 
@@ -119,109 +120,10 @@ end
 local function apply_camera_offset() camera_mod.apply_offset() end
 local function center_camera(reset) camera_mod.center(reset) end
 
--- ── Animation helpers ─────────────────────────────────────────────────────
+-- ── Combat (delegated to combat_mod.lua) ─────────────────────────────────
 
---- Play a combat animation on a unit, returning to idle after it finishes.
--- @param uid number: unit id
--- @param anim_name string: animation state name (e.g. "attack-melee", "defend", "death")
--- @param duration number: seconds before returning to idle (0 = hold forever, e.g. death)
-local function play_combat_anim(uid, anim_name, duration)
-    local anim_state = unit_anims[uid]
-    if not anim_state then return end
-    local key = anim_state.def_id and anim_state.def_id:lower():gsub(" ", "_")
-    local entry = key and unit_sprites[key]
-    if not entry or not entry.anims or not entry.anims[anim_name] then return end
-    anim_module.play(anim_state, anim_name)
-    if duration > 0 then
-        pending_anims[#pending_anims + 1] = {
-            uid = uid,
-            end_time = love.timer.getTime() + duration,
-            return_to = "idle",
-        }
-    end
-end
-
---- Trigger attack animations on attacker and defender.
--- Call BEFORE apply_attack so both units are still alive.
--- @param attacker_id number: attacking unit id
--- @param defender_id number: defending unit id
--- @param is_ranged boolean: true if ranged attack
-local function trigger_attack_anims(attacker_id, defender_id, is_ranged)
-    local atk_anim = is_ranged and "attack-ranged" or "attack-melee"
-    play_combat_anim(attacker_id, atk_anim, 0.75)
-    play_combat_anim(defender_id, "defend", 0.5)
-end
-
---- Play death animation on a unit (holds on last frame, cleaned up when unit removed).
-local function trigger_death_anim(uid)
-    play_combat_anim(uid, "death", 0)  -- 0 = hold forever
-end
-
---- Detect whether current combat preview is a ranged attack.
--- Checks hex distance between attacker and defender. Distance > 1 means ranged.
--- Must be called BEFORE cancel_combat_preview() and while ghost/selection state is valid.
-local function is_ranged_attack()
-    if not combat_state.preview or combat_state.target < 0 then return false end
-    local state = norrust.get_state(vars.engine)
-    local atk_col, atk_row, def_col, def_row
-    -- Attacker position: ghost position if ghosting, else unit state position
-    local atk_id = ghost.col ~= nil and ghost.unit_id or sel.unit_id
-    if ghost.col ~= nil then
-        atk_col, atk_row = ghost.col, ghost.row
-    end
-    for _, unit in ipairs(state.units or {}) do
-        local uid = int(unit.id)
-        if uid == atk_id and not atk_col then
-            atk_col, atk_row = int(unit.col), int(unit.row)
-        end
-        if uid == combat_state.target then
-            def_col, def_row = int(unit.col), int(unit.row)
-        end
-    end
-    if atk_col and def_col then
-        return hex.distance(atk_col, atk_row, def_col, def_row) > 1
-    end
-    return false
-end
-
---- Apply attack damage, trigger anims and check death.
--- @param attacker_id number: attacking unit id
--- @param defender_id number: defending unit id
--- @param is_ranged boolean: true if ranged attack
-local function apply_attack_with_anims(attacker_id, defender_id, is_ranged)
-    -- Capture defender position before attack (vars.engine removes dead units)
-    local pre_state = norrust.get_state(vars.engine)
-    local def_info = nil
-    for _, unit in ipairs(pre_state.units or {}) do
-        if int(unit.id) == defender_id then
-            def_info = {def_id = unit.def_id, col = int(unit.col), row = int(unit.row), faction = int(unit.faction)}
-            break
-        end
-    end
-
-    trigger_attack_anims(attacker_id, defender_id, is_ranged)
-    norrust.apply_attack(vars.engine, attacker_id, defender_id)
-    local new_state = norrust.get_state(vars.engine)
-    local defender_alive = false
-    for _, unit in ipairs(new_state.units or {}) do
-        if int(unit.id) == defender_id then
-            defender_alive = true
-            break
-        end
-    end
-    if not defender_alive then
-        trigger_death_anim(defender_id)
-        if def_info then
-            dying_units[defender_id] = {
-                def_id = def_info.def_id, col = def_info.col, row = def_info.row,
-                faction = def_info.faction, timer = 1.0,
-            }
-        end
-        sound.play("death")
-    else
-        sound.play("hit")
-    end
-end
+local function is_ranged_attack() return combat_mod.is_ranged_attack() end
+local function execute_attack(...) return combat_mod.execute_attack(...) end
 
 -- ── Dialogue subscriber ─────────────────────────────────────────────────
 -- Subscribes to gameplay events and manages dialogue UI state.
@@ -252,69 +154,6 @@ events.on("scenario_loaded", function(data)
     local music_vfs = "scenarios/" .. data.board:gsub("board%.toml$", "music.ogg")
     sound.play_music(music_vfs)
 end)
-
---- Execute an attack with combat animations.
--- Melee: attacker slides toward defender, attacks at contact, slides back.
--- Ranged: attacks in place (no movement).
--- @param attacker_id number: attacking unit id
--- @param defender_id number: defending unit id
--- @param is_ranged boolean: true if ranged attack
--- @param on_done function|nil: called after attack fully resolves
-local function execute_attack(attacker_id, defender_id, is_ranged, on_done)
-    -- Check if defender is a leader — fire leader_attacked trigger
-    local pre_state = norrust.get_state(vars.engine)
-    for _, unit in ipairs(pre_state.units or {}) do
-        if int(unit.id) == defender_id then
-            for _, ab in ipairs(unit.abilities or {}) do
-                if ab == "leader" then
-                    events.emit("dialogue", {trigger = "leader_attacked"})
-                    break
-                end
-            end
-            break
-        end
-    end
-
-    if is_ranged then
-        apply_attack_with_anims(attacker_id, defender_id, true)
-        if on_done then on_done() end
-        return
-    end
-
-    -- Melee: look up positions for slide
-    local state = norrust.get_state(vars.engine)
-    local ax, ay, dx, dy
-    for _, unit in ipairs(state.units or {}) do
-        local uid = int(unit.id)
-        if uid == attacker_id then
-            ax, ay = hex.to_pixel(int(unit.col), int(unit.row))
-        elseif uid == defender_id then
-            dx, dy = hex.to_pixel(int(unit.col), int(unit.row))
-        end
-    end
-
-    if not ax or not dx then
-        -- Fallback: can't find positions, attack without slide
-        apply_attack_with_anims(attacker_id, defender_id, false)
-        if on_done then on_done() end
-        return
-    end
-
-    -- Slide 40% toward defender
-    local mid_x = ax + (dx - ax) * 0.4
-    local mid_y = ay + (dy - ay) * 0.4
-
-    pending_anims.combat_slide = {
-        uid = attacker_id,
-        start_x = ax, start_y = ay,
-        target_x = mid_x, target_y = mid_y,
-        t = 0, speed = 6,
-        phase = "approach",
-        defender_id = defender_id,
-        pause_remaining = nil,
-        on_done = on_done,
-    }
-end
 
 -- ── Game logic helpers ──────────────────────────────────────────────────────
 
@@ -625,6 +464,15 @@ function love.load()
     -- Initialize camera module
     camera_mod.init({camera = camera, hex = hex, scn = scn, get_viewport = get_viewport, clamp = clamp})
 
+    -- Initialize combat module
+    combat_mod.init({
+        unit_anims = unit_anims, unit_sprites = unit_sprites,
+        anim_module = anim_module, pending_anims = pending_anims,
+        dying_units = dying_units, norrust = norrust, vars = vars,
+        hex = hex, sound = sound, combat_state = combat_state,
+        ghost = ghost, sel = sel, events = events, int = int,
+    })
+
     -- Initialize input handler module with all context references
     input.init({
         vars = vars, scn = scn, sel = sel, ghost = ghost,
@@ -683,93 +531,8 @@ function love.update(dt)
         if vars.status_timer <= 0 then vars.status_message = nil end
     end
 
-    -- Update unit animations
-    for uid, anim_state in pairs(unit_anims) do
-        local entry = nil
-        -- Find the unit's def_id to look up anim_data
-        -- We need the state to map uid → def_id; cache is built during draw_units
-        -- For efficiency, store def_id on the anim_state when created
-        if anim_state.def_id then
-            entry = unit_sprites[anim_state.def_id:lower():gsub(" ", "_")]
-        end
-        if entry and entry.anims then
-            anim_module.update(anim_state, entry.anims, dt)
-        end
-    end
-
-    -- Return combat animations to idle when their duration expires
-    local now = love.timer.getTime()
-    local i = 1
-    while i <= #pending_anims do
-        local pa = pending_anims[i]
-        if now >= pa.end_time then
-            local anim_state = unit_anims[pa.uid]
-            if anim_state then
-                anim_module.play(anim_state, pa.return_to)
-            end
-            table.remove(pending_anims, i)
-        else
-            i = i + 1
-        end
-    end
-
-    -- Tick down dying unit timers
-    for uid, info in pairs(dying_units) do
-        info.timer = info.timer - dt
-        if info.timer <= 0 then
-            dying_units[uid] = nil
-            unit_anims[uid] = nil
-        end
-    end
-
-    -- Movement interpolation animation
-    local ma = pending_anims.move
-    if ma then
-        ma.t = ma.t + ma.speed * dt
-        while ma and ma.t >= 1.0 do
-            ma.seg = ma.seg + 1
-            ma.t = ma.t - 1.0
-            if ma.seg >= #ma.path then
-                local cb = ma.on_complete
-                pending_anims.move = nil
-                ma = nil
-                if cb then cb() end
-            end
-        end
-    end
-
-    -- Combat slide animation (melee approach/return)
-    local cs = pending_anims.combat_slide
-    if cs then
-        if cs.pause_remaining then
-            -- Pausing at contact point (attack anims playing)
-            cs.pause_remaining = cs.pause_remaining - dt
-            if cs.pause_remaining <= 0 then
-                -- Start return phase
-                cs.phase = "return"
-                cs.t = 0
-                cs.pause_remaining = nil
-                -- Swap direction: slide back to start
-                cs.target_x, cs.start_x = cs.start_x, cs.target_x
-                cs.target_y, cs.start_y = cs.start_y, cs.target_y
-            end
-        else
-            cs.t = cs.t + cs.speed * dt
-            if cs.t >= 1.0 then
-                cs.t = 1.0
-                if cs.phase == "approach" then
-                    -- At contact: trigger attack, pause for anims
-                    apply_attack_with_anims(cs.uid, cs.defender_id, false)
-                    cs.pause_remaining = 0.3
-                elseif cs.phase == "return" then
-                    -- Back at start: done
-                    local cb = cs.on_done
-                    pending_anims.combat_slide = nil
-                    if cb then cb() end
-                end
-            end
-        end
-    end
+    -- Combat and animation tick
+    combat_mod.update_anims(dt)
 
     -- Camera panning and lerp
     camera_mod.update(dt)

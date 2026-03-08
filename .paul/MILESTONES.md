@@ -33,19 +33,48 @@ Completed milestone log for this project.
 | v2.7 Controls & Help | 2026-03-07 | ~30min | 2 phases, 2 plans |
 | v2.8 Code Cleanup & Architecture | 2026-03-07 | ~1 day | 5 phases, 5 plans |
 | v2.9 Audit Fixes | 2026-03-07 | ~15min | 2 phases, 2 plans |
-| v3.0 Upvalue Reduction & UX Polish | In Progress | - | 2 phases |
+| v3.0 Upvalue Reduction & UX Polish | 2026-03-07 | ~20min | 2 phases, 2 plans |
+| v3.1 Main.lua Modularization | In Progress | - | 3 phases |
 
 ---
 
-## v3.0 Upvalue Reduction & UX Polish (In Progress)
+## v3.1 Main.lua Modularization (In Progress)
 
-**Theme:** Eliminate upvalue pressure permanently, fix small UX issues from backlog.
+**Theme:** Split main.lua (~985 lines) into 3 focused modules + leaner hub.
 
 **Phases:**
 | Phase | Name | Status |
 |-------|------|--------|
-| 85 | Upvalue Reduction | Not started |
-| 86 | UX Fixes | Not started |
+| 87 | Extract State | Not started |
+| 88 | Extract Camera | Not started |
+| 89 | Extract Combat | Not started |
+
+---
+
+## v3.0 Upvalue Reduction & UX Polish
+
+**Completed:** 2026-03-07
+**Duration:** ~20min
+
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 2 |
+| Plans | 2 |
+| Tests | 121 Rust |
+
+### Key Accomplishments
+
+- **Upvalue reduction** — MODES/game_data/mods tables reduce love.load upvalues from 55 to 46
+- **UX fixes** — adjacent-only castle highlight, combat preview ToD label, advancement hint, zoom-corrected setup prompt
+
+### Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| MODES/game_data/mods tables for upvalue reduction | Constants, game data, and pass-through modules grouped; 55→46 upvalues |
+| Castle adjacency uses hex.distance == 1 | Hex grids need cube coordinate distance, not square grid dx/dy |
 
 ---
 

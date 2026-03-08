@@ -6,6 +6,37 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
+**v3.1 Main.lua Modularization**
+Status: Complete
+Phases: 3 of 3 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 87 | Extract State | 1/1 | ✅ Complete | 2026-03-07 |
+| 88 | Extract Camera | 1/1 | ✅ Complete | 2026-03-07 |
+| 89 | Extract Combat | 1/1 | ✅ Complete | 2026-03-07 |
+
+## v3.1 Phase Details
+
+### Phase 87: Extract State
+
+**Goal:** Extract pure state declarations (vars, pending_anims, unit_anims, dying_units, sel, ghost, camera, dlg, AI table, recruit state) into state.lua. Zero logic, just table initialization. main.lua requires state.lua and uses returned tables.
+**Depends on:** None
+
+### Phase 88: Extract Camera
+
+**Goal:** Extract camera helpers (update_camera_from_board, center_camera_on_hex, zoom/pan logic) into camera.lua with clean API: update(dt), center_on(col, row), handle_zoom(dy). Only needs camera table + vars + constants.
+**Depends on:** Phase 87 (state tables must be in state.lua first)
+
+### Phase 89: Extract Combat
+
+**Goal:** Extract combat resolution (resolve_combat, apply_combat_result, check_advancement, animation tick) into combat.lua. Receives ctx table like input.lua does. Heaviest dependencies but cohesive functionality.
+**Depends on:** Phase 88 (camera extracted, main.lua smaller)
+
+---
+
+## Previous Milestone
+
 **v3.0 Upvalue Reduction & UX Polish**
 Status: Complete
 Phases: 2 of 2 complete
