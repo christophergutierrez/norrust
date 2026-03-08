@@ -201,6 +201,11 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Clickable sidebar buttons (End Turn, Recruit, Help) for mouse-only play — Phase 77 (77-01)
 
 - [x] Save management UI: list/load/delete saves from main menu with metadata display — Phase 90 (90-01)
+- [x] Save display_name field with UI prompt for editing labels — Phase 91 (91-01)
+- [x] Veteran deploy/bench selection screen for campaign overflow — Phase 92 (92-01)
+- [x] Castle hex validation for veteran placement (FFI matches apply_recruit rules) — Phase 92 (92-01)
+- [x] Campaign faction assignment from TOML config (faction_0/faction_1) — Phase 92 (92-01)
+- [x] Veterans healed to full HP on scenario carry-over — Phase 92 (92-01)
 
 ### Active (In Progress / Deferred)
 
@@ -370,4 +375,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-08 after Phase 90 — Save Management UI.*
+*Last updated: 2026-03-08 after Phase 92 — Veteran Deployment (v3.2 complete).*

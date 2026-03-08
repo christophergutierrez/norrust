@@ -130,6 +130,7 @@ function save.write_save(engine, norrust, scenario_board, scenarios_path, campai
     -- Build save data
     local data = {
         game = {
+            display_name = "",
             board_path = scenario_board,
             scenarios_path = scenarios_path,
             turn = int(state.turn),
@@ -461,9 +462,10 @@ function save.list_saves()
                 date_str = string.format("%s-%s-%s %s:%s:%s", year, month, day, hour, min, sec)
             end
 
-            -- Read header lines to extract turn and campaign info
+            -- Read header lines to extract turn, campaign, and display_name
             local turn = "?"
             local campaign_name = nil
+            local display_name = nil
             local text = love.filesystem.read(filepath)
             if text then
                 local in_game = false
@@ -481,6 +483,8 @@ function save.list_saves()
                     if in_game then
                         local t = line:match("^turn%s*=%s*(%d+)")
                         if t then turn = t end
+                        local dn = line:match('^display_name%s*=%s*"([^"]*)"')
+                        if dn then display_name = dn end
                     end
                     if in_campaign then
                         local cf = line:match('^campaign_file%s*=%s*"([^"]+)"')
@@ -495,6 +499,7 @@ function save.list_saves()
                 scenario = scenario,
                 turn = turn,
                 campaign = campaign_name,
+                display_name = (display_name and display_name ~= "") and display_name or nil,
             }
         end
     end
@@ -511,6 +516,34 @@ function save.delete_save(filepath)
         print("[SAVE] Failed to delete: " .. filepath)
     end
     return ok
+end
+
+--- Update the display_name field in a save file's [game] section.
+--- Performs targeted string replacement without full re-parse.
+function save.update_display_name(filepath, name)
+    local text = love.filesystem.read(filepath)
+    if not text then return false end
+
+    -- Escape quotes in name for TOML
+    local safe_name = name:gsub('\\', '\\\\'):gsub('"', '\\"')
+    local new_line = 'display_name = "' .. safe_name .. '"'
+
+    -- Try to replace existing display_name line
+    local replaced
+    replaced = text:gsub('(display_name%s*=%s*"[^"]*")', new_line, 1)
+    if replaced ~= text then
+        love.filesystem.write(filepath, replaced)
+        return true
+    end
+
+    -- No existing display_name — insert after [game] header
+    replaced = text:gsub('%[game%]\n', '[game]\n' .. new_line .. '\n', 1)
+    if replaced ~= text then
+        love.filesystem.write(filepath, replaced)
+        return true
+    end
+
+    return false
 end
 
 return save

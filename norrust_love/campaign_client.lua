@@ -161,6 +161,52 @@ function campaign_client.load_campaign_scenario(ctx)
 
     -- Place veterans from previous scenario
     if ctx.campaign_index > 0 and #ctx.campaign_veterans > 0 then
+        -- Count available slots
+        local keep_col, keep_row, castle_hexes = campaign_client.find_keep_and_castles(ctx)
+        local state = ctx.norrust.get_state(ctx.engine)
+        local pos_map = ctx.build_unit_pos_map(state)
+        local available = 0
+        if keep_col then
+            -- Count keep + unoccupied castles
+            local check_key = ctx.int(keep_col) .. "," .. ctx.int(keep_row)
+            if not pos_map[check_key] then available = available + 1 end
+            for _, ch in ipairs(castle_hexes) do
+                local ck = ctx.int(ch.col) .. "," .. ctx.int(ch.row)
+                if not pos_map[ck] then available = available + 1 end
+            end
+        end
+
+        if #ctx.campaign_veterans > available and available > 0 then
+            -- Overflow: show deploy screen
+            local deploy = ctx.campaign_deploy
+            deploy.veterans = {}
+            local living = ctx.roster_mod and ctx.campaign_roster
+                and ctx.roster_mod.get_living(ctx.campaign_roster) or {}
+            for i, vet in ipairs(ctx.campaign_veterans) do
+                local uuid = living[i] and living[i].uuid or nil
+                deploy.veterans[#deploy.veterans + 1] = {
+                    def_id = vet.def_id,
+                    hp = ctx.int(vet.hp),
+                    xp = ctx.int(vet.xp),
+                    xp_needed = ctx.int(vet.xp_needed),
+                    advancement_pending = vet.advancement_pending,
+                    deployed = (i <= available),
+                    uuid = uuid,
+                }
+            end
+            deploy.slots = available
+            deploy.selected = 1
+            deploy.active = true
+
+            -- Apply carry-over gold before deploy screen
+            if ctx.campaign_gold > 0 then
+                ctx.norrust.set_faction_gold(ctx.engine, 0, ctx.campaign_gold)
+            end
+
+            ctx.game_mode = ctx.DEPLOY_VETERANS
+            return
+        end
+
         campaign_client.place_veterans(ctx)
         ctx.next_unit_id = ctx.norrust.get_next_unit_id(ctx.engine)
     end
@@ -170,6 +216,35 @@ function campaign_client.load_campaign_scenario(ctx)
         ctx.norrust.set_faction_gold(ctx.engine, 0, ctx.campaign_gold)
     end
 
+    ctx.game_mode = ctx.PLAYING
+end
+
+--- Commit veteran deployment: place only deployed veterans, start scenario.
+function campaign_client.commit_deployment(ctx)
+    local deploy = ctx.campaign_deploy
+
+    -- Build filtered veterans list from deployed entries
+    local filtered = {}
+    for _, dv in ipairs(deploy.veterans) do
+        if dv.deployed then
+            filtered[#filtered + 1] = {
+                def_id = dv.def_id,
+                hp = dv.hp,
+                xp = dv.xp,
+                xp_needed = dv.xp_needed,
+                advancement_pending = dv.advancement_pending,
+            }
+        end
+    end
+
+    -- Temporarily replace campaign_veterans with filtered list
+    local orig = ctx.campaign_veterans
+    ctx.campaign_veterans = filtered
+    campaign_client.place_veterans(ctx)
+    ctx.campaign_veterans = orig
+
+    ctx.next_unit_id = ctx.norrust.get_next_unit_id(ctx.engine)
+    deploy.active = false
     ctx.game_mode = ctx.PLAYING
 end
 

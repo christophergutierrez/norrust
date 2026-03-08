@@ -18,6 +18,7 @@ local get_attackable_enemies, ghost_attackable_set
 local call_load_scenario, call_load_campaign_scenario
 local faction_index_for_mode
 local apply_camera_offset
+local campaign_client
 
 --- Initialize the input module with context from main.lua.
 -- All table arguments are references — mutations here are visible in main.lua.
@@ -57,6 +58,7 @@ function M.init(ctx)
     call_load_campaign_scenario = ctx.call_load_campaign_scenario
     faction_index_for_mode = ctx.faction_index_for_mode
     apply_camera_offset = ctx.apply_camera_offset
+    campaign_client = ctx.campaign_client
 end
 
 -- ── Keyboard input ────────────────────────────────────────────────────────
@@ -228,9 +230,17 @@ function M.keypressed(key)
                 campaign.veterans = {}
                 campaign.gold = 0
                 campaign.roster = mods.roster_mod.new()
-                -- Auto-assign factions and load first scenario
-                game_data.faction_id[1] = game_data.factions[1].id
-                game_data.faction_id[2] = game_data.factions[2].id
+                -- Assign factions from campaign data, or fall back to auto-assign
+                if campaign.data.faction_0 and campaign.data.faction_0 ~= "" then
+                    game_data.faction_id[1] = campaign.data.faction_0
+                else
+                    game_data.faction_id[1] = game_data.factions[1].id
+                end
+                if campaign.data.faction_1 and campaign.data.faction_1 ~= "" then
+                    game_data.faction_id[2] = campaign.data.faction_1
+                else
+                    game_data.faction_id[2] = game_data.factions[2].id
+                end
                 local sc = campaign.data.scenarios[1]
                 scn.board = sc.board
                 scn.units = sc.units
@@ -242,9 +252,122 @@ function M.keypressed(key)
         return
     end
 
+    -- Veteran deployment screen
+    if vars.game_mode == MODES.DEPLOY_VETERANS then
+        local deploy = campaign.deploy
+        local dvets = deploy.veterans or {}
+
+        if key == "up" then
+            if deploy.selected > 1 then deploy.selected = deploy.selected - 1 end
+        elseif key == "down" then
+            if deploy.selected < #dvets then deploy.selected = deploy.selected + 1 end
+        elseif key == "space" then
+            local dv = dvets[deploy.selected]
+            if dv then
+                if dv.deployed then
+                    dv.deployed = false
+                else
+                    -- Count currently deployed
+                    local count = 0
+                    for _, v in ipairs(dvets) do
+                        if v.deployed then count = count + 1 end
+                    end
+                    if count < deploy.slots then
+                        dv.deployed = true
+                    else
+                        vars.status_message = "All " .. deploy.slots .. " slots full"
+                        vars.status_timer = 2.0
+                    end
+                end
+            end
+        elseif key == "return" or key == "kpenter" then
+            -- Build campaign ctx and commit
+            local ctx = {
+                norrust = mods.norrust, engine = vars.engine, int = int,
+                hex = mods.hex, scenarios_path = scn.path,
+                campaign_veterans = campaign.veterans,
+                campaign_roster = campaign.roster, roster_mod = mods.roster_mod,
+                campaign_deploy = campaign.deploy,
+                build_unit_pos_map = build_unit_pos_map,
+                PLAYING = MODES.PLAYING,
+            }
+            campaign_client.commit_deployment(ctx)
+            vars.next_unit_id = ctx.next_unit_id or mods.norrust.get_next_unit_id(vars.engine)
+            vars.game_mode = ctx.game_mode
+            mods.events.emit("scenario_loaded", {board = scn.board})
+        elseif key == "escape" then
+            -- Deploy all (up to slot limit)
+            local count = 0
+            for _, dv in ipairs(dvets) do
+                if count < deploy.slots then
+                    dv.deployed = true
+                    count = count + 1
+                else
+                    dv.deployed = false
+                end
+            end
+            local ctx = {
+                norrust = mods.norrust, engine = vars.engine, int = int,
+                hex = mods.hex, scenarios_path = scn.path,
+                campaign_veterans = campaign.veterans,
+                campaign_roster = campaign.roster, roster_mod = mods.roster_mod,
+                campaign_deploy = campaign.deploy,
+                build_unit_pos_map = build_unit_pos_map,
+                PLAYING = MODES.PLAYING,
+            }
+            campaign_client.commit_deployment(ctx)
+            vars.next_unit_id = ctx.next_unit_id or mods.norrust.get_next_unit_id(vars.engine)
+            vars.game_mode = ctx.game_mode
+            mods.events.emit("scenario_loaded", {board = scn.board})
+        else
+            -- Number keys 1-9 toggle deploy
+            local num = tonumber(key)
+            if num and num >= 1 and num <= #dvets then
+                local dv = dvets[num]
+                if dv.deployed then
+                    dv.deployed = false
+                else
+                    local count = 0
+                    for _, v in ipairs(dvets) do
+                        if v.deployed then count = count + 1 end
+                    end
+                    if count < deploy.slots then
+                        dv.deployed = true
+                    else
+                        vars.status_message = "All " .. deploy.slots .. " slots full"
+                        vars.status_timer = 2.0
+                    end
+                end
+            end
+        end
+        return
+    end
+
     -- Save management screen
     if vars.game_mode == MODES.LOAD_SAVE then
         local saves = game_data.save_list or {}
+
+        -- Rename mode intercepts keys
+        if game_data.save_renaming then
+            if key == "return" or key == "kpenter" then
+                local selected = saves[game_data.save_idx]
+                if selected then
+                    mods.save.update_display_name(selected.filepath, game_data.save_rename_text)
+                    game_data.save_list = mods.save.list_saves()
+                end
+                game_data.save_renaming = false
+            elseif key == "escape" then
+                game_data.save_renaming = false
+            elseif key == "backspace" then
+                local t = game_data.save_rename_text
+                if #t > 0 then
+                    -- Remove last byte (ASCII-safe; UTF-8 multi-byte unlikely in save names)
+                    game_data.save_rename_text = t:sub(1, #t - 1)
+                end
+            end
+            return
+        end
+
         if key == "escape" then
             vars.game_mode = MODES.PICK_SCENARIO
         elseif key == "up" then
@@ -326,6 +449,13 @@ function M.keypressed(key)
                     game_data.save_idx = math.max(1, #game_data.save_list)
                 end
             end
+        elseif key == "r" and #saves > 0 then
+            local selected = saves[game_data.save_idx]
+            if selected then
+                game_data.save_renaming = true
+                game_data.save_rename_skip = true
+                game_data.save_rename_text = selected.display_name or ""
+            end
         end
         return
     end
@@ -370,7 +500,7 @@ function M.keypressed(key)
                     for _, entry in ipairs(living) do
                         campaign.veterans[#campaign.veterans + 1] = {
                             def_id = entry.def_id,
-                            hp = entry.hp,
+                            hp = entry.max_hp,
                             max_hp = entry.max_hp,
                             xp = entry.xp,
                             xp_needed = entry.xp_needed,
@@ -378,7 +508,9 @@ function M.keypressed(key)
                         }
                     end
                 else
-                    campaign.veterans = mods.norrust.get_survivors(vars.engine, 0)
+                    local survivors = mods.norrust.get_survivors(vars.engine, 0)
+                    for _, s in ipairs(survivors) do s.hp = s.max_hp end
+                    campaign.veterans = survivors
                 end
                 campaign.gold = mods.norrust.get_carry_gold(
                     vars.engine, 0,
@@ -607,6 +739,7 @@ function M.mousepressed(sx, sy, button)
     if button ~= 1 then return end
     if vars.game_mode == MODES.PICK_SCENARIO then return end
     if vars.game_mode == MODES.LOAD_SAVE then return end
+    if vars.game_mode == MODES.DEPLOY_VETERANS then return end
 
     -- Setup mode click
     if vars.game_mode ~= MODES.PLAYING then
@@ -688,6 +821,7 @@ function M.mousepressed(sx, sy, button)
                 local err_map = {
                     [-4] = "Hex is occupied",
                     [-9] = "Must click a castle hex",
+                    [-10] = "Move leader to the keep first",
                 }
                 sel.recruit_error = err_map[rc] or string.format("Place failed (code %d)", rc)
             end

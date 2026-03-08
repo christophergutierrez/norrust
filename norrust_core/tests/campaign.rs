@@ -131,7 +131,11 @@ fn test_veteran_placement_via_ffi() {
         let board_path = c(&project_root().join("scenarios/contested/board.toml").to_string_lossy());
         assert_eq!(norrust_load_board(engine, board_path.as_ptr(), 42), 1);
 
-        // Place a veteran fighter with custom stats
+        // Place a leader on the keep (1,2) so veteran placement is valid
+        let leader_id = c("Lieutenant");
+        norrust_place_unit_at(engine, 1, leader_id.as_ptr(), 0, 0, 1, 2);
+
+        // Place a veteran fighter on adjacent castle hex (1,1)
         let def_id = c("fighter");
         let result = norrust_place_veteran_unit(
             engine,

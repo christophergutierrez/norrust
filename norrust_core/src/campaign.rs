@@ -24,6 +24,12 @@ pub struct CampaignScenarioDef {
 pub struct CampaignDef {
     pub id: String,
     pub name: String,
+    /// Faction ID for player (faction 0). If empty, client assigns.
+    #[serde(default)]
+    pub faction_0: String,
+    /// Faction ID for enemy (faction 1). If empty, client assigns.
+    #[serde(default)]
+    pub faction_1: String,
     /// Percentage of gold that carries over between scenarios (0-100).
     #[serde(default = "default_carry_percent")]
     pub gold_carry_percent: u32,
@@ -49,6 +55,10 @@ struct CampaignFile {
 struct CampaignMeta {
     id: String,
     name: String,
+    #[serde(default)]
+    faction_0: String,
+    #[serde(default)]
+    faction_1: String,
     #[serde(default = "default_carry_percent")]
     gold_carry_percent: u32,
     #[serde(default)]
@@ -80,6 +90,8 @@ pub fn load_campaign(path: &Path) -> Result<CampaignDef, String> {
     Ok(CampaignDef {
         id: file.campaign.id,
         name: file.campaign.name,
+        faction_0: file.campaign.faction_0,
+        faction_1: file.campaign.faction_1,
         gold_carry_percent: file.campaign.gold_carry_percent,
         early_finish_bonus: file.campaign.early_finish_bonus,
         scenarios: file.scenarios,

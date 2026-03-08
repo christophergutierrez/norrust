@@ -7,14 +7,14 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 ## Current Milestone
 
 **v3.2 Campaign Management**
-Status: 🚧 In Progress
-Phases: 1 of 3 complete
+Status: ✅ Complete
+Phases: 3 of 3 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 90 | Save Management UI | 1/1 | ✅ Complete | 2026-03-08 |
-| 91 | Save Naming | TBD | Not started | - |
-| 92 | Veteran Deployment | TBD | Not started | - |
+| 91 | Save Naming | 1/1 | ✅ Complete | 2026-03-08 |
+| 92 | Veteran Deployment | 1/1 | ✅ Complete | 2026-03-08 |
 
 ## v3.2 Phase Details
 

@@ -30,6 +30,7 @@ local MODES = {
     SETUP_BLUE = 2, SETUP_RED = 3,
     PLAYING = 4,
     LOAD_SAVE = 5,
+    DEPLOY_VETERANS = 6,
 }
 
 -- Game data: scenarios, campaigns, faction state
@@ -49,6 +50,8 @@ local game_data = {
     leader_placed = {false, false},
     save_list = {},
     save_idx = 1,
+    save_renaming = false,
+    save_rename_text = "",
 }
 
 -- ── State (from state.lua) ────────────────────────────────────────────────
@@ -340,8 +343,10 @@ local function build_campaign_ctx()
         faction_id = game_data.faction_id, game_over = vars.game_over,
         winner_faction = vars.winner_faction, recruit_mode = sel.recruit_mode,
         next_unit_id = vars.next_unit_id, game_mode = vars.game_mode,
-        PLAYING = MODES.PLAYING, clear_selection = clear_selection,
+        PLAYING = MODES.PLAYING, DEPLOY_VETERANS = MODES.DEPLOY_VETERANS,
+        clear_selection = clear_selection,
         build_unit_pos_map = build_unit_pos_map,
+        campaign_deploy = campaign.deploy,
     }
 end
 
@@ -497,6 +502,7 @@ function love.load()
         ghost_attackable_set = ghost_attackable_set,
         call_load_scenario = call_load_scenario,
         call_load_campaign_scenario = call_load_campaign_scenario,
+        campaign_client = campaign_client,
         faction_index_for_mode = faction_index_for_mode,
         apply_camera_offset = apply_camera_offset,
     })
@@ -586,6 +592,8 @@ function love.draw()
     ctx.PICK_FACTION_RED = MODES.PICK_FACTION_RED; ctx.SETUP_BLUE = MODES.SETUP_BLUE
     ctx.SETUP_RED = MODES.SETUP_RED; ctx.PLAYING = MODES.PLAYING; ctx.LOAD_SAVE = MODES.LOAD_SAVE
     ctx.save_list = game_data.save_list; ctx.save_idx = game_data.save_idx
+    ctx.save_renaming = game_data.save_renaming; ctx.save_rename_text = game_data.save_rename_text
+    ctx.DEPLOY_VETERANS = MODES.DEPLOY_VETERANS; ctx.deploy = campaign.deploy
     -- Fonts, sprites
     ctx.fonts = fonts; ctx.terrain_tiles = terrain_tiles; ctx.unit_sprites = unit_sprites
     ctx.unit_anims = unit_anims
@@ -626,6 +634,15 @@ function love.mousepressed(sx, sy, button) input.mousepressed(sx, sy, button) en
 function love.mousereleased(x, y, button) input.mousereleased(x, y, button) end
 function love.mousemoved(sx, sy, dx, dy) input.mousemoved(sx, sy, dx, dy) end
 function love.wheelmoved(x, y) input.wheelmoved(x, y) end
+function love.textinput(t)
+    if game_data.save_renaming then
+        if game_data.save_rename_skip then
+            game_data.save_rename_skip = false
+            return
+        end
+        game_data.save_rename_text = game_data.save_rename_text .. t
+    end
+end
 
 -- ── love.resize ─────────────────────────────────────────────────────────────
 

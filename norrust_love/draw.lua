@@ -208,7 +208,7 @@ function draw.draw_setup_hud(ctx)
             love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3], 1)
             love.graphics.printf("No save files found", 0, vp_h / 2 - 10, vp_w, "center")
         else
-            local max_visible = math.floor((vp_h - 120) / 26)
+            local max_visible = math.floor((vp_h - 120) / 32)
             local idx = ctx.save_idx or 1
             -- Scroll window: keep selected item visible
             local scroll_top = 1
@@ -219,19 +219,36 @@ function draw.draw_setup_hud(ctx)
 
             for i = scroll_top, scroll_end do
                 local s = saves[i]
-                local y = 70 + (i - scroll_top) * 26
-                local label = s.date_str .. "  —  " .. s.scenario .. "  —  Turn " .. s.turn
-                if s.campaign then
-                    label = label .. "  [" .. s.campaign .. "]"
+                local y = 70 + (i - scroll_top) * 32
+                local primary, secondary
+                if s.display_name then
+                    primary = s.display_name
+                    secondary = s.date_str .. "  —  " .. s.scenario .. "  —  Turn " .. s.turn
+                    if s.campaign then secondary = secondary .. "  [" .. s.campaign .. "]" end
+                else
+                    primary = s.date_str .. "  —  " .. s.scenario .. "  —  Turn " .. s.turn
+                    if s.campaign then primary = primary .. "  [" .. s.campaign .. "]" end
+                    secondary = nil
                 end
 
-                love.graphics.setFont(fonts[13])
                 if i == idx then
+                    love.graphics.setFont(fonts[13])
                     love.graphics.setColor(C_YELLOW[1], C_YELLOW[2], C_YELLOW[3], 1)
-                    love.graphics.printf("> " .. label, 20, y, vp_w - 40, "left")
+                    love.graphics.printf("> " .. primary, 20, y, vp_w - 40, "left")
+                    if secondary then
+                        love.graphics.setFont(fonts[11])
+                        love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3], 0.8)
+                        love.graphics.printf("    " .. secondary, 20, y + 14, vp_w - 40, "left")
+                    end
                 else
+                    love.graphics.setFont(fonts[13])
                     love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
-                    love.graphics.printf("  " .. label, 20, y, vp_w - 40, "left")
+                    love.graphics.printf("  " .. primary, 20, y, vp_w - 40, "left")
+                    if secondary then
+                        love.graphics.setFont(fonts[11])
+                        love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3], 0.6)
+                        love.graphics.printf("    " .. secondary, 20, y + 14, vp_w - 40, "left")
+                    end
                 end
             end
 
@@ -242,14 +259,84 @@ function draw.draw_setup_hud(ctx)
             end
             if scroll_end < #saves then
                 love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3], 1)
-                love.graphics.printf("▼ more", 0, 70 + (scroll_end - scroll_top + 1) * 26, vp_w, "center")
+                love.graphics.printf("▼ more", 0, 70 + (scroll_end - scroll_top + 1) * 32, vp_w, "center")
             end
+        end
+
+        -- Rename prompt bar
+        if ctx.save_renaming then
+            local bar_h = 40
+            local bar_y = vp_h - 70
+            love.graphics.setColor(0.1, 0.1, 0.15, 0.9)
+            love.graphics.rectangle("fill", 20, bar_y, vp_w - 40, bar_h, 6, 6)
+            love.graphics.setFont(fonts[14])
+            love.graphics.setColor(C_WARM_TITLE[1], C_WARM_TITLE[2], C_WARM_TITLE[3], 1)
+            local cursor = (math.floor(love.timer.getTime() * 2) % 2 == 0) and "_" or ""
+            love.graphics.print("Rename: " .. (ctx.save_rename_text or "") .. cursor, 30, bar_y + 6)
+            love.graphics.setFont(fonts[11])
+            love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3], 0.8)
+            love.graphics.print("[Enter] Confirm    [Esc] Cancel", 30, bar_y + 24)
         end
 
         -- Controls hint at bottom
         love.graphics.setFont(fonts[12])
         love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3], 1)
-        love.graphics.printf("[Enter] Load    [D] Delete    [Esc] Back", 0, vp_h - 30, vp_w, "center")
+        love.graphics.printf("[Enter] Load    [R] Rename    [D] Delete    [Esc] Back", 0, vp_h - 20, vp_w, "center")
+        return
+    end
+
+    -- Veteran deployment screen
+    if ctx.game_mode == ctx.DEPLOY_VETERANS then
+        local deploy = ctx.deploy or {}
+        local dvets = deploy.veterans or {}
+        local slots = deploy.slots or 0
+        local sel_idx = deploy.selected or 1
+
+        -- Count deployed
+        local deployed_count = 0
+        for _, dv in ipairs(dvets) do
+            if dv.deployed then deployed_count = deployed_count + 1 end
+        end
+
+        love.graphics.setFont(fonts[18])
+        love.graphics.setColor(C_GOLD[1], C_GOLD[2], C_GOLD[3], 1)
+        love.graphics.printf("Deploy Veterans", 0, 30, vp_w, "center")
+
+        love.graphics.setFont(fonts[14])
+        love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
+        love.graphics.printf(
+            string.format("Deployed: %d / %d slots", deployed_count, slots),
+            0, 56, vp_w, "center"
+        )
+
+        for i, dv in ipairs(dvets) do
+            local y = 90 + (i - 1) * 28
+            local prefix = dv.deployed and "[+]" or "[-]"
+            local label = string.format(
+                "%s [%d] %s  HP:%d  XP:%d/%d",
+                prefix, i, dv.def_id, dv.hp, dv.xp, dv.xp_needed
+            )
+            if dv.advancement_pending then
+                label = label .. " *"
+            end
+
+            love.graphics.setFont(fonts[13])
+            if i == sel_idx then
+                love.graphics.setColor(C_YELLOW[1], C_YELLOW[2], C_YELLOW[3], 1)
+                love.graphics.printf("> " .. label, 20, y, vp_w - 40, "left")
+            elseif dv.deployed then
+                love.graphics.setColor(0.5, 1.0, 0.5, 1)
+                love.graphics.printf("  " .. label, 20, y, vp_w - 40, "left")
+            else
+                love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3], 0.6)
+                love.graphics.printf("  " .. label, 20, y, vp_w - 40, "left")
+            end
+        end
+
+        -- Controls hint
+        love.graphics.setFont(fonts[12])
+        love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3], 1)
+        love.graphics.printf("[Space] Toggle    [Enter] Confirm    [Esc] Deploy All", 0, vp_h - 20, vp_w, "center")
         return
     end
 
@@ -772,7 +859,7 @@ function draw.draw_frame(ctx, state)
     love.graphics.scale(ctx.UI_SCALE, ctx.UI_SCALE)
 
     -- Scenario selection or save list: no board loaded yet
-    if ctx.game_mode == ctx.PICK_SCENARIO or ctx.game_mode == ctx.LOAD_SAVE then
+    if ctx.game_mode == ctx.PICK_SCENARIO or ctx.game_mode == ctx.LOAD_SAVE or ctx.game_mode == ctx.DEPLOY_VETERANS then
         draw.draw_setup_hud(ctx)
         love.graphics.pop()
         return

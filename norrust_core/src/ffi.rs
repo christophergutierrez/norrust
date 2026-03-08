@@ -920,9 +920,11 @@ pub unsafe extern "C" fn norrust_load_campaign(
         .collect();
 
     let json = format!(
-        "{{\"id\":\"{}\",\"name\":\"{}\",\"gold_carry_percent\":{},\"early_finish_bonus\":{},\"scenarios\":[{}]}}",
+        "{{\"id\":\"{}\",\"name\":\"{}\",\"faction_0\":\"{}\",\"faction_1\":\"{}\",\"gold_carry_percent\":{},\"early_finish_bonus\":{},\"scenarios\":[{}]}}",
         campaign.id,
         campaign.name,
+        campaign.faction_0,
+        campaign.faction_1,
         campaign.gold_carry_percent,
         campaign.early_finish_bonus,
         scenarios_json.join(",")
@@ -993,15 +995,32 @@ pub unsafe extern "C" fn norrust_place_veteran_unit(
     unit.xp_needed = xp_needed as u32;
     unit.advancement_pending = advancement_pending != 0;
 
-    let hex = Hex::from_offset(col, row);
+    let destination = Hex::from_offset(col, row);
     let Some(state) = e.game.as_mut() else { return -1 };
-    if !state.board.contains(hex) {
+    if !state.board.contains(destination) {
         return -1;
     }
-    if state.positions.values().any(|&h| h == hex) {
-        return -1;
+    // Leader must be on a keep tile
+    let active = state.active_faction;
+    let keep_hex = state.positions.iter().find_map(|(&uid, &hex)| {
+        let unit = state.units.get(&uid)?;
+        if unit.faction != active { return None; }
+        if !unit.abilities.iter().any(|a| a == "leader") { return None; }
+        state.board.tile_at(hex).filter(|t| t.terrain_id == "keep").map(|_| hex)
+    });
+    let Some(keep_hex) = keep_hex else { return -10 };
+    // Destination must be a castle tile adjacent to the keep
+    match state.board.tile_at(destination) {
+        Some(tile) if tile.terrain_id == "castle" => {}
+        _ => return -9,
     }
-    state.place_unit(unit, hex);
+    if keep_hex.distance(destination) != 1 {
+        return -9;
+    }
+    if state.positions.values().any(|&h| h == destination) {
+        return -4;
+    }
+    state.place_unit(unit, destination);
     0
 }
 

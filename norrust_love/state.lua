@@ -45,6 +45,7 @@ local ghost = {col = nil, row = nil, unit_id = -1, attackable = {}, path = {}}
 local campaign = {
     path = "", active = false, data = nil,
     index = 0, veterans = {}, gold = 0, roster = nil,
+    deploy = {active = false, veterans = {}, slots = 0, selected = 1},
 }
 
 local dlg = {active = {}, history = {}, show_history = false, scroll = 0}
