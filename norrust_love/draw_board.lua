@@ -101,15 +101,42 @@ function M.draw_units(ctx, state)
         ::continue::
     end
 
-    -- Draw dying units (death animation still playing)
+    -- Draw dying units (derived death: idle sprite tilts + fades)
     for uid, info in pairs(ctx.dying_units or {}) do
         local anim_state = ctx.unit_anims[uid]
-        if anim_state then
-            local cx, cy = ctx.hex.to_pixel(info.col, info.row)
-            local faction = info.faction
-            anim_state.facing = faction == 0 and "right" or "left"
-            ctx.assets.draw_unit_sprite(ctx.unit_sprites, info.def_id, cx, cy, ctx.hex.RADIUS, faction, 1.0, ctx.FACTION_COLORS, anim_state)
-        end
+        if not anim_state then goto continue_dying end
+
+        -- Force idle for derived death
+        ctx.anim_module.play(anim_state, "idle")
+
+        local key = info.def_id and info.def_id:lower():gsub(" ", "_")
+        local entry = key and ctx.unit_sprites[key]
+        if not entry or not entry.anims then goto continue_dying end
+
+        local img, quad, fw, fh = ctx.anim_module.get_quad(anim_state, entry.anims)
+        if not img or not quad then goto continue_dying end
+
+        local cx, cy = ctx.hex.to_pixel(info.col, info.row)
+        local faction = info.faction
+        local flip = faction == 0 and 1 or -1
+
+        -- Progress: 0.0 (just died) to 1.0 (fully gone)
+        local progress = 1.0 - (info.timer / 1.0)
+        local angle = progress * math.pi / 2  -- tilt 0° to 90°
+        local alpha = 1.0 - progress           -- fade 1.0 to 0.0
+
+        -- Faction-colored underlay circle (fading)
+        local fc = ctx.FACTION_COLORS[faction]
+        love.graphics.setColor(fc[1], fc[2], fc[3], alpha)
+        love.graphics.circle("fill", cx, cy, ctx.hex.RADIUS * 0.45)
+
+        -- Draw idle sprite with rotation + fade
+        local target_size = ctx.hex.RADIUS * 1.4
+        local scale = math.min(target_size / fw, target_size / fh)
+        love.graphics.setColor(1, 1, 1, alpha)
+        love.graphics.draw(img, quad, cx, cy, angle, scale * flip, scale, fw / 2, fh / 2)
+
+        ::continue_dying::
     end
 
     -- Clean up stale animation states for dead/removed units (skip dying units)

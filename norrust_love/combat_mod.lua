@@ -49,7 +49,12 @@ local function trigger_attack_anims(attacker_id, defender_id, is_ranged)
 end
 
 local function trigger_death_anim(uid)
-    play_combat_anim(uid, "death", 0)
+    -- Death is now derived at render time (tilt + fade from idle)
+    -- Just ensure anim state is on idle; draw_board handles the visual
+    local anim_state = unit_anims[uid]
+    if anim_state then
+        anim_module.play(anim_state, "idle")
+    end
 end
 
 local function apply_attack_with_anims(attacker_id, defender_id, is_ranged)

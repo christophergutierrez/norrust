@@ -4,7 +4,7 @@ id = "elvish_captain"
 file = "idle.png"
 frame_width = 256
 frame_height = 256
-frames = 4
+frames = 6
 fps = 4
 
 [attacks.melee]
@@ -18,22 +18,16 @@ fps = 8
 file = "attack-ranged.png"
 frame_width = 256
 frame_height = 256
-frames = 4
+frames = 6
 fps = 6
 
 [defend]
 file = "defend.png"
 frame_width = 256
 frame_height = 256
-frames = 3
+frames = 6
 fps = 6
 
-[death]
-file = "death.png"
-frame_width = 256
-frame_height = 256
-frames = 4
-fps = 6
 
 [portrait]
 file = "portrait.png"

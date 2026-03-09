@@ -404,6 +404,10 @@ function love.load()
             end
             love.keypressed = function(key) viewer.keypressed(key) end
             love.wheelmoved = function(x, y) viewer.wheelmoved(x, y) end
+            love.mousemoved = function() end
+            love.mousepressed = function() end
+            love.mousereleased = function() end
+            love.resize = function() end
             return
         end
     end

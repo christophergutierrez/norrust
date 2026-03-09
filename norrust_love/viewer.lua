@@ -24,6 +24,10 @@ local anim_state = nil
 local anim_names = {}       -- available anim states for current unit
 local anim_name_idx = 1
 
+-- All-anims view: one anim_state per animation, all playing simultaneously
+local show_all_anims = true
+local all_anim_states = {}  -- {name = anim_state, ...}
+
 local SIDEBAR_W = 220
 local ZOOM_MIN = 0.25
 local ZOOM_MAX = 4.0
@@ -115,14 +119,19 @@ local function select_asset(idx)
             if entry.anims.defend then
                 anim_names[#anim_names + 1] = "defend"
             end
-            if entry.anims.death then
-                anim_names[#anim_names + 1] = "death"
-            end
+            -- death excluded: derived at render time (tilt + fade from idle)
         end
         anim_name_idx = 1
         anim_state = anim_module.new_state()
         if #anim_names > 0 then
             anim_module.play(anim_state, anim_names[1])
+        end
+        -- Create per-animation states for all-anims view
+        all_anim_states = {}
+        for _, name in ipairs(anim_names) do
+            local s = anim_module.new_state()
+            anim_module.play(s, name)
+            all_anim_states[name] = s
         end
     else
         anim_state = nil
@@ -152,12 +161,16 @@ end
 
 --- Advance the current unit's animation state by dt seconds.
 function viewer.update(dt)
-    if anim_state then
-        local item = asset_list[selected_idx]
-        if item and item.type == "unit" then
-            local entry = unit_sprites[item.id]
-            if entry and entry.anims then
+    local item = asset_list[selected_idx]
+    if item and item.type == "unit" then
+        local entry = unit_sprites[item.id]
+        if entry and entry.anims then
+            if anim_state then
                 anim_module.update(anim_state, entry.anims, dt)
+            end
+            -- Update all individual anim states for all-anims view
+            for _, s in pairs(all_anim_states) do
+                anim_module.update(s, entry.anims, dt)
             end
         end
     end
@@ -359,8 +372,8 @@ local function draw_unit_preview(def_id)
         end
     end
 
-    -- Portrait (top right)
-    if entry.portrait then
+    -- Portrait (top right, single-anim view only)
+    if not show_all_anims and entry.portrait then
         local pw, ph = entry.portrait:getWidth(), entry.portrait:getHeight()
         local pscale = math.min(100 / pw, 100 / ph)
         local px = vp_w - pw * pscale - 20
@@ -375,6 +388,77 @@ local function draw_unit_preview(def_id)
     end
 end
 
+--- Draw all poses side by side for a unit.
+local function draw_unit_all_anims(def_id)
+    local vp_w, vp_h = get_viewport()
+    local entry = unit_sprites[def_id]
+    if not entry or not entry.anims then return end
+
+    local area_w = vp_w - SIDEBAR_W
+    local n = #anim_names
+    if n == 0 then return end
+
+    -- Title
+    love.graphics.setFont(fonts[15])
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.print(string.format("%s  —  all poses", def_id), SIDEBAR_W + 15, 10)
+
+    -- Layout: all poses in a horizontal row, evenly spaced
+    local label_h = 20
+    local top_margin = 35
+    local bot_margin = 45
+    local avail_h = vp_h - top_margin - bot_margin - label_h
+    local col_w = area_w / n
+    local pose_size = math.min(col_w - 20, avail_h) * zoom
+
+    for i, name in ipairs(anim_names) do
+        local s = all_anim_states[name]
+        local anim_data = entry.anims[name]
+        if not s or not anim_data then goto continue end
+
+        local col_x = SIDEBAR_W + (i - 1) * col_w
+        local cx = col_x + col_w / 2
+
+        -- Label
+        love.graphics.setFont(fonts[12])
+        love.graphics.setColor(0.7, 0.7, 0.7, 1)
+        local tw = fonts[12]:getWidth(name)
+        love.graphics.print(name, cx - tw / 2, top_margin)
+
+        -- Draw the pose
+        local img, quad, fw, fh = anim_module.get_quad(s, entry.anims)
+        if img and quad then
+            local pscale = math.min(pose_size / fw, pose_size / fh)
+            local flip = flipped and -1 or 1
+            local draw_w = fw * pscale
+            local draw_h = fh * pscale
+            local dx = cx - (draw_w * flip) / 2
+            local dy = top_margin + label_h + (avail_h - draw_h) / 2
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.draw(img, quad, dx, dy, 0, pscale * flip, pscale)
+
+            -- Border
+            local bx = cx - draw_w / 2
+            love.graphics.setColor(0.3, 0.3, 0.35, 0.5)
+            love.graphics.rectangle("line", bx, dy, draw_w, draw_h)
+        end
+
+        ::continue::
+    end
+
+    -- Portrait (bottom right)
+    if entry.portrait then
+        local pw, ph = entry.portrait:getWidth(), entry.portrait:getHeight()
+        local pscale = math.min(80 / pw, 80 / ph)
+        local px = vp_w - pw * pscale - 10
+        local py = vp_h - ph * pscale - 40
+        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.draw(entry.portrait, px, py, 0, pscale, pscale)
+        love.graphics.setColor(0.4, 0.4, 0.4)
+        love.graphics.rectangle("line", px, py, pw * pscale, ph * pscale)
+    end
+end
+
 --- Draw the bottom bar showing keyboard controls.
 local function draw_controls_bar()
     local vp_w, vp_h = get_viewport()
@@ -384,7 +468,7 @@ local function draw_controls_bar()
 
     love.graphics.setFont(fonts[11])
     love.graphics.setColor(0.5, 0.5, 0.5)
-    love.graphics.print("Up/Down: select   Left/Right: anim state   +/-: zoom   F: flip   R: reset   Esc: quit", SIDEBAR_W + 10, vp_h - 22)
+    love.graphics.print("Up/Down: select   Left/Right: anim   +/-: zoom   F: flip   A: all anims   R: reset   Esc: quit", SIDEBAR_W + 10, vp_h - 22)
 end
 
 --- Render the full viewer: sidebar, preview area, and controls bar.
@@ -396,7 +480,11 @@ function viewer.draw()
         if item.type == "terrain" then
             draw_terrain_preview(item.id)
         elseif item.type == "unit" then
-            draw_unit_preview(item.id)
+            if show_all_anims then
+                draw_unit_all_anims(item.id)
+            else
+                draw_unit_preview(item.id)
+            end
         end
     end
 
@@ -436,6 +524,8 @@ function viewer.keypressed(key)
         zoom = math.max(ZOOM_MIN, zoom / 1.25)
     elseif key == "f" then
         flipped = not flipped
+    elseif key == "a" then
+        show_all_anims = not show_all_anims
     elseif key == "r" then
         zoom = 1.0
         flipped = false

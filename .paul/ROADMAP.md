@@ -6,7 +6,42 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
-(none — v3.3 complete, next milestone not yet defined)
+**v3.4 Sprite Pipeline v2**
+Status: ✅ Complete
+Phases: 3 of 3 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 94 | Pipeline Core | 2 | ✅ Complete | 2026-03-09 |
+| 95 | Death Removal + Viewer | 1 | ✅ Complete | 2026-03-09 |
+| 96 | Batch Generation + Cleanup | 1 | ✅ Complete | 2026-03-09 |
+
+## v3.4 Phase Details
+
+### Phase 94: Pipeline Core
+
+**Goal:** Build generate/process/validate functions as composable pipeline. Single-pose-per-call via Gemini API with reference image feedback. Validation loop with direction check (auto-flip), multi-blob detection, size enforcement (<30KB hard limit), edge quality. Portrait pipeline with separate prompt (painterly, black bg, close-up). CLI tool with --unit, --redo, --base flags.
+**Depends on:** None (prototype exists in generate_sprites_v2.py)
+
+**Plans:**
+- 94-01: Sprite validation + retry loop (direction auto-flip, multi-blob, size, edges)
+- 94-02: Portrait pipeline (separate prompt, black bg, process + validate)
+
+### Phase 95: Death Removal + Viewer
+
+**Goal:** Remove death pose from generation pipeline. Derive death animation at render time from idle (rotate + fade). Finalize viewer all-poses side-by-side view as default. Clean up viewer crash fixes (mouse/resize handlers).
+**Depends on:** Phase 94 (pipeline must be stable before removing death)
+
+**Plans:**
+- TBD (defined during /paul:plan)
+
+### Phase 96: Batch Generation
+
+**Goal:** Run the validated pipeline for all 17 units. Per-unit defend descriptions with correct equipment. Manual review pass via viewer. Fix outliers with --redo. Generate portraits for all units.
+**Depends on:** Phase 95 (death removal + viewer must be done for review)
+
+**Plans:**
+- TBD (defined during /paul:plan)
 
 ---
 

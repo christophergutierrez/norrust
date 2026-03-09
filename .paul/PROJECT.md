@@ -146,6 +146,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] AI-generated unit sprites for all 16 priority units via Gemini 2.0 Flash pipeline (92 PNG files) — Phase 44-46 (v1.7)
 - [x] Python sprite generation pipeline (generate_sprites.py + unit_prompts.toml) replacing obsolete Lua generator — Phase 45 (45-01)
 - [x] Combat animations: attack-melee, attack-ranged, defend, death triggered during gameplay with timer-based return to idle — Phase 47 (47-01)
+- [x] Sprite pipeline v2: single-pose Gemini generation with PIL validation, retry loop, portrait pipeline — Phase 94 (94-01, 94-02)
+- [x] Derived death animation (tilt + fade from idle at render time, no death.png needed) — Phase 95 (95-01)
+- [x] Project-level tools/ directory for utilities (generate_sprites.py relocated from norrust_love/tools/) — Phase 96 (96-01)
 - [x] Faction-based unit facing (chess-style: faction 0→right, faction 1→left) — Phase 47 (47-01)
 - [x] Ranged attack support in ghost movement: hex.distance() + get_attackable_enemies() with max_range — Phase 47 (47-01)
 - [x] Ghost path visualization: A* path from unit to ghost position displayed as hex highlights + connecting line — Phase 48 (48-01)
@@ -328,6 +331,10 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | ctx table pattern for Lua module extraction | Build mutable context table per-frame/per-call; modules access state via ctx.field | 2026-03-04 | Active |
 | Campaign ctx writeback pattern | build_campaign_ctx() → call → apply_campaign_ctx() bridges state mutations across module boundary | 2026-03-04 | Active |
 | Gemini 2.0 Flash for sprite generation (not MCP) | nana-banana MCP returns text, not images; direct API via curl/python | 2026-03-05 | Active |
+| Single-pose-per-call sprite generation | Grid sheets unreliable; individual poses with reference image feedback more consistent | 2026-03-09 | Active |
+| Direction auto-flip removed | COM heuristic unreliable; manual fix via magick -flop | 2026-03-09 | Active |
+| Death derived at render time | AI-generated death sprites low quality; idle tilt+fade is better | 2026-03-09 | Active |
+| tools/ as project utility home | Not part of Love2D client; project-level utilities live at root | 2026-03-09 | Active |
 | Flood-fill bg removal from corners | Preserves interior detail unlike global color replace; fuzz 20% general, 8% portraits | 2026-03-05 | Active |
 | White background prompts for AI sprites | Green screen unreliable from AI; white background + flood-fill more consistent | 2026-03-05 | Active |
 | Generic animation suffixes + TOML character specifics | Decouples character art from animation logic; adding units = adding TOML entry | 2026-03-05 | Active |
@@ -384,4 +391,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-08 after Phase 93 — Exit Buttons + Code Review (v3.3 complete).*
+*Last updated: 2026-03-09 after Phase 96 — Sprite Pipeline v2 (v3.4 complete).*
