@@ -15,17 +15,7 @@ Thumbs.db
 # Paul volatile state
 .paul/STATE.md
 
-# Setup docs
-ALTERNATIVE.md
-ANALYSIS.md
-MISSION_CONTROL.md
-REFERENCE.md
-REWRITE_PHASE_1.md
-REWRITE_PHASE_2.md
-REWRITE_PHASE_3.md
-REWRITE_PHASE_4.md
-REWRITE_PHASE_5.md
-REWRITE_PLAN.md
+tmp/
 
 # Shared libraries
 *.so
