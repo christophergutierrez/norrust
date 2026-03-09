@@ -133,13 +133,13 @@ fn test_veteran_placement_via_ffi() {
 
         // Place a leader on the keep (1,2) so veteran placement is valid
         let leader_id = c("Lieutenant");
-        norrust_place_unit_at(engine, 1, leader_id.as_ptr(), 0, 0, 1, 2);
+        let leader_uid = norrust_place_unit_at(engine, leader_id.as_ptr(), 0, 1, 2);
+        assert!(leader_uid > 0, "leader placement should return positive unit_id");
 
         // Place a veteran fighter on adjacent castle hex (1,1)
         let def_id = c("fighter");
         let result = norrust_place_veteran_unit(
             engine,
-            99,             // unit_id
             def_id.as_ptr(),
             0,              // faction
             1, 1,           // col, row
@@ -148,7 +148,7 @@ fn test_veteran_placement_via_ffi() {
             40,             // xp_needed
             0,              // advancement_pending = false
         );
-        assert_eq!(result, 0, "veteran placement should succeed");
+        assert!(result > 0, "veteran placement should return positive unit_id");
 
         // Verify via state JSON that the unit has carried stats
         let json_str = ffi_string(norrust_get_state_json(engine));

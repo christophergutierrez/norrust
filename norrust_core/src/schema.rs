@@ -30,7 +30,8 @@ pub struct UnitDef {
     pub max_hp: u32,
     pub movement: u32,
     pub attacks: Vec<AttackDef>,
-    /// damage_type -> resistance modifier in percent (negative = weakness)
+    /// damage_type -> resistance modifier in percent.
+    /// Negative = resistance (less damage taken), positive = weakness (more damage taken).
     pub resistances: HashMap<String, i32>,
     /// terrain_id -> movement point cost (99 = impassable)
     pub movement_costs: HashMap<String, u32>,
@@ -48,7 +49,7 @@ pub struct UnitDef {
     /// Race (e.g. "human", "elf") — metadata, no gameplay effect.
     #[serde(default)]
     pub race: String,
-    /// Gold recruitment cost — stored for future UI, not used by Rust engine.
+    /// Gold recruitment cost — deducted from faction gold on recruitment.
     #[serde(default)]
     pub cost: u32,
     /// Usage hint (e.g. "fighter", "archer") — stored for future AI/recruitment.

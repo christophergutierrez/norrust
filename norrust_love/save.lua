@@ -389,7 +389,7 @@ function save.load_save(engine, norrust, filepath, center_camera_fn)
 
     -- Place units and restore combat state
     for _, u in ipairs(data.units) do
-        norrust.place_unit_at(engine, int(u.id), u.def_id, 0, int(u.faction), int(u.col), int(u.row))
+        norrust.restore_unit_at(engine, int(u.id), u.def_id, int(u.faction), int(u.col), int(u.row))
         if u.hp then
             norrust.set_unit_combat_state(engine, int(u.id), int(u.hp), int(u.xp or 0), u.moved, u.attacked)
         end

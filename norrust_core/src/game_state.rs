@@ -145,6 +145,9 @@ impl GameState {
         self.positions.insert(id, hex);
         self.hex_to_unit.insert(hex, id);
         self.units.insert(id, unit);
+        if self.next_unit_id <= id {
+            self.next_unit_id = id + 1;
+        }
     }
 }
 

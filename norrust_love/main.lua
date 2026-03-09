@@ -524,7 +524,7 @@ function love.update(dt)
             local f = norrust.get_active_faction(vars.engine)
             local fid = game_data.faction_id[f + 1]
             if fid and fid ~= "" then
-                norrust.ai_recruit(vars.engine, fid, norrust.get_next_unit_id(vars.engine))
+                norrust.ai_recruit(vars.engine, fid)
                 norrust.ai_take_turn(vars.engine, f)
                 check_game_over()
             end

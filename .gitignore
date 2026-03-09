@@ -32,3 +32,6 @@ REWRITE_PLAN.md
 *.dll
 *.dylib
 norrust_love/assets/units/*/tmp/
+
+# Raw sprite sheets (intermediate, regeneratable)
+sprites_raw/

@@ -134,14 +134,15 @@ ffi.cdef[[
     char* norrust_get_terrain_at(NorRustEngine* engine, int32_t col, int32_t row);
 
     // Unit management
-    void norrust_place_unit_at(NorRustEngine* engine, int32_t unit_id, const char* def_id, int32_t hp, int32_t faction, int32_t col, int32_t row);
+    int32_t norrust_place_unit_at(NorRustEngine* engine, const char* def_id, int32_t faction, int32_t col, int32_t row);
+    int32_t norrust_restore_unit_at(NorRustEngine* engine, int32_t unit_id, const char* def_id, int32_t faction, int32_t col, int32_t row);
     int32_t norrust_remove_unit_at(NorRustEngine* engine, int32_t col, int32_t row);
     int32_t norrust_get_unit_cost(NorRustEngine* engine, const char* def_id);
     int32_t norrust_get_unit_level(NorRustEngine* engine, const char* def_id);
 
     // Recruitment
-    int32_t norrust_recruit_unit_at(NorRustEngine* engine, int32_t unit_id, const char* def_id, int32_t col, int32_t row);
-    int32_t norrust_ai_recruit(NorRustEngine* engine, const char* faction_id, int32_t start_unit_id);
+    int32_t norrust_recruit_unit_at(NorRustEngine* engine, const char* def_id, int32_t col, int32_t row);
+    int32_t norrust_ai_recruit(NorRustEngine* engine, const char* faction_id);
     int32_t norrust_apply_starting_gold(NorRustEngine* engine, const char* f0_id, const char* f1_id);
 
     // Faction queries
@@ -180,7 +181,12 @@ ffi.cdef[[
     char* norrust_load_campaign(NorRustEngine* engine, const char* path);
     char* norrust_get_survivors_json(NorRustEngine* engine, int32_t faction);
     int32_t norrust_get_carry_gold(NorRustEngine* engine, int32_t faction, int32_t gold_carry_percent, int32_t early_finish_bonus);
-    int32_t norrust_place_veteran_unit(NorRustEngine* engine, int32_t unit_id, const char* def_id, int32_t faction, int32_t col, int32_t row, int32_t hp, int32_t xp, int32_t xp_needed, int32_t advancement_pending);
+    int32_t norrust_place_veteran_unit(NorRustEngine* engine, const char* def_id, int32_t faction, int32_t col, int32_t row, int32_t hp, int32_t xp, int32_t xp_needed, int32_t advancement_pending);
+
+    // Targeted state queries
+    int32_t norrust_get_board_size(NorRustEngine* engine, int32_t* out_cols, int32_t* out_rows);
+    int32_t norrust_get_gold(NorRustEngine* engine, int32_t faction);
+    int32_t norrust_get_unit_at(NorRustEngine* engine, int32_t col, int32_t row);
     void norrust_set_faction_gold(NorRustEngine* engine, int32_t faction, int32_t gold);
     void norrust_set_turn(NorRustEngine* engine, int32_t turn);
     void norrust_set_active_faction(NorRustEngine* engine, int32_t faction);
@@ -281,9 +287,14 @@ end
 
 -- ── Unit management ─────────────────────────────────────────────────────────
 
---- Place a unit on the board at the given hex coordinate.
-function M.place_unit_at(engine, unit_id, def_id, hp, faction, col, row)
-    lib.norrust_place_unit_at(engine, unit_id, def_id, hp, faction, col, row)
+--- Place a unit on the board. Engine auto-assigns ID. Returns assigned unit ID.
+function M.place_unit_at(engine, def_id, faction, col, row)
+    return lib.norrust_place_unit_at(engine, def_id, faction, col, row)
+end
+
+--- Restore a unit with explicit ID (for save loading). Returns unit ID or -1.
+function M.restore_unit_at(engine, unit_id, def_id, faction, col, row)
+    return lib.norrust_restore_unit_at(engine, unit_id, def_id, faction, col, row)
 end
 
 --- Remove the unit at a hex coordinate, returning true on success.
@@ -303,14 +314,14 @@ end
 
 -- ── Recruitment ─────────────────────────────────────────────────────────────
 
---- Recruit a new unit at the given hex, deducting gold from the active faction.
-function M.recruit_unit_at(engine, unit_id, def_id, col, row)
-    return lib.norrust_recruit_unit_at(engine, unit_id, def_id, col, row)
+--- Recruit a new unit at the given hex. Engine auto-assigns ID. Returns assigned ID or negative error.
+function M.recruit_unit_at(engine, def_id, col, row)
+    return lib.norrust_recruit_unit_at(engine, def_id, col, row)
 end
 
---- Run AI recruitment logic for a faction, returning the next available unit ID.
-function M.ai_recruit(engine, faction_id, start_unit_id)
-    return lib.norrust_ai_recruit(engine, faction_id, start_unit_id)
+--- Run AI recruitment logic for a faction.
+function M.ai_recruit(engine, faction_id)
+    return lib.norrust_ai_recruit(engine, faction_id)
 end
 
 --- Set starting gold for both factions based on their leader costs.
@@ -479,9 +490,27 @@ function M.get_carry_gold(engine, faction, gold_carry_percent, early_finish_bonu
     return lib.norrust_get_carry_gold(engine, faction, gold_carry_percent, early_finish_bonus)
 end
 
---- Place a veteran unit with preserved XP and advancement state from a prior scenario.
-function M.place_veteran_unit(engine, unit_id, def_id, faction, col, row, hp, xp, xp_needed, advancement_pending)
-    return lib.norrust_place_veteran_unit(engine, unit_id, def_id, faction, col, row, hp, xp, xp_needed, advancement_pending and 1 or 0)
+--- Place a veteran unit with preserved XP and advancement state. Engine auto-assigns ID.
+function M.place_veteran_unit(engine, def_id, faction, col, row, hp, xp, xp_needed, advancement_pending)
+    return lib.norrust_place_veteran_unit(engine, def_id, faction, col, row, hp, xp, xp_needed, advancement_pending and 1 or 0)
+end
+
+--- Return board dimensions without full JSON state dump.
+function M.get_board_size(engine)
+    local cols = ffi.new("int32_t[1]")
+    local rows = ffi.new("int32_t[1]")
+    lib.norrust_get_board_size(engine, cols, rows)
+    return cols[0], rows[0]
+end
+
+--- Return faction gold without full JSON state dump.
+function M.get_gold(engine, faction)
+    return lib.norrust_get_gold(engine, faction)
+end
+
+--- Return unit ID at hex, or -1 if empty.
+function M.get_unit_at(engine, col, row)
+    return lib.norrust_get_unit_at(engine, col, row)
 end
 
 --- Set the gold amount for a faction.
@@ -562,6 +591,7 @@ end
 
 --- Manually free an engine instance (normally handled by GC).
 function M.free(engine)
+    ffi.gc(engine, nil)
     lib.norrust_free(engine)
 end
 

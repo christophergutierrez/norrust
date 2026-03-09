@@ -84,7 +84,6 @@ function campaign_client.place_veterans(ctx)
     end
 
 
-    local uid = ctx.norrust.get_next_unit_id(ctx.engine)
     local placed = 0
     for vi, vet in ipairs(ctx.campaign_veterans) do
         if placed >= #slots then break end
@@ -101,21 +100,22 @@ function campaign_client.place_veterans(ctx)
         end
         if not slot then break end
 
-        local rc = ctx.norrust.place_veteran_unit(
-            ctx.engine, uid,
+        local uid = ctx.norrust.place_veteran_unit(
+            ctx.engine,
             vet.def_id, 0,
             int(slot.col), int(slot.row),
             int(vet.hp), int(vet.xp), int(vet.xp_needed),
             vet.advancement_pending
         )
         -- Map engine ID to roster UUID
-        if ctx.campaign_roster and vet_uuids[vi] then
+        if uid > 0 and ctx.campaign_roster and vet_uuids[vi] then
             ctx.roster_mod.map_id(ctx.campaign_roster, uid, vet_uuids[vi])
         end
 
         -- Update pos_map so next veteran doesn't collide
-        pos_map[int(slot.col) .. "," .. int(slot.row)] = {id = uid, faction = 0}
-        uid = uid + 1
+        if uid > 0 then
+            pos_map[int(slot.col) .. "," .. int(slot.row)] = {id = uid, faction = 0}
+        end
     end
 end
 

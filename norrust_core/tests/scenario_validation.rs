@@ -440,7 +440,7 @@ fn test_ffi_all_symbols_exercised() {
 
         // Unit management
         let fighter = CString::new("Fighter").unwrap();
-        norrust_place_unit_at(engine, 99, fighter.as_ptr(), 30, 0, 0, 0);
+        norrust_place_unit_at(engine, fighter.as_ptr(), 0, 0, 0);
         norrust_remove_unit_at(engine, 0, 0);
 
         // Next unit ID
@@ -459,9 +459,9 @@ fn test_ffi_all_symbols_exercised() {
 
         // Recruitment
         let spearman = CString::new("Spearman").unwrap();
-        norrust_recruit_unit_at(engine, 50, spearman.as_ptr(), 0, 0);
+        norrust_recruit_unit_at(engine, spearman.as_ptr(), 0, 0);
 
-        norrust_ai_recruit(engine, loyalists.as_ptr(), 100);
+        norrust_ai_recruit(engine, loyalists.as_ptr());
 
         // Pathfinding
         let mut out_len: i32 = 0;

@@ -175,7 +175,7 @@ pub enum ActionRequest {
     Attack { attacker_id: u32, defender_id: u32 },
     EndTurn,
     Advance { unit_id: u32 },
-    Recruit { unit_id: u32, def_id: String, col: i32, row: i32 },
+    Recruit { def_id: String, col: i32, row: i32 },
 }
 
 impl From<ActionRequest> for Action {

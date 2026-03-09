@@ -3,10 +3,23 @@
 //! All functions use the `norrust_` prefix and operate on an opaque `*mut NorRustEngine`.
 //! String returns are caller-owned: free with `norrust_free_string()`.
 //! Integer arrays are caller-owned: free with `norrust_free_int_array()`.
+//!
+//! # Return value conventions
+//!
+//! | Function category         | Success           | Failure            |
+//! |---------------------------|-------------------|--------------------|
+//! | Load / lifecycle          | `1`               | `0`                |
+//! | Action / mutation         | `0`               | negative error code|
+//! | Placement (unit_id back)  | positive unit_id  | `-1`               |
+//! | Scalar queries            | the value         | `-1` (or `0`)      |
+//! | String queries            | valid `*mut c_char` | empty string ptr |
 
 use std::collections::HashSet;
 use std::ffi::{c_char, CStr, CString};
+use std::panic;
 use std::path::PathBuf;
+
+use serde::Serialize;
 
 use crate::board::Tile;
 use crate::campaign;
@@ -19,6 +32,40 @@ use crate::pathfinding::{find_path, get_zoc_hexes, reachable_hexes};
 use crate::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
 use crate::snapshot::{ActionRequest, StateSnapshot};
 use crate::unit::{advance_unit, Unit};
+
+// ── FFI helper macros ────────────────────────────────────────────────────────
+
+/// Dereference the engine pointer, returning `$fail` if null.
+/// Binds `$e: &mut NorRustEngine`.
+macro_rules! with_engine {
+    ($ptr:expr, $e:ident, $fail:expr, $body:block) => {{
+        let Some($e) = (unsafe { $ptr.as_mut() }) else { return $fail };
+        $body
+    }};
+}
+
+/// Dereference the engine pointer AND its `game` field, returning `$fail` if either is None.
+/// Binds `$e: &mut NorRustEngine` and `$state: &mut GameState`.
+/// Automatically invalidates `state_cache` after the body runs.
+macro_rules! with_game_mut {
+    ($ptr:expr, $e:ident, $state:ident, $fail:expr, $body:block) => {{
+        let Some($e) = (unsafe { $ptr.as_mut() }) else { return $fail };
+        let Some($state) = $e.game.as_mut() else { return $fail };
+        let __result = $body;
+        $e.state_cache = None;
+        __result
+    }};
+}
+
+/// Dereference the engine pointer AND its `game` field (immutable), returning `$fail` if either is None.
+/// Binds `$e: &NorRustEngine` and `$state: &GameState`.
+macro_rules! with_game_ref {
+    ($ptr:expr, $e:ident, $state:ident, $fail:expr, $body:block) => {{
+        let Some($e) = (unsafe { $ptr.as_ref() }) else { return $fail };
+        let Some($state) = $e.game.as_ref() else { return $fail };
+        $body
+    }};
+}
 
 // ── Engine struct ────────────────────────────────────────────────────────────
 
@@ -76,23 +123,70 @@ fn to_c_string(s: &str) -> *mut c_char {
     CString::new(s).unwrap_or_default().into_raw()
 }
 
-/// Escape a string for safe embedding in JSON. Handles backslash, quote, and control chars.
-fn json_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c.is_control() => {
-                out.push_str(&format!("\\u{:04x}", c as u32));
-            }
-            c => out.push(c),
-        }
-    }
-    out
+// ── Serde helper structs for JSON serialization ─────────────────────────────
+
+#[derive(Serialize)]
+struct FactionIdEntry<'a> {
+    id: &'a str,
+    name: &'a str,
+}
+
+#[derive(Serialize)]
+struct TerrainInfoJson<'a> {
+    terrain_id: &'a str,
+    defense: u32,
+    movement_cost: u32,
+    base_defense: u32,
+    base_movement_cost: u32,
+    healing: u32,
+}
+
+#[derive(Serialize)]
+struct CombatPreviewJson<'a> {
+    attacker_hit_pct: u32,
+    defender_hit_pct: u32,
+    attacker_damage_per_hit: u32,
+    attacker_strikes: u32,
+    defender_damage_per_hit: u32,
+    defender_strikes: u32,
+    attacker_damage_min: u32,
+    attacker_damage_max: u32,
+    attacker_damage_mean: f64,
+    defender_damage_min: u32,
+    defender_damage_max: u32,
+    defender_damage_mean: f64,
+    attacker_kill_pct: f64,
+    defender_kill_pct: f64,
+    attacker_attack_name: &'a str,
+    defender_attack_name: &'a str,
+    attacker_hp: u32,
+    defender_hp: u32,
+    attacker_terrain_defense: u32,
+    defender_terrain_defense: u32,
+}
+
+#[derive(Serialize)]
+struct CampaignScenarioJson<'a> {
+    board: &'a str,
+    units: &'a str,
+    preset_units: bool,
+}
+
+#[derive(Serialize)]
+struct CampaignDefJson<'a> {
+    id: &'a str,
+    name: &'a str,
+    faction_0: &'a str,
+    faction_1: &'a str,
+    gold_carry_percent: u32,
+    early_finish_bonus: u32,
+    scenarios: Vec<CampaignScenarioJson<'a>>,
+}
+
+#[derive(Serialize)]
+struct DialogueEntryJson<'a> {
+    id: &'a str,
+    text: &'a str,
 }
 
 /// Build a fully populated Unit from the registry, same as gdext_node place_unit_at.
@@ -171,18 +265,19 @@ pub unsafe extern "C" fn norrust_load_data(
     engine: *mut NorRustEngine,
     data_path: *const c_char,
 ) -> i32 {
-    let Some(e) = engine.as_mut() else { return 0 };
-    let base = PathBuf::from(cstr_to_str(data_path));
+    with_engine!(engine, e, 0, {
+        let base = PathBuf::from(cstr_to_str(data_path));
 
-    match Registry::<UnitDef>::load_from_dir(&base.join("units")) {
-        Ok(registry) => e.units = Some(registry),
-        Err(_) => return 0,
-    }
-    match Registry::<TerrainDef>::load_from_dir(&base.join("terrain")) {
-        Ok(registry) => e.terrain = Some(registry),
-        Err(_) => return 0,
-    }
-    1
+        match Registry::<UnitDef>::load_from_dir(&base.join("units")) {
+            Ok(registry) => e.units = Some(registry),
+            Err(_) => return 0,
+        }
+        match Registry::<TerrainDef>::load_from_dir(&base.join("terrain")) {
+            Ok(registry) => e.terrain = Some(registry),
+            Err(_) => return 0,
+        }
+        1
+    })
 }
 
 #[no_mangle]
@@ -255,20 +350,22 @@ pub unsafe extern "C" fn norrust_load_board(
     board_path: *const c_char,
     seed: i64,
 ) -> i32 {
-    let Some(e) = engine.as_mut() else { return 0 };
-    if seed <= 0 { return 0; }
-    let path = PathBuf::from(cstr_to_str(board_path));
-    let loaded = match crate::scenario::load_board(&path) {
-        Ok(b) => b,
-        Err(_) => return 0,
-    };
-    let mut state = GameState::new_seeded(loaded.board, seed as u64);
-    state.objective_hex = loaded.objective_hex;
-    state.max_turns = loaded.max_turns;
-    e.game = Some(state);
-    upgrade_tiles_mut(e);
-    e.state_cache = None;
-    1
+    panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let Some(e) = (unsafe { engine.as_mut() }) else { return 0 };
+        if seed <= 0 { return 0; }
+        let path = PathBuf::from(unsafe { cstr_to_str(board_path) });
+        let loaded = match crate::scenario::load_board(&path) {
+            Ok(b) => b,
+            Err(_) => return 0,
+        };
+        let mut state = GameState::new_seeded(loaded.board, seed as u64);
+        state.objective_hex = loaded.objective_hex;
+        state.max_turns = loaded.max_turns;
+        e.game = Some(state);
+        upgrade_tiles_mut(e);
+        e.state_cache = None;
+        1
+    })).unwrap_or(0)
 }
 
 #[no_mangle]
@@ -276,55 +373,57 @@ pub unsafe extern "C" fn norrust_load_units(
     engine: *mut NorRustEngine,
     units_path: *const c_char,
 ) -> i32 {
-    let Some(e) = engine.as_mut() else { return 0 };
-    if e.game.is_none() { return 0; }
-    let path = PathBuf::from(cstr_to_str(units_path));
-    let units_def = match crate::scenario::load_units_file(&path) {
-        Ok(d) => d,
-        Err(_) => return 0,
-    };
+    panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let Some(e) = (unsafe { engine.as_mut() }) else { return 0 };
+        if e.game.is_none() { return 0; }
+        let path = PathBuf::from(unsafe { cstr_to_str(units_path) });
+        let units_def = match crate::scenario::load_units_file(&path) {
+            Ok(d) => d,
+            Err(_) => return 0,
+        };
 
-    // Place units and track highest ID
-    let mut max_id: u32 = 0;
-    for p in &units_def.units {
-        let unit = unit_from_registry(e, p.id, &p.unit_type, p.faction as u8);
-        let hex = Hex::from_offset(p.col, p.row);
+        // Place units and track highest ID
+        let mut max_id: u32 = 0;
+        for p in &units_def.units {
+            let unit = unit_from_registry(e, p.id, &p.unit_type, p.faction as u8);
+            let hex = Hex::from_offset(p.col, p.row);
+            if let Some(state) = e.game.as_mut() {
+                state.place_unit(unit, hex);
+            }
+            if p.id > max_id { max_id = p.id; }
+        }
+
+        // Set next_unit_id above all placed units
         if let Some(state) = e.game.as_mut() {
-            state.place_unit(unit, hex);
+            state.next_unit_id = max_id + 1;
         }
-        if p.id > max_id { max_id = p.id; }
-    }
 
-    // Set next_unit_id above all placed units
-    if let Some(state) = e.game.as_mut() {
-        state.next_unit_id = max_id + 1;
-    }
-
-    // Resolve trigger zones from the parsed file
-    for tdef in units_def.triggers {
-        let mut spawns = Vec::new();
-        for s in &tdef.spawns {
-            let Some(state) = e.game.as_mut() else { continue };
-            let uid = state.next_unit_id;
-            state.next_unit_id += 1;
-            let unit = unit_from_registry(e, uid, &s.unit_type, s.faction);
-            spawns.push(PendingSpawn {
-                unit,
-                destination: Hex::from_offset(s.col, s.row),
-            });
+        // Resolve trigger zones from the parsed file
+        for tdef in units_def.triggers {
+            let mut spawns = Vec::new();
+            for s in &tdef.spawns {
+                let Some(state) = e.game.as_mut() else { continue };
+                let uid = state.next_unit_id;
+                state.next_unit_id += 1;
+                let unit = unit_from_registry(e, uid, &s.unit_type, s.faction);
+                spawns.push(PendingSpawn {
+                    unit,
+                    destination: Hex::from_offset(s.col, s.row),
+                });
+            }
+            if let Some(state) = e.game.as_mut() {
+                state.trigger_zones.push(TriggerZone {
+                    trigger_hex: Hex::from_offset(tdef.trigger_col, tdef.trigger_row),
+                    trigger_faction: tdef.trigger_faction,
+                    spawns,
+                    triggered: false,
+                });
+            }
         }
-        if let Some(state) = e.game.as_mut() {
-            state.trigger_zones.push(TriggerZone {
-                trigger_hex: Hex::from_offset(tdef.trigger_col, tdef.trigger_row),
-                trigger_faction: tdef.trigger_faction,
-                spawns,
-                triggered: false,
-            });
-        }
-    }
 
-    e.state_cache = None;
-    1
+        e.state_cache = None;
+        1
+    })).unwrap_or(0)
 }
 
 #[no_mangle]
@@ -333,31 +432,62 @@ pub unsafe extern "C" fn norrust_get_terrain_at(
     col: i32,
     row: i32,
 ) -> *mut c_char {
-    let Some(e) = engine.as_ref() else { return to_c_string("") };
-    let Some(state) = e.game.as_ref() else { return to_c_string("") };
-    let tid = state.board.terrain_at(Hex::from_offset(col, row)).unwrap_or("");
-    to_c_string(tid)
+    with_game_ref!(engine, _e, state, to_c_string(""), {
+        let tid = state.board.terrain_at(Hex::from_offset(col, row)).unwrap_or("");
+        to_c_string(tid)
+    })
 }
 
 // ── Unit management ──────────────────────────────────────────────────────────
 
+/// Place a new unit on the board. The engine auto-assigns the next available unit ID.
+/// Returns the assigned unit_id (positive) or -1 on failure.
 #[no_mangle]
 pub unsafe extern "C" fn norrust_place_unit_at(
     engine: *mut NorRustEngine,
-    unit_id: i32,
     def_id: *const c_char,
-    _hp: i32,
     faction: i32,
     col: i32,
     row: i32,
-) {
-    let Some(e) = engine.as_mut() else { return };
-    let did = cstr_to_str(def_id);
-    let unit = unit_from_registry(e, unit_id as u32, did, faction as u8);
-    if let Some(state) = e.game.as_mut() {
+) -> i32 {
+    panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let Some(e) = (unsafe { engine.as_mut() }) else { return -1 };
+        let did = unsafe { cstr_to_str(def_id) };
+        let Some(state) = e.game.as_mut() else { return -1 };
+        let uid = state.next_unit_id;
+        state.next_unit_id += 1;
+        let unit = unit_from_registry(e, uid, did, faction as u8);
+        let Some(state) = e.game.as_mut() else { return -1 };
         state.place_unit(unit, Hex::from_offset(col, row));
-    }
-    e.state_cache = None;
+        e.state_cache = None;
+        uid as i32
+    })).unwrap_or(-1)
+}
+
+/// Place a unit with an explicit unit_id (for save/load restoration).
+/// Returns the unit_id on success, -1 on failure.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_restore_unit_at(
+    engine: *mut NorRustEngine,
+    unit_id: i32,
+    def_id: *const c_char,
+    faction: i32,
+    col: i32,
+    row: i32,
+) -> i32 {
+    panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let Some(e) = (unsafe { engine.as_mut() }) else { return -1 };
+        let did = unsafe { cstr_to_str(def_id) };
+        let unit = unit_from_registry(e, unit_id as u32, did, faction as u8);
+        let Some(state) = e.game.as_mut() else { return -1 };
+        state.place_unit(unit, Hex::from_offset(col, row));
+        // Keep next_unit_id above all placed units
+        if (unit_id as u32) >= state.next_unit_id {
+            state.next_unit_id = unit_id as u32 + 1;
+        }
+        e.state_cache = None;
+        unit_id
+    })).unwrap_or(-1)
 }
 
 #[no_mangle]
@@ -366,14 +496,13 @@ pub unsafe extern "C" fn norrust_remove_unit_at(
     col: i32,
     row: i32,
 ) -> i32 {
-    let Some(e) = engine.as_mut() else { return 0 };
-    let Some(state) = e.game.as_mut() else { return 0 };
-    let target = Hex::from_offset(col, row);
-    let Some(uid) = state.hex_to_unit.remove(&target) else { return 0 };
-    state.units.remove(&uid);
-    state.positions.remove(&uid);
-    e.state_cache = None;
-    1
+    with_game_mut!(engine, _e, state, 0, {
+        let target = Hex::from_offset(col, row);
+        let Some(uid) = state.hex_to_unit.remove(&target) else { return 0 };
+        state.units.remove(&uid);
+        state.positions.remove(&uid);
+        1
+    })
 }
 
 #[no_mangle]
@@ -404,10 +533,11 @@ pub unsafe extern "C" fn norrust_get_unit_level(
 
 // ── Recruitment ──────────────────────────────────────────────────────────────
 
+/// Recruit a unit at the given hex. The engine auto-assigns the next available unit ID.
+/// Returns the assigned unit_id (positive) on success, or a negative error code on failure.
 #[no_mangle]
 pub unsafe extern "C" fn norrust_recruit_unit_at(
     engine: *mut NorRustEngine,
-    unit_id: i32,
     def_id: *const c_char,
     col: i32,
     row: i32,
@@ -421,27 +551,35 @@ pub unsafe extern "C" fn norrust_recruit_unit_at(
         None => return -1,
     };
 
-    let faction = {
-        let Some(state) = e.game.as_ref() else { return -1 };
-        state.active_faction
+    let (faction, uid) = {
+        let Some(state) = e.game.as_mut() else { return -1 };
+        let uid = state.next_unit_id;
+        state.next_unit_id += 1;
+        (state.active_faction, uid)
     };
-    let unit = unit_from_registry(e, unit_id as u32, &did, faction);
+    let unit = unit_from_registry(e, uid, &did, faction);
 
     let destination = Hex::from_offset(col, row);
     let Some(state) = e.game.as_mut() else { return -1 };
-    let result = match apply_recruit(state, unit, destination, cost) {
-        Ok(()) => 0,
-        Err(err) => action_err_code(err),
-    };
-    e.state_cache = None;
-    result
+    match apply_recruit(state, unit, destination, cost) {
+        Ok(()) => {
+            e.state_cache = None;
+            uid as i32
+        }
+        Err(err) => {
+            e.state_cache = None;
+            action_err_code(err)
+        }
+    }
 }
 
+/// AI recruitment: fill castle hexes adjacent to leader's keep.
+/// Engine reads next_unit_id from internal state and auto-advances it.
+/// Returns the number of units recruited.
 #[no_mangle]
 pub unsafe extern "C" fn norrust_ai_recruit(
     engine: *mut NorRustEngine,
     faction_id: *const c_char,
-    start_unit_id: i32,
 ) -> i32 {
     let Some(e) = engine.as_mut() else { return 0 };
     let id = cstr_to_str(faction_id).to_string();
@@ -451,7 +589,6 @@ pub unsafe extern "C" fn norrust_ai_recruit(
     };
 
     let mut recruited = 0i32;
-    let mut uid = start_unit_id;
 
     for _ in 0..12 {
         let action: Option<(String, i32, i32)> = e.game.as_ref().and_then(|state| {
@@ -483,14 +620,16 @@ pub unsafe extern "C" fn norrust_ai_recruit(
             Some(def) => def.cost,
             None => break,
         };
-        let Some(game_ref) = e.game.as_ref() else { break };
-        let faction = game_ref.active_faction;
-        let unit = unit_from_registry(e, uid as u32, &did, faction);
+        let Some(state) = e.game.as_mut() else { break };
+        let uid = state.next_unit_id;
+        state.next_unit_id += 1;
+        let faction = state.active_faction;
+        let unit = unit_from_registry(e, uid, &did, faction);
         let destination = Hex::from_offset(col, row);
 
         let Some(state) = e.game.as_mut() else { break };
         match apply_recruit(state, unit, destination, cost) {
-            Ok(()) => { recruited += 1; uid += 1; }
+            Ok(()) => { recruited += 1; }
             Err(_) => break,
         }
     }
@@ -556,12 +695,13 @@ pub unsafe extern "C" fn norrust_get_faction_ids_json(
     engine: *mut NorRustEngine,
 ) -> *mut c_char {
     let Some(e) = engine.as_ref() else { return to_c_string("[]") };
-    let arr: Vec<String> = e.factions.iter()
-        .map(|(f, _)| {
-            format!("{{\"id\":\"{}\",\"name\":\"{}\"}}", json_escape(&f.id), json_escape(&f.name))
-        })
+    let arr: Vec<FactionIdEntry> = e.factions.iter()
+        .map(|(f, _)| FactionIdEntry { id: &f.id, name: &f.name })
         .collect();
-    to_c_string(&format!("[{}]", arr.join(",")))
+    match serde_json::to_string(&arr) {
+        Ok(s) => to_c_string(&s),
+        Err(_) => to_c_string("[]"),
+    }
 }
 
 #[no_mangle]
@@ -589,7 +729,7 @@ pub unsafe extern "C" fn norrust_get_faction_recruits_json(
     let Some((_, recruits)) = e.factions.iter().find(|(f, _)| f.id == id) else {
         return to_c_string("[]");
     };
-    let filtered: Vec<String> = recruits.iter()
+    let filtered: Vec<&str> = recruits.iter()
         .filter(|did| {
             if max_level <= 0 { return true; }
             e.units.as_ref()
@@ -597,9 +737,12 @@ pub unsafe extern "C" fn norrust_get_faction_recruits_json(
                 .map(|u| u.level as i32 <= max_level)
                 .unwrap_or(true)
         })
-        .map(|id| format!("\"{}\"", json_escape(id)))
+        .map(|id| id.as_str())
         .collect();
-    to_c_string(&format!("[{}]", filtered.join(",")))
+    match serde_json::to_string(&filtered) {
+        Ok(s) => to_c_string(&s),
+        Err(_) => to_c_string("[]"),
+    }
 }
 
 // ── Game state queries ───────────────────────────────────────────────────────
@@ -638,12 +781,12 @@ pub unsafe extern "C" fn norrust_get_time_of_day_name(
 
 #[no_mangle]
 pub unsafe extern "C" fn norrust_get_winner(engine: *mut NorRustEngine) -> i32 {
-    let Some(e) = engine.as_ref() else { return -1 };
-    let Some(state) = e.game.as_ref() else { return -1 };
-    match state.check_winner() {
-        Some(f) => f as i32,
-        None => -1,
-    }
+    with_game_ref!(engine, _e, state, -1, {
+        match state.check_winner() {
+            Some(f) => f as i32,
+            None => -1,
+        }
+    })
 }
 
 #[no_mangle]
@@ -652,10 +795,9 @@ pub unsafe extern "C" fn norrust_set_objective_hex(
     col: i32,
     row: i32,
 ) {
-    let Some(e) = engine.as_mut() else { return };
-    let Some(state) = e.game.as_mut() else { return };
-    state.objective_hex = Some(Hex::from_offset(col, row));
-    e.state_cache = None;
+    with_game_mut!(engine, _e, state, (), {
+        state.objective_hex = Some(Hex::from_offset(col, row));
+    });
 }
 
 #[no_mangle]
@@ -663,10 +805,9 @@ pub unsafe extern "C" fn norrust_set_max_turns(
     engine: *mut NorRustEngine,
     max_turns: i32,
 ) {
-    let Some(e) = engine.as_mut() else { return };
-    let Some(state) = e.game.as_mut() else { return };
-    state.max_turns = if max_turns > 0 { Some(max_turns as u32) } else { None };
-    e.state_cache = None;
+    with_game_mut!(engine, _e, state, (), {
+        state.max_turns = if max_turns > 0 { Some(max_turns as u32) } else { None };
+    });
 }
 
 #[no_mangle]
@@ -706,17 +847,15 @@ pub unsafe extern "C" fn norrust_apply_move(
     col: i32,
     row: i32,
 ) -> i32 {
-    let Some(e) = engine.as_mut() else { return -1 };
-    let Some(state) = e.game.as_mut() else { return -1 };
-    let result = match apply_action(state, Action::Move {
-        unit_id: unit_id as u32,
-        destination: Hex::from_offset(col, row),
-    }) {
-        Ok(()) => 0,
-        Err(err) => action_err_code(err),
-    };
-    e.state_cache = None;
-    result
+    with_game_mut!(engine, _e, state, -1, {
+        match apply_action(state, Action::Move {
+            unit_id: unit_id as u32,
+            destination: Hex::from_offset(col, row),
+        }) {
+            Ok(()) => 0,
+            Err(err) => action_err_code(err),
+        }
+    })
 }
 
 #[no_mangle]
@@ -725,17 +864,15 @@ pub unsafe extern "C" fn norrust_apply_attack(
     attacker_id: i32,
     defender_id: i32,
 ) -> i32 {
-    let Some(e) = engine.as_mut() else { return -1 };
-    let Some(state) = e.game.as_mut() else { return -1 };
-    let result = match apply_action(state, Action::Attack {
-        attacker_id: attacker_id as u32,
-        defender_id: defender_id as u32,
-    }) {
-        Ok(()) => 0,
-        Err(err) => action_err_code(err),
-    };
-    e.state_cache = None;
-    result
+    with_game_mut!(engine, _e, state, -1, {
+        match apply_action(state, Action::Attack {
+            attacker_id: attacker_id as u32,
+            defender_id: defender_id as u32,
+        }) {
+            Ok(()) => 0,
+            Err(err) => action_err_code(err),
+        }
+    })
 }
 
 #[no_mangle]
@@ -780,14 +917,12 @@ pub unsafe extern "C" fn norrust_apply_advance(
 
 #[no_mangle]
 pub unsafe extern "C" fn norrust_end_turn(engine: *mut NorRustEngine) -> i32 {
-    let Some(e) = engine.as_mut() else { return -1 };
-    let Some(state) = e.game.as_mut() else { return -1 };
-    let result = match apply_action(state, Action::EndTurn) {
-        Ok(()) => 0,
-        Err(err) => action_err_code(err),
-    };
-    e.state_cache = None;
-    result
+    with_game_mut!(engine, _e, state, -1, {
+        match apply_action(state, Action::EndTurn) {
+            Ok(()) => 0,
+            Err(err) => action_err_code(err),
+        }
+    })
 }
 
 #[no_mangle]
@@ -795,31 +930,33 @@ pub unsafe extern "C" fn norrust_apply_action_json(
     engine: *mut NorRustEngine,
     json: *const c_char,
 ) -> i32 {
-    let Some(e) = engine.as_mut() else { return -1 };
-    if e.game.is_none() { return -1; }
-    let json_str = cstr_to_str(json);
-    let req: ActionRequest = match serde_json::from_str(json_str) {
-        Ok(r) => r,
-        Err(_) => return -99,
-    };
-    match req {
-        ActionRequest::Advance { unit_id } => {
-            norrust_apply_advance(engine, unit_id as i32)
+    panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let Some(e) = (unsafe { engine.as_mut() }) else { return -1 };
+        if e.game.is_none() { return -1; }
+        let json_str = unsafe { cstr_to_str(json) };
+        let req: ActionRequest = match serde_json::from_str(json_str) {
+            Ok(r) => r,
+            Err(_) => return -99,
+        };
+        match req {
+            ActionRequest::Advance { unit_id } => {
+                unsafe { norrust_apply_advance(engine, unit_id as i32) }
+            }
+            ActionRequest::Recruit { def_id, col, row } => {
+                let c_def = CString::new(def_id).unwrap_or_default();
+                unsafe { norrust_recruit_unit_at(engine, c_def.as_ptr(), col, row) }
+            }
+            other => {
+                let Some(state) = e.game.as_mut() else { return -1 };
+                let result = match apply_action(state, other.into()) {
+                    Ok(()) => 0,
+                    Err(err) => action_err_code(err),
+                };
+                e.state_cache = None;
+                result
+            }
         }
-        ActionRequest::Recruit { unit_id, def_id, col, row } => {
-            let c_def = CString::new(def_id).unwrap_or_default();
-            norrust_recruit_unit_at(engine, unit_id as i32, c_def.as_ptr(), col, row)
-        }
-        other => {
-            let Some(state) = e.game.as_mut() else { return -1 };
-            let result = match apply_action(state, other.into()) {
-                Ok(()) => 0,
-                Err(err) => action_err_code(err),
-            };
-            e.state_cache = None;
-            result
-        }
-    }
+    })).unwrap_or(-1)
 }
 
 // ── Pathfinding ──────────────────────────────────────────────────────────────
@@ -929,11 +1066,10 @@ pub unsafe extern "C" fn norrust_ai_take_turn(
     engine: *mut NorRustEngine,
     faction: i32,
 ) {
-    let Some(e) = engine.as_mut() else { return };
     if faction < 0 || faction > 1 { return; }
-    let Some(state) = e.game.as_mut() else { return };
-    crate::ai::ai_take_turn(state, faction as u8);
-    e.state_cache = None;
+    with_game_mut!(engine, _e, state, (), {
+        crate::ai::ai_take_turn(state, faction as u8);
+    });
 }
 
 // ── Campaign ─────────────────────────────────────────────────────────────────
@@ -949,29 +1085,23 @@ pub unsafe extern "C" fn norrust_load_campaign(
         Err(_) => return to_c_string(""),
     };
 
-    // Build JSON manually (no Serialize on CampaignDef needed)
-    let scenarios_json: Vec<String> = campaign
-        .scenarios
-        .iter()
-        .map(|s| {
-            format!(
-                "{{\"board\":\"{}\",\"units\":\"{}\",\"preset_units\":{}}}",
-                json_escape(&s.board), json_escape(&s.units), s.preset_units
-            )
-        })
-        .collect();
-
-    let json = format!(
-        "{{\"id\":\"{}\",\"name\":\"{}\",\"faction_0\":\"{}\",\"faction_1\":\"{}\",\"gold_carry_percent\":{},\"early_finish_bonus\":{},\"scenarios\":[{}]}}",
-        json_escape(&campaign.id),
-        json_escape(&campaign.name),
-        json_escape(&campaign.faction_0),
-        json_escape(&campaign.faction_1),
-        campaign.gold_carry_percent,
-        campaign.early_finish_bonus,
-        scenarios_json.join(",")
-    );
-    to_c_string(&json)
+    let json_obj = CampaignDefJson {
+        id: &campaign.id,
+        name: &campaign.name,
+        faction_0: &campaign.faction_0,
+        faction_1: &campaign.faction_1,
+        gold_carry_percent: campaign.gold_carry_percent,
+        early_finish_bonus: campaign.early_finish_bonus,
+        scenarios: campaign.scenarios.iter().map(|s| CampaignScenarioJson {
+            board: &s.board,
+            units: &s.units,
+            preset_units: s.preset_units,
+        }).collect(),
+    };
+    match serde_json::to_string(&json_obj) {
+        Ok(s) => to_c_string(&s),
+        Err(_) => to_c_string(""),
+    }
 }
 
 #[no_mangle]
@@ -1012,10 +1142,12 @@ pub unsafe extern "C" fn norrust_get_carry_gold(
     ) as i32
 }
 
+/// Place a veteran unit (carried over from a previous scenario).
+/// Engine auto-assigns the next available unit ID.
+/// Returns the assigned unit_id (positive) on success, or a negative error code.
 #[no_mangle]
 pub unsafe extern "C" fn norrust_place_veteran_unit(
     engine: *mut NorRustEngine,
-    unit_id: i32,
     def_id: *const c_char,
     faction: i32,
     col: i32,
@@ -1028,8 +1160,12 @@ pub unsafe extern "C" fn norrust_place_veteran_unit(
     let Some(e) = engine.as_mut() else { return -1 };
     let did = cstr_to_str(def_id);
 
+    let Some(state) = e.game.as_mut() else { return -1 };
+    let uid = state.next_unit_id;
+    state.next_unit_id += 1;
+
     // Build unit from registry (gets full combat stats)
-    let mut unit = unit_from_registry(e, unit_id as u32, did, faction as u8);
+    let mut unit = unit_from_registry(e, uid, did, faction as u8);
 
     // Override with carried-over progression state
     unit.hp = hp as u32;
@@ -1044,8 +1180,8 @@ pub unsafe extern "C" fn norrust_place_veteran_unit(
     }
     // Leader must be on a keep tile
     let active = state.active_faction;
-    let keep_hex = state.positions.iter().find_map(|(&uid, &hex)| {
-        let unit = state.units.get(&uid)?;
+    let keep_hex = state.positions.iter().find_map(|(&u, &hex)| {
+        let unit = state.units.get(&u)?;
         if unit.faction != active { return None; }
         if !unit.abilities.iter().any(|a| a == "leader") { return None; }
         state.board.tile_at(hex).filter(|t| t.terrain_id == "keep").map(|_| hex)
@@ -1064,7 +1200,7 @@ pub unsafe extern "C" fn norrust_place_veteran_unit(
     }
     state.place_unit(unit, destination);
     e.state_cache = None;
-    0
+    uid as i32
 }
 
 #[no_mangle]
@@ -1073,12 +1209,11 @@ pub unsafe extern "C" fn norrust_set_faction_gold(
     faction: i32,
     gold: i32,
 ) {
-    let Some(e) = engine.as_mut() else { return };
-    let Some(state) = e.game.as_mut() else { return };
-    if faction >= 0 && (faction as usize) < state.gold.len() {
-        state.gold[faction as usize] = gold.max(0) as u32;
-    }
-    e.state_cache = None;
+    with_game_mut!(engine, _e, state, (), {
+        if faction >= 0 && (faction as usize) < state.gold.len() {
+            state.gold[faction as usize] = gold.max(0) as u32;
+        }
+    });
 }
 
 #[no_mangle]
@@ -1086,10 +1221,9 @@ pub unsafe extern "C" fn norrust_set_turn(
     engine: *mut NorRustEngine,
     turn: i32,
 ) {
-    let Some(e) = engine.as_mut() else { return };
-    let Some(state) = e.game.as_mut() else { return };
-    state.turn = turn.max(1) as u32;
-    e.state_cache = None;
+    with_game_mut!(engine, _e, state, (), {
+        state.turn = turn.max(1) as u32;
+    });
 }
 
 #[no_mangle]
@@ -1097,10 +1231,9 @@ pub unsafe extern "C" fn norrust_set_active_faction(
     engine: *mut NorRustEngine,
     faction: i32,
 ) {
-    let Some(e) = engine.as_mut() else { return };
-    let Some(state) = e.game.as_mut() else { return };
-    state.active_faction = faction.max(0) as u8;
-    e.state_cache = None;
+    with_game_mut!(engine, _e, state, (), {
+        state.active_faction = faction.max(0) as u8;
+    });
 }
 
 #[no_mangle]
@@ -1112,16 +1245,15 @@ pub unsafe extern "C" fn norrust_set_unit_combat_state(
     moved: i32,
     attacked: i32,
 ) {
-    let Some(e) = engine.as_mut() else { return };
-    let Some(state) = e.game.as_mut() else { return };
-    let uid = unit_id as u32;
-    if let Some(unit) = state.units.get_mut(&uid) {
-        unit.hp = hp.max(0) as u32;
-        unit.xp = xp.max(0) as u32;
-        unit.moved = moved != 0;
-        unit.attacked = attacked != 0;
-    }
-    e.state_cache = None;
+    with_game_mut!(engine, _e, state, (), {
+        let uid = unit_id as u32;
+        if let Some(unit) = state.units.get_mut(&uid) {
+            unit.hp = hp.max(0) as u32;
+            unit.xp = xp.max(0) as u32;
+            unit.moved = moved != 0;
+            unit.attacked = attacked != 0;
+        }
+    });
 }
 
 // ── Terrain query ────────────────────────────────────────────────────────────
@@ -1157,12 +1289,18 @@ pub unsafe extern "C" fn norrust_get_unit_terrain_info(
     let effective_move_cost = unit.movement_costs.get(terrain_id).copied()
         .unwrap_or(tile.movement_cost);
 
-    let json = format!(
-        "{{\"terrain_id\":\"{}\",\"defense\":{},\"movement_cost\":{},\"base_defense\":{},\"base_movement_cost\":{},\"healing\":{}}}",
-        json_escape(terrain_id), effective_defense, effective_move_cost,
-        tile.defense, tile.movement_cost, tile.healing
-    );
-    to_c_string(&json)
+    let info = TerrainInfoJson {
+        terrain_id,
+        defense: effective_defense,
+        movement_cost: effective_move_cost,
+        base_defense: tile.defense,
+        base_movement_cost: tile.movement_cost,
+        healing: tile.healing,
+    };
+    match serde_json::to_string(&info) {
+        Ok(s) => to_c_string(&s),
+        Err(_) => to_c_string(""),
+    }
 }
 
 // ── Combat preview ──────────────────────────────────────────────────────────
@@ -1242,29 +1380,32 @@ pub unsafe extern "C" fn norrust_simulate_combat(
     let n = if num_sims > 0 { num_sims as u32 } else { 100 };
     let preview = simulate_combat(attacker, defender, atk_terrain_defense, def_terrain_defense, state.turn, n, range_needed, flanked, atk_leadership, def_leadership);
 
-    let json = format!(
-        concat!(
-            "{{\"attacker_hit_pct\":{},\"defender_hit_pct\":{},",
-            "\"attacker_damage_per_hit\":{},\"attacker_strikes\":{},",
-            "\"defender_damage_per_hit\":{},\"defender_strikes\":{},",
-            "\"attacker_damage_min\":{},\"attacker_damage_max\":{},\"attacker_damage_mean\":{:.1},",
-            "\"defender_damage_min\":{},\"defender_damage_max\":{},\"defender_damage_mean\":{:.1},",
-            "\"attacker_kill_pct\":{:.1},\"defender_kill_pct\":{:.1},",
-            "\"attacker_attack_name\":\"{}\",\"defender_attack_name\":\"{}\",",
-            "\"attacker_hp\":{},\"defender_hp\":{},",
-            "\"attacker_terrain_defense\":{},\"defender_terrain_defense\":{}}}"
-        ),
-        preview.attacker_hit_pct, preview.defender_hit_pct,
-        preview.attacker_damage_per_hit, preview.attacker_strikes,
-        preview.defender_damage_per_hit, preview.defender_strikes,
-        preview.attacker_damage_min, preview.attacker_damage_max, preview.attacker_damage_mean,
-        preview.defender_damage_min, preview.defender_damage_max, preview.defender_damage_mean,
-        preview.attacker_kill_pct, preview.defender_kill_pct,
-        json_escape(&preview.attacker_attack_name), json_escape(&preview.defender_attack_name),
-        preview.attacker_hp, preview.defender_hp,
-        preview.attacker_terrain_defense, preview.defender_terrain_defense,
-    );
-    to_c_string(&json)
+    let json_obj = CombatPreviewJson {
+        attacker_hit_pct: preview.attacker_hit_pct,
+        defender_hit_pct: preview.defender_hit_pct,
+        attacker_damage_per_hit: preview.attacker_damage_per_hit,
+        attacker_strikes: preview.attacker_strikes,
+        defender_damage_per_hit: preview.defender_damage_per_hit,
+        defender_strikes: preview.defender_strikes,
+        attacker_damage_min: preview.attacker_damage_min,
+        attacker_damage_max: preview.attacker_damage_max,
+        attacker_damage_mean: preview.attacker_damage_mean,
+        defender_damage_min: preview.defender_damage_min,
+        defender_damage_max: preview.defender_damage_max,
+        defender_damage_mean: preview.defender_damage_mean,
+        attacker_kill_pct: preview.attacker_kill_pct,
+        defender_kill_pct: preview.defender_kill_pct,
+        attacker_attack_name: &preview.attacker_attack_name,
+        defender_attack_name: &preview.defender_attack_name,
+        attacker_hp: preview.attacker_hp,
+        defender_hp: preview.defender_hp,
+        attacker_terrain_defense: preview.attacker_terrain_defense,
+        defender_terrain_defense: preview.defender_terrain_defense,
+    };
+    match serde_json::to_string(&json_obj) {
+        Ok(s) => to_c_string(&s),
+        Err(_) => to_c_string(""),
+    }
 }
 
 // ── Trigger zones ────────────────────────────────────────────────────────────
@@ -1277,10 +1418,13 @@ pub unsafe extern "C" fn norrust_get_trigger_zones_fired(
 ) -> *mut c_char {
     let Some(e) = engine.as_ref() else { return to_c_string("[]") };
     let Some(state) = e.game.as_ref() else { return to_c_string("[]") };
-    let items: Vec<&str> = state.trigger_zones.iter()
-        .map(|tz| if tz.triggered { "true" } else { "false" })
+    let items: Vec<bool> = state.trigger_zones.iter()
+        .map(|tz| tz.triggered)
         .collect();
-    to_c_string(&format!("[{}]", items.join(",")))
+    match serde_json::to_string(&items) {
+        Ok(s) => to_c_string(&s),
+        Err(_) => to_c_string("[]"),
+    }
 }
 
 /// Set the triggered flag on a specific trigger zone by index.
@@ -1290,12 +1434,11 @@ pub unsafe extern "C" fn norrust_set_trigger_zone_fired(
     index: i32,
     fired: i32,
 ) {
-    let Some(e) = engine.as_mut() else { return };
-    let Some(state) = e.game.as_mut() else { return };
-    if let Some(tz) = state.trigger_zones.get_mut(index as usize) {
-        tz.triggered = fired != 0;
-    }
-    e.state_cache = None;
+    with_game_mut!(engine, _e, state, (), {
+        if let Some(tz) = state.trigger_zones.get_mut(index as usize) {
+            tz.triggered = fired != 0;
+        }
+    });
 }
 
 // ── Dialogue ─────────────────────────────────────────────────────────────────
@@ -1342,18 +1485,14 @@ pub unsafe extern "C" fn norrust_get_dialogue(
     if pending.is_empty() {
         return to_c_string("[]");
     }
-    // Build JSON array manually (same pattern as other FFI functions)
-    let items: Vec<String> = pending
+    let items: Vec<DialogueEntryJson> = pending
         .iter()
-        .map(|e| {
-            format!(
-                "{{\"id\":\"{}\",\"text\":\"{}\"}}",
-                json_escape(&e.id),
-                json_escape(&e.text)
-            )
-        })
+        .map(|e| DialogueEntryJson { id: &e.id, text: &e.text })
         .collect();
-    to_c_string(&format!("[{}]", items.join(",")))
+    match serde_json::to_string(&items) {
+        Ok(s) => to_c_string(&s),
+        Err(_) => to_c_string("[]"),
+    }
 }
 
 /// Returns JSON array of strings for dialogue entries that have fired.
@@ -1364,10 +1503,11 @@ pub unsafe extern "C" fn norrust_get_dialogue_fired(
 ) -> *mut c_char {
     let Some(e) = engine.as_ref() else { return to_c_string("[]") };
     let Some(ds) = e.dialogue_state.as_ref() else { return to_c_string("[]") };
-    let items: Vec<String> = ds.fired_ids().iter()
-        .map(|id| format!("\"{}\"", json_escape(id)))
-        .collect();
-    to_c_string(&format!("[{}]", items.join(",")))
+    let ids: Vec<&str> = ds.fired_ids().iter().map(|id| id.as_str()).collect();
+    match serde_json::to_string(&ids) {
+        Ok(s) => to_c_string(&s),
+        Err(_) => to_c_string("[]"),
+    }
 }
 
 /// Mark dialogue entries as fired by passing a JSON array of ID strings.
@@ -1389,4 +1529,46 @@ pub unsafe extern "C" fn norrust_set_dialogue_fired(
         }
     }
     e.state_cache = None;
+}
+
+// ── Targeted state queries ──────────────────────────────────────────────────
+
+/// Return board dimensions without a full state JSON dump.
+/// Writes width to `*out_cols` and height to `*out_rows`. Returns 1 on success, 0 on failure.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_get_board_size(
+    engine: *mut NorRustEngine,
+    out_cols: *mut i32,
+    out_rows: *mut i32,
+) -> i32 {
+    with_game_ref!(engine, e, state, 0, {
+        if !out_cols.is_null() { *out_cols = state.board.width as i32; }
+        if !out_rows.is_null() { *out_rows = state.board.height as i32; }
+        1
+    })
+}
+
+/// Return the gold for a given faction (0 or 1) without a full state JSON dump.
+/// Returns -1 on failure.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_get_gold(
+    engine: *mut NorRustEngine,
+    faction: i32,
+) -> i32 {
+    with_game_ref!(engine, e, state, -1, {
+        state.gold.get(faction as usize).map(|&g| g as i32).unwrap_or(-1)
+    })
+}
+
+/// Return the unit_id at a given hex, or -1 if empty / invalid.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_get_unit_at(
+    engine: *mut NorRustEngine,
+    col: i32,
+    row: i32,
+) -> i32 {
+    with_game_ref!(engine, e, state, -1, {
+        let hex = Hex::from_offset(col, row);
+        state.hex_to_unit.get(&hex).map(|&uid| uid as i32).unwrap_or(-1)
+    })
 }
