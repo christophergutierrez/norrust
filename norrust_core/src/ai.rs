@@ -387,98 +387,27 @@ fn plan_unit_action(state: &GameState, uid: u32, faction: u8) -> Option<(Hex, Op
     best_action
 }
 
-// ── Core AI turn logic ──────────────────────────────────────────────────────
+// ── Turn-level planner ──────────────────────────────────────────────────────
 
-/// AI turn using 1-ply lookahead: for each unit, simulate all (move, attack)
-/// combinations, pick the one producing the best evaluated state.
-///
-/// `cheapest_recruit_cost`: the cost of the cheapest recruitable unit (0 = no recruit info).
-/// When > 0, the leader will stay on keep if recruiting is possible, or move back to keep.
-pub fn ai_take_turn(state: &mut GameState, faction: u8, cheapest_recruit_cost: u32) {
-    let leader_id = find_leader(state, faction);
-    let stay = should_leader_stay(state, faction, cheapest_recruit_cost);
-    let return_keep = leader_should_return_to_keep(state, faction, cheapest_recruit_cost);
+/// Number of unit orderings to try per turn. More orderings = better
+/// coordination but slower planning. First ordering is the natural order;
+/// subsequent orderings rotate the unit list.
+const TURN_PLAN_ORDERINGS: usize = 5;
 
-    let unit_ids: Vec<u32> = state
-        .units
-        .iter()
-        .filter(|(_, u)| u.faction == faction && !u.attacked)
-        .map(|(id, _)| *id)
-        .collect();
-
-    for uid in unit_ids {
-        if !state.units.contains_key(&uid) || state.units[&uid].attacked {
-            continue;
-        }
-
-        let is_leader = leader_id == Some(uid);
-
-        // Leader discipline: stay on keep if can recruit more
-        if is_leader && stay {
-            continue;
-        }
-
-        // Leader discipline: move back to keep if off-keep and can recruit
-        if is_leader {
-            if let Some(keep_hex) = return_keep {
-                let start = state.positions[&uid];
-                let unit_ref = &state.units[&uid];
-                let movement = if unit_ref.slowed { unit_ref.movement / 2 } else { unit_ref.movement };
-                let zoc = get_zoc_hexes(state, faction);
-                let candidates = reachable_hexes(&state.board, &state.units[&uid].movement_costs, 1, start, movement, &zoc, false);
-                let occupied: HashSet<Hex> = state.hex_to_unit.iter()
-                    .filter(|(_, &id)| id != uid).map(|(&h, _)| h).collect();
-                if let Some(&march_dest) = candidates.iter()
-                    .filter(|&&h| h != start && !occupied.contains(&h))
-                    .min_by_key(|&&c| c.distance(keep_hex))
-                {
-                    if march_dest.distance(keep_hex) < start.distance(keep_hex) {
-                        let _ = apply_action(state, Action::Move { unit_id: uid, destination: march_dest });
-                    }
-                }
-                continue;
-            }
-        }
-
-        // 1-ply lookahead: try all actions, pick best
-        if let Some((dest, target)) = plan_unit_action(state, uid, faction) {
-            let start = state.positions[&uid];
-            if dest != start {
-                let _ = apply_action(state, Action::Move { unit_id: uid, destination: dest });
-            }
-            if let Some(eid) = target {
-                if state.units.contains_key(&uid) && state.units.contains_key(&eid) {
-                    let _ = apply_action(state, Action::Attack { attacker_id: uid, defender_id: eid });
-                }
-            }
-        }
-    }
-
-    apply_action(state, Action::EndTurn).expect("EndTurn must always succeed");
-}
-
-/// Plan an AI turn on a cloned state, returning the list of actions taken.
-///
-/// The real `state` is NOT modified. The caller can replay these actions
-/// one at a time with animations on the presentation side.
-///
-/// `cheapest_recruit_cost`: the cost of the cheapest recruitable unit (0 = no recruit info).
-pub fn ai_plan_turn(state: &GameState, faction: u8, cheapest_recruit_cost: u32) -> Vec<ActionRecord> {
+/// Plan a single turn attempt with the given unit ordering on a clone.
+/// Returns (action_records, final_score).
+fn run_turn_ordering(
+    state: &GameState,
+    faction: u8,
+    leader_id: Option<u32>,
+    stay: bool,
+    return_keep: Option<Hex>,
+    unit_order: &[u32],
+) -> (Vec<ActionRecord>, f32) {
     let mut clone = state.clone();
     let mut records = Vec::new();
 
-    let leader_id = find_leader(&clone, faction);
-    let stay = should_leader_stay(&clone, faction, cheapest_recruit_cost);
-    let return_keep = leader_should_return_to_keep(&clone, faction, cheapest_recruit_cost);
-
-    let unit_ids: Vec<u32> = clone
-        .units
-        .iter()
-        .filter(|(_, u)| u.faction == faction && !u.attacked)
-        .map(|(id, _)| *id)
-        .collect();
-
-    for uid in unit_ids {
+    for &uid in unit_order {
         if !clone.units.contains_key(&uid) || clone.units[&uid].attacked {
             continue;
         }
@@ -531,6 +460,104 @@ pub fn ai_plan_turn(state: &GameState, faction: u8, cheapest_recruit_cost: u32) 
         }
     }
 
+    let score = evaluate_state(&clone, faction);
+    (records, score)
+}
+
+/// Plan a full AI turn by trying multiple unit orderings and picking the best.
+/// Returns (action_records, final_score).
+///
+/// The leader always acts in its natural position. Only non-leader units are
+/// reordered across attempts.
+fn plan_full_turn(
+    state: &GameState,
+    faction: u8,
+    cheapest_recruit_cost: u32,
+) -> (Vec<ActionRecord>, f32) {
+    let leader_id = find_leader(state, faction);
+    let stay = should_leader_stay(state, faction, cheapest_recruit_cost);
+    let return_keep = leader_should_return_to_keep(state, faction, cheapest_recruit_cost);
+
+    // Separate leader from non-leader units
+    let all_ids: Vec<u32> = state
+        .units
+        .iter()
+        .filter(|(_, u)| u.faction == faction && !u.attacked)
+        .map(|(id, _)| *id)
+        .collect();
+
+    let mut leader_ids: Vec<u32> = Vec::new();
+    let mut non_leader_ids: Vec<u32> = Vec::new();
+    for &uid in &all_ids {
+        if leader_id == Some(uid) {
+            leader_ids.push(uid);
+        } else {
+            non_leader_ids.push(uid);
+        }
+    }
+
+    // Sort for deterministic base ordering
+    non_leader_ids.sort();
+
+    let n = non_leader_ids.len();
+    let orderings = if n <= 1 { 1 } else { TURN_PLAN_ORDERINGS.min(n) };
+
+    let mut best_records = Vec::new();
+    let mut best_score = f32::NEG_INFINITY;
+
+    for i in 0..orderings {
+        // Build ordering: leader first, then rotated non-leaders
+        let mut order = leader_ids.clone();
+        for j in 0..n {
+            order.push(non_leader_ids[(j + i) % n]);
+        }
+
+        let (records, score) = run_turn_ordering(state, faction, leader_id, stay, return_keep, &order);
+        if score > best_score {
+            best_score = score;
+            best_records = records;
+        }
+    }
+
+    (best_records, best_score)
+}
+
+// ── Core AI turn logic ──────────────────────────────────────────────────────
+
+/// AI turn using multi-ordering turn planner: tries several unit orderings,
+/// picks the one producing the best evaluated final state.
+///
+/// `cheapest_recruit_cost`: the cost of the cheapest recruitable unit (0 = no recruit info).
+/// When > 0, the leader will stay on keep if recruiting is possible, or move back to keep.
+pub fn ai_take_turn(state: &mut GameState, faction: u8, cheapest_recruit_cost: u32) {
+    let (records, _score) = plan_full_turn(state, faction, cheapest_recruit_cost);
+
+    // Replay the best plan on the real state
+    for record in &records {
+        match record {
+            ActionRecord::Move { unit_id, to_col, to_row } => {
+                let dest = Hex::from_offset(*to_col, *to_row);
+                let _ = apply_action(state, Action::Move { unit_id: *unit_id, destination: dest });
+            }
+            ActionRecord::Attack { attacker_id, defender_id } => {
+                if state.units.contains_key(attacker_id) && state.units.contains_key(defender_id) {
+                    let _ = apply_action(state, Action::Attack { attacker_id: *attacker_id, defender_id: *defender_id });
+                }
+            }
+        }
+    }
+
+    apply_action(state, Action::EndTurn).expect("EndTurn must always succeed");
+}
+
+/// Plan an AI turn on a cloned state, returning the list of actions taken.
+///
+/// The real `state` is NOT modified. The caller can replay these actions
+/// one at a time with animations on the presentation side.
+///
+/// `cheapest_recruit_cost`: the cost of the cheapest recruitable unit (0 = no recruit info).
+pub fn ai_plan_turn(state: &GameState, faction: u8, cheapest_recruit_cost: u32) -> Vec<ActionRecord> {
+    let (records, _score) = plan_full_turn(state, faction, cheapest_recruit_cost);
     records
 }
 
@@ -982,6 +1009,80 @@ mod tests {
             dest.distance(enemy_pos) < start.distance(enemy_pos),
             "AI should move closer to enemy: start dist={}, dest dist={}",
             start.distance(enemy_pos), dest.distance(enemy_pos)
+        );
+    }
+
+    // ── Turn planner tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_turn_planner_returns_actions() {
+        // Simple setup: 2 friendly units and 1 enemy.
+        // plan_full_turn should return non-empty actions and a finite score.
+        let mut board = Board::new(8, 3);
+        for col in 0..8 {
+            for row in 0..3 {
+                board.set_terrain(Hex::from_offset(col, row), "flat");
+            }
+        }
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+
+        let u1 = make_fighter(1, 0, 30);
+        state.place_unit(u1, Hex::from_offset(0, 1));
+        let u2 = make_fighter(2, 0, 30);
+        state.place_unit(u2, Hex::from_offset(1, 1));
+
+        let enemy = make_fighter(3, 1, 30);
+        state.place_unit(enemy, Hex::from_offset(7, 1));
+
+        let (records, score) = plan_full_turn(&state, 0, u32::MAX);
+        assert!(!records.is_empty(), "Turn planner should produce actions");
+        assert!(score.is_finite(), "Score should be finite, got {}", score);
+    }
+
+    #[test]
+    fn test_turn_planner_multiple_orderings() {
+        // 3 friendly units and 2 enemies. Multi-ordering should complete
+        // and produce a score >= single ordering baseline.
+        let mut board = Board::new(8, 5);
+        for col in 0..8 {
+            for row in 0..5 {
+                board.set_terrain(Hex::from_offset(col, row), "flat");
+            }
+        }
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+
+        let u1 = make_fighter(1, 0, 30);
+        state.place_unit(u1, Hex::from_offset(0, 1));
+        let u2 = make_fighter(2, 0, 30);
+        state.place_unit(u2, Hex::from_offset(0, 2));
+        let u3 = make_fighter(3, 0, 30);
+        state.place_unit(u3, Hex::from_offset(0, 3));
+
+        let e1 = make_fighter(4, 1, 15);
+        state.place_unit(e1, Hex::from_offset(5, 2));
+        let e2 = make_fighter(5, 1, 15);
+        state.place_unit(e2, Hex::from_offset(5, 3));
+
+        // Run the multi-ordering planner
+        let (records, score) = plan_full_turn(&state, 0, u32::MAX);
+
+        // Should produce actions and a reasonable score
+        assert!(!records.is_empty(), "Should produce actions with 3 units");
+        assert!(score.is_finite(), "Score should be finite");
+
+        // Run single ordering (just the first/natural order) as baseline
+        let mut unit_ids: Vec<u32> = state.units.iter()
+            .filter(|(_, u)| u.faction == 0 && !u.attacked)
+            .map(|(id, _)| *id).collect();
+        unit_ids.sort();
+        let (_, single_score) = run_turn_ordering(&state, 0, None, false, None, &unit_ids);
+
+        assert!(
+            score >= single_score,
+            "Multi-ordering score ({}) should be >= single ordering ({})",
+            score, single_score
         );
     }
 }

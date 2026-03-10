@@ -225,6 +225,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] evaluate_state(state, faction) holistic board evaluation function — Phase 98 (98-01)
 - [x] 1-ply lookahead AI: plan_unit_action() clone-simulate-evaluate for per-unit action selection — Phase 99 (99-01)
 - [x] Shared AI decision logic: ai_take_turn and ai_plan_turn both use plan_unit_action — Phase 99 (99-01)
+- [x] Multi-ordering turn planner: plan_full_turn() tries 5 unit orderings, picks best final state — Phase 100 (100-01)
+- [x] ActionRecord replay: ai_take_turn replays best plan from plan_full_turn — Phase 100 (100-01)
 
 ### Active (In Progress / Deferred)
 
@@ -406,4 +408,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 | March heuristic for move-only AI | Clone-evaluate per hex too slow in debug; distance-to-enemy heuristic sufficient | 2026-03-10 | Active |
 
-*Last updated: 2026-03-10 after Phase 99 — 1-Ply Unit Lookahead.*
+| Rotation-based unit ordering | Deterministic, no RNG; K=5 rotations covers diverse orderings for implicit coordination | 2026-03-10 | Active |
+
+| ActionRecord replay for ai_take_turn | Both ai_take_turn and ai_plan_turn share identical planning via plan_full_turn | 2026-03-10 | Active |
+
+*Last updated: 2026-03-10 after Phase 100 — Turn Planning.*
