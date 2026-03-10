@@ -7,8 +7,8 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 ## Current Milestone
 
 **v3.5 AI Overhaul**
-Status: 🚧 In Progress
-Phases: 4 of 5 complete
+Status: ✅ Complete
+Phases: 5 of 5 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
@@ -16,7 +16,7 @@ Phases: 4 of 5 complete
 | 98 | State Evaluation | 1/1 | ✅ Complete | 2026-03-10 |
 | 99 | 1-Ply Unit Lookahead | 1/1 | ✅ Complete | 2026-03-10 |
 | 100 | Turn Planning | 1/1 | ✅ Complete | 2026-03-10 |
-| 101 | Ranged & Tactical Behavior | TBD | Not started | - |
+| 101 | Ranged & Tactical Behavior | 1/1 | ✅ Complete | 2026-03-10 |
 
 ## v3.5 Phase Details
 

@@ -298,6 +298,48 @@ pub fn evaluate_state(state: &GameState, faction: u8) -> f32 {
 
 // ── 1-ply lookahead unit planner ─────────────────────────────────────────────
 
+/// Find the best retreat destination toward a healing hex.
+/// Prefers a reachable hex with healing > 0; otherwise picks the reachable hex
+/// closest to any healing hex on the board.
+fn retreat_toward_healing(
+    state: &GameState,
+    candidates: &[Hex],
+    start: Hex,
+) -> Option<(Hex, Option<u32>)> {
+    // Collect all healing hexes on the board
+    let healing_hexes: Vec<Hex> = (0..state.board.height as i32)
+        .flat_map(|row| (0..state.board.width as i32).map(move |col| Hex::from_offset(col, row)))
+        .filter(|&h| state.board.tile_at(h).map(|t| t.healing > 0).unwrap_or(false))
+        .collect();
+
+    if healing_hexes.is_empty() {
+        return None;
+    }
+
+    // First: check if any candidate IS a healing hex
+    if let Some(&heal_dest) = candidates
+        .iter()
+        .filter(|&&h| h != start)
+        .filter(|&&h| healing_hexes.contains(&h))
+        .min_by_key(|&&h| healing_hexes.iter().map(|hh| h.distance(*hh)).min().unwrap_or(u32::MAX))
+    {
+        return Some((heal_dest, None));
+    }
+
+    // Otherwise: pick the reachable hex that minimizes distance to nearest healing hex
+    if let Some(&retreat_dest) = candidates
+        .iter()
+        .filter(|&&h| h != start)
+        .min_by_key(|&&c| {
+            healing_hexes.iter().map(|&hh| c.distance(hh)).min().unwrap_or(u32::MAX)
+        })
+    {
+        return Some((retreat_dest, None));
+    }
+
+    None
+}
+
 /// For a single unit, try all reachable (move, optional attack) combinations
 /// on a cloned state, evaluate each result, and return the best action.
 ///
@@ -356,6 +398,17 @@ fn plan_unit_action(state: &GameState, uid: u32, faction: u8) -> Option<(Hex, Op
 
         for eid in &attackable {
             has_any_attack = true;
+
+            // Capture enemy HP ratio BEFORE simulation (enemy may die)
+            let enemy_hp_ratio = state.units.get(eid).map(|e| {
+                e.hp as f32 / e.max_hp.max(1) as f32
+            }).unwrap_or(1.0);
+
+            // Check if this is a ranged attack from distance 2
+            let epos = state.positions[eid];
+            let is_ranged_distance2 = unit.attacks.iter().any(|a| a.range == "ranged")
+                && cand.distance(epos) == 2;
+
             let mut sim = state.clone();
             if cand != start {
                 let _ = apply_action(&mut sim, Action::Move { unit_id: uid, destination: cand });
@@ -363,7 +416,16 @@ fn plan_unit_action(state: &GameState, uid: u32, faction: u8) -> Option<(Hex, Op
             if sim.units.contains_key(&uid) && sim.units.contains_key(eid) {
                 let _ = apply_action(&mut sim, Action::Attack { attacker_id: uid, defender_id: *eid });
             }
-            let score = evaluate_state(&sim, faction);
+            let mut score = evaluate_state(&sim, faction);
+
+            // Tactical bonus: prefer ranged attacks from distance 2 (no retaliation)
+            if is_ranged_distance2 {
+                score += 2.0;
+            }
+
+            // Tactical bonus: focus fire on wounded enemies (up to +5.0)
+            score += (1.0 - enemy_hp_ratio) * 5.0;
+
             if score > best_score {
                 best_score = score;
                 best_action = Some((cand, Some(*eid)));
@@ -371,9 +433,53 @@ fn plan_unit_action(state: &GameState, uid: u32, faction: u8) -> Option<(Hex, Op
         }
     }
 
-    // If no attack was possible, march toward the nearest enemy.
+    // Retreat threshold: units below this HP ratio prefer healing over fighting
+    const RETREAT_HP_RATIO: f32 = 0.30;
+    let unit = &state.units[&uid];
+    let hp_ratio = unit.hp as f32 / unit.max_hp.max(1) as f32;
+    let is_wounded = hp_ratio < RETREAT_HP_RATIO;
+
+    // If wounded and has attacks but no kill available, override with retreat
+    if is_wounded && has_any_attack {
+        let can_kill = {
+            let mut found_kill = false;
+            for &cand in &candidates {
+                let unit = &state.units[&uid];
+                let attackable: Vec<u32> = enemies.iter().filter_map(|&(eid, epos)| {
+                    let can_engage = unit.attacks.iter().any(|a| {
+                        (a.range == "melee" && cand.neighbors().contains(&epos))
+                            || (a.range == "ranged" && cand.distance(epos) == 2)
+                    });
+                    if can_engage { Some(eid) } else { None }
+                }).collect();
+                for eid in &attackable {
+                    let mut sim = state.clone();
+                    if cand != start {
+                        let _ = apply_action(&mut sim, Action::Move { unit_id: uid, destination: cand });
+                    }
+                    if sim.units.contains_key(&uid) && sim.units.contains_key(eid) {
+                        let _ = apply_action(&mut sim, Action::Attack { attacker_id: uid, defender_id: *eid });
+                    }
+                    if !sim.units.contains_key(eid) {
+                        found_kill = true;
+                        break;
+                    }
+                }
+                if found_kill { break; }
+            }
+            found_kill
+        };
+        if !can_kill {
+            // Override attack decision — retreat instead
+            best_action = retreat_toward_healing(state, &candidates, start);
+        }
+    }
+
+    // If no attack was possible, march toward the nearest enemy (or retreat if wounded).
     if !has_any_attack {
-        if let Some(&march_dest) = candidates
+        if is_wounded {
+            best_action = retreat_toward_healing(state, &candidates, start);
+        } else if let Some(&march_dest) = candidates
             .iter()
             .filter(|&&h| h != start)
             .min_by_key(|&&c| {
@@ -564,7 +670,7 @@ pub fn ai_plan_turn(state: &GameState, faction: u8, cheapest_recruit_cost: u32) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::Board;
+    use crate::board::{Board, Tile};
     use crate::game_state::GameState;
     use crate::schema::AttackDef;
     use crate::unit::Unit;
@@ -1084,5 +1190,181 @@ mod tests {
             "Multi-ordering score ({}) should be >= single ordering ({})",
             score, single_score
         );
+    }
+
+    // ── Tactical behavior tests (Phase 101) ──────────────────────────────
+
+    fn make_archer(id: u32, faction: u8, hp: u32) -> Unit {
+        let bow = AttackDef {
+            id: "bow".to_string(),
+            name: "Bow".to_string(),
+            damage: 5,
+            strikes: 3,
+            attack_type: "pierce".to_string(),
+            range: "ranged".to_string(),
+            ..Default::default()
+        };
+        let dagger = AttackDef {
+            id: "dagger".to_string(),
+            name: "Dagger".to_string(),
+            damage: 4,
+            strikes: 2,
+            attack_type: "blade".to_string(),
+            range: "melee".to_string(),
+            ..Default::default()
+        };
+        let mut u = Unit::new(id, "archer", hp, faction);
+        u.max_hp = hp;
+        u.attacks = vec![bow, dagger];
+        u.movement = 5;
+        u.default_defense = 30;
+        u
+    }
+
+    #[test]
+    fn test_ranged_prefers_distance() {
+        // Ranged unit can attack from distance 1 (melee) or distance 2 (ranged).
+        // Should prefer distance 2 to avoid retaliation.
+        let mut board = Board::new(5, 3);
+        for col in 0..5 {
+            for row in 0..3 {
+                board.set_terrain(Hex::from_offset(col, row), "flat");
+            }
+        }
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+
+        // Archer at (0,1) with movement 5 — can reach both adjacent and distance-2
+        let archer = make_archer(1, 0, 20);
+        state.place_unit(archer, Hex::from_offset(0, 1));
+
+        // Enemy at (3,1)
+        let enemy = make_fighter(2, 1, 20);
+        state.place_unit(enemy, Hex::from_offset(3, 1));
+
+        let result = plan_unit_action(&state, 1, 0);
+        assert!(result.is_some(), "AI should choose an action");
+        let (dest, target) = result.unwrap();
+        assert_eq!(target, Some(2), "Should attack the enemy");
+        let enemy_hex = Hex::from_offset(3, 1);
+        assert_eq!(dest.distance(enemy_hex), 2,
+            "Ranged unit should prefer distance-2 position, got distance {}",
+            dest.distance(enemy_hex));
+    }
+
+    #[test]
+    fn test_focus_fire_wounded() {
+        // Two enemies attackable from the same position — one full HP, one wounded.
+        // AI should prefer the wounded one (focus fire bonus).
+        let mut board = Board::new(5, 5);
+        for col in 0..5 {
+            for row in 0..5 {
+                board.set_terrain(Hex::from_offset(col, row), "flat");
+            }
+        }
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+
+        // Our fighter at (2,2)
+        let attacker = make_fighter(1, 0, 30);
+        state.place_unit(attacker, Hex::from_offset(2, 2));
+
+        // Full HP enemy at (3,2)
+        let full_enemy = make_fighter(2, 1, 30);
+        state.place_unit(full_enemy, Hex::from_offset(3, 2));
+
+        // Wounded enemy at (3,3) — set hp to 30% of max (9/30)
+        let mut wounded_enemy = make_fighter(3, 1, 30);
+        wounded_enemy.hp = 9;
+        state.place_unit(wounded_enemy, Hex::from_offset(3, 3));
+
+        let result = plan_unit_action(&state, 1, 0);
+        assert!(result.is_some(), "AI should choose an action");
+        let (_, target) = result.unwrap();
+        assert_eq!(target, Some(3),
+            "AI should focus fire on the wounded enemy (id 3), got {:?}", target);
+    }
+
+    #[test]
+    fn test_wounded_retreats_to_village() {
+        // Wounded unit (below 30% HP) with a village reachable and no enemies
+        // in attack range. Should move toward village.
+        let mut board = Board::new(8, 3);
+        for col in 0..8 {
+            for row in 0..3 {
+                board.set_terrain(Hex::from_offset(col, row), "flat");
+            }
+        }
+        // Place a village (healing hex) at (1,1)
+        let village_tile = Tile {
+            terrain_id: "village".to_string(),
+            movement_cost: 1,
+            defense: 60,
+            healing: 8,
+            color: "#808080".to_string(),
+        };
+        board.set_tile(Hex::from_offset(1, 1), village_tile);
+
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+
+        // Wounded unit at (3,1) — 5 HP out of 30 (16.7%, below 30%)
+        let mut wounded = make_fighter(1, 0, 30);
+        wounded.hp = 5;
+        state.place_unit(wounded, Hex::from_offset(3, 1));
+
+        // Enemy far away at (7,1) — not in attack range
+        let enemy = make_fighter(2, 1, 30);
+        state.place_unit(enemy, Hex::from_offset(7, 1));
+
+        let result = plan_unit_action(&state, 1, 0);
+        assert!(result.is_some(), "Wounded unit should retreat");
+        let (dest, target) = result.unwrap();
+        assert!(target.is_none(), "Should not attack — retreating");
+        let village_hex = Hex::from_offset(1, 1);
+        let start_hex = Hex::from_offset(3, 1);
+        assert!(dest.distance(village_hex) < start_hex.distance(village_hex),
+            "Unit should move closer to village (dest dist: {}, start dist: {})",
+            dest.distance(village_hex), start_hex.distance(village_hex));
+    }
+
+    #[test]
+    fn test_wounded_still_attacks_for_kill() {
+        // Wounded unit (20% HP) adjacent to a 1-HP enemy.
+        // Should still attack for the kill rather than retreating.
+        let mut board = Board::new(5, 3);
+        for col in 0..5 {
+            for row in 0..3 {
+                board.set_terrain(Hex::from_offset(col, row), "flat");
+            }
+        }
+        // Village available at (0,1)
+        let village_tile = Tile {
+            terrain_id: "village".to_string(),
+            movement_cost: 1,
+            defense: 60,
+            healing: 8,
+            color: "#808080".to_string(),
+        };
+        board.set_tile(Hex::from_offset(0, 1), village_tile);
+
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+
+        // Wounded unit at (2,1) — 6 HP out of 30 (20%, below 30%)
+        let mut wounded = make_fighter(1, 0, 30);
+        wounded.hp = 6;
+        state.place_unit(wounded, Hex::from_offset(2, 1));
+
+        // Enemy at (3,1) with 1 HP — easy kill
+        let mut dying_enemy = make_fighter(2, 1, 30);
+        dying_enemy.hp = 1;
+        state.place_unit(dying_enemy, Hex::from_offset(3, 1));
+
+        let result = plan_unit_action(&state, 1, 0);
+        assert!(result.is_some(), "Wounded unit should still act");
+        let (_, target) = result.unwrap();
+        assert_eq!(target, Some(2),
+            "Wounded unit should attack the 1-HP enemy for the kill");
     }
 }

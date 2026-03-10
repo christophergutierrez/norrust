@@ -227,6 +227,10 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Shared AI decision logic: ai_take_turn and ai_plan_turn both use plan_unit_action — Phase 99 (99-01)
 - [x] Multi-ordering turn planner: plan_full_turn() tries 5 unit orderings, picks best final state — Phase 100 (100-01)
 - [x] ActionRecord replay: ai_take_turn replays best plan from plan_full_turn — Phase 100 (100-01)
+- [x] Ranged distance bonus: +2.0 for distance-2 ranged attacks (avoids melee retaliation) — Phase 101 (101-01)
+- [x] Focus fire bonus: up to +5.0 for attacking wounded enemies to secure kills — Phase 101 (101-01)
+- [x] Wounded unit retreat: units below 30% HP retreat toward healing terrain when no kill available — Phase 101 (101-01)
+- [x] retreat_toward_healing() helper: finds nearest healing hex on board for wounded unit routing — Phase 101 (101-01)
 
 ### Active (In Progress / Deferred)
 
@@ -412,4 +416,10 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 | ActionRecord replay for ai_take_turn | Both ai_take_turn and ai_plan_turn share identical planning via plan_full_turn | 2026-03-10 | Active |
 
-*Last updated: 2026-03-10 after Phase 100 — Turn Planning.*
+| Tactical bonuses as tie-breakers | evaluate_state is primary driver; +2.0/+5.0 bonuses steer among similar-score options | 2026-03-10 | Active |
+
+| Enemy HP captured before simulation | Enemy may die during simulated combat; pre-sim ratio needed for focus fire scoring | 2026-03-10 | Active |
+
+| Wounded retreat overrides attack only when no kill possible | Securing kills always worth the risk; retreat is fallback when no kill achievable | 2026-03-10 | Active |
+
+*Last updated: 2026-03-10 after Phase 101 — Ranged & Tactical Behavior.*
