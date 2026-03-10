@@ -6,7 +6,35 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
-**v3.5 AI Overhaul**
+**v3.6 AI Leader Intelligence**
+Status: 🚧 In Progress
+Phases: 1 of 2 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 102 | Recruit-First Ordering | 1/1 | ✅ Complete | 2026-03-10 |
+| 103 | Leader 2-Ply Lookahead | TBD | Not started | - |
+
+## v3.6 Phase Details
+
+### Phase 102: Recruit-First Ordering
+
+Focus: AI spends all gold on recruitment before planning any unit movement. Leader stays on keep until broke. Eliminates "recruit one, move, recruit one next turn" pattern.
+Depends on: Phase 97 (recruit discipline), Phase 100 (turn planning)
+Plans: 1/1 complete
+
+### Phase 103: Leader 2-Ply Lookahead
+
+Focus: Leader's plan_unit_action simulates 2 turns deep (my move → opponent response → evaluate). Catches oscillation. Extend to all units if performance allows (< 30s debug, < 5s release, < 8s mobile).
+Depends on: Phase 99 (1-ply lookahead), Phase 102 (recruit-first)
+Plans: TBD (defined during /paul:plan)
+
+---
+
+## Completed Milestones
+
+### v3.5 AI Overhaul
+
 Status: ✅ Complete
 Phases: 5 of 5 complete
 

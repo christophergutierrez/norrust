@@ -9,6 +9,7 @@ use crate::combat::{time_of_day, tod_damage_modifier};
 use crate::game_state::{apply_action, Action, GameState};
 use crate::hex::Hex;
 use crate::pathfinding::{get_zoc_hexes, reachable_hexes};
+use crate::schema::AttackDef;
 use crate::unit::Unit;
 
 /// A recorded AI action for animated replay on the client side.
@@ -500,6 +501,71 @@ fn plan_unit_action(state: &GameState, uid: u32, faction: u8) -> Option<(Hex, Op
 /// subsequent orderings rotate the unit list.
 const TURN_PLAN_ORDERINGS: usize = 5;
 
+/// Simulate recruitment on a cloned state: spend all gold on placeholder units
+/// placed on empty castle hexes adjacent to the leader's keep.
+/// Returns IDs of recruited placeholder units.
+fn simulate_recruitment(
+    clone: &mut GameState,
+    faction: u8,
+    recruit_defs: &[(u32, u32)], // (cost, movement)
+) -> Vec<u32> {
+    if recruit_defs.is_empty() {
+        return Vec::new();
+    }
+
+    // Find leader on keep
+    let leader_id = find_leader(clone, faction);
+    let leader_hex = leader_id.and_then(|lid| clone.positions.get(&lid).copied());
+    let keep_hex = match leader_hex {
+        Some(h) if clone.board.tile_at(h).map(|t| t.terrain_id == "keep").unwrap_or(false) => h,
+        _ => return Vec::new(),
+    };
+
+    let cheapest = recruit_defs.iter().map(|&(c, _)| c).min().unwrap_or(u32::MAX);
+    let mut recruited_ids = Vec::new();
+    let mut rotation = 0usize;
+
+    while clone.gold[faction as usize] >= cheapest {
+        // Find empty castle hex adjacent to keep
+        let castle_hex = keep_hex.neighbors().iter().copied().find(|&h| {
+            clone.board.tile_at(h).map(|t| t.terrain_id == "castle").unwrap_or(false)
+                && !clone.hex_to_unit.contains_key(&h)
+        });
+        let Some(dest) = castle_hex else { break };
+
+        // Pick recruit type round-robin (only affordable ones)
+        let affordable: Vec<&(u32, u32)> = recruit_defs.iter()
+            .filter(|&&(cost, _)| clone.gold[faction as usize] >= cost)
+            .collect();
+        if affordable.is_empty() { break; }
+        let &(cost, movement) = affordable[rotation % affordable.len()];
+        rotation += 1;
+
+        // Create placeholder unit
+        let uid = clone.next_unit_id;
+        clone.next_unit_id += 1;
+        let mut unit = Unit::new(uid, "recruit", 20, faction);
+        unit.max_hp = 20;
+        unit.movement = movement;
+        unit.default_defense = 30;
+        unit.attacks = vec![AttackDef {
+            id: "sword".to_string(),
+            name: "Sword".to_string(),
+            damage: 5,
+            strikes: 2,
+            attack_type: "blade".to_string(),
+            range: "melee".to_string(),
+            ..Default::default()
+        }];
+
+        clone.place_unit(unit, dest);
+        clone.gold[faction as usize] -= cost;
+        recruited_ids.push(uid);
+    }
+
+    recruited_ids
+}
+
 /// Plan a single turn attempt with the given unit ordering on a clone.
 /// Returns (action_records, final_score).
 fn run_turn_ordering(
@@ -509,11 +575,19 @@ fn run_turn_ordering(
     stay: bool,
     return_keep: Option<Hex>,
     unit_order: &[u32],
+    recruit_defs: &[(u32, u32)],
 ) -> (Vec<ActionRecord>, f32) {
     let mut clone = state.clone();
     let mut records = Vec::new();
 
-    for &uid in unit_order {
+    // Simulate recruitment before movement planning
+    let recruited_ids = simulate_recruitment(&mut clone, faction, recruit_defs);
+
+    // Build extended unit order including recruited units
+    let mut full_order: Vec<u32> = unit_order.to_vec();
+    full_order.extend_from_slice(&recruited_ids);
+
+    for &uid in &full_order {
         if !clone.units.contains_key(&uid) || clone.units[&uid].attacked {
             continue;
         }
@@ -579,6 +653,7 @@ fn plan_full_turn(
     state: &GameState,
     faction: u8,
     cheapest_recruit_cost: u32,
+    recruit_defs: &[(u32, u32)],
 ) -> (Vec<ActionRecord>, f32) {
     let leader_id = find_leader(state, faction);
     let stay = should_leader_stay(state, faction, cheapest_recruit_cost);
@@ -618,7 +693,7 @@ fn plan_full_turn(
             order.push(non_leader_ids[(j + i) % n]);
         }
 
-        let (records, score) = run_turn_ordering(state, faction, leader_id, stay, return_keep, &order);
+        let (records, score) = run_turn_ordering(state, faction, leader_id, stay, return_keep, &order, recruit_defs);
         if score > best_score {
             best_score = score;
             best_records = records;
@@ -636,12 +711,25 @@ fn plan_full_turn(
 /// `cheapest_recruit_cost`: the cost of the cheapest recruitable unit (0 = no recruit info).
 /// When > 0, the leader will stay on keep if recruiting is possible, or move back to keep.
 pub fn ai_take_turn(state: &mut GameState, faction: u8, cheapest_recruit_cost: u32) {
-    let (records, _score) = plan_full_turn(state, faction, cheapest_recruit_cost);
+    ai_take_turn_with_recruits(state, faction, cheapest_recruit_cost, &[]);
+}
 
-    // Replay the best plan on the real state
+/// AI turn with recruit simulation: placeholder recruits are simulated in the
+/// planning clone so the planner sees their value and keeps the leader on keep.
+pub fn ai_take_turn_with_recruits(
+    state: &mut GameState,
+    faction: u8,
+    cheapest_recruit_cost: u32,
+    recruit_defs: &[(u32, u32)],
+) {
+    let (records, _score) = plan_full_turn(state, faction, cheapest_recruit_cost, recruit_defs);
+
+    // Replay the best plan on the real state.
+    // Skip actions for simulated recruit IDs (they don't exist in the real state).
     for record in &records {
         match record {
             ActionRecord::Move { unit_id, to_col, to_row } => {
+                if !state.units.contains_key(unit_id) { continue; }
                 let dest = Hex::from_offset(*to_col, *to_row);
                 let _ = apply_action(state, Action::Move { unit_id: *unit_id, destination: dest });
             }
@@ -663,7 +751,17 @@ pub fn ai_take_turn(state: &mut GameState, faction: u8, cheapest_recruit_cost: u
 ///
 /// `cheapest_recruit_cost`: the cost of the cheapest recruitable unit (0 = no recruit info).
 pub fn ai_plan_turn(state: &GameState, faction: u8, cheapest_recruit_cost: u32) -> Vec<ActionRecord> {
-    let (records, _score) = plan_full_turn(state, faction, cheapest_recruit_cost);
+    ai_plan_turn_with_recruits(state, faction, cheapest_recruit_cost, &[])
+}
+
+/// Plan an AI turn with recruit simulation for more accurate planning.
+pub fn ai_plan_turn_with_recruits(
+    state: &GameState,
+    faction: u8,
+    cheapest_recruit_cost: u32,
+    recruit_defs: &[(u32, u32)],
+) -> Vec<ActionRecord> {
+    let (records, _score) = plan_full_turn(state, faction, cheapest_recruit_cost, recruit_defs);
     records
 }
 
@@ -1141,7 +1239,7 @@ mod tests {
         let enemy = make_fighter(3, 1, 30);
         state.place_unit(enemy, Hex::from_offset(7, 1));
 
-        let (records, score) = plan_full_turn(&state, 0, u32::MAX);
+        let (records, score) = plan_full_turn(&state, 0, u32::MAX, &[]);
         assert!(!records.is_empty(), "Turn planner should produce actions");
         assert!(score.is_finite(), "Score should be finite, got {}", score);
     }
@@ -1172,7 +1270,7 @@ mod tests {
         state.place_unit(e2, Hex::from_offset(5, 3));
 
         // Run the multi-ordering planner
-        let (records, score) = plan_full_turn(&state, 0, u32::MAX);
+        let (records, score) = plan_full_turn(&state, 0, u32::MAX, &[]);
 
         // Should produce actions and a reasonable score
         assert!(!records.is_empty(), "Should produce actions with 3 units");
@@ -1183,7 +1281,7 @@ mod tests {
             .filter(|(_, u)| u.faction == 0 && !u.attacked)
             .map(|(id, _)| *id).collect();
         unit_ids.sort();
-        let (_, single_score) = run_turn_ordering(&state, 0, None, false, None, &unit_ids);
+        let (_, single_score) = run_turn_ordering(&state, 0, None, false, None, &unit_ids, &[]);
 
         assert!(
             score >= single_score,
@@ -1366,5 +1464,84 @@ mod tests {
         let (_, target) = result.unwrap();
         assert_eq!(target, Some(2),
             "Wounded unit should attack the 1-HP enemy for the kill");
+    }
+
+    // ── Recruit-first tests (Phase 102) ──────────────────────────────────
+
+    #[test]
+    fn test_recruit_first_leader_stays() {
+        // Leader on keep with gold and castle slots.
+        // With recruit_defs, leader should stay on keep.
+        let board = setup_keep_board(0, 2);
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+        state.gold[0] = 100;
+
+        let leader = make_leader(1, 0);
+        state.place_unit(leader, Hex::from_offset(0, 2));
+
+        let enemy = make_fighter(2, 1, 30);
+        state.place_unit(enemy, Hex::from_offset(7, 2));
+
+        let recruit_defs = vec![(10u32, 5u32)];
+        let (records, _) = plan_full_turn(&state, 0, 10, &recruit_defs);
+
+        // Leader (id=1) should NOT have a Move action
+        let leader_moved = records.iter().any(|r| matches!(r, ActionRecord::Move { unit_id: 1, .. }));
+        assert!(!leader_moved,
+            "Leader should stay on keep when recruits are possible, got: {:?}", records);
+    }
+
+    #[test]
+    fn test_recruit_first_fills_castle() {
+        // Leader on keep with enough gold. simulate_recruitment should fill castle slots.
+        let board = setup_keep_board(0, 2);
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+        state.gold[0] = 200; // plenty
+
+        let leader = make_leader(1, 0);
+        state.place_unit(leader, Hex::from_offset(0, 2));
+
+        let enemy = make_fighter(2, 1, 30);
+        state.place_unit(enemy, Hex::from_offset(7, 2));
+
+        let recruit_defs = vec![(10u32, 5u32)];
+        let mut clone = state.clone();
+        let recruited = simulate_recruitment(&mut clone, 0, &recruit_defs);
+
+        // setup_keep_board places castle on all 6 neighbors within board bounds
+        assert!(recruited.len() >= 2,
+            "Should recruit at least 2 units, got {}", recruited.len());
+        // Gold should be reduced
+        assert!(clone.gold[0] < 200,
+            "Gold should be spent on recruits, still at {}", clone.gold[0]);
+        // All recruited units should exist in the clone
+        for &uid in &recruited {
+            assert!(clone.units.contains_key(&uid),
+                "Recruited unit {} should exist in clone", uid);
+        }
+    }
+
+    #[test]
+    fn test_no_recruit_when_broke() {
+        // Leader on keep with 0 gold. Should not recruit.
+        let board = setup_keep_board(0, 2);
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+        state.gold[0] = 0;
+
+        let leader = make_leader(1, 0);
+        state.place_unit(leader, Hex::from_offset(0, 2));
+
+        let enemy = make_fighter(2, 1, 30);
+        state.place_unit(enemy, Hex::from_offset(7, 2));
+
+        let recruit_defs = vec![(10u32, 5u32)];
+        let mut clone = state.clone();
+        let recruited = simulate_recruitment(&mut clone, 0, &recruit_defs);
+
+        assert!(recruited.is_empty(),
+            "Should not recruit with 0 gold, got {} recruits", recruited.len());
     }
 }

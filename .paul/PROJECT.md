@@ -231,6 +231,10 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Focus fire bonus: up to +5.0 for attacking wounded enemies to secure kills — Phase 101 (101-01)
 - [x] Wounded unit retreat: units below 30% HP retreat toward healing terrain when no kill available — Phase 101 (101-01)
 - [x] retreat_toward_healing() helper: finds nearest healing hex on board for wounded unit routing — Phase 101 (101-01)
+- [x] simulate_recruitment() in planning clone: placeholder units for turn planner to evaluate recruit-first strategy — Phase 102 (102-01)
+- [x] recruit_defs (cost, movement) tuples threaded through plan_full_turn/run_turn_ordering — Phase 102 (102-01)
+- [x] build_recruit_defs() FFI helper: extracts real unit data from faction registry for planner consumption — Phase 102 (102-01)
+- [x] ai_take_turn_with_recruits/ai_plan_turn_with_recruits: recruit-aware AI entry points — Phase 102 (102-01)
 
 ### Active (In Progress / Deferred)
 

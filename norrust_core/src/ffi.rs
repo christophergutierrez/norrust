@@ -1132,6 +1132,23 @@ fn cheapest_recruit_cost_ref(e: &NorRustEngine, faction: u8) -> u32 {
         .unwrap_or(u32::MAX)
 }
 
+/// Build (cost, movement) tuples for all recruitable unit types of a faction.
+fn build_recruit_defs(e: &NorRustEngine, faction: u8) -> Vec<(u32, u32)> {
+    let idx = faction as usize;
+    let recruits = if idx < e.factions.len() {
+        &e.factions[idx].1
+    } else {
+        return Vec::new();
+    };
+    let registry = match e.units.as_ref() {
+        Some(r) => r,
+        None => return Vec::new(),
+    };
+    recruits.iter()
+        .filter_map(|did| registry.get(did.as_str()).map(|def| (def.cost, def.movement)))
+        .collect()
+}
+
 // ── AI ───────────────────────────────────────────────────────────────────────
 
 #[no_mangle]
@@ -1142,8 +1159,9 @@ pub unsafe extern "C" fn norrust_ai_take_turn(
     if faction < 0 || faction > 1 { return; }
     let Some(e) = engine.as_mut() else { return };
     let cheapest = cheapest_recruit_cost_ref(e, faction as u8);
+    let recruit_defs = build_recruit_defs(e, faction as u8);
     let Some(state) = e.game.as_mut() else { return };
-    crate::ai::ai_take_turn(state, faction as u8, cheapest);
+    crate::ai::ai_take_turn_with_recruits(state, faction as u8, cheapest, &recruit_defs);
     e.state_cache = None;
 }
 
@@ -1158,8 +1176,9 @@ pub unsafe extern "C" fn norrust_ai_plan_turn(
     if faction < 0 || faction > 1 { return to_c_string("[]"); }
     let Some(e) = engine.as_ref() else { return to_c_string("[]") };
     let cheapest = cheapest_recruit_cost_ref(e, faction as u8);
+    let recruit_defs = build_recruit_defs(e, faction as u8);
     let Some(state) = e.game.as_ref() else { return to_c_string("[]") };
-    let records = crate::ai::ai_plan_turn(state, faction as u8, cheapest);
+    let records = crate::ai::ai_plan_turn_with_recruits(state, faction as u8, cheapest, &recruit_defs);
     let json = serde_json::to_string(&records).unwrap_or_else(|_| "[]".to_string());
     to_c_string(&json)
 }
