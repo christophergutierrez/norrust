@@ -23,6 +23,7 @@ pub enum ActionRecord {
 ///
 /// `resistance` is the defender's resistance to this attack type — positive
 /// means the defender is weak (takes more damage), negative means resistant.
+#[allow(dead_code)]
 fn expected_outgoing_damage(
     attacker_attack_damage: u32,
     attacker_attack_strikes: u32,
@@ -41,6 +42,7 @@ fn expected_outgoing_damage(
 ///
 /// Score = (dealt × kill_bonus) / received.max(1.0)
 /// kill_bonus = 3.0 if expected dealt damage would kill the defender, else 1.0.
+#[allow(dead_code)]
 fn score_attack(
     attacker: &Unit,
     attacker_hex: Hex,
@@ -294,10 +296,101 @@ pub fn evaluate_state(state: &GameState, faction: u8) -> f32 {
     score
 }
 
+// ── 1-ply lookahead unit planner ─────────────────────────────────────────────
+
+/// For a single unit, try all reachable (move, optional attack) combinations
+/// on a cloned state, evaluate each result, and return the best action.
+///
+/// Returns `Some((destination, optional_attack_target))` if an action improves
+/// over staying put, or `None` if the unit should not act.
+fn plan_unit_action(state: &GameState, uid: u32, faction: u8) -> Option<(Hex, Option<u32>)> {
+    let start = *state.positions.get(&uid)?;
+    let unit = state.units.get(&uid)?;
+    let movement = if unit.slowed { unit.movement / 2 } else { unit.movement };
+
+    let zoc = get_zoc_hexes(state, faction);
+    let candidates_raw =
+        reachable_hexes(&state.board, &unit.movement_costs, 1, start, movement, &zoc, false);
+
+    let all_occupied: HashSet<Hex> = state
+        .hex_to_unit
+        .iter()
+        .filter(|(_, &id)| id != uid)
+        .map(|(&h, _)| h)
+        .collect();
+
+    let candidates: Vec<Hex> = candidates_raw
+        .into_iter()
+        .filter(|&h| h == start || !all_occupied.contains(&h))
+        .collect();
+
+    // Collect enemies
+    let enemies: Vec<(u32, Hex)> = state
+        .units
+        .iter()
+        .filter(|(_, u)| u.faction != faction)
+        .map(|(&id, _)| (id, state.positions[&id]))
+        .collect();
+
+    if enemies.is_empty() {
+        return None;
+    }
+
+    // Try all (move, attack) combinations — pick the best one by evaluate_state.
+    // When attacks exist, always pick the best attack (don't compare against baseline,
+    // since retaliation damage would make the AI too passive).
+    // When no attacks exist, march toward the nearest enemy.
+    let mut best_score = f32::NEG_INFINITY;
+    let mut best_action: Option<(Hex, Option<u32>)> = None;
+    let mut has_any_attack = false;
+
+    for &cand in &candidates {
+        let unit = &state.units[&uid];
+        let attackable: Vec<u32> = enemies.iter().filter_map(|&(eid, epos)| {
+            let can_engage = unit.attacks.iter().any(|a| {
+                (a.range == "melee" && cand.neighbors().contains(&epos))
+                    || (a.range == "ranged" && cand.distance(epos) == 2)
+            });
+            if can_engage { Some(eid) } else { None }
+        }).collect();
+
+        for eid in &attackable {
+            has_any_attack = true;
+            let mut sim = state.clone();
+            if cand != start {
+                let _ = apply_action(&mut sim, Action::Move { unit_id: uid, destination: cand });
+            }
+            if sim.units.contains_key(&uid) && sim.units.contains_key(eid) {
+                let _ = apply_action(&mut sim, Action::Attack { attacker_id: uid, defender_id: *eid });
+            }
+            let score = evaluate_state(&sim, faction);
+            if score > best_score {
+                best_score = score;
+                best_action = Some((cand, Some(*eid)));
+            }
+        }
+    }
+
+    // If no attack was possible, march toward the nearest enemy.
+    if !has_any_attack {
+        if let Some(&march_dest) = candidates
+            .iter()
+            .filter(|&&h| h != start)
+            .min_by_key(|&&c| {
+                enemies.iter().map(|(_, epos)| c.distance(*epos)).min().unwrap_or(u32::MAX)
+            })
+        {
+            best_action = Some((march_dest, None));
+        }
+    }
+
+    best_action
+}
+
 // ── Core AI turn logic ──────────────────────────────────────────────────────
 
-/// Greedy AI: for every unit of `faction`, find the best (destination, target)
-/// pair by expected-damage scoring, apply Move + Attack, then end the turn.
+/// AI turn using 1-ply lookahead: for each unit, simulate all (move, attack)
+/// combinations, pick the one producing the best evaluated state.
 ///
 /// `cheapest_recruit_cost`: the cost of the cheapest recruitable unit (0 = no recruit info).
 /// When > 0, the leader will stay on keep if recruiting is possible, or move back to keep.
@@ -306,7 +399,6 @@ pub fn ai_take_turn(state: &mut GameState, faction: u8, cheapest_recruit_cost: u
     let stay = should_leader_stay(state, faction, cheapest_recruit_cost);
     let return_keep = leader_should_return_to_keep(state, faction, cheapest_recruit_cost);
 
-    // Collect unit IDs upfront to avoid borrow conflicts during apply_action.
     let unit_ids: Vec<u32> = state
         .units
         .iter()
@@ -314,16 +406,7 @@ pub fn ai_take_turn(state: &mut GameState, faction: u8, cheapest_recruit_cost: u
         .map(|(id, _)| *id)
         .collect();
 
-    // Collect enemy IDs once before the loop; filter out dead ones each iteration.
-    let enemy_ids: Vec<u32> = state
-        .units
-        .iter()
-        .filter(|(_, u)| u.faction != faction)
-        .map(|(id, _)| *id)
-        .collect();
-
     for uid in unit_ids {
-        // Unit may have been killed by retaliation from a prior action this turn.
         if !state.units.contains_key(&uid) || state.units[&uid].attacked {
             continue;
         }
@@ -335,36 +418,18 @@ pub fn ai_take_turn(state: &mut GameState, faction: u8, cheapest_recruit_cost: u
             continue;
         }
 
-        let start = state.positions[&uid];
-
-        // Extract unit data before pathfinding to avoid cloning movement_costs.
-        let unit_ref = &state.units[&uid];
-        let movement = if unit_ref.slowed { unit_ref.movement / 2 } else { unit_ref.movement };
-
-        let zoc = get_zoc_hexes(state, faction);
-        let candidates_raw =
-            reachable_hexes(&state.board, &state.units[&uid].movement_costs, 1, start, movement, &zoc, false);
-
-        // Build the occupied set (everyone except this unit).
-        let all_occupied: HashSet<Hex> = state
-            .hex_to_unit
-            .iter()
-            .filter(|(_, &id)| id != uid)
-            .map(|(&h, _)| h)
-            .collect();
-
-        // Reachable hexes the unit can actually land on.
-        let candidates: Vec<Hex> = candidates_raw
-            .into_iter()
-            .filter(|&h| h == start || !all_occupied.contains(&h))
-            .collect();
-
         // Leader discipline: move back to keep if off-keep and can recruit
         if is_leader {
             if let Some(keep_hex) = return_keep {
-                if let Some(&march_dest) = candidates
-                    .iter()
-                    .filter(|&&h| h != start)
+                let start = state.positions[&uid];
+                let unit_ref = &state.units[&uid];
+                let movement = if unit_ref.slowed { unit_ref.movement / 2 } else { unit_ref.movement };
+                let zoc = get_zoc_hexes(state, faction);
+                let candidates = reachable_hexes(&state.board, &state.units[&uid].movement_costs, 1, start, movement, &zoc, false);
+                let occupied: HashSet<Hex> = state.hex_to_unit.iter()
+                    .filter(|(_, &id)| id != uid).map(|(&h, _)| h).collect();
+                if let Some(&march_dest) = candidates.iter()
+                    .filter(|&&h| h != start && !occupied.contains(&h))
                     .min_by_key(|&&c| c.distance(keep_hex))
                 {
                     if march_dest.distance(keep_hex) < start.distance(keep_hex) {
@@ -375,62 +440,16 @@ pub fn ai_take_turn(state: &mut GameState, faction: u8, cheapest_recruit_cost: u
             }
         }
 
-        // Build enemy data from pre-collected IDs, skipping any killed by retaliation.
-        let enemies: Vec<(u32, Hex, Unit)> = enemy_ids
-            .iter()
-            .filter(|id| state.units.contains_key(id))
-            .map(|&id| (id, state.positions[&id], state.units[&id].clone()))
-            .collect();
-
-        // Score all (destination, enemy) pairs — keep all borrows in this block.
-        let (best_dest, best_target) = {
-            let mut best_score = 0.0f32;
-            let mut best_dest = start;
-            let mut best_target: Option<u32> = None;
-
-            let unit = &state.units[&uid];
-            for c in &candidates {
-                for (eid, epos, enemy) in &enemies {
-                    let can_engage = unit.attacks.iter().any(|a| {
-                        (a.range == "melee" && c.neighbors().contains(epos))
-                            || (a.range == "ranged" && c.distance(*epos) == 2)
-                    });
-                    if can_engage {
-                        let s = score_attack(unit, *c, enemy, *epos, state);
-                        if s > best_score {
-                            best_score = s;
-                            best_dest = *c;
-                            best_target = Some(*eid);
-                        }
-                    }
+        // 1-ply lookahead: try all actions, pick best
+        if let Some((dest, target)) = plan_unit_action(state, uid, faction) {
+            let start = state.positions[&uid];
+            if dest != start {
+                let _ = apply_action(state, Action::Move { unit_id: uid, destination: dest });
+            }
+            if let Some(eid) = target {
+                if state.units.contains_key(&uid) && state.units.contains_key(&eid) {
+                    let _ = apply_action(state, Action::Attack { attacker_id: uid, defender_id: eid });
                 }
-            }
-            (best_dest, best_target)
-        }; // immutable borrows of state released here
-
-        if let Some(eid) = best_target {
-            if best_dest != start {
-                let _ = apply_action(
-                    state,
-                    Action::Move { unit_id: uid, destination: best_dest },
-                );
-            }
-            let _ =
-                apply_action(state, Action::Attack { attacker_id: uid, defender_id: eid });
-        } else if !enemies.is_empty() {
-            // March: move to the reachable hex closest to any enemy.
-            if let Some(&march_dest) = candidates
-                .iter()
-                .filter(|&&h| h != start)
-                .min_by_key(|&&c| {
-                    enemies
-                        .iter()
-                        .map(|(_, epos, _)| c.distance(*epos))
-                        .min()
-                        .unwrap_or(u32::MAX)
-                })
-            {
-                let _ = apply_action(state, Action::Move { unit_id: uid, destination: march_dest });
             }
         }
     }
@@ -459,13 +478,6 @@ pub fn ai_plan_turn(state: &GameState, faction: u8, cheapest_recruit_cost: u32) 
         .map(|(id, _)| *id)
         .collect();
 
-    let enemy_ids: Vec<u32> = clone
-        .units
-        .iter()
-        .filter(|(_, u)| u.faction != faction)
-        .map(|(id, _)| *id)
-        .collect();
-
     for uid in unit_ids {
         if !clone.units.contains_key(&uid) || clone.units[&uid].attacked {
             continue;
@@ -478,33 +490,18 @@ pub fn ai_plan_turn(state: &GameState, faction: u8, cheapest_recruit_cost: u32) 
             continue;
         }
 
-        let start = clone.positions[&uid];
-
-        let unit_ref = &clone.units[&uid];
-        let movement = if unit_ref.slowed { unit_ref.movement / 2 } else { unit_ref.movement };
-
-        let zoc = get_zoc_hexes(&clone, faction);
-        let candidates_raw =
-            reachable_hexes(&clone.board, &clone.units[&uid].movement_costs, 1, start, movement, &zoc, false);
-
-        let all_occupied: HashSet<Hex> = clone
-            .hex_to_unit
-            .iter()
-            .filter(|(_, &id)| id != uid)
-            .map(|(&h, _)| h)
-            .collect();
-
-        let candidates: Vec<Hex> = candidates_raw
-            .into_iter()
-            .filter(|&h| h == start || !all_occupied.contains(&h))
-            .collect();
-
         // Leader discipline: move back to keep if off-keep and can recruit
         if is_leader {
             if let Some(keep_hex) = return_keep {
-                if let Some(&march_dest) = candidates
-                    .iter()
-                    .filter(|&&h| h != start)
+                let start = clone.positions[&uid];
+                let unit_ref = &clone.units[&uid];
+                let movement = if unit_ref.slowed { unit_ref.movement / 2 } else { unit_ref.movement };
+                let zoc = get_zoc_hexes(&clone, faction);
+                let candidates = reachable_hexes(&clone.board, &clone.units[&uid].movement_costs, 1, start, movement, &zoc, false);
+                let occupied: HashSet<Hex> = clone.hex_to_unit.iter()
+                    .filter(|(_, &id)| id != uid).map(|(&h, _)| h).collect();
+                if let Some(&march_dest) = candidates.iter()
+                    .filter(|&&h| h != start && !occupied.contains(&h))
                     .min_by_key(|&&c| c.distance(keep_hex))
                 {
                     if march_dest.distance(keep_hex) < start.distance(keep_hex) {
@@ -517,64 +514,19 @@ pub fn ai_plan_turn(state: &GameState, faction: u8, cheapest_recruit_cost: u32) 
             }
         }
 
-        let enemies: Vec<(u32, Hex, Unit)> = enemy_ids
-            .iter()
-            .filter(|id| clone.units.contains_key(id))
-            .map(|&id| (id, clone.positions[&id], clone.units[&id].clone()))
-            .collect();
-
-        let (best_dest, best_target) = {
-            let mut best_score = 0.0f32;
-            let mut best_dest = start;
-            let mut best_target: Option<u32> = None;
-
-            let unit = &clone.units[&uid];
-            for c in &candidates {
-                for (eid, epos, enemy) in &enemies {
-                    let can_engage = unit.attacks.iter().any(|a| {
-                        (a.range == "melee" && c.neighbors().contains(epos))
-                            || (a.range == "ranged" && c.distance(*epos) == 2)
-                    });
-                    if can_engage {
-                        let s = score_attack(unit, *c, enemy, *epos, &clone);
-                        if s > best_score {
-                            best_score = s;
-                            best_dest = *c;
-                            best_target = Some(*eid);
-                        }
-                    }
+        // 1-ply lookahead: try all actions, pick best
+        if let Some((dest, target)) = plan_unit_action(&clone, uid, faction) {
+            let start = clone.positions[&uid];
+            if dest != start {
+                let (c, r) = dest.to_offset();
+                records.push(ActionRecord::Move { unit_id: uid, to_col: c, to_row: r });
+                let _ = apply_action(&mut clone, Action::Move { unit_id: uid, destination: dest });
+            }
+            if let Some(eid) = target {
+                if clone.units.contains_key(&uid) && clone.units.contains_key(&eid) {
+                    records.push(ActionRecord::Attack { attacker_id: uid, defender_id: eid });
+                    let _ = apply_action(&mut clone, Action::Attack { attacker_id: uid, defender_id: eid });
                 }
-            }
-            (best_dest, best_target)
-        };
-
-        if let Some(eid) = best_target {
-            if best_dest != start {
-                let (c, r) = best_dest.to_offset();
-                records.push(ActionRecord::Move { unit_id: uid, to_col: c, to_row: r });
-                let _ = apply_action(
-                    &mut clone,
-                    Action::Move { unit_id: uid, destination: best_dest },
-                );
-            }
-            records.push(ActionRecord::Attack { attacker_id: uid, defender_id: eid });
-            let _ =
-                apply_action(&mut clone, Action::Attack { attacker_id: uid, defender_id: eid });
-        } else if !enemies.is_empty() {
-            if let Some(&march_dest) = candidates
-                .iter()
-                .filter(|&&h| h != start)
-                .min_by_key(|&&c| {
-                    enemies
-                        .iter()
-                        .map(|(_, epos, _)| c.distance(*epos))
-                        .min()
-                        .unwrap_or(u32::MAX)
-                })
-            {
-                let (c, r) = march_dest.to_offset();
-                records.push(ActionRecord::Move { unit_id: uid, to_col: c, to_row: r });
-                let _ = apply_action(&mut clone, Action::Move { unit_id: uid, destination: march_dest });
             }
         }
     }
@@ -921,6 +873,115 @@ mod tests {
             (score_0 + score_1).abs() < 30.0,
             "Symmetric state should have roughly opposite scores: f0={}, f1={}, sum={}",
             score_0, score_1, score_0 + score_1
+        );
+    }
+
+    // ── Lookahead behavior tests ────────────────────────────────────
+
+    /// Helper: create a basic fighter unit with a melee attack and flat movement costs.
+    fn make_fighter(id: u32, faction: u8, hp: u32) -> Unit {
+        let sword = AttackDef {
+            id: "sword".to_string(),
+            name: "Sword".to_string(),
+            damage: 7,
+            strikes: 3,
+            attack_type: "blade".to_string(),
+            range: "melee".to_string(),
+            ..Default::default()
+        };
+        let mut u = Unit::new(id, "fighter", hp, faction);
+        u.max_hp = hp;
+        u.attacks = vec![sword];
+        u.movement = 5;
+        u.default_defense = 30;
+        u
+    }
+
+    #[test]
+    fn test_lookahead_prefers_kill_for_victory() {
+        // One enemy at 1 HP (killing it wins the game). AI should pick that
+        // target over any other action since it produces a terminal win state.
+        let mut board = Board::new(5, 3);
+        for col in 0..5 {
+            for row in 0..3 {
+                board.set_terrain(Hex::from_offset(col, row), "flat");
+            }
+        }
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+
+        // Our unit at (2,1)
+        let attacker = make_fighter(1, 0, 30);
+        state.place_unit(attacker, Hex::from_offset(2, 1));
+
+        // Only enemy at (3,1): 1 HP — killing wins the game
+        let weak_enemy = make_fighter(2, 1, 1);
+        state.place_unit(weak_enemy, Hex::from_offset(3, 1));
+
+        let result = plan_unit_action(&state, 1, 0);
+        assert!(result.is_some(), "AI should choose to attack");
+        let (_, target) = result.unwrap();
+        assert_eq!(target, Some(2), "AI should attack the last enemy for the win");
+    }
+
+    #[test]
+    fn test_lookahead_considers_attack_positions() {
+        // Verify that the lookahead evaluates different attack positions.
+        // Unit has one enemy to attack — it should pick a position and attack.
+        let mut board = Board::new(5, 5);
+        for col in 0..5 {
+            for row in 0..5 {
+                board.set_terrain(Hex::from_offset(col, row), "flat");
+            }
+        }
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+
+        let attacker = make_fighter(1, 0, 30);
+        state.place_unit(attacker, Hex::from_offset(0, 2));
+
+        let enemy = make_fighter(2, 1, 20);
+        state.place_unit(enemy, Hex::from_offset(3, 2));
+
+        let result = plan_unit_action(&state, 1, 0);
+        assert!(result.is_some(), "AI should choose an action");
+        let (dest, target) = result.unwrap();
+        assert_eq!(target, Some(2), "AI should attack the enemy");
+        // Destination should be adjacent to enemy at (3,2)
+        let enemy_hex = Hex::from_offset(3, 2);
+        assert_eq!(dest.distance(enemy_hex), 1,
+            "AI should move adjacent to enemy to attack");
+    }
+
+    #[test]
+    fn test_lookahead_moves_without_attack() {
+        // No enemies in range, but enemies exist on the board.
+        // AI should move toward them (not stay put).
+        let mut board = Board::new(10, 3);
+        for col in 0..10 {
+            for row in 0..3 {
+                board.set_terrain(Hex::from_offset(col, row), "flat");
+            }
+        }
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+
+        let fighter = make_fighter(1, 0, 30);
+        state.place_unit(fighter, Hex::from_offset(0, 1));
+
+        let enemy = make_fighter(2, 1, 30);
+        state.place_unit(enemy, Hex::from_offset(9, 1));
+
+        let result = plan_unit_action(&state, 1, 0);
+        assert!(result.is_some(), "AI should move even without attack targets");
+        let (dest, target) = result.unwrap();
+        assert!(target.is_none(), "No attack should be possible");
+        let start = Hex::from_offset(0, 1);
+        let enemy_pos = Hex::from_offset(9, 1);
+        assert!(
+            dest.distance(enemy_pos) < start.distance(enemy_pos),
+            "AI should move closer to enemy: start dist={}, dest dist={}",
+            start.distance(enemy_pos), dest.distance(enemy_pos)
         );
     }
 }

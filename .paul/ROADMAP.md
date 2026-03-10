@@ -8,13 +8,13 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 **v3.5 AI Overhaul**
 Status: 🚧 In Progress
-Phases: 2 of 5 complete
+Phases: 3 of 5 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 97 | Recruit Discipline | 1/1 | ✅ Complete | 2026-03-10 |
 | 98 | State Evaluation | 1/1 | ✅ Complete | 2026-03-10 |
-| 99 | 1-Ply Unit Lookahead | TBD | Not started | - |
+| 99 | 1-Ply Unit Lookahead | 1/1 | ✅ Complete | 2026-03-10 |
 | 100 | Turn Planning | TBD | Not started | - |
 | 101 | Ranged & Tactical Behavior | TBD | Not started | - |
 

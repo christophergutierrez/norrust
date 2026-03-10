@@ -223,6 +223,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Mixed unit type recruitment: round-robin selection instead of always most expensive — Phase 97 (97-01)
 - [x] cheapest_recruit_cost parameter for AI planning functions — Phase 97 (97-01)
 - [x] evaluate_state(state, faction) holistic board evaluation function — Phase 98 (98-01)
+- [x] 1-ply lookahead AI: plan_unit_action() clone-simulate-evaluate for per-unit action selection — Phase 99 (99-01)
+- [x] Shared AI decision logic: ai_take_turn and ai_plan_turn both use plan_unit_action — Phase 99 (99-01)
 
 ### Active (In Progress / Deferred)
 
@@ -400,4 +402,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 | evaluate_state centered HP ratio | Raw ratio breaks zero-sum symmetry; (own/total-0.5)*2 centers at 0 | 2026-03-10 | Active |
 
-*Last updated: 2026-03-10 after Phase 98 — State Evaluation.*
+| No baseline comparison for AI attacks | Baseline made AI too conservative (refused attacks when retaliation worsened score); always pick best attack | 2026-03-10 | Active |
+
+| March heuristic for move-only AI | Clone-evaluate per hex too slow in debug; distance-to-enemy heuristic sufficient | 2026-03-10 | Active |
+
+*Last updated: 2026-03-10 after Phase 99 — 1-Ply Unit Lookahead.*
