@@ -202,6 +202,98 @@ fn leader_should_return_to_keep(state: &GameState, faction: u8, cheapest_cost: u
     Some(keep_hex)
 }
 
+// ── State evaluation ────────────────────────────────────────────────────────
+
+/// Evaluate a game state from the perspective of `faction`.
+/// Returns a score where higher is better for `faction`.
+///
+/// Used by lookahead AI to compare candidate states after simulated actions.
+pub fn evaluate_state(state: &GameState, faction: u8) -> f32 {
+    // Terminal states: decided games get extreme scores
+    if let Some(winner) = state.check_winner() {
+        return if winner == faction { f32::MAX } else { f32::MIN };
+    }
+
+    let enemy = 1 - faction;
+    let mut score = 0.0f32;
+
+    // Gather unit stats per side
+    let mut own_hp: f32 = 0.0;
+    let mut enemy_hp: f32 = 0.0;
+    let mut own_count: f32 = 0.0;
+    let mut enemy_count: f32 = 0.0;
+    let mut own_leader_ratio: Option<f32> = None;
+    let mut enemy_leader_hp: Option<(f32, f32)> = None; // (hp, max_hp)
+
+    for (uid, unit) in &state.units {
+        let hp = unit.hp as f32;
+        if unit.faction == faction {
+            own_hp += hp;
+            own_count += 1.0;
+            if unit.abilities.iter().any(|a| a == "leader") {
+                own_leader_ratio = Some(hp / unit.max_hp.max(1) as f32);
+            }
+        } else {
+            enemy_hp += hp;
+            enemy_count += 1.0;
+            if unit.abilities.iter().any(|a| a == "leader") {
+                enemy_leader_hp = Some((hp, unit.max_hp as f32));
+            }
+        }
+
+        // Positional value: objective proximity
+        // Both attacker and defender benefit from being near the objective
+        if let Some(obj) = state.objective_hex {
+            if let Some(&pos) = state.positions.get(uid) {
+                let board_diam = (state.board.width + state.board.height) as f32;
+                let dist = pos.distance(obj) as f32;
+                let proximity = (board_diam - dist) * 3.0 / board_diam;
+                if unit.faction == faction {
+                    score += proximity;
+                } else if enemy == 0 {
+                    // Enemy attacker near objective is bad for us (defender)
+                    score -= proximity;
+                }
+            }
+        }
+    }
+
+    // HP advantage (weight 2.0)
+    score += (own_hp - enemy_hp) * 2.0;
+
+    // Unit count advantage (weight 10.0)
+    score += (own_count - enemy_count) * 10.0;
+
+    // HP ratio bonus (weight 5.0) — centered at 0 when equal
+    let total_hp = own_hp + enemy_hp;
+    if total_hp > 0.0 {
+        score += (own_hp / total_hp - 0.5) * 2.0 * 100.0 * 5.0;
+    }
+
+    // Village control (weight 8.0)
+    let own_villages = state.village_owners.values()
+        .filter(|&&owner| owner == faction as i8)
+        .count() as f32;
+    score += own_villages * 8.0;
+
+    // Gold advantage (weight 0.5)
+    let own_gold = state.gold[faction as usize] as f32;
+    let enemy_gold = state.gold[enemy as usize] as f32;
+    score += (own_gold - enemy_gold) * 0.5;
+
+    // Leader safety (weight 15.0)
+    if let Some(ratio) = own_leader_ratio {
+        score += ratio * 15.0;
+    }
+    // Bonus for enemy leader being low HP (opportunity to kill)
+    if let Some((hp, max_hp)) = enemy_leader_hp {
+        let enemy_ratio = hp / max_hp.max(1.0);
+        score += (1.0 - enemy_ratio) * 10.0; // More bonus when enemy leader is hurt
+    }
+
+    score
+}
+
 // ── Core AI turn logic ──────────────────────────────────────────────────────
 
 /// Greedy AI: for every unit of `faction`, find the best (destination, target)
@@ -697,5 +789,138 @@ mod tests {
         // Leader should attack normally (not stay idle)
         let leader_attacked = records.iter().any(|r| matches!(r, ActionRecord::Attack { attacker_id: 1, .. }));
         assert!(leader_attacked, "Leader should attack when no gold: {:?}", records);
+    }
+
+    // ── evaluate_state tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_eval_hp_advantage() {
+        let board = Board::new(5, 5);
+        let mut state = GameState::new(board);
+
+        // Faction 0: 2 units with 30 HP each
+        let mut u1 = Unit::new(1, "fighter", 30, 0);
+        u1.max_hp = 30;
+        state.place_unit(u1, Hex::from_offset(0, 0));
+        let mut u2 = Unit::new(2, "fighter", 30, 0);
+        u2.max_hp = 30;
+        state.place_unit(u2, Hex::from_offset(1, 0));
+
+        // Faction 1: 2 units with 10 HP each
+        let mut u3 = Unit::new(3, "fighter", 10, 1);
+        u3.max_hp = 30;
+        state.place_unit(u3, Hex::from_offset(3, 0));
+        let mut u4 = Unit::new(4, "fighter", 10, 1);
+        u4.max_hp = 30;
+        state.place_unit(u4, Hex::from_offset(4, 0));
+
+        let score_0 = evaluate_state(&state, 0);
+        let score_1 = evaluate_state(&state, 1);
+        assert!(score_0 > score_1, "Faction with more HP should score higher: f0={}, f1={}", score_0, score_1);
+    }
+
+    #[test]
+    fn test_eval_village_control() {
+        let board = Board::new(5, 5);
+        let mut state_a = GameState::new(board.clone());
+        let mut state_b = state_a.clone();
+
+        // Both states have same units
+        let u1 = Unit::new(1, "fighter", 30, 0);
+        let u2 = Unit::new(2, "fighter", 30, 1);
+        state_a.place_unit(u1.clone(), Hex::from_offset(0, 0));
+        state_a.place_unit(u2.clone(), Hex::from_offset(4, 0));
+        state_b.place_unit(u1, Hex::from_offset(0, 0));
+        state_b.place_unit(u2, Hex::from_offset(4, 0));
+
+        // State A: faction 0 owns 2 villages
+        let v1 = Hex::from_offset(2, 2);
+        let v2 = Hex::from_offset(3, 2);
+        state_a.village_owners.insert(v1, 0);
+        state_a.village_owners.insert(v2, 0);
+        // State B: faction 0 owns 0 villages
+        state_b.village_owners.insert(v1, 1);
+        state_b.village_owners.insert(v2, 1);
+
+        let score_a = evaluate_state(&state_a, 0);
+        let score_b = evaluate_state(&state_b, 0);
+        assert!(score_a > score_b, "More villages should give higher score: a={}, b={}", score_a, score_b);
+    }
+
+    #[test]
+    fn test_eval_terminal_win() {
+        let board = Board::new(5, 5);
+        let mut state = GameState::new(board);
+
+        // Only faction 0 has units → faction 0 wins by elimination
+        let u1 = Unit::new(1, "fighter", 30, 0);
+        state.place_unit(u1, Hex::from_offset(0, 0));
+
+        assert_eq!(evaluate_state(&state, 0), f32::MAX);
+        assert_eq!(evaluate_state(&state, 1), f32::MIN);
+    }
+
+    #[test]
+    fn test_eval_terminal_loss() {
+        let board = Board::new(5, 5);
+        let mut state = GameState::new(board);
+
+        // Only faction 1 has units → faction 1 wins
+        let u1 = Unit::new(1, "fighter", 30, 1);
+        state.place_unit(u1, Hex::from_offset(0, 0));
+
+        assert_eq!(evaluate_state(&state, 1), f32::MAX);
+        assert_eq!(evaluate_state(&state, 0), f32::MIN);
+    }
+
+    #[test]
+    fn test_eval_leader_safety() {
+        let board = Board::new(5, 5);
+
+        // State A: leader at full HP
+        let mut state_a = GameState::new(board.clone());
+        let mut leader_a = make_leader(1, 0);
+        leader_a.hp = 40;
+        leader_a.max_hp = 40;
+        state_a.place_unit(leader_a, Hex::from_offset(0, 0));
+        let enemy_a = Unit::new(2, "fighter", 30, 1);
+        state_a.place_unit(enemy_a, Hex::from_offset(4, 0));
+
+        // State B: leader at 10 HP
+        let mut state_b = GameState::new(board);
+        let mut leader_b = make_leader(1, 0);
+        leader_b.hp = 10;
+        leader_b.max_hp = 40;
+        state_b.place_unit(leader_b, Hex::from_offset(0, 0));
+        let enemy_b = Unit::new(2, "fighter", 30, 1);
+        state_b.place_unit(enemy_b, Hex::from_offset(4, 0));
+
+        let score_a = evaluate_state(&state_a, 0);
+        let score_b = evaluate_state(&state_b, 0);
+        assert!(score_a > score_b, "Healthier leader should score higher: full={}, wounded={}", score_a, score_b);
+    }
+
+    #[test]
+    fn test_eval_symmetric() {
+        let board = Board::new(5, 5);
+        let mut state = GameState::new(board);
+
+        // Equal forces, symmetric positions
+        let mut u1 = Unit::new(1, "fighter", 30, 0);
+        u1.max_hp = 30;
+        state.place_unit(u1, Hex::from_offset(0, 2));
+        let mut u2 = Unit::new(2, "fighter", 30, 1);
+        u2.max_hp = 30;
+        state.place_unit(u2, Hex::from_offset(4, 2));
+
+        let score_0 = evaluate_state(&state, 0);
+        let score_1 = evaluate_state(&state, 1);
+        // Scores should be approximately opposite (equal forces)
+        // Allow some tolerance for positional asymmetry
+        assert!(
+            (score_0 + score_1).abs() < 30.0,
+            "Symmetric state should have roughly opposite scores: f0={}, f1={}, sum={}",
+            score_0, score_1, score_0 + score_1
+        );
     }
 }

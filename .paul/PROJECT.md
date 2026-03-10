@@ -222,6 +222,7 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] AI leader discipline: stays on keep until castle slots filled, returns to keep when off-keep with gold — Phase 97 (97-01)
 - [x] Mixed unit type recruitment: round-robin selection instead of always most expensive — Phase 97 (97-01)
 - [x] cheapest_recruit_cost parameter for AI planning functions — Phase 97 (97-01)
+- [x] evaluate_state(state, faction) holistic board evaluation function — Phase 98 (98-01)
 
 ### Active (In Progress / Deferred)
 
@@ -397,4 +398,6 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 *Created: 2026-02-27*
 | AI leader discipline + mixed recruitment | Smarter AI spending; leader stays on keep, round-robin unit selection | 2026-03-10 | Active |
 
-*Last updated: 2026-03-10 after Phase 97 — Recruit Discipline (v3.5 started).*
+| evaluate_state centered HP ratio | Raw ratio breaks zero-sum symmetry; (own/total-0.5)*2 centers at 0 | 2026-03-10 | Active |
+
+*Last updated: 2026-03-10 after Phase 98 — State Evaluation.*
