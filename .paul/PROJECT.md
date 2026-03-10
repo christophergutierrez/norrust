@@ -235,6 +235,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] recruit_defs (cost, movement) tuples threaded through plan_full_turn/run_turn_ordering — Phase 102 (102-01)
 - [x] build_recruit_defs() FFI helper: extracts real unit data from faction registry for planner consumption — Phase 102 (102-01)
 - [x] ai_take_turn_with_recruits/ai_plan_turn_with_recruits: recruit-aware AI entry points — Phase 102 (102-01)
+- [x] 2-ply lookahead for all units: evaluate_with_opponent_response simulates enemy greedy response before scoring — Phase 103 (103-01)
+- [x] depth parameter on plan_unit_action: configurable 1-ply vs 2-ply lookahead — Phase 103 (103-01)
 
 ### Active (In Progress / Deferred)
 
