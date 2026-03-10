@@ -109,6 +109,44 @@ end
 
 M.json_decode = json_decode
 
+-- ── Minimal JSON encoder ────────────────────────────────────────────────────
+
+local function json_encode(val)
+    local t = type(val)
+    if val == nil then return "null"
+    elseif t == "boolean" then return val and "true" or "false"
+    elseif t == "number" then
+        if val == math.floor(val) and val > -2^53 and val < 2^53 then
+            return string.format("%d", val)
+        end
+        return tostring(val)
+    elseif t == "string" then
+        local s = val:gsub('\\', '\\\\'):gsub('"', '\\"')
+            :gsub('\n', '\\n'):gsub('\r', '\\r'):gsub('\t', '\\t')
+        return '"' .. s .. '"'
+    elseif t == "table" then
+        -- Detect array vs object: array if first key is 1
+        if val[1] ~= nil or next(val) == nil then
+            -- Array (or empty table → empty array)
+            local items = {}
+            for i = 1, #val do
+                items[i] = json_encode(val[i])
+            end
+            return "[" .. table.concat(items, ",") .. "]"
+        else
+            -- Object
+            local items = {}
+            for k, v in pairs(val) do
+                items[#items + 1] = json_encode(tostring(k)) .. ":" .. json_encode(v)
+            end
+            return "{" .. table.concat(items, ",") .. "}"
+        end
+    end
+    return "null"
+end
+
+M.json_encode = json_encode
+
 -- ── FFI declarations ────────────────────────────────────────────────────────
 
 ffi.cdef[[
@@ -163,7 +201,8 @@ ffi.cdef[[
     // Actions
     int32_t norrust_apply_move(NorRustEngine* engine, int32_t unit_id, int32_t col, int32_t row);
     int32_t norrust_apply_attack(NorRustEngine* engine, int32_t attacker_id, int32_t defender_id);
-    int32_t norrust_apply_advance(NorRustEngine* engine, int32_t unit_id);
+    int32_t norrust_apply_advance(NorRustEngine* engine, int32_t unit_id, int32_t target_index);
+    char* norrust_get_advance_options(NorRustEngine* engine, int32_t unit_id);
     int32_t norrust_end_turn(NorRustEngine* engine);
     int32_t norrust_apply_action_json(NorRustEngine* engine, const char* json);
 
@@ -173,6 +212,8 @@ ffi.cdef[[
 
     // AI
     void norrust_ai_take_turn(NorRustEngine* engine, int32_t faction);
+    char* norrust_ai_plan_turn(NorRustEngine* engine, int32_t faction);
+    void norrust_ai_deploy_recruits(NorRustEngine* engine, int32_t faction);
 
     // Trigger zones
     int32_t norrust_get_next_unit_id(NorRustEngine* engine);
@@ -409,9 +450,15 @@ function M.apply_attack(engine, attacker_id, defender_id)
     return lib.norrust_apply_attack(engine, attacker_id, defender_id)
 end
 
---- Advance a unit into the hex vacated by a defeated defender.
-function M.apply_advance(engine, unit_id)
-    return lib.norrust_apply_advance(engine, unit_id)
+--- Advance a unit to the next tier. target_index selects which advancement (0 = first).
+function M.apply_advance(engine, unit_id, target_index)
+    return lib.norrust_apply_advance(engine, unit_id, target_index or 0)
+end
+
+--- Return the advancement options for a unit as a list of {id, name} tables.
+function M.get_advance_options(engine, unit_id)
+    local raw = get_string(lib.norrust_get_advance_options(engine, unit_id))
+    return json_decode(raw) or {}
 end
 
 --- End the current faction's turn and advance to the next.
@@ -461,6 +508,17 @@ end
 --- Run the AI opponent's full turn for the given faction.
 function M.ai_take_turn(engine, faction)
     lib.norrust_ai_take_turn(engine, faction)
+end
+
+--- Plan an AI turn without modifying game state. Returns array of action records.
+function M.ai_plan_turn(engine, faction)
+    local raw = get_string(lib.norrust_ai_plan_turn(engine, faction))
+    return json_decode(raw) or {}
+end
+
+--- Move all faction units off castle hexes to free slots for recruitment.
+function M.ai_deploy_recruits(engine, faction)
+    lib.norrust_ai_deploy_recruits(engine, faction)
 end
 
 -- ── Trigger zones ──────────────────────────────────────────────────────────

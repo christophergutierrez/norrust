@@ -1113,6 +1113,62 @@ pub unsafe extern "C" fn norrust_find_path(
 
 // ── AI helpers ──────────────────────────────────────────────────────────────
 
+/// Move all faction units sitting on castle hexes to nearby non-castle hexes.
+/// Uses cheap pathfinding (reachable hexes) instead of full AI evaluation.
+fn deploy_castle_units(e: &mut NorRustEngine, faction: u8) {
+    let Some(state) = e.game.as_mut() else { return };
+
+    // Find faction units on castle hexes
+    let castle_units: Vec<u32> = state.units.iter()
+        .filter(|(_, u)| u.faction == faction && !u.attacked)
+        .filter(|(&uid, _)| {
+            let hex = state.positions[&uid];
+            state.board.tile_at(hex).map(|t| t.terrain_id == "castle").unwrap_or(false)
+        })
+        .map(|(&uid, _)| uid)
+        .collect();
+
+    let zoc = crate::pathfinding::get_zoc_hexes(state, faction);
+
+    for uid in castle_units {
+        if !state.units.contains_key(&uid) { continue; }
+        let start = state.positions[&uid];
+        let unit = &state.units[&uid];
+        let movement = if unit.slowed { unit.movement / 2 } else { unit.movement };
+        let reachable = crate::pathfinding::reachable_hexes(
+            &state.board, &unit.movement_costs, 1, start, movement, &zoc, false,
+        );
+        // Pick nearest non-castle, non-occupied hex
+        let occupied: std::collections::HashSet<crate::hex::Hex> = state.hex_to_unit.iter()
+            .filter(|(_, &id)| id != uid).map(|(&h, _)| h).collect();
+        if let Some(&dest) = reachable.iter()
+            .filter(|&&h| h != start && !occupied.contains(&h))
+            .filter(|&&h| !state.board.tile_at(h).map(|t| t.terrain_id == "castle" || t.terrain_id == "keep").unwrap_or(true))
+            .min_by_key(|&&h| h.distance(start))
+        {
+            let _ = apply_action(state, Action::Move { unit_id: uid, destination: dest });
+        } else if let Some(&dest) = reachable.iter()
+            .filter(|&&h| h != start && !occupied.contains(&h))
+            .min_by_key(|&&h| h.distance(start))
+        {
+            // Fallback: any non-occupied reachable hex (even castle)
+            let _ = apply_action(state, Action::Move { unit_id: uid, destination: dest });
+        }
+    }
+}
+
+/// FFI: Move all faction units off castle hexes to free slots for recruitment.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_ai_deploy_recruits(
+    engine: *mut NorRustEngine,
+    faction: i32,
+) {
+    if faction < 0 || faction > 1 { return; }
+    let Some(e) = engine.as_mut() else { return };
+    deploy_castle_units(e, faction as u8);
+    e.state_cache = None;
+}
+
 /// Compute the cheapest recruit cost for a faction.
 /// Uses faction index to look up in `e.factions` (same order as loaded).
 fn cheapest_recruit_cost_ref(e: &NorRustEngine, faction: u8) -> u32 {
@@ -1160,8 +1216,42 @@ pub unsafe extern "C" fn norrust_ai_take_turn(
     let Some(e) = engine.as_mut() else { return };
     let cheapest = cheapest_recruit_cost_ref(e, faction as u8);
     let recruit_defs = build_recruit_defs(e, faction as u8);
+    let f = faction as u8;
+
+    // Plan the turn (includes Recruit actions for recruit-move-recruit cycle)
+    let records = {
+        let Some(state) = e.game.as_ref() else { return };
+        crate::ai::ai_plan_turn_with_recruits(state, f, cheapest, &recruit_defs)
+    };
+
+    // Replay with real recruitment on Recruit actions
+    for record in &records {
+        match record {
+            crate::ai::ActionRecord::Move { unit_id, to_col, to_row } => {
+                let Some(state) = e.game.as_mut() else { return };
+                if !state.units.contains_key(unit_id) { continue; }
+                let dest = crate::hex::Hex::from_offset(*to_col, *to_row);
+                let _ = apply_action(state, Action::Move { unit_id: *unit_id, destination: dest });
+            }
+            crate::ai::ActionRecord::Attack { attacker_id, defender_id } => {
+                let Some(state) = e.game.as_mut() else { return };
+                if state.units.contains_key(attacker_id) && state.units.contains_key(defender_id) {
+                    let _ = apply_action(state, Action::Attack { attacker_id: *attacker_id, defender_id: *defender_id });
+                }
+            }
+            crate::ai::ActionRecord::Recruit => {
+                // Real recruitment into freed castle slots
+                norrust_ai_recruit(engine, std::ffi::CString::new(
+                    e.factions.get(f as usize).map(|(fd, _)| fd.id.as_str()).unwrap_or("")
+                ).unwrap_or_default().as_ptr());
+                // Deploy: move all faction units off castle hexes
+                deploy_castle_units(e, f);
+            }
+        }
+    }
+
     let Some(state) = e.game.as_mut() else { return };
-    crate::ai::ai_take_turn_with_recruits(state, faction as u8, cheapest, &recruit_defs);
+    let _ = apply_action(state, Action::EndTurn);
     e.state_cache = None;
 }
 

@@ -81,6 +81,8 @@ function draw.draw_frame(ctx, state)
             draw_sidebar.draw_dialogue_history(ctx)
         elseif ctx.combat_preview ~= nil then
             draw_sidebar.draw_combat_preview(ctx)
+        elseif ctx.advance_choice then
+            draw_sidebar.draw_advance_choice(ctx)
         elseif ctx.recruit_mode then
             draw_sidebar.draw_recruit_panel(ctx, state)
         elseif ctx.inspect_unit_id ~= -1 then

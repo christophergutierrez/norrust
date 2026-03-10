@@ -50,6 +50,36 @@ function M.init(ctx)
 end
 
 function M.keypressed(key)
+    -- Block input when active faction is not human-controlled
+    local active_f = mods.norrust.get_active_faction(vars.engine)
+    local ctrl = game_data.controllers and game_data.controllers[active_f + 1] or "human"
+    if ctrl ~= "human" and not vars.game_over then return end
+
+    -- Advance choice mode: pick advancement branch
+    if sel.advance_choice then
+        local ac = sel.advance_choice
+        if key == "return" or key == "kpenter" then
+            mods.norrust.apply_advance(vars.engine, ac.unit_id, ac.selected - 1)
+            sel.advance_choice = nil
+            clear_selection()
+        elseif key == "escape" then
+            sel.advance_choice = nil
+        elseif key == "up" then
+            ac.selected = math.max(1, ac.selected - 1)
+        elseif key == "down" then
+            ac.selected = math.min(#ac.options, ac.selected + 1)
+        else
+            local num = tonumber(key)
+            if num and num >= 1 and num <= #ac.options then
+                ac.selected = num
+                mods.norrust.apply_advance(vars.engine, ac.unit_id, num - 1)
+                sel.advance_choice = nil
+                clear_selection()
+            end
+        end
+        return
+    end
+
     if vars.game_over then
         if key == "return" or key == "kpenter" then
             if campaign.active and vars.winner_faction == 0 then
@@ -145,31 +175,33 @@ function M.keypressed(key)
         mods.events.emit("dialogue", {trigger = "turn_end"})
         sound.play("turn_end")
 
-        -- End turn + AI
+        -- End turn — AI/Port turns auto-triggered by love.update
         mods.norrust.end_turn(vars.engine)
         clear_selection()
         check_game_over()
-        if not vars.game_over and mods.norrust.get_active_faction(vars.engine) == 1 then
-            mods.norrust.ai_recruit(vars.engine, game_data.faction_id[2])
-            mods.norrust.ai_take_turn(vars.engine, 1)
-            check_game_over()
-        end
-
-        -- New turn dialogue (reset panel so only new messages show)
         dlg.active = {}
         mods.events.emit("dialogue", {trigger = "turn_start"})
 
     elseif key == "a" then
-        -- Advance selected unit
-        if sel.unit_id ~= -1 then
+        -- Advance selected unit (with branch choice if multiple options)
+        if sel.advance_choice then
+            -- Already in choice mode — ignore 'a' press
+        elseif sel.unit_id ~= -1 then
             local state = mods.norrust.get_state(vars.engine)
             local active = mods.norrust.get_active_faction(vars.engine)
             for _, unit in ipairs(state.units or {}) do
                 if int(unit.id) == sel.unit_id
                     and int(unit.faction) == active
                     and unit.advancement_pending then
-                    mods.norrust.apply_advance(vars.engine, sel.unit_id)
-                    clear_selection()
+                    local options = mods.norrust.get_advance_options(vars.engine, sel.unit_id)
+                    if #options > 1 then
+                        -- Multiple options: enter choice mode
+                        sel.advance_choice = {unit_id = sel.unit_id, options = options, selected = 1}
+                    else
+                        -- Single option or auto-advance
+                        mods.norrust.apply_advance(vars.engine, sel.unit_id, 0)
+                        clear_selection()
+                    end
                     break
                 end
             end
@@ -234,6 +266,10 @@ end
 
 function M.mousepressed(col, row, clicked_key, state, pos_map, active, x, y)
     if vars.game_over then return end
+
+    -- Block mouse input when active faction is not human-controlled
+    local ctrl = game_data.controllers and game_data.controllers[active + 1] or "human"
+    if ctrl ~= "human" then return end
 
     -- Recruit mode click
     if sel.recruit_mode then

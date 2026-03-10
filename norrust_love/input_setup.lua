@@ -36,6 +36,47 @@ function M.init(ctx)
     campaign_client = ctx.campaign_client
 end
 
+--- Auto-place leader on a keep hex for AI/Port controlled side.
+-- @param fi  faction index (0 = blue, 1 = red)
+local function auto_place_leader(fi)
+    local state = mods.norrust.get_state(vars.engine)
+    local keep_hexes = {}
+    for _, tile in ipairs(state.terrain or {}) do
+        if tile.terrain_id == "keep" then
+            keep_hexes[#keep_hexes + 1] = {col = int(tile.col), row = int(tile.row)}
+        end
+    end
+    -- Sort by col: blue (fi=0) gets leftmost, red (fi=1) gets rightmost
+    table.sort(keep_hexes, function(a, b) return a.col < b.col end)
+    local hex_choice = keep_hexes[fi == 0 and 1 or #keep_hexes]
+    if hex_choice then
+        local leader_def = mods.norrust.get_faction_leader(vars.engine, game_data.faction_id[fi + 1])
+        mods.norrust.place_unit_at(vars.engine, leader_def, fi, hex_choice.col, hex_choice.row)
+        game_data.leader_placed[fi + 1] = true
+    end
+end
+
+--- Apply starting gold and enter PLAYING mode.
+local function finalize_setup()
+    mods.norrust.apply_starting_gold(vars.engine, game_data.faction_id[1], game_data.faction_id[2])
+    if scn.starting_gold then
+        mods.norrust.set_faction_gold(vars.engine, 0, scn.starting_gold)
+        mods.norrust.set_faction_gold(vars.engine, 1, scn.starting_gold)
+    end
+    -- Auto-start agent server if any controller is "port"
+    if game_data.controllers[1] == "port" or game_data.controllers[2] == "port" then
+        if not shared.agent then
+            shared.agent = shared.agent_mod.new(9876)
+            if shared.agent then
+                vars.status_message = "Agent server on port 9876"
+                vars.status_timer = 3.0
+            end
+        end
+    end
+    vars.game_mode = MODES.PLAYING
+    mods.events.emit("scenario_loaded", {board = scn.board})
+end
+
 function M.handle_pick_scenario(key)
     local num = tonumber(key)
     if num and num >= 1 and num <= #game_data.SCENARIOS then
@@ -44,20 +85,14 @@ function M.handle_pick_scenario(key)
         scn.board = game_data.SCENARIOS[num].board
         scn.units = game_data.SCENARIOS[num].units
         scn.preset = game_data.SCENARIOS[num].preset_units
+        scn.starting_gold = game_data.SCENARIOS[num].starting_gold
+        -- Reset controllers to human for new game
+        game_data.controllers[1] = "human"
+        game_data.controllers[2] = "human"
         call_load_scenario()
-        if scn.preset then
-            -- Preset scenarios: auto-assign factions and start directly
-            game_data.faction_id[1] = game_data.factions[1].id
-            game_data.faction_id[2] = game_data.factions[2].id
-            mods.norrust.apply_starting_gold(vars.engine, game_data.faction_id[1], game_data.faction_id[2])
-            mods.norrust.load_units(vars.engine, scn.path .. "/" .. scn.units)
-            vars.game_mode = MODES.PLAYING
-            mods.events.emit("scenario_loaded", {board = scn.board})
-        else
-            game_data.leader_placed[1] = false
-            game_data.leader_placed[2] = false
-            vars.game_mode = MODES.PICK_FACTION_BLUE
-        end
+        game_data.leader_placed[1] = false
+        game_data.leader_placed[2] = false
+        vars.game_mode = MODES.PICK_FACTION_BLUE
     elseif key == "l" then
         -- Open save list screen
         game_data.save_list = mods.save.list_saves()
@@ -89,6 +124,7 @@ function M.handle_pick_scenario(key)
             scn.board = sc.board
             scn.units = sc.units
             scn.preset = sc.preset_units
+            scn.starting_gold = nil
             call_load_scenario()
             call_load_campaign_scenario()
         end
@@ -97,20 +133,57 @@ function M.handle_pick_scenario(key)
     end
 end
 
+--- Cycle controller for a faction side.
+-- @param side  1 or 2 (Lua index into controllers)
+local function cycle_controller(side)
+    local cur = game_data.controllers[side]
+    if cur == "human" then
+        game_data.controllers[side] = "ai"
+    elseif cur == "ai" then
+        game_data.controllers[side] = "port"
+    else
+        game_data.controllers[side] = "human"
+    end
+end
+
 function M.handle_setup(key)
-    -- Faction picker: number keys (non-preset scenarios only)
+    -- Faction picker: number keys + controller keys (non-preset scenarios only)
     if vars.game_mode == MODES.PICK_FACTION_BLUE or vars.game_mode == MODES.PICK_FACTION_RED then
         if key == "escape" then
             vars.game_mode = MODES.PICK_SCENARIO
             sound.play_music("data/sounds/menu_music.ogg")
             return
         end
+
+        local is_blue = (vars.game_mode == MODES.PICK_FACTION_BLUE)
+        local side = is_blue and 1 or 2
+
+        -- Controller toggle keys
+        if key == "h" then
+            game_data.controllers[side] = "human"
+            return
+        elseif key == "tab" then
+            cycle_controller(side)
+            return
+        end
+
         local num = tonumber(key)
         if num and num >= 1 and num <= #game_data.factions then
-            local fi = vars.game_mode == MODES.PICK_FACTION_BLUE and 0 or 1
+            local fi = is_blue and 0 or 1
             game_data.faction_id[fi + 1] = game_data.factions[num].id
             vars.sel_faction_idx = 0
-            vars.game_mode = vars.game_mode == MODES.PICK_FACTION_BLUE and MODES.SETUP_BLUE or MODES.SETUP_RED
+            local ctrl = game_data.controllers[fi + 1]
+            if ctrl == "ai" or ctrl == "port" then
+                -- Auto-place leader for non-human controller
+                auto_place_leader(fi)
+                if is_blue then
+                    vars.game_mode = MODES.PICK_FACTION_RED
+                else
+                    finalize_setup()
+                end
+            else
+                vars.game_mode = is_blue and MODES.SETUP_BLUE or MODES.SETUP_RED
+            end
         end
         return
     end
@@ -146,9 +219,7 @@ function M.mousepressed_setup(col, row, x, y)
             if vars.game_mode == MODES.SETUP_BLUE then
                 vars.game_mode = MODES.PICK_FACTION_RED
             else
-                mods.norrust.apply_starting_gold(vars.engine, game_data.faction_id[1], game_data.faction_id[2])
-                vars.game_mode = MODES.PLAYING
-                mods.events.emit("scenario_loaded", {board = scn.board})
+                finalize_setup()
             end
         end
     end

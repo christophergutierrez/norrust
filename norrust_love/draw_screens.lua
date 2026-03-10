@@ -217,12 +217,23 @@ function M.draw_setup_hud(ctx)
         love.graphics.setColor(fc[1], fc[2], fc[3])
         love.graphics.print("FACTION — " .. faction_name, vp_w - SIDEBAR_X_OFF, SIDEBAR_PAD)
 
+        -- Controller selection
+        local side = is_blue and 1 or 2
+        local ctrl = (ctx.controllers or {"human","human"})[side]
+        local ctrl_labels = {human = "Human", ai = "AI", port = "Port"}
+        love.graphics.setFont(fonts[13])
+        love.graphics.setColor(C_GOLD[1], C_GOLD[2], C_GOLD[3], 1)
+        love.graphics.print("Controller: " .. (ctrl_labels[ctrl] or ctrl), vp_w - SIDEBAR_X_OFF, 30)
         love.graphics.setFont(fonts[11])
         love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3])
-        love.graphics.print("Press 1-" .. #ctx.factions .. " to pick", vp_w - SIDEBAR_X_OFF, 30)
+        love.graphics.print("[Tab] cycle  [H] human", vp_w - SIDEBAR_X_OFF, 46)
+
+        love.graphics.setFont(fonts[11])
+        love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3])
+        love.graphics.print("Press 1-" .. #ctx.factions .. " to pick faction", vp_w - SIDEBAR_X_OFF, 64)
 
         for i, f in ipairs(ctx.factions) do
-            local y = 56 + (i - 1) * 22
+            local y = 86 + (i - 1) * 22
             local label = "[" .. i .. "] " .. f.name
             if (i - 1) == ctx.sel_faction_idx then
                 love.graphics.setColor(C_YELLOW[1], C_YELLOW[2], C_YELLOW[3], 1)

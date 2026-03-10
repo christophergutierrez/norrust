@@ -53,7 +53,7 @@ function animation.load_unit_anims(base_path, toml_data)
     end
 
     load_anim("defend", toml_data.defend, false)
-    load_anim("death", toml_data.death, false)
+    -- Death is derived at render time (tilt + fade from idle), no sprite needed
 
     -- Portrait (not an animation, but load the image)
     if toml_data.portrait and toml_data.portrait.file then

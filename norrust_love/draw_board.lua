@@ -106,9 +106,6 @@ function M.draw_units(ctx, state)
         local anim_state = ctx.unit_anims[uid]
         if not anim_state then goto continue_dying end
 
-        -- Force idle for derived death
-        ctx.anim_module.play(anim_state, "idle")
-
         local key = info.def_id and info.def_id:lower():gsub(" ", "_")
         local entry = key and ctx.unit_sprites[key]
         if not entry or not entry.anims then goto continue_dying end
@@ -118,10 +115,11 @@ function M.draw_units(ctx, state)
 
         local cx, cy = ctx.hex.to_pixel(info.col, info.row)
         local faction = info.faction
+        if not faction or not ctx.FACTION_COLORS[faction] then goto continue_dying end
         local flip = faction == 0 and 1 or -1
 
         -- Progress: 0.0 (just died) to 1.0 (fully gone)
-        local progress = 1.0 - (info.timer / 1.0)
+        local progress = 1.0 - (info.timer / (info.duration or 1.0))
         local angle = progress * math.pi / 2  -- tilt 0° to 90°
         local alpha = 1.0 - progress           -- fade 1.0 to 0.0
 

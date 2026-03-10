@@ -64,7 +64,6 @@ def generate_image(api_key, prompt, retries=3):
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
         "gemini-2.0-flash-exp-image-generation:generateContent"
-        f"?key={api_key}"
     )
 
     body = json.dumps({
@@ -81,15 +80,21 @@ def generate_image(api_key, prompt, retries=3):
         try:
             req = urllib.request.Request(
                 url, data=body,
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    "x-goog-api-key": api_key,
+                },
             )
             with urllib.request.urlopen(req, timeout=120) as resp:
                 data = json.loads(resp.read())
         except Exception as e:
-            print(f"  API error: {e}", flush=True)
+            print(f"  API error: {type(e).__name__}", flush=True)
             continue
 
-        candidates = data.get("candidates", [{}])
+        candidates = data.get("candidates", [])
+        if not candidates:
+            print("  No candidates in response", flush=True)
+            continue
         parts_resp = candidates[0].get("content", {}).get("parts", [])
         for p in parts_resp:
             if "inlineData" in p:

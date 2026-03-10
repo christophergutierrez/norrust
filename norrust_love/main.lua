@@ -36,11 +36,9 @@ local MODES = {
 -- Game data: scenarios, campaigns, faction state
 local game_data = {
     SCENARIOS = {
-        {name = "Contested (8x5)",  board = "contested/board.toml",  units = "contested/units.toml", preset_units = false},
-        {name = "Crossing (16x10)", board = "crossing/board.toml",   units = "crossing/units.toml",  preset_units = true},
-        {name = "Ambush (12x8)",    board = "ambush/board.toml",     units = "ambush/units.toml",    preset_units = true},
-        {name = "Night Orcs (20x12)", board = "night_orcs/board.toml", units = "night_orcs/units.toml", preset_units = true},
-        {name = "Final Battle (24x14)", board = "final_battle/board.toml", units = "final_battle/units.toml", preset_units = true},
+        {name = "Quick Play",   board = "contested/board.toml",     units = "contested/units.toml",     preset_units = false},
+        {name = "Night Battle", board = "night_orcs/board.toml",    units = "night_orcs/units.toml",    preset_units = false},
+        {name = "Big Battle",   board = "final_battle/board.toml",  units = "final_battle/units.toml",  preset_units = false, starting_gold = 300},
     },
     CAMPAIGNS = {
         {name = "The Road to Norrust", file = "tutorial.toml"},
@@ -48,6 +46,7 @@ local game_data = {
     factions = {},
     faction_id = {"", ""},
     leader_placed = {false, false},
+    controllers = {"human", "human"},
     save_list = {},
     save_idx = 1,
     save_renaming = false,
@@ -185,6 +184,7 @@ local function clear_selection()
     sel.reachable_cells = {}
     sel.reachable_set = {}
     sel.inspect_id = -1
+    sel.advance_choice = nil
     cancel_combat_preview()
     cancel_ghost()
 end
@@ -520,7 +520,89 @@ function love.update(dt)
         agent_server.update(shared.agent, norrust, vars.engine)
     end
 
-    -- AI vs AI: auto-play both factions
+    -- AI action queue replay (animated AI turns)
+    if shared.ai_queue and not pending_anims.move and not pending_anims.combat_slide then
+        shared.ai_action_delay = (shared.ai_action_delay or 0) - dt
+        if shared.ai_action_delay <= 0 then
+            if shared.ai_queue_idx <= #shared.ai_queue then
+                local action = shared.ai_queue[shared.ai_queue_idx]
+                shared.ai_queue_idx = shared.ai_queue_idx + 1
+                shared.ai_action_delay = 0.1
+
+                if action.action == "Move" then
+                    local to_col = int(action.to_col)
+                    local to_row = int(action.to_row)
+                    local uid = int(action.unit_id)
+                    local path = norrust.find_path(vars.engine, uid, to_col, to_row)
+                    if path and #path >= 2 then
+                        start_move_anim(uid, path)
+                    else
+                        norrust.apply_move(vars.engine, uid, to_col, to_row)
+                    end
+                elseif action.action == "Recruit" then
+                    -- Recruit into castle slots and deploy off castle hexes
+                    local active_f = norrust.get_active_faction(vars.engine)
+                    local fid = game_data.faction_id[active_f + 1]
+                    if fid and fid ~= "" then
+                        norrust.ai_recruit(vars.engine, fid)
+                        norrust.ai_deploy_recruits(vars.engine, active_f)
+                    end
+                elseif action.action == "Attack" then
+                    local atk_id = int(action.attacker_id)
+                    local def_id = int(action.defender_id)
+                    -- Determine if ranged from current positions
+                    local state_now = norrust.get_state(vars.engine)
+                    local ranged = false
+                    local a_col, a_row, d_col, d_row
+                    for _, u in ipairs(state_now.units or {}) do
+                        local uid = int(u.id)
+                        if uid == atk_id then a_col, a_row = int(u.col), int(u.row) end
+                        if uid == def_id then d_col, d_row = int(u.col), int(u.row) end
+                    end
+                    if a_col and d_col then
+                        ranged = hex.distance(a_col, a_row, d_col, d_row) > 1
+                    end
+                    execute_attack(atk_id, def_id, ranged, function()
+                        check_game_over()
+                    end)
+                    shared.ai_action_delay = 0.3
+                end
+            else
+                -- Queue complete — end AI turn
+                norrust.end_turn(vars.engine)
+                check_game_over()
+                shared.ai_queue = nil
+                shared.ai_queue_idx = nil
+                shared.ai_action_delay = nil
+                dlg.active = {}
+                events.emit("dialogue", {trigger = "turn_start"})
+            end
+        end
+    end
+
+    -- Controller-based AI turns (animated)
+    if not ai.vs_ai and vars.game_mode == MODES.PLAYING and not vars.game_over
+       and not pending_anims.move and not pending_anims.combat_slide
+       and not shared.ai_queue then
+        local active_f = norrust.get_active_faction(vars.engine)
+        local ctrl = game_data.controllers[active_f + 1]
+        if ctrl == "ai" then
+            local actions = norrust.ai_plan_turn(vars.engine, active_f)
+            if #actions > 0 then
+                shared.ai_queue = actions
+                shared.ai_queue_idx = 1
+                shared.ai_action_delay = 0.3
+            else
+                -- No actions — just end AI turn
+                norrust.end_turn(vars.engine)
+                check_game_over()
+                dlg.active = {}
+                events.emit("dialogue", {trigger = "turn_start"})
+            end
+        end
+    end
+
+    -- AI vs AI: auto-play both factions (instant mode, no animation)
     if ai.vs_ai and vars.game_mode == MODES.PLAYING and not vars.game_over
        and not pending_anims.move and #pending_anims == 0 and not pending_anims.combat_slide then
         ai.timer = ai.timer - dt
@@ -528,7 +610,6 @@ function love.update(dt)
             local f = norrust.get_active_faction(vars.engine)
             local fid = game_data.faction_id[f + 1]
             if fid and fid ~= "" then
-                norrust.ai_recruit(vars.engine, fid)
                 norrust.ai_take_turn(vars.engine, f)
                 check_game_over()
             end
@@ -559,6 +640,7 @@ local function build_draw_ctx_state()
         inspect_terrain = sel.inspect_terrain, recruit_mode = sel.recruit_mode,
         recruit_palette = sel.recruit_palette, recruit_veterans = sel.recruit_state.veterans,
         selected_recruit_idx = sel.recruit_idx,
+        advance_choice = sel.advance_choice,
         recruit_error = sel.recruit_error, reachable_cells = sel.reachable_cells,
         reachable_set = sel.reachable_set,
         ghost_col = ghost.col, ghost_row = ghost.row, ghost_unit_id = ghost.unit_id,
@@ -574,6 +656,7 @@ local function build_draw_ctx_state()
         campaign_data = campaign.data,
         factions = game_data.factions, sel_faction_idx = vars.sel_faction_idx,
         faction_id = game_data.faction_id, leader_placed = game_data.leader_placed,
+        controllers = game_data.controllers,
         faction_index_for_mode = faction_index_for_mode,
     }
 end

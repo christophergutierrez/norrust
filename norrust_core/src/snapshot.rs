@@ -174,7 +174,7 @@ pub enum ActionRequest {
     Move { unit_id: u32, col: i32, row: i32 },
     Attack { attacker_id: u32, defender_id: u32 },
     EndTurn,
-    Advance { unit_id: u32 },
+    Advance { unit_id: u32, #[serde(default)] target_index: u32 },
     Recruit { def_id: String, col: i32, row: i32 },
 }
 
@@ -190,7 +190,7 @@ impl From<ActionRequest> for Action {
             }
             ActionRequest::EndTurn => Action::EndTurn,
             ActionRequest::Advance { .. } => {
-                unreachable!("Advance is handled by apply_advance() before into()")
+                unreachable!("Advance is handled by norrust_apply_advance() before into()")
             }
             ActionRequest::Recruit { .. } => {
                 unreachable!("Recruit is handled by recruit_unit_at() before into()")

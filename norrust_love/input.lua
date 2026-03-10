@@ -242,8 +242,8 @@ end
 local mode_handlers
 
 function M.keypressed(key)
-    -- Block input during movement animation
-    if pending_anims.move or pending_anims.combat_slide then return end
+    -- Block input during animation or AI turn
+    if pending_anims.move or pending_anims.combat_slide or shared.ai_queue then return end
 
     -- Build mode dispatch table on first call (MODES not available at load time)
     if not mode_handlers then
@@ -303,8 +303,8 @@ end
 -- ── Mouse input ───────────────────────────────────────────────────────────
 
 function M.mousepressed(sx, sy, button)
-    -- Block input during movement animation
-    if pending_anims.move or pending_anims.combat_slide then return end
+    -- Block input during animation or AI turn
+    if pending_anims.move or pending_anims.combat_slide or shared.ai_queue then return end
 
     local x, y = screen_to_game(sx, sy)
 

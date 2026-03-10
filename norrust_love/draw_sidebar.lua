@@ -536,4 +536,34 @@ function M.draw_sidebar_buttons(ctx)
     end
 end
 
+--- Draw the advancement branch choice panel.
+function M.draw_advance_choice(ctx)
+    local fonts = ctx.fonts
+    local vp_w, vp_h = ctx.vp_w, ctx.vp_h
+    local ac = ctx.advance_choice
+
+    draw_sidebar_bg(vp_w, vp_h)
+
+    love.graphics.setFont(fonts[15])
+    love.graphics.setColor(C_WARM_TITLE[1], C_WARM_TITLE[2], C_WARM_TITLE[3])
+    love.graphics.print("ADVANCE UNIT", vp_w - SIDEBAR_X_OFF, SIDEBAR_PAD)
+
+    love.graphics.setFont(fonts[11])
+    love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3])
+    love.graphics.print("Choose advancement:", vp_w - SIDEBAR_X_OFF, 30)
+    love.graphics.print("[1-" .. #ac.options .. "] or arrows+enter", vp_w - SIDEBAR_X_OFF, 44)
+    love.graphics.print("[Esc] Cancel", vp_w - SIDEBAR_X_OFF, 58)
+
+    for i, opt in ipairs(ac.options) do
+        local y = 80 + (i - 1) * 24
+        if i == ac.selected then
+            love.graphics.setColor(C_YELLOW[1], C_YELLOW[2], C_YELLOW[3], 1)
+            love.graphics.print("> ", vp_w - SIDEBAR_X_OFF, y)
+        else
+            love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
+        end
+        love.graphics.print(string.format("[%d] %s", i, opt.name), vp_w - SIDEBAR_X_OFF + 12, y)
+    end
+end
+
 return M

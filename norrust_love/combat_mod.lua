@@ -82,7 +82,7 @@ local function apply_attack_with_anims(attacker_id, defender_id, is_ranged)
         if def_info then
             dying_units[defender_id] = {
                 def_id = def_info.def_id, col = def_info.col, row = def_info.row,
-                faction = def_info.faction, timer = 1.0,
+                faction = def_info.faction, timer = 1.0, duration = 1.0,
             }
         end
         sound.play("death")

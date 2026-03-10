@@ -1,10 +1,13 @@
--- save.lua — Save/load game state to TOML files in Love2D save directory
+-- save.lua — Save/load game state (JSON format, backward-compat TOML reading)
 
 local toml_parser = require("toml_parser")
+local norrust_mod = require("norrust")
+local json_encode = norrust_mod.json_encode
+local json_decode = norrust_mod.json_decode
 
 local save = {}
 
--- ── TOML serialization ──────────────────────────────────────────────────────
+-- ── TOML serialization (kept for backward compat) ───────────────────────────
 
 --- Serialize a Lua value to a TOML value string.
 local function toml_value(v)
@@ -205,17 +208,17 @@ function save.write_save(engine, norrust, scenario_board, scenarios_path, campai
         }
     end
 
-    local toml_str = save.serialize_toml(data)
+    local json_str = json_encode(data)
 
     -- Create saves directory
     love.filesystem.createDirectory("saves")
 
-    -- Generate filename: YYYY-MM-DD_HHMMSS_scenario.toml
+    -- Generate filename: YYYY-MM-DD_HHMMSS_scenario.json
     local date = os.date("%Y-%m-%d_%H%M%S")
     local scenario_name = scenario_board:match("^(.+)/board%.toml$") or scenario_board:gsub("%.toml$", "")
-    local filename = "saves/" .. date .. "_" .. scenario_name .. ".toml"
+    local filename = "saves/" .. date .. "_" .. scenario_name .. ".json"
 
-    local ok, err = love.filesystem.write(filename, toml_str)
+    local ok, err = love.filesystem.write(filename, json_str)
     if not ok then
         print("[SAVE] Failed to write: " .. tostring(err))
         return nil
@@ -354,6 +357,7 @@ local function parse_save_toml(text)
 end
 
 --- Load a save file and reconstruct engine state.
+--- Supports both JSON (.json) and legacy TOML (.toml) save files.
 --- Returns the parsed save data on success, nil on failure.
 function save.load_save(engine, norrust, filepath, center_camera_fn)
     local text = love.filesystem.read(filepath)
@@ -362,7 +366,12 @@ function save.load_save(engine, norrust, filepath, center_camera_fn)
         return nil
     end
 
-    local data = parse_save_toml(text)
+    local data
+    if filepath:match("%.json$") then
+        data = json_decode(text)
+    else
+        data = parse_save_toml(text)
+    end
     if not data or not data.game or not data.game.board_path then
         print("[LOAD] Invalid save file format")
         return nil
@@ -427,16 +436,25 @@ function save.load_save(engine, norrust, filepath, center_camera_fn)
     return data
 end
 
---- Find the most recent save file.
+--- Find the most recent save file (JSON or TOML).
 --- Returns filepath relative to save dir, or nil if none.
 function save.find_latest()
     local items = love.filesystem.getDirectoryItems("saves")
     if not items or #items == 0 then return nil end
 
+    -- Filter to save files only
+    local saves = {}
+    for _, f in ipairs(items) do
+        if f:match("%.json$") or f:match("%.toml$") then
+            saves[#saves + 1] = f
+        end
+    end
+    if #saves == 0 then return nil end
+
     -- Sort alphabetically (date-first naming = chronological)
-    table.sort(items)
+    table.sort(saves)
     -- Return last = most recent
-    return "saves/" .. items[#items]
+    return "saves/" .. saves[#saves]
 end
 
 --- List all save files with metadata, reverse-chronological.
@@ -450,11 +468,11 @@ function save.list_saves()
 
     local saves = {}
     for _, filename in ipairs(items) do
-        if filename:match("%.toml$") then
+        if filename:match("%.json$") or filename:match("%.toml$") then
             local filepath = "saves/" .. filename
-            -- Parse date and scenario from filename: YYYY-MM-DD_HHMMSS_scenario.toml
+            -- Parse date and scenario from filename: YYYY-MM-DD_HHMMSS_scenario.{json,toml}
             local year, month, day, hour, min, sec, scen_name =
-                filename:match("^(%d+)-(%d+)-(%d+)_(%d%d)(%d%d)(%d%d)_(.+)%.toml$")
+                filename:match("^(%d+)-(%d+)-(%d+)_(%d%d)(%d%d)(%d%d)_(.+)%.%a+$")
 
             local date_str = "Unknown"
             local scenario = scen_name or filename
@@ -462,33 +480,46 @@ function save.list_saves()
                 date_str = string.format("%s-%s-%s %s:%s:%s", year, month, day, hour, min, sec)
             end
 
-            -- Read header lines to extract turn, campaign, and display_name
+            -- Read metadata: turn, campaign, display_name
             local turn = "?"
             local campaign_name = nil
             local display_name = nil
             local text = love.filesystem.read(filepath)
             if text then
-                local in_game = false
-                local in_campaign = false
-                for line in text:gmatch("[^\r\n]+") do
-                    if line:match("^%[game%]") then
-                        in_game = true; in_campaign = false
-                    elseif line:match("^%[campaign%]") then
-                        in_campaign = true; in_game = false
-                    elseif line:match("^%[") then
-                        -- Any other section — stop scanning headers
-                        if not in_game and not in_campaign then break end
-                        in_game = false; in_campaign = false
+                if filepath:match("%.json$") then
+                    -- JSON save: parse and extract fields
+                    local d = json_decode(text)
+                    if d and d.game then
+                        turn = tostring(d.game.turn or "?")
+                        display_name = d.game.display_name
+                        if display_name == "" then display_name = nil end
                     end
-                    if in_game then
-                        local t = line:match("^turn%s*=%s*(%d+)")
-                        if t then turn = t end
-                        local dn = line:match('^display_name%s*=%s*"([^"]*)"')
-                        if dn then display_name = dn end
+                    if d and d.campaign and d.campaign.campaign_file then
+                        campaign_name = d.campaign.campaign_file:gsub("%.toml$", "")
                     end
-                    if in_campaign then
-                        local cf = line:match('^campaign_file%s*=%s*"([^"]+)"')
-                        if cf then campaign_name = cf:gsub("%.toml$", "") end
+                else
+                    -- Legacy TOML save: line-scan
+                    local in_game = false
+                    local in_campaign = false
+                    for line in text:gmatch("[^\r\n]+") do
+                        if line:match("^%[game%]") then
+                            in_game = true; in_campaign = false
+                        elseif line:match("^%[campaign%]") then
+                            in_campaign = true; in_game = false
+                        elseif line:match("^%[") then
+                            if not in_game and not in_campaign then break end
+                            in_game = false; in_campaign = false
+                        end
+                        if in_game then
+                            local t = line:match("^turn%s*=%s*(%d+)")
+                            if t then turn = t end
+                            local dn = line:match('^display_name%s*=%s*"([^"]*)"')
+                            if dn then display_name = dn end
+                        end
+                        if in_campaign then
+                            local cf = line:match('^campaign_file%s*=%s*"([^"]+)"')
+                            if cf then campaign_name = cf:gsub("%.toml$", "") end
+                        end
                     end
                 end
             end
@@ -518,17 +549,26 @@ function save.delete_save(filepath)
     return ok
 end
 
---- Update the display_name field in a save file's [game] section.
---- Performs targeted string replacement without full re-parse.
+--- Update the display_name field in a save file.
 function save.update_display_name(filepath, name)
     local text = love.filesystem.read(filepath)
     if not text then return false end
 
-    -- Escape quotes in name for TOML
+    if filepath:match("%.json$") then
+        -- JSON: parse, modify, re-encode
+        local data = json_decode(text)
+        if data and data.game then
+            data.game.display_name = name
+            love.filesystem.write(filepath, json_encode(data))
+            return true
+        end
+        return false
+    end
+
+    -- Legacy TOML: targeted string replacement
     local safe_name = name:gsub('\\', '\\\\'):gsub('"', '\\"')
     local new_line = 'display_name = "' .. safe_name .. '"'
 
-    -- Try to replace existing display_name line
     local replaced
     replaced = text:gsub('(display_name%s*=%s*"[^"]*")', new_line, 1)
     if replaced ~= text then
@@ -536,7 +576,6 @@ function save.update_display_name(filepath, name)
         return true
     end
 
-    -- No existing display_name — insert after [game] header
     replaced = text:gsub('%[game%]\n', '[game]\n' .. new_line .. '\n', 1)
     if replaced ~= text then
         love.filesystem.write(filepath, replaced)

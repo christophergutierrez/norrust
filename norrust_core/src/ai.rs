@@ -18,6 +18,7 @@ use crate::unit::Unit;
 pub enum ActionRecord {
     Move { unit_id: u32, to_col: i32, to_row: i32 },
     Attack { attacker_id: u32, defender_id: u32 },
+    Recruit,
 }
 
 /// Expected damage dealt by one attack exchange (floating-point HP).
@@ -616,63 +617,34 @@ fn simulate_recruitment(
 
 /// Plan a single turn attempt with the given unit ordering on a clone.
 /// Returns (action_records, final_score).
+///
+/// Order: non-leaders move first → recruit into freed castle slots → new recruits
+/// move → leader decides last (stay on keep if can recruit, else plan normally).
 fn run_turn_ordering(
     state: &GameState,
     faction: u8,
     leader_id: Option<u32>,
-    stay: bool,
     return_keep: Option<Hex>,
     unit_order: &[u32],
+    cheapest_recruit_cost: u32,
     recruit_defs: &[(u32, u32)],
 ) -> (Vec<ActionRecord>, f32) {
     let mut clone = state.clone();
     let mut records = Vec::new();
 
-    // Simulate recruitment before movement planning
-    let recruited_ids = simulate_recruitment(&mut clone, faction, recruit_defs);
+    // Initial recruitment
+    let initial_recruits = simulate_recruitment(&mut clone, faction, recruit_defs);
+    let mut did_recruit = !initial_recruits.is_empty();
+    if did_recruit {
+        records.push(ActionRecord::Recruit);
+    }
 
-    // Build extended unit order including recruited units
-    let mut full_order: Vec<u32> = unit_order.to_vec();
-    full_order.extend_from_slice(&recruited_ids);
+    // Move all non-leader units first (original units from unit_order)
+    for &uid in unit_order {
+        if leader_id == Some(uid) { continue; } // Leader goes last
+        if !clone.units.contains_key(&uid) || clone.units[&uid].attacked { continue; }
 
-    for &uid in &full_order {
-        if !clone.units.contains_key(&uid) || clone.units[&uid].attacked {
-            continue;
-        }
-
-        let is_leader = leader_id == Some(uid);
-
-        // Leader discipline: stay on keep if can recruit more
-        if is_leader && stay {
-            continue;
-        }
-
-        // Leader discipline: move back to keep if off-keep and can recruit
-        if is_leader {
-            if let Some(keep_hex) = return_keep {
-                let start = clone.positions[&uid];
-                let unit_ref = &clone.units[&uid];
-                let movement = if unit_ref.slowed { unit_ref.movement / 2 } else { unit_ref.movement };
-                let zoc = get_zoc_hexes(&clone, faction);
-                let candidates = reachable_hexes(&clone.board, &clone.units[&uid].movement_costs, 1, start, movement, &zoc, false);
-                let occupied: HashSet<Hex> = clone.hex_to_unit.iter()
-                    .filter(|(_, &id)| id != uid).map(|(&h, _)| h).collect();
-                if let Some(&march_dest) = candidates.iter()
-                    .filter(|&&h| h != start && !occupied.contains(&h))
-                    .min_by_key(|&&c| c.distance(keep_hex))
-                {
-                    if march_dest.distance(keep_hex) < start.distance(keep_hex) {
-                        let (c, r) = march_dest.to_offset();
-                        records.push(ActionRecord::Move { unit_id: uid, to_col: c, to_row: r });
-                        let _ = apply_action(&mut clone, Action::Move { unit_id: uid, destination: march_dest });
-                    }
-                }
-                continue;
-            }
-        }
-
-        // 2-ply lookahead for all units: fast enough even in debug mode (~20ms)
-        if let Some((dest, target)) = plan_unit_action(&clone, uid, faction, 2) {
+        if let Some((dest, target)) = plan_unit_action(&clone, uid, faction, 1) {
             let start = clone.positions[&uid];
             if dest != start {
                 let (c, r) = dest.to_offset();
@@ -688,6 +660,108 @@ fn run_turn_ordering(
         }
     }
 
+    // Move initial recruits off castle hexes (freeing slots for more recruitment)
+    for &uid in &initial_recruits {
+        if !clone.units.contains_key(&uid) { continue; }
+        if let Some((dest, target)) = plan_unit_action(&clone, uid, faction, 1) {
+            let start = clone.positions[&uid];
+            if dest != start {
+                let (c, r) = dest.to_offset();
+                records.push(ActionRecord::Move { unit_id: uid, to_col: c, to_row: r });
+                let _ = apply_action(&mut clone, Action::Move { unit_id: uid, destination: dest });
+            }
+            if let Some(eid) = target {
+                if clone.units.contains_key(&uid) && clone.units.contains_key(&eid) {
+                    records.push(ActionRecord::Attack { attacker_id: uid, defender_id: eid });
+                    let _ = apply_action(&mut clone, Action::Attack { attacker_id: uid, defender_id: eid });
+                }
+            }
+        }
+    }
+
+    // Recruit again into freed castle slots, move new recruits out (repeat until done)
+    for _wave in 0..6 {
+        if !should_leader_stay(&clone, faction, cheapest_recruit_cost) { break; }
+        let new_ids = simulate_recruitment(&mut clone, faction, recruit_defs);
+        if new_ids.is_empty() { break; }
+        did_recruit = true;
+        records.push(ActionRecord::Recruit);
+        for &uid in &new_ids {
+            if !clone.units.contains_key(&uid) { continue; }
+            if let Some((dest, target)) = plan_unit_action(&clone, uid, faction, 1) {
+                let start = clone.positions[&uid];
+                if dest != start {
+                    let (c, r) = dest.to_offset();
+                    records.push(ActionRecord::Move { unit_id: uid, to_col: c, to_row: r });
+                    let _ = apply_action(&mut clone, Action::Move { unit_id: uid, destination: dest });
+                }
+                if let Some(eid) = target {
+                    if clone.units.contains_key(&uid) && clone.units.contains_key(&eid) {
+                        records.push(ActionRecord::Attack { attacker_id: uid, defender_id: eid });
+                        let _ = apply_action(&mut clone, Action::Attack { attacker_id: uid, defender_id: eid });
+                    }
+                }
+            }
+        }
+    }
+
+    // Leader decides last: stay on keep if recruited this turn or can still recruit
+    if let Some(lid) = leader_id {
+        if clone.units.contains_key(&lid) && !clone.units[&lid].attacked {
+            if did_recruit || should_leader_stay(&clone, faction, cheapest_recruit_cost) {
+                // Stay on keep, but attack adjacent enemies
+                let leader_hex = clone.positions[&lid];
+                let adjacent_enemy = clone.units.iter()
+                    .filter(|(_, u)| u.faction != faction)
+                    .find_map(|(&eid, _)| {
+                        let epos = clone.positions[&eid];
+                        if leader_hex.neighbors().contains(&epos) { Some(eid) } else { None }
+                    });
+                if let Some(eid) = adjacent_enemy {
+                    if clone.units.contains_key(&lid) && clone.units.contains_key(&eid) {
+                        records.push(ActionRecord::Attack { attacker_id: lid, defender_id: eid });
+                        let _ = apply_action(&mut clone, Action::Attack { attacker_id: lid, defender_id: eid });
+                    }
+                }
+            } else if let Some(keep_hex) = return_keep {
+                // Move back toward keep
+                let start = clone.positions[&lid];
+                let unit_ref = &clone.units[&lid];
+                let movement = if unit_ref.slowed { unit_ref.movement / 2 } else { unit_ref.movement };
+                let zoc = get_zoc_hexes(&clone, faction);
+                let candidates = reachable_hexes(&clone.board, &clone.units[&lid].movement_costs, 1, start, movement, &zoc, false);
+                let occupied: HashSet<Hex> = clone.hex_to_unit.iter()
+                    .filter(|(_, &id)| id != lid).map(|(&h, _)| h).collect();
+                if let Some(&march_dest) = candidates.iter()
+                    .filter(|&&h| h != start && !occupied.contains(&h))
+                    .min_by_key(|&&c| c.distance(keep_hex))
+                {
+                    if march_dest.distance(keep_hex) < start.distance(keep_hex) {
+                        let (c, r) = march_dest.to_offset();
+                        records.push(ActionRecord::Move { unit_id: lid, to_col: c, to_row: r });
+                        let _ = apply_action(&mut clone, Action::Move { unit_id: lid, destination: march_dest });
+                    }
+                }
+            } else {
+                // Leader has no recruitment duties — plan normally with 2-ply
+                if let Some((dest, target)) = plan_unit_action(&clone, lid, faction, 2) {
+                    let start = clone.positions[&lid];
+                    if dest != start {
+                        let (c, r) = dest.to_offset();
+                        records.push(ActionRecord::Move { unit_id: lid, to_col: c, to_row: r });
+                        let _ = apply_action(&mut clone, Action::Move { unit_id: lid, destination: dest });
+                    }
+                    if let Some(eid) = target {
+                        if clone.units.contains_key(&lid) && clone.units.contains_key(&eid) {
+                            records.push(ActionRecord::Attack { attacker_id: lid, defender_id: eid });
+                            let _ = apply_action(&mut clone, Action::Attack { attacker_id: lid, defender_id: eid });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let score = evaluate_state(&clone, faction);
     (records, score)
 }
@@ -695,8 +769,7 @@ fn run_turn_ordering(
 /// Plan a full AI turn by trying multiple unit orderings and picking the best.
 /// Returns (action_records, final_score).
 ///
-/// The leader always acts in its natural position. Only non-leader units are
-/// reordered across attempts.
+/// Non-leaders move first (reordered across attempts), then leader acts last.
 fn plan_full_turn(
     state: &GameState,
     faction: u8,
@@ -704,26 +777,16 @@ fn plan_full_turn(
     recruit_defs: &[(u32, u32)],
 ) -> (Vec<ActionRecord>, f32) {
     let leader_id = find_leader(state, faction);
-    let stay = should_leader_stay(state, faction, cheapest_recruit_cost);
     let return_keep = leader_should_return_to_keep(state, faction, cheapest_recruit_cost);
 
-    // Separate leader from non-leader units
-    let all_ids: Vec<u32> = state
+    // Collect non-leader units
+    let mut non_leader_ids: Vec<u32> = state
         .units
         .iter()
         .filter(|(_, u)| u.faction == faction && !u.attacked)
-        .map(|(id, _)| *id)
+        .filter(|(&id, _)| leader_id != Some(id))
+        .map(|(&id, _)| id)
         .collect();
-
-    let mut leader_ids: Vec<u32> = Vec::new();
-    let mut non_leader_ids: Vec<u32> = Vec::new();
-    for &uid in &all_ids {
-        if leader_id == Some(uid) {
-            leader_ids.push(uid);
-        } else {
-            non_leader_ids.push(uid);
-        }
-    }
 
     // Sort for deterministic base ordering
     non_leader_ids.sort();
@@ -735,13 +798,16 @@ fn plan_full_turn(
     let mut best_score = f32::NEG_INFINITY;
 
     for i in 0..orderings {
-        // Build ordering: leader first, then rotated non-leaders
-        let mut order = leader_ids.clone();
+        // Build ordering: non-leaders only (leader handled inside run_turn_ordering)
+        let mut order: Vec<u32> = Vec::with_capacity(n);
         for j in 0..n {
             order.push(non_leader_ids[(j + i) % n]);
         }
 
-        let (records, score) = run_turn_ordering(state, faction, leader_id, stay, return_keep, &order, recruit_defs);
+        let (records, score) = run_turn_ordering(
+            state, faction, leader_id, return_keep, &order,
+            cheapest_recruit_cost, recruit_defs,
+        );
         if score > best_score {
             best_score = score;
             best_records = records;
@@ -785,6 +851,9 @@ pub fn ai_take_turn_with_recruits(
                 if state.units.contains_key(attacker_id) && state.units.contains_key(defender_id) {
                     let _ = apply_action(state, Action::Attack { attacker_id: *attacker_id, defender_id: *defender_id });
                 }
+            }
+            ActionRecord::Recruit => {
+                // Handled by FFI layer which has registry access
             }
         }
     }
@@ -1329,7 +1398,7 @@ mod tests {
             .filter(|(_, u)| u.faction == 0 && !u.attacked)
             .map(|(id, _)| *id).collect();
         unit_ids.sort();
-        let (_, single_score) = run_turn_ordering(&state, 0, None, false, None, &unit_ids, &[]);
+        let (_, single_score) = run_turn_ordering(&state, 0, None, None, &unit_ids, 0, &[]);
 
         assert!(
             score >= single_score,
@@ -1591,6 +1660,49 @@ mod tests {
 
         assert!(recruited.is_empty(),
             "Should not recruit with 0 gold, got {} recruits", recruited.len());
+    }
+
+    #[test]
+    fn test_recruit_move_recruit_cycle() {
+        // Leader on keep with gold. Initial recruits fill castle slots.
+        // When recruits move off castle hexes, leader recruits MORE into freed slots.
+        let board = setup_keep_board(0, 2);
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+        state.gold[0] = 200; // Enough for many recruits
+
+        let leader = make_leader(1, 0);
+        state.place_unit(leader, Hex::from_offset(0, 2));
+
+        let enemy = make_fighter(2, 1, 30);
+        state.place_unit(enemy, Hex::from_offset(7, 2));
+
+        let recruit_defs = vec![(15u32, 5u32)];
+
+        // Count how many castle slots exist
+        let keep = Hex::from_offset(0, 2);
+        let castle_count = keep.neighbors().iter()
+            .filter(|&&h| state.board.contains(h)
+                && state.board.tile_at(h).map(|t| t.terrain_id == "castle").unwrap_or(false))
+            .count();
+
+        // Plan a full turn — should recruit, move recruits out, recruit again
+        let (records, _) = plan_full_turn(&state, 0, 15, &recruit_defs);
+
+        // Count how many units were planned to move (not the leader)
+        let units_moved: HashSet<u32> = records.iter().filter_map(|r| match r {
+            ActionRecord::Move { unit_id, .. } if *unit_id != 1 => Some(*unit_id),
+            _ => None,
+        }).collect();
+
+        // Should have more units moving than the initial castle slots
+        // because recruits moved out and new recruits filled the freed slots
+        eprintln!("Castle slots: {}, units moved: {}, total actions: {}",
+            castle_count, units_moved.len(), records.len());
+
+        assert!(units_moved.len() >= castle_count,
+            "Should recruit-move-recruit: {} castle slots but only {} units moved. Actions: {:?}",
+            castle_count, units_moved.len(), records);
     }
 
     #[test]

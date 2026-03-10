@@ -7,13 +7,6 @@ frame_height = 256
 frames = 1
 fps = 1
 
-[attacks.melee]
-file = "attack-melee.png"
-frame_width = 256
-frame_height = 256
-frames = 1
-fps = 1
-
 [attacks.ranged]
 file = "attack-ranged.png"
 frame_width = 256

@@ -451,7 +451,7 @@ fn test_ffi_all_symbols_exercised() {
         // These may return error codes; we just verify they don't crash.
         norrust_apply_move(engine, 1, 0, 0);
         norrust_apply_attack(engine, 1, 2);
-        norrust_apply_advance(engine, 1);
+        norrust_apply_advance(engine, 1, 0);
         norrust_end_turn(engine);
 
         let action = CString::new(r#"{"EndTurn":{}}"#).unwrap();

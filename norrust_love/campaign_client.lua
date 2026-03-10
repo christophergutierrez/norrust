@@ -1,6 +1,7 @@
 -- campaign_client.lua — Scenario and campaign loading helpers extracted from main.lua
 -- Functions modify ctx fields in place; main.lua reads back state changes.
 
+local hex = require("hex")
 local campaign_client = {}
 
 --- Load the selected scenario board and update board dimensions.
@@ -38,10 +39,7 @@ function campaign_client.find_keep_and_castles(ctx)
         for _, tile in ipairs(state.terrain or {}) do
             if tile.terrain_id == "castle" then
                 local tc, tr = int(tile.col), int(tile.row)
-                -- Check adjacency (distance ~1 in offset coords via hex neighbors)
-                local dx = math.abs(tc - keep_col)
-                local dy = math.abs(tr - keep_row)
-                if dx <= 1 and dy <= 1 and not (dx == 0 and dy == 0) then
+                if hex.distance(tc, tr, keep_col, keep_row) == 1 then
                     castle_hexes[#castle_hexes + 1] = {col = tc, row = tr}
                 end
             end

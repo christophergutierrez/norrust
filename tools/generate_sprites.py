@@ -81,17 +81,17 @@ UNITS = {
     ),
     "sergeant": (
         "human sergeant officer, chain mail, red cape, sword and shield, commanding officer",
-        "sword", None,
+        "sword", "crossbow bolt shot",
         "crouching behind shield, sword held back ready to counter",
     ),
     "lieutenant": (
         "human lieutenant commander, plate armor, white cape, longsword, gold crown, leader",
-        "sword", None,
+        "sword", "crossbow bolt shot",
         "parrying with longsword held high, armored shoulder turned forward",
     ),
     "elvish_fighter": (
         "elf warrior, green leather armor, long blonde hair, elven sword, leaf-pattern shield",
-        "sword", None,
+        "sword", "bow shot",
         "crouching behind leaf-pattern shield, sword ready at side",
     ),
     "elvish_archer": (
@@ -106,7 +106,7 @@ UNITS = {
     ),
     "elvish_scout": (
         "elf scout rider on white horse, light green leather armor, sword, mounted",
-        "sword from horseback", None,
+        "sword from horseback", "bow shot from horseback",
         "horse turning sideways, rider ducking low against horse's neck",
     ),
     "elvish_shaman": (
@@ -153,7 +153,6 @@ def generate_image(api_key, prompt, reference_image_path=None, retries=3):
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
         "gemini-2.0-flash-exp-image-generation:generateContent"
-        f"?key={api_key}"
     )
 
     parts = []
@@ -183,15 +182,21 @@ def generate_image(api_key, prompt, reference_image_path=None, retries=3):
         try:
             req = urllib.request.Request(
                 url, data=body,
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    "x-goog-api-key": api_key,
+                },
             )
             with urllib.request.urlopen(req, timeout=120) as resp:
                 data = json.loads(resp.read())
         except Exception as e:
-            print(f"    API error: {e}", flush=True)
+            print(f"    API error: {type(e).__name__}", flush=True)
             continue
 
-        candidates = data.get("candidates", [{}])
+        candidates = data.get("candidates", [])
+        if not candidates:
+            print("    No candidates in response", flush=True)
+            continue
         parts_resp = candidates[0].get("content", {}).get("parts", [])
         for p in parts_resp:
             if "inlineData" in p:
@@ -238,8 +243,14 @@ def process_single_image(img_data, out_path, threshold=100):
                 top_c = min(top_c, y)
                 bot_c = max(bot_c, y)
 
-    content_w = right_c - left_c + 1 if right_c >= left_c else new_w
-    content_h = bot_c - top_c + 1 if bot_c >= top_c else new_h
+    # No content found — save blank frame
+    if right_c < left_c:
+        frame = Image.new("RGBA", (FRAME_SIZE, FRAME_SIZE), (0, 0, 0, 0))
+        frame.save(out_path)
+        return False, 0, 0
+
+    content_w = right_c - left_c + 1
+    content_h = bot_c - top_c + 1
 
     # Crop to content
     crop = img.crop((left_c, top_c, right_c + 1, bot_c + 1))
@@ -414,8 +425,10 @@ def write_sprite_toml(unit_dir, unit_name, has_ranged=True):
             f.write(f"frame_height = {FRAME_SIZE}\n")
             f.write(f"frames = 1\n")
             f.write(f"fps = 1\n")
-        f.write("\n[portrait]\n")
-        f.write('file = "portrait.png"\n')
+        portrait_path = os.path.join(unit_dir, "portrait.png")
+        if os.path.exists(portrait_path):
+            f.write("\n[portrait]\n")
+            f.write('file = "portrait.png"\n')
 
 
 def build_prompt(unit_name, pose, ref_path):
