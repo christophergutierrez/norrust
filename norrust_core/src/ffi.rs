@@ -14,7 +14,7 @@
 //! | Scalar queries            | the value         | `-1` (or `0`)      |
 //! | String queries            | valid `*mut c_char` | empty string ptr |
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{c_char, CStr, CString};
 use std::panic;
 use std::path::PathBuf;
@@ -589,6 +589,8 @@ pub unsafe extern "C" fn norrust_ai_recruit(
     };
 
     let mut recruited = 0i32;
+    let mut recruited_counts: HashMap<String, u32> = HashMap::new();
+    let mut rotation_idx: usize = 0;
 
     for _ in 0..12 {
         let action: Option<(String, i32, i32)> = e.game.as_ref().and_then(|state| {
@@ -604,12 +606,24 @@ pub unsafe extern "C" fn norrust_ai_recruit(
                     && state.board.tile_at(h).map(|t| t.terrain_id == "castle").unwrap_or(false)
                     && !state.hex_to_unit.contains_key(&h)
             })?;
-            let def_id = recruits.iter().find(|did| {
-                e.units.as_ref()
-                    .and_then(|r| r.get(did.as_str()))
-                    .map(|def| state.gold[active as usize] >= def.cost)
-                    .unwrap_or(false)
-            })?;
+            // Pick affordable units with round-robin: prefer least-recruited type
+            let mut affordable: Vec<(&String, u32)> = recruits.iter()
+                .filter_map(|did| {
+                    e.units.as_ref()
+                        .and_then(|r| r.get(did.as_str()))
+                        .filter(|def| state.gold[active as usize] >= def.cost)
+                        .map(|def| (did, def.cost))
+                })
+                .collect();
+            if affordable.is_empty() { return None; }
+            // Sort by: least recruited count, then rotate through ties
+            affordable.sort_by_key(|(did, _)| *recruited_counts.get(*did).unwrap_or(&0));
+            let min_count = *recruited_counts.get(affordable[0].0).unwrap_or(&0);
+            let ties: Vec<_> = affordable.iter()
+                .filter(|(did, _)| *recruited_counts.get(*did).unwrap_or(&0) == min_count)
+                .collect();
+            let pick = ties[rotation_idx % ties.len()];
+            let def_id = pick.0;
             let (col, row) = dest.to_offset();
             Some((def_id.clone(), col, row))
         });
@@ -629,7 +643,11 @@ pub unsafe extern "C" fn norrust_ai_recruit(
 
         let Some(state) = e.game.as_mut() else { break };
         match apply_recruit(state, unit, destination, cost) {
-            Ok(()) => { recruited += 1; }
+            Ok(()) => {
+                recruited += 1;
+                *recruited_counts.entry(did.clone()).or_insert(0) += 1;
+                rotation_idx += 1;
+            }
             Err(_) => break,
         }
     }
@@ -875,10 +893,43 @@ pub unsafe extern "C" fn norrust_apply_attack(
     })
 }
 
+/// Return the advancement options for a unit as a JSON array.
+/// Each option: `{"id":"white_mage","name":"White Mage"}`.
+/// Returns empty array `[]` if unit has no advancement options.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_get_advance_options(
+    engine: *mut NorRustEngine,
+    unit_id: i32,
+) -> *mut c_char {
+    #[derive(Serialize)]
+    struct AdvanceOption { id: String, name: String }
+
+    let Some(e) = engine.as_ref() else { return to_c_string("[]") };
+    let Some(state) = e.game.as_ref() else { return to_c_string("[]") };
+    let uid = unit_id as u32;
+    let Some(unit) = state.units.get(&uid) else { return to_c_string("[]") };
+
+    let Some(registry) = e.units.as_ref() else { return to_c_string("[]") };
+    let Some(current_def) = registry.get(&unit.def_id) else { return to_c_string("[]") };
+
+    let options: Vec<AdvanceOption> = current_def.advances_to.iter()
+        .filter_map(|target_id| {
+            registry.get(target_id).map(|def| AdvanceOption {
+                id: def.id.clone(),
+                name: def.name.clone(),
+            })
+        })
+        .collect();
+
+    let json = serde_json::to_string(&options).unwrap_or_else(|_| "[]".to_string());
+    to_c_string(&json)
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn norrust_apply_advance(
     engine: *mut NorRustEngine,
     unit_id: i32,
+    target_index: i32,
 ) -> i32 {
     let Some(e) = engine.as_mut() else { return -1 };
     let uid = unit_id as u32;
@@ -895,9 +946,10 @@ pub unsafe extern "C" fn norrust_apply_advance(
     if faction != state.active_faction { return -2; }
     if !advancement_pending { return -8; }
 
+    let idx = if target_index < 0 { 0usize } else { target_index as usize };
     let target_def_id = match e.units.as_ref()
         .and_then(|r| r.get(&current_def_id))
-        .and_then(|def| def.advances_to.first().cloned())
+        .and_then(|def| def.advances_to.get(idx).cloned())
     {
         Some(id) => id,
         None => return -9,
@@ -939,8 +991,8 @@ pub unsafe extern "C" fn norrust_apply_action_json(
             Err(_) => return -99,
         };
         match req {
-            ActionRequest::Advance { unit_id } => {
-                unsafe { norrust_apply_advance(engine, unit_id as i32) }
+            ActionRequest::Advance { unit_id, target_index } => {
+                unsafe { norrust_apply_advance(engine, unit_id as i32, target_index as i32) }
             }
             ActionRequest::Recruit { def_id, col, row } => {
                 let c_def = CString::new(def_id).unwrap_or_default();
@@ -1059,6 +1111,27 @@ pub unsafe extern "C" fn norrust_find_path(
     Box::into_raw(boxed) as *mut i32
 }
 
+// ── AI helpers ──────────────────────────────────────────────────────────────
+
+/// Compute the cheapest recruit cost for a faction.
+/// Uses faction index to look up in `e.factions` (same order as loaded).
+fn cheapest_recruit_cost_ref(e: &NorRustEngine, faction: u8) -> u32 {
+    let idx = faction as usize;
+    let recruits = if idx < e.factions.len() {
+        &e.factions[idx].1
+    } else {
+        return u32::MAX;
+    };
+    let registry = match e.units.as_ref() {
+        Some(r) => r,
+        None => return u32::MAX,
+    };
+    recruits.iter()
+        .filter_map(|did| registry.get(did.as_str()).map(|def| def.cost))
+        .min()
+        .unwrap_or(u32::MAX)
+}
+
 // ── AI ───────────────────────────────────────────────────────────────────────
 
 #[no_mangle]
@@ -1067,9 +1140,28 @@ pub unsafe extern "C" fn norrust_ai_take_turn(
     faction: i32,
 ) {
     if faction < 0 || faction > 1 { return; }
-    with_game_mut!(engine, _e, state, (), {
-        crate::ai::ai_take_turn(state, faction as u8);
-    });
+    let Some(e) = engine.as_mut() else { return };
+    let cheapest = cheapest_recruit_cost_ref(e, faction as u8);
+    let Some(state) = e.game.as_mut() else { return };
+    crate::ai::ai_take_turn(state, faction as u8, cheapest);
+    e.state_cache = None;
+}
+
+/// Plan an AI turn without modifying the real game state.
+/// Returns a JSON array of `ActionRecord` objects.
+/// The caller should replay these actions one at a time with animations.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_ai_plan_turn(
+    engine: *mut NorRustEngine,
+    faction: i32,
+) -> *mut c_char {
+    if faction < 0 || faction > 1 { return to_c_string("[]"); }
+    let Some(e) = engine.as_ref() else { return to_c_string("[]") };
+    let cheapest = cheapest_recruit_cost_ref(e, faction as u8);
+    let Some(state) = e.game.as_ref() else { return to_c_string("[]") };
+    let records = crate::ai::ai_plan_turn(state, faction as u8, cheapest);
+    let json = serde_json::to_string(&records).unwrap_or_else(|_| "[]".to_string());
+    to_c_string(&json)
 }
 
 // ── Campaign ─────────────────────────────────────────────────────────────────

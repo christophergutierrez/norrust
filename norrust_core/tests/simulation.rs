@@ -272,7 +272,7 @@ fn test_ai_vs_ai_terminates() {
     // Run AI vs AI for up to 100 turns (each call to ai_take_turn includes EndTurn).
     for _ in 0..100 {
         let faction = state.active_faction;
-        ai_take_turn(&mut state, faction);
+        ai_take_turn(&mut state, faction, u32::MAX);
         if game_winner(&state).is_some() {
             break;
         }
@@ -319,7 +319,7 @@ fn test_ai_marches_toward_enemy_when_no_attack() {
     state.place_unit(f0, Hex::from_offset(0, 0));
     state.place_unit(f1, Hex::from_offset(7, 0));
 
-    ai_take_turn(&mut state, 0);
+    ai_take_turn(&mut state, 0, u32::MAX);
 
     let (col, _) = state.positions[&1].to_offset();
     assert!(col > 0, "unit should have advanced from col 0, now at col {}", col);

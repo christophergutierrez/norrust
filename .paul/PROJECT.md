@@ -219,6 +219,10 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] State cache with dirty-flag invalidation on NorRustEngine — Phase 93 (93-01)
 - [x] Rust sole authority for next_unit_id (removed Lua dual-tracking) — Phase 93 (93-01)
 
+- [x] AI leader discipline: stays on keep until castle slots filled, returns to keep when off-keep with gold — Phase 97 (97-01)
+- [x] Mixed unit type recruitment: round-robin selection instead of always most expensive — Phase 97 (97-01)
+- [x] cheapest_recruit_cost parameter for AI planning functions — Phase 97 (97-01)
+
 ### Active (In Progress / Deferred)
 
 (none)
@@ -391,4 +395,6 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-09 after Phase 96 — Sprite Pipeline v2 (v3.4 complete).*
+| AI leader discipline + mixed recruitment | Smarter AI spending; leader stays on keep, round-robin unit selection | 2026-03-10 | Active |
+
+*Last updated: 2026-03-10 after Phase 97 — Recruit Discipline (v3.5 started).*

@@ -6,6 +6,53 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
+**v3.5 AI Overhaul**
+Status: 🚧 In Progress
+Phases: 1 of 5 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 97 | Recruit Discipline | 1/1 | ✅ Complete | 2026-03-10 |
+| 98 | State Evaluation | TBD | Not started | - |
+| 99 | 1-Ply Unit Lookahead | TBD | Not started | - |
+| 100 | Turn Planning | TBD | Not started | - |
+| 101 | Ranged & Tactical Behavior | TBD | Not started | - |
+
+## v3.5 Phase Details
+
+### Phase 97: Recruit Discipline
+
+Focus: AI fills all castle slots before moving leader away from keep. Mixed unit type recruitment instead of always picking the most expensive unit.
+Plans: TBD (defined during /paul:plan)
+
+### Phase 98: State Evaluation
+
+Focus: Evaluation function scoring game states by HP totals, unit count, village control, positional value (proximity to objectives/enemies), leader safety.
+Depends on: None (independent utility module)
+Plans: TBD (defined during /paul:plan)
+
+### Phase 99: 1-Ply Unit Lookahead
+
+Focus: Clone GameState per unit, try all move+attack combos, pick the action that produces the best evaluated state. Replaces greedy expected-damage scoring.
+Depends on: Phase 98 (needs eval function)
+Plans: TBD (defined during /paul:plan)
+
+### Phase 100: Turn Planning
+
+Focus: Simulate entire turn across all units. Try different unit orderings and move combinations. Beam search keeping top N candidate states to find best coordinated plan.
+Depends on: Phase 99 (needs per-unit lookahead as building block)
+Plans: TBD (defined during /paul:plan)
+
+### Phase 101: Ranged & Tactical Behavior
+
+Focus: Ranged units prefer attacking from distance and avoid adjacent positioning. Focus fire on wounded enemies to secure kills. Retreat badly wounded units toward villages/healing terrain.
+Depends on: Phase 100 (tactical behaviors layer on top of turn planner)
+Plans: TBD (defined during /paul:plan)
+
+---
+
+## Previous Milestone
+
 **v3.4 Sprite Pipeline v2**
 Status: ✅ Complete
 Phases: 3 of 3 complete
@@ -44,8 +91,6 @@ Phases: 3 of 3 complete
 - TBD (defined during /paul:plan)
 
 ---
-
-## Previous Milestone
 
 **v3.3 Exit Buttons**
 Status: ✅ Complete

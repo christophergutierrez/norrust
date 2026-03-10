@@ -210,7 +210,7 @@ fn run_balance(
             ai_recruit(&mut state, active, &fd.recruits, &unit_reg, &mut next_id);
 
             // AI takes turn (move, attack, end turn).
-            ai_take_turn(&mut state, active);
+            ai_take_turn(&mut state, active, u32::MAX);
 
             if let Some(winner) = state.check_winner() {
                 result.wins[winner as usize] += 1;
