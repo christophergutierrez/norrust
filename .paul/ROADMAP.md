@@ -6,32 +6,51 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
-**v3.6 AI Leader Intelligence**
+**v3.7 Save System Overhaul**
+Status: In Progress
+Phases: 1 of 3 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 104 | Campaign State in Rust | 1/1 | ✅ Complete | 2026-03-10 |
+| 105 | JSON Save Format | TBD | Not started | - |
+| 106 | Save UX Cleanup | TBD | Not started | - |
+
+## v3.7 Phase Details
+
+### Phase 104: Campaign State in Rust ✅
+
+Focus: Move campaign model (veterans, gold carry, scenario index, roster) from Lua-side tracking into Rust engine. Lua becomes thin client reading/writing via FFI. Foundation for everything else.
+Depends on: None
+Plans: 1/1 complete
+Completed: 2026-03-10
+
+### Phase 105: JSON Save Format
+
+Focus: Engine serializes/deserializes full game + campaign state as JSON via serde. Unit UIDs included naturally as part of Rust model. Single FFI call for save/load.
+Depends on: Phase 104 (campaign state must be in Rust before serializing it)
+Plans: TBD (defined during /paul:plan)
+
+### Phase 106: Save UX Cleanup
+
+Focus: Wire new save/load FFI into Lua. Save management UI reads JSON metadata. Delete save.lua TOML parser/serializer dead code. Existing UX preserved (F5/F9, save list, display_name, auto-save).
+Depends on: Phase 105 (JSON save/load FFI must exist before wiring Lua)
+Plans: TBD (defined during /paul:plan)
+
+---
+
+## Completed Milestones
+
+### v3.6 AI Leader Intelligence
+
 Status: ✅ Complete
+Completed: 2026-03-10
 Phases: 2 of 2 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 102 | Recruit-First Ordering | 1/1 | ✅ Complete | 2026-03-10 |
 | 103 | Leader 2-Ply Lookahead | 1/1 | ✅ Complete | 2026-03-10 |
-
-## v3.6 Phase Details
-
-### Phase 102: Recruit-First Ordering
-
-Focus: AI spends all gold on recruitment before planning any unit movement. Leader stays on keep until broke. Eliminates "recruit one, move, recruit one next turn" pattern.
-Depends on: Phase 97 (recruit discipline), Phase 100 (turn planning)
-Plans: 1/1 complete
-
-### Phase 103: Leader 2-Ply Lookahead
-
-Focus: All units use 2-ply lookahead (my action → opponent greedy response → evaluate). Catches oscillation. Extended to all units — performance was ~20ms (far under 30s bound).
-Depends on: Phase 99 (1-ply lookahead), Phase 102 (recruit-first)
-Plans: 1/1 complete
-
----
-
-## Completed Milestones
 
 ### v3.5 AI Overhaul
 
@@ -1605,4 +1624,4 @@ See MILESTONES.md for full history.
 </details>
 
 ---
-*Roadmap updated: 2026-03-06 — v2.1 Save System created (4 phases: UUID+roster, save writer, load game, integration)*
+*Roadmap updated: 2026-03-10 — v3.7 Save System Overhaul created*

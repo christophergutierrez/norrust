@@ -36,6 +36,109 @@ Completed milestone log for this project.
 | v3.0 Upvalue Reduction & UX Polish | 2026-03-07 | ~20min | 2 phases, 2 plans |
 | v3.1 Main.lua Modularization | 2026-03-07 | ~1 day | 3 phases, 3 plans |
 | v3.2 Campaign Management | 2026-03-08 | ~2 days | 3 phases, 3 plans |
+| v3.3 Exit Buttons | 2026-03-08 | ~30min | 1 phase, 1 plan |
+| v3.4 Sprite Pipeline v2 | 2026-03-09 | ~1 day | 3 phases, 4 plans |
+| v3.5 AI Overhaul | 2026-03-10 | ~1 day | 5 phases, 5 plans |
+| v3.6 AI Leader Intelligence | 2026-03-10 | ~40min | 2 phases, 2 plans |
+
+---
+
+## ✅ v3.6 AI Leader Intelligence
+
+**Completed:** 2026-03-10
+**Duration:** ~40min
+
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 2 |
+| Plans | 2 |
+| Files modified | 2 (ai.rs, ffi.rs) |
+| Tests | 107 unit + 42 integration |
+
+### Key Accomplishments
+
+- **Recruit-first ordering** — AI simulates all affordable recruitment before movement planning; recruited units participate in tactical decisions
+- **simulate_recruitment()** — creates placeholder units in planning clone for turn planner evaluation
+- **build_recruit_defs()** — FFI helper extracts real (cost, movement) data from faction registry
+- **2-ply lookahead for all units** — evaluate_with_opponent_response() simulates opponent's greedy response before scoring
+- **depth parameter** on plan_unit_action gates 1-ply vs 2-ply cleanly
+- **Performance** — ~20ms all-unit 2-ply, far under 30s bound; AI vs AI terminates in 0.44s
+
+### Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Placeholder units (hp=20, dmg=5, str=2) for planning | ai.rs has no registry access; only need cost+movement for planning |
+| All units 2-ply (not leader-only) | 20ms total ≪ 30s bound; all units benefit from opponent response sim |
+| Greedy opponent response (not minimax) | Simple, fast, realistic; catches oscillation without exponential depth |
+| 2-ply for march moves too | Marching toward enemy is strategic; opponent response affects positioning |
+| recruit_defs as (cost, movement) tuples | Avoids registry access in ai.rs; clean module boundary |
+
+---
+
+## ✅ v3.5 AI Overhaul
+
+**Completed:** 2026-03-10
+**Duration:** ~1 day
+
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 5 |
+| Plans | 5 |
+| Tests | 104 unit |
+
+### Key Accomplishments
+
+- **Recruit discipline** — leader stays on keep until castle full; mixed unit type round-robin
+- **evaluate_state()** — holistic board evaluation (centered HP ratio, unit count, village control, position)
+- **1-ply lookahead** — clone-simulate-evaluate per unit replacing greedy expected damage
+- **Multi-ordering turn planner** — 5 rotation orderings, best coordinated plan
+- **Tactical behaviors** — ranged distance preference, focus fire on wounded, retreat toward healing
+
+---
+
+## ✅ v3.4 Sprite Pipeline v2
+
+**Completed:** 2026-03-09
+**Duration:** ~1 day
+
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 3 |
+| Plans | 4 |
+
+### Key Accomplishments
+
+- **Single-pose Gemini generation** with PIL validation, retry loop, portrait pipeline
+- **Derived death animation** (tilt + fade from idle at render time)
+- **tools/ directory** for project-level utilities
+
+---
+
+## ✅ v3.3 Exit Buttons
+
+**Completed:** 2026-03-08
+**Duration:** ~30min
+
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 1 |
+| Plans | 1 |
+
+### Key Accomplishments
+
+- **Exit button** with inline save confirmation on game board
+- **Q/Escape quit** from main menu and setup screens
+- **Mode-dispatch table** for input handling (530→30 line keypressed refactor)
+- **26 code review fixes** including json_escape, reverse hex→unit index, state cache
 
 ---
 
@@ -915,4 +1018,4 @@ Completed milestone log for this project.
 - Full Wesnoth-style combat: adjacency enforcement, bidirectional retaliation, time-of-day modifiers, resistances
 
 ---
-*MILESTONES.md — Updated: 2026-03-08 (v3.2 Campaign Management)*
+*MILESTONES.md — Updated: 2026-03-10 (v3.6 AI Leader Intelligence)*

@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 use crate::board::Tile;
-use crate::campaign;
+use crate::campaign::{self, CampaignState};
 use crate::combat::{simulate_combat, time_of_day, TimeOfDay};
 use crate::dialogue::DialogueState;
 use crate::game_state::{apply_action, apply_recruit, Action, ActionError, GameState, PendingSpawn, TriggerZone};
@@ -78,6 +78,8 @@ pub struct NorRustEngine {
     dialogue_state: Option<DialogueState>,
     /// Cached JSON from `norrust_get_state_json`. `None` means dirty.
     state_cache: Option<String>,
+    /// Campaign progression state (None for standalone scenarios).
+    campaign: Option<CampaignState>,
 }
 
 impl NorRustEngine {
@@ -89,6 +91,7 @@ impl NorRustEngine {
             factions: Vec::new(),
             dialogue_state: None,
             state_cache: None,
+            campaign: None,
         }
     }
 }
@@ -1402,6 +1405,180 @@ pub unsafe extern "C" fn norrust_place_veteran_unit(
     state.place_unit(unit, destination);
     e.state_cache = None;
     uid as i32
+}
+
+// ── Campaign State (new v3.7) ────────────────────────────────────────────────
+
+/// Start a campaign: load definition and create CampaignState on the engine.
+/// Returns JSON of the campaign definition on success, empty string on failure.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_start_campaign(
+    engine: *mut NorRustEngine,
+    path: *const c_char,
+) -> *mut c_char {
+    let Some(e) = engine.as_mut() else { return to_c_string("") };
+    let p = PathBuf::from(cstr_to_str(path));
+    let def = match campaign::load_campaign(&p) {
+        Ok(c) => c,
+        Err(_) => return to_c_string(""),
+    };
+
+    // Build JSON response before moving def into CampaignState
+    let json_obj = CampaignDefJson {
+        id: &def.id,
+        name: &def.name,
+        faction_0: &def.faction_0,
+        faction_1: &def.faction_1,
+        gold_carry_percent: def.gold_carry_percent,
+        early_finish_bonus: def.early_finish_bonus,
+        scenarios: def.scenarios.iter().map(|s| CampaignScenarioJson {
+            board: &s.board,
+            units: &s.units,
+            preset_units: s.preset_units,
+        }).collect(),
+    };
+    let json = match serde_json::to_string(&json_obj) {
+        Ok(s) => s,
+        Err(_) => return to_c_string(""),
+    };
+
+    e.campaign = Some(CampaignState::new(def));
+    to_c_string(&json)
+}
+
+/// Add a unit to the campaign roster. Returns the assigned UUID as a C string.
+/// Returns empty string if no active campaign.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_campaign_add_unit(
+    engine: *mut NorRustEngine,
+    def_id: *const c_char,
+    engine_id: i32,
+    hp: i32,
+    max_hp: i32,
+    xp: i32,
+    xp_needed: i32,
+    advancement_pending: i32,
+) -> *mut c_char {
+    let Some(e) = engine.as_mut() else { return to_c_string("") };
+    let Some(cs) = e.campaign.as_mut() else { return to_c_string("") };
+    let did = cstr_to_str(def_id);
+
+    // Get abilities from game state if unit exists
+    let abilities = e.game.as_ref()
+        .and_then(|state| state.units.get(&(engine_id as u32)))
+        .map(|u| u.abilities.clone())
+        .unwrap_or_default();
+
+    let uuid = cs.add_unit(
+        did,
+        engine_id as u32,
+        hp as u32,
+        max_hp as u32,
+        xp as u32,
+        xp_needed as u32,
+        advancement_pending != 0,
+        abilities,
+    );
+    to_c_string(&uuid)
+}
+
+/// Map an engine unit ID to an existing roster UUID (for veteran placement).
+#[no_mangle]
+pub unsafe extern "C" fn norrust_campaign_map_id(
+    engine: *mut NorRustEngine,
+    engine_id: i32,
+    uuid: *const c_char,
+) {
+    let Some(e) = engine.as_mut() else { return };
+    let Some(cs) = e.campaign.as_mut() else { return };
+    let uuid_str = cstr_to_str(uuid);
+    cs.map_id(engine_id as u32, uuid_str);
+}
+
+/// Sync the campaign roster from the current game state for the given faction.
+/// Returns 0 on success, -1 if no campaign or game state.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_campaign_sync_roster(
+    engine: *mut NorRustEngine,
+    faction: i32,
+) -> i32 {
+    let Some(e) = engine.as_mut() else { return -1 };
+    let state = match e.game.as_ref() {
+        Some(s) => s,
+        None => return -1,
+    };
+    let cs = match e.campaign.as_mut() {
+        Some(c) => c,
+        None => return -1,
+    };
+    cs.sync_from_state(state, faction as u8);
+    0
+}
+
+/// Record a victory: sync roster, extract veterans, calculate gold, advance scenario.
+/// Returns JSON with {scenario_index, carry_gold, veterans: [...], living: [...]}.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_campaign_record_victory(
+    engine: *mut NorRustEngine,
+    faction: i32,
+) -> *mut c_char {
+    let Some(e) = engine.as_mut() else { return to_c_string("") };
+    let state = match e.game.as_ref() {
+        Some(s) => s,
+        None => return to_c_string(""),
+    };
+    let cs = match e.campaign.as_mut() {
+        Some(c) => c,
+        None => return to_c_string(""),
+    };
+    cs.record_victory(state, faction as u8);
+
+    #[derive(Serialize)]
+    struct VictoryResult {
+        scenario_index: usize,
+        carry_gold: u32,
+        veterans: Vec<campaign::VeteranUnit>,
+        living: Vec<campaign::RosterEntry>,
+    }
+    let result = VictoryResult {
+        scenario_index: cs.scenario_index,
+        carry_gold: cs.carry_gold,
+        veterans: cs.veterans.clone(),
+        living: cs.get_living().into_iter().cloned().collect(),
+    };
+    match serde_json::to_string(&result) {
+        Ok(s) => to_c_string(&s),
+        Err(_) => to_c_string(""),
+    }
+}
+
+/// Get the full campaign state as JSON (for save system).
+/// Returns empty string if no active campaign.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_get_campaign_state_json(
+    engine: *mut NorRustEngine,
+) -> *mut c_char {
+    let Some(e) = engine.as_ref() else { return to_c_string("") };
+    let Some(cs) = e.campaign.as_ref() else { return to_c_string("") };
+    match serde_json::to_string(cs) {
+        Ok(s) => to_c_string(&s),
+        Err(_) => to_c_string(""),
+    }
+}
+
+/// Get living roster entries as JSON array (for deployment UI).
+/// Returns "[]" if no active campaign.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_campaign_get_living_json(
+    engine: *mut NorRustEngine,
+) -> *mut c_char {
+    let Some(e) = engine.as_ref() else { return to_c_string("[]") };
+    let Some(cs) = e.campaign.as_ref() else { return to_c_string("[]") };
+    let living: Vec<&campaign::RosterEntry> = cs.get_living();
+    match serde_json::to_string(&living) {
+        Ok(s) => to_c_string(&s),
+        Err(_) => to_c_string("[]"),
+    }
 }
 
 #[no_mangle]

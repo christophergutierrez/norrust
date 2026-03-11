@@ -240,7 +240,7 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ### Active (In Progress / Deferred)
 
-(none)
+- [ ] Campaign state owned by Rust with JSON serialization — Phase 104 (foundation), Phase 105 (serialization), Phase 106 (Lua wiring)
 
 ### Out of Scope
 
@@ -391,6 +391,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | Named draw constants for sidebar geometry | SIDEBAR_W/PAD/X_OFF + color constants replace 100+ magic number sites in draw.lua | 2026-03-07 | Active |
 | Tile color cache at scenario load | build_tile_color_cache() avoids per-frame parse_html_color; rebuilt on scenario load | 2026-03-07 | Active |
 | let-else error returns in FFI | All Option<GameState> access uses let-else with negative error codes; zero unwrap() | 2026-03-07 | Active |
+| CampaignState on NorRustEngine (not GameState) | GameState resets per scenario; campaign persists across scenarios; clean ownership | 2026-03-10 | Active |
+| UUID via xorshift64 (combat::Rng) | Consistent with existing RNG pattern; no external deps | 2026-03-10 | Active |
+| id_map cleared between scenarios | engine_id → uuid mapping is per-scenario; roster persists | 2026-03-10 | Active |
 
 ## Tech Stack
 
@@ -428,4 +431,10 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 | Wounded retreat overrides attack only when no kill possible | Securing kills always worth the risk; retreat is fallback when no kill achievable | 2026-03-10 | Active |
 
-*Last updated: 2026-03-10 after Phase 101 — Ranged & Tactical Behavior.*
+| Placeholder units for recruit simulation | ai.rs has no registry; hp=20/dmg=5/str=2 placeholders sufficient for planning | 2026-03-10 | Active |
+
+| All units 2-ply (not leader-only) | 20ms total ≪ 30s bound; all units benefit from opponent response | 2026-03-10 | Active |
+
+| Greedy opponent response in 2-ply | No recursive depth; catches oscillation without exponential blowup | 2026-03-10 | Active |
+
+*Last updated: 2026-03-10 after Phase 104 Campaign State in Rust.*
