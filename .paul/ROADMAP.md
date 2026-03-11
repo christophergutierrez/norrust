@@ -6,6 +6,39 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
+**v4.0 Unit Content Completeness**
+Status: 🚧 In Progress
+Phases: 1 of 3 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 115 | Missing Units + Cleanup | 1/1 | ✅ Complete | 2026-03-11 |
+| 116 | Stat Verification | TBD | Not started | - |
+| 117 | Integration Validation | TBD | Not started | - |
+
+## v4.0 Phase Details
+
+### Phase 115: Missing Units + Cleanup
+
+Focus: Create General TOML (Lieutenant → General), remove legacy orphan units (hero, fighter, archer), verify all advances_to chains resolve to real unit definitions.
+Depends on: None
+Constraints: Data-only; zero Rust code changes. Wesnoth WML is reference source.
+
+### Phase 116: Stat Verification
+
+Focus: Audit all ~114 unit stats against Wesnoth WML source data. Fix incorrect movement_costs, defense, resistances, attacks, abilities values.
+Depends on: Phase 115 (clean unit tree)
+Constraints: scrape_wesnoth.py available for bulk re-scraping if needed.
+
+### Phase 117: Integration Validation
+
+Focus: Run full test suite, verify all factions recruit and advance correctly in-game via debug scenarios. Regenerate debug data.
+Depends on: Phase 116 (correct stats)
+
+---
+
+## Previous Milestone
+
 **v3.9 Debug Sandbox**
 Status: ✅ Complete
 Phases: 3 of 3 complete

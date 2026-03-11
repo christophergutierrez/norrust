@@ -264,7 +264,7 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 ### Active (In Progress / Deferred)
 
 - [ ] Sprite generation for all 114 units (deferred — circles serve as placeholders)
-- [ ] Missing advancement target unit definitions (General, many level 3+ units) — advancement silently fails when target def doesn't exist
+- [x] All advancement chains resolve — 132 units, 84 targets, zero dangling references — Phase 115 (115-01)
 
 ### Out of Scope
 
