@@ -375,7 +375,7 @@ mod tests {
             id: "test".to_string(),
             name: "Test Campaign".to_string(),
             faction_0: "loyalists".to_string(),
-            faction_1: "orcs".to_string(),
+            faction_1: "northerners".to_string(),
             gold_carry_percent: 80,
             early_finish_bonus: 5,
             scenarios: vec![

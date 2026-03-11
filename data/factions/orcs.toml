@@ -1,5 +1,0 @@
-id = "orcs"
-name = "Orcs"
-leader_def = "Orcish Warrior"
-recruits = ["orc_base"]
-starting_gold = 100

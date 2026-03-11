@@ -1,0 +1,5 @@
+id = "northerners"
+name = "Northerners"
+leader_def = "Orcish Warrior"
+recruits = ["northerner_base"]
+starting_gold = 100

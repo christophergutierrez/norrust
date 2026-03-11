@@ -45,7 +45,7 @@ fn test_ffi_full_game_cycle() {
 
         // ── Apply starting gold ────────────────────────────────────
         let f0 = c("loyalists");
-        let f1 = c("orcs");
+        let f1 = c("northerners");
         let ok = norrust_apply_starting_gold(engine, f0.as_ptr(), f1.as_ptr());
         assert_eq!(ok, 1, "norrust_apply_starting_gold must succeed");
 

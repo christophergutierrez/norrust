@@ -1,0 +1,5 @@
+id = "undead"
+name = "Undead"
+leader_def = "Dark Sorcerer"
+recruits = ["undead_base"]
+starting_gold = 100

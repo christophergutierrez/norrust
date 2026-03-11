@@ -1,0 +1,5 @@
+id = "rebels"
+name = "Rebels"
+leader_def = "Elvish Captain"
+recruits = ["rebel_base"]
+starting_gold = 100

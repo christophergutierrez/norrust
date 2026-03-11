@@ -211,35 +211,42 @@ mod tests {
     fn test_recruit_group_registry_loads() {
         let dir = data_dir().join("recruit_groups");
         let registry: Registry<RecruitGroup> = Registry::load_from_dir(&dir).unwrap();
-        assert_eq!(registry.len(), 3, "expected 3 recruit groups, got {}", registry.len());
+        assert_eq!(registry.len(), 4, "expected 4 recruit groups, got {}", registry.len());
 
-        let elf = registry.get("elf_base").expect("elf_base not found");
-        assert!(elf.members.contains(&"Elvish Fighter".to_string()), "elf_base missing Elvish Fighter");
-        assert!(elf.members.contains(&"Elvish Archer".to_string()), "elf_base missing Elvish Archer");
+        let rebel = registry.get("rebel_base").expect("rebel_base not found");
+        assert!(rebel.members.contains(&"Elvish Fighter".to_string()), "rebel_base missing Elvish Fighter");
+        assert!(rebel.members.contains(&"Elvish Archer".to_string()), "rebel_base missing Elvish Archer");
 
         let human = registry.get("human_base").expect("human_base not found");
         assert!(human.members.contains(&"Spearman".to_string()), "human_base missing Spearman");
 
-        let orc = registry.get("orc_base").expect("orc_base not found");
-        assert!(orc.members.contains(&"Orcish Grunt".to_string()), "orc_base missing Orcish Grunt");
+        let northerner = registry.get("northerner_base").expect("northerner_base not found");
+        assert!(northerner.members.contains(&"Orcish Grunt".to_string()), "northerner_base missing Orcish Grunt");
+
+        let undead = registry.get("undead_base").expect("undead_base not found");
+        assert!(undead.members.contains(&"Skeleton".to_string()), "undead_base missing Skeleton");
     }
 
     #[test]
     fn test_faction_registry_loads() {
         let dir = data_dir().join("factions");
         let registry: Registry<FactionDef> = Registry::load_from_dir(&dir).unwrap();
-        assert_eq!(registry.len(), 3, "expected 3 factions, got {}", registry.len());
+        assert_eq!(registry.len(), 4, "expected 4 factions, got {}", registry.len());
 
-        let elves = registry.get("elves").expect("elves faction not found");
-        assert_eq!(elves.leader_def, "Elvish Captain");
-        assert_eq!(elves.recruits, vec!["elf_base"]);
+        let rebels = registry.get("rebels").expect("rebels faction not found");
+        assert_eq!(rebels.leader_def, "Elvish Captain");
+        assert_eq!(rebels.recruits, vec!["rebel_base"]);
 
         let loyalists = registry.get("loyalists").expect("loyalists not found");
         assert_eq!(loyalists.leader_def, "Lieutenant");
         assert_eq!(loyalists.recruits, vec!["human_base"]);
 
-        let orcs = registry.get("orcs").expect("orcs not found");
-        assert_eq!(orcs.leader_def, "Orcish Warrior");
+        let northerners = registry.get("northerners").expect("northerners not found");
+        assert_eq!(northerners.leader_def, "Orcish Warrior");
+
+        let undead = registry.get("undead").expect("undead faction not found");
+        assert_eq!(undead.leader_def, "Dark Sorcerer");
+        assert_eq!(undead.recruits, vec!["undead_base"]);
     }
 
     #[test]

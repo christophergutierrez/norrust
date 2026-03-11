@@ -8,13 +8,13 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 **v3.8 Unit Expansion**
 Status: 🚧 In Progress
-Phases: 2 of 5 complete
+Phases: 3 of 5 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 107 | Unit Tree Audit | 1 | ✅ Complete | 2026-03-10 |
 | 108 | Directory Reorganization + Recursive Loader | 1 | ✅ Complete | 2026-03-11 |
-| 109 | TOML Completion + Advancement Wiring | TBD | Not started | - |
+| 109 | TOML Completion + Advancement Wiring | 1 | ✅ Complete | 2026-03-11 |
 | 110 | Sprite Generation | TBD | Not started | - |
 | 111 | Faction Integration + Polish | TBD | Not started | - |
 

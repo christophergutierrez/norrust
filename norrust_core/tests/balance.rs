@@ -229,24 +229,24 @@ fn run_balance(
 
 #[test]
 fn balance_crossing() {
-    let r = run_balance("crossing", 1000, "loyalists", "orcs");
-    println!("Crossing (Loyalists vs Orcs, 1000 games): {}", r);
+    let r = run_balance("crossing", 1000, "loyalists", "northerners");
+    println!("Crossing (Loyalists vs Northerners, 1000 games): {}", r);
 }
 
 #[test]
 fn balance_night_orcs() {
-    let r = run_balance("night_orcs", 1000, "loyalists", "orcs");
-    println!("Night Orcs (Loyalists vs Orcs, 1000 games): {}", r);
+    let r = run_balance("night_orcs", 1000, "loyalists", "northerners");
+    println!("Night Orcs (Loyalists vs Northerners, 1000 games): {}", r);
 }
 
 #[test]
 fn balance_final_battle() {
-    let r = run_balance("final_battle", 1000, "loyalists", "orcs");
-    println!("Final Battle (Loyalists vs Orcs, 1000 games): {}", r);
+    let r = run_balance("final_battle", 1000, "loyalists", "northerners");
+    println!("Final Battle (Loyalists vs Northerners, 1000 games): {}", r);
 }
 
 #[test]
 fn balance_contested() {
-    let r = run_balance("contested", 1000, "loyalists", "orcs");
-    println!("Contested (Loyalists vs Orcs, 1000 games): {}", r);
+    let r = run_balance("contested", 1000, "loyalists", "northerners");
+    println!("Contested (Loyalists vs Northerners, 1000 games): {}", r);
 }

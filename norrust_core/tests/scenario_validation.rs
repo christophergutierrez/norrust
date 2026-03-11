@@ -414,7 +414,7 @@ fn test_ffi_all_symbols_exercised() {
 
         // Starting gold
         let f0 = CString::new("loyalists").unwrap();
-        let f1 = CString::new("orcs").unwrap();
+        let f1 = CString::new("northerners").unwrap();
         norrust_apply_starting_gold(engine, f0.as_ptr(), f1.as_ptr());
 
         // State queries
