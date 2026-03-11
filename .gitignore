@@ -25,3 +25,6 @@ norrust_love/assets/units/*/tmp/
 
 # Raw sprite sheets (intermediate, regeneratable)
 sprites_raw/
+
+# Debug sandbox generated data
+debug/data/

@@ -6,17 +6,37 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
-**v3.8 Unit Expansion**
-Status: ✅ Complete
-Phases: 5 of 5 complete
+**v3.9 Debug Sandbox**
+Status: 🚧 In Progress
+Phases: 1 of 3 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
-| 107 | Unit Tree Audit | 1 | ✅ Complete | 2026-03-10 |
-| 108 | Directory Reorganization + Recursive Loader | 1 | ✅ Complete | 2026-03-11 |
-| 109 | TOML Completion + Advancement Wiring | 1 | ✅ Complete | 2026-03-11 |
-| 110 | Sprite Generation | 1 | ✅ Complete | 2026-03-11 |
-| 111 | Faction Integration + Polish | 1 | ✅ Complete | 2026-03-11 |
+| 112 | Debug Config + Generator Tool | 1 | ✅ Complete | 2026-03-11 |
+| 113 | Debug Launch Mode + Cheat Keys | TBD | Not started | - |
+| 114 | Test Scenarios + Polish | TBD | Not started | - |
+
+## v3.9 Phase Details
+
+### Phase 112: Debug Config + Generator Tool
+
+Focus: Create debug_config.toml schema with defaults (xp_to_advance, starting_gold, HP overrides). Python generator tool reads config, copies real unit/scenario TOMLs into debug/data/, patches overridden fields. Lives in tools/ alongside existing generators.
+Depends on: None
+Constraints: Zero changes to norrust_core. Generator is standalone Python tool.
+Plans: 1 (112-01: execute — complete)
+Result: generate_debug.py produces 131 units (114 patched), 4 factions, 15 terrain, 4 recruit groups with per-unit override support
+
+### Phase 113: Debug Launch Mode + Cheat Keys
+
+Focus: --debug flag or similar launch mechanism switches Love2D data path from data/ to debug/data/. Minimal conf.lua touch (one if). debug.lua loaded only in debug mode with cheat keys: X = max XP, G = add gold, T = cycle ToD.
+Depends on: Phase 112 (debug data must exist to load)
+
+### Phase 114: Test Scenarios + Polish
+
+Focus: Pre-built debug scenarios for common test cases (small board, units adjacent, multi-advancement paths). Verify end-to-end debug workflow. Documentation.
+Depends on: Phase 113 (launch mode must work)
+
+---
 
 ## v3.8 Phase Details
 

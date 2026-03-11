@@ -1,0 +1,25 @@
+# Debug Sandbox Configuration
+#
+# Run: python3 tools/generate_debug.py
+# Output: debug/data/ (complete game data with patched values)
+#
+# All fields are optional. Omitted fields keep their original values.
+# Per-unit overrides take precedence over defaults.
+
+[defaults]
+experience = 1          # XP needed to advance (normally 42-150)
+# max_hp = 999          # Uncomment to make units very hard to kill
+# cost = 1              # Uncomment for near-free recruitment
+# movement = 99         # Uncomment for unlimited movement range
+
+[defaults.faction]
+starting_gold = 99999   # Override faction starting gold
+
+# Per-unit overrides (key = unit ID exactly as in TOML id field)
+# Uncomment and modify as needed:
+#
+# [overrides.units.Spearman]
+# experience = 50       # Test Spearman at normal-ish pace
+#
+# [overrides.units.Mage]
+# max_hp = 10           # Test fragile mage scenarios
