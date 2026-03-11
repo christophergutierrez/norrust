@@ -7,14 +7,14 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 ## Current Milestone
 
 **v4.0 Unit Content Completeness**
-Status: 🚧 In Progress
-Phases: 2 of 3 complete
+Status: ✅ Complete
+Phases: 3 of 3 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 115 | Missing Units + Cleanup | 1/1 | ✅ Complete | 2026-03-11 |
 | 116 | Stat Verification | 1/1 | ✅ Complete | 2026-03-11 |
-| 117 | Integration Validation | TBD | Not started | - |
+| 117 | Integration Validation | 1/1 | ✅ Complete | 2026-03-11 |
 
 ## v4.0 Phase Details
 
@@ -37,7 +37,12 @@ Depends on: Phase 116 (correct stats)
 
 ---
 
-## Previous Milestone
+## Previous Milestones
+
+**v4.0 Unit Content Completeness**
+Status: ✅ Complete
+Phases: 3 of 3 complete
+Completed: 2026-03-11
 
 **v3.9 Debug Sandbox**
 Status: ✅ Complete

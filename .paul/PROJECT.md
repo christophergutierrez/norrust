@@ -265,6 +265,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 - [ ] Sprite generation for all 114 units (deferred — circles serve as placeholders)
 - [x] All advancement chains resolve — 132 units, 84 targets, zero dangling references — Phase 115 (115-01)
+- [x] All 109 WML-matched unit stats verified correct (zero discrepancies) — Phase 116 (116-01)
+- [x] Integration validation: 156 tests pass, all 4 factions recruit and advance in-game — Phase 117 (117-01)
 
 ### Out of Scope
 
@@ -446,7 +448,7 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-11 after Phase 114*
+*Last updated: 2026-03-11 after Phase 117 — v4.0 milestone complete*
 | AI leader discipline + mixed recruitment | Smarter AI spending; leader stays on keep, round-robin unit selection | 2026-03-10 | Active |
 
 | evaluate_state centered HP ratio | Raw ratio breaks zero-sum symmetry; (own/total-0.5)*2 centers at 0 | 2026-03-10 | Active |
