@@ -248,7 +248,7 @@ local function check_game_over()
         vars.game_over = true
         vars.winner_faction = w
         if w == 0 then
-            save.write_save(vars.engine, norrust, scn.board, scn.path, nil)
+            save.write_save(vars.engine, norrust, scn.board)
         end
     end
 end

@@ -237,10 +237,18 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] ai_take_turn_with_recruits/ai_plan_turn_with_recruits: recruit-aware AI entry points — Phase 102 (102-01)
 - [x] 2-ply lookahead for all units: evaluate_with_opponent_response simulates enemy greedy response before scoring — Phase 103 (103-01)
 - [x] depth parameter on plan_unit_action: configurable 1-ply vs 2-ply lookahead — Phase 103 (103-01)
+- [x] CampaignState owned by Rust engine (veterans, gold, roster, scenario index) — Phase 104 (104-01)
+- [x] UUID generation via xorshift64 in Rust campaign module — Phase 104 (104-01)
+- [x] SaveState DTO with serde Serialize/Deserialize for full engine serialization — Phase 105 (105-01)
+- [x] norrust_save_json/norrust_load_json FFI functions for single-call save/load — Phase 105 (105-01)
+- [x] Registry-based unit restore: saves only runtime state, attacks/defense from registry — Phase 105 (105-01)
+- [x] Lua save/load wired to single FFI calls, replacing ~14 manual restore calls — Phase 106 (106-01)
+- [x] TOML serialization dead code removed from save.lua — Phase 106 (106-01)
+- [x] Legacy TOML/old-JSON save backward compatibility preserved — Phase 106 (106-01)
 
 ### Active (In Progress / Deferred)
 
-- [ ] Campaign state owned by Rust with JSON serialization — Phase 104 (foundation), Phase 105 (serialization), Phase 106 (Lua wiring)
+(No active requirements)
 
 ### Out of Scope
 
@@ -370,13 +378,13 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | Dialogue path derived from board filename | board.toml → board_dialogue.toml; no separate config needed | 2026-03-05 | Active |
 | Narrator panel lowest priority in panel chain | Hidden by combat/recruit/unit/terrain panels; dialogue is ambient | 2026-03-05 | Active |
 | turn_end fires before engine end_turn | Captures ending turn/faction before state advances | 2026-03-05 | Active |
-| Custom parse_save_toml in save.lua | toml_parser.lua doesn't support [[arrays-of-tables]]; save.lua is self-contained | 2026-03-06 | Active |
+| Custom parse_save_toml in save.lua | toml_parser.lua doesn't support [[arrays-of-tables]]; kept for legacy load only | 2026-03-06 | Active |
 | Save files in Love2D save directory | t.identity="norrust" → ~/.local/share/love/norrust/saves/; game data stays read-only | 2026-03-06 | Active |
 | Date-first flat save naming | YYYY-MM-DD_HHMMSS_scenario.toml; chronological sort without subdirectories | 2026-03-06 | Active |
 | F9 works from any game mode | Must load after restart when in PICK_SCENARIO; handler before mode-specific blocks | 2026-03-06 | Active |
 | FFI state query returns JSON, restore takes individual calls or JSON | Consistent pattern for serializable engine state | 2026-03-06 | Active |
 | Auto-save before AI turn (on 'e' key) | Captures player intent before AI moves; player can undo AI by loading | 2026-03-06 | Active |
-| campaign_ctx parameter for optional campaign context in save | nil for standalone, table for campaign; single save function | 2026-03-06 | Active |
+| campaign_ctx parameter for optional campaign context in save | nil for standalone, table for campaign; single save function | 2026-03-06 | Superseded (v3.7 — engine owns campaign) |
 | 8-char hex UUID for unit identity (not RFC 4122) | Sufficient for campaign scope; no external deps | 2026-03-06 | Active |
 | Roster is campaign-only (nil for standalone) | Standalone scenarios don't need identity tracking | 2026-03-06 | Active |
 | Local uid tracking in veteran placement loop | Engine's place_unit doesn't increment next_unit_id | 2026-03-06 | Active |
@@ -397,6 +405,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | SaveState DTO for serialization (not Serialize on GameState) | GameState has HashMap<Hex,_> keys + RNG; SaveState is clean boundary | 2026-03-10 | Active |
 | Registry-based unit restore from saves | Saves only runtime state; attacks/defense from registry on load | 2026-03-10 | Active |
 | Board reload from path on save restore | Terrain + trigger zones come from TOML; not duplicated in save | 2026-03-10 | Active |
+| Single FFI call save/load from Lua | norrust.save_json()/load_json() replace ~14 manual calls; engine owns all state | 2026-03-10 | Active |
+| Format detection via top-level field presence | data.board_path = new format, data.game = old format; no version flags | 2026-03-10 | Active |
+| Legacy _legacy_restore() for old saves | Shared by both old JSON and TOML; avoids code duplication | 2026-03-10 | Active |
 
 ## Tech Stack
 
@@ -440,4 +451,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 | Greedy opponent response in 2-ply | No recursive depth; catches oscillation without exponential blowup | 2026-03-10 | Active |
 
-*Last updated: 2026-03-10 after Phase 105 JSON Save Format.*
+*Last updated: 2026-03-10 after Phase 106 Save UX Cleanup.*

@@ -29,8 +29,21 @@ local campaign_client
 --- Restore game state after loading a save file.
 -- @param data  The table returned by save.load_save
 local function restore_from_save(data)
-    scn.board = data.game.board_path
-    scn.path = data.game.scenarios_path
+    -- Detect format: new (top-level board_path) vs old (nested game.board_path)
+    if data.board_path then
+        -- New Rust-format: extract relative board path from full path
+        local prefix = scn.path .. "/"
+        if data.board_path:sub(1, #prefix) == prefix then
+            scn.board = data.board_path:sub(#prefix + 1)
+        else
+            scn.board = data.board_path
+        end
+    else
+        -- Old format
+        scn.board = data.game.board_path
+        scn.path = data.game.scenarios_path
+    end
+
     vars.game_over = false
     vars.winner_faction = -1
     clear_selection()
@@ -39,8 +52,51 @@ local function restore_from_save(data)
     scn.COLS = int(state.cols or 8)
     scn.ROWS = int(state.rows or 5)
     center_camera()
-    -- Restore campaign context if present
-    if data.campaign then
+
+    -- Restore campaign context
+    if data.board_path and data.campaign then
+        -- New format: campaign from Rust CampaignState (engine already restored)
+        local c = data.campaign
+        campaign.active = true
+        campaign.data = c.campaign_def
+        campaign.index = int(c.scenario_index)
+        campaign.gold = int(c.carry_gold)
+        if c.campaign_def.faction_0 and c.campaign_def.faction_0 ~= "" then
+            game_data.faction_id[1] = c.campaign_def.faction_0
+        end
+        if c.campaign_def.faction_1 and c.campaign_def.faction_1 ~= "" then
+            game_data.faction_id[2] = c.campaign_def.faction_1
+        end
+        campaign.veterans = c.veterans or {}
+        -- Reconstruct Lua roster from Rust format
+        if c.roster then
+            campaign.roster = mods.roster_mod.new()
+            for uuid, entry in pairs(c.roster) do
+                local status = entry.status
+                -- Rust enum serializes as "Alive"/"Dead", Lua uses "alive"/"dead"
+                if type(status) == "string" then status = status:lower() end
+                campaign.roster.entries[uuid] = {
+                    uuid = uuid,
+                    def_id = entry.def_id,
+                    hp = int(entry.hp),
+                    max_hp = int(entry.max_hp),
+                    xp = int(entry.xp),
+                    xp_needed = int(entry.xp_needed),
+                    advancement_pending = entry.advancement_pending or false,
+                    status = status or "alive",
+                }
+            end
+            -- Restore id_map (JSON keys are strings, Lua uses numbers)
+            if c.id_map then
+                for str_id, uuid in pairs(c.id_map) do
+                    campaign.roster.id_map[tonumber(str_id)] = uuid
+                end
+            end
+        else
+            campaign.roster = mods.roster_mod.new()
+        end
+    elseif data.campaign then
+        -- Old format: campaign from Lua-format save
         local c = data.campaign
         campaign.active = true
         campaign.data = mods.norrust.load_campaign(vars.engine, campaign.path .. "/" .. c.campaign_file)
@@ -48,19 +104,15 @@ local function restore_from_save(data)
         campaign.gold = int(c.campaign_gold)
         game_data.faction_id[1] = c.faction_id_0
         game_data.faction_id[2] = c.faction_id_1
-        -- Restore veterans
         campaign.veterans = data.veterans or {}
-        -- Restore roster
         if data.roster and #data.roster > 0 then
             campaign.roster = mods.roster_mod.from_save_array(data.roster)
-            -- Re-map engine IDs to roster UUIDs by matching def_id
             local st = mods.norrust.get_state(vars.engine)
             for _, u in ipairs(st.units or {}) do
                 if int(u.faction) == 0 then
                     for uuid, entry in pairs(campaign.roster.entries) do
                         if entry.status == "alive" and not campaign.roster.id_map[int(u.id)]
                            and entry.def_id == u.def_id then
-                            -- Check no other engine_id already maps to this uuid
                             local already_mapped = false
                             for _, mapped_uuid in pairs(campaign.roster.id_map) do
                                 if mapped_uuid == uuid then already_mapped = true; break end
@@ -137,26 +189,12 @@ end
 
 -- ── Keyboard input ────────────────────────────────────────────────────────
 
--- Build campaign context for save (nil if not in campaign).
--- Module-scope so both F5 and exit_confirm handlers can use it.
-local function build_save_campaign_ctx()
-    if not campaign.active then return nil end
-    return {
-        file = game_data.CAMPAIGNS[1].file,
-        index = campaign.index,
-        gold = campaign.gold,
-        veterans = campaign.veterans,
-        faction_id = game_data.faction_id,
-        roster = campaign.roster and mods.roster_mod.to_save_array(campaign.roster) or nil,
-    }
-end
-
 -- Handle global keys (F5, F9, /, m, -, =).
 -- Returns true if the key was consumed.
 local function handle_global_keys(key)
     -- Save (F5, playing only)
     if key == "f5" and vars.game_mode == MODES.PLAYING then
-        local filename = mods.save.write_save(vars.engine, mods.norrust, scn.board, scn.path, build_save_campaign_ctx())
+        local filename = mods.save.write_save(vars.engine, mods.norrust, scn.board)
         if filename then
             vars.status_message = "Saved: " .. filename
         else
@@ -215,7 +253,7 @@ end
 local function handle_exit_confirm(key)
     if key == "y" then
         -- Save and return to menu
-        mods.save.write_save(vars.engine, mods.norrust, scn.board, scn.path, build_save_campaign_ctx())
+        mods.save.write_save(vars.engine, mods.norrust, scn.board)
         shared.exit_confirm = false
         campaign.active = false
         campaign.roster = nil

@@ -1,214 +1,22 @@
 -- save.lua — Save/load game state (JSON format, backward-compat TOML reading)
 
-local toml_parser = require("toml_parser")
 local norrust_mod = require("norrust")
 local json_encode = norrust_mod.json_encode
 local json_decode = norrust_mod.json_decode
 
 local save = {}
 
--- ── TOML serialization (kept for backward compat) ───────────────────────────
-
---- Serialize a Lua value to a TOML value string.
-local function toml_value(v)
-    local t = type(v)
-    if t == "string" then
-        return '"' .. v:gsub('\\', '\\\\'):gsub('"', '\\"') .. '"'
-    elseif t == "number" then
-        if v == math.floor(v) then
-            return string.format("%d", v)
-        end
-        return tostring(v)
-    elseif t == "boolean" then
-        return v and "true" or "false"
-    end
-    return tostring(v)
-end
-
---- Serialize a Lua array to a TOML inline array string.
-local function toml_array(arr)
-    local items = {}
-    for _, v in ipairs(arr) do
-        items[#items + 1] = toml_value(v)
-    end
-    return "[" .. table.concat(items, ", ") .. "]"
-end
-
---- Serialize a save data table to TOML string.
---- Expects: {game = {key=val,...}, units = {{key=val,...}, ...}}
-function save.serialize_toml(data)
-    local lines = {}
-    lines[#lines + 1] = "# Norrust save file"
-    lines[#lines + 1] = ""
-
-    -- [game] section
-    if data.game then
-        lines[#lines + 1] = "[game]"
-        for k, v in pairs(data.game) do
-            lines[#lines + 1] = k .. " = " .. toml_value(v)
-        end
-        lines[#lines + 1] = ""
-    end
-
-    -- [campaign] section (optional)
-    if data.campaign then
-        lines[#lines + 1] = "[campaign]"
-        local camp_order = {"campaign_file", "campaign_index", "campaign_gold", "faction_id_0", "faction_id_1"}
-        for _, k in ipairs(camp_order) do
-            if data.campaign[k] ~= nil then
-                lines[#lines + 1] = k .. " = " .. toml_value(data.campaign[k])
-            end
-        end
-        lines[#lines + 1] = ""
-    end
-
-    -- [state] section (trigger zones + dialogue fired)
-    if data.state then
-        lines[#lines + 1] = "[state]"
-        if data.state.trigger_zones_fired then
-            lines[#lines + 1] = "trigger_zones_fired = " .. toml_array(data.state.trigger_zones_fired)
-        end
-        if data.state.dialogue_fired then
-            lines[#lines + 1] = "dialogue_fired = " .. toml_array(data.state.dialogue_fired)
-        end
-        lines[#lines + 1] = ""
-    end
-
-    -- [[veterans]] array-of-tables (campaign carry-over units)
-    if data.veterans then
-        for _, vet in ipairs(data.veterans) do
-            lines[#lines + 1] = "[[veterans]]"
-            local vet_order = {"def_id", "hp", "xp", "xp_needed", "advancement_pending"}
-            for _, k in ipairs(vet_order) do
-                if vet[k] ~= nil then
-                    lines[#lines + 1] = k .. " = " .. toml_value(vet[k])
-                end
-            end
-            lines[#lines + 1] = ""
-        end
-    end
-
-    -- [[roster]] array-of-tables (campaign persistent unit roster)
-    if data.roster then
-        for _, entry in ipairs(data.roster) do
-            lines[#lines + 1] = "[[roster]]"
-            local roster_order = {"uuid", "def_id", "hp", "max_hp", "xp", "xp_needed", "advancement_pending", "status"}
-            for _, k in ipairs(roster_order) do
-                if entry[k] ~= nil then
-                    lines[#lines + 1] = k .. " = " .. toml_value(entry[k])
-                end
-            end
-            lines[#lines + 1] = ""
-        end
-    end
-
-    -- [[units]] array-of-tables
-    if data.units then
-        for _, unit in ipairs(data.units) do
-            lines[#lines + 1] = "[[units]]"
-            local order = {"id", "def_id", "faction", "col", "row", "hp", "max_hp", "xp", "xp_needed", "moved", "attacked"}
-            for _, k in ipairs(order) do
-                if unit[k] ~= nil then
-                    lines[#lines + 1] = k .. " = " .. toml_value(unit[k])
-                end
-            end
-            lines[#lines + 1] = ""
-        end
-    end
-
-    return table.concat(lines, "\n")
-end
-
 -- ── Save ────────────────────────────────────────────────────────────────────
 
---- Save the current game state to a TOML file.
---- campaign_ctx: nil for standalone, or {file, index, gold, veterans, faction_id}
+--- Save the current game state to a JSON file via single FFI call.
 --- Returns the filename on success, nil on failure.
-function save.write_save(engine, norrust, scenario_board, scenarios_path, campaign_ctx)
-    local state = norrust.get_state(engine)
-    if not state then return nil end
+function save.write_save(engine, norrust, scenario_board, display_name)
+    -- Set display name on engine before serializing
+    norrust.set_display_name(engine, display_name or "")
 
-    local int = math.floor
-
-    -- Build save data
-    local data = {
-        game = {
-            display_name = "",
-            board_path = scenario_board,
-            scenarios_path = scenarios_path,
-            turn = int(state.turn),
-            active_faction = int(state.active_faction),
-            gold_0 = int(state.gold[1]),
-            gold_1 = int(state.gold[2]),
-        },
-        units = {},
-    }
-
-    -- Add objective/max_turns if present
-    if state.objective_col then
-        data.game.objective_col = int(state.objective_col)
-        data.game.objective_row = int(state.objective_row)
-    end
-    if state.max_turns then
-        data.game.max_turns = int(state.max_turns)
-    end
-
-    -- Campaign context
-    if campaign_ctx then
-        data.campaign = {
-            campaign_file = campaign_ctx.file,
-            campaign_index = int(campaign_ctx.index),
-            campaign_gold = int(campaign_ctx.gold),
-            faction_id_0 = campaign_ctx.faction_id[1],
-            faction_id_1 = campaign_ctx.faction_id[2],
-        }
-        -- Veterans from previous scenarios
-        if campaign_ctx.veterans and #campaign_ctx.veterans > 0 then
-            data.veterans = {}
-            for _, vet in ipairs(campaign_ctx.veterans) do
-                data.veterans[#data.veterans + 1] = {
-                    def_id = vet.def_id,
-                    hp = int(vet.hp),
-                    xp = int(vet.xp),
-                    xp_needed = int(vet.xp_needed),
-                    advancement_pending = vet.advancement_pending,
-                }
-            end
-        end
-        -- Roster (persistent unit identity)
-        if campaign_ctx.roster and #campaign_ctx.roster > 0 then
-            data.roster = campaign_ctx.roster
-        end
-    end
-
-    -- Trigger zone and dialogue fired state
-    data.state = {}
-    local tz_fired = norrust.get_trigger_zones_fired(engine)
-    if #tz_fired > 0 then
-        data.state.trigger_zones_fired = tz_fired
-    end
-    local dlg_fired = norrust.get_dialogue_fired(engine)
-    if #dlg_fired > 0 then
-        data.state.dialogue_fired = dlg_fired
-    end
-
-    for _, u in ipairs(state.units or {}) do
-        data.units[#data.units + 1] = {
-            id = int(u.id),
-            def_id = u.def_id,
-            faction = int(u.faction),
-            col = int(u.col),
-            row = int(u.row),
-            hp = int(u.hp),
-            max_hp = int(u.max_hp),
-            xp = int(u.xp),
-            xp_needed = int(u.xp_needed),
-            moved = u.moved,
-            attacked = u.attacked,
-        }
-    end
-
-    local json_str = json_encode(data)
+    -- Get full state as JSON from engine
+    local json_str = norrust.save_json(engine)
+    if not json_str or json_str == "" then return nil end
 
     -- Create saves directory
     love.filesystem.createDirectory("saves")
@@ -357,7 +165,7 @@ local function parse_save_toml(text)
 end
 
 --- Load a save file and reconstruct engine state.
---- Supports both JSON (.json) and legacy TOML (.toml) save files.
+--- Supports new JSON (single FFI call), old JSON, and legacy TOML save files.
 --- Returns the parsed save data on success, nil on failure.
 function save.load_save(engine, norrust, filepath, center_camera_fn)
     local text = love.filesystem.read(filepath)
@@ -366,17 +174,44 @@ function save.load_save(engine, norrust, filepath, center_camera_fn)
         return nil
     end
 
-    local data
+    -- JSON saves
     if filepath:match("%.json$") then
-        data = json_decode(text)
-    else
-        data = parse_save_toml(text)
+        local data = json_decode(text)
+        if not data then
+            print("[LOAD] Invalid JSON save file")
+            return nil
+        end
+
+        -- New Rust-format saves have board_path at top level
+        if data.board_path then
+            local ok = norrust.load_json(engine, text)
+            if not ok then
+                print("[LOAD] Failed to restore engine state from JSON")
+                return nil
+            end
+            print("[LOAD] Loaded: " .. filepath)
+            return data
+        end
+
+        -- Old JSON format: fall through to legacy multi-call restore
+        if not data.game or not data.game.board_path then
+            print("[LOAD] Invalid save file format")
+            return nil
+        end
+        return save._legacy_restore(engine, norrust, data, filepath)
     end
+
+    -- TOML saves: parse and use legacy restore
+    local data = parse_save_toml(text)
     if not data or not data.game or not data.game.board_path then
         print("[LOAD] Invalid save file format")
         return nil
     end
+    return save._legacy_restore(engine, norrust, data, filepath)
+end
 
+--- Legacy multi-call restore for old JSON and TOML save files.
+function save._legacy_restore(engine, norrust, data, filepath)
     local int = math.floor
     local g = data.game
 
@@ -421,10 +256,8 @@ function save.load_save(engine, norrust, filepath, center_camera_fn)
 
     -- Restore dialogue fired state
     if data.state and data.state.dialogue_fired and #data.state.dialogue_fired > 0 then
-        -- Load dialogue file first (derived from board filename)
         local dialogue_path = g.scenarios_path .. "/" .. g.board_path:gsub("board%.toml$", "dialogue.toml")
         norrust.load_dialogue(engine, dialogue_path)
-        -- Build JSON array and pass to FFI
         local items = {}
         for _, id in ipairs(data.state.dialogue_fired) do
             items[#items + 1] = '"' .. id:gsub('\\', '\\\\'):gsub('"', '\\"') .. '"'
@@ -489,13 +322,23 @@ function save.list_saves()
                 if filepath:match("%.json$") then
                     -- JSON save: parse and extract fields
                     local d = json_decode(text)
-                    if d and d.game then
-                        turn = tostring(d.game.turn or "?")
-                        display_name = d.game.display_name
-                        if display_name == "" then display_name = nil end
-                    end
-                    if d and d.campaign and d.campaign.campaign_file then
-                        campaign_name = d.campaign.campaign_file:gsub("%.toml$", "")
+                    if d then
+                        if d.board_path then
+                            -- New Rust-format save
+                            turn = tostring(d.turn or "?")
+                            display_name = d.display_name
+                            if d.campaign and d.campaign.campaign_def then
+                                campaign_name = d.campaign.campaign_def.name
+                            end
+                        elseif d.game then
+                            -- Old JSON format
+                            turn = tostring(d.game.turn or "?")
+                            display_name = d.game.display_name
+                            if display_name == "" then display_name = nil end
+                            if d.campaign and d.campaign.campaign_file then
+                                campaign_name = d.campaign.campaign_file:gsub("%.toml$", "")
+                            end
+                        end
                     end
                 else
                     -- Legacy TOML save: line-scan
@@ -557,7 +400,14 @@ function save.update_display_name(filepath, name)
     if filepath:match("%.json$") then
         -- JSON: parse, modify, re-encode
         local data = json_decode(text)
-        if data and data.game then
+        if not data then return false end
+        if data.board_path then
+            -- New Rust-format save
+            data.display_name = name
+            love.filesystem.write(filepath, json_encode(data))
+            return true
+        elseif data.game then
+            -- Old JSON format
             data.game.display_name = name
             love.filesystem.write(filepath, json_encode(data))
             return true

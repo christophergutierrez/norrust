@@ -7,14 +7,14 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 ## Current Milestone
 
 **v3.7 Save System Overhaul**
-Status: In Progress
-Phases: 2 of 3 complete
+Status: ✅ Complete
+Phases: 3 of 3 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 104 | Campaign State in Rust | 1/1 | ✅ Complete | 2026-03-10 |
 | 105 | JSON Save Format | 1/1 | ✅ Complete | 2026-03-10 |
-| 106 | Save UX Cleanup | TBD | Not started | - |
+| 106 | Save UX Cleanup | 1/1 | ✅ Complete | 2026-03-10 |
 
 ## v3.7 Phase Details
 
@@ -32,11 +32,12 @@ Depends on: Phase 104 (campaign state must be in Rust before serializing it)
 Plans: 1/1 complete
 Completed: 2026-03-10
 
-### Phase 106: Save UX Cleanup
+### Phase 106: Save UX Cleanup ✅
 
 Focus: Wire new save/load FFI into Lua. Save management UI reads JSON metadata. Delete save.lua TOML parser/serializer dead code. Existing UX preserved (F5/F9, save list, display_name, auto-save).
 Depends on: Phase 105 (JSON save/load FFI must exist before wiring Lua)
-Plans: TBD (defined during /paul:plan)
+Plans: 1/1 complete
+Completed: 2026-03-10
 
 ---
 

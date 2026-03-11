@@ -248,6 +248,11 @@ ffi.cdef[[
     char* norrust_get_dialogue(NorRustEngine* engine, const char* trigger, uint32_t turn, uint8_t faction, int32_t col, int32_t row);
     char* norrust_get_dialogue_fired(NorRustEngine* engine);
     void norrust_set_dialogue_fired(NorRustEngine* engine, const char* ids_json);
+
+    // Save / Load
+    void norrust_set_display_name(NorRustEngine* engine, const char* name);
+    char* norrust_save_json(NorRustEngine* engine);
+    int32_t norrust_load_json(NorRustEngine* engine, const char* json);
 ]]
 
 -- ── Load shared library ─────────────────────────────────────────────────────
@@ -645,6 +650,21 @@ end
 --- Mark dialogue entries as fired from a JSON array string.
 function M.set_dialogue_fired(engine, ids_json)
     lib.norrust_set_dialogue_fired(engine, ids_json)
+end
+
+--- Set display name on engine (for save metadata).
+function M.set_display_name(engine, name)
+    lib.norrust_set_display_name(engine, name)
+end
+
+--- Save full engine state to JSON string.
+function M.save_json(engine)
+    return get_string(lib.norrust_save_json(engine))
+end
+
+--- Load full engine state from JSON string. Returns true on success.
+function M.load_json(engine, json)
+    return lib.norrust_load_json(engine, json) == 0
 end
 
 --- Manually free an engine instance (normally handled by GC).
