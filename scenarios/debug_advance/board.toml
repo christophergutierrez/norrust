@@ -1,0 +1,16 @@
+# Debug scenario: Advance Test — 8 columns × 5 rows
+# Keeps with full castle rings for both sides, flat center for fighting.
+# Use X cheat to max XP, then 'a' to advance.
+#
+# Blue keep: (1,2) — castles: (0,1)(1,1)(0,2)(2,2)(0,3)(1,3)
+# Red  keep: (6,2) — castles: (5,1)(6,1)(5,2)(7,2)(5,3)(6,3)
+
+width = 8
+height = 5
+tiles = [
+  "flat",   "flat",   "flat",   "flat",   "flat",   "flat",   "flat",   "flat",
+  "castle", "castle", "flat",   "flat",   "flat",   "castle", "castle", "flat",
+  "castle", "keep",   "castle", "flat",   "flat",   "castle", "keep",   "castle",
+  "castle", "castle", "flat",   "flat",   "flat",   "castle", "castle", "flat",
+  "flat",   "flat",   "flat",   "flat",   "flat",   "flat",   "flat",   "flat",
+]

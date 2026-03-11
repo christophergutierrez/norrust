@@ -12,6 +12,10 @@ experience = 1          # XP needed to advance (normally 42-150)
 # cost = 1              # Uncomment for near-free recruitment
 # movement = 99         # Uncomment for unlimited movement range
 
+[defaults.attacks]
+damage = 1              # Minimal damage so units gain XP without killing each other
+# strikes = 1           # Uncomment to also reduce number of strikes
+
 [defaults.faction]
 starting_gold = 99999   # Override faction starting gold
 

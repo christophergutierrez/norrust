@@ -460,6 +460,9 @@ function love.load()
             shared.debug_mode = true
             vars.status_message = "DEBUG MODE"
             vars.status_timer = 5.0
+            -- Prepend debug scenarios to the list
+            table.insert(game_data.SCENARIOS, 1, {name = "[DBG] Advance Test", board = "debug_advance/board.toml", units = "debug_advance/units.toml", preset_units = false})
+            table.insert(game_data.SCENARIOS, 2, {name = "[DBG] Recruit Test", board = "debug_recruit/board.toml", units = "debug_recruit/units.toml", preset_units = false})
         elseif a == "--agent-server" then
             shared.agent = agent_server.new(9876)
             if shared.agent then

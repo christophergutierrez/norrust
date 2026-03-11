@@ -1,0 +1,16 @@
+# Debug scenario: Recruit Test — leaders on keeps
+# Faction 0 leader at (1,2), Faction 1 leader at (6,2).
+
+[[units]]
+id = 1
+unit_type = "Lieutenant"
+faction = 0
+col = 1
+row = 2
+
+[[units]]
+id = 2
+unit_type = "Lieutenant"
+faction = 1
+col = 6
+row = 2

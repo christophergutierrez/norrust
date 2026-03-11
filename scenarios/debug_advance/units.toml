@@ -1,0 +1,48 @@
+# Debug scenario: Advance Test
+# Units with known working advancement chains, placed for immediate combat.
+# Mage → White Mage / Red Mage, Heavy Inf → Shock Trooper, Fighter → Hero
+#
+# Blue (faction 0) on left, Red (faction 1) on right.
+# Center columns (2,3) have units adjacent for instant fighting.
+
+[[units]]
+id = 1
+unit_type = "Mage"
+faction = 0
+col = 2
+row = 1
+
+[[units]]
+id = 2
+unit_type = "fighter"
+faction = 0
+col = 2
+row = 2
+
+[[units]]
+id = 3
+unit_type = "Heavy Infantryman"
+faction = 0
+col = 2
+row = 3
+
+[[units]]
+id = 4
+unit_type = "Mage"
+faction = 1
+col = 3
+row = 1
+
+[[units]]
+id = 5
+unit_type = "fighter"
+faction = 1
+col = 3
+row = 2
+
+[[units]]
+id = 6
+unit_type = "Heavy Infantryman"
+faction = 1
+col = 3
+row = 3

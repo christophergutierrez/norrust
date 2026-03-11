@@ -8,7 +8,7 @@ movement = 5
 alignment = "chaotic"
 cost = 34
 usage = "mixed fighter"
-abilities = []
+abilities = ["leader"]
 advances_to = ["Lich", "Necromancer"]
 
 [[attacks]]

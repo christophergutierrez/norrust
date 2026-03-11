@@ -25,6 +25,9 @@ DATA_DST = PROJECT_ROOT / "debug" / "data"
 # Fields we know how to patch in unit TOMLs (top-level simple key = value)
 UNIT_PATCHABLE = {"experience", "max_hp", "movement", "cost", "level", "alignment"}
 
+# Fields we know how to patch inside [[attacks]] sections
+ATTACK_PATCHABLE = {"damage", "strikes"}
+
 # Fields we know how to patch in faction TOMLs
 FACTION_PATCHABLE = {"starting_gold"}
 
@@ -38,37 +41,43 @@ def load_config():
         return tomllib.load(f)
 
 
-def patch_toml_lines(lines, patches):
-    """Patch simple top-level key=value fields in TOML lines.
+def patch_toml_lines(lines, patches, attack_patches=None):
+    """Patch key=value fields in TOML lines.
 
-    Only patches lines matching `^key = value` where key is in patches dict.
-    Preserves all other lines (including [[attacks]], [resistances], etc.) unchanged.
+    Top-level fields (before any section) are patched from `patches` dict.
+    Fields inside [[attacks]] sections are patched from `attack_patches` dict.
+    All other sections ([resistances], [defense], etc.) are preserved unchanged.
 
     Returns (patched_lines, patched_count).
     """
     patched = []
     count = 0
-    in_section = False  # Track if we're inside a [section] or [[array]]
+    current_section = None  # None = top-level, "attacks" = [[attacks]], other = skip
 
     for line in lines:
         stripped = line.strip()
 
-        # Track sections — fields inside [resistances], [[attacks]], etc. are NOT patched
+        # Track sections
         if stripped.startswith("["):
-            in_section = True
+            if stripped.startswith("[[attacks]]"):
+                current_section = "attacks"
+            else:
+                current_section = "other"
             patched.append(line)
             continue
 
-        # Blank line after a section can reset to top-level (before next section)
-        # But actually in TOML, once you're in a section, subsequent bare keys
-        # belong to that section. Top-level fields come BEFORE any [section].
-        # So we only patch when NOT in a section.
-        if not in_section:
+        # Determine which patches apply in current context
+        active_patches = None
+        if current_section is None:
+            active_patches = patches
+        elif current_section == "attacks" and attack_patches:
+            active_patches = attack_patches
+
+        if active_patches:
             matched = False
-            for field, value in patches.items():
+            for field, value in active_patches.items():
                 pattern = rf"^{re.escape(field)}\s*="
                 if re.match(pattern, stripped):
-                    # Preserve original formatting: find the = and replace after it
                     eq_idx = line.index("=")
                     if isinstance(value, str):
                         patched.append(f"{line[:eq_idx + 1]} \"{value}\"\n")
@@ -102,6 +111,10 @@ def generate_units(config):
     # Build default patches (only UNIT_PATCHABLE fields that are set)
     default_patches = {k: v for k, v in defaults.items() if k in UNIT_PATCHABLE}
 
+    # Build attack patches from [defaults.attacks] section
+    attack_defaults = defaults.get("attacks", {})
+    default_attack_patches = {k: v for k, v in attack_defaults.items() if k in ATTACK_PATCHABLE}
+
     units_src = DATA_SRC / "units"
     units_dst = DATA_DST / "units"
 
@@ -133,8 +146,8 @@ def generate_units(config):
                     if k in UNIT_PATCHABLE:
                         patches[k] = v
 
-            if patches:
-                patched_lines, count = patch_toml_lines(lines, patches)
+            if patches or default_attack_patches:
+                patched_lines, count = patch_toml_lines(lines, patches, default_attack_patches)
                 with open(dst_file, "w") as f:
                     f.writelines(patched_lines)
                 if count > 0:
