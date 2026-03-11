@@ -336,10 +336,10 @@ fn test_wesnoth_units_load() {
     let registry = Registry::<UnitDef>::load_from_dir(&data_dir)
         .expect("all unit TOMLs must load without error");
 
-    // 4 custom units + 200+ scraped Wesnoth units
+    // 4 legacy test units + 93 faction units (95 minus 2 missing) + 2 leaders
     assert!(
-        registry.len() >= 200,
-        "expected >= 200 units, got {}",
+        registry.len() >= 95,
+        "expected >= 95 units, got {}",
         registry.len()
     );
 

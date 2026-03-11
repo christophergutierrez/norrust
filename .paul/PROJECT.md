@@ -245,6 +245,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Lua save/load wired to single FFI calls, replacing ~14 manual restore calls — Phase 106 (106-01)
 - [x] TOML serialization dead code removed from save.lua — Phase 106 (106-01)
 - [x] Legacy TOML/old-JSON save backward compatibility preserved — Phase 106 (106-01)
+- [x] Recursive registry loader: load_from_dir scans arbitrarily deep subdirectories — Phase 108 (108-01)
+- [x] Tree-structured unit directories mirroring advancement paths (base/evolution1/evolution2/) — Phase 108 (108-01)
+- [x] 95-unit registry across 4 factions (Loyalists, Rebels, Northerners, Undead) audited and documented — Phase 107 (107-01)
 
 ### Active (In Progress / Deferred)
 
@@ -408,6 +411,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | Single FFI call save/load from Lua | norrust.save_json()/load_json() replace ~14 manual calls; engine owns all state | 2026-03-10 | Active |
 | Format detection via top-level field presence | data.board_path = new format, data.game = old format; no version flags | 2026-03-10 | Active |
 | Legacy _legacy_restore() for old saves | Shared by both old JSON and TOML; avoids code duplication | 2026-03-10 | Active |
+| Recursive scan_dir with load_flat flag | Flat TOMLs only at root; subdirs use dirname.toml convention at any depth | 2026-03-11 | Active |
+| Tree-structured unit directories | data/units/base/evolution/name.toml mirrors advancement paths; max depth 4 | 2026-03-11 | Active |
+| Non-faction scraped TOMLs deleted | 210 drakes/dwarves/dunes/ships removed; only 4-faction units + legacy test units kept | 2026-03-11 | Active |
 
 ## Tech Stack
 
@@ -451,4 +457,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 | Greedy opponent response in 2-ply | No recursive depth; catches oscillation without exponential blowup | 2026-03-10 | Active |
 
-*Last updated: 2026-03-10 after Phase 106 Save UX Cleanup.*
+*Last updated: 2026-03-11 after Phase 108 Directory Reorganization.*

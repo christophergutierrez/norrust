@@ -56,10 +56,16 @@ where
     T: DeserializeOwned + IdField,
 {
     /// Load all `.toml` files from `dir` into a Registry keyed by each item's `id` field.
-    /// Also scans immediate subdirectories for a `<dirname>.toml` file (e.g. `units/bowman/bowman.toml`).
+    /// Scans subdirectories recursively for `<dirname>.toml` files at any depth.
     pub fn load_from_dir(dir: &Path) -> Result<Self, RegistryError> {
         let mut items = HashMap::new();
+        Self::scan_dir(dir, true, &mut items)?;
+        Ok(Registry { items })
+    }
 
+    /// Recursively scan a directory for TOML definitions.
+    /// When `load_flat` is true, also loads flat `.toml` files (only at the top-level call).
+    fn scan_dir(dir: &Path, load_flat: bool, items: &mut HashMap<String, T>) -> Result<(), RegistryError> {
         let entries = std::fs::read_dir(dir).map_err(|e| RegistryError::Io {
             path: dir.display().to_string(),
             source: e,
@@ -73,8 +79,8 @@ where
 
             let path = entry.path();
 
-            // Flat .toml file in directory root
-            if path.extension().and_then(|e| e.to_str()) == Some("toml") {
+            // Flat .toml file (only at top level)
+            if load_flat && path.extension().and_then(|e| e.to_str()) == Some("toml") {
                 let content = std::fs::read_to_string(&path).map_err(|e| RegistryError::Io {
                     path: path.display().to_string(),
                     source: e,
@@ -87,7 +93,7 @@ where
                 continue;
             }
 
-            // Subdirectory: look for <dirname>.toml inside
+            // Subdirectory: look for <dirname>.toml inside, then recurse
             if path.is_dir() {
                 if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
                     let toml_path = path.join(format!("{}.toml", dir_name));
@@ -103,10 +109,12 @@ where
                         items.insert(item.id().to_owned(), item);
                     }
                 }
+                // Recurse into subdirectory (never load flat TOMLs in subdirs)
+                Self::scan_dir(&path, false, items)?;
             }
         }
 
-        Ok(Registry { items })
+        Ok(())
     }
 
     /// Look up an entry by its ID. Returns `None` if not found.

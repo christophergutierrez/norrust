@@ -6,8 +6,55 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
-**v3.7 Save System Overhaul**
+**v3.8 Unit Expansion**
+Status: 🚧 In Progress
+Phases: 2 of 5 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 107 | Unit Tree Audit | 1 | ✅ Complete | 2026-03-10 |
+| 108 | Directory Reorganization + Recursive Loader | 1 | ✅ Complete | 2026-03-11 |
+| 109 | TOML Completion + Advancement Wiring | TBD | Not started | - |
+| 110 | Sprite Generation | TBD | Not started | - |
+| 111 | Faction Integration + Polish | TBD | Not started | - |
+
+## v3.8 Phase Details
+
+### Phase 107: Unit Tree Audit
+
+Focus: Enumerate all ~90 units across 4 factions (Loyalists, Rebels, Northerners, Undead). Verify which TOMLs exist, which are missing, which have incorrect stats or advancement wiring. Produce definitive unit list as reference for subsequent phases.
+Depends on: None
+Plans: 1 (107-01: research — complete)
+Result: 95 unique units identified, UNIT-REGISTRY.md created with status audit and proposed directory tree
+
+### Phase 108: Directory Reorganization + Recursive Loader
+
+Focus: Move units into tree-structured directories mirroring advancement paths (e.g., `data/units/spearman/swordsman/royal_guard/`). Update registry loader (`load_from_dir`) to recurse arbitrarily deep. All existing tests pass with new directory layout.
+Depends on: Phase 107 (need definitive unit list before reorganizing)
+
+### Phase 109: TOML Completion + Advancement Wiring
+
+Focus: Create/fix all ~90 unit TOMLs with correct stats, attacks, and `advances_to` fields. Update faction recruit groups to include all missing units (Horseman, Fencer, Merman Fighter, Wose, Merman Hunter, Troll Whelp, Wolf Rider, Naga Fighter, Goblin Spearman). Create Undead faction TOML + recruit group. Test advancement chains end-to-end.
+Depends on: Phase 108 (TOMLs must be in correct directory structure)
+
+### Phase 110: Sprite Generation
+
+Focus: Batch generate sprites for all units missing them (~70+ units) using existing `tools/generate_sprites.py` pipeline. Verify all sprites in asset viewer. Update `unit_prompts.toml` with descriptions for each new unit.
+Depends on: Phase 109 (all TOMLs must exist before generating sprites for them)
+
+### Phase 111: Faction Integration + Polish
+
+Focus: Undead faction fully playable. Faction selection shows 4 factions. Update scenarios if needed for new faction support. End-to-end testing of all advancement paths across all 4 factions.
+Depends on: Phase 110 (sprites must exist for visual completeness)
+
+---
+
+## Completed Milestones
+
+### v3.7 Save System Overhaul
+
 Status: ✅ Complete
+Completed: 2026-03-10
 Phases: 3 of 3 complete
 
 | Phase | Name | Plans | Status | Completed |
@@ -15,33 +62,6 @@ Phases: 3 of 3 complete
 | 104 | Campaign State in Rust | 1/1 | ✅ Complete | 2026-03-10 |
 | 105 | JSON Save Format | 1/1 | ✅ Complete | 2026-03-10 |
 | 106 | Save UX Cleanup | 1/1 | ✅ Complete | 2026-03-10 |
-
-## v3.7 Phase Details
-
-### Phase 104: Campaign State in Rust ✅
-
-Focus: Move campaign model (veterans, gold carry, scenario index, roster) from Lua-side tracking into Rust engine. Lua becomes thin client reading/writing via FFI. Foundation for everything else.
-Depends on: None
-Plans: 1/1 complete
-Completed: 2026-03-10
-
-### Phase 105: JSON Save Format ✅
-
-Focus: Engine serializes/deserializes full game + campaign state as JSON via serde. Unit UIDs included naturally as part of Rust model. Single FFI call for save/load.
-Depends on: Phase 104 (campaign state must be in Rust before serializing it)
-Plans: 1/1 complete
-Completed: 2026-03-10
-
-### Phase 106: Save UX Cleanup ✅
-
-Focus: Wire new save/load FFI into Lua. Save management UI reads JSON metadata. Delete save.lua TOML parser/serializer dead code. Existing UX preserved (F5/F9, save list, display_name, auto-save).
-Depends on: Phase 105 (JSON save/load FFI must exist before wiring Lua)
-Plans: 1/1 complete
-Completed: 2026-03-10
-
----
-
-## Completed Milestones
 
 ### v3.6 AI Leader Intelligence
 
@@ -1626,4 +1646,4 @@ See MILESTONES.md for full history.
 </details>
 
 ---
-*Roadmap updated: 2026-03-10 — v3.7 Save System Overhaul created*
+*Roadmap updated: 2026-03-10 — v3.8 Unit Expansion created*
