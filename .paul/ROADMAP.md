@@ -8,12 +8,12 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 **v3.9 Debug Sandbox**
 Status: 🚧 In Progress
-Phases: 1 of 3 complete
+Phases: 2 of 3 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 112 | Debug Config + Generator Tool | 1 | ✅ Complete | 2026-03-11 |
-| 113 | Debug Launch Mode + Cheat Keys | TBD | Not started | - |
+| 113 | Debug Launch Mode + Cheat Keys | 1 | ✅ Complete | 2026-03-11 |
 | 114 | Test Scenarios + Polish | TBD | Not started | - |
 
 ## v3.9 Phase Details
@@ -30,6 +30,8 @@ Result: generate_debug.py produces 131 units (114 patched), 4 factions, 15 terra
 
 Focus: --debug flag or similar launch mechanism switches Love2D data path from data/ to debug/data/. Minimal conf.lua touch (one if). debug.lua loaded only in debug mode with cheat keys: X = max XP, G = add gold, T = cycle ToD.
 Depends on: Phase 112 (debug data must exist to load)
+Plans: 1 (113-01: execute — complete)
+Result: --debug flag switches data paths, 3 cheat FFI functions added, X/G/T keys gated behind debug_mode
 
 ### Phase 114: Test Scenarios + Polish
 

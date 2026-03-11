@@ -254,10 +254,14 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Faction naming aligned to Wesnoth vocabulary: elves→rebels, orcs→northerners — Phase 109 (109-01)
 - [x] Sprite generation tool with all 114 unit definitions and tree-path support — Phase 110 (110-01)
 - [x] 4 factions (loyalists, rebels, northerners, undead) fully operational with correct campaign references — Phase 111 (111-01)
+- [x] Config-driven debug data generator (tools/generate_debug.py) with per-unit override support — Phase 112 (112-01)
+- [x] --debug launch flag switching Love2D to debug/data/ with X/G/T cheat keys — Phase 113 (113-01)
+- [x] 3 cheat FFI functions (cheat_set_xp, cheat_add_gold, cheat_set_turn) as pure additions — Phase 113 (113-01)
 
 ### Active (In Progress / Deferred)
 
 - [ ] Sprite generation for all 114 units (deferred — circles serve as placeholders)
+- [ ] Missing advancement target unit definitions (General, many level 3+ units) — advancement silently fails when target def doesn't exist
 
 ### Out of Scope
 

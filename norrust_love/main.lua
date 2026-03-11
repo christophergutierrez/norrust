@@ -384,8 +384,10 @@ end
 
 --- Initialize vars.engine, load data/factions/assets, and start at scenario selection.
 function love.load()
-    -- Check for generation flags
+    -- Check for generation flags and debug mode
+    local debug_mode = false
     for _, arg in ipairs(arg or {}) do
+        if arg == "--debug" then debug_mode = true end
         if arg == "--generate-tiles" then
             local gen = require("generate_tiles")
             gen.run()
@@ -425,7 +427,8 @@ function love.load()
     -- Paths (norrust_love is one level inside project root)
     local source = love.filesystem.getSource()
     local project_root = source .. "/.."
-    local data_path = project_root .. "/data"
+    local data_rel = debug_mode and "debug/data" or "data"
+    local data_path = project_root .. "/" .. data_rel
     scn.path = project_root .. "/scenarios"
 
     campaign.path = project_root .. "/campaigns"
@@ -438,9 +441,9 @@ function love.load()
     game_data.factions = norrust.get_faction_ids(vars.engine)
     table.sort(game_data.factions, function(a, b) return a.name < b.name end)
 
-    -- Load visual assets from data/ via symlink (data -> ../data)
-    terrain_tiles = assets.load_terrain_tiles("data")
-    unit_sprites = assets.load_unit_sprites("data")
+    -- Load visual assets via symlink (data -> ../data or debug -> ../debug)
+    terrain_tiles = assets.load_terrain_tiles(data_rel)
+    unit_sprites = assets.load_unit_sprites(data_rel)
 
     -- Load sound effects and start menu music
     sound.load()
@@ -452,7 +455,12 @@ function love.load()
     -- Check for CLI flags
     local args = arg or {}
     for i, a in ipairs(args) do
-        if a == "--agent-server" then
+        if a == "--debug" then
+            -- Already handled above; store in shared for input module
+            shared.debug_mode = true
+            vars.status_message = "DEBUG MODE"
+            vars.status_timer = 5.0
+        elseif a == "--agent-server" then
             shared.agent = agent_server.new(9876)
             if shared.agent then
                 vars.status_message = "Agent server on port 9876"

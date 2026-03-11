@@ -246,6 +246,30 @@ local function handle_global_keys(key)
         return true
     end
 
+    -- Debug cheat keys (only active with --debug flag)
+    if shared.debug_mode and vars.game_mode == MODES.PLAYING then
+        if key == "x" and sel.unit_id >= 0 then
+            mods.norrust.cheat_set_xp(vars.engine, sel.unit_id)
+            vars.status_message = "CHEAT: XP maxed"
+            vars.status_timer = 2.0
+            return true
+        elseif key == "g" then
+            local state = mods.norrust.get_state(vars.engine)
+            local faction = state and state.active_faction or 0
+            mods.norrust.cheat_add_gold(vars.engine, faction, 1000)
+            vars.status_message = "CHEAT: +1000 gold"
+            vars.status_timer = 2.0
+            return true
+        elseif key == "t" then
+            local state = mods.norrust.get_state(vars.engine)
+            local turn = state and state.turn or 1
+            mods.norrust.cheat_set_turn(vars.engine, turn + 1)
+            vars.status_message = "CHEAT: Turn advanced"
+            vars.status_timer = 2.0
+            return true
+        end
+    end
+
     return false
 end
 

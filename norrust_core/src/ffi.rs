@@ -2106,3 +2106,49 @@ pub unsafe extern "C" fn norrust_load_json(
         0
     })).unwrap_or(-1)
 }
+
+// ── Debug / Cheat FFI ─────────────────────────────────────────────────────
+
+/// Set a unit's XP to its advancement threshold, triggering advancement_pending.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_cheat_set_xp(
+    engine: *mut NorRustEngine,
+    unit_id: i32,
+) -> i32 {
+    with_game_mut!(engine, _e, state, -1, {
+        let uid = unit_id as u32;
+        let Some(unit) = state.units.get_mut(&uid) else { return -2 };
+        if unit.xp_needed > 0 {
+            unit.xp = unit.xp_needed;
+            unit.advancement_pending = true;
+        }
+        0
+    })
+}
+
+/// Add gold to a faction (0 or 1). Amount can be negative to remove gold.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_cheat_add_gold(
+    engine: *mut NorRustEngine,
+    faction: i32,
+    amount: i32,
+) -> i32 {
+    with_game_mut!(engine, _e, state, -1, {
+        let f = faction as usize;
+        if f >= state.gold.len() { return -2; }
+        state.gold[f] = (state.gold[f] as i64 + amount as i64).max(0) as u32;
+        0
+    })
+}
+
+/// Set the turn counter directly (affects time of day).
+#[no_mangle]
+pub unsafe extern "C" fn norrust_cheat_set_turn(
+    engine: *mut NorRustEngine,
+    turn: i32,
+) -> i32 {
+    with_game_mut!(engine, _e, state, -1, {
+        state.turn = turn as u32;
+        0
+    })
+}

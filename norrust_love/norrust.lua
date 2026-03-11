@@ -224,6 +224,11 @@ ffi.cdef[[
     int32_t norrust_get_carry_gold(NorRustEngine* engine, int32_t faction, int32_t gold_carry_percent, int32_t early_finish_bonus);
     int32_t norrust_place_veteran_unit(NorRustEngine* engine, const char* def_id, int32_t faction, int32_t col, int32_t row, int32_t hp, int32_t xp, int32_t xp_needed, int32_t advancement_pending);
 
+    // Debug / Cheat
+    int32_t norrust_cheat_set_xp(NorRustEngine* engine, int32_t unit_id);
+    int32_t norrust_cheat_add_gold(NorRustEngine* engine, int32_t faction, int32_t amount);
+    int32_t norrust_cheat_set_turn(NorRustEngine* engine, int32_t turn);
+
     // Targeted state queries
     int32_t norrust_get_board_size(NorRustEngine* engine, int32_t* out_cols, int32_t* out_rows);
     int32_t norrust_get_gold(NorRustEngine* engine, int32_t faction);
@@ -671,6 +676,23 @@ end
 function M.free(engine)
     ffi.gc(engine, nil)
     lib.norrust_free(engine)
+end
+
+-- ── Debug / Cheat ─────────────────────────────────────────────────────────
+
+--- Set unit XP to advancement threshold (triggers advancement_pending).
+function M.cheat_set_xp(engine, unit_id)
+    return lib.norrust_cheat_set_xp(engine, unit_id)
+end
+
+--- Add gold to a faction.
+function M.cheat_add_gold(engine, faction, amount)
+    return lib.norrust_cheat_add_gold(engine, faction, amount)
+end
+
+--- Set turn counter directly (affects time of day).
+function M.cheat_set_turn(engine, turn)
+    return lib.norrust_cheat_set_turn(engine, turn)
 end
 
 return M
