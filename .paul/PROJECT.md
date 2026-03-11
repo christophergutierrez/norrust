@@ -252,6 +252,7 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] 4 factions fully defined: loyalists, rebels, northerners, undead with correct leaders and recruit groups — Phase 109 (109-01)
 - [x] 4 recruit groups complete: human_base (8), rebel_base (7), northerner_base (7), undead_base (7) — all members resolve to real units — Phase 109 (109-01)
 - [x] Faction naming aligned to Wesnoth vocabulary: elves→rebels, orcs→northerners — Phase 109 (109-01)
+- [x] Sprite generation tool with all 114 unit definitions and tree-path support — Phase 110 (110-01)
 
 ### Active (In Progress / Deferred)
 
@@ -461,4 +462,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 | Greedy opponent response in 2-ply | No recursive depth; catches oscillation without exponential blowup | 2026-03-10 | Active |
 
-*Last updated: 2026-03-11 after Phase 109 TOML Completion + Advancement Wiring.*
+*Last updated: 2026-03-11 after Phase 110 Sprite Generation.*

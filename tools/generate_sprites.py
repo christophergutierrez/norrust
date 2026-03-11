@@ -53,31 +53,164 @@ The sprite is centered on the mask."""
 # Unit definitions
 # (description, melee_weapon, ranged_weapon_or_None, defend_desc)
 # defend_desc describes how the character defends WITHOUT adding equipment they don't have.
+# Keys use "/" for tree-structured paths (e.g., "spearman/swordsman").
 UNITS = {
+    # ── Legacy test units ─────────────────────────────────────────
+    "fighter": (
+        "human fighter soldier, simple chain mail, iron helmet, longsword, round shield",
+        "sword", None,
+        "raising round shield to block, crouching behind it with sword ready",
+    ),
+    "archer": (
+        "human archer, leather jerkin, brown hood, simple shortbow, quiver of arrows",
+        "short sword", "shortbow",
+        "leaping sideways to dodge, bow clutched to chest",
+    ),
+    "hero": (
+        "human hero champion, gleaming plate armor, winged helm, bastard sword, ornate shield, red cape",
+        "sword", None,
+        "bracing behind ornate shield with sword held high, cape billowing",
+    ),
+    "ranger": (
+        "human ranger woodsman, green cloak, leather armor, longbow, short sword at hip",
+        "short sword", "longbow",
+        "ducking low with cloak wrapped protectively, bow held aside",
+    ),
+    # ── Loyalists ─────────────────────────────────────────────────
     "spearman": (
         "human spearman soldier, chain mail armor, iron helmet, long spear, blue tabard",
         "spear", "spear throw",
         "bracing with spear held crosswise, crouching low to absorb impact",
+    ),
+    "spearman/swordsman": (
+        "human swordsman veteran, polished chain mail, steel helmet with visor, longsword, kite shield, blue tabard",
+        "sword", None,
+        "crouching behind kite shield with sword at the ready",
+    ),
+    "spearman/swordsman/royal_guard": (
+        "human royal guard elite, full plate armor, plumed great helm, ornate longsword, tower shield with royal crest",
+        "longsword", None,
+        "braced behind tower shield bearing royal crest, longsword raised to counter",
+    ),
+    "spearman/pikeman": (
+        "human pikeman soldier, chain mail and plate pauldrons, open helm, long pike, blue tabard",
+        "pike", None,
+        "pike planted and angled forward, crouching low behind the shaft",
+    ),
+    "spearman/pikeman/halberdier": (
+        "human halberdier elite, full plate armor, closed helm with visor, ornate halberd with axe blade and spike",
+        "halberd", None,
+        "halberd held crosswise as a barrier, armored stance braced for impact",
+    ),
+    "spearman/javelineer": (
+        "human javelineer skirmisher, light chain mail, open helm, bundle of javelins, small round shield",
+        "spear", "javelin throw",
+        "ducking behind small round shield, javelin held back ready to throw",
     ),
     "bowman": (
         "human bowman archer, leather armor, green hood, longbow, quiver of arrows",
         "short sword", "longbow",
         "dodging sideways, leaning away from attack with arm raised to protect face",
     ),
+    "bowman/longbowman": (
+        "human longbowman veteran, reinforced leather armor, green cloak, tall longbow, sword at hip",
+        "sword", "longbow",
+        "stepping back evasively with bow raised as a ward",
+    ),
+    "bowman/longbowman/master_bowman": (
+        "human master bowman elite, studded leather armor, feathered cap, masterwork longbow, ornate quiver",
+        "sword", "longbow",
+        "leaning away gracefully, bow arm raised protectively",
+    ),
     "cavalryman": (
         "human cavalryman on horseback, plate armor, lance, mounted knight on brown horse",
         "sword from horseback", None,
         "horse rearing back, rider pulling reins defensively",
+    ),
+    "cavalryman/dragoon": (
+        "human dragoon on armored brown horse, plate armor with blue plume, sword and crossbow, mounted",
+        "sword from horseback", "crossbow from horseback",
+        "horse turning sideways, rider raising armored forearm to block",
+    ),
+    "cavalryman/dragoon/cavalier": (
+        "human cavalier on barded warhorse, full plate armor, blue and gold plume, longsword, mounted on armored horse",
+        "longsword from horseback", "crossbow from horseback",
+        "barded horse rearing, cavalier with longsword raised in parrying stance",
     ),
     "heavy_infantryman": (
         "human heavy infantryman, full plate armor, great helm, heavy iron mace, tower shield",
         "mace", None,
         "crouching behind tower shield, braced for impact",
     ),
-    "mage": (
-        "human mage wizard, blue robes, pointed hat, wooden staff with glowing crystal top",
-        "staff", "fireball magic blast from staff",
-        "holding staff up defensively with a faint magic barrier shimmering in front",
+    "heavy_infantryman/shock_trooper": (
+        "human shock trooper, heavy plate armor with spiked pauldrons, full helm, morning star flail",
+        "flail", None,
+        "hunching behind spiked pauldrons, flail drawn back ready to swing",
+    ),
+    "heavy_infantryman/shock_trooper/iron_mauler": (
+        "human iron mauler elite, massive plate armor with iron rivets, horned great helm, heavy spiked flail",
+        "flail", None,
+        "crouching in full armor, massive flail held crosswise as a barrier",
+    ),
+    "horseman": (
+        "human horseman cavalry, chain mail and plate, lance, mounted on brown horse, blue pennant",
+        "spear from horseback", None,
+        "horse rearing back, rider bracing with spear at guard",
+    ),
+    "horseman/lancer": (
+        "human lancer heavy cavalry, plate armor, long lance with pennant, mounted on armored horse",
+        "lance from horseback", None,
+        "armored horse turning, lancer holding lance defensively across body",
+    ),
+    "horseman/knight": (
+        "human knight in full plate, plumed helm, longsword and lance, mounted on barded warhorse, noble crest",
+        "sword from horseback", None,
+        "barded warhorse rearing, knight with sword raised in guard position",
+    ),
+    "horseman/knight/grand_knight": (
+        "human grand knight commander, ornate gilded plate armor, great plumed helm, greatsword and lance, mounted on fully barded destrier",
+        "longsword from horseback", None,
+        "fully barded destrier turning, grand knight with greatsword held high defensively",
+    ),
+    "horseman/knight/paladin": (
+        "human paladin holy knight, gleaming white and gold plate armor, winged helm, glowing blessed sword, mounted on white barded warhorse",
+        "glowing holy sword from horseback", None,
+        "white warhorse rearing, paladin raising glowing sword creating a divine ward",
+    ),
+    "fencer": (
+        "human fencer duelist, light leather armor, plumed hat, rapier saber, agile stance",
+        "saber", None,
+        "parrying with saber in en garde stance, body turned sideways",
+    ),
+    "fencer/duelist": (
+        "human duelist master fencer, fine leather armor with silver trim, feathered hat, elegant rapier, hand crossbow at hip",
+        "saber", "crossbow",
+        "sidestepping with rapier extended in parry, body angled to present smaller target",
+    ),
+    "fencer/duelist/master_at_arms": (
+        "human master at arms weapons expert, reinforced leather and chain, captain's hat with plume, masterwork rapier, ornate crossbow",
+        "saber", "crossbow",
+        "flowing defensive stance with rapier weaving a pattern, perfectly balanced",
+    ),
+    "merman_fighter": (
+        "merman fighter warrior, aqua-green scales, fish tail, coral-tipped trident, shell armor chest plate",
+        "trident", None,
+        "raising trident crosswise to block, scales bristling defensively",
+    ),
+    "merman_fighter/merman_warrior": (
+        "merman warrior veteran, deep blue-green scales, muscular, heavy trident, reinforced shell armor",
+        "trident", None,
+        "crouching with trident braced forward, armored tail coiled",
+    ),
+    "merman_fighter/merman_warrior/merman_hoplite": (
+        "merman hoplite elite, bronze-green scales, coral plate armor, long spear, large round shell shield",
+        "spear", None,
+        "braced behind round shell shield with spear ready to thrust",
+    ),
+    "merman_fighter/merman_warrior/merman_triton": (
+        "merman triton champion, iridescent blue scales, ornate coral armor, golden trident, crown of shells",
+        "trident", None,
+        "sweeping golden trident in a defensive arc, scales glowing faintly",
     ),
     "sergeant": (
         "human sergeant officer, chain mail, red cape, sword and shield, commanding officer",
@@ -89,55 +222,413 @@ UNITS = {
         "sword", "crossbow bolt shot",
         "parrying with longsword held high, armored shoulder turned forward",
     ),
+    # ── Rebels ────────────────────────────────────────────────────
     "elvish_fighter": (
         "elf warrior, green leather armor, long blonde hair, elven sword, leaf-pattern shield",
         "sword", "bow shot",
         "crouching behind leaf-pattern shield, sword ready at side",
+    ),
+    "elvish_fighter/elvish_hero": (
+        "elf hero veteran, burnished green and silver armor, flowing golden hair, ornate elven longsword, leaf-pattern shield",
+        "sword", "bow shot",
+        "spinning parry with elven longsword, hair flowing behind",
+    ),
+    "elvish_fighter/elvish_hero/elvish_champion": (
+        "elf champion master, gleaming mithril and emerald armor, crown circlet, legendary elven blade, golden shield with tree motif",
+        "sword", "bow shot",
+        "champion stance with legendary blade raised, golden shield braced forward",
+    ),
+    "elvish_fighter/elvish_captain": (
+        "elf captain leader, ornate green and gold armor, elven longsword, flowing cape, crown circlet",
+        "sword", "bow",
+        "parrying with elven longsword, cape flowing behind",
+    ),
+    "elvish_fighter/elvish_captain/elvish_marshal": (
+        "elf marshal commander, resplendent gold and green plate, great cape, master-forged elven blade, crown with emerald, leader",
+        "sword", "bow shot",
+        "commanding stance with blade raised high, cape billowing, crown gleaming",
     ),
     "elvish_archer": (
         "elvish archer, green hooded cloak, brown boots, longbow, quiver",
         "sword", "longbow",
         "leaping back evasively, cloak swirling, bow held to the side",
     ),
-    "elvish_captain": (
-        "elf captain leader, ornate green and gold armor, elven longsword, flowing cape, crown circlet",
+    "elvish_archer/elvish_marksman": (
+        "elf marksman sharpshooter, dark green hooded cloak, reinforced leather, long-range elven longbow, precision quiver",
+        "sword", "longbow",
+        "sidestepping with practiced grace, bow lowered defensively",
+    ),
+    "elvish_archer/elvish_marksman/elvish_sharpshooter": (
+        "elf sharpshooter elite, forest camouflage cloak, masterwork leather armor, legendary elven longbow, magical quiver",
+        "sword", "longbow",
+        "vanishing step backward, cloak blurring, bow ready at hip",
+    ),
+    "elvish_archer/elvish_ranger": (
+        "elf ranger woodsman, brown and green leather, woodland cloak, sturdy bow, short sword at belt",
         "sword", "bow",
-        "parrying with elven longsword, cape flowing behind",
+        "crouching low in forest stance, sword drawn ready to parry",
+    ),
+    "elvish_archer/elvish_ranger/elvish_avenger": (
+        "elf avenger shadow warrior, dark green and black leather, hooded, twin daggers and composite bow, silent and deadly",
+        "sword", "bow",
+        "coiled defensive stance, blade drawn and eyes fixed, hood shadowing face",
     ),
     "elvish_scout": (
         "elf scout rider on white horse, light green leather armor, sword, mounted",
         "sword from horseback", "bow shot from horseback",
         "horse turning sideways, rider ducking low against horse's neck",
     ),
+    "elvish_scout/elvish_rider": (
+        "elf rider mounted on swift white horse, green and silver leather, elven sword, longbow, flowing mane",
+        "sword from horseback", "bow from horseback",
+        "white horse sidestepping, rider leaning low with sword in guard",
+    ),
+    "elvish_scout/elvish_rider/elvish_outrider": (
+        "elf outrider on majestic white stallion, ornate silver and green armor, master-forged sword, elven war bow, banner",
+        "sword from horseback", "bow from horseback",
+        "stallion rearing, outrider with sword raised protectively, armor gleaming",
+    ),
     "elvish_shaman": (
         "female elf shaman healer, white and green robes, wooden staff with leaves, nature magic",
         "staff", "magic healing energy blast",
         "holding staff forward with a nature magic ward of swirling leaves",
     ),
+    "elvish_shaman/elvish_druid": (
+        "female elf druid, flowing green and brown robes, gnarled oak staff with glowing leaves, vine crown",
+        "staff", "thorny vine magic blast",
+        "raising oak staff with roots and vines coiling protectively around",
+    ),
+    "elvish_shaman/elvish_druid/elvish_shyde": (
+        "female elf shyde nature spirit, luminous white and green gown, staff of living wood blooming with flowers, crown of blossoms, ethereal glow",
+        "faerie touch", "thorn and vine magic blast",
+        "radiant ward of swirling petals and light surrounding body",
+    ),
+    "elvish_shaman/elvish_sorceress": (
+        "female elf sorceress, deep blue and silver robes, silver staff with crystal, arcane runes floating, mystical",
+        "staff", "faerie fire arcane magic blast",
+        "spinning staff creating a swirl of arcane faerie fire shield",
+    ),
+    "elvish_shaman/elvish_sorceress/elvish_enchantress": (
+        "female elf enchantress, flowing violet and silver robes, ornate crystal staff, glowing ethereal webs of magic",
+        "staff", "ethereal web magic blast",
+        "weaving shimmering web of protective magic with staff",
+    ),
+    "elvish_shaman/elvish_sorceress/elvish_enchantress/elvish_sylph": (
+        "female elf sylph, translucent gossamer wings, radiant white and gold gown, staff of pure light, fey aura, floating slightly above ground",
+        "faerie touch", "ethereal web and faerie fire blast",
+        "wings spreading wide creating a shimmering barrier of fey light",
+    ),
+    "mage": (
+        "human mage wizard, blue robes, pointed hat, wooden staff with glowing crystal top",
+        "staff", "fireball magic blast from staff",
+        "holding staff up defensively with a faint magic barrier shimmering in front",
+    ),
+    "mage/red_mage": (
+        "human red mage, deep red robes with gold trim, red pointed hat, staff with blazing ruby crystal",
+        "staff", "fireball blast from staff",
+        "staff raised with swirling flame shield in front",
+    ),
+    "mage/red_mage/arch_mage": (
+        "human arch mage, ornate crimson and gold robes, tall pointed hat with runes, master staff with enormous blazing crystal",
+        "staff", "massive fireball blast",
+        "sweeping staff creating a wall of protective fire",
+    ),
+    "mage/red_mage/arch_mage/great_mage": (
+        "human great mage supreme wizard, resplendent crimson and gold vestments, jeweled crown, legendary staff crackling with pure fire energy",
+        "staff", "devastating fire magic blast",
+        "standing firm as a dome of pure magical fire swirls protectively",
+    ),
+    "mage/red_mage/silver_mage": (
+        "human silver mage, shimmering silver and white robes, silver circlet, staff with glowing moonstone, arcane and fire dual magic",
+        "staff", "silver fire missile blast",
+        "staff creating a shimmering silver magic barrier",
+    ),
+    "mage/white_mage": (
+        "human white mage healer, pure white robes with gold trim, white hood, staff with radiant white crystal, holy light",
+        "staff", "beam of holy white light from staff",
+        "staff raised creating a dome of protective white light",
+    ),
+    "mage/white_mage/mage_of_light": (
+        "human mage of light, radiant white and gold vestments, golden halo, flail and holy staff, beams of divine light",
+        "flail", "intense beam of holy light",
+        "golden halo blazing, divine light forming a protective shield",
+    ),
+    "merman_hunter": (
+        "merman hunter, blue-green scales, fish tail, trident spear, light shell armor, aquatic",
+        "spear", "thrown spear",
+        "raising spear crosswise with tail coiled defensively",
+    ),
+    "merman_hunter/merman_netcaster": (
+        "merman netcaster, sea-green scales, weighted throwing net, wooden club, shell pauldrons",
+        "club", "weighted net throw",
+        "pulling net close protectively, club raised to ward off attacks",
+    ),
+    "merman_hunter/merman_netcaster/merman_entangler": (
+        "merman entangler veteran, dark green scales, reinforced shell armor, heavy club, large enchanted net with barbs",
+        "club", "barbed net throw",
+        "spinning net in a defensive circle, club held ready",
+    ),
+    "merman_hunter/merman_spearman": (
+        "merman spearman, turquoise scales, long coral-tipped spear, shell chest armor, aquatic warrior",
+        "spear", "thrown spear",
+        "spear held horizontally to block, tail braced",
+    ),
+    "merman_hunter/merman_spearman/merman_javelineer": (
+        "merman javelineer elite, deep blue scales, bundle of coral javelins, ornate shell armor, powerful tail",
+        "spear", "javelin throw",
+        "javelin held crosswise defensively, scales bristling",
+    ),
+    "wose": (
+        "wose tree creature, massive living tree humanoid, bark skin, moss-covered, thick branch arms, ancient and slow",
+        "crushing branch arms", None,
+        "hunching forward with bark-covered arms crossed protectively like a wall",
+    ),
+    "wose/elder_wose": (
+        "elder wose ancient tree being, enormous gnarled bark body, deep moss and lichen, massive crushing limbs, glowing amber sap eyes",
+        "crushing branch arms", None,
+        "rooting deeply into ground, bark thickening into a defensive wall",
+    ),
+    "wose/elder_wose/ancient_wose": (
+        "ancient wose primeval tree titan, colossal bark body, trailing vines and flowers, thunderous limbs, wise glowing eyes, oldest of the forest",
+        "crushing branch arms", None,
+        "standing immovable like an ancient oak, bark hardened into impenetrable armor",
+    ),
+    # ── Northerners ───────────────────────────────────────────────
     "orcish_grunt": (
         "orc grunt warrior, green skin, leather and bone armor, crude iron sword, muscular",
         "sword", None,
         "raising muscular forearm to block, snarling, crude sword held back",
+    ),
+    "orcish_grunt/orcish_warrior": (
+        "orc warrior chieftain, green skin, heavy bone and iron armor, great two-handed sword, leader",
+        "greatsword", None,
+        "holding greatsword crosswise in front as a barrier, roaring defiantly",
+    ),
+    "orcish_grunt/orcish_warrior/orcish_warlord": (
+        "orc warlord supreme leader, green skin, massive spiked plate and bone armor, enormous greatsword, war banner on back, scarred veteran",
+        "greatsword", "crude bow",
+        "greatsword planted in ground as a wall, snarling behind it",
     ),
     "orcish_archer": (
         "orc archer, green skin, leather armor, crude shortbow, bone-tipped arrows",
         "dagger", "shortbow",
         "ducking low with bow clutched to chest, turning sideways to present smaller target",
     ),
+    "orcish_archer/orcish_crossbowman": (
+        "orc crossbowman, green skin, reinforced leather and iron studs, heavy iron crossbow, short sword",
+        "short sword", "crossbow",
+        "hunching behind crossbow held sideways as a shield, sword ready",
+    ),
+    "orcish_archer/orcish_crossbowman/orcish_slurbow": (
+        "orc slurbow elite, green skin, heavy iron and leather armor, massive repeating crossbow, short sword, fire bolts",
+        "short sword", "repeating crossbow",
+        "crouching behind massive crossbow, armored and snarling",
+    ),
     "orcish_assassin": (
         "orc assassin rogue, green skin, dark leather armor, twin daggers, hooded, stealthy",
         "throwing daggers", "poison darts",
         "crossed daggers in front of face, crouching low in defensive stance",
     ),
-    "orcish_warrior": (
-        "orc warrior chieftain, green skin, heavy bone and iron armor, great two-handed sword, leader",
-        "greatsword", None,
-        "holding greatsword crosswise in front as a barrier, roaring defiantly",
+    "orcish_assassin/orcish_slayer": (
+        "orc slayer veteran assassin, green skin, black leather armor, wicked daggers, hooded, poisoned blades, scarred",
+        "dagger", "throwing knives",
+        "spinning low with daggers crossed defensively, hood shadowing face",
+    ),
+    "orcish_assassin/orcish_slayer/orcish_nightblade": (
+        "orc nightblade master assassin, green skin, pitch-black leather armor, dual serrated blades, shadowy, glowing red eyes under hood",
+        "dual blades", "throwing knives",
+        "vanishing into shadow, blades crossed in an X, only red eyes visible",
+    ),
+    "goblin_spearman": (
+        "goblin spearman, small green-skinned goblin, ragged leather armor, crude spear, pointed ears, sneaky",
+        "spear", "thrown spear",
+        "cowering behind spear held forward, hunched and ready to flee",
+    ),
+    "goblin_spearman/goblin_impaler": (
+        "goblin impaler veteran, small green-skinned, reinforced leather, longer barbed spear, war paint, fierce for a goblin",
+        "spear", "thrown spear",
+        "spear braced forward in a desperate defensive stance",
+    ),
+    "goblin_spearman/goblin_rouser": (
+        "goblin rouser leader, small green-skinned, crude iron helmet, spear and small shield, war drum on back, rally flag",
+        "spear", None,
+        "hiding behind small shield with spear pointed outward",
+    ),
+    "troll_whelp": (
+        "troll whelp young troll, gray-green skin, massive fists, loincloth, tusks, hunched, regenerating",
+        "fist", None,
+        "raising huge fists protectively, hunching shoulders, snarling",
+    ),
+    "troll_whelp/troll": (
+        "troll adult, massive gray-green skin, huge wooden club, loincloth and bone necklace, towering, regenerating",
+        "club", None,
+        "hunching forward with club held across body, snarling defiantly",
+    ),
+    "troll_whelp/troll/troll_warrior": (
+        "troll warrior veteran, massive gray-green skin, iron-banded war hammer, crude iron armor plates, battle-scarred, regenerating",
+        "hammer", None,
+        "hammer held crosswise, armored shoulders hunched protectively",
+    ),
+    "troll_whelp/troll_rocklobber": (
+        "troll rocklobber, gray-green skin, huge sling, bag of boulders, loincloth, throwing stance",
+        "fist", "sling with boulder",
+        "hunching down with arms raised to block, bag of rocks clutched",
+    ),
+    "wolf_rider": (
+        "goblin wolf rider, small goblin mounted on gray wolf, leather armor, wolf has fangs and claws",
+        "wolf fangs", None,
+        "wolf snarling and bristling, goblin rider ducking low on wolf's back",
+    ),
+    "wolf_rider/goblin_knight": (
+        "goblin knight, small goblin in crude iron armor mounted on large gray wolf, wolf has iron collar",
+        "wolf fangs", None,
+        "wolf growling and crouching, armored goblin bracing on its back",
+    ),
+    "wolf_rider/goblin_knight/direwolf_rider": (
+        "direwolf rider, small goblin in spiked iron armor mounted on massive dire wolf, dire wolf has iron fangs and spiked collar",
+        "dire wolf fangs and claws", None,
+        "dire wolf snarling with hackles raised, goblin rider hunching behind wolf's armored head",
+    ),
+    "wolf_rider/goblin_pillager": (
+        "goblin pillager raider, small goblin mounted on wolf, torch in one hand, net in other, leather and stolen armor",
+        "wolf fangs and torch", "weighted net throw",
+        "wolf turning defensively, goblin raising torch to ward off attackers",
+    ),
+    "naga_fighter": (
+        "naga fighter, serpentine lower body, humanoid torso, green scales, curved sword, no legs, snake tail",
+        "sword", None,
+        "coiling serpent body defensively, sword held in guard position",
+    ),
+    "naga_fighter/naga_warrior": (
+        "naga warrior veteran, muscular serpentine body, dark green scales, two curved swords, shell armor, war-scarred",
+        "dual swords", None,
+        "coiled and ready with both swords crossed defensively",
+    ),
+    "naga_fighter/naga_warrior/naga_myrmidon": (
+        "naga myrmidon champion, massive serpentine body, iridescent dark scales, ornate dual blades, golden scale armor, crown of coral",
+        "dual swords", None,
+        "towering on coiled body with blades weaving a defensive pattern",
+    ),
+    # ── Undead ────────────────────────────────────────────────────
+    "skeleton": (
+        "skeleton warrior undead, bare bones, rusty axe, tattered cloth remnants, glowing eye sockets, animated bones",
+        "axe", None,
+        "raising bony arm with axe held crosswise, hollow eyes glowing",
+    ),
+    "skeleton/revenant": (
+        "revenant undead warrior, armored skeleton, rusted chain mail over bones, heavy axe, glowing green eyes, relentless",
+        "axe", None,
+        "armored bones bracing with axe held defensively, eyes blazing green",
+    ),
+    "skeleton/revenant/draug": (
+        "draug undead champion, ancient armored skeleton, dark plate armor fused to bones, massive axe, burning blue eyes, death aura",
+        "axe", None,
+        "standing immovable in fused armor, axe raised in eternal guard, blue fire in eye sockets",
+    ),
+    "skeleton/deathblade": (
+        "deathblade undead warrior, skeleton with dark energy, twin axes crackling with shadow, tattered dark cloak, purple glowing eyes",
+        "axe", None,
+        "twin axes crossed defensively, shadow energy swirling around bones",
+    ),
+    "skeleton_archer": (
+        "skeleton archer undead, bare bones, crude bow, quiver of bone arrows, tattered hood, glowing eye sockets",
+        "bone fist", "bow",
+        "hunching with bow clutched to ribcage, eye sockets flickering",
+    ),
+    "skeleton_archer/bone_shooter": (
+        "bone shooter undead archer, reinforced skeleton, iron-bound bow, bone arrows, rusty armor scraps, steady glowing eyes",
+        "dagger", "bow",
+        "stepping back with bow lowered, bony hand raised to deflect",
+    ),
+    "skeleton_archer/bone_shooter/banebow": (
+        "banebow undead marksman, dark skeleton, enchanted black bow with green glow, poisoned arrows, dark cloak, blazing green eyes",
+        "dagger", "enchanted bow",
+        "bow raised as a ward, green energy crackling along bones",
+    ),
+    "ghost": (
+        "ghost undead spirit, translucent pale blue spectral figure, floating, tattered ethereal robes, hollow eyes, wailing",
+        "spectral touch", "cold wail blast",
+        "flickering and phasing partially out of existence",
+    ),
+    "ghost/shadow": (
+        "shadow undead spirit, dark translucent wraith, shadowy claws, wispy dark form, glowing red eyes, menacing",
+        "shadow claws", None,
+        "dissolving into wisps of darkness, claws drawn inward",
+    ),
+    "ghost/shadow/nightgaunt": (
+        "nightgaunt undead horror, pitch-black spectral form, long shadowy talons, faceless dark void head, trailing darkness",
+        "shadow claws", None,
+        "melting into a pool of darkness, only talons visible",
+    ),
+    "ghost/wraith": (
+        "wraith undead spirit, dark hooded spectral figure, glowing spectral blade, tattered black robes, piercing blue eyes",
+        "baneblade", "cold wail blast",
+        "spectral robes billowing, baneblade raised as a ward, fading partially",
+    ),
+    "ghost/wraith/spectre": (
+        "spectre undead horror, towering dark spectral figure, massive glowing baneblade, crown of shadow, blazing blue eyes, death incarnate",
+        "baneblade", "devastating cold wail blast",
+        "looming with robes swirling, baneblade creating an arc of spectral energy",
+    ),
+    "ghoul": (
+        "ghoul undead, hunched decaying humanoid, pale gray skin, long claws, tattered rags, feral, glowing yellow eyes",
+        "claws", None,
+        "crouching low with claws raised protectively, snarling",
+    ),
+    "ghoul/necrophage": (
+        "necrophage undead, larger hunched decaying form, bloated gray-green skin, massive claws, plague-ridden, yellow eyes",
+        "claws", None,
+        "hunching forward with arms crossed, claws spread threateningly",
+    ),
+    "ghoul/necrophage/ghast": (
+        "ghast undead horror, massive bloated decaying form, putrid green-gray skin, enormous fanged maw, huge claws, plague aura",
+        "bite", None,
+        "rearing back with massive maw open, claws raised in feral defense",
+    ),
+    "vampire_bat": (
+        "vampire bat, large dark bat, red eyes, leathery wings spread, fangs bared, flying",
+        "fangs", None,
+        "wings folded protectively, body twisted to dodge",
+    ),
+    "vampire_bat/blood_bat": (
+        "blood bat, large crimson-tinged bat, glowing red eyes, sharp fangs dripping, wider wingspan, flying",
+        "fangs", None,
+        "banking sharply, wings angled to deflect, red eyes blazing",
+    ),
+    "vampire_bat/blood_bat/dread_bat": (
+        "dread bat, massive dark bat, enormous wingspan, burning red eyes, wicked fangs, shadow aura, flying terror",
+        "fangs", None,
+        "diving and twisting, massive wings creating a shield of darkness",
+    ),
+    "walking_corpse": (
+        "walking corpse zombie undead, shambling decaying humanoid, tattered clothes, gray-green rotting skin, blank eyes, arms outstretched",
+        "touch", None,
+        "stumbling backward with arms raised, decaying body absorbing blow",
+    ),
+    "walking_corpse/soulless": (
+        "soulless zombie undead, larger shambling corpse, more muscular decay, tattered armor scraps, glowing dead eyes, plague touch",
+        "touch", None,
+        "lurching forward with arms crossed protectively, dead eyes glowing",
     ),
     "dark_adept": (
         "dark adept necromancer, pale skin, dark purple/black hooded robe, glowing purple eyes, skeletal staff with skull top",
         "staff jab", "purple chill wave magic blast",
         "raising skeletal staff with skull glowing, dark energy shield swirling around",
+    ),
+    "dark_adept/dark_sorcerer": (
+        "dark sorcerer undead master, pale gaunt face, ornate black and purple robes, staff with glowing skull, shadow magic crackling, leader",
+        "staff", "chill wave and shadow wave magic",
+        "staff raised with swirling dark energy barrier, skull blazing purple",
+    ),
+    "dark_adept/dark_sorcerer/lich": (
+        "lich undead archmage, skeletal body in ancient black robes, crown of bone, staff of pure dark energy, blazing blue fire eyes, supreme undead",
+        "arcane touch", "chill tempest and shadow wave",
+        "floating with robes billowing, dark energy vortex swirling as a shield",
+    ),
+    "dark_adept/dark_sorcerer/necromancer": (
+        "necromancer dark wizard, pale hooded figure, heavy black robes with skull motifs, plague staff, green necromantic energy, summoner of dead",
+        "plague staff", "chill wave and shadow wave magic",
+        "plague staff raised creating a barrier of sickly green necromantic energy",
     ),
 }
 
@@ -406,8 +897,10 @@ def validate_sprite(img_path):
 def write_sprite_toml(unit_dir, unit_name, has_ranged=True):
     """Write sprite.toml for a unit. Single frame per pose (v2 pipeline)."""
     toml_path = os.path.join(unit_dir, "sprite.toml")
+    # Use leaf name as sprite ID (e.g., "swordsman" not "spearman/swordsman")
+    sprite_id = unit_name.rsplit("/", 1)[-1] if "/" in unit_name else unit_name
     with open(toml_path, "w") as f:
-        f.write(f'id = "{unit_name}"\n')
+        f.write(f'id = "{sprite_id}"\n')
         for name in POSE_NAMES:
             if name == "attack-ranged" and not has_ranged:
                 continue
@@ -521,7 +1014,8 @@ def generate_portrait(api_key, unit_name, max_attempts=3):
     os.makedirs(SPRITES_RAW_DIR, exist_ok=True)
 
     out_path = os.path.join(unit_dir, "portrait.png")
-    raw_path = os.path.join(SPRITES_RAW_DIR, f"{unit_name}_v2_portrait.png")
+    raw_name = unit_name.replace("/", "__")
+    raw_path = os.path.join(SPRITES_RAW_DIR, f"{raw_name}_v2_portrait.png")
 
     prompt = build_portrait_prompt(unit_name)
 
@@ -566,7 +1060,8 @@ def generate_pose(api_key, unit_name, pose, ref_path=None, max_attempts=3):
     os.makedirs(SPRITES_RAW_DIR, exist_ok=True)
 
     out_path = os.path.join(unit_dir, f"{pose}.png")
-    raw_path = os.path.join(SPRITES_RAW_DIR, f"{unit_name}_v2_{pose}.png")
+    raw_name = unit_name.replace("/", "__")
+    raw_path = os.path.join(SPRITES_RAW_DIR, f"{raw_name}_v2_{pose}.png")
 
     prompt = build_prompt(unit_name, pose, ref_path)
 
@@ -713,7 +1208,8 @@ def main():
                 return 1
         else:
             # Default to idle raw
-            ref_path = os.path.join(SPRITES_RAW_DIR, f"{args.unit}_v2_idle.png")
+            raw_name = args.unit.replace("/", "__")
+            ref_path = os.path.join(SPRITES_RAW_DIR, f"{raw_name}_v2_idle.png")
             if not os.path.exists(ref_path):
                 print(f"No idle reference found at {ref_path}")
                 print("Use --base to specify a reference image")
