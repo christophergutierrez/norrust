@@ -7,8 +7,8 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 ## Current Milestone
 
 **v3.8 Unit Expansion**
-Status: 🚧 In Progress
-Phases: 4 of 5 complete
+Status: ✅ Complete
+Phases: 5 of 5 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
@@ -16,7 +16,7 @@ Phases: 4 of 5 complete
 | 108 | Directory Reorganization + Recursive Loader | 1 | ✅ Complete | 2026-03-11 |
 | 109 | TOML Completion + Advancement Wiring | 1 | ✅ Complete | 2026-03-11 |
 | 110 | Sprite Generation | 1 | ✅ Complete | 2026-03-11 |
-| 111 | Faction Integration + Polish | TBD | Not started | - |
+| 111 | Faction Integration + Polish | 1 | ✅ Complete | 2026-03-11 |
 
 ## v3.8 Phase Details
 
@@ -46,10 +46,18 @@ Depends on: Phase 109 (all TOMLs must exist before generating sprites for them)
 
 Focus: Undead faction fully playable. Faction selection shows 4 factions. Update scenarios if needed for new faction support. End-to-end testing of all advancement paths across all 4 factions.
 Depends on: Phase 110 (sprites must exist for visual completeness)
+Plans: 1 (111-01: execute — complete)
+Result: Fixed campaign "orcs" → "northerners", all 145 tests pass, all 4 factions operational
 
 ---
 
 ## Completed Milestones
+
+### v3.8 Unit Expansion
+
+Status: ✅ Complete
+Completed: 2026-03-11
+Phases: 5 of 5 complete
 
 ### v3.7 Save System Overhaul
 

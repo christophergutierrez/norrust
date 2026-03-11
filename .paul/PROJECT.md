@@ -253,10 +253,11 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] 4 recruit groups complete: human_base (8), rebel_base (7), northerner_base (7), undead_base (7) — all members resolve to real units — Phase 109 (109-01)
 - [x] Faction naming aligned to Wesnoth vocabulary: elves→rebels, orcs→northerners — Phase 109 (109-01)
 - [x] Sprite generation tool with all 114 unit definitions and tree-path support — Phase 110 (110-01)
+- [x] 4 factions (loyalists, rebels, northerners, undead) fully operational with correct campaign references — Phase 111 (111-01)
 
 ### Active (In Progress / Deferred)
 
-(No active requirements)
+- [ ] Sprite generation for all 114 units (deferred — circles serve as placeholders)
 
 ### Out of Scope
 
@@ -438,6 +439,7 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
+*Last updated: 2026-03-11 after Phase 111*
 | AI leader discipline + mixed recruitment | Smarter AI spending; leader stays on keep, round-robin unit selection | 2026-03-10 | Active |
 
 | evaluate_state centered HP ratio | Raw ratio breaks zero-sum symmetry; (own/total-0.5)*2 centers at 0 | 2026-03-10 | Active |

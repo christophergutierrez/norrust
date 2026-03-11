@@ -2,7 +2,7 @@
 id = "tutorial"
 name = "The Road to Norrust"
 faction_0 = "loyalists"
-faction_1 = "orcs"
+faction_1 = "northerners"
 gold_carry_percent = 80
 early_finish_bonus = 5
 
