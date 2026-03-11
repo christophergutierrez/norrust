@@ -132,7 +132,7 @@ fn test_headless_advancement_scenario() {
     assert_eq!(state.units[&1].max_hp, 45);
     assert_eq!(state.units[&1].hp, 45);
     assert_eq!(state.units[&1].xp, 0);
-    assert_eq!(state.units[&1].xp_needed, 80);
+    assert_eq!(state.units[&1].xp_needed, 0, "terminal unit (advances_to=[]) has xp_needed=0");
     assert!(!state.units[&1].advancement_pending);
 }
 
@@ -202,7 +202,7 @@ fn test_fighter_advancement_with_real_stats() {
     assert_eq!(state.units[&1].max_hp, 45,            "hero max_hp = 45");
     assert_eq!(state.units[&1].hp,     45,            "full heal on advancement");
     assert_eq!(state.units[&1].xp,      0,            "xp resets to 0");
-    assert_eq!(state.units[&1].xp_needed, 80,         "xp_needed set from hero.toml experience");
+    assert_eq!(state.units[&1].xp_needed, 0,          "terminal unit (advances_to=[]) has xp_needed=0");
     assert!(!state.units[&1].advancement_pending,      "advancement_pending cleared");
     // Verify weapon updated: hero sword does 9×4
     assert_eq!(state.units[&1].attacks[0].damage, 9);

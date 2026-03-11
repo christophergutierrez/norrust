@@ -95,7 +95,7 @@ impl Unit {
         self.defense = def.defense.clone();
         self.resistances = def.resistances.clone();
         self.alignment = parse_alignment(&def.alignment);
-        self.xp_needed = def.experience;
+        self.xp_needed = if def.advances_to.is_empty() { 0 } else { def.experience };
         self.level = def.level;
         self.abilities = def.abilities.clone();
     }
@@ -180,7 +180,7 @@ mod tests {
         assert_eq!(unit.movement, 5);
         assert_eq!(unit.attacks[0].damage, 9);
         assert_eq!(unit.xp, 0);
-        assert_eq!(unit.xp_needed, 80);
+        assert_eq!(unit.xp_needed, 0, "terminal unit (advances_to=[]) should have xp_needed=0");
         assert!(!unit.advancement_pending);
     }
 }
