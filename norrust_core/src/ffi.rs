@@ -23,13 +23,14 @@ use serde::Serialize;
 
 use crate::board::Tile;
 use crate::campaign::{self, CampaignState};
-use crate::combat::{simulate_combat, time_of_day, TimeOfDay};
+use crate::combat::{simulate_combat, time_of_day, Rng, TimeOfDay};
 use crate::dialogue::DialogueState;
 use crate::game_state::{apply_action, apply_recruit, Action, ActionError, GameState, PendingSpawn, TriggerZone};
 use crate::hex::Hex;
 use crate::loader::Registry;
 use crate::pathfinding::{find_path, get_zoc_hexes, reachable_hexes};
 use crate::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
+use crate::save::SaveState;
 use crate::snapshot::{ActionRequest, StateSnapshot};
 use crate::unit::{advance_unit, Unit};
 
@@ -80,6 +81,12 @@ pub struct NorRustEngine {
     state_cache: Option<String>,
     /// Campaign progression state (None for standalone scenarios).
     campaign: Option<CampaignState>,
+    /// Path to the loaded board.toml (for save serialization).
+    board_path: Option<String>,
+    /// Path to the loaded dialogue.toml (for save serialization).
+    dialogue_path: Option<String>,
+    /// Human-readable scenario name (for save list UI).
+    display_name: Option<String>,
 }
 
 impl NorRustEngine {
@@ -92,6 +99,9 @@ impl NorRustEngine {
             dialogue_state: None,
             state_cache: None,
             campaign: None,
+            board_path: None,
+            dialogue_path: None,
+            display_name: None,
         }
     }
 }
@@ -356,7 +366,8 @@ pub unsafe extern "C" fn norrust_load_board(
     panic::catch_unwind(panic::AssertUnwindSafe(|| {
         let Some(e) = (unsafe { engine.as_mut() }) else { return 0 };
         if seed <= 0 { return 0; }
-        let path = PathBuf::from(unsafe { cstr_to_str(board_path) });
+        let path_str = unsafe { cstr_to_str(board_path) };
+        let path = PathBuf::from(path_str);
         let loaded = match crate::scenario::load_board(&path) {
             Ok(b) => b,
             Err(_) => return 0,
@@ -365,6 +376,7 @@ pub unsafe extern "C" fn norrust_load_board(
         state.objective_hex = loaded.objective_hex;
         state.max_turns = loaded.max_turns;
         e.game = Some(state);
+        e.board_path = Some(path_str.to_string());
         upgrade_tiles_mut(e);
         e.state_cache = None;
         1
@@ -1832,6 +1844,7 @@ pub unsafe extern "C" fn norrust_load_dialogue(
     match DialogueState::load(std::path::Path::new(path_str)) {
         Ok(state) => {
             engine.dialogue_state = Some(state);
+            engine.dialogue_path = Some(path_str.to_string());
             1
         }
         Err(_) => 0,
@@ -1949,4 +1962,147 @@ pub unsafe extern "C" fn norrust_get_unit_at(
         let hex = Hex::from_offset(col, row);
         state.hex_to_unit.get(&hex).map(|&uid| uid as i32).unwrap_or(-1)
     })
+}
+
+// ── Save / Load ─────────────────────────────────────────────────────────────
+
+/// Set the display name for save metadata (human-readable scenario name).
+#[no_mangle]
+pub unsafe extern "C" fn norrust_set_display_name(
+    engine: *mut NorRustEngine,
+    name: *const c_char,
+) {
+    let Some(e) = engine.as_mut() else { return };
+    let name_str = cstr_to_str(name);
+    e.display_name = if name_str.is_empty() { None } else { Some(name_str.to_string()) };
+}
+
+/// Serialize the full engine state to JSON for saving.
+///
+/// Returns a JSON string containing all game state, campaign state, dialogue
+/// fired IDs, and metadata needed to reconstruct the game. Caller frees with
+/// `norrust_free_string()`. Returns null if no game state loaded.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_save_json(
+    engine: *mut NorRustEngine,
+) -> *mut c_char {
+    let Some(e) = engine.as_ref() else { return std::ptr::null_mut() };
+    let Some(state) = e.game.as_ref() else { return std::ptr::null_mut() };
+    let Some(board_path) = e.board_path.as_deref() else { return std::ptr::null_mut() };
+
+    let save = SaveState::build(
+        state,
+        board_path,
+        e.dialogue_state.as_ref(),
+        e.dialogue_path.as_deref(),
+        e.campaign.as_ref(),
+        e.display_name.as_deref(),
+    );
+
+    match serde_json::to_string(&save) {
+        Ok(json) => to_c_string(&json),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// Restore full engine state from a JSON save string.
+///
+/// Reloads the board from the saved path, reconstructs all units from the
+/// registry, restores game metadata, dialogue fired state, and campaign state.
+/// Returns 0 on success, -1 on error.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_load_json(
+    engine: *mut NorRustEngine,
+    json: *const c_char,
+) -> i32 {
+    panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let Some(e) = engine.as_mut() else { return -1 };
+        let json_str = cstr_to_str(json);
+        let save: SaveState = match serde_json::from_str(json_str) {
+            Ok(s) => s,
+            Err(_) => return -1,
+        };
+
+        // 1. Reload board from saved path
+        let path = PathBuf::from(&save.board_path);
+        let loaded = match crate::scenario::load_board(&path) {
+            Ok(b) => b,
+            Err(_) => return -1,
+        };
+        let mut state = GameState::new_seeded(loaded.board, save.rng_state);
+        state.objective_hex = loaded.objective_hex;
+        state.max_turns = loaded.max_turns;
+        e.game = Some(state);
+        e.board_path = Some(save.board_path.clone());
+        upgrade_tiles_mut(e);
+
+        // 2. Override game metadata from save
+        let Some(state) = e.game.as_mut() else { return -1 };
+        state.rng = Rng::new(save.rng_state);
+        state.turn = save.turn;
+        state.active_faction = save.active_faction;
+        state.gold = save.gold;
+        if let Some(mt) = save.max_turns {
+            state.max_turns = Some(mt);
+        }
+        if let Some((col, row)) = save.objective_hex {
+            state.objective_hex = Some(Hex::from_offset(col, row));
+        }
+
+        // 3. Restore units from registry + saved state
+        for su in &save.units {
+            let mut unit = unit_from_registry(e, su.id, &su.def_id, su.faction);
+            // Override runtime state from save
+            unit.hp = su.hp;
+            unit.max_hp = su.max_hp;
+            unit.xp = su.xp;
+            unit.xp_needed = su.xp_needed;
+            unit.advancement_pending = su.advancement_pending;
+            unit.moved = su.moved;
+            unit.attacked = su.attacked;
+            unit.poisoned = su.poisoned;
+            unit.slowed = su.slowed;
+            unit.level = su.level;
+            unit.abilities = su.abilities.clone();
+
+            let Some(state) = e.game.as_mut() else { return -1 };
+            state.place_unit(unit, Hex::from_offset(su.col, su.row));
+        }
+
+        // 4. Set next_unit_id
+        let Some(state) = e.game.as_mut() else { return -1 };
+        state.next_unit_id = save.next_unit_id;
+
+        // 5. Restore trigger zone fired state
+        for (i, fired) in save.trigger_zones_fired.iter().enumerate() {
+            if let Some(tz) = state.trigger_zones.get_mut(i) {
+                tz.triggered = *fired;
+            }
+        }
+
+        // 6. Restore village owners
+        for &(col, row, owner) in &save.village_owners {
+            state.village_owners.insert(Hex::from_offset(col, row), owner);
+        }
+
+        // 7. Restore dialogue
+        if let Some(ref dlg_path) = save.dialogue_path {
+            if let Ok(mut ds) = DialogueState::load(std::path::Path::new(dlg_path)) {
+                for id in &save.dialogue_fired {
+                    ds.mark_fired(id);
+                }
+                e.dialogue_state = Some(ds);
+                e.dialogue_path = Some(dlg_path.clone());
+            }
+        }
+
+        // 8. Restore campaign state
+        e.campaign = save.campaign;
+
+        // 9. Restore metadata
+        e.display_name = save.display_name;
+
+        e.state_cache = None;
+        0
+    })).unwrap_or(-1)
 }

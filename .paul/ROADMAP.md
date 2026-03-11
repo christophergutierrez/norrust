@@ -8,12 +8,12 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 **v3.7 Save System Overhaul**
 Status: In Progress
-Phases: 1 of 3 complete
+Phases: 2 of 3 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 104 | Campaign State in Rust | 1/1 | ✅ Complete | 2026-03-10 |
-| 105 | JSON Save Format | TBD | Not started | - |
+| 105 | JSON Save Format | 1/1 | ✅ Complete | 2026-03-10 |
 | 106 | Save UX Cleanup | TBD | Not started | - |
 
 ## v3.7 Phase Details
@@ -25,11 +25,12 @@ Depends on: None
 Plans: 1/1 complete
 Completed: 2026-03-10
 
-### Phase 105: JSON Save Format
+### Phase 105: JSON Save Format ✅
 
 Focus: Engine serializes/deserializes full game + campaign state as JSON via serde. Unit UIDs included naturally as part of Rust model. Single FFI call for save/load.
 Depends on: Phase 104 (campaign state must be in Rust before serializing it)
-Plans: TBD (defined during /paul:plan)
+Plans: 1/1 complete
+Completed: 2026-03-10
 
 ### Phase 106: Save UX Cleanup
 

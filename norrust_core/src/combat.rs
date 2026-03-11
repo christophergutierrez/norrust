@@ -55,6 +55,11 @@ impl Rng {
         Self { state: seed }
     }
 
+    /// Return the current RNG state (for save serialization).
+    pub fn state(&self) -> u64 {
+        self.state
+    }
+
     /// Generate the next pseudorandom u64 using xorshift64.
     pub fn next_u64(&mut self) -> u64 {
         let mut x = self.state;

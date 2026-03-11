@@ -13,7 +13,7 @@ use crate::combat::Rng;
 use crate::game_state::GameState;
 
 /// A single scenario entry within a campaign definition.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CampaignScenarioDef {
     pub board: String,
     pub units: String,
@@ -22,7 +22,7 @@ pub struct CampaignScenarioDef {
 }
 
 /// Top-level campaign definition loaded from TOML.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CampaignDef {
     pub id: String,
     pub name: String,
@@ -72,7 +72,7 @@ struct CampaignMeta {
 /// Contains only the fields that vary from registry defaults (hp, xp, advancement).
 /// Combat stats (attacks, defense, movement_costs, resistances) are re-derived from
 /// the registry when the veteran is placed in the next scenario.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VeteranUnit {
     pub def_id: String,
     pub hp: u32,
@@ -91,7 +91,7 @@ pub enum RosterStatus {
 }
 
 /// A rostered unit with persistent UUID identity across scenarios.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RosterEntry {
     pub uuid: String,
     pub def_id: String,
@@ -108,7 +108,7 @@ pub struct RosterEntry {
 ///
 /// Tracks scenario index, carry-over gold, veterans, and the UUID-based roster
 /// for persistent unit identity across scenarios.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CampaignState {
     pub campaign_def: CampaignDef,
     pub scenario_index: usize,

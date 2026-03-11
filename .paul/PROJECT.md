@@ -394,6 +394,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | CampaignState on NorRustEngine (not GameState) | GameState resets per scenario; campaign persists across scenarios; clean ownership | 2026-03-10 | Active |
 | UUID via xorshift64 (combat::Rng) | Consistent with existing RNG pattern; no external deps | 2026-03-10 | Active |
 | id_map cleared between scenarios | engine_id → uuid mapping is per-scenario; roster persists | 2026-03-10 | Active |
+| SaveState DTO for serialization (not Serialize on GameState) | GameState has HashMap<Hex,_> keys + RNG; SaveState is clean boundary | 2026-03-10 | Active |
+| Registry-based unit restore from saves | Saves only runtime state; attacks/defense from registry on load | 2026-03-10 | Active |
+| Board reload from path on save restore | Terrain + trigger zones come from TOML; not duplicated in save | 2026-03-10 | Active |
 
 ## Tech Stack
 
@@ -437,4 +440,4 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 | Greedy opponent response in 2-ply | No recursive depth; catches oscillation without exponential blowup | 2026-03-10 | Active |
 
-*Last updated: 2026-03-10 after Phase 104 Campaign State in Rust.*
+*Last updated: 2026-03-10 after Phase 105 JSON Save Format.*
