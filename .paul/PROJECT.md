@@ -257,6 +257,9 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Config-driven debug data generator (tools/generate_debug.py) with per-unit override support — Phase 112 (112-01)
 - [x] --debug launch flag switching Love2D to debug/data/ with X/G/T cheat keys — Phase 113 (113-01)
 - [x] 3 cheat FFI functions (cheat_set_xp, cheat_add_gold, cheat_set_turn) as pure additions — Phase 113 (113-01)
+- [x] Debug test scenarios (advance + recruit) with 8x5 boards wired into --debug scenario list — Phase 114 (114-01)
+- [x] Attack damage patching in generate_debug.py for [[attacks]] sections — Phase 114 (114-01)
+- [x] Dark Sorcerer "leader" ability fix (was preventing undead faction recruitment) — Phase 114 (114-01)
 
 ### Active (In Progress / Deferred)
 
@@ -443,7 +446,7 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 
 ---
 *Created: 2026-02-27*
-*Last updated: 2026-03-11 after Phase 111*
+*Last updated: 2026-03-11 after Phase 114*
 | AI leader discipline + mixed recruitment | Smarter AI spending; leader stays on keep, round-robin unit selection | 2026-03-10 | Active |
 
 | evaluate_state centered HP ratio | Raw ratio breaks zero-sum symmetry; (own/total-0.5)*2 centers at 0 | 2026-03-10 | Active |

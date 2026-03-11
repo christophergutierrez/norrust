@@ -7,14 +7,14 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 ## Current Milestone
 
 **v3.9 Debug Sandbox**
-Status: 🚧 In Progress
-Phases: 2 of 3 complete
+Status: ✅ Complete
+Phases: 3 of 3 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 112 | Debug Config + Generator Tool | 1 | ✅ Complete | 2026-03-11 |
 | 113 | Debug Launch Mode + Cheat Keys | 1 | ✅ Complete | 2026-03-11 |
-| 114 | Test Scenarios + Polish | TBD | Not started | - |
+| 114 | Test Scenarios + Polish | 1 | ✅ Complete | 2026-03-11 |
 
 ## v3.9 Phase Details
 
@@ -37,6 +37,8 @@ Result: --debug flag switches data paths, 3 cheat FFI functions added, X/G/T key
 
 Focus: Pre-built debug scenarios for common test cases (small board, units adjacent, multi-advancement paths). Verify end-to-end debug workflow. Documentation.
 Depends on: Phase 113 (launch mode must work)
+Plans: 1 (114-01: execute — complete)
+Result: 2 debug scenarios (advance + recruit) with 8x5 boards, attack damage patching, Dark Sorcerer leader ability fix
 
 ---
 
