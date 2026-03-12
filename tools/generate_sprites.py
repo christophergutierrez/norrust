@@ -55,26 +55,11 @@ The sprite is centered on the mask."""
 # defend_desc describes how the character defends WITHOUT adding equipment they don't have.
 # Keys use "/" for tree-structured paths (e.g., "spearman/swordsman").
 UNITS = {
-    # ── Legacy test units ─────────────────────────────────────────
+    # ── Legacy (still used in scenarios) ──────────────────────────
     "fighter": (
         "human fighter soldier, simple chain mail, iron helmet, longsword, round shield",
         "sword", None,
         "raising round shield to block, crouching behind it with sword ready",
-    ),
-    "archer": (
-        "human archer, leather jerkin, brown hood, simple shortbow, quiver of arrows",
-        "short sword", "shortbow",
-        "leaping sideways to dodge, bow clutched to chest",
-    ),
-    "hero": (
-        "human hero champion, gleaming plate armor, winged helm, bastard sword, ornate shield, red cape",
-        "sword", None,
-        "bracing behind ornate shield with sword held high, cape billowing",
-    ),
-    "ranger": (
-        "human ranger woodsman, green cloak, leather armor, longbow, short sword at hip",
-        "short sword", "longbow",
-        "ducking low with cloak wrapped protectively, bow held aside",
     ),
     # ── Loyalists ─────────────────────────────────────────────────
     "spearman": (
@@ -221,6 +206,11 @@ UNITS = {
         "human lieutenant commander, plate armor, white cape, longsword, gold crown, leader",
         "sword", "crossbow bolt shot",
         "parrying with longsword held high, armored shoulder turned forward",
+    ),
+    "lieutenant/general": (
+        "human general supreme commander, ornate gold plate armor, great plumed helm, longsword, tower shield with kingdom crest, red and gold cape, leader",
+        "longsword", "crossbow bolt shot",
+        "bracing behind tower shield with crest, longsword raised high, cape billowing",
     ),
     # ── Rebels ────────────────────────────────────────────────────
     "elvish_fighter": (
@@ -643,7 +633,7 @@ def generate_image(api_key, prompt, reference_image_path=None, retries=3):
     """Generate an image via Gemini API, optionally with a reference image."""
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        "gemini-2.0-flash-exp-image-generation:generateContent"
+        "gemini-2.5-flash-image:generateContent"
     )
 
     parts = []
