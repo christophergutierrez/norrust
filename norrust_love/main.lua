@@ -393,24 +393,6 @@ function love.load()
             gen.run()
             love.event.quit()
             return
-        elseif arg == "--viewer" then
-            local viewer = require("viewer")
-            viewer.set_scale(UI_SCALE)
-            viewer.load()
-            love.update = function(dt) viewer.update(dt) end
-            love.draw = function()
-                love.graphics.push()
-                love.graphics.scale(UI_SCALE, UI_SCALE)
-                viewer.draw()
-                love.graphics.pop()
-            end
-            love.keypressed = function(key) viewer.keypressed(key) end
-            love.wheelmoved = function(x, y) viewer.wheelmoved(x, y) end
-            love.mousemoved = function() end
-            love.mousepressed = function() end
-            love.mousereleased = function() end
-            love.resize = function() end
-            return
         end
     end
 
