@@ -246,12 +246,12 @@ UNITS = {
     "elvish_archer/elvish_marksman": (
         "elf marksman sharpshooter, dark green hooded cloak, reinforced leather, long-range elven longbow, precision quiver",
         "sword", "longbow",
-        "sidestepping with practiced grace, bow lowered defensively",
+        "leaning back sword horizontal to block attack",
     ),
     "elvish_archer/elvish_marksman/elvish_sharpshooter": (
         "elf sharpshooter elite, forest camouflage cloak, masterwork leather armor, legendary elven longbow, magical quiver",
         "sword", "longbow",
-        "vanishing step backward, cloak blurring, bow ready at hip",
+        "vanishing step backward, cloak blurring, sword up to block attack",
     ),
     "elvish_archer/elvish_ranger": (
         "elf ranger woodsman, brown and green leather, woodland cloak, sturdy bow, short sword at belt",
