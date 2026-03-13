@@ -52,12 +52,8 @@ function M.keypressed(key)
     elseif key == "return" or key == "kpenter" then
         -- Build campaign ctx and commit
         local ctx = {
-            norrust = mods.norrust, engine = vars.engine, int = int,
-            hex = mods.hex, scenarios_path = scn.path,
-            campaign_veterans = campaign.veterans,
-            campaign_roster = campaign.roster, roster_mod = mods.roster_mod,
+            norrust = mods.norrust, engine = vars.engine,
             campaign_deploy = campaign.deploy,
-            build_unit_pos_map = build_unit_pos_map,
             PLAYING = MODES.PLAYING,
         }
         campaign_client.commit_deployment(ctx)
@@ -75,12 +71,8 @@ function M.keypressed(key)
             end
         end
         local ctx = {
-            norrust = mods.norrust, engine = vars.engine, int = int,
-            hex = mods.hex, scenarios_path = scn.path,
-            campaign_veterans = campaign.veterans,
-            campaign_roster = campaign.roster, roster_mod = mods.roster_mod,
+            norrust = mods.norrust, engine = vars.engine,
             campaign_deploy = campaign.deploy,
-            build_unit_pos_map = build_unit_pos_map,
             PLAYING = MODES.PLAYING,
         }
         campaign_client.commit_deployment(ctx)

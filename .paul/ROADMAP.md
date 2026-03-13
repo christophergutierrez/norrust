@@ -7,15 +7,15 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 ## Current Milestone
 
 **v5.0 Engine-Owned Gameplay**
-Status: 🔄 In Progress
-Phases: 3 of 4 complete
+Status: ✅ Complete
+Phases: 4 of 4 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 118 | Campaign Orchestration | 1/1 | ✅ Complete | 2026-03-12 |
 | 119 | Roster & UUID Tracking | 1/1 | ✅ Complete | 2026-03-13 |
 | 120 | Game-Over Campaign Logic | 1/1 | ✅ Complete | 2026-03-13 |
-| 121 | Veteran Deployment | 0/0 | ⬚ Not Started | — |
+| 121 | Veteran Deployment | 1/1 | ✅ Complete | 2026-03-13 |
 
 ## v5.0 Phase Details
 

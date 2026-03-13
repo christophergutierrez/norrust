@@ -231,6 +231,7 @@ ffi.cdef[[
     char* norrust_campaign_get_living_json(NorRustEngine* engine);
     void norrust_campaign_map_id(NorRustEngine* engine, int32_t engine_id, const char* uuid);
     char* norrust_campaign_get_mapped_uuids_json(NorRustEngine* engine);
+    char* norrust_campaign_commit_deployment(NorRustEngine* engine, const char* deployed_json);
 
     // Debug / Cheat
     int32_t norrust_cheat_set_xp(NorRustEngine* engine, int32_t unit_id);
@@ -621,6 +622,13 @@ end
 --- Get UUIDs currently mapped to engine unit IDs (units on the board).
 function M.campaign_get_mapped_uuids(engine)
     local raw = get_string(lib.norrust_campaign_get_mapped_uuids_json(engine))
+    return json_decode(raw) or {}
+end
+
+--- Commit veteran deployment: place user-selected veterans on keep/castle hexes.
+--- deployed_json: JSON array of veteran indices (e.g. "[0, 2, 3]")
+function M.campaign_commit_deployment(engine, deployed_json)
+    local raw = get_string(lib.norrust_campaign_commit_deployment(engine, deployed_json))
     return json_decode(raw) or {}
 end
 

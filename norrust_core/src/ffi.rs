@@ -1420,6 +1420,115 @@ pub unsafe extern "C" fn norrust_place_veteran_unit(
     uid as i32
 }
 
+/// Commit veteran deployment: place user-selected veterans on keep/castle hexes.
+/// Takes a JSON array of indices into campaign.veterans (e.g. [0, 2, 3]).
+/// Returns JSON: {"status":"ok","placed":N} or {"status":"error","message":"..."}.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_campaign_commit_deployment(
+    engine: *mut NorRustEngine,
+    deployed_json: *const c_char,
+) -> *mut c_char {
+    let Some(e) = engine.as_mut() else {
+        return to_c_string(r#"{"status":"error","message":"null engine"}"#);
+    };
+
+    // Parse deployed indices
+    let json_str = cstr_to_str(deployed_json);
+    let indices: Vec<usize> = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => return to_c_string(r#"{"status":"error","message":"invalid json"}"#),
+    };
+
+    // Get veterans and living UUIDs from campaign state
+    let (selected_veterans, living_uuids) = {
+        let Some(cs) = e.campaign.as_ref() else {
+            return to_c_string(r#"{"status":"error","message":"no campaign"}"#);
+        };
+        let living = cs.get_living();
+        let mut vets = Vec::new();
+        let mut uuids = Vec::new();
+        for &idx in &indices {
+            if let Some(vet) = cs.veterans.get(idx) {
+                vets.push(vet.clone());
+                uuids.push(living.get(idx).map(|e| e.uuid.clone()));
+            }
+        }
+        (vets, uuids)
+    };
+
+    // Find keep and castle slots
+    let slots = {
+        let Some(state) = e.game.as_ref() else {
+            return to_c_string(r#"{"status":"error","message":"no game state"}"#);
+        };
+        let (keep_opt, castles) = campaign::find_keep_and_castles(state, 0);
+        match keep_opt {
+            Some(keep) => {
+                let mut s: Vec<Hex> = vec![keep];
+                s.extend_from_slice(&castles);
+                s
+            }
+            None => {
+                return to_c_string(r#"{"status":"ok","placed":0}"#);
+            }
+        }
+    };
+
+    // Clear id_map for new scenario placement
+    if let Some(cs) = e.campaign.as_mut() {
+        cs.clear_id_map();
+    }
+
+    // Place each selected veteran
+    let mut placed = 0usize;
+    for (vi, vet) in selected_veterans.iter().enumerate() {
+        if placed >= slots.len() { break; }
+
+        // Find next unoccupied slot
+        let slot = {
+            let state = e.game.as_ref().unwrap();
+            let mut found = None;
+            for si in placed..slots.len() {
+                if !state.hex_to_unit.contains_key(&slots[si]) {
+                    found = Some(si);
+                    break;
+                }
+            }
+            found
+        };
+
+        let Some(si) = slot else { break };
+        placed = si + 1;
+        let hex = slots[si];
+        let (col, row) = hex.to_offset();
+
+        // Create and place the veteran unit
+        let state = e.game.as_mut().unwrap();
+        let uid = state.next_unit_id;
+        state.next_unit_id += 1;
+
+        let mut unit = unit_from_registry(e, uid, &vet.def_id, 0);
+        unit.hp = unit.max_hp; // Heal to full
+        unit.xp = vet.xp;
+        unit.xp_needed = vet.xp_needed;
+        unit.advancement_pending = vet.advancement_pending;
+
+        let state = e.game.as_mut().unwrap();
+        state.place_unit(unit, Hex::from_offset(col, row));
+
+        // Map engine ID to roster UUID
+        if let Some(uuid) = living_uuids.get(vi).and_then(|u| u.clone()) {
+            if let Some(cs) = e.campaign.as_mut() {
+                cs.map_id(uid, &uuid);
+            }
+        }
+    }
+
+    e.state_cache = None;
+    let result = format!(r#"{{"status":"ok","placed":{}}}"#, placed);
+    to_c_string(&result)
+}
+
 // ── Campaign State (new v3.7) ────────────────────────────────────────────────
 
 /// Start a campaign: load definition and create CampaignState on the engine.

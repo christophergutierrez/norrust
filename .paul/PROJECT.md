@@ -431,6 +431,8 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | Non-faction scraped TOMLs deleted | 210 drakes/dwarves/dunes/ships removed; only 4-faction units + legacy test units kept | 2026-03-11 | Active |
 | FFI results include status fields for branching | campaign_record_victory returns "next_scenario"/"campaign_complete"; Lua never checks engine-internal state | 2026-03-13 | Active |
 | campaign_record_victory as single-call game-over | Replaces multi-step Lua sync+extract+calculate; engine owns all transitions | 2026-03-13 | Active |
+| campaign_commit_deployment as single-call placement | Deployed indices sent as JSON; engine owns keep/castle finding + placement | 2026-03-13 | Active |
+| v5.0 complete: all gameplay in Rust | Campaign orchestration, roster, game-over, deployment — Lua is presentation only | 2026-03-13 | Active |
 
 ## Tech Stack
 

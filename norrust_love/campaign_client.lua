@@ -72,94 +72,21 @@ function campaign_client.load_campaign_scenario(ctx)
     end
 end
 
---- Find the player keep hex and its adjacent castle hexes.
---- Used by commit_deployment to place veterans on valid hexes.
---- Note: Phase 121 will move this to Rust entirely.
-local function find_keep_and_castles(ctx)
-    local hex = require("hex")
-    local state = ctx.norrust.get_state(ctx.engine)
-    local int = ctx.int
-    local keep_col, keep_row = nil, nil
-    local castle_hexes = {}
-
-    for _, tile in ipairs(state.terrain or {}) do
-        local tc, tr = int(tile.col), int(tile.row)
-        if tile.terrain_id == "keep" then
-            if keep_col == nil or tc < keep_col then
-                keep_col, keep_row = tc, tr
-            end
-        end
-    end
-
-    if keep_col then
-        for _, tile in ipairs(state.terrain or {}) do
-            if tile.terrain_id == "castle" then
-                local tc, tr = int(tile.col), int(tile.row)
-                if hex.distance(tc, tr, keep_col, keep_row) == 1 then
-                    castle_hexes[#castle_hexes + 1] = {col = tc, row = tr}
-                end
-            end
-        end
-    end
-
-    return keep_col, keep_row, castle_hexes
-end
-
---- Commit veteran deployment: place only deployed veterans, start scenario.
---- Note: Phase 121 will migrate this to Rust.
+--- Commit veteran deployment: send deployed veteran indices to engine for placement.
 function campaign_client.commit_deployment(ctx)
     local deploy = ctx.campaign_deploy
-    local int = ctx.int
 
-    -- Build filtered veterans list
-    local filtered = {}
-    for _, dv in ipairs(deploy.veterans) do
+    -- Build JSON array of deployed veteran indices (0-based for Rust)
+    local indices = {}
+    for i, dv in ipairs(deploy.veterans) do
         if dv.deployed then
-            filtered[#filtered + 1] = dv
+            indices[#indices + 1] = i - 1  -- Lua 1-based → Rust 0-based
         end
     end
 
-    -- Find placement slots
-    local keep_col, keep_row, castle_hexes = find_keep_and_castles(ctx)
-    if not keep_col then
-        deploy.active = false
-        ctx.game_mode = ctx.PLAYING
-        return
-    end
-
-    local slots = {{col = keep_col, row = keep_row}}
-    for _, ch in ipairs(castle_hexes) do
-        slots[#slots + 1] = ch
-    end
-
-    local state = ctx.norrust.get_state(ctx.engine)
-    local pos_map = ctx.build_unit_pos_map(state)
-
-    local placed = 0
-    for _, vet in ipairs(filtered) do
-        if placed >= #slots then break end
-        local slot = nil
-        for si = placed + 1, #slots do
-            local key = int(slots[si].col) .. "," .. int(slots[si].row)
-            if not pos_map[key] then
-                slot = slots[si]
-                placed = si
-                break
-            end
-        end
-        if not slot then break end
-
-        local uid = ctx.norrust.place_veteran_unit(
-            ctx.engine,
-            vet.def_id, 0,
-            int(slot.col), int(slot.row),
-            int(vet.hp), int(vet.xp), int(vet.xp_needed),
-            vet.advancement_pending
-        )
-        if uid > 0 then
-            pos_map[int(slot.col) .. "," .. int(slot.row)] = {id = uid, faction = 0}
-        end
-    end
+    -- Single FFI call: engine finds keep/castles, places veterans, maps UUIDs
+    local json = "[" .. table.concat(indices, ",") .. "]"
+    ctx.norrust.campaign_commit_deployment(ctx.engine, json)
 
     deploy.active = false
     ctx.game_mode = ctx.PLAYING
