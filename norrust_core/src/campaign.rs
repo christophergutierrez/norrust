@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::combat::Rng;
 use crate::game_state::GameState;
+use crate::hex::Hex;
 
 /// A single scenario entry within a campaign definition.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -247,6 +248,46 @@ impl CampaignState {
     pub fn current_scenario(&self) -> Option<&CampaignScenarioDef> {
         self.campaign_def.scenarios.get(self.scenario_index)
     }
+
+    /// Build VeteranInfo list from current veterans + roster for deployment UI.
+    pub fn build_veteran_info(&self, available_slots: usize) -> Vec<VeteranInfo> {
+        let living: Vec<&RosterEntry> = self.get_living();
+        self.veterans
+            .iter()
+            .enumerate()
+            .map(|(i, vet)| {
+                let uuid = living.get(i).map(|e| e.uuid.clone());
+                VeteranInfo {
+                    def_id: vet.def_id.clone(),
+                    hp: vet.hp,
+                    max_hp: vet.max_hp,
+                    xp: vet.xp,
+                    xp_needed: vet.xp_needed,
+                    advancement_pending: vet.advancement_pending,
+                    uuid,
+                    deployed: i < available_slots,
+                }
+            })
+            .collect()
+    }
+
+    /// Populate the roster from all faction-0 units in the game state (first scenario).
+    pub fn populate_initial_roster(&mut self, state: &GameState, faction: u8) {
+        for (_, unit) in &state.units {
+            if unit.faction == faction {
+                self.add_unit(
+                    &unit.def_id,
+                    unit.id,
+                    unit.hp,
+                    unit.max_hp,
+                    unit.xp,
+                    unit.xp_needed,
+                    unit.advancement_pending,
+                    unit.abilities.clone(),
+                );
+            }
+        }
+    }
 }
 
 /// Load a campaign definition from a TOML file.
@@ -264,6 +305,110 @@ pub fn load_campaign(path: &Path) -> Result<CampaignDef, String> {
         early_finish_bonus: file.campaign.early_finish_bonus,
         scenarios: file.scenarios,
     })
+}
+
+/// Result of veteran placement attempt.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub enum PlaceResult {
+    /// All veterans placed successfully.
+    Placed,
+    /// More veterans than available slots — deployment screen needed.
+    DeployNeeded {
+        slots: usize,
+        veterans: Vec<VeteranInfo>,
+    },
+}
+
+/// Veteran info for the deployment UI (includes roster UUID).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VeteranInfo {
+    pub def_id: String,
+    pub hp: u32,
+    pub max_hp: u32,
+    pub xp: u32,
+    pub xp_needed: u32,
+    pub advancement_pending: bool,
+    pub uuid: Option<String>,
+    pub deployed: bool,
+}
+
+/// Result of loading the next campaign scenario.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub enum ScenarioLoadResult {
+    /// Scenario loaded and ready to play.
+    Playing,
+    /// Deploy screen needed — more veterans than available castle slots.
+    DeployNeeded {
+        slots: usize,
+        veterans: Vec<VeteranInfo>,
+    },
+    /// Campaign is finished (no more scenarios).
+    CampaignComplete,
+    /// Error during loading.
+    Error(String),
+}
+
+/// Find the player keep hex and adjacent castle hexes on the board.
+///
+/// For faction 0, selects the leftmost keep; for faction 1, the rightmost.
+/// Returns (keep_hex, castle_hexes) where castle_hexes are adjacent to the keep.
+pub fn find_keep_and_castles(state: &GameState, faction: u8) -> (Option<Hex>, Vec<Hex>) {
+    let board = &state.board;
+    let width = board.width as i32;
+    let height = board.height as i32;
+
+    // Scan all hexes for keeps
+    let mut keep_hex: Option<Hex> = None;
+    for col in 0..width {
+        for row in 0..height {
+            let hex = Hex::from_offset(col, row);
+            if board.terrain_at(hex) == Some("keep") {
+                let (kcol, _) = hex.to_offset();
+                match keep_hex {
+                    None => keep_hex = Some(hex),
+                    Some(current) => {
+                        let (cur_col, _) = current.to_offset();
+                        if faction == 0 && kcol < cur_col {
+                            keep_hex = Some(hex);
+                        } else if faction == 1 && kcol > cur_col {
+                            keep_hex = Some(hex);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let Some(keep) = keep_hex else {
+        return (None, Vec::new());
+    };
+
+    // Collect adjacent castle hexes
+    let mut castle_hexes = Vec::new();
+    for col in 0..width {
+        for row in 0..height {
+            let hex = Hex::from_offset(col, row);
+            if board.terrain_at(hex) == Some("castle") && keep.distance(hex) == 1 {
+                castle_hexes.push(hex);
+            }
+        }
+    }
+
+    (Some(keep), castle_hexes)
+}
+
+/// Count available (unoccupied) placement slots on keep + adjacent castles.
+pub fn count_available_slots(state: &GameState, keep: Hex, castles: &[Hex]) -> usize {
+    let mut count = 0;
+    if !state.hex_to_unit.contains_key(&keep) {
+        count += 1;
+    }
+    for &hex in castles {
+        if !state.hex_to_unit.contains_key(&hex) {
+            count += 1;
+        }
+    }
+    count
 }
 
 /// Extract surviving units of the given faction from the current game state.
@@ -563,5 +708,149 @@ mod tests {
             cs.map_id((i + 10) as u32, uuid);
         }
         assert_eq!(cs.id_map.len(), 2);
+    }
+
+    #[test]
+    fn test_find_keep_and_castles_faction_0() {
+        // Create a board with two keeps and castles
+        let mut board = Board::new(16, 10);
+        // Left keep at (1, 5)
+        board.set_terrain(Hex::from_offset(1, 5), "keep");
+        // Adjacent castles to left keep
+        board.set_terrain(Hex::from_offset(0, 4), "castle");
+        board.set_terrain(Hex::from_offset(0, 5), "castle");
+        board.set_terrain(Hex::from_offset(1, 4), "castle");
+        board.set_terrain(Hex::from_offset(2, 5), "castle");
+        board.set_terrain(Hex::from_offset(1, 6), "castle");
+        // Right keep at (13, 5)
+        board.set_terrain(Hex::from_offset(13, 5), "keep");
+        board.set_terrain(Hex::from_offset(13, 4), "castle");
+        board.set_terrain(Hex::from_offset(14, 5), "castle");
+
+        let state = GameState::new(board);
+
+        // Faction 0: should pick leftmost keep
+        let (keep, castles) = find_keep_and_castles(&state, 0);
+        assert!(keep.is_some());
+        let (kcol, krow) = keep.unwrap().to_offset();
+        assert_eq!((kcol, krow), (1, 5));
+        // Should have adjacent castle hexes (distance == 1 from keep)
+        assert!(castles.len() >= 4);
+        for c in &castles {
+            assert_eq!(keep.unwrap().distance(*c), 1);
+        }
+    }
+
+    #[test]
+    fn test_find_keep_and_castles_faction_1() {
+        let mut board = Board::new(16, 10);
+        board.set_terrain(Hex::from_offset(1, 5), "keep");
+        board.set_terrain(Hex::from_offset(13, 5), "keep");
+        board.set_terrain(Hex::from_offset(13, 4), "castle");
+        board.set_terrain(Hex::from_offset(14, 5), "castle");
+
+        let state = GameState::new(board);
+
+        // Faction 1: should pick rightmost keep
+        let (keep, castles) = find_keep_and_castles(&state, 1);
+        assert!(keep.is_some());
+        let (kcol, _) = keep.unwrap().to_offset();
+        assert_eq!(kcol, 13);
+        assert_eq!(castles.len(), 2);
+    }
+
+    #[test]
+    fn test_find_keep_and_castles_no_keep() {
+        let board = Board::new(8, 5);
+        let state = GameState::new(board);
+        let (keep, castles) = find_keep_and_castles(&state, 0);
+        assert!(keep.is_none());
+        assert!(castles.is_empty());
+    }
+
+    #[test]
+    fn test_count_available_slots() {
+        let mut board = Board::new(8, 5);
+        board.set_terrain(Hex::from_offset(1, 2), "keep");
+        board.set_terrain(Hex::from_offset(0, 2), "castle");
+        board.set_terrain(Hex::from_offset(2, 2), "castle");
+
+        let mut state = GameState::new(board);
+        let keep = Hex::from_offset(1, 2);
+        let castles = vec![Hex::from_offset(0, 2), Hex::from_offset(2, 2)];
+
+        // All empty: 3 slots (keep + 2 castles)
+        assert_eq!(count_available_slots(&state, keep, &castles), 3);
+
+        // Occupy the keep
+        state.place_unit(Unit::new(1, "leader", 30, 0), keep);
+        assert_eq!(count_available_slots(&state, keep, &castles), 2);
+
+        // Occupy one castle
+        state.place_unit(Unit::new(2, "fighter", 30, 0), Hex::from_offset(0, 2));
+        assert_eq!(count_available_slots(&state, keep, &castles), 1);
+    }
+
+    #[test]
+    fn test_build_veteran_info() {
+        let def = make_campaign_def();
+        let mut cs = CampaignState::new(def);
+
+        // Simulate having veterans
+        cs.veterans = vec![
+            VeteranUnit {
+                def_id: "fighter".to_string(),
+                hp: 30, max_hp: 30, xp: 15, xp_needed: 40,
+                advancement_pending: false, abilities: vec![],
+            },
+            VeteranUnit {
+                def_id: "archer".to_string(),
+                hp: 20, max_hp: 25, xp: 5, xp_needed: 32,
+                advancement_pending: false, abilities: vec![],
+            },
+            VeteranUnit {
+                def_id: "spearman".to_string(),
+                hp: 28, max_hp: 28, xp: 0, xp_needed: 36,
+                advancement_pending: false, abilities: vec![],
+            },
+        ];
+
+        // With 2 available slots, first 2 should be deployed
+        let info = cs.build_veteran_info(2);
+        assert_eq!(info.len(), 3);
+        assert!(info[0].deployed);
+        assert!(info[1].deployed);
+        assert!(!info[2].deployed);
+
+        // With enough slots, all deployed
+        let info = cs.build_veteran_info(5);
+        assert!(info.iter().all(|v| v.deployed));
+    }
+
+    #[test]
+    fn test_populate_initial_roster() {
+        let def = make_campaign_def();
+        let mut cs = CampaignState::new(def);
+
+        let board = Board::new(8, 5);
+        let mut state = GameState::new(board);
+
+        let u1 = Unit::new(1, "fighter", 30, 0);
+        state.place_unit(u1, Hex::from_offset(0, 0));
+
+        let u2 = Unit::new(2, "archer", 25, 0);
+        state.place_unit(u2, Hex::from_offset(1, 0));
+
+        // Enemy — should not be in roster
+        let u3 = Unit::new(3, "grunt", 30, 1);
+        state.place_unit(u3, Hex::from_offset(2, 0));
+
+        cs.populate_initial_roster(&state, 0);
+
+        assert_eq!(cs.roster.len(), 2);
+        assert_eq!(cs.id_map.len(), 2);
+        assert!(cs.id_map.contains_key(&1));
+        assert!(cs.id_map.contains_key(&2));
+        assert!(!cs.id_map.contains_key(&3));
     }
 }

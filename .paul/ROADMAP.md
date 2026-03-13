@@ -6,15 +6,42 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
-**v4.0 Unit Content Completeness**
-Status: ✅ Complete
-Phases: 3 of 3 complete
+**v5.0 Engine-Owned Gameplay**
+Status: 🔄 In Progress
+Phases: 3 of 4 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
-| 115 | Missing Units + Cleanup | 1/1 | ✅ Complete | 2026-03-11 |
-| 116 | Stat Verification | 1/1 | ✅ Complete | 2026-03-11 |
-| 117 | Integration Validation | 1/1 | ✅ Complete | 2026-03-11 |
+| 118 | Campaign Orchestration | 1/1 | ✅ Complete | 2026-03-12 |
+| 119 | Roster & UUID Tracking | 1/1 | ✅ Complete | 2026-03-13 |
+| 120 | Game-Over Campaign Logic | 1/1 | ✅ Complete | 2026-03-13 |
+| 121 | Veteran Deployment | 0/0 | ⬚ Not Started | — |
+
+## v5.0 Phase Details
+
+### Phase 118: Campaign Orchestration
+
+Focus: Migrate campaign_client.lua → Rust. Scenario progression, veteran placement on keep/castles, carry-over gold application. The Rust engine should own campaign state transitions so any frontend can drive a campaign without reimplementing orchestration logic.
+Depends on: None
+Constraints: Lua caller becomes thin wrapper — calls Rust FFI, reads results, updates UI only.
+
+### Phase 119: Roster & UUID Tracking
+
+Focus: Migrate roster.lua → Rust. Persistent unit identity (UUID generation), death detection, survivor curation. The engine tracks which units survived each scenario and carries their identity forward.
+Depends on: Phase 118 (campaign state in Rust)
+Constraints: UUIDs must be deterministic-reproducible for testing. Roster is engine-internal state, not presentation.
+
+### Phase 120: Game-Over Campaign Logic
+
+Focus: Migrate campaign sections from input_play.lua → Rust. Survivor extraction, HP reset to max, campaign index advancement, victory/defeat determination. When a scenario ends, the engine decides what happens next.
+Depends on: Phase 119 (roster tracking in Rust)
+Constraints: End-of-scenario logic must be a single FFI call, not a sequence of Lua-side queries.
+
+### Phase 121: Veteran Deployment
+
+Focus: Migrate veteran deployment slot math from input_deploy.lua → Rust. Count available castle hexes around keep, enforce slot limits, place veterans. The engine handles all placement validation.
+Depends on: Phase 120 (game-over feeds into next-scenario setup)
+Constraints: Deployment is engine logic — Lua only renders hex highlights and forwards clicks.
 
 ## v4.0 Phase Details
 
@@ -41,7 +68,7 @@ Depends on: Phase 116 (correct stats)
 
 **v4.0 Unit Content Completeness**
 Status: ✅ Complete
-Phases: 3 of 3 complete
+Phases: 3 of 3 complete (115–117)
 Completed: 2026-03-11
 
 **v3.9 Debug Sandbox**

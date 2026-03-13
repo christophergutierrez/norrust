@@ -9,7 +9,6 @@ local draw_mod = require("draw")
 local campaign_client = require("campaign_client")
 local events = require("events")
 local save = require("save")
-local roster_mod = require("roster")
 local agent_server = require("agent_server")
 local input = require("input")
 local state_mod = require("state")
@@ -337,9 +336,7 @@ local function build_campaign_ctx()
         scenario_units = scn.units, scenario_preset = scn.preset,
         BOARD_COLS = scn.COLS, BOARD_ROWS = scn.ROWS,
         center_camera = center_camera,
-        campaign_data = campaign.data, campaign_index = campaign.index,
-        campaign_veterans = campaign.veterans, campaign_gold = campaign.gold,
-        campaign_roster = campaign.roster, roster_mod = roster_mod,
+        campaign_data = campaign.data,
         faction_id = game_data.faction_id, game_over = vars.game_over,
         winner_faction = vars.winner_faction, recruit_mode = sel.recruit_mode,
         game_mode = vars.game_mode,
@@ -484,7 +481,7 @@ function love.load()
         shared = shared, combat_state = combat_state, sound = sound,
         pending_anims = pending_anims,
         game_data = game_data,
-        mods = {norrust = norrust, hex = hex, events = events, save = save, roster_mod = roster_mod},
+        mods = {norrust = norrust, hex = hex, events = events, save = save},
         MODES = MODES,
         UI_SCALE = UI_SCALE,
         get_viewport = get_viewport, screen_to_game = screen_to_game,

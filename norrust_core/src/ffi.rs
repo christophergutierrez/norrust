@@ -1383,8 +1383,9 @@ pub unsafe extern "C" fn norrust_place_veteran_unit(
     // Build unit from registry (gets full combat stats)
     let mut unit = unit_from_registry(e, uid, did, faction as u8);
 
-    // Override with carried-over progression state
-    unit.hp = hp as u32;
+    // Override with carried-over progression state (heal to full HP)
+    let _ = hp; // hp parameter ignored — veterans heal to full
+    unit.hp = unit.max_hp;
     unit.xp = xp as u32;
     unit.xp_needed = xp_needed as u32;
     unit.advancement_pending = advancement_pending != 0;
@@ -1547,12 +1548,19 @@ pub unsafe extern "C" fn norrust_campaign_record_victory(
 
     #[derive(Serialize)]
     struct VictoryResult {
+        status: String,
         scenario_index: usize,
         carry_gold: u32,
         veterans: Vec<campaign::VeteranUnit>,
         living: Vec<campaign::RosterEntry>,
     }
+    let status = if cs.current_scenario().is_some() {
+        "next_scenario"
+    } else {
+        "campaign_complete"
+    };
     let result = VictoryResult {
+        status: status.to_string(),
         scenario_index: cs.scenario_index,
         carry_gold: cs.carry_gold,
         veterans: cs.veterans.clone(),
@@ -1591,6 +1599,270 @@ pub unsafe extern "C" fn norrust_campaign_get_living_json(
         Ok(s) => to_c_string(&s),
         Err(_) => to_c_string("[]"),
     }
+}
+
+/// Get UUIDs currently mapped to engine unit IDs (i.e., units on the board).
+/// Returns JSON array of UUID strings, e.g. ["abc12345", "def67890"].
+#[no_mangle]
+pub unsafe extern "C" fn norrust_campaign_get_mapped_uuids_json(
+    engine: *mut NorRustEngine,
+) -> *mut c_char {
+    let Some(e) = engine.as_ref() else { return to_c_string("[]") };
+    let Some(cs) = e.campaign.as_ref() else { return to_c_string("[]") };
+    let uuids: Vec<&String> = cs.id_map.values().collect();
+    match serde_json::to_string(&uuids) {
+        Ok(s) => to_c_string(&s),
+        Err(_) => to_c_string("[]"),
+    }
+}
+
+/// Load the next campaign scenario: board, units, veterans, gold — all in one call.
+///
+/// Returns JSON:
+/// - `{"status":"playing"}` — scenario ready
+/// - `{"status":"deploy_needed","slots":N,"veterans":[...]}` — deployment screen needed
+/// - `{"status":"complete"}` — campaign finished
+/// - `{"status":"error","message":"..."}` — load failure
+#[no_mangle]
+pub unsafe extern "C" fn norrust_campaign_load_next_scenario(
+    engine: *mut NorRustEngine,
+    scenarios_path: *const c_char,
+) -> *mut c_char {
+    let Some(e) = engine.as_mut() else {
+        return to_c_string(r#"{"status":"error","message":"null engine"}"#);
+    };
+    let base = PathBuf::from(cstr_to_str(scenarios_path));
+
+    // Get current scenario info from campaign state
+    let (board_path, units_path, preset, scenario_index, carry_gold, veterans_exist, board_name) = {
+        let Some(cs) = e.campaign.as_ref() else {
+            return to_c_string(r#"{"status":"error","message":"no campaign"}"#);
+        };
+        let Some(sc) = cs.current_scenario() else {
+            return to_c_string(r#"{"status":"complete"}"#);
+        };
+        let board_name = sc.board.clone();
+        (
+            sc.board.clone(),
+            sc.units.clone(),
+            sc.preset_units,
+            cs.scenario_index,
+            cs.carry_gold,
+            !cs.veterans.is_empty(),
+            board_name,
+        )
+    };
+
+    // 1. Load board (creates fresh GameState)
+    let full_board_path = base.join(&board_path);
+    let loaded = match crate::scenario::load_board(&full_board_path) {
+        Ok(b) => b,
+        Err(msg) => {
+            let json = format!(r#"{{"status":"error","message":"{}"}}"#, msg.replace('"', "'"));
+            return to_c_string(&json);
+        }
+    };
+    let mut state = GameState::new_seeded(loaded.board, 42);
+    state.objective_hex = loaded.objective_hex;
+    state.max_turns = loaded.max_turns;
+    e.game = Some(state);
+    e.board_path = Some(full_board_path.to_string_lossy().to_string());
+    upgrade_tiles_mut(e);
+
+    // 2. Load preset units if flagged
+    if preset {
+        // Apply starting gold from faction definitions
+        let f0_id = e.campaign.as_ref().map(|c| c.campaign_def.faction_0.clone()).unwrap_or_default();
+        let f1_id = e.campaign.as_ref().map(|c| c.campaign_def.faction_1.clone()).unwrap_or_default();
+        if let Some(state) = e.game.as_mut() {
+            let gold0 = e.factions.iter().find(|(f, _)| f.id == f0_id).map(|(f, _)| f.starting_gold);
+            let gold1 = e.factions.iter().find(|(f, _)| f.id == f1_id).map(|(f, _)| f.starting_gold);
+            if let (Some(g0), Some(g1)) = (gold0, gold1) {
+                state.gold = [g0, g1];
+            }
+        }
+
+        // Load units
+        let full_units_path = base.join(&units_path);
+        if let Ok(units_def) = crate::scenario::load_units_file(&full_units_path) {
+            let mut max_id: u32 = 0;
+            for p in &units_def.units {
+                let unit = unit_from_registry(e, p.id, &p.unit_type, p.faction as u8);
+                if let Some(state) = e.game.as_mut() {
+                    state.place_unit(unit, Hex::from_offset(p.col, p.row));
+                }
+                if p.id > max_id { max_id = p.id; }
+            }
+            if let Some(state) = e.game.as_mut() {
+                state.next_unit_id = max_id + 1;
+            }
+            // Resolve trigger zones
+            for tdef in units_def.triggers {
+                let mut spawns = Vec::new();
+                for s in &tdef.spawns {
+                    let Some(state) = e.game.as_mut() else { continue };
+                    let uid = state.next_unit_id;
+                    state.next_unit_id += 1;
+                    let unit = unit_from_registry(e, uid, &s.unit_type, s.faction);
+                    spawns.push(PendingSpawn {
+                        unit,
+                        destination: Hex::from_offset(s.col, s.row),
+                    });
+                }
+                if let Some(state) = e.game.as_mut() {
+                    state.trigger_zones.push(TriggerZone {
+                        trigger_hex: Hex::from_offset(tdef.trigger_col, tdef.trigger_row),
+                        trigger_faction: tdef.trigger_faction,
+                        spawns,
+                        triggered: false,
+                    });
+                }
+            }
+        }
+    }
+
+    // 3. First scenario: populate roster from placed units
+    if scenario_index == 0 {
+        if let (Some(cs), Some(state)) = (e.campaign.as_mut(), e.game.as_ref()) {
+            cs.populate_initial_roster(state, 0);
+        }
+    }
+
+    // 4. Place veterans (if any, and scenario > 0)
+    if scenario_index > 0 && veterans_exist {
+        let deploy_result = {
+            let Some(state) = e.game.as_ref() else {
+                return to_c_string(r#"{"status":"error","message":"no game state"}"#);
+            };
+            let (keep_opt, castles) = campaign::find_keep_and_castles(state, 0);
+            match keep_opt {
+                Some(keep) => {
+                    let available = campaign::count_available_slots(state, keep, &castles);
+                    let cs = e.campaign.as_ref().unwrap();
+                    let num_vets = cs.veterans.len();
+                    if num_vets > available && available > 0 {
+                        // Deploy screen needed
+                        let vet_info = cs.build_veteran_info(available);
+                        Some((available, vet_info))
+                    } else {
+                        // Can place all veterans
+                        None
+                    }
+                }
+                None => None, // No keep found, skip placement
+            }
+        };
+
+        if let Some((slots, vet_info)) = deploy_result {
+            // Apply carry-over gold before deploy screen
+            if carry_gold > 0 {
+                if let Some(state) = e.game.as_mut() {
+                    state.gold[0] = carry_gold;
+                }
+            }
+            e.state_cache = None;
+
+            #[derive(Serialize)]
+            struct DeployResult {
+                status: String,
+                board: String,
+                slots: usize,
+                veterans: Vec<campaign::VeteranInfo>,
+            }
+            let result = DeployResult {
+                status: "deploy_needed".to_string(),
+                board: board_name.clone(),
+                slots,
+                veterans: vet_info,
+            };
+            return match serde_json::to_string(&result) {
+                Ok(s) => to_c_string(&s),
+                Err(_) => to_c_string(r#"{"status":"error","message":"json error"}"#),
+            };
+        }
+
+        // Place all veterans directly
+        let state = e.game.as_ref().unwrap();
+        let (keep_opt, castles) = campaign::find_keep_and_castles(state, 0);
+        if let Some(keep) = keep_opt {
+            // Build slots list: keep first, then castles
+            let mut slots: Vec<Hex> = vec![keep];
+            slots.extend_from_slice(&castles);
+
+            let veterans: Vec<campaign::VeteranUnit> = e.campaign.as_ref()
+                .map(|cs| cs.veterans.clone())
+                .unwrap_or_default();
+
+            let living_uuids: Vec<Option<String>> = e.campaign.as_ref()
+                .map(|cs| {
+                    let living = cs.get_living();
+                    veterans.iter().enumerate().map(|(i, _)| {
+                        living.get(i).map(|e| e.uuid.clone())
+                    }).collect()
+                })
+                .unwrap_or_default();
+
+            // Clear id_map for new scenario
+            if let Some(cs) = e.campaign.as_mut() {
+                cs.clear_id_map();
+            }
+
+            let mut placed = 0;
+            for (vi, vet) in veterans.iter().enumerate() {
+                if placed >= slots.len() { break; }
+
+                // Find next unoccupied slot
+                let slot = {
+                    let state = e.game.as_ref().unwrap();
+                    let mut found = None;
+                    for si in placed..slots.len() {
+                        if !state.hex_to_unit.contains_key(&slots[si]) {
+                            found = Some(si);
+                            break;
+                        }
+                    }
+                    found
+                };
+
+                let Some(si) = slot else { break };
+                placed = si + 1;
+                let hex = slots[si];
+                let (col, row) = hex.to_offset();
+
+                // Create and place the veteran unit
+                let state = e.game.as_mut().unwrap();
+                let uid = state.next_unit_id;
+                state.next_unit_id += 1;
+
+                let mut unit = unit_from_registry(e, uid, &vet.def_id, 0);
+                unit.hp = unit.max_hp; // Heal to full
+                unit.xp = vet.xp;
+                unit.xp_needed = vet.xp_needed;
+                unit.advancement_pending = vet.advancement_pending;
+
+                let state = e.game.as_mut().unwrap();
+                state.place_unit(unit, Hex::from_offset(col, row));
+
+                // Map engine ID to roster UUID
+                if let Some(uuid) = living_uuids.get(vi).and_then(|u| u.clone()) {
+                    if let Some(cs) = e.campaign.as_mut() {
+                        cs.map_id(uid, &uuid);
+                    }
+                }
+            }
+        }
+    }
+
+    // 5. Apply carry-over gold
+    if scenario_index > 0 && carry_gold > 0 {
+        if let Some(state) = e.game.as_mut() {
+            state.gold[0] = carry_gold;
+        }
+    }
+
+    e.state_cache = None;
+    let playing_json = format!(r#"{{"status":"playing","board":"{}"}}"#, board_name.replace('"', "'"));
+    to_c_string(&playing_json)
 }
 
 #[no_mangle]

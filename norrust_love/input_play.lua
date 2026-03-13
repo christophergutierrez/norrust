@@ -83,38 +83,13 @@ function M.keypressed(key)
     if vars.game_over then
         if key == "return" or key == "kpenter" then
             if campaign.active and vars.winner_faction == 0 then
-                -- Player won — sync roster then derive veterans
-                if campaign.roster then
-                    mods.roster_mod.sync_from_engine(campaign.roster, mods.norrust.get_state(vars.engine))
-                    local living = mods.roster_mod.get_living(campaign.roster)
-                    campaign.veterans = {}
-                    for _, entry in ipairs(living) do
-                        campaign.veterans[#campaign.veterans + 1] = {
-                            def_id = entry.def_id,
-                            hp = entry.max_hp,
-                            max_hp = entry.max_hp,
-                            xp = entry.xp,
-                            xp_needed = entry.xp_needed,
-                            advancement_pending = entry.advancement_pending,
-                        }
-                    end
-                else
-                    local survivors = mods.norrust.get_survivors(vars.engine, 0)
-                    for _, s in ipairs(survivors) do s.hp = s.max_hp end
-                    campaign.veterans = survivors
-                end
-                campaign.gold = mods.norrust.get_carry_gold(
-                    vars.engine, 0,
-                    campaign.data.gold_carry_percent,
-                    campaign.data.early_finish_bonus
-                )
-                campaign.index = campaign.index + 1
-                if campaign.index < #campaign.data.scenarios then
+                -- Player won — engine handles roster sync, veteran extraction, gold, index advance
+                local result = mods.norrust.campaign_record_victory(vars.engine, 0)
+                if result and result.status == "next_scenario" then
                     call_load_campaign_scenario()
                 else
                     -- Campaign complete — return to scenario selection
                     campaign.active = false
-                    campaign.roster = nil
                     vars.game_over = false
                     vars.winner_faction = -1
                     vars.game_mode = MODES.PICK_SCENARIO
@@ -123,7 +98,6 @@ function M.keypressed(key)
             else
                 -- Individual scenario win/loss, or campaign defeat
                 campaign.active = false
-                campaign.roster = nil
                 vars.game_over = false
                 vars.winner_faction = -1
                 vars.game_mode = MODES.PICK_SCENARIO
@@ -229,13 +203,14 @@ function M.keypressed(key)
         if not sel.recruit_mode then
             local faction = mods.norrust.get_active_faction(vars.engine)
             sel.recruit_palette = mods.norrust.get_faction_recruits(vars.engine, game_data.faction_id[faction + 1], 0)
-            -- Build veteran recruit list from roster (campaign only)
+            -- Build veteran recruit list from engine roster (campaign only)
             sel.recruit_state.veterans = {}
-            if campaign.active and campaign.roster then
-                local living = mods.roster_mod.get_living(campaign.roster)
-                -- Filter out veterans already on the board (have engine_id mapped)
+            if campaign.active then
+                local living = mods.norrust.campaign_get_living(vars.engine)
+                -- Filter out veterans already on the board (mapped to engine IDs)
+                local mapped_uuids = mods.norrust.campaign_get_mapped_uuids(vars.engine)
                 local mapped = {}
-                for _, uuid in pairs(campaign.roster.id_map) do
+                for _, uuid in ipairs(mapped_uuids) do
                     mapped[uuid] = true
                 end
                 for _, entry in ipairs(living) do
@@ -285,7 +260,7 @@ function M.mousepressed(col, row, clicked_key, state, pos_map, active, x, y)
                 vet.advancement_pending
             )
             if uid > 0 then
-                mods.roster_mod.map_id(campaign.roster, uid, vet.uuid)
+                mods.norrust.campaign_map_id(vars.engine, uid, vet.uuid)
                 sound.play("recruit")
                 table.remove(sel.recruit_state.veterans, sel.recruit_idx + 1)
                 if sel.recruit_idx >= #sel.recruit_state.veterans + #sel.recruit_palette then
@@ -307,12 +282,13 @@ function M.mousepressed(col, row, clicked_key, state, pos_map, active, x, y)
             if def_id ~= "" then
                 local uid = mods.norrust.recruit_unit_at(vars.engine, def_id, col, row)
                 if uid > 0 then
-                    -- Add recruited unit to campaign roster
-                    if campaign.active and campaign.roster then
+                    -- Add recruited unit to campaign roster via engine
+                    if campaign.active then
                         local st = mods.norrust.get_state(vars.engine)
                         for _, u in ipairs(st.units or {}) do
                             if int(u.id) == uid then
-                                mods.roster_mod.add(campaign.roster, u.def_id, uid,
+                                mods.norrust.campaign_add_unit(vars.engine,
+                                    u.def_id, uid,
                                     int(u.hp), int(u.max_hp), int(u.xp), int(u.xp_needed),
                                     u.advancement_pending or false)
                                 break

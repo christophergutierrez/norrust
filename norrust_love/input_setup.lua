@@ -102,13 +102,12 @@ function M.handle_pick_scenario(key)
         -- Start campaign
         sound.stop_music()
         local camp = game_data.CAMPAIGNS[1]
-        campaign.data = mods.norrust.load_campaign(vars.engine, campaign.path .. "/" .. camp.file)
+        campaign.data = mods.norrust.start_campaign(vars.engine, campaign.path .. "/" .. camp.file)
         if campaign.data then
             campaign.active = true
             campaign.index = 0
             campaign.veterans = {}
             campaign.gold = 0
-            campaign.roster = mods.roster_mod.new()
             -- Assign factions from campaign data, or fall back to auto-assign
             if campaign.data.faction_0 and campaign.data.faction_0 ~= "" then
                 game_data.faction_id[1] = campaign.data.faction_0
@@ -120,6 +119,9 @@ function M.handle_pick_scenario(key)
             else
                 game_data.faction_id[2] = game_data.factions[2].id
             end
+            -- Campaign: player is human, enemy is AI
+            game_data.controllers[1] = "human"
+            game_data.controllers[2] = "ai"
             local sc = campaign.data.scenarios[1]
             scn.board = sc.board
             scn.units = sc.units

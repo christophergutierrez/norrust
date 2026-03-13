@@ -223,6 +223,14 @@ ffi.cdef[[
     char* norrust_get_survivors_json(NorRustEngine* engine, int32_t faction);
     int32_t norrust_get_carry_gold(NorRustEngine* engine, int32_t faction, int32_t gold_carry_percent, int32_t early_finish_bonus);
     int32_t norrust_place_veteran_unit(NorRustEngine* engine, const char* def_id, int32_t faction, int32_t col, int32_t row, int32_t hp, int32_t xp, int32_t xp_needed, int32_t advancement_pending);
+    char* norrust_campaign_load_next_scenario(NorRustEngine* engine, const char* scenarios_path);
+    char* norrust_start_campaign(NorRustEngine* engine, const char* path);
+    char* norrust_campaign_add_unit(NorRustEngine* engine, const char* def_id, int32_t engine_id, int32_t hp, int32_t max_hp, int32_t xp, int32_t xp_needed, int32_t advancement_pending);
+    int32_t norrust_campaign_sync_roster(NorRustEngine* engine, int32_t faction);
+    char* norrust_campaign_record_victory(NorRustEngine* engine, int32_t faction);
+    char* norrust_campaign_get_living_json(NorRustEngine* engine);
+    void norrust_campaign_map_id(NorRustEngine* engine, int32_t engine_id, const char* uuid);
+    char* norrust_campaign_get_mapped_uuids_json(NorRustEngine* engine);
 
     // Debug / Cheat
     int32_t norrust_cheat_set_xp(NorRustEngine* engine, int32_t unit_id);
@@ -561,6 +569,59 @@ end
 --- Place a veteran unit with preserved XP and advancement state. Engine auto-assigns ID.
 function M.place_veteran_unit(engine, def_id, faction, col, row, hp, xp, xp_needed, advancement_pending)
     return lib.norrust_place_veteran_unit(engine, def_id, faction, col, row, hp, xp, xp_needed, advancement_pending and 1 or 0)
+end
+
+--- Load the next campaign scenario (board, units, veterans, gold) in a single call.
+--- Returns a table with {status="playing"|"deploy_needed"|"complete"|"error", ...}.
+function M.campaign_load_next_scenario(engine, scenarios_path)
+    local raw = get_string(lib.norrust_campaign_load_next_scenario(engine, scenarios_path))
+    if raw == "" then return {status = "error", message = "empty response"} end
+    return json_decode(raw) or {status = "error", message = "json decode failed"}
+end
+
+--- Start a campaign: load definition and create CampaignState on the engine.
+--- Returns campaign definition table on success, nil on failure.
+function M.start_campaign(engine, path)
+    local raw = get_string(lib.norrust_start_campaign(engine, path))
+    if raw == "" then return nil end
+    return json_decode(raw)
+end
+
+--- Add a unit to the campaign roster. Returns the assigned UUID string.
+function M.campaign_add_unit(engine, def_id, engine_id, hp, max_hp, xp, xp_needed, advancement_pending)
+    local raw = get_string(lib.norrust_campaign_add_unit(engine, def_id, engine_id, hp, max_hp, xp, xp_needed, advancement_pending and 1 or 0))
+    if raw == "" then return nil end
+    return raw
+end
+
+--- Sync the campaign roster from the current game state for the given faction.
+function M.campaign_sync_roster(engine, faction)
+    return lib.norrust_campaign_sync_roster(engine, faction)
+end
+
+--- Record a victory: sync roster, extract veterans, calculate gold, advance scenario.
+--- Returns table with {scenario_index, carry_gold, veterans, living}.
+function M.campaign_record_victory(engine, faction)
+    local raw = get_string(lib.norrust_campaign_record_victory(engine, faction))
+    if raw == "" then return nil end
+    return json_decode(raw)
+end
+
+--- Get living roster entries as a table array.
+function M.campaign_get_living(engine)
+    local raw = get_string(lib.norrust_campaign_get_living_json(engine))
+    return json_decode(raw) or {}
+end
+
+--- Map an engine unit ID to an existing roster UUID.
+function M.campaign_map_id(engine, engine_id, uuid)
+    lib.norrust_campaign_map_id(engine, engine_id, uuid)
+end
+
+--- Get UUIDs currently mapped to engine unit IDs (units on the board).
+function M.campaign_get_mapped_uuids(engine)
+    local raw = get_string(lib.norrust_campaign_get_mapped_uuids_json(engine))
+    return json_decode(raw) or {}
 end
 
 --- Return board dimensions without full JSON state dump.
