@@ -17,3 +17,4 @@ pub mod scenario;
 pub mod schema;
 pub mod snapshot;
 pub mod unit;
+pub mod visibility;

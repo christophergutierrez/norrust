@@ -62,6 +62,9 @@ pub struct UnitDef {
     /// Determines Time-of-Day damage modifier. Copied to Unit at spawn.
     #[serde(default = "default_alignment")]
     pub alignment: String,
+    /// Vision range in hexes for fog of war. 0 = use movement as vision range.
+    #[serde(default)]
+    pub vision_range: u32,
 }
 
 /// Unit placement entry for scenario unit files.

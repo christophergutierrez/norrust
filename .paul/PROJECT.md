@@ -267,6 +267,7 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] All advancement chains resolve — 132 units, 84 targets, zero dangling references — Phase 115 (115-01)
 - [x] All 109 WML-matched unit stats verified correct (zero discrepancies) — Phase 116 (116-01)
 - [x] Integration validation: 156 tests pass, all 4 factions recruit and advance in-game — Phase 117 (117-01)
+- [x] Core visibility calculation: vision_range on UnitDef/Unit, compute_visibility() returns HashSet<Hex> — Phase 122 (122-01)
 
 ### Out of Scope
 
@@ -433,6 +434,7 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | campaign_record_victory as single-call game-over | Replaces multi-step Lua sync+extract+calculate; engine owns all transitions | 2026-03-13 | Active |
 | campaign_commit_deployment as single-call placement | Deployed indices sent as JSON; engine owns keep/castle finding + placement | 2026-03-13 | Active |
 | v5.0 complete: all gameplay in Rust | Campaign orchestration, roster, game-over, deployment — Lua is presentation only | 2026-03-13 | Active |
+| Range-based visibility (not LOS) | Simpler, faster; vision_range=0 defaults to movement (Wesnoth convention) | 2026-03-13 | Active |
 
 ## Tech Stack
 

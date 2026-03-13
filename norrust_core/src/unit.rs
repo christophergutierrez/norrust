@@ -65,6 +65,8 @@ pub struct Unit {
     pub poisoned: bool,
     /// Slowed status — halves movement and damage, cleared at start of faction turn.
     pub slowed: bool,
+    /// Vision range in hexes for fog of war. 0 = use movement as vision range.
+    pub vision_range: u32,
 }
 
 /// Advance `unit` to the stats defined by `new_def`.
@@ -98,6 +100,7 @@ impl Unit {
         self.xp_needed = if def.advances_to.is_empty() { 0 } else { def.experience };
         self.level = def.level;
         self.abilities = def.abilities.clone();
+        self.vision_range = def.vision_range;
     }
 
     /// Create a unit from a UnitDef blueprint, fully populated with stats.
@@ -131,6 +134,7 @@ impl Unit {
             abilities: Vec::new(),
             poisoned: false,
             slowed: false,
+            vision_range: 0,
         }
     }
 }

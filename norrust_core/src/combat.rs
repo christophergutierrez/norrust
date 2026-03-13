@@ -339,7 +339,7 @@ mod tests {
             defense: HashMap::new(), default_defense: 40,
             movement: 6, movement_costs: HashMap::new(),
             xp: 0, xp_needed: 40, advancement_pending: false,
-            level: 1, abilities: vec![], poisoned: false, slowed: false,
+            level: 1, abilities: vec![], poisoned: false, slowed: false, vision_range: 0,
         };
         let defender = Unit {
             id: 2, def_id: "spearman".into(), hp: 36, max_hp: 36,
@@ -349,7 +349,7 @@ mod tests {
             defense: HashMap::new(), default_defense: 40,
             movement: 5, movement_costs: HashMap::new(),
             xp: 0, xp_needed: 40, advancement_pending: false,
-            level: 1, abilities: vec![], poisoned: false, slowed: false,
+            level: 1, abilities: vec![], poisoned: false, slowed: false, vision_range: 0,
         };
         let preview = simulate_combat(&attacker, &defender, 40, 50, 1, 1000, "melee", false, 0, 0);
 

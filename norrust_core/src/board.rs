@@ -92,6 +92,11 @@ impl Board {
     pub fn tile_at(&self, hex: Hex) -> Option<&Tile> {
         self.tiles.get(&hex)
     }
+
+    /// Return all hexes that have tiles assigned.
+    pub fn tile_hexes(&self) -> impl Iterator<Item = &Hex> {
+        self.tiles.keys()
+    }
 }
 
 #[cfg(test)]

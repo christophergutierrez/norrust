@@ -6,7 +6,42 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
-No active milestone. Run /paul:discuss-milestone or /paul:milestone to define next.
+**v6.0 Fog of War**
+Status: In Progress
+Phases: 1 of 4 complete
+
+| Phase | Name | Plans | Status | Completed |
+|-------|------|-------|--------|-----------|
+| 122 | Core Visibility Calculation | 1/1 | Complete | 2026-03-13 |
+| 123 | FFI Visibility Filtering | TBD | Not started | - |
+| 124 | Draw Layer Fog Rendering | TBD | Not started | - |
+| 125 | AI Fog Integration | TBD | Not started | - |
+
+## v6.0 Phase Details
+
+### Phase 122: Core Visibility Calculation
+
+Focus: Add vision_range to UnitDef, compute per-faction visibility as HashSet<Hex>. Range-based (not line-of-sight) — a hex is visible if any friendly unit has vision_range >= distance to it. Visibility recalculated on move/place/death.
+Depends on: None
+Constraints: Pure Rust, no FFI changes. Visibility is engine-internal state computed from unit positions.
+
+### Phase 123: FFI Visibility Filtering
+
+Focus: Extend StateSnapshot with visible_hexes field. Filter units in snapshot to only those on visible hexes for the requesting faction. Add get_visible_hexes FFI call. Fog-of-war becomes the default for human players.
+Depends on: Phase 122 (compute_visibility)
+Constraints: AI faction can still request unfiltered state. Human faction sees only visible units.
+
+### Phase 124: Draw Layer Fog Rendering
+
+Focus: Render fog overlay on non-visible hexes (dark tint or shroud sprite). Previously-seen hexes show terrain but no units (fog). Never-seen hexes show shroud. Hide enemy units on non-visible hexes.
+Depends on: Phase 123 (visible_hexes in snapshot)
+Constraints: Lua-only changes. Fog state tracked client-side (which hexes have ever been seen).
+
+### Phase 125: AI Fog Integration
+
+Focus: AI planner receives only visible enemy positions — no cheating. AI must plan with incomplete information, using last-known positions or heuristics for unseen enemies.
+Depends on: Phase 123 (filtered snapshots)
+Constraints: AI quality may decrease — that's acceptable. Fair play matters more than optimal AI.
 
 ## Completed Milestones
 
