@@ -1,0 +1,83 @@
+# Two Brothers Scenario 3: Guarded Castle
+#
+# Side 0 (Blue/Player): Arvith's Loyalists — Lieutenant leader on keep (4,22)
+# Side 1 (Red/AI): Rotharik's Undead + Orc guards
+#
+# Win: slay Rotharik. Lose: Arvith dies or 24 turns expire.
+
+# ── Blue Forces (Loyalists) ──────────────────────────────────────────
+
+[[units]]
+id = 1
+unit_type = "Lieutenant"
+faction = 0
+col = 4
+row = 22
+
+[[units]]
+id = 2
+unit_type = "Spearman"
+faction = 0
+col = 3
+row = 22
+
+[[units]]
+id = 3
+unit_type = "Bowman"
+faction = 0
+col = 5
+row = 22
+
+[[units]]
+id = 4
+unit_type = "Horseman"
+faction = 0
+col = 4
+row = 21
+
+# ── Red Forces (Undead + Orcs) ───────────────────────────────────────
+
+# Rotharik — dark sorcerer leader in the castle
+[[units]]
+id = 5
+unit_type = "Dark Sorcerer"
+faction = 1
+col = 14
+row = 3
+
+# Orc castle guards
+[[units]]
+id = 6
+unit_type = "Orcish Warrior"
+faction = 1
+col = 12
+row = 10
+
+[[units]]
+id = 7
+unit_type = "Orcish Grunt"
+faction = 1
+col = 16
+row = 8
+
+[[units]]
+id = 8
+unit_type = "Orcish Grunt"
+faction = 1
+col = 10
+row = 12
+
+# Undead patrols
+[[units]]
+id = 9
+unit_type = "Skeleton"
+faction = 1
+col = 18
+row = 15
+
+[[units]]
+id = 10
+unit_type = "Skeleton Archer"
+faction = 1
+col = 8
+row = 16

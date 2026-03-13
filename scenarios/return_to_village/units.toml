@@ -1,0 +1,100 @@
+# Two Brothers Scenario 4: Return to the Village
+#
+# Side 0 (Blue/Player): Arvith & Baran's forces — Lieutenant leader on keep (3,20)
+# Side 1 (Red/AI): Tairach's Orc army — Orcish Warrior leader on keep (18,4)
+#
+# Win: slay Tairach. Lose: Arvith dies or 24 turns expire.
+# Final battle of the campaign — the brothers return to find Maghre under siege.
+
+# ── Blue Forces (Loyalists) ──────────────────────────────────────────
+
+# Arvith — leader
+[[units]]
+id = 1
+unit_type = "Lieutenant"
+faction = 0
+col = 3
+row = 20
+
+# Baran — brother, freed from the castle
+[[units]]
+id = 2
+unit_type = "Mage"
+faction = 0
+col = 2
+row = 20
+
+# Returning veterans
+[[units]]
+id = 3
+unit_type = "Horseman"
+faction = 0
+col = 4
+row = 20
+
+[[units]]
+id = 4
+unit_type = "Spearman"
+faction = 0
+col = 3
+row = 21
+
+[[units]]
+id = 5
+unit_type = "Bowman"
+faction = 0
+col = 3
+row = 19
+
+# ── Red Forces (Orc Invaders) ───────────────────────────────────────
+
+# Tairach — the orcish warlord who besieged Maghre
+[[units]]
+id = 6
+unit_type = "Orcish Warrior"
+faction = 1
+col = 18
+row = 4
+
+# Orc raiding force
+[[units]]
+id = 7
+unit_type = "Orcish Grunt"
+faction = 1
+col = 17
+row = 4
+
+[[units]]
+id = 8
+unit_type = "Orcish Grunt"
+faction = 1
+col = 19
+row = 4
+
+[[units]]
+id = 9
+unit_type = "Orcish Archer"
+faction = 1
+col = 16
+row = 8
+
+[[units]]
+id = 10
+unit_type = "Wolf Rider"
+faction = 1
+col = 20
+row = 10
+
+[[units]]
+id = 11
+unit_type = "Troll Whelp"
+faction = 1
+col = 14
+row = 12
+
+[[units]]
+id = 12
+unit_type = "Goblin Spearman"
+faction = 1
+col = 18
+row = 14

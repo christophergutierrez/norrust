@@ -1,0 +1,40 @@
+# Two Brothers Scenario 3: Guarded Castle — Dialogue
+
+[[dialogue]]
+id = "story_intro"
+trigger = "scenario_start"
+text = "Following the kidnapper's directions, Arvith and his men arrive at a crumbling castle deep in the borderlands. The hulking mass of stone looms in the fog. There is movement in the mist."
+
+[[dialogue]]
+id = "open_1"
+trigger = "scenario_start"
+text = "[Arvith] The adept's directions were true. There's the castle — and it's crawling with undead and orcs."
+
+[[dialogue]]
+id = "open_2"
+trigger = "scenario_start"
+text = "[Arvith] Somewhere in that fortress, Baran is being held prisoner. We must fight our way through and find the key to his cell."
+
+[[dialogue]]
+id = "turn_8"
+trigger = "turn_start"
+turn = 8
+faction = 0
+text = "[Arvith] Press forward! We must reach the dungeons before they can harm my brother."
+
+[[dialogue]]
+id = "turn_16"
+trigger = "turn_start"
+turn = 16
+faction = 0
+text = "[Arvith] Time is running short. If we don't reach Baran soon, it may be too late!"
+
+[[dialogue]]
+id = "boss_death"
+trigger = "leader_attacked"
+text = "[Rotharik] Your hand or Tairach's, death is still death..."
+
+[[dialogue]]
+id = "victory"
+trigger = "leader_attacked"
+text = "[Arvith] There's a key in his robes — it must open the cell! Baran, we're coming for you!"

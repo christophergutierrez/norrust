@@ -1,0 +1,34 @@
+# Two Brothers Scenario 3: Guarded Castle (cropped 26x26 from 39x33)
+
+width = 26
+height = 26
+max_turns = 24
+
+tiles = [
+  "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat",
+  "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "cave", "flat",
+  "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "castle", "castle", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "cave", "flat", "flat",
+  "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "castle", "keep", "castle", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat",
+  "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "castle", "castle", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "cave", "cave", "cave",
+  "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "cave", "cave",
+  "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat",
+  "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat",
+  "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat",
+  "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat",
+  "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat",
+  "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat",
+  "flat", "hills", "hills", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat",
+  "mountains", "hills", "hills", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat",
+  "hills", "hills", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat",
+  "hills", "flat", "hills", "hills", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat",
+  "hills", "flat", "hills", "flat", "hills", "hills", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "hills", "flat",
+  "flat", "flat", "hills", "hills", "flat", "flat", "hills", "hills", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "hills", "flat", "flat",
+  "flat", "flat", "flat", "flat", "flat", "flat", "hills", "flat", "hills", "hills", "flat", "hills", "flat", "flat", "flat", "flat", "flat", "hills", "flat", "hills", "flat", "flat", "flat", "flat", "flat", "flat",
+  "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "hills", "hills", "flat", "flat", "hills", "flat", "flat", "flat", "flat", "hills", "flat", "flat", "hills", "flat", "flat", "hills", "flat",
+  "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "hills", "hills", "flat", "flat", "hills", "flat", "hills", "hills", "flat", "flat", "hills", "flat", "flat", "hills", "flat", "flat", "flat", "village",
+  "flat", "flat", "flat", "castle", "castle", "flat", "flat", "flat", "flat", "flat", "hills", "flat", "flat", "flat", "flat", "village", "flat", "flat", "flat", "flat", "flat", "flat", "hills", "flat", "flat", "village",
+  "flat", "flat", "flat", "castle", "keep", "castle", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat",
+  "flat", "flat", "flat", "castle", "castle", "flat", "flat", "flat", "flat", "village", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat",
+  "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "village", "village", "village", "village", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat",
+  "forest", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "village", "village", "village", "village", "village", "village", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat",
+]

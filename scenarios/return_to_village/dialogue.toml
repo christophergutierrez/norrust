@@ -1,0 +1,46 @@
+# Two Brothers Scenario 4: Return to the Village — Dialogue
+# The brothers return to find Maghre besieged by orcs.
+
+[[dialogue]]
+id = "story_intro"
+trigger = "scenario_start"
+text = "With Baran freed, the brothers ride south toward home. But smoke rises on the horizon — Maghre is under attack."
+
+[[dialogue]]
+id = "open_1"
+trigger = "scenario_start"
+text = "[Arvith] The village is just across those hills — and already I see men fleeing. We must find out what is happening!"
+
+[[dialogue]]
+id = "open_2"
+trigger = "scenario_start"
+text = "[Baran] That warlord — it's the one from Toen Caric! The orc I scarred with fire!"
+
+[[dialogue]]
+id = "open_3"
+trigger = "scenario_start"
+text = "[Arvith] Let's finish what we started, brother. I'll be the right arm, and you the left."
+
+[[dialogue]]
+id = "turn_8"
+trigger = "turn_start"
+turn = 8
+faction = 0
+text = "[Baran] The villagers cannot hold much longer. We must break through to the warlord!"
+
+[[dialogue]]
+id = "turn_16"
+trigger = "turn_start"
+turn = 16
+faction = 0
+text = "[Arvith] Press the attack! If the warlord falls, his army will scatter!"
+
+[[dialogue]]
+id = "boss_death"
+trigger = "leader_attacked"
+text = "[Arvith] It is finished. We've defeated him at last. It was good to have you at my side, Baran."
+
+[[dialogue]]
+id = "epilogue"
+trigger = "leader_attacked"
+text = "[Baran] So much has been destroyed. But you have my word, brother — if we are beset again, I will be ready. Together, the right hand and the left."

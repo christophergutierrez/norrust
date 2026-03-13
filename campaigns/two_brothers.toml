@@ -15,3 +15,13 @@ preset_units = true
 board = "the_chase/board.toml"
 units = "the_chase/units.toml"
 preset_units = true
+
+[[scenarios]]
+board = "guarded_castle/board.toml"
+units = "guarded_castle/units.toml"
+preset_units = true
+
+[[scenarios]]
+board = "return_to_village/board.toml"
+units = "return_to_village/units.toml"
+preset_units = true

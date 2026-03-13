@@ -1,0 +1,32 @@
+# Two Brothers Scenario 4: Return to the Village (cropped 24x24 from 28x33)
+
+width = 24
+height = 24
+max_turns = 24
+
+tiles = [
+  "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "forest", "flat", "flat", "hills", "village", "mountains", "mountains", "mountains", "mountains", "mountains",
+  "forest", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "hills", "hills", "forest", "forest", "mountains", "mountains", "mountains", "mountains",
+  "flat", "flat", "flat", "flat", "flat", "hills", "flat", "flat", "flat", "hills", "flat", "flat", "flat", "flat", "flat", "flat", "forest", "hills", "forest", "forest", "forest", "hills", "flat", "hills",
+  "flat", "flat", "flat", "flat", "hills", "flat", "hills", "flat", "hills", "hills", "village", "flat", "flat", "flat", "forest", "flat", "flat", "castle", "castle", "flat", "village", "hills", "hills", "hills",
+  "flat", "flat", "flat", "flat", "flat", "flat", "flat", "hills", "flat", "flat", "hills", "hills", "flat", "flat", "flat", "forest", "forest", "castle", "keep", "castle", "forest", "flat", "hills", "hills",
+  "flat", "flat", "flat", "flat", "flat", "hills", "hills", "hills", "hills", "flat", "flat", "hills", "flat", "flat", "flat", "flat", "flat", "castle", "castle", "hills", "flat", "flat", "flat", "flat",
+  "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "hills", "flat", "flat", "hills", "flat", "flat", "flat", "flat", "flat", "hills", "flat", "hills", "hills", "flat", "flat",
+  "flat", "flat", "flat", "flat", "hills", "flat", "flat", "hills", "flat", "hills", "hills", "hills", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat",
+  "flat", "flat", "flat", "flat", "flat", "flat", "hills", "mountains", "hills", "mountains", "mountains", "hills", "hills", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat",
+  "flat", "flat", "flat", "village", "flat", "hills", "hills", "mountains", "hills", "hills", "forest", "hills", "flat", "flat", "hills", "flat", "flat", "flat", "flat", "flat", "flat", "hills", "flat", "flat",
+  "flat", "flat", "flat", "flat", "flat", "hills", "hills", "mountains", "hills", "hills", "forest", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "hills", "forest", "hills", "forest", "forest", "forest",
+  "flat", "flat", "flat", "hills", "hills", "mountains", "mountains", "mountains", "forest", "hills", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "hills", "forest", "forest", "forest", "forest", "forest",
+  "flat", "flat", "flat", "hills", "mountains", "hills", "mountains", "hills", "hills", "forest", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "forest", "forest", "forest", "flat", "forest", "forest",
+  "hills", "hills", "hills", "mountains", "village", "mountains", "hills", "forest", "forest", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "forest", "forest", "forest", "flat",
+  "hills", "flat", "hills", "mountains", "mountains", "forest", "hills", "hills", "forest", "flat", "flat", "flat", "flat", "village", "village", "village", "flat", "flat", "village", "flat", "forest", "flat", "forest", "flat",
+  "flat", "mountains", "mountains", "hills", "village", "hills", "hills", "hills", "flat", "flat", "flat", "flat", "village", "village", "village", "village", "village", "village", "flat", "flat", "flat", "flat", "flat", "flat",
+  "shallow_water", "shallow_water", "hills", "hills", "hills", "flat", "forest", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "village", "village", "village", "village", "village", "flat", "flat", "flat", "flat", "shallow_water",
+  "hills", "shallow_water", "hills", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "village", "flat", "flat", "flat", "flat", "shallow_water", "shallow_water", "flat",
+  "hills", "flat", "shallow_water", "shallow_water", "flat", "flat", "flat", "shallow_water", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "shallow_water", "shallow_water", "shallow_water", "shallow_water", "flat", "flat", "flat",
+  "flat", "flat", "castle", "castle", "shallow_water", "shallow_water", "flat", "shallow_water", "shallow_water", "flat", "flat", "shallow_water", "shallow_water", "shallow_water", "shallow_water", "shallow_water", "shallow_water", "flat", "flat", "flat", "village", "flat", "flat", "flat",
+  "flat", "flat", "castle", "keep", "castle", "flat", "shallow_water", "shallow_water", "shallow_water", "shallow_water", "shallow_water", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat",
+  "flat", "flat", "castle", "castle", "reef", "reef", "flat", "shallow_water", "shallow_water", "shallow_water", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat",
+  "flat", "flat", "shallow_water", "shallow_water", "flat", "shallow_water", "shallow_water", "shallow_water", "shallow_water", "shallow_water", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "castle", "flat", "flat",
+  "forest", "forest", "flat", "flat", "shallow_water", "flat", "shallow_water", "shallow_water", "shallow_water", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat",
+]
