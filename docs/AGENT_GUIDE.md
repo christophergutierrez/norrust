@@ -3,6 +3,24 @@
 A practical guide for building an agent that plays The Clash for Norrust. Assumes you've read
 [BRIDGE_API.md](BRIDGE_API.md) for the raw API contract.
 
+## Fog of War
+
+The game supports fog of war based on unit vision ranges. When FOW is enabled:
+
+- `get_state` returns the **full, unfiltered** state (useful for AI that should see everything)
+- `norrust_get_state_json_fow(engine, faction)` returns state **filtered by visibility** — only
+  units within the faction's vision range are included
+
+Vision is range-based (not line-of-sight). Each unit has a `vision_range` (defaults to its
+movement value if 0). A hex is visible if any friendly unit is within vision range.
+
+Hexes have three states from the client's perspective:
+- **Visible** — currently in vision range, full information
+- **Fog** — previously seen but not currently visible (50% black overlay)
+- **Shroud** — never seen (80% black overlay)
+
+For agents that should play "fairly" (without full map knowledge), use the FOW-filtered state.
+
 ## Connection
 
 Start the game with the agent server enabled:
@@ -224,6 +242,12 @@ All actions return an integer code. Handle these:
 | -9 | Not castle | Recruit on wrong hex |
 
 If an action fails, the game state is unchanged — retry with different parameters or skip that unit.
+
+## Veteran Units and Campaigns
+
+In campaign mode, units carry over between scenarios. Veteran units retain their XP and
+advancement level but heal to full HP. The agent server currently exposes single-scenario
+play — campaign progression is handled by the Love2D client.
 
 ---
 *See also: [BRIDGE_API.md](BRIDGE_API.md) for the complete C ABI reference.*

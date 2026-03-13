@@ -166,18 +166,18 @@ mod tests {
         assert_eq!(fighter.experience, 40);
         assert_eq!(fighter.advances_to, vec!["hero"]);
 
-        let archer = registry.get("archer").expect("archer not found");
-        assert_eq!(archer.max_hp, 25);
-        assert_eq!(archer.attacks[0].damage, 5);
-        assert_eq!(archer.attacks[0].strikes, 4);
+        let bowman = registry.get("Bowman").expect("Bowman not found");
+        assert_eq!(bowman.max_hp, 33);
+        assert_eq!(bowman.attacks[1].damage, 6);
+        assert_eq!(bowman.attacks[1].strikes, 3);
 
-        let hero = registry.get("hero").expect("hero not found");
-        assert_eq!(hero.max_hp, 45);
-        assert_eq!(hero.level, 2);
+        let spearman = registry.get("Spearman").expect("Spearman not found");
+        assert_eq!(spearman.max_hp, 36);
+        assert_eq!(spearman.level, 1);
 
-        let ranger = registry.get("ranger").expect("ranger not found");
-        assert_eq!(ranger.max_hp, 38);
-        assert_eq!(ranger.level, 2);
+        let swordsman = registry.get("Swordsman").expect("Swordsman not found");
+        assert_eq!(swordsman.max_hp, 55);
+        assert_eq!(swordsman.level, 2);
     }
 
     #[test]

@@ -136,14 +136,14 @@ fn test_veteran_placement_via_ffi() {
         let leader_uid = norrust_place_unit_at(engine, leader_id.as_ptr(), 0, 1, 2);
         assert!(leader_uid > 0, "leader placement should return positive unit_id");
 
-        // Place a veteran fighter on adjacent castle hex (1,1)
-        let def_id = c("fighter");
+        // Place a veteran Spearman on adjacent castle hex (1,1)
+        let def_id = c("Spearman");
         let result = norrust_place_veteran_unit(
             engine,
             def_id.as_ptr(),
             0,              // faction
             1, 1,           // col, row
-            18,             // hp (wounded)
+            18,             // hp (ignored — veterans heal to full)
             25,             // xp
             40,             // xp_needed
             0,              // advancement_pending = false
@@ -153,8 +153,8 @@ fn test_veteran_placement_via_ffi() {
         // Verify via state JSON that the unit has carried stats
         let json_str = ffi_string(norrust_get_state_json(engine));
         assert!(!json_str.is_empty());
-        // The unit should have hp=18 (not registry default 36 for Spearman or whatever)
-        assert!(json_str.contains("\"hp\":18"), "veteran HP should be 18, not registry default");
+        // Veterans heal to full HP on placement (hp param is ignored)
+        assert!(json_str.contains("\"hp\":36"), "veteran HP should be max_hp (36)");
         assert!(json_str.contains("\"xp\":25"), "veteran XP should be 25");
         assert!(json_str.contains("\"xp_needed\":40"), "veteran xp_needed should be 40");
 

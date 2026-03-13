@@ -6,43 +6,46 @@ This document defines the file formats, naming conventions, metadata schema, and
 
 ## 1. Directory Structure
 
+Unit sprites and terrain tiles live alongside their TOML definitions in `data/`:
+
 ```
-assets/
+data/
   terrain/
+    flat.toml                    # terrain definition
     flat.png                     # hex terrain tile, keyed by terrain_id
+    forest.toml
     forest.png
-    hills.png
-    mountains.png
-    shallow_water.png
-    castle.png
-    keep.png
-    village.png
-    ...                          # one PNG per terrain type in data/terrain/
+    ...                          # one TOML + PNG pair per terrain type
   units/
-    spearman/                    # directory keyed by def_id
-      sprite.toml                # metadata sidecar (required for animations)
-      idle.png                   # static image or spritesheet
+    spearman/                    # directory keyed by def_id (tree-structured)
+      spearman.toml              # unit stats (required)
+      sprite.toml                # sprite metadata sidecar (required for animations)
+      idle.png                   # idle animation spritesheet
       attack-melee.png           # attack animation spritesheet
-      attack-ranged.png          # ranged attack spritesheet (if applicable)
       defend.png                 # defend animation spritesheet
-      death.png                  # death animation spritesheet
       portrait.png               # sidebar portrait image
-    pikeman/                     # advancement of spearman (sibling directory)
+      swordsman/                 # advancement (nested directory)
+        swordsman.toml
+        sprite.toml
+        idle.png
+        ...
+    mage/
+      mage.toml
       sprite.toml
       idle.png
       ...
-    fighter/
-      sprite.toml
-      idle.png
-      ...
+      red_mage/                  # advancement chain continues
+        arch_mage/
+          great_mage/            # max nesting depth: 4
 ```
 
 ### Key Conventions
 
-- **Terrain images** are flat files in `assets/terrain/`, named by `terrain_id` from `data/terrain/*.toml`.
-- **Unit assets** are grouped in directories under `assets/units/`, named by `def_id` from `data/units/*.toml`.
-- Advancement chains are sibling directories (linked by `advances_to` in TOML data, not by filesystem hierarchy).
+- **Terrain images** are alongside their TOML in `data/terrain/`, named by `terrain_id`.
+- **Unit assets** are co-located with their TOML in `data/units/` tree, matching the advancement hierarchy.
+- Advancement chains are nested directories (parent → child mirrors `advances_to` in TOML).
 - All filenames are lowercase with hyphens for multi-word names (e.g., `attack-melee.png`, `shallow_water.png`).
+- Raw/intermediate sprite generation output goes in `sprites_raw/` (gitignored, regeneratable).
 
 ---
 
@@ -253,67 +256,37 @@ Units cycle through these animation states during gameplay:
 
 ## 7. Pipeline Workflow
 
-### Asset Creation Pipeline
+### Current Pipeline (Gemini 2.0 Flash)
+
+Unit sprites are generated one pose at a time using `tools/generate_sprites.py`:
 
 ```
-1. Generate       →  AI tool (Nano Banana) produces raw image
-2. Cleanup        →  Manual touch-up (remove artifacts, fix proportions)
-3. Format         →  Export as PNG, correct dimensions, transparent background
-4. Place          →  Copy into assets/{terrain|units/def_id}/ directory
-5. Metadata       →  Create/update sprite.toml (units only)
-6. Validate       →  Preview in asset viewer (Phase 34) or run game
-7. Iterate        →  Adjust and re-generate if needed
+1. Generate       →  Gemini 2.0 Flash API produces single-pose PNG with reference image
+2. Validate       →  PIL/Pillow checks: multi-blob (BFS flood-fill), size (<30KB), edge (2px border)
+3. Retry          →  Up to 3 retries per pose if validation fails
+4. Place          →  Output directly to data/units/<name>/ directory
+5. Metadata       →  sprite.toml created/updated automatically
+6. Flip check     →  Manual direction flip if needed: `magick <file>.png -flop <file>.png`
 ```
 
-### Generation Guidelines (Nano Banana / Gemini)
+Portraits are generated separately (painterly style, black background, 128x128, 100KB limit).
 
-#### Sprite Sheet Format: 6x5 Grid
+Death animations are not generated — they are derived at render time (idle sprite tilts 0° → 90° with fade).
 
-AI-generated sprite sheets use a **6 column x 5 row** uniform grid layout:
+### Generation Tools
 
-| Row | Animation |
-|-----|-----------|
-| 1 | Idle (6 frames) |
-| 2 | Melee attack (6 frames) |
-| 3 | Ranged attack (6 frames) — or standing ready for melee-only units |
-| 4 | Defend (6 frames) |
-| 5 | Death (6 frames) |
+| Tool | Purpose |
+|------|---------|
+| `tools/generate_sprites.py` | Unit sprite generation (single pose per API call) |
+| `tools/generate_terrain.py` | Terrain tile generation (`--terrain`, `--all`, `--preview`, `--list`) |
+| `tools/review_sprites.py` | Sprite validation and review |
 
-- **Background:** Solid magenta (#FF00FF) — easy to chroma-key out
-- **No borders or grid lines** — the uniform grid allows mathematical slicing
-- **Aspect ratio:** 6:5 (landscape)
-- All 30 frames must show the same character with consistent design
-- Portrait is generated separately as a single image
+### Terrain Tile Generation
 
-#### Prompt Template
+Terrain tiles are 256x256 RGB PNGs, center-cropped to square, LANCZOS resized, no background
+removal (full coverage required). Generated via `tools/generate_terrain.py` using Gemini API.
 
-```
-Pixel art sprite sheet on a solid magenta (#FF00FF) background.
-6 columns, 5 rows, uniform grid, no borders or grid lines.
-Each cell contains one frame of the same character facing right.
-16-bit retro pixel art style, dark outlines, clean readable
-silhouette. Landscape orientation, 6:5 aspect ratio.
-
-The character is [CHARACTER DESCRIPTION]. Armed with [WEAPON].
-
-Row 1 - Idle: [idle description], 6 frames.
-  Loop-ready (frame 6 flows back to frame 1).
-Row 2 - Melee attack: [melee description], 6 frames.
-Row 3 - Ranged attack: [ranged description], 6 frames.
-  (For melee-only: "Standing ready, holding [weapon] at side, 6 frames")
-Row 4 - Defend: [defend description], 6 frames.
-Row 5 - Death: [death description, progressing left to right], 6 frames.
-
-The character must look identical in every frame — same outfit,
-same equipment, same colors. Only the pose changes.
-```
-
-#### Processing Pipeline
-
-1. Generate sprite sheet via Nano Banana (outputs high-res PNG)
-2. Run `process_spritesheet.py` to resize to 1536x1280, remove magenta, slice into strips
-3. Generate portrait separately
-4. Output: 5 horizontal strip PNGs (1536x256 each) + portrait.png (256x256)
+All 15 terrain tiles and all unit sprites have been regenerated in HD-2D style.
 
 ### Quality Checklist
 
