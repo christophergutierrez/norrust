@@ -49,6 +49,8 @@ local campaign = {
 
 local dlg = {active = {}, history = {}, show_history = false, scroll = 0}
 
+local fog = {seen = {}, visible = {}, enabled = true}
+
 local camera = {
     origin_x = 0, origin_y = 0,
     offset_x = 0, offset_y = 0,
@@ -80,5 +82,6 @@ return {
     ghost = ghost,
     campaign = campaign,
     dlg = dlg,
+    fog = fog,
     camera = camera,
 }

@@ -41,6 +41,42 @@ Completed milestone log for this project.
 | v3.5 AI Overhaul | 2026-03-10 | ~1 day | 5 phases, 5 plans |
 | v3.6 AI Leader Intelligence | 2026-03-10 | ~40min | 2 phases, 2 plans |
 | v5.0 Engine-Owned Gameplay | 2026-03-13 | ~2 days | 4 phases, 4 plans |
+| v6.0 Fog of War | 2026-03-13 | ~1 day | 3 phases, 3 plans |
+
+---
+
+## ✅ v6.0 Fog of War
+
+**Completed:** 2026-03-13
+**Duration:** ~1 day
+
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 3 (Phase 125 AI Fog Integration deferred) |
+| Plans | 3 |
+| Files modified | 9 (visibility.rs, snapshot.rs, ffi.rs, lib.rs, schema.rs, unit.rs, board.rs, combat.rs, norrust.lua, main.lua, draw_board.lua, state.lua) |
+| Tests | 129 unit + 4 integration |
+
+### Key Accomplishments
+
+- **compute_visibility()** — range-based hex visibility calculation per faction; vision_range field on UnitDef/Unit (0 = fallback to movement)
+- **Filtered StateSnapshot** — from_game_state_fow() hides enemy units on non-visible hexes; visible_hexes array in JSON
+- **FFI fog-of-war endpoint** — norrust_get_state_json_fow(engine, faction) for filtered state queries
+- **Client-side fog tracking** — fog.seen persists across turns, fog.visible rebuilt each frame
+- **Shroud/fog overlays** — shroud (never seen) = 80% black, fog (previously seen) = 50% black, visible = normal
+- **Single-player FOW** — faction 0 hardcoded as viewer; AI sees all (acceptable for now)
+
+### Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Range-based visibility (not line-of-sight) | Simpler, matches Wesnoth default; hex distance <= vision_range |
+| vision_range=0 defaults to movement | Wesnoth convention; no need to set on every unit |
+| Dual snapshot API (get_state vs get_state_fow) | Cached unfiltered for AI/setup; uncached filtered for human play |
+| fog.seen client-side persistence | Engine is stateless per-frame; client accumulates seen hexes |
+| Phase 125 deferred | AI fog integration adds complexity without gameplay benefit yet |
 
 ---
 
@@ -1055,4 +1091,4 @@ Completed milestone log for this project.
 - Full Wesnoth-style combat: adjacency enforcement, bidirectional retaliation, time-of-day modifiers, resistances
 
 ---
-*MILESTONES.md — Updated: 2026-03-10 (v3.6 AI Leader Intelligence)*
+*MILESTONES.md — Updated: 2026-03-13 (v6.0 Fog of War)*

@@ -269,6 +269,7 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] Integration validation: 156 tests pass, all 4 factions recruit and advance in-game — Phase 117 (117-01)
 - [x] Core visibility calculation: vision_range on UnitDef/Unit, compute_visibility() returns HashSet<Hex> — Phase 122 (122-01)
 - [x] FFI visibility filtering: from_game_state_fow() hides invisible enemies, visible_hexes array — Phase 123 (123-01)
+- [x] Fog of war rendering: shroud/fog overlays, seen_hexes persistence, human uses filtered state — Phase 124 (124-01)
 
 ### Out of Scope
 
@@ -436,6 +437,7 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 | campaign_commit_deployment as single-call placement | Deployed indices sent as JSON; engine owns keep/castle finding + placement | 2026-03-13 | Active |
 | v5.0 complete: all gameplay in Rust | Campaign orchestration, roster, game-over, deployment — Lua is presentation only | 2026-03-13 | Active |
 | Range-based visibility (not LOS) | Simpler, faster; vision_range=0 defaults to movement (Wesnoth convention) | 2026-03-13 | Active |
+| FOW for single-player only | Faction 0 hardcoded as viewer; hotseat sees all; AI cheats (acceptable) | 2026-03-13 | Active |
 
 ## Tech Stack
 

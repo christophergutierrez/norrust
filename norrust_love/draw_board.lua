@@ -165,6 +165,27 @@ function M.draw_board(ctx, state)
         end
     end
 
+    -- 1a. Fog of war overlays
+    if ctx.fog and ctx.fog.enabled then
+        for row = 0, ctx.BOARD_ROWS - 1 do
+            for col = 0, ctx.BOARD_COLS - 1 do
+                local key = col .. "," .. row
+                if not ctx.fog.visible[key] then
+                    local cx, cy = ctx.hex.to_pixel(col, row)
+                    if ctx.fog.seen[key] then
+                        -- Fogged: previously seen, currently not visible
+                        love.graphics.setColor(0, 0, 0, 0.5)
+                    else
+                        -- Shrouded: never seen
+                        love.graphics.setColor(0, 0, 0, 0.8)
+                    end
+                    love.graphics.polygon("fill", ctx.hex.polygon(cx, cy, ctx.hex.RADIUS))
+                end
+            end
+        end
+        love.graphics.setColor(1, 1, 1, 1)
+    end
+
     -- 1b. Village ownership borders
     love.graphics.setLineWidth(2.5)
     for key, owner in pairs(village_owners) do

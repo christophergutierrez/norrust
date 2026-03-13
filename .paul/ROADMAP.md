@@ -6,16 +6,22 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 ## Current Milestone
 
-**v6.0 Fog of War**
-Status: In Progress
-Phases: 2 of 4 complete
+No active milestone. Run /paul:discuss-milestone or /paul:milestone to define next.
+
+## Completed Milestones
+
+<details>
+<summary>v6.0 Fog of War — 2026-03-13 (3 phases, 1 deferred)</summary>
+Phases: 3 of 4 complete (Phase 125 deferred)
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 122 | Core Visibility Calculation | 1/1 | Complete | 2026-03-13 |
 | 123 | FFI Visibility Filtering | 1/1 | Complete | 2026-03-13 |
-| 124 | Draw Layer Fog Rendering | TBD | Not started | - |
-| 125 | AI Fog Integration | TBD | Not started | - |
+| 124 | Draw Layer Fog Rendering | 1/1 | Complete | 2026-03-13 |
+| 125 | AI Fog Integration | - | Deferred | - |
+
+</details>
 
 ## v6.0 Phase Details
 

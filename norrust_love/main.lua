@@ -71,6 +71,7 @@ local sel = state_mod.sel
 local ghost = state_mod.ghost
 local campaign = state_mod.campaign
 local dlg = state_mod.dlg
+local fog = state_mod.fog
 local camera = state_mod.camera
 
 local sound = require("sound")
@@ -149,6 +150,8 @@ events.on("scenario_loaded", function(data)
     dlg.scroll = 0
     dlg.show_history = false
     dlg.active = {}
+    fog.seen = {}
+    fog.visible = {}
 
     local dialogue_path = scn.path .. "/" .. data.board:gsub("board%.toml$", "dialogue.toml")
     norrust.load_dialogue(vars.engine, dialogue_path)
@@ -653,7 +656,21 @@ end
 
 --- Dispatch to draw module with full context.
 function love.draw()
-    local state = vars.engine and norrust.get_state(vars.engine) or {}
+    local state
+    if vars.engine and fog.enabled and vars.game_mode == MODES.PLAYING then
+        state = norrust.get_state_fow(vars.engine, 0)
+        -- Rebuild visible set and accumulate seen
+        fog.visible = {}
+        if state.visible_hexes then
+            for _, vh in ipairs(state.visible_hexes) do
+                local key = int(vh.col) .. "," .. int(vh.row)
+                fog.visible[key] = true
+                fog.seen[key] = true
+            end
+        end
+    else
+        state = vars.engine and norrust.get_state(vars.engine) or {}
+    end
     local ctx = build_draw_ctx_state()
     -- Modules
     ctx.hex = hex; ctx.assets = assets; ctx.anim_module = anim_module; ctx.norrust = norrust
@@ -675,6 +692,7 @@ function love.draw()
     ctx.dying_units = dying_units
     ctx.show_help = shared.show_help
     ctx.exit_confirm = shared.exit_confirm
+    ctx.fog = fog
     -- Camera
     ctx.board_origin_x = camera.origin_x; ctx.board_origin_y = camera.origin_y
     ctx.camera_offset_x = camera.offset_x; ctx.camera_offset_y = camera.offset_y
