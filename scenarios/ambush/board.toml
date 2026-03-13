@@ -1,26 +1,28 @@
-# scenarios/ambush.toml — 12 columns × 8 rows, row-major (left→right, top→bottom)
+# scenarios/ambush.toml — 16 columns × 10 rows, row-major (left→right, top→bottom)
 #
-# Campaign scenario: player must navigate through dense forest to reach enemy keep.
-# Hidden trigger zones spawn enemy reinforcements when player units enter.
+# Campaign scenario 2: player pushes through dense forest with enemy veterans
+# already deployed forward. Player should have carry-over units from crossing.
 #
-# Blue keep: (1,4) — 6 adjacent castle hexes: (0,3)(1,3)(0,4)(2,4)(0,5)(1,5)
-# Red  keep: (10,4) — 6 adjacent castle hexes: (9,3)(10,3)(9,4)(11,4)(9,5)(10,5)
+# Blue keep: (1,5)  — 6 adjacent castle hexes
+# Red  keep: (13,5) — 6 adjacent castle hexes
 #
-# Objective: Blue must reach (10,4) within 25 turns.
+# Objective: Blue must reach (13,5) within 30 turns.
 
-width = 12
-height = 8
-objective_col = 10
-objective_row = 4
-max_turns = 25
+width = 16
+height = 10
+objective_col = 13
+objective_row = 5
+max_turns = 30
 
 tiles = [
-  "forest", "forest", "hills",  "forest", "forest", "hills",  "forest", "forest", "hills",  "forest", "forest", "forest",
-  "forest", "forest", "forest", "flat",   "forest", "forest", "forest", "flat",   "forest", "forest", "forest", "forest",
-  "forest", "forest", "flat",   "flat",   "forest", "hills",  "forest", "village","forest", "flat",   "forest", "forest",
-  "castle", "castle", "forest", "hills",  "flat",   "forest", "flat",   "forest", "flat",   "castle", "castle", "forest",
-  "castle", "keep",   "castle", "flat",   "forest", "village","flat",   "forest", "flat",   "castle", "keep",   "castle",
-  "castle", "castle", "forest", "flat",   "hills",  "forest", "village","flat",   "flat",   "castle", "castle", "forest",
-  "forest", "forest", "flat",   "hills",  "forest", "flat",   "forest", "forest", "hills",  "flat",   "forest", "forest",
-  "forest", "forest", "forest", "forest", "hills",  "forest", "forest", "forest", "forest", "hills",  "forest", "forest",
+  "forest", "forest", "hills",  "forest", "flat",   "forest", "hills",  "forest", "flat",   "forest", "hills",  "forest", "flat",   "forest", "forest", "forest",
+  "forest", "flat",   "forest", "village","forest", "hills",  "forest", "flat",   "village","forest", "hills",  "forest", "flat",   "forest", "flat",   "forest",
+  "hills",  "forest", "flat",   "forest", "hills",  "forest", "flat",   "hills",  "forest", "flat",   "forest", "village","hills",  "forest", "flat",   "hills",
+  "forest", "flat",   "hills",  "forest", "flat",   "village","forest", "flat",   "forest", "hills",  "flat",   "forest", "forest", "flat",   "forest", "forest",
+  "castle", "castle", "castle", "hills",  "forest", "flat",   "forest", "village","forest", "flat",   "hills",  "forest", "flat",   "castle", "castle", "flat",
+  "castle", "keep",   "castle", "forest", "flat",   "hills",  "forest", "flat",   "hills",  "forest", "flat",   "forest", "castle", "keep",   "castle", "flat",
+  "castle", "castle", "castle", "flat",   "hills",  "forest", "village","flat",   "forest", "hills",  "flat",   "forest", "flat",   "castle", "castle", "flat",
+  "forest", "flat",   "hills",  "forest", "village","forest", "flat",   "hills",  "forest", "flat",   "village","hills",  "forest", "flat",   "flat",   "forest",
+  "hills",  "forest", "flat",   "hills",  "forest", "flat",   "hills",  "forest", "flat",   "forest", "hills",  "forest", "flat",   "hills",  "forest", "hills",
+  "forest", "forest", "forest", "forest", "hills",  "forest", "flat",   "forest", "hills",  "flat",   "forest", "forest", "hills",  "forest", "forest", "forest",
 ]

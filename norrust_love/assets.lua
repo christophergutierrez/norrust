@@ -56,51 +56,57 @@ function assets.load_unit_sprites(base_path)
     local info = love.filesystem.getInfo(dir)
     if not info then return sprites end
 
-    local dirs = love.filesystem.getDirectoryItems(dir)
-    for _, def_id in ipairs(dirs) do
-        local unit_dir = dir .. "/" .. def_id
-        local dir_info = love.filesystem.getInfo(unit_dir)
-        if dir_info and dir_info.type == "directory" then
-            local entry = {}
+    -- Recursively scan unit directories for sprite.toml or idle.png
+    local function scan_dir(path)
+        local items = love.filesystem.getDirectoryItems(path)
+        for _, name in ipairs(items) do
+            local full = path .. "/" .. name
+            local item_info = love.filesystem.getInfo(full)
+            if item_info and item_info.type == "directory" then
+                local entry = {}
 
-            -- Try sprite.toml for full animation support
-            local toml_path = unit_dir .. "/sprite.toml"
-            local toml_data = toml_parser.parse_file(toml_path)
-            if toml_data then
-                entry.anims = anim.load_unit_anims(unit_dir, toml_data)
-                -- Portrait loaded by animation module
-                if entry.anims.portrait then
-                    entry.portrait = entry.anims.portrait
+                -- Try sprite.toml for full animation support
+                local toml_path = full .. "/sprite.toml"
+                local toml_data = toml_parser.parse_file(toml_path)
+                if toml_data then
+                    local sprite_id = toml_data.id or name
+                    entry.anims = anim.load_unit_anims(full, toml_data)
+                    if entry.anims.portrait then
+                        entry.portrait = entry.anims.portrait
+                    end
+                    sprites[sprite_id] = entry
                 end
-            end
 
-            -- Fallback: load idle.png as static image (no sprite.toml)
-            if not entry.anims then
-                local idle_path = unit_dir .. "/idle.png"
-                local idle_info = love.filesystem.getInfo(idle_path)
-                if idle_info then
-                    local ok, img = pcall(love.graphics.newImage, idle_path)
-                    if ok then
-                        entry.idle = img
+                -- Fallback: load idle.png as static image (no sprite.toml)
+                if not toml_data then
+                    local idle_path = full .. "/idle.png"
+                    local idle_info = love.filesystem.getInfo(idle_path)
+                    if idle_info then
+                        local ok, img = pcall(love.graphics.newImage, idle_path)
+                        if ok then
+                            entry.idle = img
+                        end
+                    end
+                    local portrait_path = full .. "/portrait.png"
+                    local portrait_info = love.filesystem.getInfo(portrait_path)
+                    if portrait_info then
+                        local pok, pimg = pcall(love.graphics.newImage, portrait_path)
+                        if pok then
+                            entry.portrait = pimg
+                        end
+                    end
+                    if entry.idle then
+                        sprites[name] = entry
                     end
                 end
-                -- Load portrait standalone
-                local portrait_path = unit_dir .. "/portrait.png"
-                local portrait_info = love.filesystem.getInfo(portrait_path)
-                if portrait_info then
-                    local pok, pimg = pcall(love.graphics.newImage, portrait_path)
-                    if pok then
-                        entry.portrait = pimg
-                    end
-                end
-            end
 
-            -- Only store if we have something to draw
-            if entry.anims or entry.idle then
-                sprites[def_id] = entry
+                -- Recurse into subdirectories (advancement tree)
+                scan_dir(full)
             end
         end
     end
+
+    scan_dir(dir)
     return sprites
 end
 
