@@ -279,6 +279,64 @@ def write_board_toml(terrain_ids, width, height, output_path,
     return output_path
 
 
+def mirror_horizontal(terrain_ids, side_positions):
+    """Mirror the map horizontally (left↔right). Updates side positions."""
+    width = len(terrain_ids[0])
+    mirrored = [list(reversed(row)) for row in terrain_ids]
+    new_positions = {}
+    for side, (col, row) in side_positions.items():
+        new_positions[side] = (width - 1 - col, row)
+    return mirrored, new_positions
+
+
+def place_keep(terrain_ids, col, row):
+    """Place a keep at (col, row) with 6 adjacent castle hexes."""
+    terrain_ids[row][col] = "keep"
+    even = (row % 2 == 0)
+    if even:
+        neighbors = [(-1, -1), (0, -1), (1, 0), (0, 1), (-1, 1), (-1, 0)]
+    else:
+        neighbors = [(0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 0)]
+    for dc, dr in neighbors:
+        nc, nr = col + dc, row + dr
+        if 0 <= nr < len(terrain_ids) and 0 <= nc < len(terrain_ids[nr]):
+            terrain_ids[nr][nc] = "castle"
+
+
+def fix_keeps(terrain_ids):
+    """Find all keeps and ensure each has 6 adjacent castle hexes."""
+    for row_idx, row in enumerate(terrain_ids):
+        for col_idx, t in enumerate(row):
+            if t == "keep":
+                even = (row_idx % 2 == 0)
+                if even:
+                    neighbors = [(-1, -1), (0, -1), (1, 0), (0, 1), (-1, 1), (-1, 0)]
+                else:
+                    neighbors = [(0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 0)]
+                for dc, dr in neighbors:
+                    nc, nr = col_idx + dc, row_idx + dr
+                    if 0 <= nr < len(terrain_ids) and 0 <= nc < len(terrain_ids[nr]):
+                        if terrain_ids[nr][nc] not in ("keep", "castle"):
+                            terrain_ids[nr][nc] = "castle"
+
+
+def remove_keep(terrain_ids, col, row):
+    """Remove a keep and its adjacent castles, replacing with flat."""
+    if terrain_ids[row][col] != "keep":
+        return
+    terrain_ids[row][col] = "flat"
+    even = (row % 2 == 0)
+    if even:
+        neighbors = [(-1, -1), (0, -1), (1, 0), (0, 1), (-1, 1), (-1, 0)]
+    else:
+        neighbors = [(0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 0)]
+    for dc, dr in neighbors:
+        nc, nr = col + dc, row + dr
+        if 0 <= nr < len(terrain_ids) and 0 <= nc < len(terrain_ids[nr]):
+            if terrain_ids[nr][nc] == "castle":
+                terrain_ids[nr][nc] = "flat"
+
+
 def preview_terrain(terrain_ids, side_positions):
     """Print a compact visual preview of the map."""
     SYMBOLS = {
@@ -313,6 +371,12 @@ def main():
     parser.add_argument("--max-turns", type=int, help="Turn limit for the scenario")
     parser.add_argument("--objective", help="Objective hex as col,row (e.g., 5,10)")
     parser.add_argument("--crop", help="Crop region as col,row,width,height (e.g., 25,15,16,12)")
+    parser.add_argument("--mirror", action="store_true", help="Mirror map horizontally (player on left)")
+    parser.add_argument("--fix-keeps", action="store_true", help="Ensure all keeps have 6 adjacent castles")
+    parser.add_argument("--place-keep", action="append", metavar="COL,ROW",
+                        help="Place a keep+castles at col,row (can repeat)")
+    parser.add_argument("--remove-keep", action="append", metavar="COL,ROW",
+                        help="Remove a keep+castles at col,row (can repeat)")
     parser.add_argument("--preview", action="store_true", help="Show visual map preview")
     parser.add_argument("--show-unmapped", action="store_true", help="Show unmapped terrain codes")
     parser.add_argument("--comment", help="Comment to add at top of output file")
@@ -349,6 +413,30 @@ def main():
     # Convert terrain
     unmapped = {} if args.show_unmapped else None
     terrain_ids, side_positions = convert_map(grid, unmapped)
+
+    # Mirror if requested
+    if args.mirror:
+        terrain_ids, side_positions = mirror_horizontal(terrain_ids, side_positions)
+        print("Mirrored horizontally (player on left)")
+
+    # Place/remove keeps
+    if args.remove_keep:
+        for spec in args.remove_keep:
+            c, r = [int(x) for x in spec.split(",")]
+            remove_keep(terrain_ids, c, r)
+            print(f"Removed keep at ({c},{r})")
+
+    if args.place_keep:
+        for spec in args.place_keep:
+            c, r = [int(x) for x in spec.split(",")]
+            place_keep(terrain_ids, c, r)
+            # Update side positions
+            print(f"Placed keep at ({c},{r})")
+
+    # Fix all keeps to have 6 adjacent castles
+    if args.fix_keeps:
+        fix_keeps(terrain_ids)
+        print("Fixed all keeps to have 6 adjacent castles")
 
     # Stats
     terrain_counts = Counter()
