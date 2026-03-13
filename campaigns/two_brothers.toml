@@ -10,3 +10,8 @@ early_finish_bonus = 3
 board = "rooting_out_a_mage/board.toml"
 units = "rooting_out_a_mage/units.toml"
 preset_units = true
+
+[[scenarios]]
+board = "the_chase/board.toml"
+units = "the_chase/units.toml"
+preset_units = true

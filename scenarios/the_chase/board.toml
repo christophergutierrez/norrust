@@ -1,0 +1,34 @@
+# Two Brothers Scenario 2: The Chase (cropped from 21x56 Wesnoth map)
+
+width = 21
+height = 26
+max_turns = 28
+
+tiles = [
+  "reef", "reef", "shallow_water", "reef", "shallow_water", "shallow_water", "shallow_water", "shallow_water", "shallow_water", "shallow_water", "shallow_water", "shallow_water", "swamp_water", "shallow_water", "shallow_water", "shallow_water", "shallow_water", "shallow_water", "flat", "flat", "hills",
+  "shallow_water", "shallow_water", "shallow_water", "shallow_water", "forest", "shallow_water", "forest", "shallow_water", "forest", "shallow_water", "flat", "forest", "forest", "swamp_water", "swamp_water", "swamp_water", "flat", "flat", "flat", "hills", "forest",
+  "shallow_water", "shallow_water", "forest", "forest", "forest", "forest", "forest", "forest", "flat", "flat", "village", "forest", "forest", "forest", "forest", "flat", "forest", "hills", "forest", "forest", "forest",
+  "swamp_water", "swamp_water", "forest", "forest", "forest", "village", "forest", "forest", "forest", "flat", "forest", "forest", "flat", "flat", "forest", "forest", "forest", "flat", "forest", "hills", "hills",
+  "forest", "forest", "forest", "flat", "forest", "forest", "flat", "forest", "forest", "flat", "forest", "forest", "flat", "flat", "forest", "flat", "flat", "forest", "forest", "forest", "forest",
+  "forest", "forest", "forest", "forest", "forest", "flat", "forest", "village", "forest", "flat", "forest", "forest", "forest", "flat", "flat", "flat", "flat", "flat", "flat", "forest", "flat",
+  "forest", "forest", "forest", "hills", "hills", "forest", "forest", "forest", "flat", "flat", "flat", "flat", "flat", "forest", "castle", "forest", "flat", "flat", "flat", "flat", "forest",
+  "forest", "forest", "forest", "hills", "forest", "forest", "flat", "flat", "flat", "flat", "flat", "forest", "castle", "flat", "castle", "castle", "forest", "forest", "forest", "forest", "forest",
+  "flat", "village", "forest", "forest", "forest", "forest", "flat", "flat", "flat", "forest", "forest", "forest", "castle", "flat", "castle", "castle", "forest", "flat", "forest", "forest", "forest",
+  "forest", "forest", "forest", "forest", "flat", "flat", "forest", "forest", "forest", "flat", "flat", "forest", "forest", "castle", "keep", "castle", "flat", "flat", "flat", "forest", "forest",
+  "forest", "flat", "forest", "flat", "flat", "forest", "forest", "village", "forest", "flat", "forest", "flat", "flat", "castle", "castle", "castle", "forest", "village", "forest", "forest", "forest",
+  "forest", "forest", "forest", "forest", "flat", "forest", "flat", "forest", "forest", "forest", "flat", "forest", "flat", "flat", "flat", "forest", "forest", "forest", "forest", "forest", "forest",
+  "flat", "flat", "flat", "flat", "forest", "flat", "flat", "forest", "flat", "flat", "village", "village", "village", "forest", "flat", "flat", "flat", "flat", "forest", "forest", "forest",
+  "flat", "flat", "forest", "forest", "forest", "flat", "forest", "flat", "forest", "village", "village", "village", "flat", "flat", "forest", "flat", "flat", "forest", "forest", "forest", "forest",
+  "forest", "flat", "forest", "forest", "flat", "flat", "flat", "flat", "flat", "forest", "forest", "forest", "forest", "flat", "flat", "flat", "forest", "forest", "forest", "forest", "forest",
+  "forest", "forest", "forest", "forest", "forest", "flat", "forest", "forest", "forest", "flat", "flat", "flat", "forest", "flat", "forest", "flat", "flat", "flat", "flat", "forest", "flat",
+  "forest", "forest", "flat", "flat", "flat", "forest", "forest", "flat", "flat", "forest", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "forest", "flat", "flat", "flat",
+  "forest", "forest", "forest", "flat", "forest", "forest", "flat", "forest", "forest", "flat", "forest", "forest", "forest", "flat", "forest", "forest", "village", "forest", "flat", "flat", "flat",
+  "forest", "flat", "flat", "forest", "flat", "forest", "flat", "flat", "village", "forest", "flat", "flat", "forest", "flat", "forest", "village", "village", "village", "forest", "forest", "forest",
+  "forest", "forest", "flat", "forest", "flat", "forest", "forest", "forest", "forest", "forest", "flat", "flat", "flat", "flat", "flat", "forest", "forest", "village", "forest", "flat", "forest",
+  "flat", "flat", "forest", "flat", "flat", "forest", "flat", "flat", "flat", "flat", "forest", "flat", "forest", "flat", "flat", "flat", "flat", "forest", "flat", "forest", "flat",
+  "flat", "flat", "flat", "forest", "flat", "flat", "flat", "forest", "flat", "flat", "flat", "flat", "flat", "flat", "forest", "forest", "flat", "flat", "flat", "flat", "flat",
+  "flat", "flat", "flat", "castle", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "forest", "flat", "flat", "forest", "forest", "flat", "forest", "forest", "flat",
+  "flat", "flat", "flat", "castle", "castle", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "flat", "forest", "flat", "flat", "flat", "swamp_water",
+  "hills", "flat", "castle", "castle", "keep", "castle", "castle", "flat", "village", "flat", "forest", "flat", "flat", "forest", "forest", "forest", "forest", "swamp_water", "shallow_water", "reef", "shallow_water",
+  "hills", "hills", "hills", "castle", "castle", "castle", "flat", "flat", "village", "village", "flat", "forest", "forest", "flat", "forest", "forest", "swamp_water", "shallow_water", "shallow_water", "shallow_water", "shallow_water",
+]

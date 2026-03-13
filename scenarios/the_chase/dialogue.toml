@@ -1,0 +1,64 @@
+# Two Brothers Scenario 2: The Chase — Dialogue
+#
+# Arvith pursues his brother's kidnappers through elven territory.
+# The elves of the Grey Woods refuse to let him pass.
+
+# ── Story Introduction ────────────────────────────────────────────────
+
+[[dialogue]]
+id = "story_intro"
+trigger = "scenario_start"
+text = "Arvith and his band rode north in search of his missing brother. The tracks led into the Grey Woods — a forest said to be haunted by lost souls. No one from Maghre had entered it in living memory."
+
+[[dialogue]]
+id = "story_journal"
+trigger = "scenario_start"
+text = "From Arvith's journal: We're close enough to be certain now — those tracks are heading into the Grey Woods. I'm past superstitions; the forest is home to elves, unfriendly ones. Our horses won't fight well in trees, but there are things that need done. I want my brother back."
+
+# ── Opening Dialogue ──────────────────────────────────────────────────
+
+[[dialogue]]
+id = "open_1"
+trigger = "scenario_start"
+text = "[Arvith] A stroll through such lovely green woods — what could be finer?"
+
+[[dialogue]]
+id = "open_2"
+trigger = "scenario_start"
+text = "[Nil-Galion] You there! Halt and explain yourself."
+
+[[dialogue]]
+id = "open_3"
+trigger = "scenario_start"
+text = "[Arvith] We're chasing after some men who kidnapped my brother!"
+
+[[dialogue]]
+id = "open_4"
+trigger = "scenario_start"
+text = "[Nil-Galion] Those men caught their prisoner practicing necromancy. Assume the man they caught was your brother's murderer, and rest assured the grey mages will handle it. Now advance no further."
+
+[[dialogue]]
+id = "open_5"
+trigger = "scenario_start"
+text = "[Arvith] We killed the necromancer on the battlefield! These elves will not stop me from freeing Baran."
+
+# ── Turn Events ───────────────────────────────────────────────────────
+
+[[dialogue]]
+id = "turn_12"
+trigger = "turn_start"
+turn = 12
+faction = 0
+text = "[Arvith] Come on, men — let's push through these woods and catch those kidnappers!"
+
+# ── Victory ───────────────────────────────────────────────────────────
+
+[[dialogue]]
+id = "elf_death"
+trigger = "leader_attacked"
+text = "[Nil-Galion] Deluded fool, you are rescuing a necromancer. I can only hope that you are too late."
+
+[[dialogue]]
+id = "victory"
+trigger = "leader_attacked"
+text = "[Arvith] Follow their back trail! The kidnappers took Baran to a castle three days northeast of here."
