@@ -12,8 +12,8 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Paul volatile state
-.paul/STATE.md
+# Paul planning framework (local only)
+.paul/
 
 tmp/
 
