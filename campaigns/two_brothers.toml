@@ -1,0 +1,12 @@
+[campaign]
+id = "two_brothers"
+name = "A Tale of Two Brothers"
+faction_0 = "loyalists"
+faction_1 = "undead"
+gold_carry_percent = 40
+early_finish_bonus = 3
+
+[[scenarios]]
+board = "rooting_out_a_mage/board.toml"
+units = "rooting_out_a_mage/units.toml"
+preset_units = true

@@ -86,22 +86,37 @@ function M.handle_pick_scenario(key)
         scn.units = game_data.SCENARIOS[num].units
         scn.preset = game_data.SCENARIOS[num].preset_units
         scn.starting_gold = game_data.SCENARIOS[num].starting_gold
-        -- Reset controllers to human for new game
-        game_data.controllers[1] = "human"
-        game_data.controllers[2] = "human"
+        -- Preset scenarios default to human vs AI; non-preset to human vs human
+        if scn.preset then
+            game_data.controllers[1] = "human"
+            game_data.controllers[2] = "ai"
+        else
+            game_data.controllers[1] = "human"
+            game_data.controllers[2] = "human"
+        end
         call_load_scenario()
         game_data.leader_placed[1] = false
         game_data.leader_placed[2] = false
-        vars.game_mode = MODES.PICK_FACTION_BLUE
+        if scn.preset then
+            -- Preset scenarios: auto-assign first two factions, skip setup
+            game_data.faction_id[1] = game_data.factions[1] and game_data.factions[1].id or "loyalists"
+            game_data.faction_id[2] = game_data.factions[2] and game_data.factions[2].id or "northerners"
+            finalize_setup()
+        else
+            vars.game_mode = MODES.PICK_FACTION_BLUE
+        end
     elseif key == "l" then
         -- Open save list screen
         game_data.save_list = mods.save.list_saves()
         game_data.save_idx = 1
         vars.game_mode = MODES.LOAD_SAVE
-    elseif key == "c" then
-        -- Start campaign
+    elseif key == "c" or key == "d" or key == "f" or key == "g" then
+        -- Start campaign (c=1, d=2, f=3, g=4)
+        local camp_keys = {c = 1, d = 2, f = 3, g = 4}
+        local camp_idx = camp_keys[key]
+        if not camp_idx or not game_data.CAMPAIGNS[camp_idx] then return end
         sound.stop_music()
-        local camp = game_data.CAMPAIGNS[1]
+        local camp = game_data.CAMPAIGNS[camp_idx]
         campaign.data = mods.norrust.start_campaign(vars.engine, campaign.path .. "/" .. camp.file)
         if campaign.data then
             campaign.active = true

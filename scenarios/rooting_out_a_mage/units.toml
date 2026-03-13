@@ -1,0 +1,94 @@
+# Two Brothers Scenario 1: Rooting Out a Mage
+#
+# Side 0 (Blue/Player): Arvith's Loyalists — Knight leader on keep (1,20)
+#   9 named companions on castle hexes and nearby positions
+# Side 1 (Red/AI): Mordak's Undead — Dark Sorcerer leader on keep (23,4)
+#
+# Win: slay Mordak. Lose: Arvith dies or 18 turns expire.
+
+# ── Blue Forces (Loyalists) — Arvith's band ──────────────────────────
+
+# Arvith — leader, on keep (Lieutenant has "leader" ability for recruitment)
+[[units]]
+id = 1
+unit_type = "Lieutenant"
+faction = 0
+col = 1
+row = 20
+
+# Armed villagers (Spearmen)
+[[units]]
+id = 2
+unit_type = "Spearman"
+faction = 0
+col = 3
+row = 21
+
+[[units]]
+id = 3
+unit_type = "Spearman"
+faction = 0
+col = 3
+row = 20
+
+[[units]]
+id = 4
+unit_type = "Spearman"
+faction = 0
+col = 2
+row = 21
+
+[[units]]
+id = 5
+unit_type = "Spearman"
+faction = 0
+col = 1
+row = 18
+
+# Efran — bowman scout
+[[units]]
+id = 6
+unit_type = "Bowman"
+faction = 0
+col = 0
+row = 18
+
+# Faren — scout (Footpad not in registry, using Spearman)
+[[units]]
+id = 7
+unit_type = "Spearman"
+faction = 0
+col = 1
+row = 17
+
+# Arvith's mercenary horsemen
+[[units]]
+id = 8
+unit_type = "Horseman"
+faction = 0
+col = 2
+row = 19
+
+[[units]]
+id = 9
+unit_type = "Horseman"
+faction = 0
+col = 0
+row = 20
+
+[[units]]
+id = 10
+unit_type = "Horseman"
+faction = 0
+col = 1
+row = 19
+
+# ── Red Forces (Undead) — Mordak's army ──────────────────────────────
+
+# Mordak — leader, on keep
+[[units]]
+id = 11
+unit_type = "Dark Sorcerer"
+faction = 1
+col = 23
+row = 4

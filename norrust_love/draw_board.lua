@@ -298,13 +298,26 @@ function M.draw_board(ctx, state)
         end
     end
 
-    -- 6. Recruit-mode hex highlights (only castles adjacent to a keep)
+    -- 6. Recruit-mode hex highlights (only castles adjacent to active faction's keep)
     if ctx.recruit_mode then
-        -- Collect keep positions
+        -- Collect keep positions that have the active faction's leader on them
+        local active_faction = ctx.active_faction or 0
         local keeps = {}
         for _, tile in ipairs(state.terrain or {}) do
             if (tile.terrain_id or "") == "keep" then
-                keeps[#keeps + 1] = {col = int(tile.col), row = int(tile.row)}
+                local kc, kr = int(tile.col), int(tile.row)
+                -- Check if a leader unit of the active faction is on this keep
+                for _, u in ipairs(state.units or {}) do
+                    if int(u.faction) == active_faction and int(u.col) == kc and int(u.row) == kr then
+                        local is_leader = false
+                        for _, a in ipairs(u.abilities or {}) do
+                            if a == "leader" then is_leader = true; break end
+                        end
+                        if is_leader then
+                            keeps[#keeps + 1] = {col = kc, row = kr}
+                        end
+                    end
+                end
             end
         end
         for _, tile in ipairs(state.terrain or {}) do

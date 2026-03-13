@@ -428,8 +428,16 @@ function M.mousepressed(sx, sy, button)
     local local_y = (y - camera.origin_y) / camera.zoom - camera.offset_y
     local col, row = mods.hex.from_pixel(local_x, local_y)
 
-    -- Off-board click: start drag
-    if col < 0 or col >= scn.COLS or row < 0 or row >= scn.ROWS then
+    -- Clamp edge hexes: clicking the outer edge of col 0 maps to col -1, fix it
+    if col < 0 then col = 0 end
+    if row < 0 then row = 0 end
+    if col >= scn.COLS then col = scn.COLS - 1 end
+    if row >= scn.ROWS then row = scn.ROWS - 1 end
+
+    -- Off-board click: only if click is far from nearest valid hex center
+    local cx, cy = mods.hex.to_pixel(col, row)
+    local dx, dy = local_x - cx, local_y - cy
+    if dx * dx + dy * dy > mods.hex.RADIUS * mods.hex.RADIUS * 2.0 then
         camera.drag_active = true
         camera.drag_start_x, camera.drag_start_y = x, y
         camera.drag_cam_x = camera.offset_x

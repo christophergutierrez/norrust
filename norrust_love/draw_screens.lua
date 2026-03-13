@@ -44,10 +44,12 @@ function M.draw_setup_hud(ctx)
         love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3], 1)
         love.graphics.printf("Campaigns:", 0, cy, vp_w, "center")
         cy = cy + 22
+        local camp_keys = {"c", "d", "f", "g"}
         for i, camp in ipairs(ctx.CAMPAIGNS) do
             love.graphics.setFont(fonts[15])
             love.graphics.setColor(C_GOLD[1], C_GOLD[2], C_GOLD[3], 1)
-            love.graphics.printf(string.format("[C] %s", camp.name), 0, cy + (i - 1) * 28, vp_w, "center")
+            local key = camp_keys[i] or "?"
+            love.graphics.printf(string.format("[%s] %s", key:upper(), camp.name), 0, cy + (i - 1) * 28, vp_w, "center")
         end
 
         -- Load game hint

@@ -1,0 +1,83 @@
+# Two Brothers Scenario 1: Rooting Out a Mage — Dialogue
+#
+# Adapted from Wesnoth's "A Tale of Two Brothers" campaign.
+# Story intro condensed from 6 parts, key character dialogue preserved.
+
+# ── Story Introduction ────────────────────────────────────────────────
+
+[[dialogue]]
+id = "story_intro"
+trigger = "scenario_start"
+text = "The remote freehold of Maghre was once a peaceful place. Then a dark mage settled in the hills and began seeking sacrifices for his summonings. Skeletons and zombies killed cattle and fired fields. People vanished from isolated farmsteads."
+
+[[dialogue]]
+id = "story_baran"
+trigger = "scenario_start"
+text = "A man named Baran, once trained at the great Academy, returned to lead the defense. He armed the villagers and sent a beacon-call to his brother Arvith, leader of a mercenary horse company."
+
+[[dialogue]]
+id = "story_arvith"
+trigger = "scenario_start"
+text = "Heeding the call, Arvith gathered such men as he could and hurried to Maghre to help Baran."
+
+# ── Opening Dialogue ──────────────────────────────────────────────────
+
+[[dialogue]]
+id = "greet_1"
+trigger = "scenario_start"
+text = "[Baran] Greetings, brother, and welcome home."
+
+[[dialogue]]
+id = "greet_2"
+trigger = "scenario_start"
+text = "[Arvith] You called, and I came. What ails Maghre?"
+
+[[dialogue]]
+id = "greet_3"
+trigger = "scenario_start"
+text = "[Baran] A dark mage has come upon us — his creatures call him Mordak. The villagers have taken up weapons but they are not trained fighters. We need your men, and you to lead them."
+
+[[dialogue]]
+id = "greet_4"
+trigger = "scenario_start"
+text = "[Baran] I will go stealthily with a handful of scouts. While you demonstrate against Mordak, I will try to defeat him with magic at an unguarded moment. You shall be the right hand, I the left."
+
+[[dialogue]]
+id = "greet_5"
+trigger = "scenario_start"
+text = "[Arvith] Aye. Just make sure you're there when we need you."
+
+# ── Turn Events ───────────────────────────────────────────────────────
+
+[[dialogue]]
+id = "turn_6"
+trigger = "turn_start"
+turn = 6
+faction = 0
+text = "[Arvith] Baran should be in position by now. Press them, distract the adept so Baran can spring his trap!"
+
+[[dialogue]]
+id = "turn_10a"
+trigger = "turn_start"
+turn = 10
+faction = 0
+text = "[Arvith] Baran has not made his attack!"
+
+[[dialogue]]
+id = "turn_10b"
+trigger = "turn_start"
+turn = 10
+faction = 0
+text = "[Arvith] No... something has gone wrong. We have to deal with Mordak ourselves."
+
+# ── Boss Death ────────────────────────────────────────────────────────
+
+[[dialogue]]
+id = "mordak_death"
+trigger = "leader_attacked"
+text = "[Arvith] Good work, men! But what has become of my brother?"
+
+[[dialogue]]
+id = "mordak_last"
+trigger = "leader_attacked"
+text = "[Arvith] Our scouts report Baran was captured and carried further north. We will give chase at once!"

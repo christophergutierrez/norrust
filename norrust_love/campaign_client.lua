@@ -8,9 +8,15 @@
 local campaign_client = {}
 
 --- Load the selected scenario board and update board dimensions.
+--- For preset scenarios, also loads units from the units TOML file.
 --- Modifies ctx.BOARD_COLS, ctx.BOARD_ROWS.
 function campaign_client.load_selected_scenario(ctx)
     assert(ctx.norrust.load_board(ctx.engine, ctx.scenarios_path .. "/" .. ctx.scenario_board, 42), "Failed to load board")
+
+    -- For preset scenarios, load units from TOML
+    if ctx.scenario_preset and ctx.scenario_units then
+        ctx.norrust.load_units(ctx.engine, ctx.scenarios_path .. "/" .. ctx.scenario_units)
+    end
 
     -- Read board dimensions from state
     local state = ctx.norrust.get_state(ctx.engine)
