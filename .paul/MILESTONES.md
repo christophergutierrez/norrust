@@ -40,6 +40,43 @@ Completed milestone log for this project.
 | v3.4 Sprite Pipeline v2 | 2026-03-09 | ~1 day | 3 phases, 4 plans |
 | v3.5 AI Overhaul | 2026-03-10 | ~1 day | 5 phases, 5 plans |
 | v3.6 AI Leader Intelligence | 2026-03-10 | ~40min | 2 phases, 2 plans |
+| v5.0 Engine-Owned Gameplay | 2026-03-13 | ~2 days | 4 phases, 4 plans |
+
+---
+
+## ✅ v5.0 Engine-Owned Gameplay
+
+**Completed:** 2026-03-13
+**Duration:** ~2 days (2026-03-12 to 2026-03-13)
+
+### Stats
+
+| Metric | Value |
+|--------|-------|
+| Phases | 4 |
+| Plans | 4 |
+| Files modified | 7 (ffi.rs, campaign.rs, campaign_client.lua, input_play.lua, input_setup.lua, input_deploy.lua, norrust.lua, main.lua) |
+| Tests | 124 unit + 4 integration |
+
+### Key Accomplishments
+
+- **campaign_load_next_scenario** — single FFI call loads board, places units/veterans, applies gold, returns JSON status
+- **campaign_record_victory** — single FFI call syncs roster, extracts veterans, calculates gold, returns "next_scenario" or "campaign_complete"
+- **campaign_commit_deployment** — single FFI call places user-selected veterans on keep/castle hexes
+- **7 roster FFI wrappers** — start_campaign, add_unit, sync_roster, get_living, map_id, get_mapped_uuids
+- **Lua shadow state eliminated** — campaign.veterans/gold/index no longer copied in game-over handler
+- **campaign_client.lua** — reduced from 246 to ~90 lines; zero hex-scanning or unit-placement logic
+- **find_keep_and_castles removed from Lua** — Rust owns all terrain scanning
+- **Any alternative frontend** (JS, etc.) can drive campaigns without reimplementing game logic
+
+### Key Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Single FFI call pattern with JSON status returns | Complex operations as atomic calls; Lua branches on status string |
+| Orchestration in ffi.rs (not campaign.rs) | Needs NorRustEngine access for registry, game state, campaign state |
+| FFI results include status fields for branching | Lua never checks engine-internal state; reads status directly |
+| Deployed veterans as JSON index array | User selection → engine placement; clean boundary |
 
 ---
 
