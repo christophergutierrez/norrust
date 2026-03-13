@@ -268,6 +268,7 @@ A playable hex-based strategy game where the simulation logic is strictly separa
 - [x] All 109 WML-matched unit stats verified correct (zero discrepancies) — Phase 116 (116-01)
 - [x] Integration validation: 156 tests pass, all 4 factions recruit and advance in-game — Phase 117 (117-01)
 - [x] Core visibility calculation: vision_range on UnitDef/Unit, compute_visibility() returns HashSet<Hex> — Phase 122 (122-01)
+- [x] FFI visibility filtering: from_game_state_fow() hides invisible enemies, visible_hexes array — Phase 123 (123-01)
 
 ### Out of Scope
 

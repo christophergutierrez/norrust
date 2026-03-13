@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::game_state::{Action, GameState};
 use crate::hex::Hex;
+use crate::visibility::compute_visibility;
 
 /// Flat representation of a single hex tile's terrain.
 #[derive(Debug, Serialize)]
@@ -57,6 +58,13 @@ pub struct UnitSnapshot {
     pub slowed: bool,
 }
 
+/// A visible hex position for fog-of-war snapshots.
+#[derive(Debug, Serialize)]
+pub struct VisibleHex {
+    pub col: i32,
+    pub row: i32,
+}
+
 /// Complete serializable snapshot of a GameState for external consumers.
 ///
 /// Uses `cols`/`rows` terminology (matching the GDScript and bridge API)
@@ -76,6 +84,9 @@ pub struct StateSnapshot {
     pub objective_col: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub objective_row: Option<i32>,
+    /// Visible hexes for fog-of-war queries (None for unfiltered snapshots).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visible_hexes: Option<Vec<VisibleHex>>,
 }
 
 impl StateSnapshot {
@@ -158,6 +169,81 @@ impl StateSnapshot {
             max_turns: state.max_turns,
             objective_col,
             objective_row,
+            visible_hexes: None,
+        }
+    }
+
+    /// Build a fog-of-war snapshot for `faction`: enemy units on non-visible hexes are hidden,
+    /// and the visible hex set is included.
+    pub fn from_game_state_fow(state: &GameState, faction: u8) -> Self {
+        let visible = compute_visibility(state, faction);
+
+        let cols = state.board.width;
+        let rows = state.board.height;
+
+        // Terrain is always fully visible
+        let terrain = (0..cols as i32)
+            .flat_map(|col| (0..rows as i32).map(move |row| (col, row)))
+            .filter_map(|(col, row)| {
+                let hex = Hex::from_offset(col, row);
+                state.board.tile_at(hex).map(|tile| TileSnapshot {
+                    col, row,
+                    terrain_id: tile.terrain_id.clone(),
+                    color: tile.color.clone(),
+                    owner: state.village_owners.get(&hex).copied().map(|o| o as i32).unwrap_or(-1),
+                    defense: tile.defense,
+                    movement_cost: tile.movement_cost,
+                    healing: tile.healing,
+                })
+            })
+            .collect();
+
+        // Units: include friendly always, enemy only if on visible hex
+        let units = state.positions.iter()
+            .filter_map(|(&uid, &hex)| {
+                let unit = state.units.get(&uid)?;
+                if unit.faction != faction && !visible.contains(&hex) {
+                    return None; // hidden enemy
+                }
+                let (col, row) = hex.to_offset();
+                Some(UnitSnapshot {
+                    id: uid,
+                    def_id: unit.def_id.clone(),
+                    col, row,
+                    faction: unit.faction,
+                    hp: unit.hp, max_hp: unit.max_hp,
+                    moved: unit.moved, attacked: unit.attacked,
+                    xp: unit.xp, xp_needed: unit.xp_needed,
+                    advancement_pending: unit.advancement_pending,
+                    movement: unit.movement, level: unit.level,
+                    attacks: unit.attacks.iter().map(|a| AttackSnapshot {
+                        id: a.id.clone(), name: a.name.clone(),
+                        damage: a.damage, strikes: a.strikes,
+                        range: a.range.clone(), specials: a.specials.clone(),
+                    }).collect(),
+                    abilities: unit.abilities.clone(),
+                    poisoned: unit.poisoned, slowed: unit.slowed,
+                })
+            })
+            .collect();
+
+        let (objective_col, objective_row) = match state.objective_hex {
+            Some(hex) => { let (c, r) = hex.to_offset(); (Some(c), Some(r)) }
+            None => (None, None),
+        };
+
+        let visible_hexes: Vec<VisibleHex> = visible.iter()
+            .map(|h| { let (col, row) = h.to_offset(); VisibleHex { col, row } })
+            .collect();
+
+        StateSnapshot {
+            turn: state.turn,
+            active_faction: state.active_faction,
+            cols, rows, terrain, units,
+            gold: state.gold,
+            max_turns: state.max_turns,
+            objective_col, objective_row,
+            visible_hexes: Some(visible_hexes),
         }
     }
 }
@@ -450,5 +536,59 @@ mod tests {
 
         let json = serde_json::to_string(&snap).expect("serialization must succeed");
         assert!(json.contains("\"color\":\"#4a7c4e\""), "color must appear in JSON output");
+    }
+
+    #[test]
+    fn test_fow_snapshot_hides_invisible_enemies() {
+        let board = Board::new(10, 1);
+        let mut state = GameState::new(board);
+        for col in 0..10 {
+            state.board.set_terrain(Hex::from_offset(col, 0), "flat");
+        }
+
+        // Faction 0 at col 0 with vision_range=2
+        let mut u0 = Unit::new(1, "scout", 20, 0);
+        u0.movement = 4;
+        u0.vision_range = 2;
+        state.place_unit(u0, Hex::from_offset(0, 0));
+
+        // Faction 1 at col 9 — well beyond vision
+        let mut u1 = Unit::new(2, "enemy", 20, 1);
+        u1.movement = 4;
+        state.place_unit(u1, Hex::from_offset(9, 0));
+
+        // Filtered: faction 0 should NOT see enemy at col 9
+        let fow = StateSnapshot::from_game_state_fow(&state, 0);
+        assert_eq!(fow.units.len(), 1, "only friendly unit visible");
+        assert_eq!(fow.units[0].faction, 0);
+        assert!(fow.visible_hexes.is_some());
+
+        // Unfiltered: both units present (regression check)
+        let full = StateSnapshot::from_game_state(&state);
+        assert_eq!(full.units.len(), 2);
+        assert!(full.visible_hexes.is_none());
+    }
+
+    #[test]
+    fn test_fow_snapshot_includes_visible_enemies() {
+        let board = Board::new(5, 1);
+        let mut state = GameState::new(board);
+        for col in 0..5 {
+            state.board.set_terrain(Hex::from_offset(col, 0), "flat");
+        }
+
+        // Faction 0 at col 0 with vision_range=3
+        let mut u0 = Unit::new(1, "scout", 20, 0);
+        u0.movement = 4;
+        u0.vision_range = 3;
+        state.place_unit(u0, Hex::from_offset(0, 0));
+
+        // Faction 1 at col 2 — within vision range 3
+        let mut u1 = Unit::new(2, "enemy", 20, 1);
+        u1.movement = 4;
+        state.place_unit(u1, Hex::from_offset(2, 0));
+
+        let fow = StateSnapshot::from_game_state_fow(&state, 0);
+        assert_eq!(fow.units.len(), 2, "both units should be visible");
     }
 }

@@ -861,6 +861,21 @@ pub unsafe extern "C" fn norrust_get_state_json(
     }
 }
 
+/// Return game state JSON filtered by fog of war for the given faction.
+/// Enemy units on non-visible hexes are hidden. Includes visible_hexes array.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_get_state_json_fow(
+    engine: *mut NorRustEngine,
+    faction: i32,
+) -> *mut c_char {
+    let Some(e) = engine.as_mut() else { return to_c_string("") };
+    let Some(state) = e.game.as_ref() else { return to_c_string("") };
+    match serde_json::to_string(&StateSnapshot::from_game_state_fow(state, faction as u8)) {
+        Ok(s) => to_c_string(&s),
+        Err(_) => to_c_string(""),
+    }
+}
+
 // ── Unit ID management ──────────────────────────────────────────────────
 
 #[no_mangle]

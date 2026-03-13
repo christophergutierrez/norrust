@@ -8,12 +8,12 @@ A hex-based strategy game with a headless Rust simulation core and Love2D presen
 
 **v6.0 Fog of War**
 Status: In Progress
-Phases: 1 of 4 complete
+Phases: 2 of 4 complete
 
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 122 | Core Visibility Calculation | 1/1 | Complete | 2026-03-13 |
-| 123 | FFI Visibility Filtering | TBD | Not started | - |
+| 123 | FFI Visibility Filtering | 1/1 | Complete | 2026-03-13 |
 | 124 | Draw Layer Fog Rendering | TBD | Not started | - |
 | 125 | AI Fog Integration | TBD | Not started | - |
 

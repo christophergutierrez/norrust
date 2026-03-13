@@ -195,6 +195,7 @@ ffi.cdef[[
     char* norrust_get_time_of_day_name(NorRustEngine* engine);
     int32_t norrust_get_winner(NorRustEngine* engine);
     char* norrust_get_state_json(NorRustEngine* engine);
+    char* norrust_get_state_json_fow(NorRustEngine* engine, int32_t faction);
     void norrust_set_objective_hex(NorRustEngine* engine, int32_t col, int32_t row);
     void norrust_set_max_turns(NorRustEngine* engine, int32_t max_turns);
 
@@ -445,6 +446,14 @@ end
 --- Return the full game state as raw JSON string (for TCP relay).
 function M.get_state_raw(engine)
     return get_string(lib.norrust_get_state_json(engine))
+end
+
+--- Return fog-of-war filtered game state for the given faction.
+--- Enemy units on non-visible hexes are hidden. Includes visible_hexes array.
+function M.get_state_fow(engine, faction)
+    local raw = get_string(lib.norrust_get_state_json_fow(engine, faction))
+    if raw == "" then return {} end
+    return json_decode(raw) or {}
 end
 
 --- Set the objective hex for win-condition evaluation.
