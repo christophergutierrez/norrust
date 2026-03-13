@@ -50,7 +50,7 @@ All functions take an opaque `NorRustEngine*` pointer as their first argument (e
 | Function | Signature | Returns | Description |
 |----------|-----------|---------|-------------|
 | `norrust_place_unit_at` | `(*engine, *def_id, faction, col, row) -> i32` | Unit ID | Place a unit on the board |
-| `norrust_restore_unit_at` | `(*engine, *def_id, faction, col, row, hp, xp, xp_needed) -> i32` | Unit ID | Restore a unit with specific stats (save/load) |
+| `norrust_restore_unit_at` | `(*engine, unit_id, *def_id, faction, col, row) -> i32` | 1=ok | Restore a unit with a specific ID (save/load) |
 | `norrust_remove_unit_at` | `(*engine, col, row) -> i32` | 1=ok | Remove unit at hex |
 | `norrust_get_next_unit_id` | `(*engine) -> i32` | Next ID | Get the next available unit ID |
 | `norrust_get_unit_at` | `(*engine, col, row) -> i32` | Unit ID or -1 | Query unit at hex position |
@@ -86,7 +86,7 @@ All functions take an opaque `NorRustEngine*` pointer as their first argument (e
 | `norrust_get_state_json` | `(*engine) -> *char` | Full JSON snapshot | Complete game state as JSON (cached) |
 | `norrust_get_state_json_fow` | `(*engine, faction) -> *char` | Filtered JSON | Game state filtered by fog of war (uncached) |
 | `norrust_get_gold` | `(*engine, faction) -> i32` | Gold amount | Query faction's current gold |
-| `norrust_get_board_size` | `(*engine, *out_w, *out_h)` | void | Write board dimensions to output pointers |
+| `norrust_get_board_size` | `(*engine, *out_cols, *out_rows) -> i32` | 1=ok | Write board dimensions to output pointers |
 
 ## Win Conditions
 
@@ -117,7 +117,7 @@ All functions take an opaque `NorRustEngine*` pointer as their first argument (e
 
 | Function | Signature | Returns | Description |
 |----------|-----------|---------|-------------|
-| `norrust_simulate_combat` | `(*engine, attacker_id, defender_id) -> *char` | JSON | Simulate combat outcome (no state mutation) |
+| `norrust_simulate_combat` | `(*engine, attacker_id, defender_id, attacker_col, attacker_row, num_sims) -> *char` | JSON | Monte Carlo combat simulation (no state mutation) |
 
 ## AI
 
@@ -125,7 +125,7 @@ All functions take an opaque `NorRustEngine*` pointer as their first argument (e
 |----------|-----------|---------|-------------|
 | `norrust_ai_take_turn` | `(*engine, faction)` | void | AI plays full turn for faction |
 | `norrust_ai_plan_turn` | `(*engine, faction) -> *char` | JSON | AI plans turn and returns planned actions |
-| `norrust_ai_deploy_recruits` | `(*engine, faction, start_uid) -> i32` | Next UID | AI recruits units for deployment phase |
+| `norrust_ai_deploy_recruits` | `(*engine, faction)` | void | AI deploys recruits on castle hexes |
 
 ## State Manipulation (Save/Load)
 
@@ -142,19 +142,19 @@ All functions take an opaque `NorRustEngine*` pointer as their first argument (e
 | Function | Signature | Returns | Description |
 |----------|-----------|---------|-------------|
 | `norrust_load_campaign` | `(*engine, *campaign_path) -> i32` | 1=ok | Load campaign definition from TOML |
-| `norrust_start_campaign` | `(*engine, *campaign_id) -> i32` | 1=ok | Start a loaded campaign |
+| `norrust_start_campaign` | `(*engine, *path) -> *char` | JSON status | Start a campaign from TOML path |
 | `norrust_get_campaign_state_json` | `(*engine) -> *char` | JSON | Get current campaign progress |
 | `norrust_get_survivors_json` | `(*engine) -> *char` | JSON array | Get surviving units after scenario |
-| `norrust_get_carry_gold` | `(*engine, faction) -> i32` | Gold amount | Get gold carried to next scenario |
-| `norrust_place_veteran_unit` | `(*engine, *def_id, faction, col, row, hp, xp, xp_needed, adv_pending) -> i32` | Unit ID | Place a veteran unit with carried stats (heals to full) |
-| `norrust_campaign_commit_deployment` | `(*engine, *json) -> i32` | 1=ok | Finalize deployment phase unit placements |
+| `norrust_get_carry_gold` | `(*engine, faction, gold_carry_percent, early_finish_bonus) -> i32` | Gold amount | Calculate gold carried to next scenario |
+| `norrust_place_veteran_unit` | `(*engine, *def_id, faction, col, row, hp, xp, xp_needed, adv_pending) -> i32` | Unit ID | Place a veteran unit with carried stats (hp=0 heals to full) |
+| `norrust_campaign_commit_deployment` | `(*engine, *json) -> *char` | JSON status | Finalize deployment phase unit placements |
 | `norrust_campaign_add_unit` | `(*engine, *uuid, *def_id, faction) -> i32` | 1=ok | Add unit to campaign roster |
 | `norrust_campaign_map_id` | `(*engine, *uuid, unit_id) -> i32` | 1=ok | Map a roster UUID to an in-game unit ID |
 | `norrust_campaign_sync_roster` | `(*engine) -> *char` | JSON | Sync roster state with current game state |
 | `norrust_campaign_record_victory` | `(*engine, faction) -> i32` | 1=ok | Record scenario victory for faction |
 | `norrust_campaign_get_living_json` | `(*engine) -> *char` | JSON array | Get UUIDs of living roster units |
 | `norrust_campaign_get_mapped_uuids_json` | `(*engine) -> *char` | JSON array | Get UUID-to-unit-ID mappings |
-| `norrust_campaign_load_next_scenario` | `(*engine) -> i32` | 1=ok, 0=no more | Load the next scenario in the campaign |
+| `norrust_campaign_load_next_scenario` | `(*engine, *scenarios_path) -> *char` | JSON status | Load the next scenario in the campaign |
 
 ## Dialogue
 
@@ -242,10 +242,10 @@ All functions take an opaque `NorRustEngine*` pointer as their first argument (e
 ```
 norrust_new()
   → norrust_load_data(engine, "data/")
-  → norrust_load_factions(engine, "data/")
+  → norrust_load_factions(engine, "data/")         // 4 factions: loyalists, rebels, northerners, undead
   → norrust_load_board(engine, "scenarios/contested/board.toml", seed)
   → norrust_load_units(engine, "scenarios/contested/units.toml")
-  → norrust_apply_starting_gold(engine, "loyalists", "rebels")
+  → norrust_apply_starting_gold(engine, "loyalists", "rebels")  // any two factions
   → Game loop: get_state_json, apply_move, apply_attack, end_turn, ...
   → norrust_free(engine)
 ```

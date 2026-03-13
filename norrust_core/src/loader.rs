@@ -157,7 +157,7 @@ mod tests {
         let registry: Registry<UnitDef> = Registry::load_from_dir(&dir).unwrap();
         assert!(registry.len() >= 4, "expected at least 4 units, got {}", registry.len());
 
-        let fighter = registry.get("fighter").expect("fighter not found");
+        let fighter = registry.get("Fighter").expect("Fighter not found");
         assert_eq!(fighter.max_hp, 30);
         assert_eq!(fighter.movement, 5);
         assert_eq!(fighter.attacks[0].damage, 7);

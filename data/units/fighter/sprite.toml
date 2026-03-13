@@ -1,4 +1,4 @@
-id = "fighter"
+id = "Fighter"
 
 [idle]
 file = "idle.png"

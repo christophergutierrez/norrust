@@ -143,7 +143,7 @@ fn test_veteran_placement_via_ffi() {
             def_id.as_ptr(),
             0,              // faction
             1, 1,           // col, row
-            18,             // hp (ignored — veterans heal to full)
+            18,             // hp (carried over wounded)
             25,             // xp
             40,             // xp_needed
             0,              // advancement_pending = false
@@ -153,8 +153,8 @@ fn test_veteran_placement_via_ffi() {
         // Verify via state JSON that the unit has carried stats
         let json_str = ffi_string(norrust_get_state_json(engine));
         assert!(!json_str.is_empty());
-        // Veterans heal to full HP on placement (hp param is ignored)
-        assert!(json_str.contains("\"hp\":36"), "veteran HP should be max_hp (36)");
+        // Veterans carry their HP (hp=18, not healed to max_hp=36)
+        assert!(json_str.contains("\"hp\":18"), "veteran HP should be carried (18)");
         assert!(json_str.contains("\"xp\":25"), "veteran XP should be 25");
         assert!(json_str.contains("\"xp_needed\":40"), "veteran xp_needed should be 40");
 

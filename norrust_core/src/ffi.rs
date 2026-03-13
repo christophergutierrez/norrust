@@ -1398,9 +1398,8 @@ pub unsafe extern "C" fn norrust_place_veteran_unit(
     // Build unit from registry (gets full combat stats)
     let mut unit = unit_from_registry(e, uid, did, faction as u8);
 
-    // Override with carried-over progression state (heal to full HP)
-    let _ = hp; // hp parameter ignored — veterans heal to full
-    unit.hp = unit.max_hp;
+    // Override with carried-over progression state
+    unit.hp = if hp > 0 && hp <= unit.max_hp as i32 { hp as u32 } else { unit.max_hp };
     unit.xp = xp as u32;
     unit.xp_needed = xp_needed as u32;
     unit.advancement_pending = advancement_pending != 0;
