@@ -6,6 +6,7 @@ local input_play   = require("input_play")
 local input_setup  = require("input_setup")
 local input_deploy = require("input_deploy")
 local input_saves  = require("input_saves")
+local logger = require("logger")
 
 local M = {}
 
@@ -140,6 +141,7 @@ local function restore_from_save(data)
     dlg.history = {}
     dlg.active = {}
 
+    logger.log("state: restore_from_save -> PLAYING")
     vars.game_mode = MODES.PLAYING
 end
 
@@ -198,10 +200,13 @@ end
 local function handle_global_keys(key)
     -- Save (F5, playing only)
     if key == "f5" and vars.game_mode == MODES.PLAYING then
+        logger.log("state: quick-save")
         local filename = mods.save.write_save(vars.engine, mods.norrust, scn.board)
         if filename then
+            logger.log("state: saved to " .. filename)
             vars.status_message = "Saved: " .. filename
         else
+            logger.log("state: save FAILED")
             vars.status_message = "Save failed!"
         end
         vars.status_timer = 3.0
@@ -210,13 +215,16 @@ local function handle_global_keys(key)
 
     -- Quick-load (F9)
     if key == "f9" then
+        logger.log("state: quick-load")
         local filepath = mods.save.find_latest()
         if filepath then
             local data = mods.save.load_save(vars.engine, mods.norrust, filepath, center_camera)
             if data then
                 restore_from_save(data)
+                logger.log("state: loaded from " .. filepath)
                 vars.status_message = "Loaded: " .. filepath
             else
+                logger.log("state: load FAILED from " .. filepath)
                 vars.status_message = "Load failed!"
             end
         else
@@ -281,6 +289,7 @@ end
 local function handle_exit_confirm(key)
     if key == "y" then
         -- Save and return to menu
+        logger.log("state: exit confirmed (save+quit) -> PICK_SCENARIO")
         mods.save.write_save(vars.engine, mods.norrust, scn.board)
         shared.exit_confirm = false
         campaign.active = false
@@ -291,6 +300,7 @@ local function handle_exit_confirm(key)
         sound.play_music("data/sounds/menu_music.ogg")
     elseif key == "n" then
         -- Return to menu without saving
+        logger.log("state: exit confirmed (no save) -> PICK_SCENARIO")
         shared.exit_confirm = false
         campaign.active = false
         campaign.roster = nil

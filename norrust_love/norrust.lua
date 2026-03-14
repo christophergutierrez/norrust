@@ -1,5 +1,6 @@
 -- norrust.lua — LuaJIT FFI bindings for norrust_core C ABI
 local ffi = require("ffi")
+local logger = require("logger")
 local M = {}
 
 -- ── Minimal JSON decoder ────────────────────────────────────────────────────
@@ -279,7 +280,14 @@ if not lib_path then
     local source = love.filesystem.getSource()
     lib_path = source .. "/../norrust_core/target/debug/libnorrust_core.so"
 end
-local lib = ffi.load(lib_path)
+logger.log("ffi: loading library from " .. lib_path)
+local ok, lib = pcall(ffi.load, lib_path)
+if ok then
+    logger.log("ffi: library loaded successfully")
+else
+    logger.log("ffi: FAILED to load library: " .. tostring(lib))
+    error("Failed to load norrust_core: " .. tostring(lib))
+end
 
 -- ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -308,7 +316,10 @@ end
 
 --- Load unit and terrain definitions from the given data directory.
 function M.load_data(engine, data_path)
-    return lib.norrust_load_data(engine, data_path) == 1
+    logger.log("ffi: load_data path=" .. tostring(data_path))
+    local ok = lib.norrust_load_data(engine, data_path) == 1
+    logger.log("ffi: load_data result=" .. tostring(ok))
+    return ok
 end
 
 --- Return the max HP for a unit definition by its ID.
@@ -320,6 +331,7 @@ end
 
 --- Initialize a new game with the given board dimensions and RNG seed.
 function M.create_game(engine, cols, rows, seed)
+    logger.log("ffi: create_game cols=" .. tostring(cols) .. " rows=" .. tostring(rows) .. " seed=" .. tostring(seed))
     return lib.norrust_create_game(engine, cols, rows, seed) == 1
 end
 
@@ -335,12 +347,18 @@ end
 
 --- Load a board layout from a TOML file with the given RNG seed.
 function M.load_board(engine, board_path, seed)
-    return lib.norrust_load_board(engine, board_path, seed) == 1
+    logger.log("ffi: load_board path=" .. tostring(board_path) .. " seed=" .. tostring(seed))
+    local ok = lib.norrust_load_board(engine, board_path, seed) == 1
+    logger.log("ffi: load_board result=" .. tostring(ok))
+    return ok
 end
 
 --- Load unit placements from a TOML file onto the current board.
 function M.load_units(engine, units_path)
-    return lib.norrust_load_units(engine, units_path) == 1
+    logger.log("ffi: load_units path=" .. tostring(units_path))
+    local ok = lib.norrust_load_units(engine, units_path) == 1
+    logger.log("ffi: load_units result=" .. tostring(ok))
+    return ok
 end
 
 --- Return the terrain ID string at a hex coordinate.
@@ -396,7 +414,10 @@ end
 
 --- Load faction definitions from the given data directory.
 function M.load_factions(engine, data_path)
-    return lib.norrust_load_factions(engine, data_path) == 1
+    logger.log("ffi: load_factions path=" .. tostring(data_path))
+    local ok = lib.norrust_load_factions(engine, data_path) == 1
+    logger.log("ffi: load_factions result=" .. tostring(ok))
+    return ok
 end
 
 --- Return a list of all loaded faction ID strings.
@@ -493,6 +514,7 @@ end
 
 --- End the current faction's turn and advance to the next.
 function M.end_turn(engine)
+    logger.log("ffi: end_turn")
     return lib.norrust_end_turn(engine)
 end
 
@@ -553,6 +575,7 @@ end
 
 --- Start incremental AI planning for a faction. Returns true on success.
 function M.ai_start_planning(engine, faction)
+    logger.log("ffi: ai_start_planning faction=" .. tostring(faction))
     return lib.norrust_ai_start_planning(engine, faction) == 1
 end
 
@@ -561,7 +584,9 @@ end
 function M.ai_plan_step(engine)
     local raw = get_string(lib.norrust_ai_plan_step(engine))
     if raw == "" then return nil end
-    return json_decode(raw) or {}
+    local actions = json_decode(raw) or {}
+    logger.log("ffi: ai_plan_step result=" .. #actions .. " actions")
+    return actions
 end
 
 -- ── Trigger zones ──────────────────────────────────────────────────────────
@@ -599,16 +624,24 @@ end
 --- Load the next campaign scenario (board, units, veterans, gold) in a single call.
 --- Returns a table with {status="playing"|"deploy_needed"|"complete"|"error", ...}.
 function M.campaign_load_next_scenario(engine, scenarios_path)
+    logger.log("ffi: campaign_load_next_scenario path=" .. tostring(scenarios_path))
     local raw = get_string(lib.norrust_campaign_load_next_scenario(engine, scenarios_path))
     if raw == "" then return {status = "error", message = "empty response"} end
-    return json_decode(raw) or {status = "error", message = "json decode failed"}
+    local result = json_decode(raw) or {status = "error", message = "json decode failed"}
+    logger.log("ffi: campaign_load_next_scenario status=" .. tostring(result.status))
+    return result
 end
 
 --- Start a campaign: load definition and create CampaignState on the engine.
 --- Returns campaign definition table on success, nil on failure.
 function M.start_campaign(engine, path)
+    logger.log("ffi: start_campaign path=" .. tostring(path))
     local raw = get_string(lib.norrust_start_campaign(engine, path))
-    if raw == "" then return nil end
+    if raw == "" then
+        logger.log("ffi: start_campaign result=nil (empty response)")
+        return nil
+    end
+    logger.log("ffi: start_campaign result=ok")
     return json_decode(raw)
 end
 
@@ -627,9 +660,12 @@ end
 --- Record a victory: sync roster, extract veterans, calculate gold, advance scenario.
 --- Returns table with {scenario_index, carry_gold, veterans, living}.
 function M.campaign_record_victory(engine, faction)
+    logger.log("ffi: campaign_record_victory faction=" .. tostring(faction))
     local raw = get_string(lib.norrust_campaign_record_victory(engine, faction))
     if raw == "" then return nil end
-    return json_decode(raw)
+    local result = json_decode(raw)
+    logger.log("ffi: campaign_record_victory result=" .. (result and "ok" or "nil"))
+    return result
 end
 
 --- Get living roster entries as a table array.
@@ -652,6 +688,7 @@ end
 --- Commit veteran deployment: place user-selected veterans on keep/castle hexes.
 --- deployed_json: JSON array of veteran indices (e.g. "[0, 2, 3]")
 function M.campaign_commit_deployment(engine, deployed_json)
+    logger.log("ffi: campaign_commit_deployment")
     local raw = get_string(lib.norrust_campaign_commit_deployment(engine, deployed_json))
     return json_decode(raw) or {}
 end
@@ -729,7 +766,10 @@ end
 
 --- Load a dialogue TOML file for the current scenario.
 function M.load_dialogue(engine, path)
-    return lib.norrust_load_dialogue(engine, path) == 1
+    logger.log("ffi: load_dialogue path=" .. tostring(path))
+    local ok = lib.norrust_load_dialogue(engine, path) == 1
+    logger.log("ffi: load_dialogue result=" .. tostring(ok))
+    return ok
 end
 
 --- Query pending dialogue entries for a trigger/turn/faction/hex. Returns array of {id, text}.
@@ -757,12 +797,16 @@ end
 
 --- Save full engine state to JSON string.
 function M.save_json(engine)
+    logger.log("ffi: save_json")
     return get_string(lib.norrust_save_json(engine))
 end
 
 --- Load full engine state from JSON string. Returns true on success.
 function M.load_json(engine, json)
-    return lib.norrust_load_json(engine, json) == 0
+    logger.log("ffi: load_json len=" .. tostring(json and #json or 0))
+    local ok = lib.norrust_load_json(engine, json) == 0
+    logger.log("ffi: load_json result=" .. tostring(ok))
+    return ok
 end
 
 --- Manually free an engine instance (normally handled by GC).

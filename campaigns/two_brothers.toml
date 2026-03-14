@@ -25,3 +25,7 @@ preset_units = true
 board = "return_to_village/board.toml"
 units = "return_to_village/units.toml"
 preset_units = true
+
+[[scenarios.recruits]]
+unit_type = "Mage"
+faction = 0

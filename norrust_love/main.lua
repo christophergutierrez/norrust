@@ -13,6 +13,7 @@ local agent_server = require("agent_server")
 local input = require("input")
 local state_mod = require("state")
 local camera_mod = require("camera_mod")
+local logger = require("logger")
 local combat_mod = require("combat_mod")
 
 -- ── Constants ───────────────────────────────────────────────────────────────
@@ -151,6 +152,7 @@ events.on("dialogue", function(data)
 end)
 
 events.on("scenario_loaded", function(data)
+    logger.log("event: scenario_loaded board=" .. tostring(data.board))
     dlg.history = {}
     dlg.scroll = 0
     dlg.show_history = false
@@ -290,6 +292,7 @@ local function check_game_over()
         end
     end
     if w >= 0 then
+        logger.log("state: GAME_OVER winner=faction_" .. tostring(w))
         vars.game_over = true
         vars.winner_faction = w
         if w == 0 then
@@ -393,6 +396,10 @@ local function build_campaign_ctx()
     }
 end
 
+-- Mode name lookup for logging
+local MODE_NAMES = {}
+for name, val in pairs(MODES) do MODE_NAMES[val] = name end
+
 --- Write back state modified by campaign_client into main.lua locals.
 local function apply_campaign_ctx(ctx)
     scn.COLS = ctx.BOARD_COLS
@@ -403,11 +410,15 @@ local function apply_campaign_ctx(ctx)
     vars.game_over = ctx.game_over
     vars.winner_faction = ctx.winner_faction
     sel.recruit_mode = ctx.recruit_mode
+    if ctx.game_mode ~= vars.game_mode then
+        logger.log("state: mode " .. (MODE_NAMES[vars.game_mode] or "?") .. " -> " .. (MODE_NAMES[ctx.game_mode] or "?"))
+    end
     vars.game_mode = ctx.game_mode
 end
 
 --- Load the selected scenario board via campaign_client with ctx writeback.
 local function call_load_scenario()
+    logger.log("state: loading scenario board=" .. tostring(scn.board))
     local ctx = build_campaign_ctx()
     campaign_client.load_selected_scenario(ctx)
     apply_campaign_ctx(ctx)
@@ -416,6 +427,7 @@ end
 
 --- Load the next campaign scenario via campaign_client with ctx writeback.
 local function call_load_campaign_scenario()
+    logger.log("state: loading campaign scenario index=" .. tostring(campaign.index))
     local ctx = build_campaign_ctx()
     campaign_client.load_campaign_scenario(ctx)
     apply_campaign_ctx(ctx)
@@ -427,6 +439,15 @@ end
 
 --- Initialize vars.engine, load data/factions/assets, and start at scenario selection.
 function love.load()
+    -- Check for --verbose flag early (before any FFI calls)
+    local logger = require("logger")
+    for _, a in ipairs(arg or {}) do
+        if a == "--verbose" or a == "-v" then
+            logger.init()
+            break
+        end
+    end
+
     -- Check for generation flags and debug mode
     local debug_mode = false
     for _, arg in ipairs(arg or {}) do
@@ -506,6 +527,7 @@ function love.load()
     end
 
     -- Start at scenario selection
+    logger.log("state: mode -> PICK_SCENARIO")
     vars.game_mode = MODES.PICK_SCENARIO
 
     -- Initialize camera module
@@ -817,10 +839,12 @@ end
 
 -- ── love.quit ───────────────────────────────────────────────────────────────
 
---- Clean up agent server on exit.
+--- Clean up agent server and logger on exit.
 function love.quit()
+    logger.log("state: quitting")
     if shared.agent then
         agent_server.stop(shared.agent)
         shared.agent = nil
     end
+    logger.close()
 end

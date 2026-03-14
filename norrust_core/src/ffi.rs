@@ -1800,7 +1800,7 @@ pub unsafe extern "C" fn norrust_campaign_load_next_scenario(
     let base = PathBuf::from(cstr_to_str(scenarios_path));
 
     // Get current scenario info from campaign state
-    let (board_path, units_path, preset, scenario_index, carry_gold, veterans_exist, board_name) = {
+    let (board_path, units_path, preset, scenario_index, carry_gold, veterans_exist, board_name, scenario_recruits) = {
         let Some(cs) = e.campaign.as_ref() else {
             return to_c_string(r#"{"status":"error","message":"no campaign"}"#);
         };
@@ -1808,6 +1808,7 @@ pub unsafe extern "C" fn norrust_campaign_load_next_scenario(
             return to_c_string(r#"{"status":"complete"}"#);
         };
         let board_name = sc.board.clone();
+        let recruits = sc.recruits.clone();
         (
             sc.board.clone(),
             sc.units.clone(),
@@ -1816,6 +1817,7 @@ pub unsafe extern "C" fn norrust_campaign_load_next_scenario(
             cs.carry_gold,
             !cs.veterans.is_empty(),
             board_name,
+            recruits,
         )
     };
 
@@ -1850,14 +1852,21 @@ pub unsafe extern "C" fn norrust_campaign_load_next_scenario(
 
         // Load units
         let full_units_path = base.join(&units_path);
+        let is_campaign = e.campaign.is_some();
         if let Ok(units_def) = crate::scenario::load_units_file(&full_units_path) {
             let mut max_id: u32 = 0;
             for p in &units_def.units {
+                // Track max_id from ALL units (including skipped) to avoid ID collisions
+                if p.id > max_id { max_id = p.id; }
+                // In campaign scenarios after the first, skip player (faction 0) units
+                // — veterans supply the player's army
+                if scenario_index > 0 && is_campaign && p.faction == 0 {
+                    continue;
+                }
                 let unit = unit_from_registry(e, p.id, &p.unit_type, p.faction as u8);
                 if let Some(state) = e.game.as_mut() {
                     state.place_unit(unit, Hex::from_offset(p.col, p.row));
                 }
-                if p.id > max_id { max_id = p.id; }
             }
             if let Some(state) = e.game.as_mut() {
                 state.next_unit_id = max_id + 1;
@@ -1891,6 +1900,59 @@ pub unsafe extern "C" fn norrust_campaign_load_next_scenario(
     if scenario_index == 0 {
         if let (Some(cs), Some(state)) = (e.campaign.as_mut(), e.game.as_ref()) {
             cs.populate_initial_roster(state, 0);
+        }
+    }
+
+    // 3b. Place scenario recruits (new characters joining at this scenario)
+    if !scenario_recruits.is_empty() && scenario_index > 0 {
+        let faction0_recruits: Vec<_> = scenario_recruits.iter()
+            .filter(|r| r.faction == 0)
+            .collect();
+
+        if !faction0_recruits.is_empty() {
+            // Find available castle/keep slots for faction 0
+            let slots = {
+                let Some(state) = e.game.as_ref() else {
+                    return to_c_string(r#"{"status":"error","message":"no game state"}"#);
+                };
+                let (keep_opt, castles) = campaign::find_keep_and_castles(state, 0);
+                if let Some(keep) = keep_opt {
+                    let mut s: Vec<Hex> = vec![keep];
+                    s.extend_from_slice(&castles);
+                    s
+                } else {
+                    Vec::new()
+                }
+            };
+
+            for recruit in &faction0_recruits {
+                // Find the next unoccupied slot
+                let slot_hex = {
+                    let Some(state) = e.game.as_ref() else { break };
+                    slots.iter().find(|h| !state.hex_to_unit.contains_key(h)).copied()
+                };
+                let Some(hex) = slot_hex else { break };
+                let (col, row) = hex.to_offset();
+
+                let state = e.game.as_mut().expect("game state pre-verified");
+                let uid = state.next_unit_id;
+                state.next_unit_id += 1;
+
+                let unit = unit_from_registry(e, uid, &recruit.unit_type, 0);
+                let state = e.game.as_mut().expect("game state pre-verified");
+                state.place_unit(unit, Hex::from_offset(col, row));
+
+                // Add to campaign roster
+                if let (Some(cs), Some(state)) = (e.campaign.as_mut(), e.game.as_ref()) {
+                    if let Some(u) = state.units.get(&uid) {
+                        cs.add_unit(
+                            &u.def_id, uid,
+                            u.hp, u.max_hp, u.xp, u.xp_needed,
+                            u.advancement_pending, u.abilities.clone(),
+                        );
+                    }
+                }
+            }
         }
     }
 

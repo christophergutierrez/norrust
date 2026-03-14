@@ -13,6 +13,14 @@ use crate::combat::Rng;
 use crate::game_state::GameState;
 use crate::hex::Hex;
 
+/// A unit that joins the player army at the start of a specific scenario.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScenarioRecruit {
+    pub unit_type: String,
+    #[serde(default)]
+    pub faction: i32,
+}
+
 /// A single scenario entry within a campaign definition.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CampaignScenarioDef {
@@ -20,6 +28,8 @@ pub struct CampaignScenarioDef {
     pub units: String,
     #[serde(default)]
     pub preset_units: bool,
+    #[serde(default)]
+    pub recruits: Vec<ScenarioRecruit>,
 }
 
 /// Top-level campaign definition loaded from TOML.
@@ -528,11 +538,13 @@ mod tests {
                     board: "crossing/board.toml".to_string(),
                     units: "crossing/units.toml".to_string(),
                     preset_units: true,
+                    recruits: vec![],
                 },
                 CampaignScenarioDef {
                     board: "ambush/board.toml".to_string(),
                     units: "ambush/units.toml".to_string(),
                     preset_units: true,
+                    recruits: vec![],
                 },
             ],
         }
