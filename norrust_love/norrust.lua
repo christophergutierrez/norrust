@@ -215,6 +215,8 @@ ffi.cdef[[
     void norrust_ai_take_turn(NorRustEngine* engine, int32_t faction);
     char* norrust_ai_plan_turn(NorRustEngine* engine, int32_t faction);
     void norrust_ai_deploy_recruits(NorRustEngine* engine, int32_t faction);
+    int32_t norrust_ai_start_planning(NorRustEngine* engine, int32_t faction);
+    char* norrust_ai_plan_step(NorRustEngine* engine);
 
     // Trigger zones
     int32_t norrust_get_next_unit_id(NorRustEngine* engine);
@@ -547,6 +549,19 @@ end
 --- Move all faction units off castle hexes to free slots for recruitment.
 function M.ai_deploy_recruits(engine, faction)
     lib.norrust_ai_deploy_recruits(engine, faction)
+end
+
+--- Start incremental AI planning for a faction. Returns true on success.
+function M.ai_start_planning(engine, faction)
+    return lib.norrust_ai_start_planning(engine, faction) == 1
+end
+
+--- Advance AI planning by one step. Returns nil if still planning,
+--- or a parsed action table when all orderings are done.
+function M.ai_plan_step(engine)
+    local raw = get_string(lib.norrust_ai_plan_step(engine))
+    if raw == "" then return nil end
+    return json_decode(raw) or {}
 end
 
 -- ── Trigger zones ──────────────────────────────────────────────────────────

@@ -548,7 +548,7 @@ fn plan_unit_action(state: &GameState, uid: u32, faction: u8, depth: u8) -> Opti
 /// Number of unit orderings to try per turn. More orderings = better
 /// coordination but slower planning. First ordering is the natural order;
 /// subsequent orderings rotate the unit list.
-const TURN_PLAN_ORDERINGS: usize = 5;
+const TURN_PLAN_ORDERINGS: usize = 3;
 
 /// Simulate recruitment on a cloned state: spend all gold on placeholder units
 /// placed on empty castle hexes adjacent to the leader's keep.
@@ -880,6 +880,108 @@ pub fn ai_plan_turn_with_recruits(
 ) -> Vec<ActionRecord> {
     let (records, _score) = plan_full_turn(state, faction, cheapest_recruit_cost, recruit_defs);
     records
+}
+
+// ── Incremental planning session ────────────────────────────────────────────
+
+/// Holds state for incremental AI planning (one ordering per frame).
+pub struct PlanningSession {
+    state: GameState,
+    recruit_defs: Vec<(u32, u32)>,
+    faction: u8,
+    cheapest_recruit_cost: u32,
+    current_ordering: usize,
+    total_orderings: usize,
+    best_result: Option<(Vec<ActionRecord>, f32)>,
+    leader_id: Option<u32>,
+    return_keep: Option<Hex>,
+    non_leader_ids: Vec<u32>,
+}
+
+/// Create a new PlanningSession for incremental turn planning.
+pub fn start_planning(
+    state: &GameState,
+    faction: u8,
+    cheapest_recruit_cost: u32,
+    recruit_defs: Vec<(u32, u32)>,
+) -> PlanningSession {
+    let leader_id = find_leader(state, faction);
+    let return_keep = leader_should_return_to_keep(state, faction, cheapest_recruit_cost);
+
+    let mut non_leader_ids: Vec<u32> = state
+        .units
+        .iter()
+        .filter(|(_, u)| u.faction == faction && !u.attacked)
+        .filter(|(&id, _)| leader_id != Some(id))
+        .map(|(&id, _)| id)
+        .collect();
+    non_leader_ids.sort();
+
+    let n = non_leader_ids.len();
+    let total_orderings = if n <= 1 { 1 } else { TURN_PLAN_ORDERINGS.min(n) };
+
+    PlanningSession {
+        state: state.clone(),
+        recruit_defs,
+        faction,
+        cheapest_recruit_cost,
+        current_ordering: 0,
+        total_orderings,
+        best_result: None,
+        leader_id,
+        return_keep,
+        non_leader_ids,
+    }
+}
+
+/// Run one ordering step. Returns None if more orderings remain,
+/// Some(best_actions) when all orderings are done.
+pub fn plan_next_step(session: &mut PlanningSession) -> Option<Vec<ActionRecord>> {
+    if session.current_ordering >= session.total_orderings {
+        // Already done — return best
+        return Some(
+            session.best_result.take().map(|(r, _)| r).unwrap_or_default(),
+        );
+    }
+
+    let n = session.non_leader_ids.len();
+    let i = session.current_ordering;
+
+    // Build ordering: rotate non-leader IDs
+    let mut order: Vec<u32> = Vec::with_capacity(n);
+    for j in 0..n {
+        order.push(session.non_leader_ids[(j + i) % n]);
+    }
+
+    let (records, score) = run_turn_ordering(
+        &session.state,
+        session.faction,
+        session.leader_id,
+        session.return_keep,
+        &order,
+        session.cheapest_recruit_cost,
+        &session.recruit_defs,
+    );
+
+    // Update best result
+    let is_better = match &session.best_result {
+        None => true,
+        Some((_, best_score)) => score > *best_score,
+    };
+    if is_better {
+        session.best_result = Some((records, score));
+    }
+
+    session.current_ordering += 1;
+
+    if session.current_ordering >= session.total_orderings {
+        // All orderings done
+        Some(
+            session.best_result.take().map(|(r, _)| r).unwrap_or_default(),
+        )
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]

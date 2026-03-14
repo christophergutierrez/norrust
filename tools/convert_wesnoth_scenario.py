@@ -50,8 +50,9 @@ class WMLParser:
     def _parse_block(self, end_tag):
         """Parse until [/end_tag] or EOF."""
         result = {"_children": []}
-        ifdef_depth = 0
-        skip_else = False
+        # Stack-based ifdef tracking: each entry is True (taking ifdef branch)
+        # or False (skipping, in #else branch). We always want the #ifdef branch.
+        skip_stack = []
 
         while self.pos < len(self.text):
             line = self._next_line()
@@ -67,23 +68,22 @@ class WMLParser:
                 continue
 
             # Preprocessor directives
-            if stripped.startswith("#ifdef"):
-                ifdef_depth += 1
-                # Take the first branch (EASY)
-                continue
-            if stripped.startswith("#ifndef"):
-                ifdef_depth += 1
+            if stripped.startswith("#ifdef") or stripped.startswith("#ifndef"):
+                # Push: not skipping yet (taking the ifdef branch)
+                skip_stack.append(False)
                 continue
             if stripped.startswith("#else"):
-                if ifdef_depth == 1:
-                    skip_else = True
+                if skip_stack:
+                    # Flip: start skipping the #else branch
+                    skip_stack[-1] = True
                 continue
             if stripped.startswith("#endif"):
-                ifdef_depth -= 1
-                skip_else = False
+                if skip_stack:
+                    skip_stack.pop()
                 continue
 
-            if skip_else and ifdef_depth >= 1:
+            # Skip lines if any level in the stack is in skip mode
+            if any(skip_stack):
                 continue
 
             # Opening tag: [tag_name] or [+tag_name]
@@ -313,6 +313,16 @@ def extract_objectives(scenario):
     return objectives
 
 
+def escape_toml(s):
+    """Escape a string for use in a TOML quoted string value."""
+    s = s.replace("\\", "\\\\")
+    s = s.replace('"', '\\"')
+    s = s.replace("\n", "\\n")
+    s = s.replace("\r", "\\r")
+    s = s.replace("\t", "\\t")
+    return s
+
+
 def write_units_toml(sides, units, output_path, scenario_name=""):
     """Write a NorRust units.toml file."""
     lines = []
@@ -368,8 +378,8 @@ def write_dialogue_toml(dialogues, stories, output_path, scenario_name=""):
         lines.append("[[dialogue]]")
         lines.append(f'id = "story_{i:03d}"')
         lines.append('trigger = "scenario_start"')
-        # Escape quotes in TOML strings
-        escaped = story_text.replace("\\", "\\\\").replace('"', '\\"')
+        # Escape for TOML strings
+        escaped = escape_toml(story_text)
         lines.append(f'text = "{escaped}"')
         lines.append("")
 
@@ -382,7 +392,7 @@ def write_dialogue_toml(dialogues, stories, output_path, scenario_name=""):
             lines.append(f'turn = {d["turn"]}')
         if "faction" in d:
             lines.append(f'faction = {d["faction"]}')
-        escaped = d["text"].replace("\\", "\\\\").replace('"', '\\"')
+        escaped = escape_toml(d["text"])
         lines.append(f'text = "{escaped}"')
         lines.append("")
 

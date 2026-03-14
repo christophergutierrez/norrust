@@ -227,6 +227,47 @@ function M.keypressed(key)
             sel.recruit_mode = false
         end
 
+    elseif key == "tab" then
+        -- Tab / Shift+Tab: cycle through friendly units
+        local state = mods.norrust.get_state(vars.engine)
+        local active = mods.norrust.get_active_faction(vars.engine)
+        local shift = love.keyboard.isDown("lshift", "rshift")
+
+        -- Collect alive friendly units, sorted by ID
+        local friendly = {}
+        for _, unit in ipairs(state.units or {}) do
+            if int(unit.faction) == active then
+                friendly[#friendly + 1] = {id = int(unit.id), exhausted = unit.exhausted}
+            end
+        end
+        table.sort(friendly, function(a, b) return a.id < b.id end)
+
+        if #friendly > 0 then
+            -- Prefer un-exhausted units; fall back to all if none available
+            local candidates = {}
+            for _, u in ipairs(friendly) do
+                if not u.exhausted then candidates[#candidates + 1] = u end
+            end
+            if #candidates == 0 then candidates = friendly end
+
+            -- Find current selection index in candidates
+            local cur_idx = nil
+            for i, u in ipairs(candidates) do
+                if u.id == sel.unit_id then cur_idx = i; break end
+            end
+
+            local next_idx
+            if not cur_idx then
+                next_idx = shift and #candidates or 1
+            elseif shift then
+                next_idx = cur_idx > 1 and cur_idx - 1 or #candidates
+            else
+                next_idx = cur_idx < #candidates and cur_idx + 1 or 1
+            end
+
+            select_unit(candidates[next_idx].id)
+        end
+
     else
         -- Number keys for recruit selection
         local num = tonumber(key)

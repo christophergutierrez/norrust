@@ -136,6 +136,10 @@ local function restore_from_save(data)
         campaign.gold = 0
         campaign.roster = nil
     end
+    -- Reset dialogue state so stale history doesn't carry over
+    dlg.history = {}
+    dlg.active = {}
+
     vars.game_mode = MODES.PLAYING
 end
 

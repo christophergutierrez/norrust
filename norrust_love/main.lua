@@ -616,31 +616,41 @@ function love.update(dt)
         end
     end
 
-    -- Controller-based AI turns (animated)
+    -- Controller-based AI turns (incremental planning)
     if not ai.vs_ai and vars.game_mode == MODES.PLAYING and not vars.game_over
        and not pending_anims.move and not pending_anims.combat_slide
        and not shared.ai_queue then
-        local active_f = norrust.get_active_faction(vars.engine)
-        local ctrl = game_data.controllers[active_f + 1]
-        if ctrl == "ai" then
-            local actions = norrust.ai_plan_turn(vars.engine, active_f)
-            if #actions > 0 then
-                shared.ai_queue = actions
-                shared.ai_queue_idx = 1
-                shared.ai_action_delay = 0.3
-            else
-                -- No actions — just end AI turn
-                norrust.end_turn(vars.engine)
-                check_game_over()
-                dlg.active = {}
-                events.emit("dialogue", {trigger = "turn_start"})
+        if shared.ai_planning then
+            -- Poll for next planning step
+            local actions = norrust.ai_plan_step(vars.engine)
+            if actions then
+                shared.ai_planning = false
+                if #actions > 0 then
+                    shared.ai_queue = actions
+                    shared.ai_queue_idx = 1
+                    shared.ai_action_delay = 0.3
+                else
+                    -- No actions — just end AI turn
+                    norrust.end_turn(vars.engine)
+                    check_game_over()
+                    dlg.active = {}
+                    events.emit("dialogue", {trigger = "turn_start"})
+                end
+            end
+            -- If nil, still planning — continue next frame
+        else
+            local active_f = norrust.get_active_faction(vars.engine)
+            local ctrl = game_data.controllers[active_f + 1]
+            if ctrl == "ai" then
+                norrust.ai_start_planning(vars.engine, active_f)
+                shared.ai_planning = true
             end
         end
     end
 
     -- AI vs AI: auto-play both factions (instant mode, no animation)
     if ai.vs_ai and vars.game_mode == MODES.PLAYING and not vars.game_over
-       and not pending_anims.move and #pending_anims == 0 and not pending_anims.combat_slide then
+       and not pending_anims.move and not pending_anims.combat_slide then
         ai.timer = ai.timer - dt
         if ai.timer <= 0 then
             local f = norrust.get_active_faction(vars.engine)
@@ -746,6 +756,23 @@ function love.draw()
     ctx.tile_color_cache = tile_color_cache
     draw_mod.draw_frame(ctx, state)
     shared.buttons = ctx.buttons or {}
+
+    -- AI planning indicator
+    if shared.ai_planning then
+        love.graphics.push()
+        love.graphics.scale(UI_SCALE)
+        local vp_w = select(1, get_viewport())
+        local f = fonts[14] or love.graphics.getFont()
+        love.graphics.setFont(f)
+        local msg = "AI thinking..."
+        local tw = f:getWidth(msg)
+        local x = (vp_w - 200 - tw) / 2
+        love.graphics.setColor(0, 0, 0, 0.7)
+        love.graphics.rectangle("fill", x - 10, 30, tw + 20, f:getHeight() + 10, 6, 6)
+        love.graphics.setColor(1, 1, 0.6, 1)
+        love.graphics.print(msg, x, 35)
+        love.graphics.pop()
+    end
 
     -- Status flash message (save/load feedback)
     if vars.status_message then

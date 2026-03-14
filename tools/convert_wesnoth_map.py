@@ -67,11 +67,9 @@ TERRAIN_MAP = {
     "Ds":  "swamp_water",    # dark swamp
     # Sand / desert
     "Dd":  "sand",
-    "Ds":  "swamp_water",
     "Dr":  "sand",
     # Frozen
     "Ai":  "frozen",
-    "Ha":  "frozen",
     # Cave
     "Uu":  "cave",
     "Ur":  "cave",

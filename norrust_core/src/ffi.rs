@@ -87,6 +87,8 @@ pub struct NorRustEngine {
     dialogue_path: Option<String>,
     /// Human-readable scenario name (for save list UI).
     display_name: Option<String>,
+    /// Incremental AI planning session (None when not planning).
+    planning_session: Option<crate::ai::PlanningSession>,
 }
 
 impl NorRustEngine {
@@ -102,6 +104,7 @@ impl NorRustEngine {
             board_path: None,
             dialogue_path: None,
             display_name: None,
+            planning_session: None,
         }
     }
 }
@@ -124,6 +127,10 @@ fn action_err_code(e: ActionError) -> i32 {
 }
 
 /// Convert a C string pointer to a Rust &str. Returns "" for null or invalid UTF-8.
+///
+/// # Safety
+/// The caller must ensure the C string pointed to by `s` outlives the returned `&'a str`.
+/// The `""` fallback for null/invalid input is `'static` and always safe.
 unsafe fn cstr_to_str<'a>(s: *const c_char) -> &'a str {
     if s.is_null() {
         return "";
@@ -1303,6 +1310,42 @@ pub unsafe extern "C" fn norrust_ai_plan_turn(
     to_c_string(&json)
 }
 
+/// Start incremental AI planning for a faction.
+/// Stores a PlanningSession on the engine. Returns 1 on success, 0 on failure.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_ai_start_planning(
+    engine: *mut NorRustEngine,
+    faction: i32,
+) -> i32 {
+    if faction < 0 || faction > 1 { return 0; }
+    let Some(e) = engine.as_mut() else { return 0 };
+    let cheapest = cheapest_recruit_cost_ref(e, faction as u8);
+    let recruit_defs = build_recruit_defs(e, faction as u8);
+    let Some(state) = e.game.as_ref() else { return 0 };
+    let session = crate::ai::start_planning(state, faction as u8, cheapest, recruit_defs);
+    e.planning_session = Some(session);
+    1
+}
+
+/// Advance incremental AI planning by one ordering step.
+/// Returns "" while still planning, or a JSON array of ActionRecords when done.
+/// If no session exists, returns "".
+#[no_mangle]
+pub unsafe extern "C" fn norrust_ai_plan_step(
+    engine: *mut NorRustEngine,
+) -> *mut c_char {
+    let Some(e) = engine.as_mut() else { return to_c_string("") };
+    let Some(session) = e.planning_session.as_mut() else { return to_c_string("") };
+    match crate::ai::plan_next_step(session) {
+        None => to_c_string(""),
+        Some(records) => {
+            e.planning_session = None;
+            let json = serde_json::to_string(&records).unwrap_or_else(|_| "[]".to_string());
+            to_c_string(&json)
+        }
+    }
+}
+
 // ── Campaign ─────────────────────────────────────────────────────────────────
 
 #[no_mangle]
@@ -1500,7 +1543,7 @@ pub unsafe extern "C" fn norrust_campaign_commit_deployment(
 
         // Find next unoccupied slot
         let slot = {
-            let state = e.game.as_ref().unwrap();
+            let state = e.game.as_ref().expect("game state pre-verified");
             let mut found = None;
             for si in placed..slots.len() {
                 if !state.hex_to_unit.contains_key(&slots[si]) {
@@ -1517,7 +1560,7 @@ pub unsafe extern "C" fn norrust_campaign_commit_deployment(
         let (col, row) = hex.to_offset();
 
         // Create and place the veteran unit
-        let state = e.game.as_mut().unwrap();
+        let state = e.game.as_mut().expect("game state pre-verified");
         let uid = state.next_unit_id;
         state.next_unit_id += 1;
 
@@ -1527,7 +1570,7 @@ pub unsafe extern "C" fn norrust_campaign_commit_deployment(
         unit.xp_needed = vet.xp_needed;
         unit.advancement_pending = vet.advancement_pending;
 
-        let state = e.game.as_mut().unwrap();
+        let state = e.game.as_mut().expect("game state pre-verified");
         state.place_unit(unit, Hex::from_offset(col, row));
 
         // Map engine ID to roster UUID
@@ -1905,7 +1948,7 @@ pub unsafe extern "C" fn norrust_campaign_load_next_scenario(
         }
 
         // Place all veterans directly
-        let state = e.game.as_ref().unwrap();
+        let state = e.game.as_ref().expect("game state pre-verified");
         let (keep_opt, castles) = campaign::find_keep_and_castles(state, 0);
         if let Some(keep) = keep_opt {
             // Build slots list: keep first, then castles
@@ -1936,7 +1979,7 @@ pub unsafe extern "C" fn norrust_campaign_load_next_scenario(
 
                 // Find next unoccupied slot
                 let slot = {
-                    let state = e.game.as_ref().unwrap();
+                    let state = e.game.as_ref().expect("game state pre-verified");
                     let mut found = None;
                     for si in placed..slots.len() {
                         if !state.hex_to_unit.contains_key(&slots[si]) {
@@ -1953,7 +1996,7 @@ pub unsafe extern "C" fn norrust_campaign_load_next_scenario(
                 let (col, row) = hex.to_offset();
 
                 // Create and place the veteran unit
-                let state = e.game.as_mut().unwrap();
+                let state = e.game.as_mut().expect("game state pre-verified");
                 let uid = state.next_unit_id;
                 state.next_unit_id += 1;
 
@@ -1963,7 +2006,7 @@ pub unsafe extern "C" fn norrust_campaign_load_next_scenario(
                 unit.xp_needed = vet.xp_needed;
                 unit.advancement_pending = vet.advancement_pending;
 
-                let state = e.game.as_mut().unwrap();
+                let state = e.game.as_mut().expect("game state pre-verified");
                 state.place_unit(unit, Hex::from_offset(col, row));
 
                 // Map engine ID to roster UUID
@@ -2306,11 +2349,8 @@ pub unsafe extern "C" fn norrust_set_dialogue_fired(
     let Some(e) = engine.as_mut() else { return };
     let Some(ds) = e.dialogue_state.as_mut() else { return };
     let json_str = cstr_to_str(ids_json);
-    // Simple JSON array parser for ["id1","id2",...]
-    let trimmed = json_str.trim().trim_start_matches('[').trim_end_matches(']');
-    for item in trimmed.split(',') {
-        let id = item.trim().trim_matches('"');
-        if !id.is_empty() {
+    if let Ok(ids) = serde_json::from_str::<Vec<String>>(json_str) {
+        for id in &ids {
             ds.mark_fired(id);
         }
     }
