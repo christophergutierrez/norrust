@@ -267,6 +267,7 @@ impl CampaignState {
             .enumerate()
             .map(|(i, vet)| {
                 let uuid = living.get(i).map(|e| e.uuid.clone());
+                let is_leader = vet.abilities.contains(&"leader".to_string());
                 VeteranInfo {
                     def_id: vet.def_id.clone(),
                     hp: vet.hp,
@@ -275,7 +276,8 @@ impl CampaignState {
                     xp_needed: vet.xp_needed,
                     advancement_pending: vet.advancement_pending,
                     uuid,
-                    deployed: i < available_slots,
+                    deployed: is_leader || i < available_slots,
+                    is_leader,
                 }
             })
             .collect()
@@ -340,6 +342,7 @@ pub struct VeteranInfo {
     pub advancement_pending: bool,
     pub uuid: Option<String>,
     pub deployed: bool,
+    pub is_leader: bool,
 }
 
 /// Result of loading the next campaign scenario.

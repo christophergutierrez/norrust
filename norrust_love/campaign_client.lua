@@ -63,6 +63,7 @@ function campaign_client.load_campaign_scenario(ctx)
                 advancement_pending = vet.advancement_pending,
                 deployed = vet.deployed,
                 uuid = vet.uuid,
+                is_leader = vet.is_leader or false,
             }
         end
         deploy.slots = result.slots

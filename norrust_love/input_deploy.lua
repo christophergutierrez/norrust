@@ -34,7 +34,12 @@ function M.keypressed(key)
         local dv = dvets[deploy.selected]
         if dv then
             if dv.deployed then
-                dv.deployed = false
+                if dv.is_leader then
+                    vars.status_message = "Leader must be deployed"
+                    vars.status_timer = 2.0
+                else
+                    dv.deployed = false
+                end
             else
                 -- Count currently deployed
                 local count = 0
@@ -84,7 +89,9 @@ function M.keypressed(key)
         if num and num >= 1 and num <= #dvets then
             local dv = dvets[num]
             if dv.deployed then
-                dv.deployed = false
+                if not dv.is_leader then
+                    dv.deployed = false
+                end
             else
                 local count = 0
                 for _, v in ipairs(dvets) do

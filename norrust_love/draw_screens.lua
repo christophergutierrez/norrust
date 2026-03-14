@@ -178,7 +178,7 @@ function M.draw_setup_hud(ctx)
 
         for i, dv in ipairs(dvets) do
             local y = 90 + (i - 1) * 28
-            local prefix = dv.deployed and "[+]" or "[-]"
+            local prefix = dv.is_leader and "[L]" or (dv.deployed and "[+]" or "[-]")
             local label = string.format(
                 "%s [%d] %s  HP:%d  XP:%d/%d",
                 prefix, i, dv.def_id, dv.hp, dv.xp, dv.xp_needed
