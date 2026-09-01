@@ -54,7 +54,10 @@ fn test_ffi_full_game_cycle() {
         assert!(!json_ptr.is_null(), "state JSON must not be null");
         let json = CStr::from_ptr(json_ptr).to_str().unwrap();
         assert!(json.contains("units"), "state JSON must contain 'units'");
-        assert!(json.contains("terrain"), "state JSON must contain 'terrain'");
+        assert!(
+            json.contains("terrain"),
+            "state JSON must contain 'terrain'"
+        );
         norrust_free_string(json_ptr);
 
         // ── Query active faction ───────────────────────────────────
@@ -70,7 +73,10 @@ fn test_ffi_full_game_cycle() {
         let mut out_len: i32 = 0;
         let hexes_ptr = norrust_get_reachable_hexes(engine, 1, &mut out_len);
         assert!(out_len > 0, "reachable hexes must be non-empty for unit 1");
-        assert!(!hexes_ptr.is_null(), "reachable hexes pointer must not be null");
+        assert!(
+            !hexes_ptr.is_null(),
+            "reachable hexes pointer must not be null"
+        );
         // Read first pair to verify format (col, row)
         let first_col = *hexes_ptr;
         let first_row = *hexes_ptr.add(1);
@@ -96,7 +102,10 @@ fn test_ffi_full_game_cycle() {
                 break;
             }
         }
-        assert!(moved, "at least one reachable hex must be a valid move destination");
+        assert!(
+            moved,
+            "at least one reachable hex must be a valid move destination"
+        );
 
         // ── End turn ───────────────────────────────────────────────
         let result = norrust_end_turn(engine);
@@ -134,7 +143,10 @@ fn test_ffi_full_game_cycle() {
         // ── Faction queries ────────────────────────────────────────
         let ids_ptr = norrust_get_faction_ids_json(engine);
         let ids_json = CStr::from_ptr(ids_ptr).to_str().unwrap();
-        assert!(ids_json.contains("loyalists"), "faction IDs must include loyalists");
+        assert!(
+            ids_json.contains("loyalists"),
+            "faction IDs must include loyalists"
+        );
         norrust_free_string(ids_ptr);
 
         let leader_ptr = norrust_get_faction_leader(engine, f0.as_ptr());

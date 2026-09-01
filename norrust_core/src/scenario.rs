@@ -92,8 +92,11 @@ mod tests {
     #[test]
     fn test_load_board_tile_count_mismatch() {
         let tmp_path = std::env::temp_dir().join("norrust_test_bad_board.toml");
-        std::fs::write(&tmp_path, "width = 3\nheight = 2\ntiles = [\"flat\", \"flat\"]\n")
-            .unwrap();
+        std::fs::write(
+            &tmp_path,
+            "width = 3\nheight = 2\ntiles = [\"flat\", \"flat\"]\n",
+        )
+        .unwrap();
         let result = load_board(&tmp_path);
         assert!(result.is_err(), "mismatched tile count must return Err");
         assert!(

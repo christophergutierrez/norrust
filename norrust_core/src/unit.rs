@@ -17,9 +17,9 @@ pub enum Alignment {
 /// "neutral" and "" both map to Liminal (same ToD modifier — no bonus/penalty).
 pub fn parse_alignment(s: &str) -> Alignment {
     match s {
-        "lawful"  => Alignment::Lawful,
+        "lawful" => Alignment::Lawful,
         "chaotic" => Alignment::Chaotic,
-        _         => Alignment::Liminal,
+        _ => Alignment::Liminal,
     }
 }
 
@@ -97,7 +97,11 @@ impl Unit {
         self.defense = def.defense.clone();
         self.resistances = def.resistances.clone();
         self.alignment = parse_alignment(&def.alignment);
-        self.xp_needed = if def.advances_to.is_empty() { 0 } else { def.experience };
+        self.xp_needed = if def.advances_to.is_empty() {
+            0
+        } else {
+            def.experience
+        };
         self.level = def.level;
         self.abilities = def.abilities.clone();
         self.vision_range = def.vision_range;
@@ -162,9 +166,12 @@ mod tests {
             max_hp: 45,
             movement: 5,
             attacks: vec![AttackDef {
-                id: "sword".to_string(), name: "Sword".to_string(),
-                damage: 9, strikes: 4,
-                attack_type: "blade".to_string(), range: "melee".to_string(),
+                id: "sword".to_string(),
+                name: "Sword".to_string(),
+                damage: 9,
+                strikes: 4,
+                attack_type: "blade".to_string(),
+                range: "melee".to_string(),
                 ..Default::default()
             }],
             resistances: HashMap::new(),
@@ -184,7 +191,10 @@ mod tests {
         assert_eq!(unit.movement, 5);
         assert_eq!(unit.attacks[0].damage, 9);
         assert_eq!(unit.xp, 0);
-        assert_eq!(unit.xp_needed, 0, "terminal unit (advances_to=[]) should have xp_needed=0");
+        assert_eq!(
+            unit.xp_needed, 0,
+            "terminal unit (advances_to=[]) should have xp_needed=0"
+        );
         assert!(!unit.advancement_pending);
     }
 }

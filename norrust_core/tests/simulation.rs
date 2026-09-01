@@ -52,14 +52,20 @@ fn test_headless_match_scenario() {
     // Action 1: Move unit 1 to (1,0) — adjacent to unit 2
     apply_action(
         &mut state,
-        Action::Move { unit_id: 1, destination: Hex::from_offset(1, 0) },
+        Action::Move {
+            unit_id: 1,
+            destination: Hex::from_offset(1, 0),
+        },
     )
     .expect("Move unit 1 to (1,0) should succeed");
 
     // Action 2: Attack unit 2 with unit 1 (30 dmg > 20 HP → dead)
     apply_action(
         &mut state,
-        Action::Attack { attacker_id: 1, defender_id: 2 },
+        Action::Attack {
+            attacker_id: 1,
+            defender_id: 2,
+        },
     )
     .expect("Attack on unit 2 should succeed");
 
@@ -68,9 +74,18 @@ fn test_headless_match_scenario() {
 
     // ── Verify final state ────────────────────────────────────
     assert_eq!(state.units.len(), 1, "only one unit should survive");
-    assert!(state.units.contains_key(&1), "unit 1 (attacker) must survive");
-    assert!(!state.units.contains_key(&2), "unit 2 (defender) must be dead");
-    assert!(!state.positions.contains_key(&2), "unit 2 position must be cleared");
+    assert!(
+        state.units.contains_key(&1),
+        "unit 1 (attacker) must survive"
+    );
+    assert!(
+        !state.units.contains_key(&2),
+        "unit 2 (defender) must be dead"
+    );
+    assert!(
+        !state.positions.contains_key(&2),
+        "unit 2 position must be cleared"
+    );
 }
 
 #[test]
@@ -80,9 +95,12 @@ fn test_headless_advancement_scenario() {
     let mut state = GameState::new_seeded(board, 7);
 
     let sword = AttackDef {
-        id: "sword".to_string(), name: "Sword".to_string(),
-        damage: 100, strikes: 1,
-        attack_type: "blade".to_string(), range: "melee".to_string(),
+        id: "sword".to_string(),
+        name: "Sword".to_string(),
+        damage: 100,
+        strikes: 1,
+        attack_type: "blade".to_string(),
+        range: "melee".to_string(),
         ..Default::default()
     };
     let mut fighter = Unit::new(1, "fighter", 30, 0);
@@ -98,7 +116,10 @@ fn test_headless_advancement_scenario() {
 
         apply_action(
             &mut state,
-            Action::Attack { attacker_id: 1, defender_id: enemy_id },
+            Action::Attack {
+                attacker_id: 1,
+                defender_id: enemy_id,
+            },
         )
         .expect("attack should succeed");
 
@@ -107,8 +128,14 @@ fn test_headless_advancement_scenario() {
         apply_action(&mut state, Action::EndTurn).expect("EndTurn should succeed");
     }
 
-    assert!(state.units[&1].xp >= 40, "fighter should have accumulated 40+ XP");
-    assert!(state.units[&1].advancement_pending, "advancement_pending must be set");
+    assert!(
+        state.units[&1].xp >= 40,
+        "fighter should have accumulated 40+ XP"
+    );
+    assert!(
+        state.units[&1].advancement_pending,
+        "advancement_pending must be set"
+    );
 
     // ── Advance the fighter to hero ──────────────────────────────────
     let hero_def = UnitDef {
@@ -132,7 +159,10 @@ fn test_headless_advancement_scenario() {
     assert_eq!(state.units[&1].max_hp, 45);
     assert_eq!(state.units[&1].hp, 45);
     assert_eq!(state.units[&1].xp, 0);
-    assert_eq!(state.units[&1].xp_needed, 0, "terminal unit (advances_to=[]) has xp_needed=0");
+    assert_eq!(
+        state.units[&1].xp_needed, 0,
+        "terminal unit (advances_to=[]) has xp_needed=0"
+    );
     assert!(!state.units[&1].advancement_pending);
 }
 
@@ -150,9 +180,12 @@ fn test_fighter_advancement_with_real_stats() {
 
     // Fighter with actual TOML weapon stats (damage=7 strikes=3)
     let sword = AttackDef {
-        id: "sword".to_string(), name: "Sword".to_string(),
-        damage: 7, strikes: 3,
-        attack_type: "blade".to_string(), range: "melee".to_string(),
+        id: "sword".to_string(),
+        name: "Sword".to_string(),
+        damage: 7,
+        strikes: 3,
+        attack_type: "blade".to_string(),
+        range: "melee".to_string(),
         ..Default::default()
     };
     let mut fighter = Unit::new(1, "fighter", 30, 0);
@@ -166,15 +199,27 @@ fn test_fighter_advancement_with_real_stats() {
         enemy.default_defense = 0;
         state.place_unit(enemy, Hex::from_offset(1, 0));
 
-        apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: enemy_id })
-            .expect("attack should succeed");
+        apply_action(
+            &mut state,
+            Action::Attack {
+                attacker_id: 1,
+                defender_id: enemy_id,
+            },
+        )
+        .expect("attack should succeed");
         apply_action(&mut state, Action::EndTurn).expect("EndTurn 1 should succeed");
         apply_action(&mut state, Action::EndTurn).expect("EndTurn 2 should succeed");
     }
 
-    assert!(state.units[&1].xp >= 40, "45 XP expected (5 kills × 9 XP each)");
+    assert!(
+        state.units[&1].xp >= 40,
+        "45 XP expected (5 kills × 9 XP each)"
+    );
     assert_eq!(state.units[&1].xp, 45);
-    assert!(state.units[&1].advancement_pending, "advancement_pending must be set after 45 XP");
+    assert!(
+        state.units[&1].advancement_pending,
+        "advancement_pending must be set after 45 XP"
+    );
 
     // Advance to hero using actual hero.toml stats
     let hero_def = UnitDef {
@@ -182,11 +227,15 @@ fn test_fighter_advancement_with_real_stats() {
         name: "Hero".to_string(),
         max_hp: 45,
         movement: 5,
-        attacks: vec![
-            AttackDef { id: "sword".to_string(), name: "Sword".to_string(),
-                        damage: 9, strikes: 4, attack_type: "blade".to_string(),
-                        range: "melee".to_string(), ..Default::default() },
-        ],
+        attacks: vec![AttackDef {
+            id: "sword".to_string(),
+            name: "Sword".to_string(),
+            damage: 9,
+            strikes: 4,
+            attack_type: "blade".to_string(),
+            range: "melee".to_string(),
+            ..Default::default()
+        }],
         resistances: HashMap::new(),
         movement_costs: HashMap::new(),
         defense: HashMap::new(),
@@ -198,12 +247,18 @@ fn test_fighter_advancement_with_real_stats() {
 
     advance_unit(state.units.get_mut(&1).unwrap(), &hero_def);
 
-    assert_eq!(state.units[&1].def_id, "hero",        "def_id must update to hero");
-    assert_eq!(state.units[&1].max_hp, 45,            "hero max_hp = 45");
-    assert_eq!(state.units[&1].hp,     45,            "full heal on advancement");
-    assert_eq!(state.units[&1].xp,      0,            "xp resets to 0");
-    assert_eq!(state.units[&1].xp_needed, 0,          "terminal unit (advances_to=[]) has xp_needed=0");
-    assert!(!state.units[&1].advancement_pending,      "advancement_pending cleared");
+    assert_eq!(state.units[&1].def_id, "hero", "def_id must update to hero");
+    assert_eq!(state.units[&1].max_hp, 45, "hero max_hp = 45");
+    assert_eq!(state.units[&1].hp, 45, "full heal on advancement");
+    assert_eq!(state.units[&1].xp, 0, "xp resets to 0");
+    assert_eq!(
+        state.units[&1].xp_needed, 0,
+        "terminal unit (advances_to=[]) has xp_needed=0"
+    );
+    assert!(
+        !state.units[&1].advancement_pending,
+        "advancement_pending cleared"
+    );
     // Verify weapon updated: hero sword does 9×4
     assert_eq!(state.units[&1].attacks[0].damage, 9);
     assert_eq!(state.units[&1].attacks[0].strikes, 4);
@@ -298,9 +353,12 @@ fn test_ai_marches_toward_enemy_when_no_attack() {
     let mut state = GameState::new_seeded(board, 42);
 
     let sword = AttackDef {
-        id: "sword".to_string(), name: "Sword".to_string(),
-        damage: 7, strikes: 3,
-        attack_type: "blade".to_string(), range: "melee".to_string(),
+        id: "sword".to_string(),
+        name: "Sword".to_string(),
+        damage: 7,
+        strikes: 3,
+        attack_type: "blade".to_string(),
+        range: "melee".to_string(),
         ..Default::default()
     };
     let mut costs = HashMap::new();
@@ -322,8 +380,15 @@ fn test_ai_marches_toward_enemy_when_no_attack() {
     ai_take_turn(&mut state, 0, u32::MAX);
 
     let (col, _) = state.positions[&1].to_offset();
-    assert!(col > 0, "unit should have advanced from col 0, now at col {}", col);
-    assert_eq!(col, 5, "should have marched to col 5 (furthest reachable toward enemy)");
+    assert!(
+        col > 0,
+        "unit should have advanced from col 0, now at col {}",
+        col
+    );
+    assert_eq!(
+        col, 5,
+        "should have marched to col 5 (furthest reachable toward enemy)"
+    );
 }
 
 #[test]
@@ -362,7 +427,11 @@ fn test_terrain_wiring() {
     // Board: flat | flat | hills | hills | flat  (1-row, 5 cols)
     let mut board = Board::new(5, 1);
     for col in 0..5_i32 {
-        let t = if col >= 2 && col <= 3 { "hills" } else { "flat" };
+        let t = if col >= 2 && col <= 3 {
+            "hills"
+        } else {
+            "flat"
+        };
         board.set_terrain(Hex::from_offset(col, 0), t);
     }
     let mut state = GameState::new_seeded(board, 1);
@@ -377,11 +446,17 @@ fn test_terrain_wiring() {
     state.place_unit(unit, Hex::from_offset(0, 0));
 
     // flat(0→1)=1 + hills(1→2)=2 + hills(2→3)=2 = total 5 ≤ budget 5 → reachable
-    let r = apply_action(&mut state, Action::Move {
-        unit_id: 1,
-        destination: Hex::from_offset(3, 0),
-    });
-    assert!(r.is_ok(), "should reach col 3: flat(1)+hills(2)+hills(2)=5 = budget");
+    let r = apply_action(
+        &mut state,
+        Action::Move {
+            unit_id: 1,
+            destination: Hex::from_offset(3, 0),
+        },
+    );
+    assert!(
+        r.is_ok(),
+        "should reach col 3: flat(1)+hills(2)+hills(2)=5 = budget"
+    );
 
     // Rebuild unit at col 0 for next assertion
     let mut unit2 = Unit::new(2, "Spearman", 36, 0);
@@ -393,12 +468,18 @@ fn test_terrain_wiring() {
     state.place_unit(unit2, Hex::from_offset(0, 0));
 
     // flat(1) + hills(2) + hills(2) + flat(1) = 6 > budget 5 → unreachable
-    let r2 = apply_action(&mut state, Action::Move {
-        unit_id: 2,
-        destination: Hex::from_offset(4, 0),
-    });
-    assert_eq!(r2, Err(ActionError::DestinationUnreachable),
-        "col 4 costs 6 MP total, exceeds budget 5");
+    let r2 = apply_action(
+        &mut state,
+        Action::Move {
+            unit_id: 2,
+            destination: Hex::from_offset(4, 0),
+        },
+    );
+    assert_eq!(
+        r2,
+        Err(ActionError::DestinationUnreachable),
+        "col 4 costs 6 MP total, exceeds budget 5"
+    );
 }
 
 #[test]
@@ -414,7 +495,10 @@ fn test_load_board_from_file() {
     let board = &loaded.board;
 
     // No objective or max_turns for contested scenario
-    assert!(loaded.objective_hex.is_none(), "contested has no objective_hex");
+    assert!(
+        loaded.objective_hex.is_none(),
+        "contested has no objective_hex"
+    );
     assert!(loaded.max_turns.is_none(), "contested has no max_turns");
 
     // AC-1: Dimensions correct
@@ -432,18 +516,26 @@ fn test_load_board_from_file() {
     }
 
     // AC-3: Keep positions
-    assert_eq!(board.terrain_at(Hex::from_offset(1, 2)), Some("keep"), "Blue keep at (1,2)");
-    assert_eq!(board.terrain_at(Hex::from_offset(6, 2)), Some("keep"), "Red keep at (6,2)");
+    assert_eq!(
+        board.terrain_at(Hex::from_offset(1, 2)),
+        Some("keep"),
+        "Blue keep at (1,2)"
+    );
+    assert_eq!(
+        board.terrain_at(Hex::from_offset(6, 2)),
+        Some("keep"),
+        "Red keep at (6,2)"
+    );
 
     // AC-4: Castle hexes adjacent to each keep
-    for (col, row) in [(0,1),(0,2),(0,3),(1,1),(1,3),(2,2)] {
+    for (col, row) in [(0, 1), (0, 2), (0, 3), (1, 1), (1, 3), (2, 2)] {
         assert_eq!(
             board.terrain_at(Hex::from_offset(col, row)),
             Some("castle"),
             "Blue castle at ({col},{row})"
         );
     }
-    for (col, row) in [(5,1),(5,2),(5,3),(6,1),(6,3),(7,2)] {
+    for (col, row) in [(5, 1), (5, 2), (5, 3), (6, 1), (6, 3), (7, 2)] {
         assert_eq!(
             board.terrain_at(Hex::from_offset(col, row)),
             Some("castle"),
@@ -452,7 +544,16 @@ fn test_load_board_from_file() {
     }
 
     // AC-5: Corner hexes are flat
-    for (col, row) in [(0,0),(1,0),(0,4),(1,4),(6,0),(7,0),(6,4),(7,4)] {
+    for (col, row) in [
+        (0, 0),
+        (1, 0),
+        (0, 4),
+        (1, 4),
+        (6, 0),
+        (7, 0),
+        (6, 4),
+        (7, 4),
+    ] {
         assert_eq!(
             board.terrain_at(Hex::from_offset(col, row)),
             Some("flat"),
@@ -485,7 +586,11 @@ fn test_load_units_from_file() {
 
     // AC-2: Valid positions and non-empty unit types
     for p in &placements {
-        assert!(!p.unit_type.is_empty(), "unit_type must not be empty for id={}", p.id);
+        assert!(
+            !p.unit_type.is_empty(),
+            "unit_type must not be empty for id={}",
+            p.id
+        );
         assert!(p.col >= 0 && p.col < 8, "col out of range for id={}", p.id);
         assert!(p.row >= 0 && p.row < 5, "row out of range for id={}", p.id);
     }
@@ -524,10 +629,16 @@ fn test_generate_map() {
     }
 
     // AC-3: Villages at structural positions (8 cols: v1=2, v2=5; mid_row=2)
-    assert_eq!(board.terrain_at(Hex::from_offset(2, 2)), Some("village"),
-        "village must be at (2,2)");
-    assert_eq!(board.terrain_at(Hex::from_offset(5, 2)), Some("village"),
-        "village must be at (5,2)");
+    assert_eq!(
+        board.terrain_at(Hex::from_offset(2, 2)),
+        Some("village"),
+        "village must be at (2,2)"
+    );
+    assert_eq!(
+        board.terrain_at(Hex::from_offset(5, 2)),
+        Some("village"),
+        "village must be at (5,2)"
+    );
 
     // AC-4: Contested zone has at least 2 distinct terrain types
     let contested: HashSet<&str> = (2..6_i32)
@@ -537,12 +648,16 @@ fn test_generate_map() {
         .collect();
     assert!(
         contested.len() >= 2,
-        "contested zone must have at least 2 terrain types, got: {:?}", contested
+        "contested zone must have at least 2 terrain types, got: {:?}",
+        contested
     );
     // All terrain IDs must be from the valid set
     let valid: HashSet<&str> = ["flat", "forest", "hills", "mountains"].into();
     for t in &contested {
-        assert!(valid.contains(t), "unexpected terrain '{t}' in contested zone");
+        assert!(
+            valid.contains(t),
+            "unexpected terrain '{t}' in contested zone"
+        );
     }
 }
 
@@ -555,9 +670,16 @@ fn test_faction_def_starting_gold_loads() {
     let registry = Registry::<FactionDef>::load_from_dir(&data_path.join("factions"))
         .expect("factions must load");
     // At least the three shipped factions must be present
-    assert!(registry.len() >= 3, "expected >= 3 factions, got {}", registry.len());
+    assert!(
+        registry.len() >= 3,
+        "expected >= 3 factions, got {}",
+        registry.len()
+    );
     let loyalists = registry.get("loyalists").expect("loyalists must exist");
-    assert_eq!(loyalists.starting_gold, 100, "loyalists starting_gold should be 100");
+    assert_eq!(
+        loyalists.starting_gold, 100,
+        "loyalists starting_gold should be 100"
+    );
     // All loaded factions should have positive starting gold
     assert!(
         registry.all().all(|f| f.starting_gold > 0),
@@ -571,17 +693,29 @@ fn test_faction_def_starting_gold_loads() {
 fn setup_recruit_board() -> (GameState, Hex, Hex) {
     use norrust_core::board::Tile;
     use norrust_core::unit::Unit;
-    let keep_hex    = Hex::from_offset(0, 0);
-    let castle_hex  = Hex::from_offset(1, 0);
+    let keep_hex = Hex::from_offset(0, 0);
+    let castle_hex = Hex::from_offset(1, 0);
     let mut board = Board::new(4, 3);
-    board.set_tile(keep_hex, Tile {
-        terrain_id: "keep".to_string(), movement_cost: 1, defense: 40, healing: 0,
-        color: "#c8a030".to_string(),
-    });
-    board.set_tile(castle_hex, Tile {
-        terrain_id: "castle".to_string(), movement_cost: 1, defense: 40, healing: 0,
-        color: "#c8b47a".to_string(),
-    });
+    board.set_tile(
+        keep_hex,
+        Tile {
+            terrain_id: "keep".to_string(),
+            movement_cost: 1,
+            defense: 40,
+            healing: 0,
+            color: "#c8a030".to_string(),
+        },
+    );
+    board.set_tile(
+        castle_hex,
+        Tile {
+            terrain_id: "castle".to_string(),
+            movement_cost: 1,
+            defense: 40,
+            healing: 0,
+            color: "#c8b47a".to_string(),
+        },
+    );
     let mut state = GameState::new(board);
     // Place a leader (with "leader" ability) on the keep so recruitment is allowed
     let mut leader = Unit::new(99, "leader", 30, 0);
@@ -600,7 +734,10 @@ fn test_recruit_deducts_gold() {
     apply_recruit(&mut state, unit, castle_hex, 14).expect("recruit must succeed");
 
     assert_eq!(state.gold[0], 36, "gold should be 50 - 14 = 36");
-    assert!(state.units.contains_key(&1), "unit must be placed on the board");
+    assert!(
+        state.units.contains_key(&1),
+        "unit must be placed on the board"
+    );
 }
 
 #[test]
@@ -613,7 +750,10 @@ fn test_recruit_fails_not_enough_gold() {
 
     assert_eq!(result, Err(ActionError::NotEnoughGold));
     // Unit 99 (leader) is placed; recruited unit must not be
-    assert!(!state.units.contains_key(&1), "recruit unit must not be placed on failure");
+    assert!(
+        !state.units.contains_key(&1),
+        "recruit unit must not be placed on failure"
+    );
 }
 
 #[test]
@@ -624,7 +764,12 @@ fn test_recruit_fails_not_castle_hex() {
     state.board.set_terrain(Hex::from_offset(2, 0), "flat");
     state.gold = [100, 100];
 
-    let result = apply_recruit(&mut state, Unit::new(1, "spearman", 33, 0), Hex::from_offset(2, 0), 14);
+    let result = apply_recruit(
+        &mut state,
+        Unit::new(1, "spearman", 33, 0),
+        Hex::from_offset(2, 0),
+        14,
+    );
     assert_eq!(result, Err(ActionError::DestinationNotCastle));
 }
 
@@ -635,10 +780,16 @@ fn test_recruit_fails_leader_not_on_keep() {
     // Castle hex present but no leader on a keep → LeaderNotOnKeep
     let mut board = Board::new(4, 3);
     let castle_hex = Hex::from_offset(0, 0);
-    board.set_tile(castle_hex, Tile {
-        terrain_id: "castle".to_string(), movement_cost: 1, defense: 40, healing: 0,
-        color: "#c8b47a".to_string(),
-    });
+    board.set_tile(
+        castle_hex,
+        Tile {
+            terrain_id: "castle".to_string(),
+            movement_cost: 1,
+            defense: 40,
+            healing: 0,
+            color: "#c8b47a".to_string(),
+        },
+    );
     let mut state = GameState::new(board);
     state.gold = [100, 100];
 
@@ -654,14 +805,26 @@ fn test_recruit_fails_non_leader_on_keep() {
     let keep_hex = Hex::from_offset(0, 0);
     let castle_hex = Hex::from_offset(1, 0);
     let mut board = Board::new(4, 3);
-    board.set_tile(keep_hex, Tile {
-        terrain_id: "keep".to_string(), movement_cost: 1, defense: 40, healing: 0,
-        color: "#c8a030".to_string(),
-    });
-    board.set_tile(castle_hex, Tile {
-        terrain_id: "castle".to_string(), movement_cost: 1, defense: 40, healing: 0,
-        color: "#c8b47a".to_string(),
-    });
+    board.set_tile(
+        keep_hex,
+        Tile {
+            terrain_id: "keep".to_string(),
+            movement_cost: 1,
+            defense: 40,
+            healing: 0,
+            color: "#c8a030".to_string(),
+        },
+    );
+    board.set_tile(
+        castle_hex,
+        Tile {
+            terrain_id: "castle".to_string(),
+            movement_cost: 1,
+            defense: 40,
+            healing: 0,
+            color: "#c8b47a".to_string(),
+        },
+    );
     let mut state = GameState::new(board);
     state.gold = [100, 100];
     // Non-leader unit on keep — abilities is empty
@@ -682,7 +845,11 @@ fn test_objective_hex_win() {
     state.place_unit(Unit::new(2, "enemy", 30, 1), Hex::from_offset(4, 0));
 
     // Defender on objective does NOT trigger a win
-    assert_eq!(state.check_winner(), None, "defender on objective must not win");
+    assert_eq!(
+        state.check_winner(),
+        None,
+        "defender on objective must not win"
+    );
 
     // Move attacker to objective hex (update both forward and reverse maps)
     let old1 = state.positions[&1];
@@ -695,7 +862,11 @@ fn test_objective_hex_win() {
     state.hex_to_unit.insert(Hex::from_offset(3, 0), 2);
 
     // Faction 0 should win
-    assert_eq!(state.check_winner(), Some(0), "faction 0 unit on objective hex must win");
+    assert_eq!(
+        state.check_winner(),
+        Some(0),
+        "faction 0 unit on objective hex must win"
+    );
 }
 
 #[test]
@@ -717,7 +888,11 @@ fn test_turn_limit_loss() {
 
     // Turn 3 — exceeds max_turns=2, defender wins
     state.turn = 3;
-    assert_eq!(state.check_winner(), Some(1), "defender must win when turn > max_turns");
+    assert_eq!(
+        state.check_winner(),
+        Some(1),
+        "defender must win when turn > max_turns"
+    );
 }
 
 #[test]
@@ -751,15 +926,24 @@ fn test_trigger_zone_spawns_units() {
     });
 
     // Move into trigger hex
-    apply_action(&mut state, Action::Move { unit_id: 1, destination: Hex::from_offset(1, 0) })
-        .expect("move into trigger hex should succeed");
+    apply_action(
+        &mut state,
+        Action::Move {
+            unit_id: 1,
+            destination: Hex::from_offset(1, 0),
+        },
+    )
+    .expect("move into trigger hex should succeed");
 
     // Verify spawns
     assert!(state.units.contains_key(&10), "ambusher_a must be spawned");
     assert!(state.units.contains_key(&11), "ambusher_b must be spawned");
     assert_eq!(state.positions[&10], Hex::from_offset(1, 1));
     assert_eq!(state.positions[&11], Hex::from_offset(2, 0));
-    assert!(state.trigger_zones[0].triggered, "trigger zone must be marked triggered");
+    assert!(
+        state.trigger_zones[0].triggered,
+        "trigger zone must be marked triggered"
+    );
 }
 
 #[test]
@@ -784,23 +968,48 @@ fn test_trigger_fires_only_once() {
     });
 
     // First entry — triggers spawn
-    apply_action(&mut state, Action::Move { unit_id: 1, destination: Hex::from_offset(1, 0) })
-        .expect("first move should succeed");
-    assert!(state.units.contains_key(&10), "ambusher must be spawned on first entry");
+    apply_action(
+        &mut state,
+        Action::Move {
+            unit_id: 1,
+            destination: Hex::from_offset(1, 0),
+        },
+    )
+    .expect("first move should succeed");
+    assert!(
+        state.units.contains_key(&10),
+        "ambusher must be spawned on first entry"
+    );
     let unit_count_after_first = state.units.len();
 
     // End turns to reset moved flag, then move away and back
     apply_action(&mut state, Action::EndTurn).unwrap();
     apply_action(&mut state, Action::EndTurn).unwrap();
-    apply_action(&mut state, Action::Move { unit_id: 1, destination: Hex::from_offset(0, 0) })
-        .expect("move away should succeed");
+    apply_action(
+        &mut state,
+        Action::Move {
+            unit_id: 1,
+            destination: Hex::from_offset(0, 0),
+        },
+    )
+    .expect("move away should succeed");
     apply_action(&mut state, Action::EndTurn).unwrap();
     apply_action(&mut state, Action::EndTurn).unwrap();
 
     // Second entry — must NOT spawn again
-    apply_action(&mut state, Action::Move { unit_id: 1, destination: Hex::from_offset(1, 0) })
-        .expect("second move should succeed");
-    assert_eq!(state.units.len(), unit_count_after_first, "no new units on re-entry");
+    apply_action(
+        &mut state,
+        Action::Move {
+            unit_id: 1,
+            destination: Hex::from_offset(1, 0),
+        },
+    )
+    .expect("second move should succeed");
+    assert_eq!(
+        state.units.len(),
+        unit_count_after_first,
+        "no new units on re-entry"
+    );
 }
 
 #[test]
@@ -832,12 +1041,24 @@ fn test_trigger_skips_occupied_hex() {
         triggered: false,
     });
 
-    apply_action(&mut state, Action::Move { unit_id: 1, destination: Hex::from_offset(1, 0) })
-        .expect("move should succeed");
+    apply_action(
+        &mut state,
+        Action::Move {
+            unit_id: 1,
+            destination: Hex::from_offset(1, 0),
+        },
+    )
+    .expect("move should succeed");
 
-    assert!(!state.units.contains_key(&10), "blocked spawn must be skipped");
+    assert!(
+        !state.units.contains_key(&10),
+        "blocked spawn must be skipped"
+    );
     assert!(state.units.contains_key(&11), "free spawn must be placed");
-    assert!(state.trigger_zones[0].triggered, "zone must still be marked triggered");
+    assert!(
+        state.trigger_zones[0].triggered,
+        "zone must still be marked triggered"
+    );
 }
 
 #[test]
@@ -865,11 +1086,23 @@ fn test_trigger_faction_filter() {
         triggered: false,
     });
 
-    apply_action(&mut state, Action::Move { unit_id: 2, destination: Hex::from_offset(1, 0) })
-        .expect("faction 1 move should succeed");
+    apply_action(
+        &mut state,
+        Action::Move {
+            unit_id: 2,
+            destination: Hex::from_offset(1, 0),
+        },
+    )
+    .expect("faction 1 move should succeed");
 
-    assert!(!state.units.contains_key(&10), "trigger must NOT fire for wrong faction");
-    assert!(!state.trigger_zones[0].triggered, "zone must remain untriggered");
+    assert!(
+        !state.units.contains_key(&10),
+        "trigger must NOT fire for wrong faction"
+    );
+    assert!(
+        !state.trigger_zones[0].triggered,
+        "zone must remain untriggered"
+    );
 }
 
 #[test]
@@ -893,5 +1126,9 @@ fn test_elimination_still_works() {
     if let Some(hex) = state.positions.remove(&2) {
         state.hex_to_unit.remove(&hex);
     }
-    assert_eq!(state.check_winner(), Some(0), "faction 0 wins by elimination");
+    assert_eq!(
+        state.check_winner(),
+        Some(0),
+        "faction 0 wins by elimination"
+    );
 }

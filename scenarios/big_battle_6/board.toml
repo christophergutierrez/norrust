@@ -1,0 +1,24 @@
+# Standalone Big Battle board: 24 columns x 14 rows.
+# Each TOML row mirrors tile-for-tile, with keeps at (2,7) and (21,7) and three
+# villages per side. Note: col -> 23-col is not an adjacency-preserving graph
+# reflection on an odd-r hex grid; see docs/SELF_PLAY.md before balance testing.
+
+width = 24
+height = 14
+
+tiles = [
+  "forest", "hills", "forest", "flat", "hills", "mountains", "forest", "flat", "hills", "forest", "flat", "mountains", "mountains", "flat", "forest", "hills", "flat", "forest", "mountains", "hills", "flat", "forest", "hills", "forest",
+  "flat", "forest", "hills", "forest", "flat", "hills", "flat", "flat", "forest", "hills", "mountains", "forest", "forest", "mountains", "hills", "forest", "flat", "flat", "hills", "flat", "forest", "hills", "forest", "flat",
+  "hills", "flat", "forest", "mountains", "forest", "flat", "flat", "flat", "hills", "flat", "forest", "flat", "flat", "forest", "flat", "hills", "flat", "flat", "flat", "forest", "mountains", "forest", "flat", "hills",
+  "forest", "hills", "flat", "forest", "hills", "village", "flat", "hills", "forest", "swamp_water", "flat", "flat", "flat", "flat", "swamp_water", "forest", "hills", "flat", "village", "hills", "forest", "flat", "hills", "forest",
+  "flat", "forest", "village", "flat", "forest", "swamp_water", "hills", "forest", "flat", "forest", "hills", "flat", "flat", "hills", "forest", "flat", "forest", "hills", "swamp_water", "forest", "flat", "village", "forest", "flat",
+  "hills", "flat", "hills", "forest", "flat", "hills", "forest", "flat", "flat", "hills", "forest", "flat", "flat", "forest", "hills", "flat", "flat", "forest", "hills", "flat", "forest", "hills", "flat", "hills",
+  "castle", "castle", "castle", "castle", "hills", "forest", "flat", "swamp_water", "forest", "flat", "hills", "flat", "flat", "hills", "flat", "forest", "swamp_water", "flat", "forest", "hills", "castle", "castle", "castle", "castle",
+  "castle", "castle", "keep", "castle", "flat", "swamp_water", "hills", "forest", "flat", "hills", "forest", "flat", "flat", "forest", "hills", "flat", "forest", "hills", "swamp_water", "flat", "castle", "keep", "castle", "castle",
+  "castle", "castle", "castle", "castle", "forest", "flat", "forest", "flat", "hills", "forest", "flat", "forest", "forest", "flat", "forest", "hills", "flat", "forest", "flat", "forest", "castle", "castle", "castle", "castle",
+  "flat", "forest", "hills", "forest", "flat", "flat", "flat", "hills", "swamp_water", "flat", "hills", "forest", "forest", "hills", "flat", "swamp_water", "hills", "flat", "flat", "flat", "forest", "hills", "forest", "flat",
+  "hills", "flat", "forest", "swamp_water", "hills", "forest", "flat", "forest", "flat", "hills", "flat", "forest", "forest", "flat", "hills", "flat", "forest", "flat", "forest", "hills", "swamp_water", "forest", "flat", "hills",
+  "forest", "hills", "flat", "forest", "flat", "hills", "village", "flat", "hills", "forest", "flat", "forest", "forest", "flat", "forest", "hills", "flat", "village", "hills", "flat", "forest", "flat", "hills", "forest",
+  "flat", "forest", "hills", "flat", "forest", "flat", "hills", "mountains", "forest", "flat", "hills", "flat", "flat", "hills", "flat", "forest", "mountains", "hills", "flat", "forest", "flat", "hills", "forest", "flat",
+  "hills", "flat", "forest", "hills", "mountains", "forest", "flat", "hills", "flat", "forest", "flat", "hills", "hills", "flat", "forest", "flat", "hills", "flat", "forest", "mountains", "hills", "forest", "flat", "hills",
+]

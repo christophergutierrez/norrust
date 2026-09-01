@@ -39,11 +39,15 @@ impl IdField for TerrainDef {
 }
 
 impl IdField for RecruitGroup {
-    fn id(&self) -> &str { &self.id }
+    fn id(&self) -> &str {
+        &self.id
+    }
 }
 
 impl IdField for FactionDef {
-    fn id(&self) -> &str { &self.id }
+    fn id(&self) -> &str {
+        &self.id
+    }
 }
 
 /// Generic registry that loads and stores TOML-defined game data by ID.
@@ -65,7 +69,11 @@ where
 
     /// Recursively scan a directory for TOML definitions.
     /// When `load_flat` is true, also loads flat `.toml` files (only at the top-level call).
-    fn scan_dir(dir: &Path, load_flat: bool, items: &mut HashMap<String, T>) -> Result<(), RegistryError> {
+    fn scan_dir(
+        dir: &Path,
+        load_flat: bool,
+        items: &mut HashMap<String, T>,
+    ) -> Result<(), RegistryError> {
         let entries = std::fs::read_dir(dir).map_err(|e| RegistryError::Io {
             path: dir.display().to_string(),
             source: e,
@@ -98,14 +106,16 @@ where
                 if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
                     let toml_path = path.join(format!("{}.toml", dir_name));
                     if toml_path.exists() {
-                        let content = std::fs::read_to_string(&toml_path).map_err(|e| RegistryError::Io {
-                            path: toml_path.display().to_string(),
-                            source: e,
-                        })?;
-                        let item: T = toml::from_str(&content).map_err(|e| RegistryError::Toml {
-                            path: toml_path.display().to_string(),
-                            source: e,
-                        })?;
+                        let content =
+                            std::fs::read_to_string(&toml_path).map_err(|e| RegistryError::Io {
+                                path: toml_path.display().to_string(),
+                                source: e,
+                            })?;
+                        let item: T =
+                            toml::from_str(&content).map_err(|e| RegistryError::Toml {
+                                path: toml_path.display().to_string(),
+                                source: e,
+                            })?;
                         items.insert(item.id().to_owned(), item);
                     }
                 }
@@ -155,7 +165,11 @@ mod tests {
     fn test_unit_registry_loads() {
         let dir = data_dir().join("units");
         let registry: Registry<UnitDef> = Registry::load_from_dir(&dir).unwrap();
-        assert!(registry.len() >= 4, "expected at least 4 units, got {}", registry.len());
+        assert!(
+            registry.len() >= 4,
+            "expected at least 4 units, got {}",
+            registry.len()
+        );
 
         let fighter = registry.get("Fighter").expect("Fighter not found");
         assert_eq!(fighter.max_hp, 30);
@@ -184,12 +198,19 @@ mod tests {
     fn test_terrain_registry_loads() {
         let dir = data_dir().join("terrain");
         let registry: Registry<TerrainDef> = Registry::load_from_dir(&dir).unwrap();
-        assert!(registry.len() >= 3, "expected at least 3 terrain types, got {}", registry.len());
+        assert!(
+            registry.len() >= 3,
+            "expected at least 3 terrain types, got {}",
+            registry.len()
+        );
 
         let flat = registry.get("flat").expect("flat not found");
         assert_eq!(flat.default_defense, 60);
         assert_eq!(flat.default_movement_cost, 1);
-        assert_eq!(flat.color, "#4a7c4e", "flat terrain color must match TOML value");
+        assert_eq!(
+            flat.color, "#4a7c4e",
+            "flat terrain color must match TOML value"
+        );
 
         let forest = registry.get("forest").expect("forest not found");
         assert_eq!(forest.default_defense, 60);
@@ -211,27 +232,54 @@ mod tests {
     fn test_recruit_group_registry_loads() {
         let dir = data_dir().join("recruit_groups");
         let registry: Registry<RecruitGroup> = Registry::load_from_dir(&dir).unwrap();
-        assert_eq!(registry.len(), 4, "expected 4 recruit groups, got {}", registry.len());
+        assert_eq!(
+            registry.len(),
+            4,
+            "expected 4 recruit groups, got {}",
+            registry.len()
+        );
 
         let rebel = registry.get("rebel_base").expect("rebel_base not found");
-        assert!(rebel.members.contains(&"Elvish Fighter".to_string()), "rebel_base missing Elvish Fighter");
-        assert!(rebel.members.contains(&"Elvish Archer".to_string()), "rebel_base missing Elvish Archer");
+        assert!(
+            rebel.members.contains(&"Elvish Fighter".to_string()),
+            "rebel_base missing Elvish Fighter"
+        );
+        assert!(
+            rebel.members.contains(&"Elvish Archer".to_string()),
+            "rebel_base missing Elvish Archer"
+        );
 
         let human = registry.get("human_base").expect("human_base not found");
-        assert!(human.members.contains(&"Spearman".to_string()), "human_base missing Spearman");
+        assert!(
+            human.members.contains(&"Spearman".to_string()),
+            "human_base missing Spearman"
+        );
 
-        let northerner = registry.get("northerner_base").expect("northerner_base not found");
-        assert!(northerner.members.contains(&"Orcish Grunt".to_string()), "northerner_base missing Orcish Grunt");
+        let northerner = registry
+            .get("northerner_base")
+            .expect("northerner_base not found");
+        assert!(
+            northerner.members.contains(&"Orcish Grunt".to_string()),
+            "northerner_base missing Orcish Grunt"
+        );
 
         let undead = registry.get("undead_base").expect("undead_base not found");
-        assert!(undead.members.contains(&"Skeleton".to_string()), "undead_base missing Skeleton");
+        assert!(
+            undead.members.contains(&"Skeleton".to_string()),
+            "undead_base missing Skeleton"
+        );
     }
 
     #[test]
     fn test_faction_registry_loads() {
         let dir = data_dir().join("factions");
         let registry: Registry<FactionDef> = Registry::load_from_dir(&dir).unwrap();
-        assert_eq!(registry.len(), 4, "expected 4 factions, got {}", registry.len());
+        assert_eq!(
+            registry.len(),
+            4,
+            "expected 4 factions, got {}",
+            registry.len()
+        );
 
         let rebels = registry.get("rebels").expect("rebels faction not found");
         assert_eq!(rebels.leader_def, "Elvish Captain");
@@ -251,7 +299,8 @@ mod tests {
 
     #[test]
     fn test_faction_recruit_expansion_and_level_filter() {
-        let groups = Registry::<RecruitGroup>::load_from_dir(&data_dir().join("recruit_groups")).unwrap();
+        let groups =
+            Registry::<RecruitGroup>::load_from_dir(&data_dir().join("recruit_groups")).unwrap();
         let factions = Registry::<FactionDef>::load_from_dir(&data_dir().join("factions")).unwrap();
         let units = Registry::<UnitDef>::load_from_dir(&data_dir().join("units")).unwrap();
 
@@ -265,11 +314,19 @@ mod tests {
                     recruits.push(entry.clone());
                 }
             }
-            assert!(!recruits.is_empty(), "faction '{}' expanded to empty recruit list", faction.id);
+            assert!(
+                !recruits.is_empty(),
+                "faction '{}' expanded to empty recruit list",
+                faction.id
+            );
 
             // Verify leader exists in unit registry
-            let leader = units.get(&faction.leader_def)
-                .unwrap_or_else(|| panic!("faction '{}' leader '{}' not in unit registry", faction.id, faction.leader_def));
+            let leader = units.get(&faction.leader_def).unwrap_or_else(|| {
+                panic!(
+                    "faction '{}' leader '{}' not in unit registry",
+                    faction.id, faction.leader_def
+                )
+            });
             let max_level = leader.level as i32;
 
             // All recruits should exist in unit registry
@@ -277,18 +334,26 @@ mod tests {
                 assert!(
                     units.get(recruit_id).is_some(),
                     "faction '{}' recruit '{}' not found in unit registry",
-                    faction.id, recruit_id
+                    faction.id,
+                    recruit_id
                 );
             }
 
             // Level-filtered list should be non-empty
-            let filtered: Vec<&String> = recruits.iter()
-                .filter(|id| units.get(id.as_str()).map(|u| u.level as i32 <= max_level).unwrap_or(true))
+            let filtered: Vec<&String> = recruits
+                .iter()
+                .filter(|id| {
+                    units
+                        .get(id.as_str())
+                        .map(|u| u.level as i32 <= max_level)
+                        .unwrap_or(true)
+                })
                 .collect();
             assert!(
                 !filtered.is_empty(),
                 "faction '{}' has empty recruit list after level filter (max_level={})",
-                faction.id, max_level
+                faction.id,
+                max_level
             );
         }
     }

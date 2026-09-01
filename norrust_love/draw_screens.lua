@@ -18,7 +18,6 @@ local M = {}
 
 --- Draw the setup HUD (scenario selection, faction picking, leader placement).
 function M.draw_setup_hud(ctx)
-    local int = ctx.int
     local fonts = ctx.fonts
     local vp_w, vp_h = ctx.vp_w, ctx.vp_h
 
@@ -208,16 +207,38 @@ function M.draw_setup_hud(ctx)
     end
 
     local is_blue = (ctx.game_mode == ctx.PICK_FACTION_BLUE or ctx.game_mode == ctx.SETUP_BLUE)
-    local faction_name = is_blue and "Blue" or "Red"
     local fc = is_blue and ctx.BLUE or ctx.RED
 
     -- Sidebar background
     draw_sidebar_bg(vp_w, vp_h)
 
+    local sb_x = vp_w - SIDEBAR_X_OFF
+    local sb_w = SIDEBAR_W - SIDEBAR_PAD * 2
+
+    local function banner(text)
+        local board_w = vp_w - SIDEBAR_W
+        love.graphics.setFont(fonts[14])
+        local tw = math.min(fonts[14]:getWidth(text) + 24, board_w - 20)
+        local bx = math.floor((board_w - tw) / 2)
+        love.graphics.setColor(0, 0, 0, 0.78)
+        love.graphics.rectangle("fill", bx, 10, tw, 28, 6, 6)
+        love.graphics.setColor(C_YELLOW[1], C_YELLOW[2], C_YELLOW[3], 1)
+        love.graphics.printf(text, 0, 15, board_w, "center")
+    end
+
     if ctx.game_mode == ctx.PICK_FACTION_BLUE or ctx.game_mode == ctx.PICK_FACTION_RED then
         love.graphics.setFont(fonts[15])
         love.graphics.setColor(fc[1], fc[2], fc[3])
-        love.graphics.print("FACTION — " .. faction_name, vp_w - SIDEBAR_X_OFF, SIDEBAR_PAD)
+        if is_blue then
+            love.graphics.print("YOUR SIDE", sb_x, SIDEBAR_PAD)
+        else
+            love.graphics.print("ENEMY SIDE", sb_x, SIDEBAR_PAD)
+        end
+
+        love.graphics.setFont(fonts[13])
+        love.graphics.setColor(fc[1], fc[2], fc[3], 1)
+        local side_line = is_blue and "Blue — west keep" or "Red — east keep"
+        love.graphics.print(side_line, sb_x, 28)
 
         -- Controller selection
         local side = is_blue and 1 or 2
@@ -225,17 +246,26 @@ function M.draw_setup_hud(ctx)
         local ctrl_labels = {human = "Human", ai = "AI", port = "Port"}
         love.graphics.setFont(fonts[13])
         love.graphics.setColor(C_GOLD[1], C_GOLD[2], C_GOLD[3], 1)
-        love.graphics.print("Controller: " .. (ctrl_labels[ctrl] or ctrl), vp_w - SIDEBAR_X_OFF, 30)
+        love.graphics.print("Controller: " .. (ctrl_labels[ctrl] or ctrl), sb_x, 50)
         love.graphics.setFont(fonts[11])
         love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3])
-        love.graphics.print("[Tab] cycle  [H] human", vp_w - SIDEBAR_X_OFF, 46)
+        love.graphics.print("[Tab] cycle  [H] human", sb_x, 66)
 
         love.graphics.setFont(fonts[11])
         love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3])
-        love.graphics.print("Press 1-" .. #ctx.factions .. " to pick faction", vp_w - SIDEBAR_X_OFF, 64)
+        if is_blue then
+            love.graphics.printf("You go first. Pick your faction:", sb_x, 86, sb_w, "left")
+            banner("You are Blue (west keep). You go first.")
+        elseif ctrl == "human" then
+            love.graphics.printf("Hotseat: pick Red's faction:", sb_x, 86, sb_w, "left")
+            banner("Red player: east keep. Pick a faction.")
+        else
+            love.graphics.printf("Pick the enemy faction:", sb_x, 86, sb_w, "left")
+            banner("Enemy is Red (east keep). Pick their faction.")
+        end
 
         for i, f in ipairs(ctx.factions) do
-            local y = 86 + (i - 1) * 22
+            local y = 122 + (i - 1) * 22
             local label = "[" .. i .. "] " .. f.name
             if (i - 1) == ctx.sel_faction_idx then
                 love.graphics.setColor(C_YELLOW[1], C_YELLOW[2], C_YELLOW[3], 1)
@@ -243,12 +273,12 @@ function M.draw_setup_hud(ctx)
                 love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
             end
             love.graphics.setFont(fonts[13])
-            love.graphics.print(label, vp_w - SIDEBAR_X_OFF, y)
+            love.graphics.print(label, sb_x, y)
         end
     else
         love.graphics.setFont(fonts[15])
         love.graphics.setColor(fc[1], fc[2], fc[3])
-        love.graphics.print("SETUP — " .. faction_name, vp_w - SIDEBAR_X_OFF, SIDEBAR_PAD)
+        love.graphics.print(is_blue and "PLACE YOUR LEADER" or "PLACE RED LEADER", sb_x, SIDEBAR_PAD)
 
         local fi = ctx.faction_index_for_mode()
         if not ctx.leader_placed[fi + 1] then
@@ -256,22 +286,19 @@ function M.draw_setup_hud(ctx)
 
             love.graphics.setFont(fonts[11])
             love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3])
-            love.graphics.print("Place leader:", vp_w - SIDEBAR_X_OFF, 30)
+            love.graphics.print("Leader:", sb_x, 32)
             love.graphics.setFont(fonts[14])
             love.graphics.setColor(C_YELLOW[1], C_YELLOW[2], C_YELLOW[3], 1)
-            love.graphics.print(leader_def, vp_w - SIDEBAR_X_OFF, 48)
+            love.graphics.print(leader_def, sb_x, 48)
 
-            -- Board-center prompt (account for zoom in position)
-            local bx, by = ctx.hex.to_pixel(int(ctx.BOARD_COLS / 2), int(ctx.BOARD_ROWS / 2))
-            local zoom = ctx.camera_zoom or 1
-            local sx = ctx.board_origin_x + zoom * (bx + ctx.camera_offset_x)
-            local sy = ctx.board_origin_y + zoom * (by + ctx.camera_offset_y)
-            local prompt = "Click a hex on the board to place " .. leader_def
-            love.graphics.setColor(0, 0, 0, 0.75)
-            love.graphics.rectangle("fill", sx - 200, sy - 14, 400, 24)
-            love.graphics.setFont(fonts[13])
-            love.graphics.setColor(C_YELLOW[1], C_YELLOW[2], C_YELLOW[3], 1)
-            love.graphics.print(prompt, sx - 196, sy - 8)
+            love.graphics.setFont(fonts[11])
+            love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3])
+            local keep_hint = is_blue
+                and "Click the glowing western keep. Recruits spawn on the castle hexes around it."
+                or "Click the glowing eastern keep. Recruits spawn on the castle hexes around it."
+            love.graphics.printf(keep_hint, sb_x, 72, sb_w, "left")
+
+            banner("Click the glowing keep to place " .. leader_def)
         end
     end
 end

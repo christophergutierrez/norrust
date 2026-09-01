@@ -96,8 +96,7 @@ pub fn resolve_attack(
     tod_modifier: i32,
 ) -> u32 {
     let hit_pct = 100u32.saturating_sub(terrain_defense_pct);
-    let modified_damage =
-        ((base_damage as i64 * (100 + tod_modifier as i64)) / 100).max(0) as u32;
+    let modified_damage = ((base_damage as i64 * (100 + tod_modifier as i64)) / 100).max(0) as u32;
     let mut total = 0u32;
     for _ in 0..strikes {
         if rng.roll_hit(hit_pct) {
@@ -153,54 +152,82 @@ pub fn simulate_combat(
     let tod = time_of_day(turn);
 
     // Find attacker's melee attack
-    let atk_attack: Option<&AttackDef> = attacker.attacks.iter()
-        .find(|a| a.range == range_needed);
+    let atk_attack: Option<&AttackDef> = attacker.attacks.iter().find(|a| a.range == range_needed);
 
     let Some(atk_attack) = atk_attack else {
         return CombatPreview {
-            attacker_hit_pct: 0, defender_hit_pct: 0,
-            attacker_damage_per_hit: 0, attacker_strikes: 0,
-            defender_damage_per_hit: 0, defender_strikes: 0,
-            attacker_damage_min: 0, attacker_damage_max: 0, attacker_damage_mean: 0.0,
-            defender_damage_min: 0, defender_damage_max: 0, defender_damage_mean: 0.0,
-            attacker_kill_pct: 0.0, defender_kill_pct: 0.0,
+            attacker_hit_pct: 0,
+            defender_hit_pct: 0,
+            attacker_damage_per_hit: 0,
+            attacker_strikes: 0,
+            defender_damage_per_hit: 0,
+            defender_strikes: 0,
+            attacker_damage_min: 0,
+            attacker_damage_max: 0,
+            attacker_damage_mean: 0.0,
+            defender_damage_min: 0,
+            defender_damage_max: 0,
+            defender_damage_mean: 0.0,
+            attacker_kill_pct: 0.0,
+            defender_kill_pct: 0.0,
             attacker_attack_name: String::new(),
             defender_attack_name: "none".to_string(),
-            attacker_hp: attacker.hp, defender_hp: defender.hp,
-            attacker_terrain_defense, defender_terrain_defense,
+            attacker_hp: attacker.hp,
+            defender_hp: defender.hp,
+            attacker_terrain_defense,
+            defender_terrain_defense,
         };
     };
 
     // Attacker effective damage (resistance + steadfast + ToD + specials + leadership)
     let atk_tod = tod_damage_modifier(attacker.alignment, tod);
-    let mut atk_resistance = defender.resistances.get(&atk_attack.attack_type).copied().unwrap_or(0);
+    let mut atk_resistance = defender
+        .resistances
+        .get(&atk_attack.attack_type)
+        .copied()
+        .unwrap_or(0);
     // Steadfast: double positive resistances when defending
     if atk_resistance < 0 && defender.abilities.iter().any(|a| a == "steadfast") {
         atk_resistance = (atk_resistance * 2).max(-100);
     }
-    let mut atk_effective_dmg = ((atk_attack.damage as i64 * (100 + atk_resistance as i64)) / 100).max(0) as u32;
-    if attacker.slowed { atk_effective_dmg /= 2; }
-    if has_special(atk_attack, "charge") && range_needed == "melee" { atk_effective_dmg *= 2; }
-    if has_special(atk_attack, "backstab") && flanked { atk_effective_dmg *= 2; }
+    let mut atk_effective_dmg =
+        ((atk_attack.damage as i64 * (100 + atk_resistance as i64)) / 100).max(0) as u32;
+    if attacker.slowed {
+        atk_effective_dmg /= 2;
+    }
+    if has_special(atk_attack, "charge") && range_needed == "melee" {
+        atk_effective_dmg *= 2;
+    }
+    if has_special(atk_attack, "backstab") && flanked {
+        atk_effective_dmg *= 2;
+    }
     if atk_leadership_pct > 0 {
-        atk_effective_dmg = (atk_effective_dmg as u64 * (100 + atk_leadership_pct as u64) / 100) as u32;
+        atk_effective_dmg =
+            (atk_effective_dmg as u64 * (100 + atk_leadership_pct as u64) / 100) as u32;
     }
     let atk_hit_pct = 100u32.saturating_sub(defender_terrain_defense);
 
     // Find defender's retaliation attack
-    let def_attack: Option<&AttackDef> = defender.attacks.iter()
-        .find(|a| a.range == range_needed);
+    let def_attack: Option<&AttackDef> = defender.attacks.iter().find(|a| a.range == range_needed);
 
     let (def_effective_dmg, def_hit_pct, def_tod) = if let Some(da) = def_attack {
         let dt = tod_damage_modifier(defender.alignment, tod);
-        let mut dr = attacker.resistances.get(&da.attack_type).copied().unwrap_or(0);
+        let mut dr = attacker
+            .resistances
+            .get(&da.attack_type)
+            .copied()
+            .unwrap_or(0);
         // Steadfast: double positive resistances for attacker when being retaliated against
         if dr < 0 && attacker.abilities.iter().any(|a| a == "steadfast") {
             dr = (dr * 2).max(-100);
         }
         let mut de = ((da.damage as i64 * (100 + dr as i64)) / 100).max(0) as u32;
-        if defender.slowed { de /= 2; }
-        if has_special(atk_attack, "charge") && range_needed == "melee" { de *= 2; }
+        if defender.slowed {
+            de /= 2;
+        }
+        if has_special(atk_attack, "charge") && range_needed == "melee" {
+            de *= 2;
+        }
         if def_leadership_pct > 0 {
             de = (de as u64 * (100 + def_leadership_pct as u64) / 100) as u32;
         }
@@ -223,7 +250,13 @@ pub fn simulate_combat(
         let mut rng = Rng::new((i + 1) as u64);
 
         // Attacker strikes defender
-        let atk_dmg = resolve_attack(&mut rng, atk_effective_dmg, atk_attack.strikes, defender_terrain_defense, atk_tod);
+        let atk_dmg = resolve_attack(
+            &mut rng,
+            atk_effective_dmg,
+            atk_attack.strikes,
+            defender_terrain_defense,
+            atk_tod,
+        );
         atk_dmg_min = atk_dmg_min.min(atk_dmg);
         atk_dmg_max = atk_dmg_max.max(atk_dmg);
         atk_dmg_total += atk_dmg as u64;
@@ -236,7 +269,13 @@ pub fn simulate_combat(
         // Defender retaliates if alive and has matching attack
         if defender_survives {
             if let Some(da) = def_attack {
-                let def_dmg = resolve_attack(&mut rng, def_effective_dmg, da.strikes, attacker_terrain_defense, def_tod);
+                let def_dmg = resolve_attack(
+                    &mut rng,
+                    def_effective_dmg,
+                    da.strikes,
+                    attacker_terrain_defense,
+                    def_tod,
+                );
                 def_dmg_min = def_dmg_min.min(def_dmg);
                 def_dmg_max = def_dmg_max.max(def_dmg);
                 def_dmg_total += def_dmg as u64;
@@ -262,9 +301,11 @@ pub fn simulate_combat(
     CombatPreview {
         attacker_hit_pct: atk_hit_pct,
         defender_hit_pct: def_hit_pct,
-        attacker_damage_per_hit: ((atk_effective_dmg as i64 * (100 + atk_tod as i64)) / 100).max(0) as u32,
+        attacker_damage_per_hit: ((atk_effective_dmg as i64 * (100 + atk_tod as i64)) / 100).max(0)
+            as u32,
         attacker_strikes: atk_attack.strikes,
-        defender_damage_per_hit: ((def_effective_dmg as i64 * (100 + def_tod as i64)) / 100).max(0) as u32,
+        defender_damage_per_hit: ((def_effective_dmg as i64 * (100 + def_tod as i64)) / 100).max(0)
+            as u32,
         defender_strikes: def_attack.map(|a| a.strikes).unwrap_or(0),
         attacker_damage_min: atk_dmg_min,
         attacker_damage_max: atk_dmg_max,
@@ -275,7 +316,9 @@ pub fn simulate_combat(
         attacker_kill_pct: atk_kills as f64 / n * 100.0,
         defender_kill_pct: def_kills as f64 / n * 100.0,
         attacker_attack_name: atk_attack.name.clone(),
-        defender_attack_name: def_attack.map(|a| a.name.clone()).unwrap_or_else(|| "none".to_string()),
+        defender_attack_name: def_attack
+            .map(|a| a.name.clone())
+            .unwrap_or_else(|| "none".to_string()),
         attacker_hp: attacker.hp,
         defender_hp: defender.hp,
         attacker_terrain_defense,
@@ -322,34 +365,70 @@ mod tests {
         use std::collections::HashMap;
 
         let sword = AttackDef {
-            id: "sword".into(), name: "sword".into(),
-            damage: 7, strikes: 3, attack_type: "blade".into(), range: "melee".into(),
+            id: "sword".into(),
+            name: "sword".into(),
+            damage: 7,
+            strikes: 3,
+            attack_type: "blade".into(),
+            range: "melee".into(),
             ..Default::default()
         };
         let spear = AttackDef {
-            id: "spear".into(), name: "spear".into(),
-            damage: 5, strikes: 2, attack_type: "pierce".into(), range: "melee".into(),
+            id: "spear".into(),
+            name: "spear".into(),
+            damage: 5,
+            strikes: 2,
+            attack_type: "pierce".into(),
+            range: "melee".into(),
             ..Default::default()
         };
         let attacker = Unit {
-            id: 1, def_id: "fighter".into(), hp: 38, max_hp: 38,
-            faction: 0, moved: false, attacked: false,
+            id: 1,
+            def_id: "fighter".into(),
+            hp: 38,
+            max_hp: 38,
+            faction: 0,
+            moved: false,
+            attacked: false,
             alignment: Alignment::Lawful,
-            attacks: vec![sword], resistances: HashMap::new(),
-            defense: HashMap::new(), default_defense: 40,
-            movement: 6, movement_costs: HashMap::new(),
-            xp: 0, xp_needed: 40, advancement_pending: false,
-            level: 1, abilities: vec![], poisoned: false, slowed: false, vision_range: 0,
+            attacks: vec![sword],
+            resistances: HashMap::new(),
+            defense: HashMap::new(),
+            default_defense: 40,
+            movement: 6,
+            movement_costs: HashMap::new(),
+            xp: 0,
+            xp_needed: 40,
+            advancement_pending: false,
+            level: 1,
+            abilities: vec![],
+            poisoned: false,
+            slowed: false,
+            vision_range: 0,
         };
         let defender = Unit {
-            id: 2, def_id: "spearman".into(), hp: 36, max_hp: 36,
-            faction: 1, moved: false, attacked: false,
+            id: 2,
+            def_id: "spearman".into(),
+            hp: 36,
+            max_hp: 36,
+            faction: 1,
+            moved: false,
+            attacked: false,
             alignment: Alignment::Lawful,
-            attacks: vec![spear], resistances: HashMap::new(),
-            defense: HashMap::new(), default_defense: 40,
-            movement: 5, movement_costs: HashMap::new(),
-            xp: 0, xp_needed: 40, advancement_pending: false,
-            level: 1, abilities: vec![], poisoned: false, slowed: false, vision_range: 0,
+            attacks: vec![spear],
+            resistances: HashMap::new(),
+            defense: HashMap::new(),
+            default_defense: 40,
+            movement: 5,
+            movement_costs: HashMap::new(),
+            xp: 0,
+            xp_needed: 40,
+            advancement_pending: false,
+            level: 1,
+            abilities: vec![],
+            poisoned: false,
+            slowed: false,
+            vision_range: 0,
         };
         let preview = simulate_combat(&attacker, &defender, 40, 50, 1, 1000, "melee", false, 0, 0);
 

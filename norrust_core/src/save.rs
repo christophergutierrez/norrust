@@ -123,18 +123,18 @@ impl SaveState {
             .positions
             .iter()
             .filter_map(|(&uid, &hex)| {
-                state.units.get(&uid).map(|unit| SaveUnit::from_unit(unit, &hex))
+                state
+                    .units
+                    .get(&uid)
+                    .map(|unit| SaveUnit::from_unit(unit, &hex))
             })
             .collect();
         // Sort by ID for deterministic output
         units.sort_by_key(|u| u.id);
 
         // Capture trigger zone fired state
-        let trigger_zones_fired: Vec<bool> = state
-            .trigger_zones
-            .iter()
-            .map(|tz| tz.triggered)
-            .collect();
+        let trigger_zones_fired: Vec<bool> =
+            state.trigger_zones.iter().map(|tz| tz.triggered).collect();
 
         // Capture village owners (only those with an actual owner)
         let mut village_owners: Vec<(i32, i32, i8)> = state
@@ -227,20 +227,40 @@ mod tests {
             objective_hex: Some((10, 4)),
             units: vec![
                 SaveUnit {
-                    id: 1, def_id: "fighter".to_string(), faction: 0,
-                    col: 2, row: 3, hp: 25, max_hp: 30,
-                    xp: 10, xp_needed: 40, advancement_pending: false,
-                    moved: true, attacked: false,
-                    poisoned: false, slowed: true,
-                    abilities: vec!["leader".to_string()], level: 1,
+                    id: 1,
+                    def_id: "fighter".to_string(),
+                    faction: 0,
+                    col: 2,
+                    row: 3,
+                    hp: 25,
+                    max_hp: 30,
+                    xp: 10,
+                    xp_needed: 40,
+                    advancement_pending: false,
+                    moved: true,
+                    attacked: false,
+                    poisoned: false,
+                    slowed: true,
+                    abilities: vec!["leader".to_string()],
+                    level: 1,
                 },
                 SaveUnit {
-                    id: 2, def_id: "archer".to_string(), faction: 1,
-                    col: 8, row: 5, hp: 20, max_hp: 24,
-                    xp: 0, xp_needed: 40, advancement_pending: false,
-                    moved: false, attacked: false,
-                    poisoned: true, slowed: false,
-                    abilities: vec![], level: 1,
+                    id: 2,
+                    def_id: "archer".to_string(),
+                    faction: 1,
+                    col: 8,
+                    row: 5,
+                    hp: 20,
+                    max_hp: 24,
+                    xp: 0,
+                    xp_needed: 40,
+                    advancement_pending: false,
+                    moved: false,
+                    attacked: false,
+                    poisoned: true,
+                    slowed: false,
+                    abilities: vec![],
+                    level: 1,
                 },
             ],
             next_unit_id: 3,

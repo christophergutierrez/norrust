@@ -61,12 +61,16 @@ fn terrain_noise(col: i32, row: i32, seed: u64) -> u8 {
 /// Mountains only appear in the innermost columns (dist_center <= 1).
 fn contested_terrain(n: u8, dist_center: i32) -> &'static str {
     match n {
-        0..=109  => "flat",      // ~43% flat
-        110..=164 => "forest",   // ~21% forest
-        165..=219 => "hills",    // ~21% hills
+        0..=109 => "flat",     // ~43% flat
+        110..=164 => "forest", // ~21% forest
+        165..=219 => "hills",  // ~21% hills
         _ => {
             // ~15% — mountains only at center, hills elsewhere
-            if dist_center <= 1 { "mountains" } else { "hills" }
+            if dist_center <= 1 {
+                "mountains"
+            } else {
+                "hills"
+            }
         }
     }
 }

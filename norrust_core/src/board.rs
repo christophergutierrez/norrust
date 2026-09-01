@@ -26,7 +26,13 @@ pub struct Tile {
 impl Tile {
     /// Create a Tile with sensible defaults. Used in tests and fallback paths.
     pub fn new(terrain_id: impl Into<String>) -> Self {
-        Self { terrain_id: terrain_id.into(), movement_cost: 1, defense: 40, healing: 0, color: "#808080".to_string() }
+        Self {
+            terrain_id: terrain_id.into(),
+            movement_cost: 1,
+            defense: 40,
+            healing: 0,
+            color: "#808080".to_string(),
+        }
     }
 
     /// Create a Tile from a TerrainDef registry entry.
@@ -60,7 +66,11 @@ impl Board {
     /// Create a new empty board with the given dimensions.
     pub fn new(width: u32, height: u32) -> Self {
         assert!(width > 0 && height > 0, "Board dimensions must be positive");
-        Self { width, height, tiles: HashMap::new() }
+        Self {
+            width,
+            height,
+            tiles: HashMap::new(),
+        }
     }
 
     /// Returns true if `hex` lies within the board's bounds.
@@ -136,7 +146,11 @@ mod tests {
         assert!(board.contains(Hex::ORIGIN));
         // The only valid cell is (0,0) — immediate neighbors are out of bounds
         for n in Hex::ORIGIN.neighbors() {
-            assert!(!board.contains(n), "neighbor {:?} should be out of 1x1 board", n);
+            assert!(
+                !board.contains(n),
+                "neighbor {:?} should be out of 1x1 board",
+                n
+            );
         }
     }
 

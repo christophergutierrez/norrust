@@ -11,7 +11,7 @@ use norrust_core::board::Tile;
 use norrust_core::game_state::{apply_recruit, GameState, PendingSpawn, TriggerZone};
 use norrust_core::hex::Hex;
 use norrust_core::loader::Registry;
-use norrust_core::scenario::{load_board, load_units, load_triggers};
+use norrust_core::scenario::{load_board, load_triggers, load_units};
 use norrust_core::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
 use norrust_core::unit::Unit;
 
@@ -48,7 +48,10 @@ fn load_factions(data: &Path) -> Vec<Faction> {
             }
             let mut seen = HashSet::new();
             recruits.retain(|id| seen.insert(id.clone()));
-            Faction { def: f.clone(), recruits }
+            Faction {
+                def: f.clone(),
+                recruits,
+            }
         })
         .collect()
 }
@@ -82,23 +85,36 @@ fn ai_recruit(
         // Find leader on a keep.
         let keep = state.positions.iter().find_map(|(&uid, &hex)| {
             let unit = state.units.get(&uid)?;
-            if unit.faction != faction { return None; }
-            if !unit.abilities.iter().any(|a| a == "leader") { return None; }
-            state.board.tile_at(hex).filter(|t| t.terrain_id == "keep").map(|_| hex)
+            if unit.faction != faction {
+                return None;
+            }
+            if !unit.abilities.iter().any(|a| a == "leader") {
+                return None;
+            }
+            state
+                .board
+                .tile_at(hex)
+                .filter(|t| t.terrain_id == "keep")
+                .map(|_| hex)
         });
         let Some(keep_hex) = keep else { break };
 
         // Find empty castle adjacent to keep.
         let dest = keep_hex.neighbors().iter().copied().find(|&h| {
             state.board.contains(h)
-                && state.board.tile_at(h).map(|t| t.terrain_id == "castle").unwrap_or(false)
+                && state
+                    .board
+                    .tile_at(h)
+                    .map(|t| t.terrain_id == "castle")
+                    .unwrap_or(false)
                 && !state.positions.values().any(|&p| p == h)
         });
         let Some(dest_hex) = dest else { break };
 
         // Pick first affordable recruit.
         let affordable = recruits.iter().find(|did| {
-            unit_reg.get(did.as_str())
+            unit_reg
+                .get(did.as_str())
                 .map(|def| state.gold[faction as usize] >= def.cost)
                 .unwrap_or(false)
         });
@@ -108,7 +124,9 @@ fn ai_recruit(
 
         let unit = Unit::from_def(*next_id, def, faction);
         match apply_recruit(state, unit, dest_hex, cost) {
-            Ok(()) => { *next_id += 1; }
+            Ok(()) => {
+                *next_id += 1;
+            }
             Err(_) => break,
         }
     }
@@ -122,14 +140,20 @@ struct BalanceResult {
 
 impl std::fmt::Display for BalanceResult {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let pct0 = if self.total > 0 { self.wins[0] as f64 / self.total as f64 * 100.0 } else { 0.0 };
-        let pct1 = if self.total > 0 { self.wins[1] as f64 / self.total as f64 * 100.0 } else { 0.0 };
+        let pct0 = if self.total > 0 {
+            self.wins[0] as f64 / self.total as f64 * 100.0
+        } else {
+            0.0
+        };
+        let pct1 = if self.total > 0 {
+            self.wins[1] as f64 / self.total as f64 * 100.0
+        } else {
+            0.0
+        };
         write!(
             f,
             "F0: {}/{} ({:.1}%)  F1: {}/{} ({:.1}%)  Draws: {}",
-            self.wins[0], self.total, pct0,
-            self.wins[1], self.total, pct1,
-            self.draws,
+            self.wins[0], self.total, pct0, self.wins[1], self.total, pct1, self.draws,
         )
     }
 }
@@ -152,7 +176,11 @@ fn run_balance(
     let board_path = scenario_dir.join("board.toml");
     let units_path = scenario_dir.join("units.toml");
 
-    let mut result = BalanceResult { wins: [0, 0], draws: 0, total: num_games };
+    let mut result = BalanceResult {
+        wins: [0, 0],
+        draws: 0,
+        total: num_games,
+    };
 
     for seed in 1..=num_games {
         let loaded = load_board(&board_path).unwrap();
@@ -178,16 +206,23 @@ fn run_balance(
 
         // Register trigger zones.
         for tdef in &triggers {
-            let spawns: Vec<PendingSpawn> = tdef.spawns.iter().map(|s| {
-                let uid = next_id;
-                next_id += 1;
-                let unit = if let Some(def) = unit_reg.get(&s.unit_type) {
-                    Unit::from_def(uid, def, s.faction)
-                } else {
-                    Unit::new(uid, &s.unit_type, 1, s.faction)
-                };
-                PendingSpawn { unit, destination: Hex::from_offset(s.col, s.row) }
-            }).collect();
+            let spawns: Vec<PendingSpawn> = tdef
+                .spawns
+                .iter()
+                .map(|s| {
+                    let uid = next_id;
+                    next_id += 1;
+                    let unit = if let Some(def) = unit_reg.get(&s.unit_type) {
+                        Unit::from_def(uid, def, s.faction)
+                    } else {
+                        Unit::new(uid, &s.unit_type, 1, s.faction)
+                    };
+                    PendingSpawn {
+                        unit,
+                        destination: Hex::from_offset(s.col, s.row),
+                    }
+                })
+                .collect();
             state.trigger_zones.push(TriggerZone {
                 trigger_hex: Hex::from_offset(tdef.trigger_col, tdef.trigger_row),
                 trigger_faction: tdef.trigger_faction,
@@ -238,12 +273,19 @@ fn campaign_full_playthrough() {
     let terrain_reg: Registry<TerrainDef> = Registry::load_from_dir(&data.join("terrain")).unwrap();
     let factions = load_factions(&data);
 
-    let campaign_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../campaigns/tutorial.toml");
+    let campaign_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../campaigns/tutorial.toml");
     let campaign_def = load_campaign(&campaign_path).expect("load campaign");
     let num_scenarios = campaign_def.scenarios.len();
 
-    let f0 = factions.iter().find(|f| f.def.id == campaign_def.faction_0).unwrap();
-    let f1 = factions.iter().find(|f| f.def.id == campaign_def.faction_1).unwrap();
+    let f0 = factions
+        .iter()
+        .find(|f| f.def.id == campaign_def.faction_0)
+        .unwrap();
+    let f1 = factions
+        .iter()
+        .find(|f| f.def.id == campaign_def.faction_1)
+        .unwrap();
 
     let scenario_names = ["Crossing", "Ambush", "Night Orcs", "Final Battle"];
 
@@ -282,9 +324,20 @@ fn campaign_full_playthrough() {
                     state.place_unit(unit, Hex::from_offset(p.col, p.row));
                     // Track player units in roster for first scenario
                     if si == 0 && p.faction == 0 {
-                        cs.add_unit(&def.id, next_id, def.max_hp, def.max_hp, 0,
-                            if def.advances_to.is_empty() { 0 } else { def.experience },
-                            false, def.abilities.clone());
+                        cs.add_unit(
+                            &def.id,
+                            next_id,
+                            def.max_hp,
+                            def.max_hp,
+                            0,
+                            if def.advances_to.is_empty() {
+                                0
+                            } else {
+                                def.experience
+                            },
+                            false,
+                            def.abilities.clone(),
+                        );
                     }
                     next_id += 1;
                 }
@@ -292,19 +345,28 @@ fn campaign_full_playthrough() {
 
             // Register triggers
             for tdef in &triggers {
-                let spawns: Vec<PendingSpawn> = tdef.spawns.iter().map(|s| {
-                    let uid = next_id;
-                    next_id += 1;
-                    let unit = if let Some(def) = unit_reg.get(&s.unit_type) {
-                        Unit::from_def(uid, def, s.faction)
-                    } else {
-                        Unit::new(uid, &s.unit_type, 1, s.faction)
-                    };
-                    PendingSpawn { unit, destination: Hex::from_offset(s.col, s.row) }
-                }).collect();
+                let spawns: Vec<PendingSpawn> = tdef
+                    .spawns
+                    .iter()
+                    .map(|s| {
+                        let uid = next_id;
+                        next_id += 1;
+                        let unit = if let Some(def) = unit_reg.get(&s.unit_type) {
+                            Unit::from_def(uid, def, s.faction)
+                        } else {
+                            Unit::new(uid, &s.unit_type, 1, s.faction)
+                        };
+                        PendingSpawn {
+                            unit,
+                            destination: Hex::from_offset(s.col, s.row),
+                        }
+                    })
+                    .collect();
                 state.trigger_zones.push(TriggerZone {
                     trigger_hex: Hex::from_offset(tdef.trigger_col, tdef.trigger_row),
-                    trigger_faction: tdef.trigger_faction, spawns, triggered: false,
+                    trigger_faction: tdef.trigger_faction,
+                    spawns,
+                    triggered: false,
                 });
             }
 
@@ -330,7 +392,9 @@ fn campaign_full_playthrough() {
                             }
                         }
                     }
-                    if keep_hex.is_some() { break; }
+                    if keep_hex.is_some() {
+                        break;
+                    }
                 }
 
                 if let Some(keep) = keep_hex {
@@ -342,7 +406,11 @@ fn campaign_full_playthrough() {
                     // Adjacent castles
                     for &n in keep.neighbors().iter() {
                         if state.board.contains(n)
-                            && state.board.tile_at(n).map(|t| t.terrain_id == "castle").unwrap_or(false)
+                            && state
+                                .board
+                                .tile_at(n)
+                                .map(|t| t.terrain_id == "castle")
+                                .unwrap_or(false)
                             && !state.positions.values().any(|&p| p == n)
                         {
                             slots.push(n);
@@ -352,9 +420,12 @@ fn campaign_full_playthrough() {
                     cs.clear_id_map();
                     // Snapshot veterans and living UUIDs before mutating
                     let vets: Vec<_> = cs.veterans.clone();
-                    let living_uuids: Vec<String> = cs.get_living().iter().map(|e| e.uuid.clone()).collect();
+                    let living_uuids: Vec<String> =
+                        cs.get_living().iter().map(|e| e.uuid.clone()).collect();
                     for (vi, vet) in vets.iter().enumerate() {
-                        if vi >= slots.len() { break; }
+                        if vi >= slots.len() {
+                            break;
+                        }
                         if let Some(def) = unit_reg.get(&vet.def_id) {
                             let mut unit = Unit::from_def(next_id, def, 0);
                             unit.hp = vet.hp;
@@ -376,11 +447,21 @@ fn campaign_full_playthrough() {
             let mut winner = None;
             for _ in 0..200 {
                 let active = state.active_faction;
-                ai_recruit(&mut state, active, &faction_data[active as usize].recruits, &unit_reg, &mut next_id);
+                ai_recruit(
+                    &mut state,
+                    active,
+                    &faction_data[active as usize].recruits,
+                    &unit_reg,
+                    &mut next_id,
+                );
                 // Track newly recruited player units in roster
                 for (&uid, unit) in &state.units {
-                    if unit.faction == 0 && !cs.id_map.contains_key(&uid)
-                        && !cs.roster.values().any(|e| cs.id_map.values().any(|v| v == &e.uuid))
+                    if unit.faction == 0
+                        && !cs.id_map.contains_key(&uid)
+                        && !cs
+                            .roster
+                            .values()
+                            .any(|e| cs.id_map.values().any(|v| v == &e.uuid))
                     {
                         // Check if this unit ID is already mapped
                         if cs.id_map.get(&uid).is_none() && uid >= next_id.saturating_sub(20) {
@@ -402,7 +483,10 @@ fn campaign_full_playthrough() {
                 wins_at[si] += 1;
                 survivors_at[si].push(surv_count);
                 gold_at[si].push(cs.carry_gold);
-                print!(" → {} ✓({} units, {}g)", scenario_names[si], surv_count, cs.carry_gold);
+                print!(
+                    " → {} ✓({} units, {}g)",
+                    scenario_names[si], surv_count, cs.carry_gold
+                );
             } else {
                 lost_at[si] += 1;
                 print!(" → {} ✗", scenario_names[si]);
@@ -421,9 +505,15 @@ fn campaign_full_playthrough() {
     for si in 0..num_scenarios {
         println!("Scenario {} — {}:", si + 1, scenario_names[si]);
         println!("  Reached: {}", reached);
-        println!("  Won:     {} ({:.0}% of those who reached)",
+        println!(
+            "  Won:     {} ({:.0}% of those who reached)",
             wins_at[si],
-            if reached > 0 { wins_at[si] as f64 / reached as f64 * 100.0 } else { 0.0 });
+            if reached > 0 {
+                wins_at[si] as f64 / reached as f64 * 100.0
+            } else {
+                0.0
+            }
+        );
         println!("  Lost:    {}", lost_at[si]);
         if !survivors_at[si].is_empty() {
             let avg_s = survivors_at[si].iter().sum::<u32>() as f64 / survivors_at[si].len() as f64;

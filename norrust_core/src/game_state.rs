@@ -168,8 +168,12 @@ pub fn leadership_bonus(state: &GameState, unit_id: u32) -> u32 {
     };
     let mut best_diff: u32 = 0;
     for (&uid, &hex) in &state.positions {
-        if uid == unit_id { continue; }
-        if pos.distance(hex) != 1 { continue; }
+        if uid == unit_id {
+            continue;
+        }
+        if pos.distance(hex) != 1 {
+            continue;
+        }
         if let Some(ally) = state.units.get(&uid) {
             if ally.faction == unit_faction
                 && ally.level > unit_level
@@ -191,7 +195,10 @@ pub fn leadership_bonus(state: &GameState, unit_id: u32) -> u32 {
 /// action was rejected. State is unchanged on error.
 pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionError> {
     match action {
-        Action::Move { unit_id, destination } => {
+        Action::Move {
+            unit_id,
+            destination,
+        } => {
             let unit = state
                 .units
                 .get(&unit_id)
@@ -246,7 +253,10 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
             let mover_faction = state.active_faction;
             let mut spawns_to_place: Vec<PendingSpawn> = Vec::new();
             for tz in &mut state.trigger_zones {
-                if !tz.triggered && tz.trigger_hex == destination && tz.trigger_faction == mover_faction {
+                if !tz.triggered
+                    && tz.trigger_hex == destination
+                    && tz.trigger_faction == mover_faction
+                {
                     tz.triggered = true;
                     spawns_to_place.extend(tz.spawns.drain(..));
                 }
@@ -262,7 +272,10 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
             Ok(())
         }
 
-        Action::Attack { attacker_id, defender_id } => {
+        Action::Attack {
+            attacker_id,
+            defender_id,
+        } => {
             // Validate attacker belongs to the active faction
             {
                 let attacker = state
@@ -300,7 +313,8 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                     state.units.get_mut(&attacker_id).unwrap().attacked = true;
                     return Ok(());
                 }
-                unit.attacks.iter()
+                unit.attacks
+                    .iter()
                     .find(|a| a.range == range_needed)
                     .cloned()
                     .ok_or(ActionError::NotAdjacent)?
@@ -313,9 +327,14 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                     .get(&defender_id)
                     .ok_or(ActionError::UnitNotFound(defender_id))?;
                 let terrain_id = state.board.terrain_at(defender_pos).unwrap_or("");
-                defender.defense.get(terrain_id).copied()
+                defender
+                    .defense
+                    .get(terrain_id)
+                    .copied()
                     .unwrap_or_else(|| {
-                        state.board.tile_at(defender_pos)
+                        state
+                            .board
+                            .tile_at(defender_pos)
                             .map(|t| t.defense)
                             .unwrap_or(defender.default_defense)
                     })
@@ -331,7 +350,11 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
             // Steadfast: double positive resistances when defending
             let resistance = {
                 let defender = state.units.get(&defender_id).unwrap();
-                let mut r = defender.resistances.get(&attack.attack_type).copied().unwrap_or(0);
+                let mut r = defender
+                    .resistances
+                    .get(&attack.attack_type)
+                    .copied()
+                    .unwrap_or(0);
                 if r < 0 && defender.abilities.iter().any(|a| a == "steadfast") {
                     r = (r * 2).max(-100);
                 }
@@ -349,7 +372,8 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
             {
                 let bonus = leadership_bonus(state, attacker_id);
                 if bonus > 0 {
-                    effective_damage = (effective_damage as u64 * (100 + bonus as u64) / 100) as u32;
+                    effective_damage =
+                        (effective_damage as u64 * (100 + bonus as u64) / 100) as u32;
                 }
             }
 
@@ -365,7 +389,9 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                     y: defender_pos.y + (defender_pos.y - attacker_pos.y),
                     z: defender_pos.z + (defender_pos.z - attacker_pos.z),
                 };
-                let flanked = state.hex_to_unit.get(&opposite)
+                let flanked = state
+                    .hex_to_unit
+                    .get(&opposite)
                     .filter(|&&uid| uid != attacker_id)
                     .and_then(|&uid| state.units.get(&uid))
                     .map(|u| u.faction == state.active_faction)
@@ -376,8 +402,13 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
             }
 
             // Resolve — requires mutable borrow of rng only
-            let damage =
-                resolve_attack(&mut state.rng, effective_damage, attack.strikes, terrain_defense, tod_mod);
+            let damage = resolve_attack(
+                &mut state.rng,
+                effective_damage,
+                attack.strikes,
+                terrain_defense,
+                tod_mod,
+            );
 
             // Apply damage and mark attacker as having attacked
             state.units.get_mut(&attacker_id).unwrap().attacked = true;
@@ -413,8 +444,8 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
 
             // XP grant: attacker earns 1 for a hit, +8 bonus for a kill.
             if state.units.contains_key(&attacker_id) {
-                let xp_earned = if damage > 0 { 1 } else { 0 }
-                    + if defender_hp == 0 { 8 } else { 0 };
+                let xp_earned =
+                    if damage > 0 { 1 } else { 0 } + if defender_hp == 0 { 8 } else { 0 };
                 if xp_earned > 0 {
                     let a = state.units.get_mut(&attacker_id).unwrap();
                     a.xp += xp_earned;
@@ -426,7 +457,9 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
 
             // Retaliation: defender strikes back if still alive and has attacks
             if state.units.contains_key(&defender_id) {
-                let ret_attack = state.units.get(&defender_id)
+                let ret_attack = state
+                    .units
+                    .get(&defender_id)
                     .and_then(|d| d.attacks.iter().find(|a| a.range == range_needed))
                     .cloned();
 
@@ -434,12 +467,13 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                     let ret_defense = {
                         let a = state.units.get(&attacker_id).unwrap();
                         let terrain_id = state.board.terrain_at(attacker_pos).unwrap_or("");
-                        a.defense.get(terrain_id).copied()
-                            .unwrap_or_else(|| {
-                                state.board.tile_at(attacker_pos)
-                                    .map(|t| t.defense)
-                                    .unwrap_or(a.default_defense)
-                            })
+                        a.defense.get(terrain_id).copied().unwrap_or_else(|| {
+                            state
+                                .board
+                                .tile_at(attacker_pos)
+                                .map(|t| t.defense)
+                                .unwrap_or(a.default_defense)
+                        })
                     };
                     let ret_tod = {
                         let d = state.units.get(&defender_id).unwrap();
@@ -448,14 +482,19 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                     // Steadfast: double positive resistances for attacker when being retaliated against
                     let ret_resistance = {
                         let a = state.units.get(&attacker_id).unwrap();
-                        let mut r = a.resistances.get(&def_attack.attack_type).copied().unwrap_or(0);
+                        let mut r = a
+                            .resistances
+                            .get(&def_attack.attack_type)
+                            .copied()
+                            .unwrap_or(0);
                         if r < 0 && a.abilities.iter().any(|ab| ab == "steadfast") {
                             r = (r * 2).max(-100);
                         }
                         r
                     };
                     let mut ret_effective_damage =
-                        ((def_attack.damage as i64 * (100 + ret_resistance as i64)) / 100).max(0) as u32;
+                        ((def_attack.damage as i64 * (100 + ret_resistance as i64)) / 100).max(0)
+                            as u32;
 
                     // Slow: slowed defender deals half retaliation damage
                     if state.units.get(&defender_id).unwrap().slowed {
@@ -466,7 +505,8 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                     {
                         let bonus = leadership_bonus(state, defender_id);
                         if bonus > 0 {
-                            ret_effective_damage = (ret_effective_damage as u64 * (100 + bonus as u64) / 100) as u32;
+                            ret_effective_damage =
+                                (ret_effective_damage as u64 * (100 + bonus as u64) / 100) as u32;
                         }
                     }
 
@@ -538,11 +578,20 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
 
         Action::EndTurn => {
             // Capture villages where the ending faction's units are standing.
+            // Ownership persists after the unit leaves until an enemy ends a turn on it.
             let ending_faction = state.active_faction as i8;
-            let captures: Vec<Hex> = state.units.iter()
+            let captures: Vec<Hex> = state
+                .units
+                .iter()
                 .filter(|(_, u)| u.faction == state.active_faction)
                 .filter_map(|(id, _)| state.positions.get(id).copied())
-                .filter(|&hex| state.board.tile_at(hex).map(|t| t.healing > 0).unwrap_or(false))
+                .filter(|&hex| {
+                    state
+                        .board
+                        .tile_at(hex)
+                        .map(|t| t.terrain_id == "village")
+                        .unwrap_or(false)
+                })
                 .collect();
             for hex in captures {
                 state.village_owners.insert(hex, ending_faction);
@@ -550,13 +599,17 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
 
             // Poison tick for ending faction: village cures, otherwise 8 damage
             let ending = state.active_faction;
-            let poisoned_units: Vec<u32> = state.units.iter()
+            let poisoned_units: Vec<u32> = state
+                .units
+                .iter()
                 .filter(|(_, u)| u.faction == ending && u.poisoned)
                 .map(|(id, _)| *id)
                 .collect();
             let mut poison_dead: Vec<u32> = Vec::new();
             for uid in poisoned_units {
-                let on_village = state.positions.get(&uid)
+                let on_village = state
+                    .positions
+                    .get(&uid)
                     .and_then(|&hex| state.board.tile_at(hex))
                     .map(|t| t.healing > 0)
                     .unwrap_or(false);
@@ -591,9 +644,12 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
 
             // Village income: newly-active faction earns 2 gold per owned village
             let active_i8 = state.active_faction as i8;
-            let income = state.village_owners.values()
+            let income = state
+                .village_owners
+                .values()
                 .filter(|&&owner| owner == active_i8)
-                .count() as u32 * 2;
+                .count() as u32
+                * 2;
             state.gold[state.active_faction as usize] += income;
 
             for unit in state.units.values_mut() {
@@ -603,7 +659,9 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
 
             // Heal units of the newly-active faction based on their terrain.
             let active = state.active_faction;
-            let to_heal: Vec<u32> = state.units.iter()
+            let to_heal: Vec<u32> = state
+                .units
+                .iter()
                 .filter(|(_, u)| u.faction == active)
                 .map(|(id, _)| *id)
                 .collect();
@@ -618,7 +676,9 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
             }
 
             // Regenerates: units with "regenerates_N" ability heal N HP and cure poison
-            let regen_units: Vec<(u32, u32)> = state.units.iter()
+            let regen_units: Vec<(u32, u32)> = state
+                .units
+                .iter()
                 .filter(|(_, u)| u.faction == active)
                 .filter_map(|(&id, u)| {
                     for ab in &u.abilities {
@@ -659,9 +719,17 @@ pub fn apply_recruit(
     let active = state.active_faction;
     let keep_hex = state.positions.iter().find_map(|(&uid, &hex)| {
         let unit = state.units.get(&uid)?;
-        if unit.faction != active { return None; }
-        if !unit.abilities.iter().any(|a| a == "leader") { return None; }
-        state.board.tile_at(hex).filter(|t| t.terrain_id == "keep").map(|_| hex)
+        if unit.faction != active {
+            return None;
+        }
+        if !unit.abilities.iter().any(|a| a == "leader") {
+            return None;
+        }
+        state
+            .board
+            .tile_at(hex)
+            .filter(|t| t.terrain_id == "keep")
+            .map(|_| hex)
     });
     let keep_hex = keep_hex.ok_or(ActionError::LeaderNotOnKeep)?;
     // Destination must be a castle tile adjacent to the keep.
@@ -706,7 +774,13 @@ mod tests {
         let mut state = GameState::new(board);
         state.place_unit(Unit::new(1, "fighter", 30, 0), Hex::ORIGIN);
         let dest = Hex::from_offset(1, 0);
-        let result = apply_action(&mut state, Action::Move { unit_id: 1, destination: dest });
+        let result = apply_action(
+            &mut state,
+            Action::Move {
+                unit_id: 1,
+                destination: dest,
+            },
+        );
         assert_eq!(result, Ok(()));
         assert_eq!(state.positions[&1], dest);
         assert!(state.units[&1].moved);
@@ -718,7 +792,13 @@ mod tests {
         let mut state = GameState::new(board);
         state.place_unit(Unit::new(1, "fighter", 30, 0), Hex::ORIGIN);
         let out = Hex::from_offset(5, 0);
-        let result = apply_action(&mut state, Action::Move { unit_id: 1, destination: out });
+        let result = apply_action(
+            &mut state,
+            Action::Move {
+                unit_id: 1,
+                destination: out,
+            },
+        );
         assert_eq!(result, Err(ActionError::DestinationOutOfBounds));
         assert_eq!(state.positions[&1], Hex::ORIGIN);
     }
@@ -730,7 +810,10 @@ mod tests {
         state.place_unit(Unit::new(1, "fighter", 30, 0), Hex::ORIGIN);
         apply_action(
             &mut state,
-            Action::Move { unit_id: 1, destination: Hex::from_offset(1, 0) },
+            Action::Move {
+                unit_id: 1,
+                destination: Hex::from_offset(1, 0),
+            },
         )
         .unwrap();
         assert!(state.units[&1].moved);
@@ -748,7 +831,13 @@ mod tests {
         state.place_unit(unit, Hex::ORIGIN);
         // 4 steps away — exceeds budget
         let far = Hex::from_offset(0, 4);
-        let result = apply_action(&mut state, Action::Move { unit_id: 1, destination: far });
+        let result = apply_action(
+            &mut state,
+            Action::Move {
+                unit_id: 1,
+                destination: far,
+            },
+        );
         assert_eq!(result, Err(ActionError::DestinationUnreachable));
         assert_eq!(state.positions[&1], Hex::ORIGIN); // position unchanged
     }
@@ -778,11 +867,22 @@ mod tests {
         state.place_unit(attacker, Hex::ORIGIN);
         state.place_unit(defender, Hex::from_offset(1, 0));
 
-        let result =
-            apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 });
+        let result = apply_action(
+            &mut state,
+            Action::Attack {
+                attacker_id: 1,
+                defender_id: 2,
+            },
+        );
         assert_eq!(result, Ok(()));
-        assert!(!state.units.contains_key(&2), "defender must be removed after death");
-        assert!(!state.positions.contains_key(&2), "defender position must be cleared");
+        assert!(
+            !state.units.contains_key(&2),
+            "defender must be removed after death"
+        );
+        assert!(
+            !state.positions.contains_key(&2),
+            "defender position must be cleared"
+        );
     }
 
     #[test]
@@ -790,9 +890,12 @@ mod tests {
         let board = Board::new(10, 10);
         let mut state = GameState::new_seeded(board, 42);
         let attack = AttackDef {
-            id: "sword".to_string(), name: "Sword".to_string(),
-            damage: 1, strikes: 1,
-            attack_type: "blade".to_string(), range: "melee".to_string(),
+            id: "sword".to_string(),
+            name: "Sword".to_string(),
+            damage: 1,
+            strikes: 1,
+            attack_type: "blade".to_string(),
+            range: "melee".to_string(),
             ..Default::default()
         };
         let mut attacker = Unit::new(1, "fighter", 30, 0);
@@ -803,9 +906,19 @@ mod tests {
         state.place_unit(attacker, Hex::ORIGIN);
         state.place_unit(defender, Hex::from_offset(1, 0));
 
-        apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+        apply_action(
+            &mut state,
+            Action::Attack {
+                attacker_id: 1,
+                defender_id: 2,
+            },
+        )
+        .unwrap();
 
-        assert!(state.units[&1].xp >= 1, "attacker should gain at least 1 XP for a hit");
+        assert!(
+            state.units[&1].xp >= 1,
+            "attacker should gain at least 1 XP for a hit"
+        );
     }
 
     #[test]
@@ -813,9 +926,12 @@ mod tests {
         let board = Board::new(10, 10);
         let mut state = GameState::new_seeded(board, 42);
         let attack = AttackDef {
-            id: "sword".to_string(), name: "Sword".to_string(),
-            damage: 100, strikes: 1,
-            attack_type: "blade".to_string(), range: "melee".to_string(),
+            id: "sword".to_string(),
+            name: "Sword".to_string(),
+            damage: 100,
+            strikes: 1,
+            attack_type: "blade".to_string(),
+            range: "melee".to_string(),
             ..Default::default()
         };
         let mut attacker = Unit::new(1, "fighter", 30, 0);
@@ -826,7 +942,14 @@ mod tests {
         state.place_unit(attacker, Hex::ORIGIN);
         state.place_unit(defender, Hex::from_offset(1, 0));
 
-        apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+        apply_action(
+            &mut state,
+            Action::Attack {
+                attacker_id: 1,
+                defender_id: 2,
+            },
+        )
+        .unwrap();
 
         assert!(!state.units.contains_key(&2), "defender must be dead");
         assert_eq!(state.units[&1].xp, 9, "1 hit XP + 8 kill bonus = 9");
@@ -837,9 +960,12 @@ mod tests {
         let board = Board::new(10, 10);
         let mut state = GameState::new_seeded(board, 42);
         let attack = AttackDef {
-            id: "sword".to_string(), name: "Sword".to_string(),
-            damage: 100, strikes: 1,
-            attack_type: "blade".to_string(), range: "melee".to_string(),
+            id: "sword".to_string(),
+            name: "Sword".to_string(),
+            damage: 100,
+            strikes: 1,
+            attack_type: "blade".to_string(),
+            range: "melee".to_string(),
             ..Default::default()
         };
         let mut attacker = Unit::new(1, "fighter", 30, 0);
@@ -851,10 +977,20 @@ mod tests {
         state.place_unit(attacker, Hex::ORIGIN);
         state.place_unit(defender, Hex::from_offset(1, 0));
 
-        apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+        apply_action(
+            &mut state,
+            Action::Attack {
+                attacker_id: 1,
+                defender_id: 2,
+            },
+        )
+        .unwrap();
 
         assert!(state.units[&1].xp >= 40, "xp should reach threshold");
-        assert!(state.units[&1].advancement_pending, "advancement_pending must be set");
+        assert!(
+            state.units[&1].advancement_pending,
+            "advancement_pending must be set"
+        );
     }
 
     #[test]
@@ -862,18 +998,24 @@ mod tests {
         let board = Board::new(10, 10);
         let mut state = GameState::new_seeded(board, 42);
         let attack = AttackDef {
-            id: "sword".to_string(), name: "Sword".to_string(),
-            damage: 1, strikes: 1,
-            attack_type: "blade".to_string(), range: "melee".to_string(),
+            id: "sword".to_string(),
+            name: "Sword".to_string(),
+            damage: 1,
+            strikes: 1,
+            attack_type: "blade".to_string(),
+            range: "melee".to_string(),
             ..Default::default()
         };
         let mut attacker = Unit::new(1, "fighter", 30, 0);
         attacker.attacks = vec![attack];
         attacker.default_defense = 0;
         let ret_attack = AttackDef {
-            id: "bow".to_string(), name: "Bow".to_string(),
-            damage: 1, strikes: 1,
-            attack_type: "pierce".to_string(), range: "melee".to_string(),
+            id: "bow".to_string(),
+            name: "Bow".to_string(),
+            damage: 1,
+            strikes: 1,
+            attack_type: "pierce".to_string(),
+            range: "melee".to_string(),
             ..Default::default()
         };
         let mut defender = Unit::new(2, "archer", 30, 1);
@@ -883,9 +1025,19 @@ mod tests {
         state.place_unit(attacker, Hex::ORIGIN);
         state.place_unit(defender, Hex::from_offset(1, 0));
 
-        apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+        apply_action(
+            &mut state,
+            Action::Attack {
+                attacker_id: 1,
+                defender_id: 2,
+            },
+        )
+        .unwrap();
 
-        assert!(state.units[&2].xp >= 1, "defender should gain at least 1 XP for retaliation hit");
+        assert!(
+            state.units[&2].xp >= 1,
+            "defender should gain at least 1 XP for retaliation hit"
+        );
     }
 
     #[test]
@@ -896,9 +1048,12 @@ mod tests {
         let mut state = GameState::new(board);
 
         let bow = AttackDef {
-            id: "bow".to_string(), name: "Bow".to_string(),
-            damage: 5, strikes: 4,
-            attack_type: "pierce".to_string(), range: "ranged".to_string(),
+            id: "bow".to_string(),
+            name: "Bow".to_string(),
+            damage: 5,
+            strikes: 4,
+            attack_type: "pierce".to_string(),
+            range: "ranged".to_string(),
             ..Default::default()
         };
         let mut archer = Unit::new(1, "archer", 30, 0);
@@ -906,9 +1061,12 @@ mod tests {
         archer.default_defense = 0;
 
         let sword = AttackDef {
-            id: "sword".to_string(), name: "Sword".to_string(),
-            damage: 7, strikes: 3,
-            attack_type: "blade".to_string(), range: "melee".to_string(),
+            id: "sword".to_string(),
+            name: "Sword".to_string(),
+            damage: 7,
+            strikes: 3,
+            attack_type: "blade".to_string(),
+            range: "melee".to_string(),
             ..Default::default()
         };
         let mut grunt = Unit::new(2, "grunt", 30, 1);
@@ -919,9 +1077,19 @@ mod tests {
         state.place_unit(archer, Hex::ORIGIN);
         state.place_unit(grunt, Hex::from_offset(2, 0));
 
-        apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+        apply_action(
+            &mut state,
+            Action::Attack {
+                attacker_id: 1,
+                defender_id: 2,
+            },
+        )
+        .unwrap();
 
-        assert_eq!(state.units[&1].hp, 30, "archer should take no retaliation from melee-only defender at range");
+        assert_eq!(
+            state.units[&1].hp, 30,
+            "archer should take no retaliation from melee-only defender at range"
+        );
     }
 
     #[test]
@@ -932,13 +1100,16 @@ mod tests {
 
         // Place a village tile
         let village_hex = Hex::from_offset(2, 2);
-        state.board.set_tile(village_hex, Tile {
-            terrain_id: "village".to_string(),
-            movement_cost: 1,
-            defense: 40,
-            healing: 8,
-            color: "#8b7355".to_string(),
-        });
+        state.board.set_tile(
+            village_hex,
+            Tile {
+                terrain_id: "village".to_string(),
+                movement_cost: 1,
+                defense: 40,
+                healing: 8,
+                color: "#8b7355".to_string(),
+            },
+        );
 
         // Faction 0 unit standing on the village
         state.place_unit(Unit::new(1, "fighter", 30, 0), village_hex);
@@ -959,13 +1130,16 @@ mod tests {
         let mut state = GameState::new(board);
 
         let village_hex = Hex::from_offset(3, 1);
-        state.board.set_tile(village_hex, Tile {
-            terrain_id: "village".to_string(),
-            movement_cost: 1,
-            defense: 40,
-            healing: 8,
-            color: "#8b7355".to_string(),
-        });
+        state.board.set_tile(
+            village_hex,
+            Tile {
+                terrain_id: "village".to_string(),
+                movement_cost: 1,
+                defense: 40,
+                healing: 8,
+                color: "#8b7355".to_string(),
+            },
+        );
 
         // Faction 0 captures on turn 1
         state.place_unit(Unit::new(1, "fighter", 30, 0), village_hex);
@@ -1019,15 +1193,25 @@ mod tests {
             state.place_unit(defender, defender_pos);
 
             // Place a tile at the defender's position with defense = 100 (never hit)
-            state.board.set_tile(defender_pos, Tile {
-                terrain_id: "hills".to_string(),
-                movement_cost: 2,
-                defense: 100,
-                healing: 0,
-                color: "#8b7355".to_string(),
-            });
+            state.board.set_tile(
+                defender_pos,
+                Tile {
+                    terrain_id: "hills".to_string(),
+                    movement_cost: 2,
+                    defense: 100,
+                    healing: 0,
+                    color: "#8b7355".to_string(),
+                },
+            );
 
-            apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+            apply_action(
+                &mut state,
+                Action::Attack {
+                    attacker_id: 1,
+                    defender_id: 2,
+                },
+            )
+            .unwrap();
 
             // With tile.defense = 100, hit_pct = 0, so 0 damage every strike
             assert_eq!(
@@ -1064,15 +1248,25 @@ mod tests {
             state.place_unit(defender, defender_pos);
 
             // Tile has defense = 100 — but unit-specific entry (0) should take priority
-            state.board.set_tile(defender_pos, Tile {
-                terrain_id: "hills".to_string(),
-                movement_cost: 2,
-                defense: 100,
-                healing: 0,
-                color: "#8b7355".to_string(),
-            });
+            state.board.set_tile(
+                defender_pos,
+                Tile {
+                    terrain_id: "hills".to_string(),
+                    movement_cost: 2,
+                    defense: 100,
+                    healing: 0,
+                    color: "#8b7355".to_string(),
+                },
+            );
 
-            apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+            apply_action(
+                &mut state,
+                Action::Attack {
+                    attacker_id: 1,
+                    defender_id: 2,
+                },
+            )
+            .unwrap();
 
             // Unit's defense["hills"] = 0 overrides tile.defense = 100 — damage must land
             // Use get() in case all 10 strikes killed the defender
@@ -1106,8 +1300,13 @@ mod tests {
         state.place_unit(attacker, Hex::ORIGIN);
         state.place_unit(defender, Hex::from_offset(2, 0));
 
-        let result =
-            apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 });
+        let result = apply_action(
+            &mut state,
+            Action::Attack {
+                attacker_id: 1,
+                defender_id: 2,
+            },
+        );
         assert_eq!(result, Err(ActionError::NotAdjacent));
         // Neither unit should be modified
         assert_eq!(state.units[&2].hp, 30, "defender HP must be unchanged");
@@ -1128,7 +1327,10 @@ mod tests {
         // faction 0 ends turn → faction 1 becomes active → faction 1 gets income (0 villages = 0g)
         apply_action(&mut state, Action::EndTurn).unwrap();
         assert_eq!(state.active_faction, 1);
-        assert_eq!(state.gold[1], 10, "faction 1 owns no villages, gold unchanged");
+        assert_eq!(
+            state.gold[1], 10,
+            "faction 1 owns no villages, gold unchanged"
+        );
 
         // faction 1 ends turn → faction 0 becomes active → faction 0 gets income (1 village = 2g)
         apply_action(&mut state, Action::EndTurn).unwrap();
@@ -1140,9 +1342,12 @@ mod tests {
 
     fn make_attack(specials: Vec<&str>) -> AttackDef {
         AttackDef {
-            id: "sword".to_string(), name: "Sword".to_string(),
-            damage: 10, strikes: 1,
-            attack_type: "blade".to_string(), range: "melee".to_string(),
+            id: "sword".to_string(),
+            name: "Sword".to_string(),
+            damage: 10,
+            strikes: 1,
+            attack_type: "blade".to_string(),
+            range: "melee".to_string(),
             specials: specials.into_iter().map(String::from).collect(),
         }
     }
@@ -1159,7 +1364,14 @@ mod tests {
         state.place_unit(attacker, Hex::ORIGIN);
         state.place_unit(defender, Hex::from_offset(1, 0));
 
-        apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+        apply_action(
+            &mut state,
+            Action::Attack {
+                attacker_id: 1,
+                defender_id: 2,
+            },
+        )
+        .unwrap();
 
         assert!(state.units[&1].hp > 20, "drain should heal attacker");
         assert!(state.units[&1].hp <= 30, "drain cannot exceed max_hp");
@@ -1176,9 +1388,19 @@ mod tests {
         state.place_unit(attacker, Hex::ORIGIN);
         state.place_unit(defender, Hex::from_offset(1, 0));
 
-        apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+        apply_action(
+            &mut state,
+            Action::Attack {
+                attacker_id: 1,
+                defender_id: 2,
+            },
+        )
+        .unwrap();
 
-        assert!(state.units[&2].poisoned, "defender should be poisoned after hit");
+        assert!(
+            state.units[&2].poisoned,
+            "defender should be poisoned after hit"
+        );
     }
 
     #[test]
@@ -1192,7 +1414,10 @@ mod tests {
         // Faction 0 ends turn → poison ticks for ending faction (0)
         apply_action(&mut state, Action::EndTurn).unwrap();
 
-        assert_eq!(state.units[&1].hp, 22, "poisoned unit should take 8 damage: 30 - 8 = 22");
+        assert_eq!(
+            state.units[&1].hp, 22,
+            "poisoned unit should take 8 damage: 30 - 8 = 22"
+        );
     }
 
     #[test]
@@ -1201,19 +1426,30 @@ mod tests {
         let board = Board::new(10, 10);
         let mut state = GameState::new(board);
         let village_hex = Hex::from_offset(1, 1);
-        state.board.set_tile(village_hex, Tile {
-            terrain_id: "village".to_string(),
-            movement_cost: 1, defense: 40, healing: 8,
-            color: "#8b7355".to_string(),
-        });
+        state.board.set_tile(
+            village_hex,
+            Tile {
+                terrain_id: "village".to_string(),
+                movement_cost: 1,
+                defense: 40,
+                healing: 8,
+                color: "#8b7355".to_string(),
+            },
+        );
         let mut unit = Unit::new(1, "fighter", 30, 0);
         unit.poisoned = true;
         state.place_unit(unit, village_hex);
 
         apply_action(&mut state, Action::EndTurn).unwrap();
 
-        assert!(!state.units[&1].poisoned, "poison should be cured at village");
-        assert_eq!(state.units[&1].hp, 30, "unit should not take poison damage when cured");
+        assert!(
+            !state.units[&1].poisoned,
+            "poison should be cured at village"
+        );
+        assert_eq!(
+            state.units[&1].hp, 30,
+            "unit should not take poison damage when cured"
+        );
     }
 
     #[test]
@@ -1228,10 +1464,20 @@ mod tests {
         state.place_unit(attacker, Hex::ORIGIN);
         state.place_unit(defender, Hex::from_offset(1, 0));
 
-        apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+        apply_action(
+            &mut state,
+            Action::Attack {
+                attacker_id: 1,
+                defender_id: 2,
+            },
+        )
+        .unwrap();
 
         // Charge doubles 10 → 20 per hit, 1 strike, defender takes 20
-        assert_eq!(state.units[&2].hp, 30, "charge should double damage: 50 - 20 = 30");
+        assert_eq!(
+            state.units[&2].hp, 30,
+            "charge should double damage: 50 - 20 = 30"
+        );
     }
 
     #[test]
@@ -1248,10 +1494,20 @@ mod tests {
         state.place_unit(defender, Hex::from_offset(1, 0));
         state.place_unit(ally, Hex::from_offset(2, 0));
 
-        apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+        apply_action(
+            &mut state,
+            Action::Attack {
+                attacker_id: 1,
+                defender_id: 2,
+            },
+        )
+        .unwrap();
 
         // Backstab doubles 10 → 20, 1 strike → defender takes 20
-        assert_eq!(state.units[&2].hp, 30, "backstab should double damage when flanked: 50 - 20 = 30");
+        assert_eq!(
+            state.units[&2].hp, 30,
+            "backstab should double damage when flanked: 50 - 20 = 30"
+        );
     }
 
     #[test]
@@ -1265,8 +1521,18 @@ mod tests {
 
         // Try to move 4 hexes — should fail because slowed movement = 3
         let far = Hex::from_offset(0, 4);
-        let result = apply_action(&mut state, Action::Move { unit_id: 1, destination: far });
-        assert_eq!(result, Err(ActionError::DestinationUnreachable), "slowed unit with movement 6 should only reach 3 hexes");
+        let result = apply_action(
+            &mut state,
+            Action::Move {
+                unit_id: 1,
+                destination: far,
+            },
+        );
+        assert_eq!(
+            result,
+            Err(ActionError::DestinationUnreachable),
+            "slowed unit with movement 6 should only reach 3 hexes"
+        );
     }
 
     #[test]
@@ -1281,10 +1547,20 @@ mod tests {
         state.place_unit(attacker, Hex::ORIGIN);
         state.place_unit(defender, Hex::from_offset(1, 0));
 
-        apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+        apply_action(
+            &mut state,
+            Action::Attack {
+                attacker_id: 1,
+                defender_id: 2,
+            },
+        )
+        .unwrap();
 
         // Slowed: 10 / 2 = 5 per hit, 1 strike → defender takes 5
-        assert_eq!(state.units[&2].hp, 45, "slowed attacker should deal half damage: 50 - 5 = 45");
+        assert_eq!(
+            state.units[&2].hp, 45,
+            "slowed attacker should deal half damage: 50 - 5 = 45"
+        );
     }
 
     #[test]
@@ -1299,7 +1575,10 @@ mod tests {
         // Faction 0 ends turn → faction 1 becomes active → slowed cleared for faction 1
         apply_action(&mut state, Action::EndTurn).unwrap();
         assert_eq!(state.active_faction, 1);
-        assert!(!state.units[&2].slowed, "slowed should be cleared at start of faction's turn");
+        assert!(
+            !state.units[&2].slowed,
+            "slowed should be cleared at start of faction's turn"
+        );
     }
 
     // ── Unit abilities tests ──────────────────────────────────────────────
@@ -1324,10 +1603,20 @@ mod tests {
         state.place_unit(leader, Hex::from_offset(0, 1)); // adjacent to attacker
         state.place_unit(defender, Hex::from_offset(1, 0)); // adjacent to attacker
 
-        apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+        apply_action(
+            &mut state,
+            Action::Attack {
+                attacker_id: 1,
+                defender_id: 2,
+            },
+        )
+        .unwrap();
 
         // Leadership: +25% on 10 = 12 (integer), 1 strike → defender takes 12
-        assert_eq!(state.units[&2].hp, 38, "leadership should boost damage: 10 * 1.25 = 12, 50 - 12 = 38");
+        assert_eq!(
+            state.units[&2].hp, 38,
+            "leadership should boost damage: 10 * 1.25 = 12, 50 - 12 = 38"
+        );
     }
 
     #[test]
@@ -1342,7 +1631,10 @@ mod tests {
         // Faction 0 ends turn → faction 1 active → regenerates heals
         apply_action(&mut state, Action::EndTurn).unwrap();
 
-        assert_eq!(state.units[&2].hp, 33, "regenerates_8 should heal 8: 25 + 8 = 33");
+        assert_eq!(
+            state.units[&2].hp, 33,
+            "regenerates_8 should heal 8: 25 + 8 = 33"
+        );
     }
 
     #[test]
@@ -1362,7 +1654,10 @@ mod tests {
         // Regeneration heals 8 HP; poison should NOT have ticked
         // Poison ticks for ending faction (0), but unit is faction 1 so no poison tick
         // Then regenerates heals when faction 1 becomes active
-        assert_eq!(state.units[&2].hp, 38, "regenerates should heal: 30 + 8 = 38");
+        assert_eq!(
+            state.units[&2].hp, 38,
+            "regenerates should heal: 30 + 8 = 38"
+        );
     }
 
     #[test]
@@ -1380,11 +1675,21 @@ mod tests {
         state.place_unit(attacker, Hex::ORIGIN);
         state.place_unit(defender, Hex::from_offset(1, 0));
 
-        apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+        apply_action(
+            &mut state,
+            Action::Attack {
+                attacker_id: 1,
+                defender_id: 2,
+            },
+        )
+        .unwrap();
 
         // Steadfast doubles -20 → -40 resistance
         // effective_damage = 10 * (100 + (-40)) / 100 = 10 * 60/100 = 6
-        assert_eq!(state.units[&2].hp, 44, "steadfast should double resistance: 10 * 60% = 6, 50 - 6 = 44");
+        assert_eq!(
+            state.units[&2].hp, 44,
+            "steadfast should double resistance: 10 * 60% = 6, 50 - 6 = 44"
+        );
     }
 
     #[test]
@@ -1401,10 +1706,20 @@ mod tests {
         state.place_unit(attacker, Hex::ORIGIN);
         state.place_unit(defender, Hex::from_offset(1, 0));
 
-        apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).unwrap();
+        apply_action(
+            &mut state,
+            Action::Attack {
+                attacker_id: 1,
+                defender_id: 2,
+            },
+        )
+        .unwrap();
 
         // Weakness not doubled: 10 * (100 + 10) / 100 = 11 damage
-        assert_eq!(state.units[&2].hp, 39, "steadfast should not double weakness: 50 - 11 = 39");
+        assert_eq!(
+            state.units[&2].hp, 39,
+            "steadfast should not double weakness: 50 - 11 = 39"
+        );
     }
 
     #[test]

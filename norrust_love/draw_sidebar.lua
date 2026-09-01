@@ -224,12 +224,37 @@ function M.draw_terrain_panel(ctx)
         love.graphics.setColor(0.4, 1.0, 0.4)
         love.graphics.print(string.format("Healing: +%d HP", t.healing), vp_w - SIDEBAR_X_OFF, y)
         y = y + 16
+    end
+
+    local tid = t.terrain_id or ""
+    if tid == "village" then
+        love.graphics.setColor(C_GOLD[1], C_GOLD[2], C_GOLD[3], 1)
+        love.graphics.print("Income: 2g / turn", vp_w - SIDEBAR_X_OFF, y)
+        y = y + 16
         if t.owner and t.owner >= 0 then
             local fc = faction_color(ctx, t.owner)
             love.graphics.setColor(fc[1], fc[2], fc[3])
-            love.graphics.print(t.owner == 0 and "Owner: Blue" or "Owner: Red", vp_w - SIDEBAR_X_OFF, y)
-            y = y + 16
+            local owner_name = t.owner == 0 and "Blue" or "Red"
+            love.graphics.printf(
+                "Owner: " .. owner_name .. " (held until the other side ends a turn here)",
+                vp_w - SIDEBAR_X_OFF, y, SIDEBAR_W - SIDEBAR_PAD * 2, "left"
+            )
+            y = y + 32
+        else
+            love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3])
+            love.graphics.printf(
+                "Neutral: no gold until a side ends a turn standing here",
+                vp_w - SIDEBAR_X_OFF, y, SIDEBAR_W - SIDEBAR_PAD * 2, "left"
+            )
+            y = y + 32
         end
+    elseif tid == "castle" or tid == "keep" then
+        love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3])
+        love.graphics.printf(
+            "No gold. Leader on keep recruits onto castle hexes.",
+            vp_w - SIDEBAR_X_OFF, y, SIDEBAR_W - SIDEBAR_PAD * 2, "left"
+        )
+        y = y + 32
     end
 
     -- Unit-specific stats

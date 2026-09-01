@@ -16,8 +16,15 @@ use crate::unit::Unit;
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "action")]
 pub enum ActionRecord {
-    Move { unit_id: u32, to_col: i32, to_row: i32 },
-    Attack { attacker_id: u32, defender_id: u32 },
+    Move {
+        unit_id: u32,
+        to_col: i32,
+        to_row: i32,
+    },
+    Attack {
+        attacker_id: u32,
+        defender_id: u32,
+    },
     Recruit,
 }
 
@@ -67,10 +74,22 @@ fn score_attack(
     let attacker_tile = state.board.tile_at(attacker_hex);
 
     let defender_defense = defender_tile
-        .and_then(|t| defender.defense.get(&t.terrain_id).copied().or(Some(t.defense)))
+        .and_then(|t| {
+            defender
+                .defense
+                .get(&t.terrain_id)
+                .copied()
+                .or(Some(t.defense))
+        })
         .unwrap_or(defender.default_defense);
     let attacker_defense = attacker_tile
-        .and_then(|t| attacker.defense.get(&t.terrain_id).copied().or(Some(t.defense)))
+        .and_then(|t| {
+            attacker
+                .defense
+                .get(&t.terrain_id)
+                .copied()
+                .or(Some(t.defense))
+        })
         .unwrap_or(attacker.default_defense);
 
     let atk_resistance = defender
@@ -105,7 +124,11 @@ fn score_attack(
         None => 0.0,
     };
 
-    let kill_bonus = if dealt >= defender.hp as f32 { 3.0 } else { 1.0 };
+    let kill_bonus = if dealt >= defender.hp as f32 {
+        3.0
+    } else {
+        1.0
+    };
     dealt * kill_bonus / received.max(1.0)
 }
 
@@ -128,7 +151,11 @@ fn find_keep_hexes(board: &Board) -> Vec<Hex> {
     for col in 0..board.width as i32 {
         for row in 0..board.height as i32 {
             let hex = Hex::from_offset(col, row);
-            if board.tile_at(hex).map(|t| t.terrain_id == "keep").unwrap_or(false) {
+            if board
+                .tile_at(hex)
+                .map(|t| t.terrain_id == "keep")
+                .unwrap_or(false)
+            {
                 keeps.push(hex);
             }
         }
@@ -157,7 +184,11 @@ fn find_faction_keep(state: &GameState, faction: u8) -> Option<Hex> {
 /// Check if there are empty castle hexes adjacent to the given keep hex.
 fn has_empty_castle_slots(state: &GameState, keep_hex: Hex) -> bool {
     keep_hex.neighbors().iter().any(|&h| {
-        state.board.tile_at(h).map(|t| t.terrain_id == "castle").unwrap_or(false)
+        state
+            .board
+            .tile_at(h)
+            .map(|t| t.terrain_id == "castle")
+            .unwrap_or(false)
             && !state.hex_to_unit.contains_key(&h)
     })
 }
@@ -176,7 +207,9 @@ fn should_leader_stay(state: &GameState, faction: u8, cheapest_cost: u32) -> boo
         None => return false,
     };
     // Leader must be on a keep tile
-    let on_keep = state.board.tile_at(leader_hex)
+    let on_keep = state
+        .board
+        .tile_at(leader_hex)
         .map(|t| t.terrain_id == "keep")
         .unwrap_or(false);
     if !on_keep {
@@ -215,7 +248,11 @@ fn leader_should_return_to_keep(state: &GameState, faction: u8, cheapest_cost: u
 pub fn evaluate_state(state: &GameState, faction: u8) -> f32 {
     // Terminal states: decided games get extreme scores
     if let Some(winner) = state.check_winner() {
-        return if winner == faction { f32::MAX } else { f32::MIN };
+        return if winner == faction {
+            f32::MAX
+        } else {
+            f32::MIN
+        };
     }
 
     let enemy = 1 - faction;
@@ -275,7 +312,9 @@ pub fn evaluate_state(state: &GameState, faction: u8) -> f32 {
     }
 
     // Village control (weight 8.0)
-    let own_villages = state.village_owners.values()
+    let own_villages = state
+        .village_owners
+        .values()
         .filter(|&&owner| owner == faction as i8)
         .count() as f32;
     score += own_villages * 8.0;
@@ -303,26 +342,56 @@ pub fn evaluate_state(state: &GameState, faction: u8) -> f32 {
 /// Evaluate a state by simulating the opponent's best greedy response first.
 /// Each enemy unit takes its best 1-ply action, then we evaluate the result.
 /// This lets the AI see consequences of its actions one step ahead.
-fn evaluate_with_opponent_response(state: &GameState, faction: u8) -> f32 {
+const ACTION_BEAM_WIDTH: usize = 4;
+const LOCAL_RESPONSE_LIMIT: usize = 3;
+const LOCAL_RESPONSE_RADIUS: u32 = 7;
+
+fn evaluate_with_opponent_response(state: &GameState, faction: u8, focus: Hex) -> f32 {
     let enemy = 1 - faction;
     let mut sim = state.clone();
+    sim.active_faction = enemy;
 
-    // Collect enemy unit IDs (snapshot before simulation)
-    let enemy_ids: Vec<u32> = sim.units.iter()
+    // A full enemy turn after every candidate action explodes on large maps.
+    // Respond with the closest immediate threats instead: this captures local
+    // tactical punishment while keeping planning bounded and predictable.
+    let mut enemy_ids: Vec<(u32, u32)> = sim
+        .units
+        .iter()
         .filter(|(_, u)| u.faction == enemy && !u.attacked)
-        .map(|(&id, _)| id)
+        .filter_map(|(&id, _)| {
+            let distance = sim.positions.get(&id)?.distance(focus);
+            (distance <= LOCAL_RESPONSE_RADIUS).then_some((distance, id))
+        })
         .collect();
+    enemy_ids.sort_unstable();
+    enemy_ids.truncate(LOCAL_RESPONSE_LIMIT);
 
-    for &eid in &enemy_ids {
-        if !sim.units.contains_key(&eid) { continue; } // May have died
+    for &(_, eid) in &enemy_ids {
+        if !sim.units.contains_key(&eid) {
+            continue;
+        } // May have died
         if let Some((dest, target)) = plan_unit_action(&sim, eid, enemy, 1) {
             let start = sim.positions[&eid];
             if dest != start {
-                let _ = apply_action(&mut sim, Action::Move { unit_id: eid, destination: dest });
+                apply_action(
+                    &mut sim,
+                    Action::Move {
+                        unit_id: eid,
+                        destination: dest,
+                    },
+                )
+                .expect("bounded opponent response must be a legal move");
             }
             if let Some(tid) = target {
                 if sim.units.contains_key(&eid) && sim.units.contains_key(&tid) {
-                    let _ = apply_action(&mut sim, Action::Attack { attacker_id: eid, defender_id: tid });
+                    apply_action(
+                        &mut sim,
+                        Action::Attack {
+                            attacker_id: eid,
+                            defender_id: tid,
+                        },
+                    )
+                    .expect("bounded opponent response must be a legal attack");
                 }
             }
         }
@@ -344,7 +413,13 @@ fn retreat_toward_healing(
     // Collect all healing hexes on the board
     let healing_hexes: Vec<Hex> = (0..state.board.height as i32)
         .flat_map(|row| (0..state.board.width as i32).map(move |col| Hex::from_offset(col, row)))
-        .filter(|&h| state.board.tile_at(h).map(|t| t.healing > 0).unwrap_or(false))
+        .filter(|&h| {
+            state
+                .board
+                .tile_at(h)
+                .map(|t| t.healing > 0)
+                .unwrap_or(false)
+        })
         .collect();
 
     if healing_hexes.is_empty() {
@@ -356,7 +431,13 @@ fn retreat_toward_healing(
         .iter()
         .filter(|&&h| h != start)
         .filter(|&&h| healing_hexes.contains(&h))
-        .min_by_key(|&&h| healing_hexes.iter().map(|hh| h.distance(*hh)).min().unwrap_or(u32::MAX))
+        .min_by_key(|&&h| {
+            healing_hexes
+                .iter()
+                .map(|hh| h.distance(*hh))
+                .min()
+                .unwrap_or(u32::MAX)
+        })
     {
         return Some((heal_dest, None));
     }
@@ -366,7 +447,11 @@ fn retreat_toward_healing(
         .iter()
         .filter(|&&h| h != start)
         .min_by_key(|&&c| {
-            healing_hexes.iter().map(|&hh| c.distance(hh)).min().unwrap_or(u32::MAX)
+            healing_hexes
+                .iter()
+                .map(|&hh| c.distance(hh))
+                .min()
+                .unwrap_or(u32::MAX)
         })
     {
         return Some((retreat_dest, None));
@@ -380,14 +465,30 @@ fn retreat_toward_healing(
 ///
 /// Returns `Some((destination, optional_attack_target))` if an action improves
 /// over staying put, or `None` if the unit should not act.
-fn plan_unit_action(state: &GameState, uid: u32, faction: u8, depth: u8) -> Option<(Hex, Option<u32>)> {
+fn plan_unit_action(
+    state: &GameState,
+    uid: u32,
+    faction: u8,
+    depth: u8,
+) -> Option<(Hex, Option<u32>)> {
     let start = *state.positions.get(&uid)?;
     let unit = state.units.get(&uid)?;
-    let movement = if unit.slowed { unit.movement / 2 } else { unit.movement };
+    let movement = if unit.slowed {
+        unit.movement / 2
+    } else {
+        unit.movement
+    };
 
     let zoc = get_zoc_hexes(state, faction);
-    let candidates_raw =
-        reachable_hexes(&state.board, &unit.movement_costs, 1, start, movement, &zoc, false);
+    let candidates_raw = reachable_hexes(
+        &state.board,
+        &unit.movement_costs,
+        1,
+        start,
+        movement,
+        &zoc,
+        false,
+    );
 
     let all_occupied: HashSet<Hex> = state
         .hex_to_unit
@@ -396,21 +497,38 @@ fn plan_unit_action(state: &GameState, uid: u32, faction: u8, depth: u8) -> Opti
         .map(|(&h, _)| h)
         .collect();
 
-    let candidates: Vec<Hex> = candidates_raw
+    let mut candidates: Vec<Hex> = candidates_raw
         .into_iter()
         .filter(|&h| h == start || !all_occupied.contains(&h))
         .collect();
+    candidates.sort_unstable();
 
     // Collect enemies
-    let enemies: Vec<(u32, Hex)> = state
+    let mut enemies: Vec<(u32, Hex)> = state
         .units
         .iter()
         .filter(|(_, u)| u.faction != faction)
         .map(|(&id, _)| (id, state.positions[&id]))
         .collect();
+    enemies.sort_unstable_by_key(|(id, _)| *id);
 
     if enemies.is_empty() {
         return None;
+    }
+
+    // Hierarchical action generation: strategic proximity selects a small
+    // deterministic beam, then tactical minimax evaluates that beam. Greedy
+    // depth keeps the complete candidate set as its fast baseline behavior.
+    if depth >= 2 && candidates.len() > ACTION_BEAM_WIDTH {
+        candidates.sort_unstable_by_key(|candidate| {
+            let nearest = enemies
+                .iter()
+                .map(|(_, enemy_hex)| candidate.distance(*enemy_hex))
+                .min()
+                .unwrap_or(u32::MAX);
+            (nearest, *candidate)
+        });
+        candidates.truncate(ACTION_BEAM_WIDTH);
     }
 
     // Try all (move, attack) combinations — pick the best one by evaluate_state.
@@ -423,36 +541,57 @@ fn plan_unit_action(state: &GameState, uid: u32, faction: u8, depth: u8) -> Opti
 
     for &cand in &candidates {
         let unit = &state.units[&uid];
-        let attackable: Vec<u32> = enemies.iter().filter_map(|&(eid, epos)| {
-            let can_engage = unit.attacks.iter().any(|a| {
-                (a.range == "melee" && cand.neighbors().contains(&epos))
-                    || (a.range == "ranged" && cand.distance(epos) == 2)
-            });
-            if can_engage { Some(eid) } else { None }
-        }).collect();
+        let attackable: Vec<u32> = enemies
+            .iter()
+            .filter_map(|&(eid, epos)| {
+                let can_engage = unit.attacks.iter().any(|a| {
+                    (a.range == "melee" && cand.neighbors().contains(&epos))
+                        || (a.range == "ranged" && cand.distance(epos) == 2)
+                });
+                if can_engage {
+                    Some(eid)
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         for eid in &attackable {
             has_any_attack = true;
 
             // Capture enemy HP ratio BEFORE simulation (enemy may die)
-            let enemy_hp_ratio = state.units.get(eid).map(|e| {
-                e.hp as f32 / e.max_hp.max(1) as f32
-            }).unwrap_or(1.0);
+            let enemy_hp_ratio = state
+                .units
+                .get(eid)
+                .map(|e| e.hp as f32 / e.max_hp.max(1) as f32)
+                .unwrap_or(1.0);
 
             // Check if this is a ranged attack from distance 2
             let epos = state.positions[eid];
-            let is_ranged_distance2 = unit.attacks.iter().any(|a| a.range == "ranged")
-                && cand.distance(epos) == 2;
+            let is_ranged_distance2 =
+                unit.attacks.iter().any(|a| a.range == "ranged") && cand.distance(epos) == 2;
 
             let mut sim = state.clone();
             if cand != start {
-                let _ = apply_action(&mut sim, Action::Move { unit_id: uid, destination: cand });
+                let _ = apply_action(
+                    &mut sim,
+                    Action::Move {
+                        unit_id: uid,
+                        destination: cand,
+                    },
+                );
             }
             if sim.units.contains_key(&uid) && sim.units.contains_key(eid) {
-                let _ = apply_action(&mut sim, Action::Attack { attacker_id: uid, defender_id: *eid });
+                let _ = apply_action(
+                    &mut sim,
+                    Action::Attack {
+                        attacker_id: uid,
+                        defender_id: *eid,
+                    },
+                );
             }
             let mut score = if depth >= 2 {
-                evaluate_with_opponent_response(&sim, faction)
+                evaluate_with_opponent_response(&sim, faction, cand)
             } else {
                 evaluate_state(&sim, faction)
             };
@@ -484,27 +623,48 @@ fn plan_unit_action(state: &GameState, uid: u32, faction: u8, depth: u8) -> Opti
             let mut found_kill = false;
             for &cand in &candidates {
                 let unit = &state.units[&uid];
-                let attackable: Vec<u32> = enemies.iter().filter_map(|&(eid, epos)| {
-                    let can_engage = unit.attacks.iter().any(|a| {
-                        (a.range == "melee" && cand.neighbors().contains(&epos))
-                            || (a.range == "ranged" && cand.distance(epos) == 2)
-                    });
-                    if can_engage { Some(eid) } else { None }
-                }).collect();
+                let attackable: Vec<u32> = enemies
+                    .iter()
+                    .filter_map(|&(eid, epos)| {
+                        let can_engage = unit.attacks.iter().any(|a| {
+                            (a.range == "melee" && cand.neighbors().contains(&epos))
+                                || (a.range == "ranged" && cand.distance(epos) == 2)
+                        });
+                        if can_engage {
+                            Some(eid)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
                 for eid in &attackable {
                     let mut sim = state.clone();
                     if cand != start {
-                        let _ = apply_action(&mut sim, Action::Move { unit_id: uid, destination: cand });
+                        let _ = apply_action(
+                            &mut sim,
+                            Action::Move {
+                                unit_id: uid,
+                                destination: cand,
+                            },
+                        );
                     }
                     if sim.units.contains_key(&uid) && sim.units.contains_key(eid) {
-                        let _ = apply_action(&mut sim, Action::Attack { attacker_id: uid, defender_id: *eid });
+                        let _ = apply_action(
+                            &mut sim,
+                            Action::Attack {
+                                attacker_id: uid,
+                                defender_id: *eid,
+                            },
+                        );
                     }
                     if !sim.units.contains_key(eid) {
                         found_kill = true;
                         break;
                     }
                 }
-                if found_kill { break; }
+                if found_kill {
+                    break;
+                }
             }
             found_kill
         };
@@ -522,19 +682,30 @@ fn plan_unit_action(state: &GameState, uid: u32, faction: u8, depth: u8) -> Opti
             // 2-ply march: evaluate each candidate with opponent response
             for &cand in candidates.iter().filter(|&&h| h != start) {
                 let mut sim = state.clone();
-                let _ = apply_action(&mut sim, Action::Move { unit_id: uid, destination: cand });
-                let score = evaluate_with_opponent_response(&sim, faction);
+                let _ = apply_action(
+                    &mut sim,
+                    Action::Move {
+                        unit_id: uid,
+                        destination: cand,
+                    },
+                );
+                let score = evaluate_with_opponent_response(&sim, faction, cand);
                 if score > best_score {
                     best_score = score;
                     best_action = Some((cand, None));
                 }
             }
-        } else if let Some(&march_dest) = candidates
-            .iter()
-            .filter(|&&h| h != start)
-            .min_by_key(|&&c| {
-                enemies.iter().map(|(_, epos)| c.distance(*epos)).min().unwrap_or(u32::MAX)
-            })
+        } else if let Some(&march_dest) =
+            candidates
+                .iter()
+                .filter(|&&h| h != start)
+                .min_by_key(|&&c| {
+                    enemies
+                        .iter()
+                        .map(|(_, epos)| c.distance(*epos))
+                        .min()
+                        .unwrap_or(u32::MAX)
+                })
         {
             best_action = Some((march_dest, None));
         }
@@ -549,6 +720,11 @@ fn plan_unit_action(state: &GameState, uid: u32, faction: u8, depth: u8) -> Opti
 /// coordination but slower planning. First ordering is the natural order;
 /// subsequent orderings rotate the unit list.
 const TURN_PLAN_ORDERINGS: usize = 3;
+
+/// The machine evaluates each candidate action after a complete greedy
+/// opponent response. This prevents it from taking attractive but tactically
+/// unsound attacks that expose the unit to an immediate counterattack.
+const MACHINE_LOOKAHEAD_DEPTH: u8 = 2;
 
 /// Simulate recruitment on a cloned state: spend all gold on placeholder units
 /// placed on empty castle hexes adjacent to the leader's keep.
@@ -566,27 +742,46 @@ fn simulate_recruitment(
     let leader_id = find_leader(clone, faction);
     let leader_hex = leader_id.and_then(|lid| clone.positions.get(&lid).copied());
     let keep_hex = match leader_hex {
-        Some(h) if clone.board.tile_at(h).map(|t| t.terrain_id == "keep").unwrap_or(false) => h,
+        Some(h)
+            if clone
+                .board
+                .tile_at(h)
+                .map(|t| t.terrain_id == "keep")
+                .unwrap_or(false) =>
+        {
+            h
+        }
         _ => return Vec::new(),
     };
 
-    let cheapest = recruit_defs.iter().map(|&(c, _)| c).min().unwrap_or(u32::MAX);
+    let cheapest = recruit_defs
+        .iter()
+        .map(|&(c, _)| c)
+        .min()
+        .unwrap_or(u32::MAX);
     let mut recruited_ids = Vec::new();
     let mut rotation = 0usize;
 
     while clone.gold[faction as usize] >= cheapest {
         // Find empty castle hex adjacent to keep
         let castle_hex = keep_hex.neighbors().iter().copied().find(|&h| {
-            clone.board.tile_at(h).map(|t| t.terrain_id == "castle").unwrap_or(false)
+            clone
+                .board
+                .tile_at(h)
+                .map(|t| t.terrain_id == "castle")
+                .unwrap_or(false)
                 && !clone.hex_to_unit.contains_key(&h)
         });
         let Some(dest) = castle_hex else { break };
 
         // Pick recruit type round-robin (only affordable ones)
-        let affordable: Vec<&(u32, u32)> = recruit_defs.iter()
+        let affordable: Vec<&(u32, u32)> = recruit_defs
+            .iter()
             .filter(|&&(cost, _)| clone.gold[faction as usize] >= cost)
             .collect();
-        if affordable.is_empty() { break; }
+        if affordable.is_empty() {
+            break;
+        }
         let &(cost, movement) = affordable[rotation % affordable.len()];
         rotation += 1;
 
@@ -641,20 +836,45 @@ fn run_turn_ordering(
 
     // Move all non-leader units first (original units from unit_order)
     for &uid in unit_order {
-        if leader_id == Some(uid) { continue; } // Leader goes last
-        if !clone.units.contains_key(&uid) || clone.units[&uid].attacked { continue; }
+        if leader_id == Some(uid) {
+            continue;
+        } // Leader goes last
+        if !clone.units.contains_key(&uid) || clone.units[&uid].attacked {
+            continue;
+        }
 
-        if let Some((dest, target)) = plan_unit_action(&clone, uid, faction, 1) {
+        if let Some((dest, target)) =
+            plan_unit_action(&clone, uid, faction, MACHINE_LOOKAHEAD_DEPTH)
+        {
             let start = clone.positions[&uid];
             if dest != start {
                 let (c, r) = dest.to_offset();
-                records.push(ActionRecord::Move { unit_id: uid, to_col: c, to_row: r });
-                let _ = apply_action(&mut clone, Action::Move { unit_id: uid, destination: dest });
+                records.push(ActionRecord::Move {
+                    unit_id: uid,
+                    to_col: c,
+                    to_row: r,
+                });
+                let _ = apply_action(
+                    &mut clone,
+                    Action::Move {
+                        unit_id: uid,
+                        destination: dest,
+                    },
+                );
             }
             if let Some(eid) = target {
                 if clone.units.contains_key(&uid) && clone.units.contains_key(&eid) {
-                    records.push(ActionRecord::Attack { attacker_id: uid, defender_id: eid });
-                    let _ = apply_action(&mut clone, Action::Attack { attacker_id: uid, defender_id: eid });
+                    records.push(ActionRecord::Attack {
+                        attacker_id: uid,
+                        defender_id: eid,
+                    });
+                    let _ = apply_action(
+                        &mut clone,
+                        Action::Attack {
+                            attacker_id: uid,
+                            defender_id: eid,
+                        },
+                    );
                 }
             }
         }
@@ -662,18 +882,41 @@ fn run_turn_ordering(
 
     // Move initial recruits off castle hexes (freeing slots for more recruitment)
     for &uid in &initial_recruits {
-        if !clone.units.contains_key(&uid) { continue; }
-        if let Some((dest, target)) = plan_unit_action(&clone, uid, faction, 1) {
+        if !clone.units.contains_key(&uid) {
+            continue;
+        }
+        if let Some((dest, target)) =
+            plan_unit_action(&clone, uid, faction, MACHINE_LOOKAHEAD_DEPTH)
+        {
             let start = clone.positions[&uid];
             if dest != start {
                 let (c, r) = dest.to_offset();
-                records.push(ActionRecord::Move { unit_id: uid, to_col: c, to_row: r });
-                let _ = apply_action(&mut clone, Action::Move { unit_id: uid, destination: dest });
+                records.push(ActionRecord::Move {
+                    unit_id: uid,
+                    to_col: c,
+                    to_row: r,
+                });
+                let _ = apply_action(
+                    &mut clone,
+                    Action::Move {
+                        unit_id: uid,
+                        destination: dest,
+                    },
+                );
             }
             if let Some(eid) = target {
                 if clone.units.contains_key(&uid) && clone.units.contains_key(&eid) {
-                    records.push(ActionRecord::Attack { attacker_id: uid, defender_id: eid });
-                    let _ = apply_action(&mut clone, Action::Attack { attacker_id: uid, defender_id: eid });
+                    records.push(ActionRecord::Attack {
+                        attacker_id: uid,
+                        defender_id: eid,
+                    });
+                    let _ = apply_action(
+                        &mut clone,
+                        Action::Attack {
+                            attacker_id: uid,
+                            defender_id: eid,
+                        },
+                    );
                 }
             }
         }
@@ -681,24 +924,51 @@ fn run_turn_ordering(
 
     // Recruit again into freed castle slots, move new recruits out (repeat until done)
     for _wave in 0..6 {
-        if !should_leader_stay(&clone, faction, cheapest_recruit_cost) { break; }
+        if !should_leader_stay(&clone, faction, cheapest_recruit_cost) {
+            break;
+        }
         let new_ids = simulate_recruitment(&mut clone, faction, recruit_defs);
-        if new_ids.is_empty() { break; }
+        if new_ids.is_empty() {
+            break;
+        }
         did_recruit = true;
         records.push(ActionRecord::Recruit);
         for &uid in &new_ids {
-            if !clone.units.contains_key(&uid) { continue; }
-            if let Some((dest, target)) = plan_unit_action(&clone, uid, faction, 1) {
+            if !clone.units.contains_key(&uid) {
+                continue;
+            }
+            if let Some((dest, target)) =
+                plan_unit_action(&clone, uid, faction, MACHINE_LOOKAHEAD_DEPTH)
+            {
                 let start = clone.positions[&uid];
                 if dest != start {
                     let (c, r) = dest.to_offset();
-                    records.push(ActionRecord::Move { unit_id: uid, to_col: c, to_row: r });
-                    let _ = apply_action(&mut clone, Action::Move { unit_id: uid, destination: dest });
+                    records.push(ActionRecord::Move {
+                        unit_id: uid,
+                        to_col: c,
+                        to_row: r,
+                    });
+                    let _ = apply_action(
+                        &mut clone,
+                        Action::Move {
+                            unit_id: uid,
+                            destination: dest,
+                        },
+                    );
                 }
                 if let Some(eid) = target {
                     if clone.units.contains_key(&uid) && clone.units.contains_key(&eid) {
-                        records.push(ActionRecord::Attack { attacker_id: uid, defender_id: eid });
-                        let _ = apply_action(&mut clone, Action::Attack { attacker_id: uid, defender_id: eid });
+                        records.push(ActionRecord::Attack {
+                            attacker_id: uid,
+                            defender_id: eid,
+                        });
+                        let _ = apply_action(
+                            &mut clone,
+                            Action::Attack {
+                                attacker_id: uid,
+                                defender_id: eid,
+                            },
+                        );
                     }
                 }
             }
@@ -711,35 +981,77 @@ fn run_turn_ordering(
             if did_recruit || should_leader_stay(&clone, faction, cheapest_recruit_cost) {
                 // Stay on keep, but attack adjacent enemies
                 let leader_hex = clone.positions[&lid];
-                let adjacent_enemy = clone.units.iter()
+                let adjacent_enemy = clone
+                    .units
+                    .iter()
                     .filter(|(_, u)| u.faction != faction)
                     .find_map(|(&eid, _)| {
                         let epos = clone.positions[&eid];
-                        if leader_hex.neighbors().contains(&epos) { Some(eid) } else { None }
+                        if leader_hex.neighbors().contains(&epos) {
+                            Some(eid)
+                        } else {
+                            None
+                        }
                     });
                 if let Some(eid) = adjacent_enemy {
                     if clone.units.contains_key(&lid) && clone.units.contains_key(&eid) {
-                        records.push(ActionRecord::Attack { attacker_id: lid, defender_id: eid });
-                        let _ = apply_action(&mut clone, Action::Attack { attacker_id: lid, defender_id: eid });
+                        records.push(ActionRecord::Attack {
+                            attacker_id: lid,
+                            defender_id: eid,
+                        });
+                        let _ = apply_action(
+                            &mut clone,
+                            Action::Attack {
+                                attacker_id: lid,
+                                defender_id: eid,
+                            },
+                        );
                     }
                 }
             } else if let Some(keep_hex) = return_keep {
                 // Move back toward keep
                 let start = clone.positions[&lid];
                 let unit_ref = &clone.units[&lid];
-                let movement = if unit_ref.slowed { unit_ref.movement / 2 } else { unit_ref.movement };
+                let movement = if unit_ref.slowed {
+                    unit_ref.movement / 2
+                } else {
+                    unit_ref.movement
+                };
                 let zoc = get_zoc_hexes(&clone, faction);
-                let candidates = reachable_hexes(&clone.board, &clone.units[&lid].movement_costs, 1, start, movement, &zoc, false);
-                let occupied: HashSet<Hex> = clone.hex_to_unit.iter()
-                    .filter(|(_, &id)| id != lid).map(|(&h, _)| h).collect();
-                if let Some(&march_dest) = candidates.iter()
+                let candidates = reachable_hexes(
+                    &clone.board,
+                    &clone.units[&lid].movement_costs,
+                    1,
+                    start,
+                    movement,
+                    &zoc,
+                    false,
+                );
+                let occupied: HashSet<Hex> = clone
+                    .hex_to_unit
+                    .iter()
+                    .filter(|(_, &id)| id != lid)
+                    .map(|(&h, _)| h)
+                    .collect();
+                if let Some(&march_dest) = candidates
+                    .iter()
                     .filter(|&&h| h != start && !occupied.contains(&h))
                     .min_by_key(|&&c| c.distance(keep_hex))
                 {
                     if march_dest.distance(keep_hex) < start.distance(keep_hex) {
                         let (c, r) = march_dest.to_offset();
-                        records.push(ActionRecord::Move { unit_id: lid, to_col: c, to_row: r });
-                        let _ = apply_action(&mut clone, Action::Move { unit_id: lid, destination: march_dest });
+                        records.push(ActionRecord::Move {
+                            unit_id: lid,
+                            to_col: c,
+                            to_row: r,
+                        });
+                        let _ = apply_action(
+                            &mut clone,
+                            Action::Move {
+                                unit_id: lid,
+                                destination: march_dest,
+                            },
+                        );
                     }
                 }
             } else {
@@ -748,13 +1060,32 @@ fn run_turn_ordering(
                     let start = clone.positions[&lid];
                     if dest != start {
                         let (c, r) = dest.to_offset();
-                        records.push(ActionRecord::Move { unit_id: lid, to_col: c, to_row: r });
-                        let _ = apply_action(&mut clone, Action::Move { unit_id: lid, destination: dest });
+                        records.push(ActionRecord::Move {
+                            unit_id: lid,
+                            to_col: c,
+                            to_row: r,
+                        });
+                        let _ = apply_action(
+                            &mut clone,
+                            Action::Move {
+                                unit_id: lid,
+                                destination: dest,
+                            },
+                        );
                     }
                     if let Some(eid) = target {
                         if clone.units.contains_key(&lid) && clone.units.contains_key(&eid) {
-                            records.push(ActionRecord::Attack { attacker_id: lid, defender_id: eid });
-                            let _ = apply_action(&mut clone, Action::Attack { attacker_id: lid, defender_id: eid });
+                            records.push(ActionRecord::Attack {
+                                attacker_id: lid,
+                                defender_id: eid,
+                            });
+                            let _ = apply_action(
+                                &mut clone,
+                                Action::Attack {
+                                    attacker_id: lid,
+                                    defender_id: eid,
+                                },
+                            );
                         }
                     }
                 }
@@ -792,7 +1123,11 @@ fn plan_full_turn(
     non_leader_ids.sort();
 
     let n = non_leader_ids.len();
-    let orderings = if n <= 1 { 1 } else { TURN_PLAN_ORDERINGS.min(n) };
+    let orderings = if n <= 1 {
+        1
+    } else {
+        TURN_PLAN_ORDERINGS.min(n)
+    };
 
     let mut best_records = Vec::new();
     let mut best_score = f32::NEG_INFINITY;
@@ -805,8 +1140,13 @@ fn plan_full_turn(
         }
 
         let (records, score) = run_turn_ordering(
-            state, faction, leader_id, return_keep, &order,
-            cheapest_recruit_cost, recruit_defs,
+            state,
+            faction,
+            leader_id,
+            return_keep,
+            &order,
+            cheapest_recruit_cost,
+            recruit_defs,
         );
         if score > best_score {
             best_score = score;
@@ -828,6 +1168,56 @@ pub fn ai_take_turn(state: &mut GameState, faction: u8, cheapest_recruit_cost: u
     ai_take_turn_with_recruits(state, faction, cheapest_recruit_cost, &[]);
 }
 
+/// The response-aware machine algorithm. Each unit's candidate action is
+/// evaluated after a complete one-ply greedy response from the opponent.
+pub fn ai_take_turn_greedy_lookahead(
+    state: &mut GameState,
+    faction: u8,
+    cheapest_recruit_cost: u32,
+) {
+    ai_take_turn(state, faction, cheapest_recruit_cost);
+}
+
+/// Fast baseline AI: process units in ID order and choose each unit's best
+/// immediate move or attack without simulating the opponent's reply.
+pub fn ai_take_turn_greedy(state: &mut GameState, faction: u8) {
+    let mut ids: Vec<u32> = state
+        .units
+        .iter()
+        .filter(|(_, u)| u.faction == faction && !u.attacked)
+        .map(|(&id, _)| id)
+        .collect();
+    ids.sort_unstable();
+    for uid in ids {
+        if !state.units.contains_key(&uid) || state.units[&uid].attacked {
+            continue;
+        }
+        if let Some((dest, target)) = plan_unit_action(state, uid, faction, 1) {
+            if dest != state.positions[&uid] {
+                let _ = apply_action(
+                    state,
+                    Action::Move {
+                        unit_id: uid,
+                        destination: dest,
+                    },
+                );
+            }
+            if let Some(defender_id) = target {
+                if state.units.contains_key(&uid) && state.units.contains_key(&defender_id) {
+                    let _ = apply_action(
+                        state,
+                        Action::Attack {
+                            attacker_id: uid,
+                            defender_id,
+                        },
+                    );
+                }
+            }
+        }
+    }
+    apply_action(state, Action::EndTurn).expect("EndTurn must always succeed");
+}
+
 /// AI turn with recruit simulation: placeholder recruits are simulated in the
 /// planning clone so the planner sees their value and keeps the leader on keep.
 pub fn ai_take_turn_with_recruits(
@@ -842,14 +1232,35 @@ pub fn ai_take_turn_with_recruits(
     // Skip actions for simulated recruit IDs (they don't exist in the real state).
     for record in &records {
         match record {
-            ActionRecord::Move { unit_id, to_col, to_row } => {
-                if !state.units.contains_key(unit_id) { continue; }
+            ActionRecord::Move {
+                unit_id,
+                to_col,
+                to_row,
+            } => {
+                if !state.units.contains_key(unit_id) {
+                    continue;
+                }
                 let dest = Hex::from_offset(*to_col, *to_row);
-                let _ = apply_action(state, Action::Move { unit_id: *unit_id, destination: dest });
+                let _ = apply_action(
+                    state,
+                    Action::Move {
+                        unit_id: *unit_id,
+                        destination: dest,
+                    },
+                );
             }
-            ActionRecord::Attack { attacker_id, defender_id } => {
+            ActionRecord::Attack {
+                attacker_id,
+                defender_id,
+            } => {
                 if state.units.contains_key(attacker_id) && state.units.contains_key(defender_id) {
-                    let _ = apply_action(state, Action::Attack { attacker_id: *attacker_id, defender_id: *defender_id });
+                    let _ = apply_action(
+                        state,
+                        Action::Attack {
+                            attacker_id: *attacker_id,
+                            defender_id: *defender_id,
+                        },
+                    );
                 }
             }
             ActionRecord::Recruit => {
@@ -867,7 +1278,11 @@ pub fn ai_take_turn_with_recruits(
 /// one at a time with animations on the presentation side.
 ///
 /// `cheapest_recruit_cost`: the cost of the cheapest recruitable unit (0 = no recruit info).
-pub fn ai_plan_turn(state: &GameState, faction: u8, cheapest_recruit_cost: u32) -> Vec<ActionRecord> {
+pub fn ai_plan_turn(
+    state: &GameState,
+    faction: u8,
+    cheapest_recruit_cost: u32,
+) -> Vec<ActionRecord> {
     ai_plan_turn_with_recruits(state, faction, cheapest_recruit_cost, &[])
 }
 
@@ -918,7 +1333,11 @@ pub fn start_planning(
     non_leader_ids.sort();
 
     let n = non_leader_ids.len();
-    let total_orderings = if n <= 1 { 1 } else { TURN_PLAN_ORDERINGS.min(n) };
+    let total_orderings = if n <= 1 {
+        1
+    } else {
+        TURN_PLAN_ORDERINGS.min(n)
+    };
 
     PlanningSession {
         state: state.clone(),
@@ -940,7 +1359,11 @@ pub fn plan_next_step(session: &mut PlanningSession) -> Option<Vec<ActionRecord>
     if session.current_ordering >= session.total_orderings {
         // Already done — return best
         return Some(
-            session.best_result.take().map(|(r, _)| r).unwrap_or_default(),
+            session
+                .best_result
+                .take()
+                .map(|(r, _)| r)
+                .unwrap_or_default(),
         );
     }
 
@@ -977,7 +1400,11 @@ pub fn plan_next_step(session: &mut PlanningSession) -> Option<Vec<ActionRecord>
     if session.current_ordering >= session.total_orderings {
         // All orderings done
         Some(
-            session.best_result.take().map(|(r, _)| r).unwrap_or_default(),
+            session
+                .best_result
+                .take()
+                .map(|(r, _)| r)
+                .unwrap_or_default(),
         )
     } else {
         None
@@ -1003,7 +1430,11 @@ mod tests {
     fn test_expected_damage_40pct_defense() {
         // 7 × 3 × 0.6 = 12.6
         let result = expected_outgoing_damage(7, 3, 40, 0, 0);
-        assert!((result - 12.6).abs() < 0.01, "expected ~12.6, got {}", result);
+        assert!(
+            (result - 12.6).abs() < 0.01,
+            "expected ~12.6, got {}",
+            result
+        );
     }
 
     #[test]
@@ -1098,9 +1529,13 @@ mod tests {
         // Place an enemy somewhere to attract the leader
         let mut enemy = Unit::new(2, "fighter", 30, 0);
         enemy.attacks = vec![AttackDef {
-            id: "sword".to_string(), name: "Sword".to_string(),
-            damage: 7, strikes: 3, attack_type: "blade".to_string(),
-            range: "melee".to_string(), ..Default::default()
+            id: "sword".to_string(),
+            name: "Sword".to_string(),
+            damage: 7,
+            strikes: 3,
+            attack_type: "blade".to_string(),
+            range: "melee".to_string(),
+            ..Default::default()
         }];
         let enemy_hex = Hex::from_offset(3, 2);
         state.units.insert(2, enemy);
@@ -1111,8 +1546,14 @@ mod tests {
         let records = ai_plan_turn(&state, 1, 15);
 
         // Leader should NOT have a Move record (stays on keep)
-        let leader_moved = records.iter().any(|r| matches!(r, ActionRecord::Move { unit_id: 1, .. }));
-        assert!(!leader_moved, "Leader should stay on keep when recruiting is possible, but got: {:?}", records);
+        let leader_moved = records
+            .iter()
+            .any(|r| matches!(r, ActionRecord::Move { unit_id: 1, .. }));
+        assert!(
+            !leader_moved,
+            "Leader should stay on keep when recruiting is possible, but got: {:?}",
+            records
+        );
     }
 
     #[test]
@@ -1132,9 +1573,13 @@ mod tests {
         // Place an enemy far away (to tempt leader toward enemy instead)
         let mut enemy = Unit::new(2, "fighter", 30, 0);
         enemy.attacks = vec![AttackDef {
-            id: "sword".to_string(), name: "Sword".to_string(),
-            damage: 7, strikes: 3, attack_type: "blade".to_string(),
-            range: "melee".to_string(), ..Default::default()
+            id: "sword".to_string(),
+            name: "Sword".to_string(),
+            damage: 7,
+            strikes: 3,
+            attack_type: "blade".to_string(),
+            range: "melee".to_string(),
+            ..Default::default()
         }];
         let enemy_hex = Hex::from_offset(7, 4);
         state.units.insert(2, enemy);
@@ -1145,17 +1590,28 @@ mod tests {
 
         // Leader should move toward keep (col 0, row 0), not toward enemy (col 7, row 4)
         let leader_move = records.iter().find_map(|r| match r {
-            ActionRecord::Move { unit_id: 1, to_col, to_row } => Some((*to_col, *to_row)),
+            ActionRecord::Move {
+                unit_id: 1,
+                to_col,
+                to_row,
+            } => Some((*to_col, *to_row)),
             _ => None,
         });
         let keep_hex = Hex::from_offset(0, 0);
-        assert!(leader_move.is_some(), "Leader should move toward keep, got: {:?}", records);
+        assert!(
+            leader_move.is_some(),
+            "Leader should move toward keep, got: {:?}",
+            records
+        );
         let (mc, mr) = leader_move.unwrap();
         let move_hex = Hex::from_offset(mc, mr);
         assert!(
             move_hex.distance(keep_hex) < leader_hex.distance(keep_hex),
             "Leader should move closer to keep: was at {:?} (dist {}), moved to {:?} (dist {})",
-            leader_hex, leader_hex.distance(keep_hex), move_hex, move_hex.distance(keep_hex)
+            leader_hex,
+            leader_hex.distance(keep_hex),
+            move_hex,
+            move_hex.distance(keep_hex)
         );
     }
 
@@ -1176,9 +1632,13 @@ mod tests {
         // Place enemy adjacent to keep
         let mut enemy = Unit::new(2, "fighter", 30, 0);
         enemy.attacks = vec![AttackDef {
-            id: "sword".to_string(), name: "Sword".to_string(),
-            damage: 7, strikes: 3, attack_type: "blade".to_string(),
-            range: "melee".to_string(), ..Default::default()
+            id: "sword".to_string(),
+            name: "Sword".to_string(),
+            damage: 7,
+            strikes: 3,
+            attack_type: "blade".to_string(),
+            range: "melee".to_string(),
+            ..Default::default()
         }];
         let enemy_hex = Hex::from_offset(1, 0);
         state.units.insert(2, enemy);
@@ -1189,8 +1649,14 @@ mod tests {
         let records = ai_plan_turn(&state, 1, 15);
 
         // Leader should attack normally (not stay idle)
-        let leader_attacked = records.iter().any(|r| matches!(r, ActionRecord::Attack { attacker_id: 1, .. }));
-        assert!(leader_attacked, "Leader should attack when no gold: {:?}", records);
+        let leader_attacked = records
+            .iter()
+            .any(|r| matches!(r, ActionRecord::Attack { attacker_id: 1, .. }));
+        assert!(
+            leader_attacked,
+            "Leader should attack when no gold: {:?}",
+            records
+        );
     }
 
     // ── evaluate_state tests ────────────────────────────────────────────
@@ -1218,7 +1684,12 @@ mod tests {
 
         let score_0 = evaluate_state(&state, 0);
         let score_1 = evaluate_state(&state, 1);
-        assert!(score_0 > score_1, "Faction with more HP should score higher: f0={}, f1={}", score_0, score_1);
+        assert!(
+            score_0 > score_1,
+            "Faction with more HP should score higher: f0={}, f1={}",
+            score_0,
+            score_1
+        );
     }
 
     #[test]
@@ -1246,7 +1717,12 @@ mod tests {
 
         let score_a = evaluate_state(&state_a, 0);
         let score_b = evaluate_state(&state_b, 0);
-        assert!(score_a > score_b, "More villages should give higher score: a={}, b={}", score_a, score_b);
+        assert!(
+            score_a > score_b,
+            "More villages should give higher score: a={}, b={}",
+            score_a,
+            score_b
+        );
     }
 
     #[test]
@@ -1299,7 +1775,12 @@ mod tests {
 
         let score_a = evaluate_state(&state_a, 0);
         let score_b = evaluate_state(&state_b, 0);
-        assert!(score_a > score_b, "Healthier leader should score higher: full={}, wounded={}", score_a, score_b);
+        assert!(
+            score_a > score_b,
+            "Healthier leader should score higher: full={}, wounded={}",
+            score_a,
+            score_b
+        );
     }
 
     #[test]
@@ -1322,7 +1803,9 @@ mod tests {
         assert!(
             (score_0 + score_1).abs() < 30.0,
             "Symmetric state should have roughly opposite scores: f0={}, f1={}, sum={}",
-            score_0, score_1, score_0 + score_1
+            score_0,
+            score_1,
+            score_0 + score_1
         );
     }
 
@@ -1345,6 +1828,50 @@ mod tests {
         u.movement = 5;
         u.default_defense = 30;
         u
+    }
+
+    #[test]
+    fn test_bounded_opponent_response_applies_enemy_attack() {
+        let mut board = Board::new(5, 3);
+        for col in 0..5 {
+            for row in 0..3 {
+                board.set_terrain(Hex::from_offset(col, row), "flat");
+            }
+        }
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+
+        let mut exposed = Unit::new(1, "exposed", 30, 0);
+        exposed.max_hp = 30;
+        exposed.movement = 5;
+        state.place_unit(exposed, Hex::from_offset(2, 1));
+        state.place_unit(make_fighter(2, 1, 30), Hex::from_offset(3, 1));
+
+        let before = evaluate_state(&state, 0);
+        let after = evaluate_with_opponent_response(&state, 0, Hex::from_offset(2, 1));
+        assert!(
+            after < before,
+            "a legal adjacent enemy response must reduce the exposed side's score: before={before}, after={after}"
+        );
+    }
+
+    #[test]
+    fn test_bounded_lookahead_is_deterministic() {
+        let mut board = Board::new(7, 3);
+        for col in 0..7 {
+            for row in 0..3 {
+                board.set_terrain(Hex::from_offset(col, row), "flat");
+            }
+        }
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+        state.place_unit(make_fighter(1, 0, 30), Hex::from_offset(1, 1));
+        state.place_unit(make_fighter(2, 1, 30), Hex::from_offset(5, 1));
+
+        let expected = plan_unit_action(&state, 1, 0, 2);
+        for _ in 0..20 {
+            assert_eq!(plan_unit_action(&state, 1, 0, 2), expected);
+        }
     }
 
     #[test]
@@ -1371,7 +1898,11 @@ mod tests {
         let result = plan_unit_action(&state, 1, 0, 1);
         assert!(result.is_some(), "AI should choose to attack");
         let (_, target) = result.unwrap();
-        assert_eq!(target, Some(2), "AI should attack the last enemy for the win");
+        assert_eq!(
+            target,
+            Some(2),
+            "AI should attack the last enemy for the win"
+        );
     }
 
     #[test]
@@ -1399,8 +1930,11 @@ mod tests {
         assert_eq!(target, Some(2), "AI should attack the enemy");
         // Destination should be adjacent to enemy at (3,2)
         let enemy_hex = Hex::from_offset(3, 2);
-        assert_eq!(dest.distance(enemy_hex), 1,
-            "AI should move adjacent to enemy to attack");
+        assert_eq!(
+            dest.distance(enemy_hex),
+            1,
+            "AI should move adjacent to enemy to attack"
+        );
     }
 
     #[test]
@@ -1423,7 +1957,10 @@ mod tests {
         state.place_unit(enemy, Hex::from_offset(9, 1));
 
         let result = plan_unit_action(&state, 1, 0, 1);
-        assert!(result.is_some(), "AI should move even without attack targets");
+        assert!(
+            result.is_some(),
+            "AI should move even without attack targets"
+        );
         let (dest, target) = result.unwrap();
         assert!(target.is_none(), "No attack should be possible");
         let start = Hex::from_offset(0, 1);
@@ -1431,7 +1968,8 @@ mod tests {
         assert!(
             dest.distance(enemy_pos) < start.distance(enemy_pos),
             "AI should move closer to enemy: start dist={}, dest dist={}",
-            start.distance(enemy_pos), dest.distance(enemy_pos)
+            start.distance(enemy_pos),
+            dest.distance(enemy_pos)
         );
     }
 
@@ -1496,16 +2034,20 @@ mod tests {
         assert!(score.is_finite(), "Score should be finite");
 
         // Run single ordering (just the first/natural order) as baseline
-        let mut unit_ids: Vec<u32> = state.units.iter()
+        let mut unit_ids: Vec<u32> = state
+            .units
+            .iter()
             .filter(|(_, u)| u.faction == 0 && !u.attacked)
-            .map(|(id, _)| *id).collect();
+            .map(|(id, _)| *id)
+            .collect();
         unit_ids.sort();
         let (_, single_score) = run_turn_ordering(&state, 0, None, None, &unit_ids, 0, &[]);
 
         assert!(
             score >= single_score,
             "Multi-ordering score ({}) should be >= single ordering ({})",
-            score, single_score
+            score,
+            single_score
         );
     }
 
@@ -1564,9 +2106,12 @@ mod tests {
         let (dest, target) = result.unwrap();
         assert_eq!(target, Some(2), "Should attack the enemy");
         let enemy_hex = Hex::from_offset(3, 1);
-        assert_eq!(dest.distance(enemy_hex), 2,
+        assert_eq!(
+            dest.distance(enemy_hex),
+            2,
             "Ranged unit should prefer distance-2 position, got distance {}",
-            dest.distance(enemy_hex));
+            dest.distance(enemy_hex)
+        );
     }
 
     #[test]
@@ -1598,8 +2143,12 @@ mod tests {
         let result = plan_unit_action(&state, 1, 0, 1);
         assert!(result.is_some(), "AI should choose an action");
         let (_, target) = result.unwrap();
-        assert_eq!(target, Some(3),
-            "AI should focus fire on the wounded enemy (id 3), got {:?}", target);
+        assert_eq!(
+            target,
+            Some(3),
+            "AI should focus fire on the wounded enemy (id 3), got {:?}",
+            target
+        );
     }
 
     #[test]
@@ -1640,9 +2189,12 @@ mod tests {
         assert!(target.is_none(), "Should not attack — retreating");
         let village_hex = Hex::from_offset(1, 1);
         let start_hex = Hex::from_offset(3, 1);
-        assert!(dest.distance(village_hex) < start_hex.distance(village_hex),
+        assert!(
+            dest.distance(village_hex) < start_hex.distance(village_hex),
             "Unit should move closer to village (dest dist: {}, start dist: {})",
-            dest.distance(village_hex), start_hex.distance(village_hex));
+            dest.distance(village_hex),
+            start_hex.distance(village_hex)
+        );
     }
 
     #[test]
@@ -1681,8 +2233,11 @@ mod tests {
         let result = plan_unit_action(&state, 1, 0, 1);
         assert!(result.is_some(), "Wounded unit should still act");
         let (_, target) = result.unwrap();
-        assert_eq!(target, Some(2),
-            "Wounded unit should attack the 1-HP enemy for the kill");
+        assert_eq!(
+            target,
+            Some(2),
+            "Wounded unit should attack the 1-HP enemy for the kill"
+        );
     }
 
     // ── Recruit-first tests (Phase 102) ──────────────────────────────────
@@ -1706,9 +2261,14 @@ mod tests {
         let (records, _) = plan_full_turn(&state, 0, 10, &recruit_defs);
 
         // Leader (id=1) should NOT have a Move action
-        let leader_moved = records.iter().any(|r| matches!(r, ActionRecord::Move { unit_id: 1, .. }));
-        assert!(!leader_moved,
-            "Leader should stay on keep when recruits are possible, got: {:?}", records);
+        let leader_moved = records
+            .iter()
+            .any(|r| matches!(r, ActionRecord::Move { unit_id: 1, .. }));
+        assert!(
+            !leader_moved,
+            "Leader should stay on keep when recruits are possible, got: {:?}",
+            records
+        );
     }
 
     #[test]
@@ -1730,15 +2290,24 @@ mod tests {
         let recruited = simulate_recruitment(&mut clone, 0, &recruit_defs);
 
         // setup_keep_board places castle on all 6 neighbors within board bounds
-        assert!(recruited.len() >= 2,
-            "Should recruit at least 2 units, got {}", recruited.len());
+        assert!(
+            recruited.len() >= 2,
+            "Should recruit at least 2 units, got {}",
+            recruited.len()
+        );
         // Gold should be reduced
-        assert!(clone.gold[0] < 200,
-            "Gold should be spent on recruits, still at {}", clone.gold[0]);
+        assert!(
+            clone.gold[0] < 200,
+            "Gold should be spent on recruits, still at {}",
+            clone.gold[0]
+        );
         // All recruited units should exist in the clone
         for &uid in &recruited {
-            assert!(clone.units.contains_key(&uid),
-                "Recruited unit {} should exist in clone", uid);
+            assert!(
+                clone.units.contains_key(&uid),
+                "Recruited unit {} should exist in clone",
+                uid
+            );
         }
     }
 
@@ -1760,8 +2329,11 @@ mod tests {
         let mut clone = state.clone();
         let recruited = simulate_recruitment(&mut clone, 0, &recruit_defs);
 
-        assert!(recruited.is_empty(),
-            "Should not recruit with 0 gold, got {} recruits", recruited.len());
+        assert!(
+            recruited.is_empty(),
+            "Should not recruit with 0 gold, got {} recruits",
+            recruited.len()
+        );
     }
 
     #[test]
@@ -1783,28 +2355,47 @@ mod tests {
 
         // Count how many castle slots exist
         let keep = Hex::from_offset(0, 2);
-        let castle_count = keep.neighbors().iter()
-            .filter(|&&h| state.board.contains(h)
-                && state.board.tile_at(h).map(|t| t.terrain_id == "castle").unwrap_or(false))
+        let castle_count = keep
+            .neighbors()
+            .iter()
+            .filter(|&&h| {
+                state.board.contains(h)
+                    && state
+                        .board
+                        .tile_at(h)
+                        .map(|t| t.terrain_id == "castle")
+                        .unwrap_or(false)
+            })
             .count();
 
         // Plan a full turn — should recruit, move recruits out, recruit again
         let (records, _) = plan_full_turn(&state, 0, 15, &recruit_defs);
 
         // Count how many units were planned to move (not the leader)
-        let units_moved: HashSet<u32> = records.iter().filter_map(|r| match r {
-            ActionRecord::Move { unit_id, .. } if *unit_id != 1 => Some(*unit_id),
-            _ => None,
-        }).collect();
+        let units_moved: HashSet<u32> = records
+            .iter()
+            .filter_map(|r| match r {
+                ActionRecord::Move { unit_id, .. } if *unit_id != 1 => Some(*unit_id),
+                _ => None,
+            })
+            .collect();
 
         // Should have more units moving than the initial castle slots
         // because recruits moved out and new recruits filled the freed slots
-        eprintln!("Castle slots: {}, units moved: {}, total actions: {}",
-            castle_count, units_moved.len(), records.len());
+        eprintln!(
+            "Castle slots: {}, units moved: {}, total actions: {}",
+            castle_count,
+            units_moved.len(),
+            records.len()
+        );
 
-        assert!(units_moved.len() >= castle_count,
+        assert!(
+            units_moved.len() >= castle_count,
             "Should recruit-move-recruit: {} castle slots but only {} units moved. Actions: {:?}",
-            castle_count, units_moved.len(), records);
+            castle_count,
+            units_moved.len(),
+            records
+        );
     }
 
     #[test]
@@ -1829,9 +2420,14 @@ mod tests {
         let records = ai_plan_turn(&state, 0, 15);
 
         // Leader should NOT move off keep
-        let leader_moved = records.iter().any(|r| matches!(r, ActionRecord::Move { unit_id: 1, .. }));
-        assert!(!leader_moved,
-            "2-ply leader should stay on keep with gold available, got: {:?}", records);
+        let leader_moved = records
+            .iter()
+            .any(|r| matches!(r, ActionRecord::Move { unit_id: 1, .. }));
+        assert!(
+            !leader_moved,
+            "2-ply leader should stay on keep with gold available, got: {:?}",
+            records
+        );
     }
 
     #[test]
@@ -1868,13 +2464,21 @@ mod tests {
         let (records, score) = plan_full_turn(&state, 0, 15, &recruit_defs);
         let elapsed = start.elapsed();
 
-        assert!(elapsed.as_secs() < 30,
-            "2-ply planning took {:?}, exceeds 30s debug bound", elapsed);
+        assert!(
+            elapsed.as_secs() < 30,
+            "2-ply planning took {:?}, exceeds 30s debug bound",
+            elapsed
+        );
         assert!(!records.is_empty(), "Should produce some actions");
         assert!(score > f32::NEG_INFINITY, "Score should be finite");
 
         // Log timing for reference
-        eprintln!("2-ply leader performance: {:?} ({} actions, score {:.1})", elapsed, records.len(), score);
+        eprintln!(
+            "2-ply leader performance: {:?} ({} actions, score {:.1})",
+            elapsed,
+            records.len(),
+            score
+        );
     }
 
     #[test]
@@ -1909,21 +2513,37 @@ mod tests {
         // Manually run with all units at depth 2 by calling plan_unit_action directly
         let mut clone = state.clone();
         let _recruited = simulate_recruitment(&mut clone, 0, &recruit_defs);
-        let unit_ids: Vec<u32> = clone.units.iter()
+        let unit_ids: Vec<u32> = clone
+            .units
+            .iter()
             .filter(|(_, u)| u.faction == 0 && !u.attacked)
             .map(|(&id, _)| id)
             .collect();
 
         for &uid in &unit_ids {
-            if !clone.units.contains_key(&uid) { continue; }
+            if !clone.units.contains_key(&uid) {
+                continue;
+            }
             if let Some((dest, target)) = plan_unit_action(&clone, uid, 0, 2) {
                 let s = clone.positions[&uid];
                 if dest != s {
-                    let _ = apply_action(&mut clone, Action::Move { unit_id: uid, destination: dest });
+                    let _ = apply_action(
+                        &mut clone,
+                        Action::Move {
+                            unit_id: uid,
+                            destination: dest,
+                        },
+                    );
                 }
                 if let Some(tid) = target {
                     if clone.units.contains_key(&uid) && clone.units.contains_key(&tid) {
-                        let _ = apply_action(&mut clone, Action::Attack { attacker_id: uid, defender_id: tid });
+                        let _ = apply_action(
+                            &mut clone,
+                            Action::Attack {
+                                attacker_id: uid,
+                                defender_id: tid,
+                            },
+                        );
                     }
                 }
             }
@@ -1936,11 +2556,17 @@ mod tests {
         if elapsed.as_secs() < 30 {
             eprintln!("All-unit 2-ply is fast enough! Consider enabling for all units.");
         } else {
-            eprintln!("All-unit 2-ply too slow ({:?}), keeping leader-only.", elapsed);
+            eprintln!(
+                "All-unit 2-ply too slow ({:?}), keeping leader-only.",
+                elapsed
+            );
         }
 
         // Soft assertion — just ensure it finishes at all
-        assert!(elapsed.as_secs() < 120,
-            "All-unit 2-ply took {:?}, even the generous bound exceeded", elapsed);
+        assert!(
+            elapsed.as_secs() < 120,
+            "All-unit 2-ply took {:?}, even the generous bound exceeded",
+            elapsed
+        );
     }
 }

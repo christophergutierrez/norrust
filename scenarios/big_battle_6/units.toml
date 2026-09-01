@@ -1,0 +1,2 @@
+# Standalone board: the UI deploys faction units because preset_units is false.
+units = []

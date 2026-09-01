@@ -186,14 +186,159 @@ function M.draw_board(ctx, state)
         love.graphics.setColor(1, 1, 1, 1)
     end
 
-    -- 1b. Village ownership borders
-    love.graphics.setLineWidth(2.5)
-    for key, owner in pairs(village_owners) do
-        local col_str, row_str = key:match("^(%d+),(%d+)$")
-        local cx, cy = ctx.hex.to_pixel(tonumber(col_str), tonumber(row_str))
-        local fc = faction_color(ctx, owner)
-        love.graphics.setColor(fc[1], fc[2], fc[3], 0.7)
-        love.graphics.polygon("line", ctx.hex.polygon(cx, cy, ctx.hex.RADIUS * 0.85))
+    -- 1b. Village income markers (neutral = no gold; flag color = who gets +2g/turn)
+    local occupants = {}
+    if ctx.game_mode == ctx.PLAYING then
+        for _, unit in ipairs(state.units or {}) do
+            occupants[int(unit.col) .. "," .. int(unit.row)] = int(unit.faction)
+        end
+    end
+
+    local function village_visible(key)
+        if ctx.game_mode ~= ctx.PLAYING then return true end
+        if not ctx.fog or not ctx.fog.enabled then return true end
+        return ctx.fog.visible[key] or ctx.fog.seen[key]
+    end
+
+    local function draw_village_flag(cx, cy, radius, r, g, b)
+        local pole_x = cx + radius * 0.12
+        local pole_top = cy - radius * 0.98
+        local pole_bot = cy - radius * 0.22
+        love.graphics.setColor(0.12, 0.10, 0.08, 1)
+        love.graphics.setLineWidth(3)
+        love.graphics.line(pole_x, pole_bot, pole_x, pole_top)
+        love.graphics.setColor(r, g, b, 1)
+        love.graphics.polygon("fill",
+            pole_x, pole_top + 1,
+            pole_x + radius * 0.58, pole_top + radius * 0.20,
+            pole_x, pole_top + radius * 0.40)
+        love.graphics.setColor(0, 0, 0, 0.35)
+        love.graphics.setLineWidth(1)
+        love.graphics.polygon("line",
+            pole_x, pole_top + 1,
+            pole_x + radius * 0.58, pole_top + radius * 0.20,
+            pole_x, pole_top + radius * 0.40)
+    end
+
+    for col = 0, ctx.BOARD_COLS - 1 do
+        for row = 0, ctx.BOARD_ROWS - 1 do
+            local key = col .. "," .. row
+            if tile_ids[key] == "village" and village_visible(key) then
+                local cx, cy = ctx.hex.to_pixel(col, row)
+                local radius = ctx.hex.RADIUS
+                local owner = village_owners[key]
+                local occupant = occupants[key]
+                local capturing = occupant ~= nil and occupant ~= owner
+                local pulse = 0.45 + 0.30 * math.sin(love.timer.getTime() * 5)
+
+                if owner ~= nil then
+                    local fc = faction_color(ctx, owner)
+                    love.graphics.setColor(fc[1], fc[2], fc[3], 0.28)
+                    love.graphics.polygon("fill", ctx.hex.polygon(cx, cy, radius))
+                    love.graphics.setColor(fc[1], fc[2], fc[3], 0.95)
+                    love.graphics.setLineWidth(4.5)
+                    love.graphics.polygon("line", ctx.hex.polygon(cx, cy, radius * 0.92))
+                    draw_village_flag(cx, cy, radius, fc[1], fc[2], fc[3])
+                else
+                    love.graphics.setColor(0.95, 0.82, 0.20, 0.18)
+                    love.graphics.polygon("fill", ctx.hex.polygon(cx, cy, radius))
+                    love.graphics.setColor(0.95, 0.82, 0.20, 0.9)
+                    love.graphics.setLineWidth(3.0)
+                    love.graphics.polygon("line", ctx.hex.polygon(cx, cy, radius * 0.92))
+                    draw_village_flag(cx, cy, radius, 0.75, 0.75, 0.72)
+                end
+
+                local badge
+                if owner == 0 then
+                    badge = "+2g Blue"
+                elseif owner == 1 then
+                    badge = "+2g Red"
+                else
+                    badge = "Neutral 0g"
+                end
+                if capturing then
+                    local oc = faction_color(ctx, occupant)
+                    love.graphics.setColor(oc[1], oc[2], oc[3], pulse)
+                    love.graphics.setLineWidth(3.5)
+                    love.graphics.polygon("line", ctx.hex.polygon(cx, cy, radius * 0.72))
+                    badge = "End turn: capture"
+                end
+
+                love.graphics.setFont(ctx.fonts[11])
+                local tw = ctx.fonts[11]:getWidth(badge)
+                local bx = cx - tw / 2 - 4
+                local by = cy + radius * 0.52
+                love.graphics.setColor(0, 0, 0, 0.72)
+                love.graphics.rectangle("fill", bx, by, tw + 8, 16, 3, 3)
+                if owner == 0 or owner == 1 then
+                    local fc = faction_color(ctx, owner)
+                    love.graphics.setColor(fc[1], fc[2], fc[3], 1)
+                else
+                    love.graphics.setColor(C_GOLD[1], C_GOLD[2], C_GOLD[3], 1)
+                end
+                if capturing then
+                    local oc = faction_color(ctx, occupant)
+                    love.graphics.setColor(oc[1], oc[2], oc[3], 1)
+                end
+                love.graphics.print(badge, cx - tw / 2, by + 1)
+            end
+        end
+    end
+
+    -- 1c. Setup: highlight keeps so each side's starting castle is obvious
+    local setup_mode = ctx.game_mode == ctx.SETUP_BLUE or ctx.game_mode == ctx.SETUP_RED
+        or ctx.game_mode == ctx.PICK_FACTION_BLUE or ctx.game_mode == ctx.PICK_FACTION_RED
+    if setup_mode then
+        local keeps = {}
+        for _, tile in ipairs(state.terrain or {}) do
+            if (tile.terrain_id or "") == "keep" then
+                keeps[#keeps + 1] = {col = int(tile.col), row = int(tile.row)}
+            end
+        end
+        table.sort(keeps, function(a, b)
+            if a.col == b.col then return a.row < b.row end
+            return a.col < b.col
+        end)
+        local placing = ctx.game_mode == ctx.SETUP_BLUE and 0
+            or ctx.game_mode == ctx.SETUP_RED and 1
+            or ctx.game_mode == ctx.PICK_FACTION_BLUE and 0
+            or 1
+        local rec = #keeps > 0 and keeps[placing == 0 and 1 or #keeps] or nil
+        local pulse = 0.4 + 0.25 * math.sin(love.timer.getTime() * 4)
+        for i, k in ipairs(keeps) do
+            local owner = (i == 1) and 0 or 1
+            if #keeps == 1 then owner = placing end
+            local is_rec = rec and k.col == rec.col and k.row == rec.row
+            local fc = faction_color(ctx, owner)
+            local cx, cy = ctx.hex.to_pixel(k.col, k.row)
+            if is_rec then
+                love.graphics.setColor(fc[1], fc[2], fc[3], pulse)
+                love.graphics.polygon("fill", ctx.hex.polygon(cx, cy, ctx.hex.RADIUS))
+                love.graphics.setColor(fc[1], fc[2], fc[3], 1)
+                love.graphics.setLineWidth(4.0)
+            else
+                love.graphics.setColor(fc[1], fc[2], fc[3], 0.25)
+                love.graphics.polygon("fill", ctx.hex.polygon(cx, cy, ctx.hex.RADIUS))
+                love.graphics.setColor(fc[1], fc[2], fc[3], 0.8)
+                love.graphics.setLineWidth(2.5)
+            end
+            love.graphics.polygon("line", ctx.hex.polygon(cx, cy, ctx.hex.RADIUS))
+
+            local label
+            if is_rec and (ctx.game_mode == ctx.SETUP_BLUE or ctx.game_mode == ctx.SETUP_RED) then
+                label = "YOUR KEEP"
+            elseif owner == 0 then
+                label = "BLUE KEEP"
+            else
+                label = "RED KEEP"
+            end
+            love.graphics.setFont(ctx.fonts[14])
+            local tw = ctx.fonts[14]:getWidth(label)
+            love.graphics.setColor(0, 0, 0, 0.7)
+            love.graphics.rectangle("fill", cx - tw / 2 - 4, cy - ctx.hex.RADIUS - 6, tw + 8, 18, 3, 3)
+            love.graphics.setColor(fc[1], fc[2], fc[3], 1)
+            love.graphics.print(label, cx - tw / 2, cy - ctx.hex.RADIUS - 4)
+        end
     end
 
     -- 2. Reachable hex highlights

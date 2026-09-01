@@ -125,6 +125,7 @@ so you know exactly what a better agent should exploit.
 
 > C ABI function reference: [docs/BRIDGE_API.md](docs/BRIDGE_API.md)
 > Agent strategy guide: [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md)
+> Headless self-play protocol: [docs/SELF_PLAY.md](docs/SELF_PLAY.md)
 
 ---
 
@@ -159,6 +160,7 @@ norrust/
 |----------|---------------|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design, component diagram, sequence diagrams |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Build commands, test workflow, key file map |
+| [docs/SELF_PLAY.md](docs/SELF_PLAY.md) | Reproducible headless simulations, fair comparisons, benchmark baselines |
 | [docs/BRIDGE_API.md](docs/BRIDGE_API.md) | C ABI function signatures, error codes, JSON schemas |
 | [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) | Turn lifecycle, state semantics, legal moves, combat math |
 | [docs/ASSET-SPEC.md](docs/ASSET-SPEC.md) | Sprite format, terrain tiles, animation pipeline |

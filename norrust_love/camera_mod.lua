@@ -18,6 +18,16 @@ function M.apply_offset()
     camera.offset_y = clamp(camera.offset_y, camera.min_y, camera.max_y)
 end
 
+--- Pan the camera so a hex is centered in the board viewport.
+function M.focus_hex(col, row)
+    local ux, uy = hex.to_pixel(col, row)
+    local vp_w, vp_h = get_viewport()
+    local usable_w = vp_w - 200
+    camera.target_x = clamp((usable_w / 2 - camera.origin_x) / camera.zoom - ux, camera.min_x, camera.max_x)
+    camera.target_y = clamp((vp_h / 2 - camera.origin_y) / camera.zoom - uy, camera.min_y, camera.max_y)
+    camera.lerping = true
+end
+
 function M.center(reset)
     local tlx, tly = hex.to_pixel(0, 0)
     local brx, bry = hex.to_pixel(scn.COLS - 1, scn.ROWS - 1)

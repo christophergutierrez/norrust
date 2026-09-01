@@ -1,8 +1,8 @@
 //! Fog of war visibility calculation — range-based per-faction hex visibility.
 
-use std::collections::HashSet;
 use crate::game_state::GameState;
 use crate::hex::Hex;
+use std::collections::HashSet;
 
 /// Compute the set of hexes visible to the given faction.
 ///
@@ -11,11 +11,17 @@ use crate::hex::Hex;
 /// Range-based only — no line-of-sight blocking.
 pub fn compute_visibility(state: &GameState, faction: u8) -> HashSet<Hex> {
     // Collect friendly units with their positions and effective vision range
-    let observers: Vec<(Hex, u32)> = state.units.values()
+    let observers: Vec<(Hex, u32)> = state
+        .units
+        .values()
         .filter(|u| u.faction == faction)
         .filter_map(|u| {
             let pos = state.positions.get(&u.id)?;
-            let range = if u.vision_range > 0 { u.vision_range } else { u.movement };
+            let range = if u.vision_range > 0 {
+                u.vision_range
+            } else {
+                u.movement
+            };
             Some((*pos, range))
         })
         .collect();
@@ -38,8 +44,8 @@ pub fn compute_visibility(state: &GameState, faction: u8) -> HashSet<Hex> {
 mod tests {
     use super::*;
     use crate::board::Board;
-    use crate::unit::Unit;
     use crate::hex::Hex;
+    use crate::unit::Unit;
 
     fn make_state(width: u32, height: u32) -> GameState {
         let board = Board::new(width, height);
@@ -54,7 +60,15 @@ mod tests {
         state
     }
 
-    fn place_unit(state: &mut GameState, id: u32, faction: u8, col: i32, row: i32, movement: u32, vision_range: u32) {
+    fn place_unit(
+        state: &mut GameState,
+        id: u32,
+        faction: u8,
+        col: i32,
+        row: i32,
+        movement: u32,
+        vision_range: u32,
+    ) {
         let mut unit = Unit::new(id, "test", 20, faction);
         unit.movement = movement;
         unit.vision_range = vision_range;
@@ -78,14 +92,22 @@ mod tests {
         // All hexes within distance 2 should be visible
         for hex in state.board.tile_hexes() {
             if center.distance(*hex) <= 2 {
-                assert!(vis.contains(hex), "hex {:?} within range 2 should be visible", hex);
+                assert!(
+                    vis.contains(hex),
+                    "hex {:?} within range 2 should be visible",
+                    hex
+                );
             }
         }
 
         // Hexes beyond distance 2 should not be visible
         for hex in state.board.tile_hexes() {
             if center.distance(*hex) > 2 {
-                assert!(!vis.contains(hex), "hex {:?} beyond range 2 should not be visible", hex);
+                assert!(
+                    !vis.contains(hex),
+                    "hex {:?} beyond range 2 should not be visible",
+                    hex
+                );
             }
         }
     }

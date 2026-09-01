@@ -63,6 +63,11 @@ function M.draw_hud_bar(ctx, state)
     local tod = ctx.norrust.get_time_of_day_name(ctx.engine)
     local gold_arr = state.gold or {0, 0}
     local gold = int(gold_arr[faction + 1] or 0)
+    local village_count = 0
+    for _, owner in pairs(ctx.village_owners or {}) do
+        if owner == faction then village_count = village_count + 1 end
+    end
+    local income = village_count * 2
     local turn = ctx.norrust.get_turn(ctx.engine)
     local turn_str
     if state.max_turns then
@@ -70,11 +75,26 @@ function M.draw_hud_bar(ctx, state)
     else
         turn_str = string.format("Turn %d", turn)
     end
-    local hud_text = string.format("%s  ·  %s  ·  %s's Turn  ·  %dg",
-        turn_str, tod, faction_name, gold)
+    local ctrl = ctx.controllers and ctx.controllers[faction + 1] or "human"
+    local turn_who
+    if ctrl == "human" then
+        turn_who = string.format("Your turn (%s)", faction_name)
+    elseif ctrl == "ai" then
+        turn_who = string.format("%s (AI)", faction_name)
+    else
+        turn_who = string.format("%s's turn", faction_name)
+    end
+    local hud_text = string.format("%s  ·  %s  ·  %s  ·  %dg",
+        turn_str, tod, turn_who, gold)
     love.graphics.setFont(ctx.fonts[14])
     love.graphics.setColor(fc[1], fc[2], fc[3])
     love.graphics.print(hud_text, 10, 6)
+    love.graphics.setFont(ctx.fonts[11])
+    love.graphics.setColor(C_GOLD[1], C_GOLD[2], C_GOLD[3], 1)
+    love.graphics.print(
+        string.format("Villages: %d held  ·  +%dg at the start of your turn", village_count, income),
+        10, 24
+    )
 end
 
 --- Draw a semi-transparent help overlay showing all keybindings.
@@ -128,14 +148,17 @@ function M.draw_help_overlay(ctx)
         {"Escape", "Cancel selection"},
         {"E", "End turn"},
         {"R", "Recruit units"},
+        {"Villages", "Flag color = +2g/turn"},
         {"A", "Advance unit (when ready)"},
         {"H", "Dialogue history"},
         {"P", "Toggle agent server"},
     })
 
-    draw_section(col_w * 2, "Menu", {
+    draw_section(col_w * 2, "Menu / Setup", {
         {"1-9", "Select scenario"},
-        {"C", "Start campaign"},
+        {"C / D", "Start campaign"},
+        {"Tab", "Human / AI / Port"},
+        {"Click keep", "Place your leader"},
     })
 
     -- Footer

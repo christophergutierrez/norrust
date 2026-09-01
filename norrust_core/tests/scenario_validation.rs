@@ -34,6 +34,38 @@ fn scenario_dir() -> PathBuf {
     project_root().join("scenarios")
 }
 
+#[test]
+fn big_battle_6_has_rowwise_tile_symmetry_and_six_villages() {
+    let loaded = load_board(&scenario_dir().join("big_battle_6/board.toml")).unwrap();
+    let board = loaded.board;
+    assert_eq!((board.width, board.height), (24, 14));
+
+    let mut keeps = Vec::new();
+    let mut villages = Vec::new();
+    for row in 0..board.height as i32 {
+        for col in 0..board.width as i32 {
+            let terrain = board.terrain_at(Hex::from_offset(col, row)).unwrap();
+            if terrain == "keep" { keeps.push((col, row)); }
+            if terrain == "village" { villages.push((col, row)); }
+            let mirror = board.terrain_at(Hex::from_offset(23 - col, row)).unwrap();
+            assert_eq!(terrain, mirror, "terrain mismatch at ({col},{row})");
+        }
+    }
+    assert_eq!(keeps, vec![(2, 7), (21, 7)]);
+    assert_eq!(villages.len(), 6);
+    assert_eq!(villages.iter().filter(|(col, _)| *col < 12).count(), 3);
+    assert!(villages.iter().all(|(col, row)| villages.contains(&(23 - col, *row))));
+
+    for &(col, row) in &keeps {
+        let castle_count = Hex::from_offset(col, row)
+            .neighbors()
+            .iter()
+            .filter(|&&hex| board.contains(hex) && board.terrain_at(hex) == Some("castle"))
+            .count();
+        assert_eq!(castle_count, 6, "keep at ({col},{row})");
+    }
+}
+
 // ── Discovery ────────────────────────────────────────────────────────────────
 
 struct ScenarioPair {
@@ -184,10 +216,7 @@ fn validate_scenario(pair: &ScenarioPair) -> Vec<String> {
                 board.terrain_at(hex) == Some("keep")
             });
             if !any_on_keep {
-                errors.push(format!(
-                    "Faction {} leader(s) not on a keep tile",
-                    faction
-                ));
+                errors.push(format!("Faction {} leader(s) not on a keep tile", faction));
             }
         }
     }
@@ -200,9 +229,7 @@ fn validate_scenario(pair: &ScenarioPair) -> Vec<String> {
                 let castle_count = hex
                     .neighbors()
                     .iter()
-                    .filter(|&&n| {
-                        board.contains(n) && board.terrain_at(n) == Some("castle")
-                    })
+                    .filter(|&&n| board.contains(n) && board.terrain_at(n) == Some("castle"))
                     .count();
                 if castle_count < 6 {
                     errors.push(format!(
@@ -263,10 +290,8 @@ fn validate_scenario(pair: &ScenarioPair) -> Vec<String> {
 fn validate_no_false_winner(pair: &ScenarioPair) -> Option<String> {
     let loaded = load_board(&pair.board_path).ok()?;
     let placements = load_units(&pair.units_path).ok()?;
-    let unit_reg =
-        Registry::<UnitDef>::load_from_dir(&data_dir().join("units")).ok()?;
-    let terrain_reg =
-        Registry::<TerrainDef>::load_from_dir(&data_dir().join("terrain")).ok()?;
+    let unit_reg = Registry::<UnitDef>::load_from_dir(&data_dir().join("units")).ok()?;
+    let terrain_reg = Registry::<TerrainDef>::load_from_dir(&data_dir().join("terrain")).ok()?;
 
     let mut state = GameState::new_seeded(loaded.board, 42);
     state.objective_hex = loaded.objective_hex;
@@ -311,7 +336,10 @@ fn validate_no_false_winner(pair: &ScenarioPair) -> Option<String> {
 #[test]
 fn test_all_scenarios_valid() {
     let scenarios = discover_scenarios();
-    assert!(!scenarios.is_empty(), "No scenarios discovered in scenarios/");
+    assert!(
+        !scenarios.is_empty(),
+        "No scenarios discovered in scenarios/"
+    );
 
     let mut all_errors = Vec::new();
 
@@ -329,10 +357,7 @@ fn test_all_scenarios_valid() {
     }
 
     if !all_errors.is_empty() {
-        panic!(
-            "Scenario validation failures:\n{}",
-            all_errors.join("\n")
-        );
+        panic!("Scenario validation failures:\n{}", all_errors.join("\n"));
     }
 }
 
@@ -401,14 +426,12 @@ fn test_ffi_all_symbols_exercised() {
         // Board loading (re-creates game state)
         let scenarios = discover_scenarios();
         assert!(!scenarios.is_empty());
-        let board_path =
-            CString::new(scenarios[0].board_path.to_str().unwrap()).unwrap();
+        let board_path = CString::new(scenarios[0].board_path.to_str().unwrap()).unwrap();
         let board_loaded = norrust_load_board(engine, board_path.as_ptr(), 42);
         assert_eq!(board_loaded, 1);
 
         // Units loading
-        let units_path =
-            CString::new(scenarios[0].units_path.to_str().unwrap()).unwrap();
+        let units_path = CString::new(scenarios[0].units_path.to_str().unwrap()).unwrap();
         let units_loaded = norrust_load_units(engine, units_path.as_ptr());
         assert_eq!(units_loaded, 1);
 
@@ -498,13 +521,11 @@ fn test_all_scenarios_ffi_smoke() {
             let loaded = norrust_load_data(engine, data_path.as_ptr());
             assert_eq!(loaded, 1, "{}: load_data failed", pair.name);
 
-            let board_cstr =
-                CString::new(pair.board_path.to_str().unwrap()).unwrap();
+            let board_cstr = CString::new(pair.board_path.to_str().unwrap()).unwrap();
             let board_ok = norrust_load_board(engine, board_cstr.as_ptr(), 42);
             assert_eq!(board_ok, 1, "{}: load_board failed", pair.name);
 
-            let units_cstr =
-                CString::new(pair.units_path.to_str().unwrap()).unwrap();
+            let units_cstr = CString::new(pair.units_path.to_str().unwrap()).unwrap();
             let units_ok = norrust_load_units(engine, units_cstr.as_ptr());
             assert_eq!(units_ok, 1, "{}: load_units failed", pair.name);
 
@@ -525,7 +546,11 @@ fn test_all_scenarios_ffi_smoke() {
 
             // State still queryable after AI turns
             let json = norrust_get_state_json(engine);
-            assert!(!json.is_null(), "{}: state_json null after AI turns", pair.name);
+            assert!(
+                !json.is_null(),
+                "{}: state_json null after AI turns",
+                pair.name
+            );
             norrust_free_string(json);
 
             let turn = norrust_get_turn(engine);

@@ -2,8 +2,8 @@
 
 use std::path::PathBuf;
 
-use norrust_core::campaign::{calculate_carry_gold, get_survivors, load_campaign};
 use norrust_core::board::Board;
+use norrust_core::campaign::{calculate_carry_gold, get_survivors, load_campaign};
 use norrust_core::game_state::GameState;
 use norrust_core::hex::Hex;
 use norrust_core::unit::Unit;
@@ -128,35 +128,50 @@ fn test_veteran_placement_via_ffi() {
         assert_eq!(norrust_load_data(engine, data_path.as_ptr()), 1);
 
         // Load a board
-        let board_path = c(&project_root().join("scenarios/contested/board.toml").to_string_lossy());
+        let board_path = c(&project_root()
+            .join("scenarios/contested/board.toml")
+            .to_string_lossy());
         assert_eq!(norrust_load_board(engine, board_path.as_ptr(), 42), 1);
 
         // Place a leader on the keep (1,2) so veteran placement is valid
         let leader_id = c("Lieutenant");
         let leader_uid = norrust_place_unit_at(engine, leader_id.as_ptr(), 0, 1, 2);
-        assert!(leader_uid > 0, "leader placement should return positive unit_id");
+        assert!(
+            leader_uid > 0,
+            "leader placement should return positive unit_id"
+        );
 
         // Place a veteran Spearman on adjacent castle hex (1,1)
         let def_id = c("Spearman");
         let result = norrust_place_veteran_unit(
             engine,
             def_id.as_ptr(),
-            0,              // faction
-            1, 1,           // col, row
-            18,             // hp (carried over wounded)
-            25,             // xp
-            40,             // xp_needed
-            0,              // advancement_pending = false
+            0, // faction
+            1,
+            1,  // col, row
+            18, // hp (carried over wounded)
+            25, // xp
+            40, // xp_needed
+            0,  // advancement_pending = false
         );
-        assert!(result > 0, "veteran placement should return positive unit_id");
+        assert!(
+            result > 0,
+            "veteran placement should return positive unit_id"
+        );
 
         // Verify via state JSON that the unit has carried stats
         let json_str = ffi_string(norrust_get_state_json(engine));
         assert!(!json_str.is_empty());
         // Veterans carry their HP (hp=18, not healed to max_hp=36)
-        assert!(json_str.contains("\"hp\":18"), "veteran HP should be carried (18)");
+        assert!(
+            json_str.contains("\"hp\":18"),
+            "veteran HP should be carried (18)"
+        );
         assert!(json_str.contains("\"xp\":25"), "veteran XP should be 25");
-        assert!(json_str.contains("\"xp_needed\":40"), "veteran xp_needed should be 40");
+        assert!(
+            json_str.contains("\"xp_needed\":40"),
+            "veteran xp_needed should be 40"
+        );
 
         norrust_free(engine);
     }
@@ -166,7 +181,9 @@ fn test_veteran_placement_via_ffi() {
 fn test_load_campaign_via_ffi() {
     unsafe {
         let engine = norrust_new();
-        let path = c(&project_root().join("campaigns/tutorial.toml").to_string_lossy());
+        let path = c(&project_root()
+            .join("campaigns/tutorial.toml")
+            .to_string_lossy());
         let json_str = ffi_string(norrust_load_campaign(engine, path.as_ptr()));
         assert!(!json_str.is_empty(), "campaign JSON should not be empty");
         assert!(json_str.contains("\"id\":\"tutorial\""));
@@ -187,16 +204,26 @@ fn test_survivors_and_carry_gold_via_ffi() {
         assert_eq!(norrust_load_data(engine, data_path.as_ptr()), 1);
 
         // Load crossing scenario
-        let board_path = c(&project_root().join("scenarios/crossing/board.toml").to_string_lossy());
+        let board_path = c(&project_root()
+            .join("scenarios/crossing/board.toml")
+            .to_string_lossy());
         assert_eq!(norrust_load_board(engine, board_path.as_ptr(), 42), 1);
 
-        let units_path = c(&project_root().join("scenarios/crossing/units.toml").to_string_lossy());
+        let units_path = c(&project_root()
+            .join("scenarios/crossing/units.toml")
+            .to_string_lossy());
         assert_eq!(norrust_load_units(engine, units_path.as_ptr()), 1);
 
         // Get survivors for faction 0
         let survivors_json = ffi_string(norrust_get_survivors_json(engine, 0));
-        assert!(survivors_json.starts_with('['), "survivors should be a JSON array");
-        assert!(survivors_json.contains("\"def_id\""), "survivors should have unit data");
+        assert!(
+            survivors_json.starts_with('['),
+            "survivors should be a JSON array"
+        );
+        assert!(
+            survivors_json.contains("\"def_id\""),
+            "survivors should have unit data"
+        );
 
         // Get carry gold (80%, 5 bonus per remaining turn)
         let gold = norrust_get_carry_gold(engine, 0, 80, 5);

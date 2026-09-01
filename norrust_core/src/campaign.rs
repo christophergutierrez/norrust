@@ -306,8 +306,8 @@ impl CampaignState {
 pub fn load_campaign(path: &Path) -> Result<CampaignDef, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("Failed to read campaign file: {}", e))?;
-    let file: CampaignFile = toml::from_str(&content)
-        .map_err(|e| format!("Failed to parse campaign TOML: {}", e))?;
+    let file: CampaignFile =
+        toml::from_str(&content).map_err(|e| format!("Failed to parse campaign TOML: {}", e))?;
     Ok(CampaignDef {
         id: file.campaign.id,
         name: file.campaign.name,
@@ -563,10 +563,7 @@ mod tests {
         assert!(cs.roster.is_empty());
         assert!(cs.id_map.is_empty());
         assert!(cs.current_scenario().is_some());
-        assert_eq!(
-            cs.current_scenario().unwrap().board,
-            "crossing/board.toml"
-        );
+        assert_eq!(cs.current_scenario().unwrap().board, "crossing/board.toml");
     }
 
     #[test]
@@ -650,10 +647,7 @@ mod tests {
 
         // Verify initial state
         assert_eq!(cs.scenario_index, 0);
-        assert_eq!(
-            cs.current_scenario().unwrap().board,
-            "crossing/board.toml"
-        );
+        assert_eq!(cs.current_scenario().unwrap().board, "crossing/board.toml");
 
         // Simulate scenario 1: place 3 faction-0 units
         let board = Board::new(16, 10);
@@ -693,7 +687,7 @@ mod tests {
         // Verify progression
         assert_eq!(cs.scenario_index, 1);
         assert_eq!(cs.veterans.len(), 2); // 2 survivors
-        // Gold: 150 * 80% + 10 * 5 = 120 + 50 = 170
+                                          // Gold: 150 * 80% + 10 * 5 = 120 + 50 = 170
         assert_eq!(cs.carry_gold, 170);
 
         // Verify roster
@@ -703,21 +697,14 @@ mod tests {
         assert_eq!(dead_entry.status, RosterStatus::Dead);
 
         // Verify next scenario
-        assert_eq!(
-            cs.current_scenario().unwrap().board,
-            "ambush/board.toml"
-        );
+        assert_eq!(cs.current_scenario().unwrap().board, "ambush/board.toml");
 
         // Test clear_id_map and map_id for scenario 2
         cs.clear_id_map();
         assert!(cs.id_map.is_empty());
 
         // Map veterans to new engine IDs in scenario 2
-        let living_uuids: Vec<String> = cs
-            .get_living()
-            .iter()
-            .map(|e| e.uuid.clone())
-            .collect();
+        let living_uuids: Vec<String> = cs.get_living().iter().map(|e| e.uuid.clone()).collect();
         assert_eq!(living_uuids.len(), 2);
         for (i, uuid) in living_uuids.iter().enumerate() {
             cs.map_id((i + 10) as u32, uuid);
@@ -815,18 +802,30 @@ mod tests {
         cs.veterans = vec![
             VeteranUnit {
                 def_id: "fighter".to_string(),
-                hp: 30, max_hp: 30, xp: 15, xp_needed: 40,
-                advancement_pending: false, abilities: vec![],
+                hp: 30,
+                max_hp: 30,
+                xp: 15,
+                xp_needed: 40,
+                advancement_pending: false,
+                abilities: vec![],
             },
             VeteranUnit {
                 def_id: "archer".to_string(),
-                hp: 20, max_hp: 25, xp: 5, xp_needed: 32,
-                advancement_pending: false, abilities: vec![],
+                hp: 20,
+                max_hp: 25,
+                xp: 5,
+                xp_needed: 32,
+                advancement_pending: false,
+                abilities: vec![],
             },
             VeteranUnit {
                 def_id: "spearman".to_string(),
-                hp: 28, max_hp: 28, xp: 0, xp_needed: 36,
-                advancement_pending: false, abilities: vec![],
+                hp: 28,
+                max_hp: 28,
+                xp: 0,
+                xp_needed: 36,
+                advancement_pending: false,
+                abilities: vec![],
             },
         ];
 

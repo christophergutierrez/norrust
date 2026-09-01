@@ -38,7 +38,7 @@ local game_data = {
     SCENARIOS = {
         {name = "Quick Play",   board = "contested/board.toml",     units = "contested/units.toml",     preset_units = false},
         {name = "Night Battle", board = "night_orcs/board.toml",    units = "night_orcs/units.toml",    preset_units = false},
-        {name = "Big Battle",   board = "final_battle/board.toml",  units = "final_battle/units.toml",  preset_units = false, starting_gold = 300},
+        {name = "Big Battle 6", board = "big_battle_6/board.toml", units = "big_battle_6/units.toml", preset_units = false, starting_gold = 300},
     },
     CAMPAIGNS = {
         {name = "A Tale of Two Brothers", file = "two_brothers.toml"},

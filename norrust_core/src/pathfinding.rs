@@ -247,7 +247,10 @@ mod tests {
             &zoc,
             false,
         );
-        assert!(blocked.is_none(), "path past ZOC hex must be blocked for non-skirmisher");
+        assert!(
+            blocked.is_none(),
+            "path past ZOC hex must be blocked for non-skirmisher"
+        );
 
         // Can still reach the ZOC hex itself
         let to_zoc = find_path(
@@ -281,11 +284,21 @@ mod tests {
         // Own hex always reachable
         assert!(reachable.contains(&start), "start hex must be reachable");
         // Adjacent hex (1 step) must be reachable
-        assert!(reachable.contains(&Hex::from_offset(1, 2)), "(1,2) is 1 step away");
+        assert!(
+            reachable.contains(&Hex::from_offset(1, 2)),
+            "(1,2) is 1 step away"
+        );
         // Corner (0,0) is far from center — 4 movement points — must be out of budget
-        assert!(!reachable.contains(&Hex::from_offset(0, 0)), "(0,0) is beyond budget 2");
+        assert!(
+            !reachable.contains(&Hex::from_offset(0, 0)),
+            "(0,0) is beyond budget 2"
+        );
         // At budget=2 from center of 5×5, expect 7+ hexes reachable (own + 6 adjacent)
-        assert!(reachable.len() >= 7, "expected at least 7 reachable hexes, got {}", reachable.len());
+        assert!(
+            reachable.len() >= 7,
+            "expected at least 7 reachable hexes, got {}",
+            reachable.len()
+        );
     }
 
     #[test]
@@ -307,6 +320,9 @@ mod tests {
             &zoc,
             true, // is_skirmisher
         );
-        assert!(result.is_some(), "skirmisher must be able to path past a ZOC hex");
+        assert!(
+            result.is_some(),
+            "skirmisher must be able to path past a ZOC hex"
+        );
     }
 }

@@ -60,8 +60,7 @@ impl Hex {
 
     /// Manhattan distance between two hexes in cubic space.
     pub fn distance(self, other: Hex) -> u32 {
-        ((self.x - other.x).abs() + (self.y - other.y).abs() + (self.z - other.z).abs()) as u32
-            / 2
+        ((self.x - other.x).abs() + (self.y - other.y).abs() + (self.z - other.z).abs()) as u32 / 2
     }
 
     /// The 6 hexes adjacent to this one, in direction order.
@@ -117,8 +116,18 @@ mod tests {
         let neighbors = center.neighbors();
         assert_eq!(neighbors.len(), 6);
         for n in &neighbors {
-            assert_eq!(n.x + n.y + n.z, 0, "neighbor {:?} violates cubic invariant", n);
-            assert_eq!(center.distance(*n), 1, "neighbor {:?} is not 1 step away", n);
+            assert_eq!(
+                n.x + n.y + n.z,
+                0,
+                "neighbor {:?} violates cubic invariant",
+                n
+            );
+            assert_eq!(
+                center.distance(*n),
+                1,
+                "neighbor {:?} is not 1 step away",
+                n
+            );
         }
     }
 
@@ -127,7 +136,11 @@ mod tests {
         let neighbors = Hex::ORIGIN.neighbors();
         for i in 0..6 {
             for j in (i + 1)..6 {
-                assert_ne!(neighbors[i], neighbors[j], "duplicate neighbors at {} and {}", i, j);
+                assert_ne!(
+                    neighbors[i], neighbors[j],
+                    "duplicate neighbors at {} and {}",
+                    i, j
+                );
             }
         }
     }
@@ -141,7 +154,11 @@ mod tests {
                 let hex = Hex::new(x, y, z);
                 let (col, row) = hex.to_offset();
                 let recovered = Hex::from_offset(col, row);
-                assert_eq!(hex, recovered, "roundtrip failed for {:?} → ({},{}) → {:?}", hex, col, row, recovered);
+                assert_eq!(
+                    hex, recovered,
+                    "roundtrip failed for {:?} → ({},{}) → {:?}",
+                    hex, col, row, recovered
+                );
             }
         }
     }
@@ -152,7 +169,11 @@ mod tests {
         for dir in Hex::ORIGIN.neighbors() {
             let moved = start + dir;
             let back = moved - dir;
-            assert_eq!(back, start, "add/subtract not inverse for direction {:?}", dir);
+            assert_eq!(
+                back, start,
+                "add/subtract not inverse for direction {:?}",
+                dir
+            );
         }
     }
 }

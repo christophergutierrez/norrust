@@ -3,9 +3,15 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
-fn default_level() -> u8 { 1 }
-fn default_alignment() -> String { "liminal".to_string() }
-fn default_starting_gold() -> u32 { 100 }
+fn default_level() -> u8 {
+    1
+}
+fn default_alignment() -> String {
+    "liminal".to_string()
+}
+fn default_starting_gold() -> u32 {
+    100
+}
 
 /// Attack definition loaded from TOML unit files.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -134,7 +140,7 @@ pub struct FactionDef {
     pub id: String,
     pub name: String,
     pub leader_def: String,
-    pub recruits: Vec<String>,  // mix of group ids and unit def ids; expanded at load time
+    pub recruits: Vec<String>, // mix of group ids and unit def ids; expanded at load time
     #[serde(default = "default_starting_gold")]
     pub starting_gold: u32,
 }

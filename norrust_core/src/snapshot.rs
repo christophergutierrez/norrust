@@ -26,11 +26,11 @@ pub struct TileSnapshot {
 /// Flat representation of a single attack in a unit's loadout.
 #[derive(Debug, Serialize)]
 pub struct AttackSnapshot {
-    pub id:      String,
-    pub name:    String,
-    pub damage:  u32,
+    pub id: String,
+    pub name: String,
+    pub damage: u32,
     pub strikes: u32,
-    pub range:   String,
+    pub range: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub specials: Vec<String>,
 }
@@ -105,7 +105,12 @@ impl StateSnapshot {
                     row,
                     terrain_id: tile.terrain_id.clone(),
                     color: tile.color.clone(),
-                    owner: state.village_owners.get(&hex).copied().map(|o| o as i32).unwrap_or(-1),
+                    owner: state
+                        .village_owners
+                        .get(&hex)
+                        .copied()
+                        .map(|o| o as i32)
+                        .unwrap_or(-1),
                     defense: tile.defense,
                     movement_cost: tile.movement_cost,
                     healing: tile.healing,
@@ -135,14 +140,18 @@ impl StateSnapshot {
                     advancement_pending: unit.advancement_pending,
                     movement: unit.movement,
                     level: unit.level,
-                    attacks: unit.attacks.iter().map(|a| AttackSnapshot {
-                        id:      a.id.clone(),
-                        name:    a.name.clone(),
-                        damage:  a.damage,
-                        strikes: a.strikes,
-                        range:   a.range.clone(),
-                        specials: a.specials.clone(),
-                    }).collect(),
+                    attacks: unit
+                        .attacks
+                        .iter()
+                        .map(|a| AttackSnapshot {
+                            id: a.id.clone(),
+                            name: a.name.clone(),
+                            damage: a.damage,
+                            strikes: a.strikes,
+                            range: a.range.clone(),
+                            specials: a.specials.clone(),
+                        })
+                        .collect(),
                     abilities: unit.abilities.clone(),
                     poisoned: unit.poisoned,
                     slowed: unit.slowed,
@@ -187,10 +196,16 @@ impl StateSnapshot {
             .filter_map(|(col, row)| {
                 let hex = Hex::from_offset(col, row);
                 state.board.tile_at(hex).map(|tile| TileSnapshot {
-                    col, row,
+                    col,
+                    row,
                     terrain_id: tile.terrain_id.clone(),
                     color: tile.color.clone(),
-                    owner: state.village_owners.get(&hex).copied().map(|o| o as i32).unwrap_or(-1),
+                    owner: state
+                        .village_owners
+                        .get(&hex)
+                        .copied()
+                        .map(|o| o as i32)
+                        .unwrap_or(-1),
                     defense: tile.defense,
                     movement_cost: tile.movement_cost,
                     healing: tile.healing,
@@ -199,7 +214,9 @@ impl StateSnapshot {
             .collect();
 
         // Units: include friendly always, enemy only if on visible hex
-        let units = state.positions.iter()
+        let units = state
+            .positions
+            .iter()
             .filter_map(|(&uid, &hex)| {
                 let unit = state.units.get(&uid)?;
                 if unit.faction != faction && !visible.contains(&hex) {
@@ -209,40 +226,64 @@ impl StateSnapshot {
                 Some(UnitSnapshot {
                     id: uid,
                     def_id: unit.def_id.clone(),
-                    col, row,
+                    col,
+                    row,
                     faction: unit.faction,
-                    hp: unit.hp, max_hp: unit.max_hp,
-                    moved: unit.moved, attacked: unit.attacked,
-                    xp: unit.xp, xp_needed: unit.xp_needed,
+                    hp: unit.hp,
+                    max_hp: unit.max_hp,
+                    moved: unit.moved,
+                    attacked: unit.attacked,
+                    xp: unit.xp,
+                    xp_needed: unit.xp_needed,
                     advancement_pending: unit.advancement_pending,
-                    movement: unit.movement, level: unit.level,
-                    attacks: unit.attacks.iter().map(|a| AttackSnapshot {
-                        id: a.id.clone(), name: a.name.clone(),
-                        damage: a.damage, strikes: a.strikes,
-                        range: a.range.clone(), specials: a.specials.clone(),
-                    }).collect(),
+                    movement: unit.movement,
+                    level: unit.level,
+                    attacks: unit
+                        .attacks
+                        .iter()
+                        .map(|a| AttackSnapshot {
+                            id: a.id.clone(),
+                            name: a.name.clone(),
+                            damage: a.damage,
+                            strikes: a.strikes,
+                            range: a.range.clone(),
+                            specials: a.specials.clone(),
+                        })
+                        .collect(),
                     abilities: unit.abilities.clone(),
-                    poisoned: unit.poisoned, slowed: unit.slowed,
+                    poisoned: unit.poisoned,
+                    slowed: unit.slowed,
                 })
             })
             .collect();
 
         let (objective_col, objective_row) = match state.objective_hex {
-            Some(hex) => { let (c, r) = hex.to_offset(); (Some(c), Some(r)) }
+            Some(hex) => {
+                let (c, r) = hex.to_offset();
+                (Some(c), Some(r))
+            }
             None => (None, None),
         };
 
-        let visible_hexes: Vec<VisibleHex> = visible.iter()
-            .map(|h| { let (col, row) = h.to_offset(); VisibleHex { col, row } })
+        let visible_hexes: Vec<VisibleHex> = visible
+            .iter()
+            .map(|h| {
+                let (col, row) = h.to_offset();
+                VisibleHex { col, row }
+            })
             .collect();
 
         StateSnapshot {
             turn: state.turn,
             active_faction: state.active_faction,
-            cols, rows, terrain, units,
+            cols,
+            rows,
+            terrain,
+            units,
             gold: state.gold,
             max_turns: state.max_turns,
-            objective_col, objective_row,
+            objective_col,
+            objective_row,
             visible_hexes: Some(visible_hexes),
         }
     }
@@ -257,11 +298,26 @@ impl StateSnapshot {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action")]
 pub enum ActionRequest {
-    Move { unit_id: u32, col: i32, row: i32 },
-    Attack { attacker_id: u32, defender_id: u32 },
+    Move {
+        unit_id: u32,
+        col: i32,
+        row: i32,
+    },
+    Attack {
+        attacker_id: u32,
+        defender_id: u32,
+    },
     EndTurn,
-    Advance { unit_id: u32, #[serde(default)] target_index: u32 },
-    Recruit { def_id: String, col: i32, row: i32 },
+    Advance {
+        unit_id: u32,
+        #[serde(default)]
+        target_index: u32,
+    },
+    Recruit {
+        def_id: String,
+        col: i32,
+        row: i32,
+    },
 }
 
 impl From<ActionRequest> for Action {
@@ -271,9 +327,13 @@ impl From<ActionRequest> for Action {
                 unit_id,
                 destination: Hex::from_offset(col, row),
             },
-            ActionRequest::Attack { attacker_id, defender_id } => {
-                Action::Attack { attacker_id, defender_id }
-            }
+            ActionRequest::Attack {
+                attacker_id,
+                defender_id,
+            } => Action::Attack {
+                attacker_id,
+                defender_id,
+            },
             ActionRequest::EndTurn => Action::EndTurn,
             ActionRequest::Advance { .. } => {
                 unreachable!("Advance is handled by norrust_apply_advance() before into()")
@@ -364,7 +424,13 @@ mod tests {
             serde_json::from_str(r#"{"action":"Attack","attacker_id":1,"defender_id":2}"#)
                 .expect("parse must succeed");
         let action: Action = req.into();
-        assert!(matches!(action, Action::Attack { attacker_id: 1, defender_id: 2 }));
+        assert!(matches!(
+            action,
+            Action::Attack {
+                attacker_id: 1,
+                defender_id: 2
+            }
+        ));
     }
 
     #[test]
@@ -378,13 +444,16 @@ mod tests {
         let mut state = GameState::new(board);
 
         // Forest tile with 60% default defense
-        state.board.set_tile(Hex::from_offset(0, 0), Tile {
-            terrain_id: "forest".to_string(),
-            movement_cost: 2,
-            defense: 60,
-            healing: 0,
-            color: "#2d5a27".to_string(),
-        });
+        state.board.set_tile(
+            Hex::from_offset(0, 0),
+            Tile {
+                terrain_id: "forest".to_string(),
+                movement_cost: 2,
+                defense: 60,
+                healing: 0,
+                color: "#2d5a27".to_string(),
+            },
+        );
 
         // Unit with custom forest defense of 50%
         let mut unit = Unit::new(1, "swordsman", 55, 0);
@@ -395,23 +464,38 @@ mod tests {
         // Unit-specific defense should be 50 (from unit.defense["forest"])
         let unit = state.units.get(&1).unwrap();
         let tile = state.board.tile_at(Hex::from_offset(0, 0)).unwrap();
-        let effective = unit.defense.get(&tile.terrain_id).copied()
+        let effective = unit
+            .defense
+            .get(&tile.terrain_id)
+            .copied()
             .unwrap_or(tile.defense);
-        assert_eq!(effective, 50, "unit.defense[forest] = 50 should override tile.defense = 60");
+        assert_eq!(
+            effective, 50,
+            "unit.defense[forest] = 50 should override tile.defense = 60"
+        );
 
         // On a terrain not in unit.defense map, falls back to tile.defense
-        state.board.set_tile(Hex::from_offset(1, 0), Tile {
-            terrain_id: "hills".to_string(),
-            movement_cost: 2,
-            defense: 50,
-            healing: 0,
-            color: "#8b7355".to_string(),
-        });
+        state.board.set_tile(
+            Hex::from_offset(1, 0),
+            Tile {
+                terrain_id: "hills".to_string(),
+                movement_cost: 2,
+                defense: 50,
+                healing: 0,
+                color: "#8b7355".to_string(),
+            },
+        );
         let tile_hills = state.board.tile_at(Hex::from_offset(1, 0)).unwrap();
         let unit = state.units.get(&1).unwrap();
-        let effective_hills = unit.defense.get(&tile_hills.terrain_id).copied()
+        let effective_hills = unit
+            .defense
+            .get(&tile_hills.terrain_id)
+            .copied()
             .unwrap_or(tile_hills.defense);
-        assert_eq!(effective_hills, 50, "no unit entry for hills → tile.defense = 50");
+        assert_eq!(
+            effective_hills, 50,
+            "no unit entry for hills → tile.defense = 50"
+        );
     }
 
     #[test]
@@ -430,24 +514,35 @@ mod tests {
         let mut state = GameState::new(board);
 
         let village_hex = Hex::from_offset(1, 1);
-        state.board.set_tile(village_hex, Tile {
-            terrain_id: "village".to_string(),
-            movement_cost: 1,
-            defense: 40,
-            healing: 8,
-            color: "#8b7355".to_string(),
-        });
+        state.board.set_tile(
+            village_hex,
+            Tile {
+                terrain_id: "village".to_string(),
+                movement_cost: 1,
+                defense: 40,
+                healing: 8,
+                color: "#8b7355".to_string(),
+            },
+        );
         state.place_unit(Unit::new(1, "fighter", 30, 0), village_hex);
 
         // Before capture: owner is -1
         let snap = StateSnapshot::from_game_state(&state);
-        let village_tile = snap.terrain.iter().find(|t| t.terrain_id == "village").unwrap();
+        let village_tile = snap
+            .terrain
+            .iter()
+            .find(|t| t.terrain_id == "village")
+            .unwrap();
         assert_eq!(village_tile.owner, -1);
 
         // After EndTurn: faction 0 captures
         crate::game_state::apply_action(&mut state, Action::EndTurn).unwrap();
         let snap2 = StateSnapshot::from_game_state(&state);
-        let village_tile2 = snap2.terrain.iter().find(|t| t.terrain_id == "village").unwrap();
+        let village_tile2 = snap2
+            .terrain
+            .iter()
+            .find(|t| t.terrain_id == "village")
+            .unwrap();
         assert_eq!(village_tile2.owner, 0);
 
         // JSON must include the owner field
@@ -464,9 +559,12 @@ mod tests {
         let mut unit = Unit::new(1, "Lieutenant", 40, 0);
         unit.movement = 6;
         unit.attacks = vec![AttackDef {
-            id: "sword".to_string(), name: "sword".to_string(),
-            damage: 8, strikes: 3,
-            attack_type: "blade".to_string(), range: "melee".to_string(),
+            id: "sword".to_string(),
+            name: "sword".to_string(),
+            damage: 8,
+            strikes: 3,
+            attack_type: "blade".to_string(),
+            range: "melee".to_string(),
             ..Default::default()
         }];
         unit.abilities = vec!["leader".to_string(), "leadership".to_string()];
@@ -483,9 +581,18 @@ mod tests {
         assert_eq!(u.abilities, vec!["leader", "leadership"]);
 
         let json = serde_json::to_string(&snap).expect("serialization must succeed");
-        assert!(json.contains("\"movement\":6"), "movement must appear in JSON");
-        assert!(json.contains("\"attacks\":["), "attacks array must appear in JSON");
-        assert!(json.contains("\"abilities\":["), "abilities array must appear in JSON");
+        assert!(
+            json.contains("\"movement\":6"),
+            "movement must appear in JSON"
+        );
+        assert!(
+            json.contains("\"attacks\":["),
+            "attacks array must appear in JSON"
+        );
+        assert!(
+            json.contains("\"abilities\":["),
+            "abilities array must appear in JSON"
+        );
     }
 
     #[test]
@@ -504,14 +611,24 @@ mod tests {
         state.board.set_tile(Hex::from_offset(1, 1), tile);
 
         let snap = StateSnapshot::from_game_state(&state);
-        let forest = snap.terrain.iter().find(|t| t.terrain_id == "forest").unwrap();
+        let forest = snap
+            .terrain
+            .iter()
+            .find(|t| t.terrain_id == "forest")
+            .unwrap();
         assert_eq!(forest.defense, 60);
         assert_eq!(forest.movement_cost, 2);
         assert_eq!(forest.healing, 0);
 
         let json = serde_json::to_string(&snap).expect("serialization must succeed");
-        assert!(json.contains("\"defense\":60"), "defense must appear in JSON");
-        assert!(json.contains("\"movement_cost\":2"), "movement_cost must appear in JSON");
+        assert!(
+            json.contains("\"defense\":60"),
+            "defense must appear in JSON"
+        );
+        assert!(
+            json.contains("\"movement_cost\":2"),
+            "movement_cost must appear in JSON"
+        );
     }
 
     #[test]
@@ -535,7 +652,10 @@ mod tests {
         assert_eq!(snap.terrain[0].color, "#4a7c4e");
 
         let json = serde_json::to_string(&snap).expect("serialization must succeed");
-        assert!(json.contains("\"color\":\"#4a7c4e\""), "color must appear in JSON output");
+        assert!(
+            json.contains("\"color\":\"#4a7c4e\""),
+            "color must appear in JSON output"
+        );
     }
 
     #[test]

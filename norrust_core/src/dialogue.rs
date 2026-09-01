@@ -124,8 +124,8 @@ mod tests {
 
     #[test]
     fn test_load_dialogue() {
-        let state = DialogueState::load(&test_dialogue_path())
-            .expect("should load crossing_dialogue.toml");
+        let state =
+            DialogueState::load(&test_dialogue_path()).expect("should load crossing_dialogue.toml");
         assert!(
             state.entries.len() >= 3,
             "expected at least 3 entries, got {}",
@@ -144,10 +144,7 @@ mod tests {
 
         // scenario_start should match on any turn
         let results = state.get_pending("scenario_start", 1, 0, None, None);
-        assert!(
-            !results.is_empty(),
-            "scenario_start should match"
-        );
+        assert!(!results.is_empty(), "scenario_start should match");
         for r in &results {
             assert_eq!(r.trigger, "scenario_start");
         }
@@ -164,7 +161,10 @@ mod tests {
         state.reset();
         let results = state.get_pending("turn_start", 99, 0, None, None);
         let has_turn_specific = results.iter().any(|e| e.turn.is_some());
-        assert!(!has_turn_specific, "turn 99 should not match turn-specific entries");
+        assert!(
+            !has_turn_specific,
+            "turn 99 should not match turn-specific entries"
+        );
     }
 
     #[test]
@@ -175,7 +175,10 @@ mod tests {
         assert!(!first.is_empty(), "first call should return entries");
 
         let second = state.get_pending("scenario_start", 1, 0, None, None);
-        assert!(second.is_empty(), "second call should return empty (one-shot)");
+        assert!(
+            second.is_empty(),
+            "second call should return empty (one-shot)"
+        );
     }
 
     #[test]
@@ -186,7 +189,10 @@ mod tests {
         state.reset();
 
         let after_reset = state.get_pending("scenario_start", 1, 0, None, None);
-        assert!(!after_reset.is_empty(), "after reset, entries should fire again");
+        assert!(
+            !after_reset.is_empty(),
+            "after reset, entries should fire again"
+        );
     }
 
     #[test]
@@ -195,7 +201,10 @@ mod tests {
 
         // hex_entered with matching col/row should return the bridge entry
         let results = state.get_pending("hex_entered", 1, 0, Some(8), Some(4));
-        assert!(!results.is_empty(), "hex_entered at (8,4) should match bridge entry");
+        assert!(
+            !results.is_empty(),
+            "hex_entered at (8,4) should match bridge entry"
+        );
         assert!(results.iter().any(|e| e.id == "crossing_bridge"));
 
         // One-shot: second call should return empty

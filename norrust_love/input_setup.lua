@@ -1,6 +1,8 @@
 -- norrust_love/input_setup.lua — Setup/menu/faction selection input handlers
 -- Split from input.lua. Receives context references via init().
 
+local camera_mod = require("camera_mod")
+
 local M = {}
 
 -- Context references (set by init)
@@ -36,9 +38,8 @@ function M.init(ctx)
     campaign_client = ctx.campaign_client
 end
 
---- Auto-place leader on a keep hex for AI/Port controlled side.
--- @param fi  faction index (0 = blue, 1 = red)
-local function auto_place_leader(fi)
+--- Keep hexes sorted west → east (Blue uses the first, Red the last).
+local function collect_keep_hexes()
     local state = mods.norrust.get_state(vars.engine)
     local keep_hexes = {}
     for _, tile in ipairs(state.terrain or {}) do
@@ -46,9 +47,37 @@ local function auto_place_leader(fi)
             keep_hexes[#keep_hexes + 1] = {col = int(tile.col), row = int(tile.row)}
         end
     end
-    -- Sort by col: blue (fi=0) gets leftmost, red (fi=1) gets rightmost
-    table.sort(keep_hexes, function(a, b) return a.col < b.col end)
-    local hex_choice = keep_hexes[fi == 0 and 1 or #keep_hexes]
+    table.sort(keep_hexes, function(a, b)
+        if a.col == b.col then return a.row < b.row end
+        return a.col < b.col
+    end)
+    return keep_hexes
+end
+
+local function recommended_keep(fi)
+    local keep_hexes = collect_keep_hexes()
+    if #keep_hexes == 0 then return nil end
+    return keep_hexes[fi == 0 and 1 or #keep_hexes]
+end
+
+local function focus_side_keep(fi)
+    local hex_choice = recommended_keep(fi)
+    if hex_choice then
+        camera_mod.focus_hex(hex_choice.col, hex_choice.row)
+    end
+end
+
+local function keep_at(col, row)
+    for _, k in ipairs(collect_keep_hexes()) do
+        if k.col == col and k.row == row then return true end
+    end
+    return false
+end
+
+--- Auto-place leader on a keep hex for AI/Port controlled side.
+-- @param fi  faction index (0 = blue, 1 = red)
+local function auto_place_leader(fi)
+    local hex_choice = recommended_keep(fi)
     if hex_choice then
         local leader_def = mods.norrust.get_faction_leader(vars.engine, game_data.faction_id[fi + 1])
         mods.norrust.place_unit_at(vars.engine, leader_def, fi, hex_choice.col, hex_choice.row)
@@ -86,14 +115,9 @@ function M.handle_pick_scenario(key)
         scn.units = game_data.SCENARIOS[num].units
         scn.preset = game_data.SCENARIOS[num].preset_units
         scn.starting_gold = game_data.SCENARIOS[num].starting_gold
-        -- Preset scenarios default to human vs AI; non-preset to human vs human
-        if scn.preset then
-            game_data.controllers[1] = "human"
-            game_data.controllers[2] = "ai"
-        else
-            game_data.controllers[1] = "human"
-            game_data.controllers[2] = "human"
-        end
+        -- You are always Blue (west). Red defaults to AI; Tab cycles to hotseat/port.
+        game_data.controllers[1] = "human"
+        game_data.controllers[2] = "ai"
         call_load_scenario()
         game_data.leader_placed[1] = false
         game_data.leader_placed[2] = false
@@ -104,6 +128,7 @@ function M.handle_pick_scenario(key)
             finalize_setup()
         else
             vars.game_mode = MODES.PICK_FACTION_BLUE
+            focus_side_keep(0)
         end
     elseif key == "l" then
         -- Open save list screen
@@ -195,11 +220,13 @@ function M.handle_setup(key)
                 auto_place_leader(fi)
                 if is_blue then
                     vars.game_mode = MODES.PICK_FACTION_RED
+                    focus_side_keep(1)
                 else
                     finalize_setup()
                 end
             else
                 vars.game_mode = is_blue and MODES.SETUP_BLUE or MODES.SETUP_RED
+                focus_side_keep(fi)
             end
         end
         return
@@ -228,16 +255,27 @@ function M.mousepressed_setup(col, row, x, y)
 
     if not game_data.leader_placed[fi + 1] then
         local pkey = col .. "," .. row
-        if not pos_map[pkey] then
-            local leader_def = mods.norrust.get_faction_leader(vars.engine, game_data.faction_id[fi + 1])
-            mods.norrust.place_unit_at(vars.engine, leader_def, faction, col, row)
-            game_data.leader_placed[fi + 1] = true
-            -- Auto-advance after leader placement
-            if vars.game_mode == MODES.SETUP_BLUE then
-                vars.game_mode = MODES.PICK_FACTION_RED
-            else
-                finalize_setup()
-            end
+        local keeps = collect_keep_hexes()
+        if #keeps > 0 and not keep_at(col, row) then
+            local side = fi == 0 and "western" or "eastern"
+            vars.status_message = "Place your leader on the glowing " .. side .. " keep"
+            vars.status_timer = 2.5
+            return
+        end
+        if pos_map[pkey] then
+            vars.status_message = "That keep is occupied"
+            vars.status_timer = 2.0
+            return
+        end
+        local leader_def = mods.norrust.get_faction_leader(vars.engine, game_data.faction_id[fi + 1])
+        mods.norrust.place_unit_at(vars.engine, leader_def, faction, col, row)
+        game_data.leader_placed[fi + 1] = true
+        -- Auto-advance after leader placement
+        if vars.game_mode == MODES.SETUP_BLUE then
+            vars.game_mode = MODES.PICK_FACTION_RED
+            focus_side_keep(1)
+        else
+            finalize_setup()
         end
     end
 end
