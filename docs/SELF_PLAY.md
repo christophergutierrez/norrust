@@ -3,6 +3,9 @@
 Use the Rust `self-play` binary for reproducible AI-versus-AI games. Run
 commands from the repository root.
 
+To put a **language model** in the player’s chair (not calling greedy or
+look-ahead on its own turn), see [LLM_VS_ALGORITHM.md](LLM_VS_ALGORITHM.md).
+
 ## Start here
 
 ```bash
