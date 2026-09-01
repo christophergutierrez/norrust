@@ -28,11 +28,16 @@ pub enum ActionRecord {
     Recruit,
 }
 
+const ACTION_BEAM_WIDTH: usize = 12;
+const ATTACK_BEAM_SLOTS: usize = 6;
+const LOCAL_RESPONSE_LIMIT: usize = 3;
+const LOCAL_RESPONSE_RADIUS: u32 = 7;
+const TERRAIN_TRADE_MARGIN: i32 = 15;
+
 /// Expected damage dealt by one attack exchange (floating-point HP).
 ///
 /// `resistance` is the defender's resistance to this attack type — positive
 /// means the defender is weak (takes more damage), negative means resistant.
-#[allow(dead_code)]
 fn expected_outgoing_damage(
     attacker_attack_damage: u32,
     attacker_attack_strikes: u32,
@@ -51,7 +56,6 @@ fn expected_outgoing_damage(
 ///
 /// Score = (dealt × kill_bonus) / received.max(1.0)
 /// kill_bonus = 3.0 if expected dealt damage would kill the defender, else 1.0.
-#[allow(dead_code)]
 fn score_attack(
     attacker: &Unit,
     attacker_hex: Hex,
@@ -130,6 +134,198 @@ fn score_attack(
         1.0
     };
     dealt * kill_bonus / received.max(1.0)
+}
+
+fn unit_defense_on(state: &GameState, unit: &Unit, hex: Hex) -> u32 {
+    state
+        .board
+        .tile_at(hex)
+        .and_then(|t| {
+            unit.defense
+                .get(&t.terrain_id)
+                .copied()
+                .or(Some(t.defense))
+        })
+        .unwrap_or(unit.default_defense)
+}
+
+fn is_income_hex(state: &GameState, hex: Hex) -> bool {
+    state
+        .board
+        .tile_at(hex)
+        .map(|t| t.terrain_id == "village" || t.healing > 0)
+        .unwrap_or(false)
+}
+
+fn can_engage(unit: &Unit, from: Hex, enemy: Hex) -> bool {
+    unit.attacks.iter().any(|a| {
+        (a.range == "melee" && from.neighbors().contains(&enemy))
+            || (a.range == "ranged" && from.distance(enemy) == 2)
+    })
+}
+
+fn expected_dealt(attacker: &Unit, from: Hex, defender: &Unit, at: Hex, state: &GameState) -> f32 {
+    let dist = from.distance(at);
+    let range_str = if dist == 1 { "melee" } else { "ranged" };
+    let Some(atk) = attacker.attacks.iter().find(|a| a.range == range_str) else {
+        return 0.0;
+    };
+    let tod = tod_damage_modifier(attacker.alignment, time_of_day(state.turn));
+    let def = unit_defense_on(state, defender, at);
+    let resist = defender
+        .resistances
+        .get(&atk.attack_type)
+        .copied()
+        .unwrap_or(0);
+    expected_outgoing_damage(atk.damage, atk.strikes, def, tod, resist)
+}
+
+fn bad_melee_terrain_trade(
+    attacker: &Unit,
+    from: Hex,
+    defender: &Unit,
+    at: Hex,
+    state: &GameState,
+) -> bool {
+    if from.distance(at) != 1 {
+        return false;
+    }
+    let our_def = unit_defense_on(state, attacker, from) as i32;
+    let their_def = unit_defense_on(state, defender, at) as i32;
+    if our_def + TERRAIN_TRADE_MARGIN >= their_def {
+        return false;
+    }
+    expected_dealt(attacker, from, defender, at, state) < defender.hp as f32
+}
+
+fn attackable_from(
+    unit: &Unit,
+    from: Hex,
+    enemies: &[(u32, Hex)],
+) -> Vec<u32> {
+    enemies
+        .iter()
+        .filter_map(|&(eid, epos)| can_engage(unit, from, epos).then_some(eid))
+        .collect()
+}
+
+fn select_structured_beam(
+    state: &GameState,
+    uid: u32,
+    start: Hex,
+    candidates: &[Hex],
+    enemies: &[(u32, Hex)],
+) -> Vec<Hex> {
+    let unit = &state.units[&uid];
+    let mut seen = HashSet::new();
+    let mut beam = Vec::new();
+    let mut push = |h: Hex| {
+        if seen.insert(h) {
+            beam.push(h);
+        }
+    };
+
+    push(start);
+
+    let mut attack_hexes: Vec<(i32, Hex)> = candidates
+        .iter()
+        .filter_map(|&h| {
+            let best = enemies
+                .iter()
+                .filter(|&&(_, epos)| can_engage(unit, h, epos))
+                .map(|&(eid, epos)| {
+                    score_attack(unit, h, &state.units[&eid], epos, state)
+                })
+                .fold(f32::NEG_INFINITY, f32::max);
+            if best.is_finite() {
+                Some((-(best * 1000.0) as i32, h))
+            } else {
+                None
+            }
+        })
+        .collect();
+    attack_hexes.sort_unstable();
+    for (_, h) in attack_hexes.into_iter().take(ATTACK_BEAM_SLOTS) {
+        push(h);
+    }
+
+    for &h in candidates {
+        if is_income_hex(state, h) {
+            push(h);
+        }
+    }
+
+    if let Some(&best_def) = candidates.iter().max_by_key(|&&h| (unit_defense_on(state, unit, h), h))
+    {
+        push(best_def);
+    }
+
+    if let Some(&march) = candidates
+        .iter()
+        .filter(|&&h| h != start)
+        .min_by_key(|&&h| {
+            let nearest = enemies
+                .iter()
+                .map(|(_, epos)| h.distance(*epos))
+                .min()
+                .unwrap_or(u32::MAX);
+            (nearest, h)
+        })
+    {
+        push(march);
+    }
+
+    beam.truncate(ACTION_BEAM_WIDTH);
+    beam
+}
+
+fn apply_expected_attack(sim: &mut GameState, uid: u32, from: Hex, eid: u32, state: &GameState) {
+    let Some(attacker) = state.units.get(&uid) else {
+        return;
+    };
+    let Some(defender) = state.units.get(&eid) else {
+        return;
+    };
+    let Some(&at) = state.positions.get(&eid) else {
+        return;
+    };
+    let dealt = expected_dealt(attacker, from, defender, at, state).floor() as u32;
+    if let Some(d) = sim.units.get_mut(&eid) {
+        d.hp = d.hp.saturating_sub(dealt);
+        if d.hp == 0 {
+            if let Some(hex) = sim.positions.remove(&eid) {
+                sim.hex_to_unit.remove(&hex);
+            }
+            sim.units.remove(&eid);
+        }
+    }
+    let dist = from.distance(at);
+    if dist == 1 {
+        if let Some(received) = {
+            let range_str = "melee";
+            defender.attacks.iter().find(|a| a.range == range_str).map(|def_atk| {
+                let tod = tod_damage_modifier(defender.alignment, time_of_day(state.turn));
+                let adef = unit_defense_on(state, attacker, from);
+                let resist = attacker
+                    .resistances
+                    .get(&def_atk.attack_type)
+                    .copied()
+                    .unwrap_or(0);
+                expected_outgoing_damage(def_atk.damage, def_atk.strikes, adef, tod, resist)
+                    .floor() as u32
+            })
+        } {
+            if let Some(a) = sim.units.get_mut(&uid) {
+                a.hp = a.hp.saturating_sub(received);
+                if a.hp == 0 {
+                    if let Some(hex) = sim.positions.remove(&uid) {
+                        sim.hex_to_unit.remove(&hex);
+                    }
+                    sim.units.remove(&uid);
+                }
+            }
+        }
+    }
 }
 
 // ── Leader discipline helpers ───────────────────────────────────────────────
@@ -342,10 +538,6 @@ pub fn evaluate_state(state: &GameState, faction: u8) -> f32 {
 /// Evaluate a state by simulating the opponent's best greedy response first.
 /// Each enemy unit takes its best 1-ply action, then we evaluate the result.
 /// This lets the AI see consequences of its actions one step ahead.
-const ACTION_BEAM_WIDTH: usize = 4;
-const LOCAL_RESPONSE_LIMIT: usize = 3;
-const LOCAL_RESPONSE_RADIUS: u32 = 7;
-
 fn evaluate_with_opponent_response(state: &GameState, faction: u8, focus: Hex) -> f32 {
     let enemy = 1 - faction;
     let mut sim = state.clone();
@@ -516,19 +708,10 @@ fn plan_unit_action(
         return None;
     }
 
-    // Hierarchical action generation: strategic proximity selects a small
-    // deterministic beam, then tactical minimax evaluates that beam. Greedy
-    // depth keeps the complete candidate set as its fast baseline behavior.
+    // Greedy (depth 1) keeps every reachable hex. Lookahead uses a structured
+    // beam: current hex, attack tiles, villages, best defense, closest march.
     if depth >= 2 && candidates.len() > ACTION_BEAM_WIDTH {
-        candidates.sort_unstable_by_key(|candidate| {
-            let nearest = enemies
-                .iter()
-                .map(|(_, enemy_hex)| candidate.distance(*enemy_hex))
-                .min()
-                .unwrap_or(u32::MAX);
-            (nearest, *candidate)
-        });
-        candidates.truncate(ACTION_BEAM_WIDTH);
+        candidates = select_structured_beam(state, uid, start, &candidates, &enemies);
     }
 
     // Try all (move, attack) combinations — pick the best one by evaluate_state.
@@ -538,36 +721,24 @@ fn plan_unit_action(
     let mut best_score = f32::NEG_INFINITY;
     let mut best_action: Option<(Hex, Option<u32>)> = None;
     let mut has_any_attack = false;
+    let mut has_ev_kill = false;
 
     for &cand in &candidates {
         let unit = &state.units[&uid];
-        let attackable: Vec<u32> = enemies
-            .iter()
-            .filter_map(|&(eid, epos)| {
-                let can_engage = unit.attacks.iter().any(|a| {
-                    (a.range == "melee" && cand.neighbors().contains(&epos))
-                        || (a.range == "ranged" && cand.distance(epos) == 2)
-                });
-                if can_engage {
-                    Some(eid)
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let attackable = attackable_from(unit, cand, &enemies);
 
         for eid in &attackable {
-            has_any_attack = true;
-
-            // Capture enemy HP ratio BEFORE simulation (enemy may die)
-            let enemy_hp_ratio = state
-                .units
-                .get(eid)
-                .map(|e| e.hp as f32 / e.max_hp.max(1) as f32)
-                .unwrap_or(1.0);
-
-            // Check if this is a ranged attack from distance 2
             let epos = state.positions[eid];
+            let defender = &state.units[eid];
+            if depth >= 2 && bad_melee_terrain_trade(unit, cand, defender, epos, state) {
+                continue;
+            }
+            has_any_attack = true;
+            if expected_dealt(unit, cand, defender, epos, state) >= defender.hp as f32 {
+                has_ev_kill = true;
+            }
+
+            let enemy_hp_ratio = defender.hp as f32 / defender.max_hp.max(1) as f32;
             let is_ranged_distance2 =
                 unit.attacks.iter().any(|a| a.range == "ranged") && cand.distance(epos) == 2;
 
@@ -581,7 +752,12 @@ fn plan_unit_action(
                     },
                 );
             }
-            if sim.units.contains_key(&uid) && sim.units.contains_key(eid) {
+            let mut score;
+            if depth >= 2 {
+                apply_expected_attack(&mut sim, uid, cand, *eid, state);
+                score = evaluate_with_opponent_response(&sim, faction, cand);
+                score += score_attack(unit, cand, defender, epos, state);
+            } else if sim.units.contains_key(&uid) && sim.units.contains_key(eid) {
                 let _ = apply_action(
                     &mut sim,
                     Action::Attack {
@@ -589,24 +765,47 @@ fn plan_unit_action(
                         defender_id: *eid,
                     },
                 );
-            }
-            let mut score = if depth >= 2 {
-                evaluate_with_opponent_response(&sim, faction, cand)
+                score = evaluate_state(&sim, faction);
             } else {
-                evaluate_state(&sim, faction)
-            };
-
-            // Tactical bonus: prefer ranged attacks from distance 2 (no retaliation)
+                score = evaluate_state(&sim, faction);
+            }
             if is_ranged_distance2 {
                 score += 2.0;
             }
-
-            // Tactical bonus: focus fire on wounded enemies (up to +5.0)
             score += (1.0 - enemy_hp_ratio) * 5.0;
-
             if score > best_score {
                 best_score = score;
                 best_action = Some((cand, Some(*eid)));
+            }
+        }
+
+        if depth >= 2 {
+            let better_defense =
+                unit_defense_on(state, unit, cand) > unit_defense_on(state, unit, start);
+            let start_keep = state
+                .board
+                .tile_at(start)
+                .map(|t| t.terrain_id == "keep")
+                .unwrap_or(false);
+            let sit = is_income_hex(state, cand)
+                || (cand == start && start_keep)
+                || (cand != start && better_defense);
+            if sit {
+                let mut sim = state.clone();
+                if cand != start {
+                    let _ = apply_action(
+                        &mut sim,
+                        Action::Move {
+                            unit_id: uid,
+                            destination: cand,
+                        },
+                    );
+                }
+                let score = evaluate_with_opponent_response(&sim, faction, cand);
+                if score > best_score {
+                    best_score = score;
+                    best_action = Some((cand, None));
+                }
             }
         }
     }
@@ -617,97 +816,42 @@ fn plan_unit_action(
     let hp_ratio = unit.hp as f32 / unit.max_hp.max(1) as f32;
     let is_wounded = hp_ratio < RETREAT_HP_RATIO;
 
-    // If wounded and has attacks but no kill available, override with retreat
-    if is_wounded && has_any_attack {
-        let can_kill = {
-            let mut found_kill = false;
-            for &cand in &candidates {
-                let unit = &state.units[&uid];
-                let attackable: Vec<u32> = enemies
-                    .iter()
-                    .filter_map(|&(eid, epos)| {
-                        let can_engage = unit.attacks.iter().any(|a| {
-                            (a.range == "melee" && cand.neighbors().contains(&epos))
-                                || (a.range == "ranged" && cand.distance(epos) == 2)
-                        });
-                        if can_engage {
-                            Some(eid)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                for eid in &attackable {
-                    let mut sim = state.clone();
-                    if cand != start {
-                        let _ = apply_action(
-                            &mut sim,
-                            Action::Move {
-                                unit_id: uid,
-                                destination: cand,
-                            },
-                        );
-                    }
-                    if sim.units.contains_key(&uid) && sim.units.contains_key(eid) {
-                        let _ = apply_action(
-                            &mut sim,
-                            Action::Attack {
-                                attacker_id: uid,
-                                defender_id: *eid,
-                            },
-                        );
-                    }
-                    if !sim.units.contains_key(eid) {
-                        found_kill = true;
-                        break;
-                    }
-                }
-                if found_kill {
-                    break;
-                }
-            }
-            found_kill
-        };
-        if !can_kill {
-            // Override attack decision — retreat instead
-            best_action = retreat_toward_healing(state, &candidates, start);
-        }
+    if is_wounded && has_any_attack && !has_ev_kill {
+        best_action = retreat_toward_healing(state, &candidates, start);
     }
-
-    // If no attack was possible, march toward the nearest enemy (or retreat if wounded).
     if !has_any_attack {
         if is_wounded {
             best_action = retreat_toward_healing(state, &candidates, start);
-        } else if depth >= 2 {
-            // 2-ply march: evaluate each candidate with opponent response
-            for &cand in candidates.iter().filter(|&&h| h != start) {
-                let mut sim = state.clone();
-                let _ = apply_action(
-                    &mut sim,
-                    Action::Move {
-                        unit_id: uid,
-                        destination: cand,
-                    },
-                );
-                let score = evaluate_with_opponent_response(&sim, faction, cand);
-                if score > best_score {
-                    best_score = score;
-                    best_action = Some((cand, None));
+        } else {
+            let tid = state
+                .board
+                .tile_at(start)
+                .map(|t| t.terrain_id.as_str())
+                .unwrap_or("");
+            let good_sit = is_income_hex(state, start)
+                || tid == "keep"
+                || (unit_defense_on(state, unit, start) >= 50 && tid != "castle");
+            let only_idle = match best_action {
+                None => true,
+                Some((hex, None)) if hex == start && !good_sit => true,
+                _ => false,
+            };
+            if only_idle {
+                if let Some(&march_dest) = candidates
+                    .iter()
+                    .filter(|&&h| h != start)
+                    .min_by_key(|&&c| {
+                        let nearest = enemies
+                            .iter()
+                            .map(|(_, epos)| c.distance(*epos))
+                            .min()
+                            .unwrap_or(u32::MAX);
+                        (nearest, c)
+                    })
+                {
+                    best_action = Some((march_dest, None));
                 }
             }
-        } else if let Some(&march_dest) =
-            candidates
-                .iter()
-                .filter(|&&h| h != start)
-                .min_by_key(|&&c| {
-                    enemies
-                        .iter()
-                        .map(|(_, epos)| c.distance(*epos))
-                        .min()
-                        .unwrap_or(u32::MAX)
-                })
-        {
-            best_action = Some((march_dest, None));
         }
     }
 
@@ -819,7 +963,7 @@ fn run_turn_ordering(
     state: &GameState,
     faction: u8,
     leader_id: Option<u32>,
-    return_keep: Option<Hex>,
+    _return_keep: Option<Hex>,
     unit_order: &[u32],
     cheapest_recruit_cost: u32,
     recruit_defs: &[(u32, u32)],
@@ -975,10 +1119,10 @@ fn run_turn_ordering(
         }
     }
 
-    // Leader decides last: stay on keep if recruited this turn or can still recruit
+    // Leader decides last. Stay on keep only if this plan actually recruited.
     if let Some(lid) = leader_id {
         if clone.units.contains_key(&lid) && !clone.units[&lid].attacked {
-            if did_recruit || should_leader_stay(&clone, faction, cheapest_recruit_cost) {
+            if did_recruit {
                 // Stay on keep, but attack adjacent enemies
                 let leader_hex = clone.positions[&lid];
                 let adjacent_enemy = clone
@@ -1008,8 +1152,7 @@ fn run_turn_ordering(
                         );
                     }
                 }
-            } else if let Some(keep_hex) = return_keep {
-                // Move back toward keep
+            } else if let Some(keep_hex) = _return_keep {
                 let start = clone.positions[&lid];
                 let unit_ref = &clone.units[&lid];
                 let movement = if unit_ref.slowed {
@@ -1018,7 +1161,7 @@ fn run_turn_ordering(
                     unit_ref.movement
                 };
                 let zoc = get_zoc_hexes(&clone, faction);
-                let candidates = reachable_hexes(
+                let keep_candidates = reachable_hexes(
                     &clone.board,
                     &clone.units[&lid].movement_costs,
                     1,
@@ -1033,7 +1176,7 @@ fn run_turn_ordering(
                     .filter(|(_, &id)| id != lid)
                     .map(|(&h, _)| h)
                     .collect();
-                if let Some(&march_dest) = candidates
+                if let Some(&march_dest) = keep_candidates
                     .iter()
                     .filter(|&&h| h != start && !occupied.contains(&h))
                     .min_by_key(|&&c| c.distance(keep_hex))
@@ -1054,9 +1197,9 @@ fn run_turn_ordering(
                         );
                     }
                 }
-            } else {
-                // Leader has no recruitment duties — plan normally with 2-ply
-                if let Some((dest, target)) = plan_unit_action(&clone, lid, faction, 2) {
+            } else if let Some((dest, target)) =
+                plan_unit_action(&clone, lid, faction, MACHINE_LOOKAHEAD_DEPTH)
+            {
                     let start = clone.positions[&lid];
                     if dest != start {
                         let (c, r) = dest.to_offset();
@@ -1088,7 +1231,6 @@ fn run_turn_ordering(
                             );
                         }
                     }
-                }
             }
         }
     }
@@ -1174,8 +1316,14 @@ pub fn ai_take_turn_greedy_lookahead(
     state: &mut GameState,
     faction: u8,
     cheapest_recruit_cost: u32,
+    recruit_defs: &[(u32, u32)],
 ) {
-    ai_take_turn(state, faction, cheapest_recruit_cost);
+    let cheapest = if recruit_defs.is_empty() {
+        0
+    } else {
+        cheapest_recruit_cost
+    };
+    ai_take_turn_with_recruits(state, faction, cheapest, recruit_defs);
 }
 
 /// Fast baseline AI: process units in ID order and choose each unit's best

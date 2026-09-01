@@ -1,37 +1,12 @@
 # Headless Self-Play and Balance Testing
 
-Use the Rust `self-play` binary for reproducible AI-versus-AI simulations. Run
-commands from the repository root unless noted otherwise.
+Use the Rust `self-play` binary for reproducible AI-versus-AI games. Run
+commands from the repository root.
 
-## Neutral test board
-
-Use `big_battle_6` for the current large-board baseline. It is a 24×14 board
-with row-wise mirrored terrain, mirrored keep coordinates, six legal
-recruitment slots per keep, and three villages per side. Its two 1,000-game
-greedy mirror batches were empirically near-balanced.
-
-This is not yet a mathematically neutral hex graph. The tile transformation
-`(col, row) → (23 - col, row)` does not preserve every adjacency on an odd-r
-offset grid. Therefore, always swap factions/algorithms across both board sides
-using the four-cell design below. Do not attribute a small side difference to a
-faction or algorithm merely because the TOML rows mirror visually. A future
-strictly symmetric board should use an adjacency-preserving transformation,
-such as a correctly constructed 180-degree rotation, and establish a new
-baseline.
-
-Do not use `final_battle` as a neutral balance board. It is the final map of the
-`tutorial` campaign and is intentionally asymmetric: the left side has nine
-villages while the right side has six, and much of its terrain is not mirrored.
-Self-play removes its campaign objective, but it does not remove those map-side
-differences.
-
-The scenario validation test protects `big_battle_6`'s dimensions, keeps,
-castle slots, village count, and row-wise tile symmetry. Compile that test
-surface and run an independent data check before balance simulations:
+## Start here
 
 ```bash
-cargo check --release --manifest-path norrust_core/Cargo.toml --tests
-
+# 1. Structural check of the balance board (must pass)
 python3 - <<'PY'
 import tomllib
 
@@ -45,7 +20,7 @@ terrain = lambda col, row: tiles[row * width + col]
 assert (width, height) == (24, 14)
 assert len(tiles) == width * height
 assert all(
-    terrain(col, row) == terrain(width - 1 - col, row)
+    terrain(col, row) == terrain(width - 1 - col, height - 1 - row)
     for row in range(height)
     for col in range(width)
 )
@@ -63,10 +38,10 @@ villages = [
     if terrain(col, row) == "village"
 ]
 
-assert keeps == [(2, 7), (21, 7)]
+assert sorted(keeps) == [(2, 7), (21, 6)]
 assert len(villages) == 6
 assert sum(col < width // 2 for col, _ in villages) == 3
-assert all((width - 1 - col, row) in villages for col, row in villages)
+assert all((width - 1 - col, height - 1 - row) in villages for col, row in villages)
 
 directions = [(1, -1, 0), (1, 0, -1), (0, 1, -1),
               (-1, 1, 0), (-1, 0, 1), (0, -1, 1)]
@@ -89,133 +64,159 @@ for keep in keeps:
 
 print("big_battle_6 structure: ok")
 PY
-```
 
-The focused `scenario_validation` integration test currently cannot link
-because the package emits colliding `cdylib`, `rlib`, and `self-play` artifacts.
-Treat that as a known build-system limitation, not as a passing test. The
-compile check and independent structural check above must both pass; do not
-silently ignore either failure.
-
-## Canonical fair mirror test
-
-Build once, then time the binary rather than including compilation in the
-runtime:
-
-```bash
+# 2. Build once; time the binary, not compilation
 cargo build --release --manifest-path norrust_core/Cargo.toml --bin self-play
 
-time -p norrust_core/target/release/self-play \
-  --scenario big_battle_6 \
-  --team1 undead --team2 undead \
-  --ai1 greedy --ai2 greedy \
-  --games 1000 --seed 1 --threads 4 \
-  --gold 300 --second-gold 0 --first coin-flip
+# 3. Smoke run
+norrust_core/target/release/self-play \
+  --scenario big_battle_6 --team1 undead --team2 undead \
+  --ai1 greedy --ai2 greedy --games 10 --seed 1 --threads 4 \
+  --gold 300 --second-gold 0 --first team1
 ```
 
-The fairness options are intentionally explicit:
-
-- `--gold 300` gives both sides equal starting gold.
-- `--second-gold 0` disables second-player compensation. The CLI default is
-  currently five, so omitting this option changes the experiment.
-- `--first coin-flip` uses the deterministic initiative stream. The CLI default
-  is Team 1 first.
-- `--seed 1` makes the batch reproducible.
-
-Self-play uses symmetric elimination victory. Campaign objectives and
-attacker/defender timeout victories are disabled. `--max-turns N` controls a
-workload safety loop of `2*N+2` faction turns; it is not an exact “draw at round
-N” rule, and an unresolved game can report a turn greater than N. Games that
-exhaust this loop without elimination are recorded as draws.
-
-For an independent repeat, use a non-overlapping input-index range:
-
-```bash
-time -p norrust_core/target/release/self-play \
-  --scenario big_battle_6 \
-  --team1 undead --team2 undead \
-  --ai1 greedy --ai2 greedy \
-  --games 1000 --seed 1001 --threads 4 \
-  --gold 300 --second-gold 0 --first coin-flip
-```
-
-`--seed S --games N` uses input indices `S` through `S+N-1`. The `seed` column
-printed by `--verbose` is the mixed internal game seed, not an input accepted
-for direct replay. To replay game number `k` from a batch beginning at S, use
-`--seed S+k-1 --games 1` with every other option unchanged. Do not call a
-deterministic rerun with the same input-index range an independent replication:
-it should reproduce the same games exactly.
-
-## Reading the summary
-
-Team identity and initiative are separate measurements:
-
-- Team 1 always starts at the left keep; Team 2 starts at the right keep.
-- “First-player wins” follows the initiative assignment, regardless of team.
-- Team 1 and Team 2 wins measure board side plus the selected faction/AI.
-- Draws are games that reached the safety cap without elimination.
-- Turn statistics are minimum, Q1, median, Q3, and maximum.
-- Winning material advantage is the surviving unit-cost difference.
-- Starting gold, ending gold, and recruit counts help detect recruitment or
-  bonus-allocation bugs.
-
-Use `--verbose` to print a CSV header and one row per game. Use `--compact` for
-one comma-separated batch summary. These modes are mutually exclusive.
-
-Always preserve the exact command, input-index range, game count, runtime, and
-code revision with reported results. For at least 1,000 games, a result a few
-percentage points from 50% can still be sampling noise; repeat with disjoint
-input-index ranges before diagnosing a bias.
-
-## Comparing factions or algorithms
-
-A single A-versus-B batch confounds algorithm/faction strength, board side, and
-initiative. Run the full four-cell design with the same input-index range and
-no gold bonus:
-
-| Cell | Team 1 / left | Team 2 / right | First mover |
-| --- | --- | --- | --- |
-| 1 | A | B | Team 1 |
-| 2 | A | B | Team 2 |
-| 3 | B | A | Team 1 |
-| 4 | B | A | Team 2 |
-
-Replace A and B with factions while keeping the AI fixed, or with AI algorithms
-while keeping the faction fixed. Aggregate A's wins over all four cells, then
-also report results split by side and initiative. If runtime permits, repeat
-the four cells with a disjoint input-index range.
-
-Available algorithms are `greedy`, `greedy-look-ahead`, and `random`.
-Look-ahead is substantially slower than greedy, so use a few behavior-inspection
-games first and estimate runtime before selecting the final sample size. Do not
-present a tiny behavior check as balance evidence.
-
-## Big Battle 6 baseline
-
-The following baseline was recorded on 2026-09-01 with Undead versus Undead,
-greedy versus greedy, 300 gold each, no second-player bonus, and deterministic
-coin-flip initiative:
-
-| Input-index range | Games | First wins | Team 2/right wins | Turns min/Q1/median/Q3/max | Runtime |
-| --- | ---: | ---: | ---: | --- | ---: |
-| 1–1000 | 1,000 | 52.1% | 52.6% | 11 / 14 / 15 / 18 / 30 | 96.6 s |
-| 1001–2000 | 1,000 | 51.1% | 50.9% | 11 / 14 / 15 / 18 / 33 | 94.1 s |
-| Combined | 2,000 | 51.6% | 51.75% | median 15, IQR 14–18 | — |
-
-Both batches had zero draws and averaged exactly 20.0 recruits per side. The
-combined initiative and side results are consistent with 50/50; use median 15
-turns and IQR 14–18 as the comparison baseline for other symmetric Big Battle
-boards.
-
-## CLI reference
-
-Print the current options rather than relying on copied documentation. The
-current explicit help path prints successfully but exits with status 2, so the
-following form remains safe in a shell using `set -e`:
+`--help` prints options and exits 2:
 
 ```bash
 norrust_core/target/release/self-play --help || [ "$?" -eq 2 ]
 ```
 
-The source of truth for argument parsing and summary fields is
-`norrust_core/src/bin/self_play.rs`.
+## Board and clock
+
+`big_battle_6` is the balance map: 24×14, keeps at `(2, 7)` and `(21, 6)`, six
+castle slots per keep, three village pairs. Tiles are 180-degree hex-symmetric:
+`(col, row) → (23 - col, 13 - row)`. That rotation preserves adjacency on
+odd-r. A same-row left/right flip does **not**.
+
+Do not use `final_battle` as a neutral board. It is an asymmetric campaign map
+(nine villages on the left, six on the right).
+
+Time of day follows the round number. The turn counter advances after **both**
+factions have acted, so left-first and right-first share the same ToD schedule.
+
+Team 1 is always the left keep; Team 2 is the right keep. `--first team1` or
+`--first team2` sets who moves first. `--first coin-flip` mixes initiative and
+is the wrong tool when you want to measure first-player advantage.
+
+Self-play wins by elimination only. Campaign objectives and timeout victories
+are off. `--max-turns N` is a safety cap of `2*N+2` faction turns, not “draw at
+round N”.
+
+The `scenario_validation` integration test may fail to link (`cdylib` / `rlib` /
+`self-play` collision). Use the Python check above; do not treat a link failure
+as a passing board test.
+
+## Fairness flags
+
+Always pass these unless the experiment is specifically about changing them:
+
+| Flag | Why |
+| --- | --- |
+| `--gold 300` | Equal starting gold |
+| `--second-gold 0` | CLI default is **5**. Omitting this flag is a different experiment. Not yet calibrated to cancel first-player advantage. |
+| `--first team1` or `--first team2` | Measure initiative in separate cells |
+| `--seed S` | Reproducible input-index range `S` .. `S+N-1` |
+
+`--verbose` prints one CSV row per game. `--compact` prints one summary line.
+They cannot be combined. The `seed` column in verbose output is a mixed
+internal seed, not `S`. Replay game `k` of a batch with `--seed S+k-1 --games 1`.
+
+Same `--seed S --games N` is a replay, not an independent replicate. For a
+new sample, use a disjoint range (for example `S+N`).
+
+## Algorithms
+
+| `--ai1` / `--ai2` | Role |
+| --- | --- |
+| `greedy` | Fast baseline: every reachable hex, expected-damage combat, ID order |
+| `greedy-look-ahead` | Slower: structured beam (keep, attacks, villages, defense, march), skip bad melee terrain trades, expected-damage scoring plus a local opponent reply, sit on keep/village instead of a losing trade. Leader fights unless this plan actually recruited. |
+| `random` | Legal-move uniform random |
+
+Look-ahead is ~40–50× slower than greedy on this map. Time 10 games before
+choosing a large `N`.
+
+## Recipes
+
+Greedy mirror, first-player cells (fast; ~90 s per 1,000 games here):
+
+```bash
+norrust_core/target/release/self-play \
+  --scenario big_battle_6 --team1 undead --team2 undead \
+  --ai1 greedy --ai2 greedy --games 1000 --seed 14001 --threads 4 \
+  --gold 300 --second-gold 0 --first team1
+
+norrust_core/target/release/self-play \
+  --scenario big_battle_6 --team1 undead --team2 undead \
+  --ai1 greedy --ai2 greedy --games 1000 --seed 15001 --threads 4 \
+  --gold 300 --second-gold 0 --first team2
+```
+
+Look-ahead versus greedy, initiative cells (Team 1 = look-ahead, Team 2 = greedy).
+About 4–6 minutes per 100 games here:
+
+```bash
+norrust_core/target/release/self-play \
+  --scenario big_battle_6 --team1 undead --team2 undead \
+  --ai1 greedy-look-ahead --ai2 greedy --games 100 --seed 17001 --threads 4 \
+  --gold 300 --second-gold 0 --first team1
+
+norrust_core/target/release/self-play \
+  --scenario big_battle_6 --team1 undead --team2 undead \
+  --ai1 greedy-look-ahead --ai2 greedy --games 100 --seed 17101 --threads 4 \
+  --gold 300 --second-gold 0 --first team2
+```
+
+On this board, side is fair, so two initiative cells with A on the left and B
+on the right are enough for an algorithm comparison. If you change the map or
+factions, use the four-cell design (swap sides **and** swap who moves first).
+
+## Reading the summary
+
+- **First-player wins** follow `--first`, not board side.
+- **Team 1 / Team 2 wins** are left keep vs right keep (plus whatever AI you
+  assigned there).
+- Draws are safety-cap games.
+- Recruits and ending gold catch recruitment or bonus bugs.
+
+Record the exact command, seed range, `N`, wall-clock time, and git revision
+with any reported numbers.
+
+## Current baselines (Undead vs Undead, `big_battle_6`, 300g, `--second-gold 0`)
+
+After 180-degree board symmetry and the shared ToD clock. Do not compare these
+to older coin-flip numbers from the same-row-flip map.
+
+**Greedy vs greedy** (1,000 games per initiative cell):
+
+| First | First-player WR | Left | Right |
+| --- | ---: | ---: | ---: |
+| Left (`--seed 14001`) | 62.3% | 62.3% | 37.7% |
+| Right (`--seed 15001`) | 61.1% | 38.9% | 61.1% |
+| Combined | 61.7% | 50.6% | 49.4% |
+
+Side is 50/50. First player has about a 12-point edge. Zero draws. ~20 recruits
+per side. ~94 s per 1,000 games.
+
+**Look-ahead vs greedy** (100 games per initiative cell; look-ahead on the left):
+
+| First | Look-ahead | Greedy |
+| --- | ---: | ---: |
+| Look-ahead (`--seed 17001`) | 73 | 27 |
+| Greedy (`--seed 17101`) | 80 | 20 |
+| Pooled | **153 (76.5%)** | **47 (23.5%)** |
+
+Look-ahead is stronger. It also won more often as **second** player (80/20)
+than as first (73/27) in this sample. That is the opposite of the greedy-mirror
+first-player edge; treat it as a real algorithm effect to re-check at larger
+`N`, not as a board or clock bug.
+
+Second-player gold to flatten greedy-mirror to 50/50 has **not** been tuned
+yet. Default `--second-gold 5` is not that compensation.
+
+## Implementation notes
+
+- Binary: `norrust_core/src/bin/self_play.rs`
+- Look-ahead planner: `norrust_core/src/ai.rs` (`ai_take_turn_greedy_lookahead`)
+- Round clock: `GameState.sides_acted_this_round`; `turn` increments after both
+  sides end a turn
+- Board: `scenarios/big_battle_6/board.toml`

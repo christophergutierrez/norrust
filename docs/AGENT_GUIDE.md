@@ -171,7 +171,17 @@ Movement costs are per-unit in their TOML definition. The values above are defau
 
 ## The Baseline AI
 
-The built-in `ai_take_turn` is a greedy N=0 lookahead scorer:
+There are two built-in planners (see [SELF_PLAY.md](SELF_PLAY.md) for how to
+run them headless):
+
+- **`greedy`** (`ai_take_turn_greedy`): every reachable hex, expected-damage
+  combat, no opponent reply. Fast.
+- **`greedy-look-ahead`**: structured candidate beam, skip bad melee terrain
+  trades, expected-damage scoring plus a local opponent reply. Slower and
+  stronger than greedy on `big_battle_6` (about 76% vs greedy in 200 Undead
+  games). In that sample it also won more often going second than going first.
+
+The greedy N=0 scorer:
 
 1. **For each unit:** find all reachable hexes, score each by expected damage to adjacent enemies
 2. **Scoring:** `expected_damage = hit_chance * damage * strikes` per attack; kill bonus = 3x

@@ -2983,6 +2983,11 @@ pub unsafe extern "C" fn norrust_load_json(engine: *mut NorRustEngine, json: *co
         state.rng = Rng::new(save.rng_state);
         state.turn = save.turn;
         state.active_faction = save.active_faction;
+        state.sides_acted_this_round = save.sides_acted_this_round.unwrap_or(if save.active_faction == 1 {
+            1
+        } else {
+            0
+        });
         state.gold = save.gold;
         if let Some(mt) = save.max_turns {
             state.max_turns = Some(mt);

@@ -76,6 +76,9 @@ pub struct SaveState {
     pub turn: u32,
     /// Currently active faction (0 or 1).
     pub active_faction: u8,
+    /// Sides that have ended a turn this round. Absent on old saves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sides_acted_this_round: Option<u8>,
     /// Gold per faction.
     pub gold: [u32; 2],
     /// Turn limit (None = unlimited).
@@ -162,6 +165,7 @@ impl SaveState {
             rng_state: state.rng.state(),
             turn: state.turn,
             active_faction: state.active_faction,
+            sides_acted_this_round: Some(state.sides_acted_this_round),
             gold: state.gold,
             max_turns: state.max_turns,
             objective_hex,
@@ -222,6 +226,7 @@ mod tests {
             rng_state: 42,
             turn: 5,
             active_faction: 1,
+            sides_acted_this_round: Some(1),
             gold: [80, 120],
             max_turns: Some(20),
             objective_hex: Some((10, 4)),

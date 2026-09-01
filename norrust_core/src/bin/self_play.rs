@@ -457,13 +457,13 @@ fn play_turn(
     match kind {
         AiKind::Greedy => ai_take_turn_greedy(state, side),
         AiKind::Lookahead => {
-            let cheapest = faction
+            let recruit_defs: Vec<(u32, u32)> = faction
                 .recruits
                 .iter()
-                .filter_map(|id| units.get(id).map(|def| def.cost))
-                .min()
-                .unwrap_or(0);
-            ai_take_turn_greedy_lookahead(state, side, cheapest);
+                .filter_map(|id| units.get(id).map(|def| (def.cost, def.movement)))
+                .collect();
+            let cheapest = recruit_defs.iter().map(|(cost, _)| *cost).min().unwrap_or(0);
+            ai_take_turn_greedy_lookahead(state, side, cheapest, &recruit_defs);
         }
         AiKind::Random => random_turn(state, side, rng),
     }

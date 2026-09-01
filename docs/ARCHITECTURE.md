@@ -90,7 +90,7 @@ norrust/
 │   │   ├── unit.rs         # Unit, advance_unit(), parse_alignment()
 │   │   ├── combat.rs       # Combat resolution, time_of_day(), specials
 │   │   ├── pathfinding.rs  # reachable_hexes(), A*, ZOC
-│   │   ├── ai.rs           # ai_take_turn() greedy planner
+│   │   ├── ai.rs           # greedy and greedy-look-ahead planners
 │   │   ├── mapgen.rs       # generate_map() procedural terrain generator
 │   │   ├── visibility.rs   # compute_visibility(), vision range, fog of war
 │   │   ├── campaign.rs     # Campaign state, scenario progression, veteran carry-over

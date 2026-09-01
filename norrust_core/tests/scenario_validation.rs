@@ -35,7 +35,7 @@ fn scenario_dir() -> PathBuf {
 }
 
 #[test]
-fn big_battle_6_has_rowwise_tile_symmetry_and_six_villages() {
+fn big_battle_6_has_hex_180_symmetry_and_six_villages() {
     let loaded = load_board(&scenario_dir().join("big_battle_6/board.toml")).unwrap();
     let board = loaded.board;
     assert_eq!((board.width, board.height), (24, 14));
@@ -45,16 +45,25 @@ fn big_battle_6_has_rowwise_tile_symmetry_and_six_villages() {
     for row in 0..board.height as i32 {
         for col in 0..board.width as i32 {
             let terrain = board.terrain_at(Hex::from_offset(col, row)).unwrap();
-            if terrain == "keep" { keeps.push((col, row)); }
-            if terrain == "village" { villages.push((col, row)); }
-            let mirror = board.terrain_at(Hex::from_offset(23 - col, row)).unwrap();
-            assert_eq!(terrain, mirror, "terrain mismatch at ({col},{row})");
+            if terrain == "keep" {
+                keeps.push((col, row));
+            }
+            if terrain == "village" {
+                villages.push((col, row));
+            }
+            let rotated = board
+                .terrain_at(Hex::from_offset(23 - col, 13 - row))
+                .unwrap();
+            assert_eq!(terrain, rotated, "180 mismatch at ({col},{row})");
         }
     }
-    assert_eq!(keeps, vec![(2, 7), (21, 7)]);
+    keeps.sort();
+    assert_eq!(keeps, vec![(2, 7), (21, 6)]);
     assert_eq!(villages.len(), 6);
     assert_eq!(villages.iter().filter(|(col, _)| *col < 12).count(), 3);
-    assert!(villages.iter().all(|(col, row)| villages.contains(&(23 - col, *row))));
+    assert!(villages
+        .iter()
+        .all(|(col, row)| villages.contains(&(23 - col, 13 - row))));
 
     for &(col, row) in &keeps {
         let castle_count = Hex::from_offset(col, row)

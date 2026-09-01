@@ -53,24 +53,21 @@ The test suite runs entirely headlessly — no Love2D required. It covers:
 - Unit tests across 18 source modules (130 tests)
 - Integration tests: campaign (8), scenario validation (23), simulation (3), dialogue (3), FFI (1)
 
-Expected output: 130 lib tests pass, 38 integration tests pass (168 total).
+Expected output: 133 lib tests pass (`cargo test --lib`). Integration tests may
+fail to link because of `cdylib`/`rlib`/`self-play` output collisions.
 
 ### Self-play simulations
 
-Run reproducible, parallel AI-vs-AI games directly in the Rust core. This
-smoke-test command explicitly disables the default second-player gold bonus:
-
 ```bash
-cargo run --release --manifest-path norrust_core/Cargo.toml --bin self-play -- \
+cargo build --release --manifest-path norrust_core/Cargo.toml --bin self-play
+norrust_core/target/release/self-play \
   --scenario big_battle_6 --team1 undead --team2 undead \
-  --ai1 greedy --ai2 greedy --games 100 --seed 1 \
-  --gold 300 --second-gold 0 --first coin-flip
+  --ai1 greedy --ai2 greedy --games 10 --seed 1 --threads 4 \
+  --gold 300 --second-gold 0 --first team1
 ```
 
-See [SELF_PLAY.md](SELF_PLAY.md) for the canonical balance-testing protocol,
-neutral-map requirements, seed discipline, output interpretation, four-cell
-faction/algorithm comparisons, and recorded Big Battle 6 baselines. Supported
-AI modes are `greedy`, `greedy-look-ahead`, and `random`.
+Full protocol, board check, recipes, and current baselines:
+[SELF_PLAY.md](SELF_PLAY.md). Algorithms: `greedy`, `greedy-look-ahead`, `random`.
 
 **Warning:** Do not run `cargo test` without filters — the balance test suite runs thousands of
 simulated games and takes a very long time. Always use `--lib` or name specific test files.

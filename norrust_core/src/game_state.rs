@@ -57,6 +57,9 @@ pub struct GameState {
     pub hex_to_unit: HashMap<Hex, u32>,
     pub turn: u32,
     pub active_faction: u8,
+    /// Sides that have ended a turn in the current round (0–1). `turn` advances
+    /// when this reaches 2, so both factions share the same time of day.
+    pub sides_acted_this_round: u8,
     pub rng: Rng,
     /// Maps village hexes (healing > 0) to the owning faction (-1 = unowned stored as i8::MAX).
     pub village_owners: HashMap<Hex, i8>,
@@ -82,6 +85,7 @@ impl GameState {
             hex_to_unit: HashMap::new(),
             turn: 1,
             active_faction: 0,
+            sides_acted_this_round: 0,
             rng: Rng::new(12345),
             village_owners: HashMap::new(),
             gold: [10, 10],
@@ -631,8 +635,10 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
             }
 
             state.active_faction = 1 - state.active_faction;
-            if state.active_faction == 0 {
+            state.sides_acted_this_round = state.sides_acted_this_round.saturating_add(1);
+            if state.sides_acted_this_round >= 2 {
                 state.turn += 1;
+                state.sides_acted_this_round = 0;
             }
 
             // Clear slowed for newly active faction (slow wears off at start of your turn)
@@ -820,6 +826,27 @@ mod tests {
         apply_action(&mut state, Action::EndTurn).unwrap();
         assert_eq!(state.active_faction, 1);
         assert!(!state.units[&1].moved);
+    }
+
+    #[test]
+    fn test_turn_advances_after_both_sides_regardless_of_starter() {
+        let board = Board::new(4, 4);
+        let mut left_first = GameState::new(board.clone());
+        apply_action(&mut left_first, Action::EndTurn).unwrap();
+        assert_eq!(left_first.turn, 1);
+        assert_eq!(left_first.active_faction, 1);
+        apply_action(&mut left_first, Action::EndTurn).unwrap();
+        assert_eq!(left_first.turn, 2);
+        assert_eq!(left_first.active_faction, 0);
+
+        let mut right_first = GameState::new(board);
+        right_first.active_faction = 1;
+        apply_action(&mut right_first, Action::EndTurn).unwrap();
+        assert_eq!(right_first.turn, 1);
+        assert_eq!(right_first.active_faction, 0);
+        apply_action(&mut right_first, Action::EndTurn).unwrap();
+        assert_eq!(right_first.turn, 2);
+        assert_eq!(right_first.active_faction, 1);
     }
 
     #[test]
