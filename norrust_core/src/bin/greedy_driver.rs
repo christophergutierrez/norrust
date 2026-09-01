@@ -1,0 +1,593 @@
+//! Headless turn-by-turn driver for LLM vs Greedy.
+//!
+//! JSON line protocol:
+//! - Driver prints current game state.
+//! - Controller sends one action: {"action":"Move","unit_id":1,"col":4,"row":7}
+//! - Driver applies, runs greedy opponent, prints new state and return code.
+//!
+//! Example:
+//! cargo build --bin greedy_driver
+//! target/debug/greedy_driver --scenario big_battle_6 \
+//!   --faction0 undead --faction1 undead --gold 300 --seed 42
+
+use std::collections::HashSet;
+use std::env;
+use std::io::{self, BufRead, Write};
+use std::path::{Path, PathBuf};
+
+use norrust_core::ai::ai_take_turn_greedy;
+use norrust_core::board::Tile;
+use norrust_core::game_state::{apply_action, apply_recruit, Action, GameState};
+use norrust_core::hex::Hex;
+use norrust_core::loader::Registry;
+use norrust_core::pathfinding::{get_zoc_hexes, reachable_hexes};
+use norrust_core::scenario::load_board;
+use norrust_core::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
+use norrust_core::unit::Unit;
+use serde_json::{json, Value};
+
+#[derive(Clone)]
+struct Config {
+    scenario: String,
+    faction0: String,
+    faction1: String,
+    gold: u32,
+    seed: u64,
+    scripted: bool,
+}
+
+#[derive(Clone)]
+struct Faction {
+    def: FactionDef,
+    recruits: Vec<String>,
+}
+
+fn usage() -> ! {
+    eprintln!(
+        "Usage: greedy_driver --scenario NAME --faction0 ID --faction1 ID [options]
+
+Options:
+  --scenario NAME       Scenario directory name (default: big_battle_6)
+  --faction0 ID         Faction for side 0 (default: undead)
+  --faction1 ID         Faction for side 1 (default: undead)
+  --gold N              Starting gold for both factions (default: 300)
+  --seed N              Deterministic seed (default: 42)
+  --scripted            Run full game unattended with greedy-vs-greedy (for testing)
+  -h, --help            Show this help"
+    );
+    std::process::exit(2)
+}
+
+fn parse_args() -> Config {
+    let mut c = Config {
+        scenario: "big_battle_6".into(),
+        faction0: "undead".into(),
+        faction1: "undead".into(),
+        gold: 300,
+        seed: 42,
+        scripted: false,
+    };
+    let args: Vec<String> = env::args().skip(1).collect();
+    let mut i = 0;
+    while i < args.len() {
+        let key = &args[i];
+        if key == "-h" || key == "--help" {
+            usage();
+        }
+        if key == "--scripted" {
+            c.scripted = true;
+            i += 1;
+            continue;
+        }
+        if i + 1 >= args.len() {
+            usage();
+        }
+        let value = &args[i + 1];
+        match key.as_str() {
+            "--scenario" => c.scenario = value.clone(),
+            "--faction0" => c.faction0 = value.clone(),
+            "--faction1" => c.faction1 = value.clone(),
+            "--gold" => c.gold = value.parse().unwrap_or_else(|_| usage()),
+            "--seed" => c.seed = value.parse().unwrap_or_else(|_| usage()),
+            _ => usage(),
+        }
+        i += 2;
+    }
+    c
+}
+
+fn root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
+}
+
+fn load_factions(data: &Path) -> Vec<Faction> {
+    let groups: Registry<RecruitGroup> =
+        Registry::load_from_dir(&data.join("recruit_groups")).expect("load recruit groups");
+    let registry: Registry<FactionDef> =
+        Registry::load_from_dir(&data.join("factions")).expect("load factions");
+    registry
+        .all()
+        .map(|def| {
+            let mut recruits = Vec::new();
+            for entry in &def.recruits {
+                if let Some(group) = groups.get(entry) {
+                    recruits.extend(group.members.iter().cloned());
+                } else {
+                    recruits.push(entry.clone());
+                }
+            }
+            let mut seen = HashSet::new();
+            recruits.retain(|id| seen.insert(id.clone()));
+            Faction {
+                def: def.clone(),
+                recruits,
+            }
+        })
+        .collect()
+}
+
+fn upgrade_tiles(state: &mut GameState, terrain: &Registry<TerrainDef>) {
+    for col in 0..state.board.width as i32 {
+        for row in 0..state.board.height as i32 {
+            let h = Hex::from_offset(col, row);
+            if let Some(id) = state.board.terrain_at(h).map(str::to_string) {
+                if let Some(def) = terrain.get(&id) {
+                    state.board.set_tile(h, Tile::from_def(def));
+                }
+            }
+        }
+    }
+}
+
+fn keep_for(state: &GameState, side: u8) -> Hex {
+    let mut keeps: Vec<Hex> = (0..state.board.width as i32)
+        .flat_map(|c| (0..state.board.height as i32).map(move |r| Hex::from_offset(c, r)))
+        .filter(|h| {
+            state
+                .board
+                .tile_at(*h)
+                .map(|t| t.terrain_id == "keep")
+                .unwrap_or(false)
+        })
+        .collect();
+    keeps.sort_by_key(|h| h.x);
+    if side == 0 {
+        keeps[0]
+    } else {
+        *keeps.last().expect("scenario needs two keeps")
+    }
+}
+
+/// Place recruits for `side`, handling the castle-ring vacate-and-continue cycle.
+///
+/// `want`: unit def to recruit. `None` = pick the first affordable faction recruit
+/// (the opponent's autonomous behavior). `Some(id)` = the caller chose the type.
+/// `limit`: stop after this many placements. `None` = recruit until gold or space runs out.
+///
+/// Placement is mechanical only: it never chooses *what* or *how many* when the
+/// caller has specified them, so an LLM using it still makes every strategic choice.
+fn recruit(
+    state: &mut GameState,
+    side: u8,
+    faction: &Faction,
+    units: &Registry<UnitDef>,
+    next_id: &mut u32,
+    want: Option<&str>,
+    limit: Option<u32>,
+) -> u32 {
+    let mut recruited = 0;
+    loop {
+        if limit.is_some_and(|l| recruited >= l) {
+            break;
+        }
+        let keep = state.positions.iter().find_map(|(&id, &h)| {
+            let u = state.units.get(&id)?;
+            (u.faction == side
+                && u.abilities.iter().any(|a| a == "leader")
+                && state
+                    .board
+                    .tile_at(h)
+                    .map(|t| t.terrain_id == "keep")
+                    .unwrap_or(false))
+            .then_some(h)
+        });
+        let Some(keep) = keep else { break };
+        let mut dest = keep.neighbors().iter().copied().find(|h| {
+            state
+                .board
+                .tile_at(*h)
+                .map(|t| t.terrain_id == "castle")
+                .unwrap_or(false)
+                && !state.hex_to_unit.contains_key(h)
+        });
+        if dest.is_none() {
+            let occupied_castle = keep.neighbors().iter().copied().find(|h| {
+                let Some(id) = state.hex_to_unit.get(h) else {
+                    return false;
+                };
+                state
+                    .units
+                    .get(id)
+                    .map(|u| {
+                        u.faction == side
+                            && !u.moved
+                            && !u.abilities.iter().any(|a| a == "leader")
+                    })
+                    .unwrap_or(false)
+            });
+            let Some(castle) = occupied_castle else { break };
+            let id = state.hex_to_unit[&castle];
+            let unit = state.units[&id].clone();
+            let occupied: HashSet<Hex> = state.hex_to_unit.keys().copied().collect();
+            let zoc = get_zoc_hexes(state, side);
+            let movement = if unit.slowed {
+                unit.movement / 2
+            } else {
+                unit.movement
+            };
+            let mut move_destinations: Vec<Hex> = reachable_hexes(
+                &state.board,
+                &unit.movement_costs,
+                1,
+                castle,
+                movement,
+                &zoc,
+                false,
+            )
+            .into_iter()
+            .filter(|h| *h != castle && !occupied.contains(h))
+            .collect();
+            move_destinations.sort_unstable_by_key(|h| {
+                let remains_on_castle = state
+                    .board
+                    .tile_at(*h)
+                    .is_some_and(|tile| tile.terrain_id == "castle");
+                let nearest_enemy = state
+                    .units
+                    .iter()
+                    .filter(|(_, enemy)| enemy.faction != side)
+                    .filter_map(|(enemy_id, _)| state.positions.get(enemy_id))
+                    .map(|enemy_hex| h.distance(*enemy_hex))
+                    .min()
+                    .unwrap_or(u32::MAX);
+                (remains_on_castle, nearest_enemy, *h)
+            });
+            let Some(move_dest) = move_destinations.first().copied() else {
+                break;
+            };
+            if apply_action(
+                state,
+                Action::Move {
+                    unit_id: id,
+                    destination: move_dest,
+                },
+            )
+            .is_err()
+            {
+                break;
+            }
+            dest = Some(castle);
+        }
+        let dest = dest.expect("recruitment destination must exist");
+        let def = match want {
+            // Caller chose the type: recruit exactly that, or stop if unaffordable/unknown.
+            Some(did) => match units.get(did) {
+                Some(d) if state.gold[side as usize] >= d.cost => d,
+                _ => break,
+            },
+            // No preference: first affordable recruit in the faction list.
+            None => match faction
+                .recruits
+                .iter()
+                .filter_map(|id| units.get(id))
+                .find(|d| state.gold[side as usize] >= d.cost)
+            {
+                Some(d) => d,
+                None => break,
+            },
+        };
+        let cost = def.cost;
+        if apply_recruit(state, Unit::from_def(*next_id, def, side), dest, cost).is_err() {
+            break;
+        }
+        *next_id += 1;
+        recruited += 1;
+    }
+    recruited
+}
+
+fn game_state_to_json(state: &GameState, units: &Registry<UnitDef>) -> Value {
+    let mut unit_list = Vec::new();
+    for (&id, unit) in &state.units {
+        let def = units
+            .get(&unit.def_id)
+            .map(|d| d.cost)
+            .unwrap_or_default();
+        let pos = state.positions.get(&id).map(|h| h.to_offset()).unwrap_or((0, 0));
+        unit_list.push(json!({
+            "unit_id": id,
+            "def_id": unit.def_id,
+            "faction": unit.faction,
+            "col": pos.0,
+            "row": pos.1,
+            "hp": unit.hp,
+            "moved": unit.moved,
+            "attacked": unit.attacked,
+            "xp": unit.xp,
+            "cost": def,
+        }));
+    }
+
+    json!({
+        "turn": state.turn,
+        "active_faction": state.active_faction,
+        "gold": state.gold,
+        "units": unit_list,
+        "winner": state.check_winner(),
+    })
+}
+
+fn init_game(c: &Config) -> (GameState, Faction, Faction, Registry<UnitDef>) {
+    let base = root();
+    let data = base.join("data");
+    let units: Registry<UnitDef> =
+        Registry::load_from_dir(&data.join("units")).expect("load units");
+    let terrain: Registry<TerrainDef> =
+        Registry::load_from_dir(&data.join("terrain")).expect("load terrain");
+    let factions = load_factions(&data);
+
+    let f0 = factions
+        .iter()
+        .find(|f| f.def.id == c.faction0)
+        .unwrap_or_else(|| panic!("unknown faction {}", c.faction0))
+        .clone();
+    let f1 = factions
+        .iter()
+        .find(|f| f.def.id == c.faction1)
+        .unwrap_or_else(|| panic!("unknown faction {}", c.faction1))
+        .clone();
+
+    let board = load_board(&base.join("scenarios").join(&c.scenario).join("board.toml"))
+        .expect("load board");
+
+    let mut state = GameState::new_seeded(board.board, c.seed);
+    state.objective_hex = None;
+    upgrade_tiles(&mut state, &terrain);
+
+    // Place leaders on keeps
+    let k0 = keep_for(&state, 0);
+    let k1 = keep_for(&state, 1);
+
+    state.place_unit(
+        Unit::from_def(1, units.get(&f0.def.leader_def).unwrap(), 0),
+        k0,
+    );
+    state.place_unit(
+        Unit::from_def(2, units.get(&f1.def.leader_def).unwrap(), 1),
+        k1,
+    );
+
+    state.gold = [c.gold, c.gold];
+    state.active_faction = 0;
+
+    eprintln!(
+        "[INIT] Scenario: {}, Seed: {}, Factions: {} vs {}, Gold: {} each",
+        c.scenario, c.seed, c.faction0, c.faction1, c.gold
+    );
+    let (k0_col, k0_row) = k0.to_offset();
+    let (k1_col, k1_row) = k1.to_offset();
+    eprintln!("[INIT] Keep 0 at ({},{}), Keep 1 at ({},{})", k0_col, k0_row, k1_col, k1_row);
+
+    (state, f0, f1, units)
+}
+
+fn scripted_game(c: &Config) {
+    let (mut state, f0, f1, units) = init_game(c);
+    let mut next_id = 3;
+
+    // Verify initial setup
+    {
+        let f0_leaders = state
+            .units
+            .values()
+            .filter(|u| u.faction == 0 && u.abilities.iter().any(|a| a == "leader"))
+            .count();
+        let f1_leaders = state
+            .units
+            .values()
+            .filter(|u| u.faction == 1 && u.abilities.iter().any(|a| a == "leader"))
+            .count();
+        assert_eq!(f0_leaders, 1, "Faction 0 must have exactly 1 leader");
+        assert_eq!(f1_leaders, 1, "Faction 1 must have exactly 1 leader");
+        eprintln!("[ASSERT] Each faction has exactly 1 leader on keep. ✓");
+    }
+
+    // Run greedy-vs-greedy smoke test
+    for _turn in 0..200 {
+        let side = state.active_faction;
+        if side == 0 {
+            recruit(&mut state, 0, &f0, &units, &mut next_id, None, None);
+            ai_take_turn_greedy(&mut state, 0);
+        } else {
+            recruit(&mut state, 1, &f1, &units, &mut next_id, None, None);
+            ai_take_turn_greedy(&mut state, 1);
+        }
+
+        if let Some(winner) = state.check_winner() {
+            eprintln!(
+                "[RESULT] Faction {} wins in {} turns. Final gold: {:?}",
+                winner, state.turn, state.gold
+            );
+            let unit_count = [0, 1]
+                .map(|faction| state.units.values().filter(|u| u.faction == faction).count());
+            eprintln!("[RESULT] Units: faction 0: {}, faction 1: {}", unit_count[0], unit_count[1]);
+            return;
+        }
+    }
+    eprintln!("[RESULT] Draw after 200 turns (safety limit).");
+}
+
+fn interactive_game(c: &Config) {
+    let (mut state, f0, f1, units) = init_game(c);
+    let mut next_id = 3;
+
+    // Verify initial setup
+    {
+        let f0_leaders = state
+            .units
+            .values()
+            .filter(|u| u.faction == 0 && u.abilities.iter().any(|a| a == "leader"))
+            .count();
+        let f1_leaders = state
+            .units
+            .values()
+            .filter(|u| u.faction == 1 && u.abilities.iter().any(|a| a == "leader"))
+            .count();
+        if f0_leaders != 1 || f1_leaders != 1 {
+            eprintln!("[ERROR] Setup failed: f0 leaders={}, f1 leaders={}", f0_leaders, f1_leaders);
+            std::process::exit(1);
+        }
+    }
+    eprintln!("[OK] Both factions have exactly 1 leader.");
+
+    // Main loop: faction 0 is human (LLM), faction 1 is greedy
+    let stdin = io::stdin();
+    let mut lines = stdin.lock().lines();
+
+    loop {
+        if let Some(winner) = state.check_winner() {
+            eprintln!("[GAME_END] Faction {} wins after {} turns", winner, state.turn);
+            println!("{}", serde_json::to_string(&json!({"game_end": true, "winner": winner, "turns": state.turn})).unwrap());
+            break;
+        }
+
+        let side = state.active_faction;
+
+        if side == 0 {
+            // Human turn: show state, then wait for action
+            // NOTE: LLM must decide Recruit actions themselves via action handler
+            println!("{}", serde_json::to_string(&game_state_to_json(&state, &units)).unwrap());
+            std::io::stdout().flush().unwrap();
+
+            // Read one action from stdin
+            let line = match lines.next() {
+                Some(Ok(l)) => l,
+                _ => {
+                    eprintln!("[ERROR] EOF or read error on stdin");
+                    break;
+                }
+            };
+            eprintln!("[LLM_ACTION] {}", line);
+
+            // Parse and apply action
+            match serde_json::from_str::<Value>(&line) {
+                Ok(v) => {
+                    let action_name = v.get("action").and_then(|a| a.as_str()).unwrap_or("?");
+                    match action_name {
+                        "Move" => {
+                            if let (Some(u), Some(c), Some(r)) = (
+                                v.get("unit_id").and_then(|x| x.as_u64()),
+                                v.get("col").and_then(|x| x.as_i64()),
+                                v.get("row").and_then(|x| x.as_i64()),
+                            ) {
+                                let dest = Hex::from_offset(c as i32, r as i32);
+                                match apply_action(&mut state, Action::Move { unit_id: u as u32, destination: dest }) {
+                                    Ok(_) => eprintln!("[ACTION_OK] Move u{} to ({},{})", u, c, r),
+                                    Err(e) => eprintln!("[ACTION_ERR] Move failed: {:?}", e),
+                                }
+                            }
+                        }
+                        "Attack" => {
+                            if let (Some(attacker), Some(defender)) = (
+                                v.get("attacker_id").and_then(|x| x.as_u64()),
+                                v.get("defender_id").and_then(|x| x.as_u64()),
+                            ) {
+                                match apply_action(&mut state, Action::Attack { attacker_id: attacker as u32, defender_id: defender as u32 }) {
+                                    Ok(_) => eprintln!("[ACTION_OK] Attack u{} vs u{}", attacker, defender),
+                                    Err(e) => eprintln!("[ACTION_ERR] Attack failed: {:?}", e),
+                                }
+                            }
+                        }
+                        "Recruit" => {
+                            if let (Some(def_id), Some(c), Some(r)) = (
+                                v.get("def_id").and_then(|x| x.as_str()),
+                                v.get("col").and_then(|x| x.as_i64()),
+                                v.get("row").and_then(|x| x.as_i64()),
+                            ) {
+                                let dest = Hex::from_offset(c as i32, r as i32);
+                                if let Some(unit_def) = units.get(def_id) {
+                                    let cost = unit_def.cost;
+                                    let current_id = next_id;
+                                    let unit = Unit::from_def(current_id, unit_def, 0);
+                                    match apply_recruit(&mut state, unit, dest, cost) {
+                                        Ok(_) => {
+                                            eprintln!("[ACTION_OK] Recruit {} (u{}) at ({},{})", def_id, current_id, c, r);
+                                            next_id += 1;
+                                        }
+                                        Err(e) => eprintln!("[ACTION_ERR] Recruit failed: {:?}", e),
+                                    }
+                                }
+                            }
+                        }
+                        // Recruit `count` of one unit type, letting the driver handle the
+                        // castle-ring vacate-and-continue mechanics. The caller still chooses
+                        // the unit type and the quantity; only hex placement is automated,
+                        // which mirrors the recruitment help the greedy opponent already gets.
+                        "RecruitBatch" => {
+                            let def_id = v.get("def_id").and_then(|x| x.as_str());
+                            let count = v.get("count").and_then(|x| x.as_u64());
+                            match (def_id, count) {
+                                (Some(did), Some(n)) if n > 0 => {
+                                    if units.get(did).is_none() {
+                                        eprintln!("[ACTION_ERR] RecruitBatch unknown def_id: {}", did);
+                                    } else {
+                                        let placed = recruit(
+                                            &mut state,
+                                            0,
+                                            &f0,
+                                            &units,
+                                            &mut next_id,
+                                            Some(did),
+                                            Some(n as u32),
+                                        );
+                                        eprintln!(
+                                            "[ACTION_OK] RecruitBatch {} x{} requested, {} placed, gold now {}",
+                                            did, n, placed, state.gold[0]
+                                        );
+                                    }
+                                }
+                                _ => eprintln!(
+                                    "[ACTION_ERR] RecruitBatch needs def_id and count>0"
+                                ),
+                            }
+                        }
+                        "EndTurn" => {
+                            if let Err(e) = apply_action(&mut state, Action::EndTurn) {
+                                eprintln!("[ACTION_ERR] EndTurn failed: {:?}", e);
+                            } else {
+                                eprintln!("[ACTION_OK] End faction 0 turn");
+                            }
+                        }
+                        _ => eprintln!("[ACTION_ERR] Unknown action: {}", action_name),
+                    }
+                }
+                Err(e) => eprintln!("[PARSE_ERROR] {}", e),
+            }
+        } else {
+            // Faction 1 (greedy AI) turn
+            recruit(&mut state, 1, &f1, &units, &mut next_id, None, None);
+            ai_take_turn_greedy(&mut state, 1);
+            eprintln!("[AI_TURN] Faction 1 greedy turn complete");
+        }
+    }
+}
+
+fn main() {
+    let c = parse_args();
+
+    if c.scripted {
+        scripted_game(&c);
+    } else {
+        interactive_game(&c);
+    }
+}
