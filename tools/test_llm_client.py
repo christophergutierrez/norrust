@@ -1,7 +1,24 @@
+import argparse
+import io
 import json
+import tempfile
 import unittest
+from unittest import mock
 
-from .llm_client import query_options, validate_orders, prompt_for
+from .llm_client import prompt_for, query_options, run, validate_orders
+
+
+class FakeDriverProcess:
+    def __init__(self, lines):
+        self.stdin = io.StringIO()
+        self.stdout = io.StringIO("".join(json.dumps(line) + "\n" for line in lines))
+        self.stderr = io.StringIO()
+
+    def poll(self):
+        return 0
+
+    def terminate(self):
+        raise AssertionError("completed driver must not be terminated")
 
 
 class ClientValidationTests(unittest.TestCase):
@@ -52,11 +69,16 @@ class ClientValidationTests(unittest.TestCase):
             'turn_options', 'current-unit positions', 'target IDs', 'recruit_options',
             'faction-legal definitions', 'costs', 'affordability', 'placement hexes',
             'engine responses remain authoritative', 'automatically executes the opponent',
-            'recruiter loses', 'side-turn safety cap', 'engine round',
+            'recruiter loss', 'side-turn safety cap', 'engine round',
         ]
         for text in required:
             self.assertIn(text, prompt)
         self.assertIn('"def_id":"Skeleton"', prompt)
+
+    def test_prompt_defines_exactly_one_prior_recruiter_side_losing_all_recruiters(self):
+        prompt = prompt_for({}, [])
+        self.assertIn("exactly one side that previously had a recruiter now has none", prompt)
+        self.assertNotIn("sole recruiter", prompt)
 
     def test_prompt_omits_disabled_recruit_macro_wording(self):
         prompt = prompt_for({}, [], {}, recruit_batch_enabled=False)
@@ -90,6 +112,50 @@ class ClientValidationTests(unittest.TestCase):
         prompt = prompt_for(result, [], result["recruit_options"])
         self.assertIn('"authoritative":"turn_options"', prompt)
         self.assertIn('"authoritative":"recruit_options"', prompt)
+
+    def test_infrastructure_game_end_is_durable_invalid_failure(self):
+        line = {"type": "game_end", "reason": "infrastructure_failure",
+                "winner": None, "code": "greedy_turn_failed", "message": "boom"}
+        code, terminal, fsync_calls = self.run_terminal(line)
+        self.assertEqual(code, 1)
+        self.assertTrue(terminal["infrastructure_invalid"])
+        self.assertEqual(terminal["reason"], "infrastructure_failure")
+        self.assertEqual(terminal["code"], "greedy_turn_failed")
+        self.assertEqual(terminal["message"], "boom")
+        self.assertGreaterEqual(fsync_calls, 1)
+
+    def test_gameplay_and_max_turns_game_end_remain_successful(self):
+        for line in [
+            {"type": "game_end", "reason": "winner", "winner": 0},
+            {"type": "game_end", "reason": "max_turns", "winner": None},
+        ]:
+            with self.subTest(reason=line["reason"]):
+                code, terminal, fsync_calls = self.run_terminal(line)
+                self.assertEqual(code, 0)
+                self.assertFalse(terminal["infrastructure_invalid"])
+                self.assertEqual(terminal["reason"], line["reason"])
+                self.assertGreaterEqual(fsync_calls, 1)
+
+    def run_terminal(self, line):
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = directory + "/client.jsonl"
+            args = argparse.Namespace(
+                driver="driver", scenario="scenario", faction0="a", faction1="b",
+                gold=1, seed=2, max_turns=3, llm_side=0, turn_timeout=4,
+                query_budget_seconds=5, max_queries_per_turn=6,
+                no_recruit_macro=False, interactive_model=True, orders_file=None,
+                model_command=None, model_timeout=7, log=log_path,
+                max_prompt_bytes=1024, token_input_limit=None,
+                token_output_limit=None, token_total_limit=None,
+            )
+            process = FakeDriverProcess([line])
+            with mock.patch("tools.llm_client.subprocess.Popen", return_value=process), \
+                    mock.patch("tools.llm_client.source_metadata", return_value={}), \
+                    mock.patch("tools.llm_client.os.fsync") as fsync:
+                code = run(args)
+            with open(log_path) as log:
+                records = [json.loads(raw) for raw in log]
+        return code, records[-1], fsync.call_count
 
 
 if __name__ == "__main__":

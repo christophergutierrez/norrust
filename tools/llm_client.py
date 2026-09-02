@@ -197,8 +197,8 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "faction-legal definitions, costs, affordability, and placement hexes." + recruitment_guidance +
         " engine responses "
         "remain authoritative: do not reconstruct legality in the client. The win rule is the "
-        "objective, scenario turn limit, recruiter-loss rule (a faction loses when its sole "
-        "recruiter is lost; when the recruiter loses, that faction loses), then elimination. One completed model or greedy turn increments "
+        "objective, scenario turn limit, then recruiter loss: exactly one side that previously "
+        "had a recruiter now has none. Elimination follows. One completed model or greedy turn increments "
         "the side-turn counter once; --max-turns is a side-turn safety cap, distinct from the "
         "engine round counter and scenario turn limit."
     )
@@ -343,8 +343,13 @@ def run(args: argparse.Namespace) -> int:
                 events.extend(line.get("events", []))
             elif line.get("type") == "game_end":
                 metadata.update({"winner": line.get("winner"), "reason": line.get("reason")})
+                for key in ("code", "message"):
+                    if key in line:
+                        metadata[key] = line[key]
+                metadata["infrastructure_invalid"] = \
+                    line.get("reason") == "infrastructure_failure"
                 durable({"type": "terminal", **metadata})
-                return 0
+                return 1 if metadata["infrastructure_invalid"] else 0
     finally:
         if log:
             log.close()
