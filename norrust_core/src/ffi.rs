@@ -960,6 +960,17 @@ pub unsafe extern "C" fn norrust_get_time_of_day_name(engine: *mut NorRustEngine
     to_c_string(name)
 }
 
+/// Return the canonical six-step time-of-day phase (0..=5), or -1 if no game
+/// is loaded.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_get_tod_phase(engine: *mut NorRustEngine) -> i32 {
+    engine
+        .as_ref()
+        .and_then(|e| e.game.as_ref())
+        .map(|s| crate::combat::tod_phase(s.turn) as i32)
+        .unwrap_or(-1)
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn norrust_get_winner(engine: *mut NorRustEngine) -> i32 {
     with_game_ref!(engine, _e, state, -1, {

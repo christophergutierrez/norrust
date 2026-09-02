@@ -27,6 +27,12 @@ class ModelBackend:
         raise NotImplementedError
 
 
+class InteractiveBackend(ModelBackend):
+    def complete(self, prompt: str) -> ModelReply:
+        print(prompt, file=sys.stderr, flush=True)
+        return ModelReply(input("model> "))
+
+
 class OrdersBackend(ModelBackend):
     def __init__(self, path: str):
         self.lines = iter(Path(path).read_text().splitlines())
@@ -116,6 +122,23 @@ def validate_orders(text: str, strict: bool = False) -> list[dict[str, Any]]:
     return orders
 
 
+def enforce_usage(reply: ModelReply, args: argparse.Namespace) -> None:
+    if reply.usage is None:
+        return
+    usage = reply.usage
+    input_tokens = usage.get("input_tokens")
+    output_tokens = usage.get("output_tokens")
+    if not isinstance(input_tokens, int) or not isinstance(output_tokens, int):
+        raise RuntimeError("model_error: malformed usage")
+    total = input_tokens + output_tokens
+    if args.token_input_limit is not None and input_tokens > args.token_input_limit:
+        raise RuntimeError("model_error: input token limit exceeded")
+    if args.token_output_limit is not None and output_tokens > args.token_output_limit:
+        raise RuntimeError("model_error: output token limit exceeded")
+    if args.token_total_limit is not None and total > args.token_total_limit:
+        raise RuntimeError("model_error: total token limit exceeded")
+
+
 def prompt_for(state: dict[str, Any], events: list[dict[str, Any]]) -> str:
     rules = ("You play Norrust. Choose legal tactical actions from the supplied board. "
              "Return only a JSON array of actions, ending with EndTurn. "
@@ -136,7 +159,12 @@ def run(args: argparse.Namespace) -> int:
         cmd.append("--disable-recruit-batch")
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, bufsize=1)
-    backend: ModelBackend = OrdersBackend(args.orders_file) if args.orders_file else CommandBackend(args.model_command, args.model_timeout)
+    if args.interactive_model:
+        backend: ModelBackend = InteractiveBackend()
+    elif args.orders_file:
+        backend = OrdersBackend(args.orders_file)
+    else:
+        backend = CommandBackend(args.model_command, args.model_timeout)
     events: list[dict[str, Any]] = []
     state: Optional[dict[str, Any]] = None
     metadata = {"scenario": args.scenario, "faction0": args.faction0, "faction1": args.faction1,
@@ -205,6 +233,7 @@ def run(args: argparse.Namespace) -> int:
                 metadata["model_calls"] += 1
                 try:
                     reply = backend.complete(prompt)
+                    enforce_usage(reply, args)
                     record({"type": "model", "call": metadata["model_calls"],
                             "prompt_hash": prompt_hash, "prompt_bytes": len(prompt_bytes),
                             "raw_output": reply.text, "usage": reply.usage})
@@ -217,6 +246,7 @@ def run(args: argparse.Namespace) -> int:
                             "\nReturn one corrected JSON action array only."
                         metadata["model_calls"] += 1
                         repaired = backend.complete(repair_prompt)
+                        enforce_usage(repaired, args)
                         record({"type": "repair", "call": metadata["model_calls"],
                                 "prompt_hash": hashlib.sha256(repair_prompt.encode()).hexdigest(),
                                 "raw_output": repaired.text, "usage": repaired.usage,
@@ -258,6 +288,7 @@ def main() -> int:
     p.add_argument("--max-turns", type=int, default=200)
     p.add_argument("--orders-file")
     p.add_argument("--model-command")
+    p.add_argument("--interactive-model", action="store_true")
     p.add_argument("--model-timeout", type=float, default=300)
     p.add_argument("--turn-timeout", type=int, default=300)
     p.add_argument("--query-budget-seconds", type=int, default=300)
@@ -269,8 +300,8 @@ def main() -> int:
     p.add_argument("--no-recruit-macro", action="store_true")
     p.add_argument("--log")
     a = p.parse_args()
-    if bool(a.orders_file) == bool(a.model_command):
-        p.error("choose exactly one of --orders-file or --model-command")
+    if sum(bool(value) for value in (a.orders_file, a.model_command, a.interactive_model)) != 1:
+        p.error("choose exactly one of --orders-file, --model-command, or --interactive-model")
     return run(a)
 
 

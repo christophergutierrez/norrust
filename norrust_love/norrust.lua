@@ -194,6 +194,7 @@ ffi.cdef[[
     int32_t norrust_get_active_faction(NorRustEngine* engine);
     int32_t norrust_get_turn(NorRustEngine* engine);
     char* norrust_get_time_of_day_name(NorRustEngine* engine);
+    int32_t norrust_get_tod_phase(NorRustEngine* engine);
     int32_t norrust_get_winner(NorRustEngine* engine);
     char* norrust_get_state_json(NorRustEngine* engine);
     char* norrust_get_state_json_fow(NorRustEngine* engine, int32_t faction);
@@ -454,6 +455,11 @@ end
 --- Return the current time-of-day name (e.g. "Dawn", "Dusk").
 function M.get_time_of_day_name(engine)
     return get_string(lib.norrust_get_time_of_day_name(engine))
+end
+
+--- Return the canonical six-step time-of-day phase (0 through 5).
+function M.get_tod_phase(engine)
+    return lib.norrust_get_tod_phase(engine)
 end
 
 --- Return the winning faction index, or -1 if no winner yet.
