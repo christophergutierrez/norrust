@@ -14,7 +14,7 @@
 //! | Scalar queries            | the value         | `-1` (or `0`)      |
 //! | String queries            | valid `*mut c_char` | empty string ptr |
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ffi::{c_char, CStr, CString};
 use std::panic;
 use std::path::PathBuf;
@@ -29,7 +29,7 @@ use crate::game_state::{
     apply_action, apply_recruit, apply_advance, legal_moves, legal_targets, AdvanceTarget, Action, ActionError, GameState, PendingSpawn, TriggerZone,
 };
 use crate::hex::Hex;
-use crate::loader::Registry;
+use crate::loader::{expand_recruits, Registry};
 use crate::pathfinding::{find_path, get_zoc_hexes, reachable_hexes};
 use crate::save::SaveState;
 use crate::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
@@ -830,16 +830,7 @@ pub unsafe extern "C" fn norrust_load_factions(
     e.factions = faction_reg
         .all()
         .map(|f| {
-            let mut recruits: Vec<String> = Vec::new();
-            for entry in &f.recruits {
-                if let Some(grp) = groups.get(entry) {
-                    recruits.extend(grp.members.iter().cloned());
-                } else {
-                    recruits.push(entry.clone());
-                }
-            }
-            let mut seen = HashSet::new();
-            recruits.retain(|id| seen.insert(id.clone()));
+            let recruits = expand_recruits(f, &groups);
             (f.clone(), recruits)
         })
         .collect();

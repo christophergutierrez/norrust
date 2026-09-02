@@ -124,6 +124,20 @@ def run(args: argparse.Namespace) -> int:
             record({"type": "driver", "line": line})
             if line.get("type") == "state":
                 state = line
+                # Ask the engine for the complete legal action surface before
+                # the model call; legality is never reconstructed in Python.
+                proc.stdin.write(json.dumps({"action": "Query", "what": "turn_options"}) + "\n")
+                proc.stdin.flush()
+                query_raw = proc.stdout.readline()
+                if not query_raw:
+                    record({"type": "driver_crash", "returncode": proc.poll()})
+                    return 1
+                query_line = json.loads(query_raw)
+                metadata["queries"] += 1
+                record({"type": "query", "line": query_line})
+                if query_line.get("ok") and query_line.get("body"):
+                    state = dict(state)
+                    state["turn_options"] = query_line["body"]
                 prompt = prompt_for(state, events)
                 metadata["model_calls"] += 1
                 try:

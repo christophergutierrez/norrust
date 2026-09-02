@@ -652,6 +652,29 @@ fn interactive_protocol_game(c: &Config) {
                     },
                     _ => json!({"type":"status","ok":false,"what":what,"code":"parse","message":"preview identifiers and ghost coordinates are required"}),
                 },
+                "turn_options" => {
+                    let mut ids: Vec<u32> = state.units.iter().filter_map(|(&id, unit)| (unit.faction == state.active_faction && (!unit.moved || !unit.attacked)).then_some(id)).collect();
+                    ids.sort_unstable();
+                    let mut options = Vec::new();
+                    for id in ids {
+                        let unit = &state.units[&id];
+                        let current = state.positions[&id];
+                        let mut positions = Vec::new();
+                        if !unit.attacked {
+                            let (c,r)=current.to_offset();
+                            positions.push(json!({"col":c,"row":r,"target_ids":legal_targets(&state,id,current).unwrap_or_default()}));
+                        }
+                        if !unit.moved {
+                            for hex in legal_moves(&state,id).unwrap_or_default() {
+                                let (c,r)=hex.to_offset();
+                                positions.push(json!({"col":c,"row":r,"target_ids":legal_targets(&state,id,hex).unwrap_or_default()}));
+                            }
+                        }
+                        positions.sort_by_key(|value| (value.get("row").and_then(Value::as_i64).unwrap_or(0), value.get("col").and_then(Value::as_i64).unwrap_or(0)));
+                        options.push(json!({"unit_id":id,"positions":positions}));
+                    }
+                    json!({"type":"status","ok":true,"what":what,"body":{"units":options}})
+                },
                 "recruit_options" => {
                     let side = state.active_faction as usize;
                     let faction = &factions[side];

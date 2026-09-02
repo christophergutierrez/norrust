@@ -74,6 +74,13 @@ pub struct VisibleHex {
     pub row: i32,
 }
 
+#[derive(Debug, Serialize)]
+pub struct FactionSnapshot {
+    pub side: u8,
+    pub id: String,
+    pub recruit_ids: Vec<String>,
+}
+
 /// Complete serializable snapshot of a GameState for external consumers.
 ///
 /// Uses `cols`/`rows` terminology (matching the GDScript and bridge API)
@@ -89,6 +96,7 @@ pub struct StateSnapshot {
     pub terrain: Vec<TileSnapshot>,
     pub units: Vec<UnitSnapshot>,
     pub gold: [u32; 2],
+    pub factions: Vec<FactionSnapshot>,
     pub max_turns: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub objective_col: Option<i32>,
@@ -196,6 +204,7 @@ impl StateSnapshot {
             terrain,
             units,
             gold: state.gold,
+            factions: state.faction_ids.iter().enumerate().map(|(side, id)| FactionSnapshot { side: side as u8, id: id.clone(), recruit_ids: state.recruit_ids[side].clone() }).collect(),
             max_turns: state.max_turns,
             objective_col,
             objective_row,
@@ -314,6 +323,7 @@ impl StateSnapshot {
             terrain,
             units,
             gold: state.gold,
+            factions: state.faction_ids.iter().enumerate().map(|(side, id)| FactionSnapshot { side: side as u8, id: id.clone(), recruit_ids: state.recruit_ids[side].clone() }).collect(),
             max_turns: state.max_turns,
             objective_col,
             objective_row,
