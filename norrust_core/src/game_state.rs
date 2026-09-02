@@ -183,6 +183,8 @@ pub struct GameState {
     /// Faction identity and expanded recruit roster for each side.
     pub faction_ids: [String; 2],
     pub recruit_ids: [Vec<String>; 2],
+    /// Whether each faction has ever fielded a recruiting commander.
+    pub had_recruiter: [bool; 2],
 }
 
 impl GameState {
@@ -205,6 +207,7 @@ impl GameState {
             next_unit_id: 1,
             faction_ids: [String::new(), String::new()],
             recruit_ids: [Vec::new(), Vec::new()],
+            had_recruiter: [false, false],
         }
     }
 
@@ -238,7 +241,23 @@ impl GameState {
             }
         }
 
-        // 3. Elimination: if one side has no units, the other wins
+        // 3. Losing the only recruiting commander ends the match. If both
+        // recruiters are gone, fall through to ordinary elimination rather
+        // than resolving the tie by faction/check order.
+        let has_recruiter = [0u8, 1].map(|side| {
+            self.units
+                .values()
+                .any(|unit| unit.faction == side && unit.can_recruit)
+        });
+        let lost_0 = self.had_recruiter[0] && !has_recruiter[0];
+        let lost_1 = self.had_recruiter[1] && !has_recruiter[1];
+        match (lost_0, lost_1) {
+            (true, false) => return Some(1),
+            (false, true) => return Some(0),
+            _ => {}
+        }
+
+        // 4. Elimination: if one side has no units, the other wins
         let has_0 = self.units.values().any(|u| u.faction == 0);
         let has_1 = self.units.values().any(|u| u.faction == 1);
         match (has_0, has_1) {
@@ -258,6 +277,9 @@ impl GameState {
             "place_unit: hex already occupied"
         );
         let id = unit.id;
+        if unit.can_recruit {
+            self.had_recruiter[unit.faction as usize] = true;
+        }
         self.positions.insert(id, hex);
         self.hex_to_unit.insert(hex, id);
         self.units.insert(id, unit);
@@ -1091,20 +1113,25 @@ pub fn apply_recruit(
     if unit.faction != active {
         return Err(ActionError::NotYourTurn);
     }
-    let keep_hex = state.positions.iter().find_map(|(&uid, &hex)| {
-        let unit = state.units.get(&uid)?;
-        if unit.faction != active {
-            return None;
-        }
-        if !unit.abilities.iter().any(|a| a == "leader") {
-            return None;
-        }
-        state
-            .board
-            .tile_at(hex)
-            .filter(|t| t.terrain_id == "keep")
-            .map(|_| hex)
-    });
+    let mut keep_candidates: Vec<(i32, i32, u32, Hex)> = state
+        .positions
+        .iter()
+        .filter_map(|(&uid, &hex)| {
+            let unit = state.units.get(&uid)?;
+            (unit.faction == active
+                && unit.can_recruit
+                && state
+                    .board
+                    .tile_at(hex)
+                    .is_some_and(|tile| tile.terrain_id == "keep"))
+            .then(|| {
+                let (col, row) = hex.to_offset();
+                (row, col, uid, hex)
+            })
+        })
+        .collect();
+    keep_candidates.sort_unstable_by_key(|candidate| (candidate.0, candidate.1, candidate.2));
+    let keep_hex = keep_candidates.first().map(|candidate| candidate.3);
     let keep_hex = keep_hex.ok_or(ActionError::LeaderNotOnKeep)?;
     // Destination must be a castle tile adjacent to the keep.
     match state.board.tile_at(destination) {

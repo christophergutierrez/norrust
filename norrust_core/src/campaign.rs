@@ -92,6 +92,8 @@ pub struct VeteranUnit {
     pub xp_needed: u32,
     pub advancement_pending: bool,
     pub abilities: Vec<String>,
+    #[serde(default)]
+    pub can_recruit: bool,
 }
 
 /// Whether a rostered unit is alive or dead.
@@ -112,6 +114,8 @@ pub struct RosterEntry {
     pub xp_needed: u32,
     pub advancement_pending: bool,
     pub abilities: Vec<String>,
+    #[serde(default)]
+    pub can_recruit: bool,
     pub status: RosterStatus,
 }
 
@@ -168,6 +172,7 @@ impl CampaignState {
         abilities: Vec<String>,
     ) -> String {
         let uuid = self.generate_uuid();
+        let can_recruit = abilities.iter().any(|a| a == "leader");
         let entry = RosterEntry {
             uuid: uuid.clone(),
             def_id: def_id.to_string(),
@@ -177,6 +182,7 @@ impl CampaignState {
             xp_needed,
             advancement_pending,
             abilities,
+            can_recruit,
             status: RosterStatus::Alive,
         };
         self.roster.insert(uuid.clone(), entry);
@@ -216,6 +222,7 @@ impl CampaignState {
                         entry.xp_needed = unit.xp_needed;
                         entry.advancement_pending = unit.advancement_pending;
                         entry.abilities = unit.abilities.clone();
+                        entry.can_recruit = unit.can_recruit;
                         entry.status = RosterStatus::Alive;
                     }
                 } else {
@@ -267,7 +274,7 @@ impl CampaignState {
             .enumerate()
             .map(|(i, vet)| {
                 let uuid = living.get(i).map(|e| e.uuid.clone());
-                let is_leader = vet.abilities.contains(&"leader".to_string());
+                let is_leader = vet.can_recruit;
                 VeteranInfo {
                     def_id: vet.def_id.clone(),
                     hp: vet.hp,
@@ -438,6 +445,7 @@ pub fn get_survivors(state: &GameState, faction: u8) -> Vec<VeteranUnit> {
             xp_needed: u.xp_needed,
             advancement_pending: u.advancement_pending,
             abilities: u.abilities.clone(),
+            can_recruit: u.can_recruit,
         })
         .collect()
 }
@@ -808,6 +816,7 @@ mod tests {
                 xp_needed: 40,
                 advancement_pending: false,
                 abilities: vec![],
+                can_recruit: false,
             },
             VeteranUnit {
                 def_id: "archer".to_string(),
@@ -817,6 +826,7 @@ mod tests {
                 xp_needed: 32,
                 advancement_pending: false,
                 abilities: vec![],
+                can_recruit: false,
             },
             VeteranUnit {
                 def_id: "spearman".to_string(),
@@ -826,6 +836,7 @@ mod tests {
                 xp_needed: 36,
                 advancement_pending: false,
                 abilities: vec![],
+                can_recruit: false,
             },
         ];
 

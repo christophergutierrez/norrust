@@ -207,17 +207,25 @@ fn recruit(
         if limit.is_some_and(|l| recruited >= l) {
             break;
         }
-        let keep = state.positions.iter().find_map(|(&id, &h)| {
-            let u = state.units.get(&id)?;
-            (u.faction == side
-                && u.abilities.iter().any(|a| a == "leader")
-                && state
-                    .board
-                    .tile_at(h)
-                    .map(|t| t.terrain_id == "keep")
-                    .unwrap_or(false))
-            .then_some(h)
-        });
+        let mut keep_candidates: Vec<(i32, i32, u32, Hex)> = state
+            .positions
+            .iter()
+            .filter_map(|(&id, &h)| {
+                let u = state.units.get(&id)?;
+                (u.faction == side
+                    && u.can_recruit
+                    && state
+                        .board
+                        .tile_at(h)
+                        .is_some_and(|tile| tile.terrain_id == "keep"))
+                .then(|| {
+                    let (col, row) = h.to_offset();
+                    (row, col, id, h)
+                })
+            })
+            .collect();
+        keep_candidates.sort_unstable_by_key(|candidate| (candidate.0, candidate.1, candidate.2));
+        let keep = keep_candidates.first().map(|candidate| candidate.3);
         let Some(keep) = keep else { break };
         let mut dest = keep.neighbors().iter().copied().find(|h| {
             state
@@ -235,9 +243,7 @@ fn recruit(
                 state
                     .units
                     .get(id)
-                    .map(|u| {
-                        u.faction == side && !u.moved && !u.abilities.iter().any(|a| a == "leader")
-                    })
+                    .map(|u| u.faction == side && !u.moved && !u.can_recruit)
                     .unwrap_or(false)
             });
             let Some(castle) = occupied_castle else { break };
@@ -492,12 +498,12 @@ fn scripted_game(c: &Config) {
         let f0_leaders = state
             .units
             .values()
-            .filter(|u| u.faction == 0 && u.abilities.iter().any(|a| a == "leader"))
+            .filter(|u| u.faction == 0 && u.can_recruit)
             .count();
         let f1_leaders = state
             .units
             .values()
-            .filter(|u| u.faction == 1 && u.abilities.iter().any(|a| a == "leader"))
+            .filter(|u| u.faction == 1 && u.can_recruit)
             .count();
         if f0_leaders != 1 || f1_leaders != 1 {
             println!(
@@ -569,12 +575,12 @@ fn interactive_game(c: &Config) {
         let f0_leaders = state
             .units
             .values()
-            .filter(|u| u.faction == 0 && u.abilities.iter().any(|a| a == "leader"))
+            .filter(|u| u.faction == 0 && u.can_recruit)
             .count();
         let f1_leaders = state
             .units
             .values()
-            .filter(|u| u.faction == 1 && u.abilities.iter().any(|a| a == "leader"))
+            .filter(|u| u.faction == 1 && u.can_recruit)
             .count();
         if f0_leaders != 1 || f1_leaders != 1 {
             eprintln!(

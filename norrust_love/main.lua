@@ -132,10 +132,6 @@ local function center_camera(reset) camera_mod.center(reset) end
 local function is_ranged_attack() return combat_mod.is_ranged_attack() end
 local function execute_attack(...) return combat_mod.execute_attack(...) end
 
--- ── Forward declarations ────────────────────────────────────────────────
-local scan_initial_leaders  -- defined after check_game_over, called from scenario_loaded
-local faction_had_leader = {false, false}  -- which factions started with a leader
-
 -- ── Dialogue subscriber ─────────────────────────────────────────────────
 -- Subscribes to gameplay events and manages dialogue UI state.
 
@@ -158,7 +154,6 @@ events.on("scenario_loaded", function(data)
     dlg.show_history = false
     dlg.active = {}
     fog.seen = {}
-    scan_initial_leaders()
     fog.visible = {}
 
     local dialogue_path = scn.path .. "/" .. data.board:gsub("board%.toml$", "dialogue.toml")
@@ -251,46 +246,9 @@ local function select_unit(uid)
     end
 end
 
---- Scan current units to record which factions have leaders.
---- Called once at scenario start via scenario_loaded event.
-scan_initial_leaders = function()
-    local state = norrust.get_state(vars.engine)
-    faction_had_leader = {false, false}
-    if state and state.units then
-        for _, u in ipairs(state.units) do
-            if u.abilities then
-                for _, a in ipairs(u.abilities) do
-                    if a == "leader" then
-                        faction_had_leader[u.faction + 1] = true
-                    end
-                end
-            end
-        end
-    end
-end
-
 --- Check if a faction has won and set vars.game_over state.
 local function check_game_over()
     local w = norrust.get_winner(vars.engine)
-    -- Leader death check: if a faction that started with a leader no longer has one, they lose
-    if w < 0 then
-        local state = norrust.get_state(vars.engine)
-        if state and state.units then
-            local has_leader = {false, false}
-            for _, u in ipairs(state.units) do
-                if u.abilities then
-                    for _, a in ipairs(u.abilities) do
-                        if a == "leader" then
-                            has_leader[u.faction + 1] = true
-                        end
-                    end
-                end
-            end
-            -- Only check factions that actually started with a leader
-            if faction_had_leader[1] and not has_leader[1] then w = 1 end
-            if faction_had_leader[2] and not has_leader[2] then w = 0 end
-        end
-    end
     if w >= 0 then
         logger.log("state: GAME_OVER winner=faction_" .. tostring(w))
         vars.game_over = true

@@ -517,6 +517,7 @@ mod tests {
             vision_range: 0,
             cost: 0,
             advances_to: Vec::new(),
+            can_recruit: false,
         };
         let defender = Unit {
             id: 2,
@@ -543,6 +544,7 @@ mod tests {
             vision_range: 0,
             cost: 0,
             advances_to: Vec::new(),
+            can_recruit: false,
         };
         let preview = simulate_combat(&attacker, &defender, 40, 50, 1, 1000, "melee", false, 0, 0);
 

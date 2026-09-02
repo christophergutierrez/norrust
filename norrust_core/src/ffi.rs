@@ -709,7 +709,7 @@ pub unsafe extern "C" fn norrust_ai_recruit(
                 if unit.faction != active {
                     return None;
                 }
-                if !unit.abilities.iter().any(|a| a == "leader") {
+                if !unit.can_recruit {
                     return None;
                 }
                 state
@@ -1821,7 +1821,7 @@ pub unsafe extern "C" fn norrust_place_veteran_unit(
         if unit.faction != active {
             return None;
         }
-        if !unit.abilities.iter().any(|a| a == "leader") {
+        if !unit.can_recruit {
             return None;
         }
         state
@@ -1845,6 +1845,86 @@ pub unsafe extern "C" fn norrust_place_veteran_unit(
     state.place_unit(unit, destination);
     e.state_cache = None;
     uid as i32
+}
+
+#[derive(serde::Deserialize)]
+struct VeteranPlacementRequest {
+    def_id: String,
+    faction: u8,
+    col: i32,
+    row: i32,
+    hp: u32,
+    xp: u32,
+    xp_needed: u32,
+    advancement_pending: bool,
+    can_recruit: bool,
+}
+
+/// Place a veteran with an explicit carried recruiter flag.
+///
+/// This JSON entry point is used by the campaign deployment UI. The legacy
+/// integer ABI remains unchanged for external callers.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_place_veteran_unit_json(
+    engine: *mut NorRustEngine,
+    json: *const c_char,
+) -> *mut c_char {
+    let request: VeteranPlacementRequest = match serde_json::from_str(cstr_to_str(json)) {
+        Ok(value) => value,
+        Err(_) => return to_c_string(r#"{"status":"error","message":"invalid veteran json"}"#),
+    };
+    let Some(e) = engine.as_mut() else {
+        return to_c_string(r#"{"status":"error","message":"null engine"}"#);
+    };
+    let Some(state) = e.game.as_mut() else {
+        return to_c_string(r#"{"status":"error","message":"no game state"}"#);
+    };
+    let destination = Hex::from_offset(request.col, request.row);
+    if !state.board.contains(destination) {
+        return to_c_string(r#"{"status":"error","message":"out of bounds"}"#);
+    }
+    let mut keep_candidates: Vec<Hex> = state
+        .positions
+        .iter()
+        .filter_map(|(&uid, &hex)| {
+            let unit = state.units.get(&uid)?;
+            (unit.faction == state.active_faction
+                && unit.can_recruit
+                && state
+                    .board
+                    .tile_at(hex)
+                    .is_some_and(|tile| tile.terrain_id == "keep"))
+            .then_some(hex)
+        })
+        .collect();
+    keep_candidates.sort_by_key(|hex| {
+        let (col, row) = hex.to_offset();
+        (row, col)
+    });
+    let Some(keep) = keep_candidates.first().copied() else {
+        return to_c_string(r#"{"status":"error","message":"recruiter is not on a keep"}"#);
+    };
+    if !state
+        .board
+        .tile_at(destination)
+        .is_some_and(|tile| tile.terrain_id == "castle")
+        || keep.distance(destination) != 1
+        || state.hex_to_unit.contains_key(&destination)
+    {
+        return to_c_string(r#"{"status":"error","message":"invalid veteran destination"}"#);
+    }
+    let uid = state.next_unit_id;
+    state.next_unit_id += 1;
+    let mut unit = unit_from_registry(e, uid, &request.def_id, request.faction);
+    unit.hp = request.hp.min(unit.max_hp);
+    unit.xp = request.xp;
+    unit.xp_needed = request.xp_needed;
+    unit.advancement_pending = request.advancement_pending;
+    unit.can_recruit = request.can_recruit;
+    let state = e.game.as_mut().expect("game state pre-verified");
+    state.place_unit(unit, destination);
+    e.state_cache = None;
+    to_c_string(&format!(r#"{{"status":"ok","unit_id":{}}}"#, uid))
 }
 
 /// Commit veteran deployment: place user-selected veterans on keep/castle hexes.
@@ -1941,6 +2021,7 @@ pub unsafe extern "C" fn norrust_campaign_commit_deployment(
         unit.xp = vet.xp;
         unit.xp_needed = vet.xp_needed;
         unit.advancement_pending = vet.advancement_pending;
+        unit.can_recruit = vet.can_recruit;
 
         let state = e.game.as_mut().expect("game state pre-verified");
         state.place_unit(unit, Hex::from_offset(col, row));
@@ -2516,6 +2597,7 @@ pub unsafe extern "C" fn norrust_campaign_load_next_scenario(
                 unit.xp = vet.xp;
                 unit.xp_needed = vet.xp_needed;
                 unit.advancement_pending = vet.advancement_pending;
+                unit.can_recruit = vet.can_recruit;
 
                 let state = e.game.as_mut().expect("game state pre-verified");
                 state.place_unit(unit, Hex::from_offset(col, row));
@@ -3081,6 +3163,7 @@ pub unsafe extern "C" fn norrust_load_json(engine: *mut NorRustEngine, json: *co
         if let Some((col, row)) = save.objective_hex {
             state.objective_hex = Some(Hex::from_offset(col, row));
         }
+        state.had_recruiter = save.had_recruiter;
 
         // 3. Restore units from registry + saved state
         for su in &save.units {
@@ -3097,6 +3180,7 @@ pub unsafe extern "C" fn norrust_load_json(engine: *mut NorRustEngine, json: *co
             unit.slowed = su.slowed;
             unit.level = su.level;
             unit.abilities = su.abilities.clone();
+            unit.can_recruit = su.can_recruit || unit.abilities.iter().any(|a| a == "leader");
 
             let Some(state) = e.game.as_mut() else {
                 return -1;

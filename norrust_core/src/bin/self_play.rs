@@ -276,7 +276,7 @@ fn recruit(
         let keep = state.positions.iter().find_map(|(&id, &h)| {
             let u = state.units.get(&id)?;
             (u.faction == side
-                && u.abilities.iter().any(|a| a == "leader")
+                && u.can_recruit
                 && state
                     .board
                     .tile_at(h)
@@ -301,9 +301,7 @@ fn recruit(
                 state
                     .units
                     .get(id)
-                    .map(|u| {
-                        u.faction == side && !u.moved && !u.abilities.iter().any(|a| a == "leader")
-                    })
+                    .map(|u| u.faction == side && !u.moved && !u.can_recruit)
                     .unwrap_or(false)
             });
             let Some(castle) = occupied_castle else { break };

@@ -69,6 +69,9 @@ pub struct Unit {
     pub vision_range: u32,
     pub cost: u32,
     pub advances_to: Vec<String>,
+    /// Whether this unit can operate a keep and recruit, independent of its
+    /// current unit definition (survives advancement).
+    pub can_recruit: bool,
 }
 
 /// Advance `unit` to the stats defined by `new_def`.
@@ -115,6 +118,7 @@ impl Unit {
     pub fn from_def(id: u32, def: &UnitDef, faction: u8) -> Self {
         let mut u = Self::new(id, &def.id, def.max_hp, faction);
         u.apply_def(def);
+        u.can_recruit = def.abilities.iter().any(|ability| ability == "leader");
         u
     }
 
@@ -145,6 +149,7 @@ impl Unit {
             vision_range: 0,
             cost: 0,
             advances_to: Vec::new(),
+            can_recruit: false,
         }
     }
 }

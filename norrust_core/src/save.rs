@@ -35,6 +35,8 @@ pub struct SaveUnit {
     pub slowed: bool,
     pub abilities: Vec<String>,
     pub level: u8,
+    #[serde(default)]
+    pub can_recruit: bool,
 }
 
 impl SaveUnit {
@@ -58,6 +60,7 @@ impl SaveUnit {
             slowed: unit.slowed,
             abilities: unit.abilities.clone(),
             level: unit.level,
+            can_recruit: unit.can_recruit,
         }
     }
 }
@@ -106,6 +109,8 @@ pub struct SaveState {
     /// Human-readable scenario name for the save list UI.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    #[serde(default)]
+    pub had_recruiter: [bool; 2],
 }
 
 impl SaveState {
@@ -177,6 +182,7 @@ impl SaveState {
             dialogue_fired,
             campaign: campaign.cloned(),
             display_name: display_name.map(|s| s.to_string()),
+            had_recruiter: state.had_recruiter,
         }
     }
 }
@@ -248,6 +254,7 @@ mod tests {
                     slowed: true,
                     abilities: vec!["leader".to_string()],
                     level: 1,
+                    can_recruit: true,
                 },
                 SaveUnit {
                     id: 2,
@@ -266,6 +273,7 @@ mod tests {
                     slowed: false,
                     abilities: vec![],
                     level: 1,
+                    can_recruit: false,
                 },
             ],
             next_unit_id: 3,
@@ -275,6 +283,7 @@ mod tests {
             dialogue_fired: vec!["crossing_start".to_string(), "crossing_bridge".to_string()],
             campaign: None,
             display_name: Some("The Crossing".to_string()),
+            had_recruiter: [true, false],
         };
 
         let json = serde_json::to_string(&save).expect("serialize");

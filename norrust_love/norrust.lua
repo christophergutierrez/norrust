@@ -230,6 +230,7 @@ ffi.cdef[[
     char* norrust_get_survivors_json(NorRustEngine* engine, int32_t faction);
     int32_t norrust_get_carry_gold(NorRustEngine* engine, int32_t faction, int32_t gold_carry_percent, int32_t early_finish_bonus);
     int32_t norrust_place_veteran_unit(NorRustEngine* engine, const char* def_id, int32_t faction, int32_t col, int32_t row, int32_t hp, int32_t xp, int32_t xp_needed, int32_t advancement_pending);
+    char* norrust_place_veteran_unit_json(NorRustEngine* engine, const char* json);
     char* norrust_campaign_load_next_scenario(NorRustEngine* engine, const char* scenarios_path);
     char* norrust_start_campaign(NorRustEngine* engine, const char* path);
     char* norrust_campaign_add_unit(NorRustEngine* engine, const char* def_id, int32_t engine_id, int32_t hp, int32_t max_hp, int32_t xp, int32_t xp_needed, int32_t advancement_pending);
@@ -647,6 +648,13 @@ end
 --- Place a veteran unit with preserved XP and advancement state. Engine auto-assigns ID.
 function M.place_veteran_unit(engine, def_id, faction, col, row, hp, xp, xp_needed, advancement_pending)
     return lib.norrust_place_veteran_unit(engine, def_id, faction, col, row, hp, xp, xp_needed, advancement_pending and 1 or 0)
+end
+
+function M.place_veteran_unit_json(engine, veteran)
+    local raw = get_string(lib.norrust_place_veteran_unit_json(engine, json_encode(veteran)))
+    if raw == "" then return -1 end
+    local result = json_decode(raw)
+    return result and result.unit_id or -1
 end
 
 --- Load the next campaign scenario (board, units, veterans, gold) in a single call.

@@ -363,13 +363,12 @@ fn apply_expected_attack(sim: &mut GameState, uid: u32, from: Hex, eid: u32, sta
 
 /// Find the leader unit ID for the given faction.
 fn find_leader(state: &GameState, faction: u8) -> Option<u32> {
-    state.units.iter().find_map(|(&uid, u)| {
-        if u.faction == faction && u.abilities.iter().any(|a| a == "leader") {
-            Some(uid)
-        } else {
-            None
-        }
-    })
+    state
+        .units
+        .iter()
+        .filter(|(_, unit)| unit.faction == faction && unit.can_recruit)
+        .map(|(&uid, _)| uid)
+        .min()
 }
 
 /// Find all keep hexes on the board.
@@ -1698,6 +1697,7 @@ mod tests {
         };
         let mut u = Unit::new(id, "lieutenant", 40, faction);
         u.abilities = vec!["leader".to_string()];
+        u.can_recruit = true;
         u.attacks = vec![sword];
         u.movement = 5;
         u

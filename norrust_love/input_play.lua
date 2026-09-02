@@ -293,13 +293,12 @@ function M.mousepressed(col, row, clicked_key, state, pos_map, active, x, y)
         if sel.recruit_idx < vet_count then
             -- Veteran recruitment: place veteran unit from roster
             local vet = sel.recruit_state.veterans[sel.recruit_idx + 1]
-            local uid = mods.norrust.place_veteran_unit(
-                vars.engine,
-                vet.def_id, 0,
-                col, row,
-                int(vet.hp), int(vet.xp), int(vet.xp_needed),
-                vet.advancement_pending
-            )
+            local uid = mods.norrust.place_veteran_unit_json(vars.engine, {
+                def_id = vet.def_id, faction = 0, col = col, row = row,
+                hp = int(vet.hp), xp = int(vet.xp), xp_needed = int(vet.xp_needed),
+                advancement_pending = vet.advancement_pending,
+                can_recruit = vet.can_recruit or false
+            })
             if uid > 0 then
                 mods.norrust.campaign_map_id(vars.engine, uid, vet.uuid)
                 sound.play("recruit")
