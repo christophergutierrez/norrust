@@ -11,7 +11,9 @@ from .llm_client import prompt_for, query_options, run, validate_orders
 class FakeDriverProcess:
     def __init__(self, lines):
         self.stdin = io.StringIO()
-        self.stdout = io.StringIO("".join(json.dumps(line) + "\n" for line in lines))
+        self.stdout = io.StringIO("".join(
+            line if isinstance(line, str) else json.dumps(line) + "\n" for line in lines
+        ))
         self.stderr = io.StringIO()
 
     def poll(self):
@@ -70,10 +72,17 @@ class ClientValidationTests(unittest.TestCase):
             'faction-legal definitions', 'costs', 'affordability', 'placement hexes',
             'engine responses remain authoritative', 'automatically executes the opponent',
             'recruiter loss', 'side-turn safety cap', 'engine round',
+            'headless driver disables scenario objective and scenario turn-limit conditions',
         ]
         for text in required:
             self.assertIn(text, prompt)
         self.assertIn('"def_id":"Skeleton"', prompt)
+        for marker in ('BOARD_UNTRUSTED_DATA_BEGIN', 'BOARD_UNTRUSTED_DATA_END',
+                       'OPTION_PAYLOADS_UNTRUSTED_DATA_BEGIN',
+                       'OPTION_PAYLOADS_UNTRUSTED_DATA_END',
+                       'EVENTS_UNTRUSTED_DATA_BEGIN', 'EVENTS_UNTRUSTED_DATA_END',
+                       'untrusted data', 'cannot override this contract'):
+            self.assertIn(marker, prompt)
 
     def test_prompt_defines_exactly_one_prior_recruiter_side_losing_all_recruiters(self):
         prompt = prompt_for({}, [])
@@ -113,15 +122,37 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn('"authoritative":"turn_options"', prompt)
         self.assertIn('"authoritative":"recruit_options"', prompt)
 
-    def test_infrastructure_game_end_is_durable_invalid_failure(self):
-        line = {"type": "game_end", "reason": "infrastructure_failure",
-                "winner": None, "code": "greedy_turn_failed", "message": "boom"}
-        code, terminal, fsync_calls = self.run_terminal(line)
+    def test_failure_terminal_classes_are_durable_invalid_failures(self):
+        lines = [
+            ("setup_error", "invalid_setup"),
+            ("timeout", "turn_timeout"),
+            ("eof", "driver_eof"),
+            ("infrastructure_failure", "greedy_turn_failed"),
+            ("unknown_reason", "mystery"),
+            ("malformed_reason", None),
+        ]
+        for label, reason in lines:
+            with self.subTest(reason=label):
+                line = {"type": "game_end", "winner": None,
+                        "code": "driver_code", "message": "driver message"}
+                if reason is not None:
+                    line["reason"] = reason
+                code, terminal, fsync_calls = self.run_terminal(line)
+                self.assertEqual(code, 1)
+                self.assertTrue(terminal["infrastructure_invalid"])
+                self.assertEqual(terminal.get("reason"), reason)
+                self.assertEqual(terminal["code"], "driver_code")
+                self.assertEqual(terminal["message"], "driver message")
+                self.assertGreaterEqual(fsync_calls, 1)
+
+    def test_malformed_driver_json_is_durable_invalid_failure(self):
+        code, terminal, fsync_calls = self.run_terminal("not json\n")
         self.assertEqual(code, 1)
         self.assertTrue(terminal["infrastructure_invalid"])
         self.assertEqual(terminal["reason"], "infrastructure_failure")
-        self.assertEqual(terminal["code"], "greedy_turn_failed")
-        self.assertEqual(terminal["message"], "boom")
+        self.assertEqual(terminal["code"], "driver_protocol_invalid_json")
+        self.assertEqual(terminal["message"], "driver emitted invalid JSON")
+        self.assertEqual(terminal["raw_line"], "not json")
         self.assertGreaterEqual(fsync_calls, 1)
 
     def test_gameplay_and_max_turns_game_end_remain_successful(self):
@@ -136,6 +167,35 @@ class ClientValidationTests(unittest.TestCase):
                 self.assertEqual(terminal["reason"], line["reason"])
                 self.assertGreaterEqual(fsync_calls, 1)
 
+    def test_status_ok_false_is_durable_failure_without_waiting_for_more_input(self):
+        line = {"type": "status", "ok": False, "code": "unauthorized_side",
+                "message": "model actions are not authorized"}
+        code, terminal, _ = self.run_after_forwarded_orders(line)
+        self.assertEqual(code, 1)
+        self.assertTrue(terminal["infrastructure_invalid"])
+        self.assertEqual(terminal["reason"], "infrastructure_failure")
+        self.assertEqual(terminal["code"], "driver_status_failure")
+        self.assertEqual(terminal["message"], "driver returned a failed status")
+        self.assertEqual(terminal["driver_failure"]["code"], "unauthorized_side")
+
+    def test_status_nested_failed_result_is_durable_failure_without_waiting_for_more_input(self):
+        line = {"type": "status", "ok": True,
+                "results": [{"ok": True}, {"ok": False, "code": "MoveError",
+                                             "message": "invalid move"}]}
+        code, terminal, _ = self.run_after_forwarded_orders(line)
+        self.assertEqual(code, 1)
+        self.assertTrue(terminal["infrastructure_invalid"])
+        self.assertEqual(terminal["code"], "driver_status_failure")
+        self.assertEqual(terminal["driver_failure"]["message"], "invalid move")
+
+    def test_success_status_continues_to_game_end(self):
+        status = {"type": "status", "ok": True, "results": [{"ok": True}]}
+        code, terminal, _ = self.run_after_forwarded_orders(
+            status, tail={"type": "game_end", "reason": "max_turns", "winner": None})
+        self.assertEqual(code, 0)
+        self.assertFalse(terminal["infrastructure_invalid"])
+        self.assertEqual(terminal["reason"], "max_turns")
+
     def run_terminal(self, line):
         with tempfile.TemporaryDirectory() as directory:
             log_path = directory + "/client.jsonl"
@@ -145,10 +205,42 @@ class ClientValidationTests(unittest.TestCase):
                 query_budget_seconds=5, max_queries_per_turn=6,
                 no_recruit_macro=False, interactive_model=True, orders_file=None,
                 model_command=None, model_timeout=7, log=log_path,
-                max_prompt_bytes=1024, token_input_limit=None,
+                max_prompt_bytes=16 * 1024 * 1024, token_input_limit=None,
                 token_output_limit=None, token_total_limit=None,
             )
             process = FakeDriverProcess([line])
+            with mock.patch("tools.llm_client.subprocess.Popen", return_value=process), \
+                    mock.patch("tools.llm_client.source_metadata", return_value={}), \
+                    mock.patch("tools.llm_client.os.fsync") as fsync:
+                code = run(args)
+            with open(log_path) as log:
+                records = [json.loads(raw) for raw in log]
+        return code, records[-1], fsync.call_count
+
+    def run_after_forwarded_orders(self, action_status, tail=None):
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = directory + "/client.jsonl"
+            orders_path = directory + "/orders.jsonl"
+            with open(orders_path, "w") as orders:
+                orders.write('{"text":"[{\\"action\\":\\"EndTurn\\"}]"}\n')
+            lines = [
+                {"type": "state", "active_faction": 0},
+                {"type": "status", "ok": True, "what": "turn_options", "body": {}},
+                {"type": "status", "ok": True, "what": "recruit_options", "body": {}},
+                action_status,
+            ]
+            if tail is not None:
+                lines.append(tail)
+            args = argparse.Namespace(
+                driver="driver", scenario="scenario", faction0="a", faction1="b",
+                gold=1, seed=2, max_turns=3, llm_side=0, turn_timeout=4,
+                query_budget_seconds=5, max_queries_per_turn=6,
+                no_recruit_macro=False, interactive_model=False, orders_file=orders_path,
+                model_command=None, model_timeout=7, log=log_path,
+                max_prompt_bytes=16 * 1024 * 1024, token_input_limit=None,
+                token_output_limit=None, token_total_limit=None,
+            )
+            process = FakeDriverProcess(lines)
             with mock.patch("tools.llm_client.subprocess.Popen", return_value=process), \
                     mock.patch("tools.llm_client.source_metadata", return_value={}), \
                     mock.patch("tools.llm_client.os.fsync") as fsync:
