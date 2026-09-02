@@ -193,7 +193,7 @@ fn keep_for(state: &GameState, side: u8) -> Option<Hex> {
 ///
 /// Placement is mechanical only: it never chooses *what* or *how many* when the
 /// caller has specified them, so an LLM using it still makes every strategic choice.
-fn recruit(
+fn recruit_internal(
     state: &mut GameState,
     side: u8,
     faction: &Faction,
@@ -201,6 +201,7 @@ fn recruit(
     next_id: &mut u32,
     want: Option<&str>,
     limit: Option<u32>,
+    mut recorded: Option<&mut Vec<GameEvent>>,
 ) -> u32 {
     let mut recruited = 0;
     loop {
@@ -286,16 +287,27 @@ fn recruit(
             let Some(move_dest) = move_destinations.first().copied() else {
                 break;
             };
-            if apply_action(
+            let move_events = apply_action(
                 state,
                 Action::Move {
                     unit_id: id,
                     destination: move_dest,
                 },
-            )
-            .is_err()
-            {
-                break;
+            );
+            match move_events {
+                Ok(move_events) => {
+                    if let Some(events) = recorded.as_deref_mut() {
+                        for event in move_events {
+                            match event {
+                                GameEvent::Move { unit, from, to } => {
+                                    events.push(GameEvent::Vacate { unit, from, to });
+                                }
+                                other => events.push(other),
+                            }
+                        }
+                    }
+                }
+                Err(_) => break,
             }
             dest = Some(castle);
         }
@@ -318,13 +330,52 @@ fn recruit(
             },
         };
         let cost = def.cost;
-        if apply_recruit(state, Unit::from_def(*next_id, def, side), dest, cost).is_err() {
-            break;
+        match apply_recruit(state, Unit::from_def(*next_id, def, side), dest, cost) {
+            Ok(events) => {
+                if let Some(recorded) = recorded.as_deref_mut() {
+                    recorded.extend(events);
+                }
+            }
+            Err(_) => break,
         }
         *next_id += 1;
         recruited += 1;
     }
     recruited
+}
+
+fn recruit(
+    state: &mut GameState,
+    side: u8,
+    faction: &Faction,
+    units: &Registry<UnitDef>,
+    next_id: &mut u32,
+    want: Option<&str>,
+    limit: Option<u32>,
+) -> u32 {
+    recruit_internal(state, side, faction, units, next_id, want, limit, None)
+}
+
+fn recruit_with_events(
+    state: &mut GameState,
+    side: u8,
+    faction: &Faction,
+    units: &Registry<UnitDef>,
+    next_id: &mut u32,
+    want: Option<&str>,
+    limit: Option<u32>,
+    events: &mut Vec<GameEvent>,
+) -> u32 {
+    recruit_internal(
+        state,
+        side,
+        faction,
+        units,
+        next_id,
+        want,
+        limit,
+        Some(events),
+    )
 }
 
 fn run_driver_greedy_turn(
@@ -335,11 +386,21 @@ fn run_driver_greedy_turn(
     next_id: &mut u32,
 ) -> Result<Vec<GameEvent>, GreedyTurnError> {
     let mut candidate_id = *next_id;
+    let mut recruitment_events = Vec::new();
     let events = run_greedy_side_turn(
         state,
         |working| {
-            recruit(working, side, faction, units, &mut candidate_id, None, None);
-            Ok(Vec::new())
+            recruit_with_events(
+                working,
+                side,
+                faction,
+                units,
+                &mut candidate_id,
+                None,
+                None,
+                &mut recruitment_events,
+            );
+            Ok(std::mem::take(&mut recruitment_events))
         },
         |working| ai_take_turn_greedy_actions(working, side).map_err(Into::into),
     )?;
@@ -1338,7 +1399,7 @@ fn interactive_protocol_game(c: &Config) {
                         order.get("count").and_then(Value::as_u64),
                     ) {
                         (Some(def_id), Some(count)) => {
-                            recruit(
+                            recruit_with_events(
                                 &mut state,
                                 c.llm_side,
                                 &factions[c.llm_side as usize],
@@ -1346,6 +1407,7 @@ fn interactive_protocol_game(c: &Config) {
                                 &mut next_id,
                                 Some(def_id),
                                 Some(count as u32),
+                                &mut events,
                             );
                             Ok(Vec::new())
                         }
