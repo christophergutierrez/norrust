@@ -199,7 +199,11 @@ fn mix_seed(mut value: u64) -> u64 {
     value = (value ^ (value >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
     value = (value ^ (value >> 27)).wrapping_mul(0x94d049bb133111eb);
     let mixed = value ^ (value >> 31);
-    if mixed == 0 { 1 } else { mixed }
+    if mixed == 0 {
+        1
+    } else {
+        mixed
+    }
 }
 
 fn load_factions(data: &Path) -> Vec<Faction> {
@@ -298,9 +302,7 @@ fn recruit(
                     .units
                     .get(id)
                     .map(|u| {
-                        u.faction == side
-                            && !u.moved
-                            && !u.abilities.iter().any(|a| a == "leader")
+                        u.faction == side && !u.moved && !u.abilities.iter().any(|a| a == "leader")
                     })
                     .unwrap_or(false)
             });
@@ -462,7 +464,11 @@ fn play_turn(
                 .iter()
                 .filter_map(|id| units.get(id).map(|def| (def.cost, def.movement)))
                 .collect();
-            let cheapest = recruit_defs.iter().map(|(cost, _)| *cost).min().unwrap_or(0);
+            let cheapest = recruit_defs
+                .iter()
+                .map(|(cost, _)| *cost)
+                .min()
+                .unwrap_or(0);
             ai_take_turn_greedy_lookahead(state, side, cheapest, &recruit_defs);
         }
         AiKind::Random => random_turn(state, side, rng),
@@ -514,9 +520,7 @@ fn run_game(c: &Config, game: u32) -> GameResult {
     let first = match c.first {
         FirstPlayer::Team1 => 0,
         FirstPlayer::Team2 => 1,
-        FirstPlayer::CoinFlip => {
-            (mix_seed(game_index ^ 0xd1b54a32d192ed03) & 1) as u8
-        }
+        FirstPlayer::CoinFlip => (mix_seed(game_index ^ 0xd1b54a32d192ed03) & 1) as u8,
     };
     let mut gold = [
         c.gold1.or(c.gold).unwrap_or(default_gold),
@@ -591,10 +595,7 @@ fn print_results(c: &Config, mut results: Vec<GameResult>) {
     let draws = results.len() - w1 - w2;
     let first_team1 = results.iter().filter(|r| r.first == 0).count();
     let first_team2 = results.iter().filter(|r| r.first == 1).count();
-    let first_wins = results
-        .iter()
-        .filter(|r| r.winner == Some(r.first))
-        .count();
+    let first_wins = results.iter().filter(|r| r.winner == Some(r.first)).count();
     let second_wins = results
         .iter()
         .filter(|r| r.winner.is_some() && r.winner != Some(r.first))

@@ -6,8 +6,8 @@ use serde::Serialize;
 
 use crate::board::Board;
 use crate::combat::{time_of_day, tod_damage_modifier};
-use crate::game_state::{apply_action, Action, GameState};
 use crate::events::GameEvent;
+use crate::game_state::{apply_action, Action, GameState};
 use crate::hex::Hex;
 use crate::pathfinding::{get_zoc_hexes, reachable_hexes};
 use crate::schema::AttackDef;
@@ -141,12 +141,7 @@ fn unit_defense_on(state: &GameState, unit: &Unit, hex: Hex) -> u32 {
     state
         .board
         .tile_at(hex)
-        .and_then(|t| {
-            unit.defense
-                .get(&t.terrain_id)
-                .copied()
-                .or(Some(t.defense))
-        })
+        .and_then(|t| unit.defense.get(&t.terrain_id).copied().or(Some(t.defense)))
         .unwrap_or(unit.default_defense)
 }
 
@@ -199,11 +194,7 @@ fn bad_melee_terrain_trade(
     expected_dealt(attacker, from, defender, at, state) < defender.hp as f32
 }
 
-fn attackable_from(
-    unit: &Unit,
-    from: Hex,
-    enemies: &[(u32, Hex)],
-) -> Vec<u32> {
+fn attackable_from(unit: &Unit, from: Hex, enemies: &[(u32, Hex)]) -> Vec<u32> {
     enemies
         .iter()
         .filter_map(|&(eid, epos)| can_engage(unit, from, epos).then_some(eid))
@@ -234,9 +225,7 @@ fn select_structured_beam(
             let best = enemies
                 .iter()
                 .filter(|&&(_, epos)| can_engage(unit, h, epos))
-                .map(|&(eid, epos)| {
-                    score_attack(unit, h, &state.units[&eid], epos, state)
-                })
+                .map(|&(eid, epos)| score_attack(unit, h, &state.units[&eid], epos, state))
                 .fold(f32::NEG_INFINITY, f32::max);
             if best.is_finite() {
                 Some((-(best * 1000.0) as i32, h))
@@ -256,7 +245,9 @@ fn select_structured_beam(
         }
     }
 
-    if let Some(&best_def) = candidates.iter().max_by_key(|&&h| (unit_defense_on(state, unit, h), h))
+    if let Some(&best_def) = candidates
+        .iter()
+        .max_by_key(|&&h| (unit_defense_on(state, unit, h), h))
     {
         push(best_def);
     }
@@ -304,17 +295,21 @@ fn apply_expected_attack(sim: &mut GameState, uid: u32, from: Hex, eid: u32, sta
     if dist == 1 {
         if let Some(received) = {
             let range_str = "melee";
-            defender.attacks.iter().find(|a| a.range == range_str).map(|def_atk| {
-                let tod = tod_damage_modifier(defender.alignment, time_of_day(state.turn));
-                let adef = unit_defense_on(state, attacker, from);
-                let resist = attacker
-                    .resistances
-                    .get(&def_atk.attack_type)
-                    .copied()
-                    .unwrap_or(0);
-                expected_outgoing_damage(def_atk.damage, def_atk.strikes, adef, tod, resist)
-                    .floor() as u32
-            })
+            defender
+                .attacks
+                .iter()
+                .find(|a| a.range == range_str)
+                .map(|def_atk| {
+                    let tod = tod_damage_modifier(defender.alignment, time_of_day(state.turn));
+                    let adef = unit_defense_on(state, attacker, from);
+                    let resist = attacker
+                        .resistances
+                        .get(&def_atk.attack_type)
+                        .copied()
+                        .unwrap_or(0);
+                    expected_outgoing_damage(def_atk.damage, def_atk.strikes, adef, tod, resist)
+                        .floor() as u32
+                })
         } {
             if let Some(a) = sim.units.get_mut(&uid) {
                 a.hp = a.hp.saturating_sub(received);
@@ -838,17 +833,18 @@ fn plan_unit_action(
                 _ => false,
             };
             if only_idle {
-                if let Some(&march_dest) = candidates
-                    .iter()
-                    .filter(|&&h| h != start)
-                    .min_by_key(|&&c| {
-                        let nearest = enemies
-                            .iter()
-                            .map(|(_, epos)| c.distance(*epos))
-                            .min()
-                            .unwrap_or(u32::MAX);
-                        (nearest, c)
-                    })
+                if let Some(&march_dest) =
+                    candidates
+                        .iter()
+                        .filter(|&&h| h != start)
+                        .min_by_key(|&&c| {
+                            let nearest = enemies
+                                .iter()
+                                .map(|(_, epos)| c.distance(*epos))
+                                .min()
+                                .unwrap_or(u32::MAX);
+                            (nearest, c)
+                        })
                 {
                     best_action = Some((march_dest, None));
                 }
@@ -1201,37 +1197,37 @@ fn run_turn_ordering(
             } else if let Some((dest, target)) =
                 plan_unit_action(&clone, lid, faction, MACHINE_LOOKAHEAD_DEPTH)
             {
-                    let start = clone.positions[&lid];
-                    if dest != start {
-                        let (c, r) = dest.to_offset();
-                        records.push(ActionRecord::Move {
+                let start = clone.positions[&lid];
+                if dest != start {
+                    let (c, r) = dest.to_offset();
+                    records.push(ActionRecord::Move {
+                        unit_id: lid,
+                        to_col: c,
+                        to_row: r,
+                    });
+                    let _ = apply_action(
+                        &mut clone,
+                        Action::Move {
                             unit_id: lid,
-                            to_col: c,
-                            to_row: r,
+                            destination: dest,
+                        },
+                    );
+                }
+                if let Some(eid) = target {
+                    if clone.units.contains_key(&lid) && clone.units.contains_key(&eid) {
+                        records.push(ActionRecord::Attack {
+                            attacker_id: lid,
+                            defender_id: eid,
                         });
                         let _ = apply_action(
                             &mut clone,
-                            Action::Move {
-                                unit_id: lid,
-                                destination: dest,
+                            Action::Attack {
+                                attacker_id: lid,
+                                defender_id: eid,
                             },
                         );
                     }
-                    if let Some(eid) = target {
-                        if clone.units.contains_key(&lid) && clone.units.contains_key(&eid) {
-                            records.push(ActionRecord::Attack {
-                                attacker_id: lid,
-                                defender_id: eid,
-                            });
-                            let _ = apply_action(
-                                &mut clone,
-                                Action::Attack {
-                                    attacker_id: lid,
-                                    defender_id: eid,
-                                },
-                            );
-                        }
-                    }
+                }
             }
         }
     }

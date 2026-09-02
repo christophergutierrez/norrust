@@ -99,23 +99,59 @@ pub enum Action {
     EndTurn,
 }
 
-pub enum AdvanceTarget { Index(usize), DefId(String) }
+pub enum AdvanceTarget {
+    Index(usize),
+    DefId(String),
+}
 
-pub fn apply_advance(state: &mut GameState, unit_id: u32, target: AdvanceTarget, units: &crate::loader::Registry<crate::schema::UnitDef>) -> Result<Vec<GameEvent>, ActionError> {
-    let unit = state.units.get(&unit_id).ok_or(ActionError::UnitNotFound(unit_id))?;
-    if unit.faction != state.active_faction { return Err(ActionError::NotYourTurn); }
-    if !unit.advancement_pending { return Err(ActionError::AdvanceNotPending); }
-    let current = units.get(&unit.def_id).ok_or(ActionError::AdvanceTargetNotAllowed)?;
+pub fn apply_advance(
+    state: &mut GameState,
+    unit_id: u32,
+    target: AdvanceTarget,
+    units: &crate::loader::Registry<crate::schema::UnitDef>,
+) -> Result<Vec<GameEvent>, ActionError> {
+    let unit = state
+        .units
+        .get(&unit_id)
+        .ok_or(ActionError::UnitNotFound(unit_id))?;
+    if unit.faction != state.active_faction {
+        return Err(ActionError::NotYourTurn);
+    }
+    if !unit.advancement_pending {
+        return Err(ActionError::AdvanceNotPending);
+    }
+    let current = units
+        .get(&unit.def_id)
+        .ok_or(ActionError::AdvanceTargetNotAllowed)?;
     let target_id = match target {
-        AdvanceTarget::Index(index) => current.advances_to.get(index).cloned().ok_or(ActionError::AdvanceTargetOutOfRange)?,
-        AdvanceTarget::DefId(id) => if current.advances_to.contains(&id) { id } else { return Err(ActionError::AdvanceTargetNotAllowed); },
+        AdvanceTarget::Index(index) => current
+            .advances_to
+            .get(index)
+            .cloned()
+            .ok_or(ActionError::AdvanceTargetOutOfRange)?,
+        AdvanceTarget::DefId(id) => {
+            if current.advances_to.contains(&id) {
+                id
+            } else {
+                return Err(ActionError::AdvanceTargetNotAllowed);
+            }
+        }
     };
-    let new_def = units.get(&target_id).ok_or(ActionError::AdvanceTargetNotAllowed)?;
+    let new_def = units
+        .get(&target_id)
+        .ok_or(ActionError::AdvanceTargetNotAllowed)?;
     let from_def = unit.def_id.clone();
     state.units.get_mut(&unit_id).unwrap().apply_def(new_def);
     let unit_ref = state.units.get_mut(&unit_id).unwrap();
-    unit_ref.xp = 0; unit_ref.advancement_pending = false; unit_ref.poisoned = false; unit_ref.slowed = false;
-    Ok(vec![GameEvent::Advance { unit: unit_id, from_def, to_def: target_id }])
+    unit_ref.xp = 0;
+    unit_ref.advancement_pending = false;
+    unit_ref.poisoned = false;
+    unit_ref.slowed = false;
+    Ok(vec![GameEvent::Advance {
+        unit: unit_id,
+        from_def,
+        to_def: target_id,
+    }])
 }
 
 /// Complete snapshot of a game in progress.
@@ -271,32 +307,83 @@ pub fn leadership_bonus(state: &GameState, unit_id: u32) -> u32 {
 
 /// Canonical legal destinations for a unit's current move.
 pub fn legal_moves(state: &GameState, unit_id: u32) -> Result<Vec<Hex>, ActionError> {
-    let unit = state.units.get(&unit_id).ok_or(ActionError::UnitNotFound(unit_id))?;
-    if unit.faction != state.active_faction { return Err(ActionError::NotYourTurn); }
-    if unit.moved { return Ok(Vec::new()); }
-    let from = *state.positions.get(&unit_id).ok_or(ActionError::UnitNotFound(unit_id))?;
-    let movement = if unit.slowed { unit.movement / 2 } else { unit.movement };
+    let unit = state
+        .units
+        .get(&unit_id)
+        .ok_or(ActionError::UnitNotFound(unit_id))?;
+    if unit.faction != state.active_faction {
+        return Err(ActionError::NotYourTurn);
+    }
+    if unit.moved {
+        return Ok(Vec::new());
+    }
+    let from = *state
+        .positions
+        .get(&unit_id)
+        .ok_or(ActionError::UnitNotFound(unit_id))?;
+    let movement = if unit.slowed {
+        unit.movement / 2
+    } else {
+        unit.movement
+    };
     let zoc = get_zoc_hexes(state, unit.faction);
-    let mut result = reachable_hexes(&state.board, &unit.movement_costs, 1, from, movement, &zoc, false)
-        .into_iter().filter(|h| *h != from && !state.hex_to_unit.contains_key(h)).collect::<Vec<_>>();
-    result.sort_by_key(|h| { let (c,r)=h.to_offset(); (r,c) });
+    let mut result = reachable_hexes(
+        &state.board,
+        &unit.movement_costs,
+        1,
+        from,
+        movement,
+        &zoc,
+        false,
+    )
+    .into_iter()
+    .filter(|h| *h != from && !state.hex_to_unit.contains_key(h))
+    .collect::<Vec<_>>();
+    result.sort_by_key(|h| {
+        let (c, r) = h.to_offset();
+        (r, c)
+    });
     Ok(result)
 }
 
 /// Enemies attackable from a current or legal ghost position.
 pub fn legal_targets(state: &GameState, unit_id: u32, from: Hex) -> Result<Vec<u32>, ActionError> {
-    let unit = state.units.get(&unit_id).ok_or(ActionError::UnitNotFound(unit_id))?;
-    if unit.faction != state.active_faction { return Err(ActionError::NotYourTurn); }
-    if unit.attacked { return Ok(Vec::new()); }
-    let current = *state.positions.get(&unit_id).ok_or(ActionError::UnitNotFound(unit_id))?;
-    if from != current && !legal_moves(state, unit_id)?.contains(&from) { return Err(ActionError::DestinationUnreachable); }
-    let mut result = state.positions.iter().filter_map(|(&id, &hex)| {
-        if id == unit_id || hex.distance(from) > 2 || hex.distance(from) < 1 { return None; }
-        let target = state.units.get(&id)?;
-        if target.faction == unit.faction { return None; }
-        let range = if hex.distance(from) == 1 { "melee" } else { "ranged" };
-        unit.attacks.iter().any(|a| a.range == range).then_some(id)
-    }).collect::<Vec<_>>();
+    let unit = state
+        .units
+        .get(&unit_id)
+        .ok_or(ActionError::UnitNotFound(unit_id))?;
+    if unit.faction != state.active_faction {
+        return Err(ActionError::NotYourTurn);
+    }
+    if unit.attacked {
+        return Ok(Vec::new());
+    }
+    let current = *state
+        .positions
+        .get(&unit_id)
+        .ok_or(ActionError::UnitNotFound(unit_id))?;
+    if from != current && !legal_moves(state, unit_id)?.contains(&from) {
+        return Err(ActionError::DestinationUnreachable);
+    }
+    let mut result = state
+        .positions
+        .iter()
+        .filter_map(|(&id, &hex)| {
+            if id == unit_id || hex.distance(from) > 2 || hex.distance(from) < 1 {
+                return None;
+            }
+            let target = state.units.get(&id)?;
+            if target.faction == unit.faction {
+                return None;
+            }
+            let range = if hex.distance(from) == 1 {
+                "melee"
+            } else {
+                "ranged"
+            };
+            unit.attacks.iter().any(|a| a.range == range).then_some(id)
+        })
+        .collect::<Vec<_>>();
     result.sort_unstable();
     Ok(result)
 }
@@ -354,7 +441,11 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<Vec<GameEve
                 }
             }
 
-            let old_hex = state.positions.get(&unit_id).copied().unwrap_or(destination);
+            let old_hex = state
+                .positions
+                .get(&unit_id)
+                .copied()
+                .unwrap_or(destination);
             if state.positions.contains_key(&unit_id) {
                 state.hex_to_unit.remove(&old_hex);
             }
@@ -388,7 +479,14 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<Vec<GameEve
                     let def_id = spawn.unit.def_id.clone();
                     let faction = spawn.unit.faction;
                     state.place_unit(spawn.unit, spawn.destination);
-                    events.push(GameEvent::Spawn { unit: id, def_id, faction, col, row, trigger });
+                    events.push(GameEvent::Spawn {
+                        unit: id,
+                        def_id,
+                        faction,
+                        col,
+                        row,
+                        trigger,
+                    });
                 }
             }
 
@@ -412,7 +510,9 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<Vec<GameEve
                     return Err(ActionError::UnitAlreadyAttacked);
                 }
                 if let Some(defender) = state.units.get(&defender_id) {
-                    if defender.faction == attacker.faction { return Err(ActionError::FriendlyTarget); }
+                    if defender.faction == attacker.faction {
+                        return Err(ActionError::FriendlyTarget);
+                    }
                 }
             }
 
@@ -438,11 +538,30 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<Vec<GameEve
                 if unit.attacks.is_empty() {
                     state.units.get_mut(&attacker_id).unwrap().attacked = true;
                     let a = unit.clone();
-                    let d = state.units.get(&defender_id).cloned().ok_or(ActionError::UnitNotFound(defender_id))?;
+                    let d = state
+                        .units
+                        .get(&defender_id)
+                        .cloned()
+                        .ok_or(ActionError::UnitNotFound(defender_id))?;
                     return Ok(vec![GameEvent::Attack {
-                        attacker: AttackUnitEvent { unit: a.id, hp: a.hp, xp: a.xp, killed: false, poisoned: a.poisoned, slowed: a.slowed },
-                        defender: AttackUnitEvent { unit: d.id, hp: d.hp, xp: d.xp, killed: false, poisoned: d.poisoned, slowed: d.slowed },
-                        damage_to_defender: 0, damage_to_attacker: 0,
+                        attacker: AttackUnitEvent {
+                            unit: a.id,
+                            hp: a.hp,
+                            xp: a.xp,
+                            killed: false,
+                            poisoned: a.poisoned,
+                            slowed: a.slowed,
+                        },
+                        defender: AttackUnitEvent {
+                            unit: d.id,
+                            hp: d.hp,
+                            xp: d.xp,
+                            killed: false,
+                            poisoned: d.poisoned,
+                            slowed: d.slowed,
+                        },
+                        damage_to_defender: 0,
+                        damage_to_attacker: 0,
                     }]);
                 }
                 unit.attacks
@@ -705,12 +824,44 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<Vec<GameEve
                 }
             }
 
-            let attacker_event = state.units.get(&attacker_id).map(|u| AttackUnitEvent {
-                unit: attacker_id, hp: u.hp, xp: u.xp, killed: false, poisoned: u.poisoned, slowed: u.slowed,
-            }).unwrap_or(AttackUnitEvent { unit: attacker_id, hp: 0, xp: 0, killed: true, poisoned: false, slowed: false });
-            let defender_event = state.units.get(&defender_id).map(|u| AttackUnitEvent {
-                unit: defender_id, hp: u.hp, xp: u.xp, killed: false, poisoned: u.poisoned, slowed: u.slowed,
-            }).unwrap_or(AttackUnitEvent { unit: defender_id, hp: 0, xp: 0, killed: true, poisoned: false, slowed: false });
+            let attacker_event = state
+                .units
+                .get(&attacker_id)
+                .map(|u| AttackUnitEvent {
+                    unit: attacker_id,
+                    hp: u.hp,
+                    xp: u.xp,
+                    killed: false,
+                    poisoned: u.poisoned,
+                    slowed: u.slowed,
+                })
+                .unwrap_or(AttackUnitEvent {
+                    unit: attacker_id,
+                    hp: 0,
+                    xp: 0,
+                    killed: true,
+                    poisoned: false,
+                    slowed: false,
+                });
+            let defender_event = state
+                .units
+                .get(&defender_id)
+                .map(|u| AttackUnitEvent {
+                    unit: defender_id,
+                    hp: u.hp,
+                    xp: u.xp,
+                    killed: false,
+                    poisoned: u.poisoned,
+                    slowed: u.slowed,
+                })
+                .unwrap_or(AttackUnitEvent {
+                    unit: defender_id,
+                    hp: 0,
+                    xp: 0,
+                    killed: true,
+                    poisoned: false,
+                    slowed: false,
+                });
             Ok(vec![GameEvent::Attack {
                 attacker: attacker_event,
                 defender: defender_event,
@@ -738,11 +889,18 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<Vec<GameEve
                 })
                 .collect();
             let mut captures = captures;
-            captures.sort_by_key(|h| { let (c,r)=h.to_offset(); (r,c) });
+            captures.sort_by_key(|h| {
+                let (c, r) = h.to_offset();
+                (r, c)
+            });
             for hex in captures {
                 state.village_owners.insert(hex, ending_faction);
-                let (col,row)=hex.to_offset();
-                events.push(GameEvent::Village { col, row, owner: ending_faction as u8 });
+                let (col, row) = hex.to_offset();
+                events.push(GameEvent::Village {
+                    col,
+                    row,
+                    owner: ending_faction as u8,
+                });
             }
 
             // Poison tick for ending faction: village cures, otherwise 8 damage
@@ -764,10 +922,22 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<Vec<GameEve
                 let unit = state.units.get_mut(&uid).unwrap();
                 if on_village {
                     unit.poisoned = false;
-                    events.push(GameEvent::Poison { unit: uid, damage: 0, hp: unit.hp, cured: true, killed: false });
+                    events.push(GameEvent::Poison {
+                        unit: uid,
+                        damage: 0,
+                        hp: unit.hp,
+                        cured: true,
+                        killed: false,
+                    });
                 } else {
                     unit.hp = unit.hp.saturating_sub(8);
-                    events.push(GameEvent::Poison { unit: uid, damage: 8, hp: unit.hp, cured: false, killed: unit.hp == 0 });
+                    events.push(GameEvent::Poison {
+                        unit: uid,
+                        damage: 8,
+                        hp: unit.hp,
+                        cured: false,
+                        killed: unit.hp == 0,
+                    });
                     if unit.hp == 0 {
                         poison_dead.push(uid);
                     }
@@ -788,11 +958,21 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<Vec<GameEve
             }
 
             // Clear slowed for newly active faction (slow wears off at start of your turn)
-            let mut slow_ids: Vec<u32> = state.units.iter().filter_map(|(&id,u)| (u.faction == state.active_faction && u.slowed).then_some(id)).collect();
+            let mut slow_ids: Vec<u32> = state
+                .units
+                .iter()
+                .filter_map(|(&id, u)| {
+                    (u.faction == state.active_faction && u.slowed).then_some(id)
+                })
+                .collect();
             slow_ids.sort_unstable();
             for uid in slow_ids {
                 state.units.get_mut(&uid).unwrap().slowed = false;
-                events.push(GameEvent::Slow { unit: uid, slowed: false, reason: "turn_start".into() });
+                events.push(GameEvent::Slow {
+                    unit: uid,
+                    slowed: false,
+                    reason: "turn_start".into(),
+                });
             }
             for unit in state.units.values_mut() {
                 if unit.faction == state.active_faction && unit.slowed {
@@ -809,7 +989,14 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<Vec<GameEve
                 .count() as u32
                 * 2;
             state.gold[state.active_faction as usize] += income;
-            if income > 0 { events.push(GameEvent::Gold { faction: state.active_faction, delta: income as i32, balance: state.gold[state.active_faction as usize], reason: "village_income".into() }); }
+            if income > 0 {
+                events.push(GameEvent::Gold {
+                    faction: state.active_faction,
+                    delta: income as i32,
+                    balance: state.gold[state.active_faction as usize],
+                    reason: "village_income".into(),
+                });
+            }
 
             for unit in state.units.values_mut() {
                 unit.moved = false;
@@ -832,7 +1019,14 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<Vec<GameEve
                         let unit = state.units.get_mut(&uid).unwrap();
                         let before = unit.hp;
                         unit.hp = (unit.hp + healing).min(unit.max_hp);
-                        if unit.hp != before { events.push(GameEvent::Heal { unit: uid, amount: unit.hp-before, hp: unit.hp, reason: "terrain".into() }); }
+                        if unit.hp != before {
+                            events.push(GameEvent::Heal {
+                                unit: uid,
+                                amount: unit.hp - before,
+                                hp: unit.hp,
+                                reason: "terrain".into(),
+                            });
+                        }
                     }
                 }
             }
@@ -853,13 +1047,20 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<Vec<GameEve
                     None
                 })
                 .collect();
-            regen_units.sort_by_key(|(id,_)| *id);
+            regen_units.sort_by_key(|(id, _)| *id);
             for (uid, heal_amount) in regen_units {
                 let unit = state.units.get_mut(&uid).unwrap();
                 let before = unit.hp;
                 unit.hp = (unit.hp + heal_amount).min(unit.max_hp);
                 unit.poisoned = false;
-                if unit.hp != before { events.push(GameEvent::Heal { unit: uid, amount: unit.hp-before, hp: unit.hp, reason: "regenerates".into() }); }
+                if unit.hp != before {
+                    events.push(GameEvent::Heal {
+                        unit: uid,
+                        amount: unit.hp - before,
+                        hp: unit.hp,
+                        reason: "regenerates".into(),
+                    });
+                }
             }
 
             events.push(GameEvent::EndTurn {
@@ -887,7 +1088,9 @@ pub fn apply_recruit(
     }
     // The active faction's leader (unit with "leader" ability) must be on a keep tile.
     let active = state.active_faction;
-    if unit.faction != active { return Err(ActionError::NotYourTurn); }
+    if unit.faction != active {
+        return Err(ActionError::NotYourTurn);
+    }
     let keep_hex = state.positions.iter().find_map(|(&uid, &hex)| {
         let unit = state.units.get(&uid)?;
         if unit.faction != active {
@@ -924,7 +1127,14 @@ pub fn apply_recruit(
     let faction = unit.faction;
     let (col, row) = destination.to_offset();
     state.place_unit(unit, destination);
-    Ok(vec![GameEvent::Recruit { unit: id, def_id, faction, col, row, cost }])
+    Ok(vec![GameEvent::Recruit {
+        unit: id,
+        def_id,
+        faction,
+        col,
+        row,
+        cost,
+    }])
 }
 
 pub fn recruit_from_def(
@@ -936,9 +1146,15 @@ pub fn recruit_from_def(
     units: &crate::loader::Registry<crate::schema::UnitDef>,
     next_id: &mut u32,
 ) -> Result<Vec<GameEvent>, ActionError> {
-    if side != state.active_faction { return Err(ActionError::NotYourTurn); }
-    if allowed.is_empty() { return Err(ActionError::RecruitListUnset); }
-    if !allowed.iter().any(|id| id == def_id) { return Err(ActionError::NotInRecruitList); }
+    if side != state.active_faction {
+        return Err(ActionError::NotYourTurn);
+    }
+    if allowed.is_empty() {
+        return Err(ActionError::RecruitListUnset);
+    }
+    if !allowed.iter().any(|id| id == def_id) {
+        return Err(ActionError::NotInRecruitList);
+    }
     let def = units.get(def_id).ok_or(ActionError::NotInRecruitList)?;
     let unit = Unit::from_def(*next_id, def, side);
     let events = apply_recruit(state, unit, destination, def.cost)?;

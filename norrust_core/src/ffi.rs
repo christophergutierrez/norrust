@@ -26,7 +26,8 @@ use crate::campaign::{self, CampaignState};
 use crate::combat::{simulate_combat, time_of_day, PreviewError, Rng, TimeOfDay};
 use crate::dialogue::DialogueState;
 use crate::game_state::{
-    apply_action, apply_recruit, apply_advance, legal_moves, legal_targets, AdvanceTarget, Action, ActionError, GameState, PendingSpawn, TriggerZone,
+    apply_action, apply_advance, apply_recruit, legal_moves, legal_targets, Action, ActionError,
+    AdvanceTarget, GameState, PendingSpawn, TriggerZone,
 };
 use crate::hex::Hex;
 use crate::loader::{expand_recruits, Registry};
@@ -154,7 +155,9 @@ fn preview_error_json(error: PreviewError) -> *mut c_char {
         PreviewError::OutOfRange => "OutOfRange",
         PreviewError::InvalidNSims => "InvalidNSims",
     };
-    to_c_string(&serde_json::json!({"ok":false,"code":code,"message":error.to_string()}).to_string())
+    to_c_string(
+        &serde_json::json!({"ok":false,"code":code,"message":error.to_string()}).to_string(),
+    )
 }
 
 /// Convert a C string pointer to a Rust &str. Returns "" for null or invalid UTF-8.
@@ -642,8 +645,15 @@ pub unsafe extern "C" fn norrust_recruit_unit_at(
         None => return -1,
     };
     if let Some(state) = e.game.as_ref() {
-        if state.recruit_ids[state.active_faction as usize].is_empty() { return -13; }
-        if !state.recruit_ids[state.active_faction as usize].iter().any(|id| id == &did) { return -11; }
+        if state.recruit_ids[state.active_faction as usize].is_empty() {
+            return -13;
+        }
+        if !state.recruit_ids[state.active_faction as usize]
+            .iter()
+            .any(|id| id == &did)
+        {
+            return -11;
+        }
     }
 
     let (faction, uid) = {
@@ -798,8 +808,16 @@ pub unsafe extern "C" fn norrust_apply_starting_gold(
             state.gold = [g0, g1];
             state.faction_ids = [f0.clone(), f1.clone()];
             state.recruit_ids = [
-                e.factions.iter().find(|(f, _)| f.id == f0).map(|(_, ids)| ids.clone()).unwrap_or_default(),
-                e.factions.iter().find(|(f, _)| f.id == f1).map(|(_, ids)| ids.clone()).unwrap_or_default(),
+                e.factions
+                    .iter()
+                    .find(|(f, _)| f.id == f0)
+                    .map(|(_, ids)| ids.clone())
+                    .unwrap_or_default(),
+                e.factions
+                    .iter()
+                    .find(|(f, _)| f.id == f1)
+                    .map(|(_, ids)| ids.clone())
+                    .unwrap_or_default(),
             ];
             e.state_cache = None;
             1
@@ -1117,12 +1135,23 @@ pub unsafe extern "C" fn norrust_apply_advance(
     target_index: i32,
 ) -> i32 {
     let Some(e) = engine.as_mut() else { return -1 };
-    let Some(registry) = e.units.as_ref() else { return -1 };
-    let target = if target_index < 0 { return -16 } else { AdvanceTarget::Index(target_index as usize) };
-    let Some(state) = e.game.as_mut() else { return -1 };
+    let Some(registry) = e.units.as_ref() else {
+        return -1;
+    };
+    let target = if target_index < 0 {
+        return -16;
+    } else {
+        AdvanceTarget::Index(target_index as usize)
+    };
+    let Some(state) = e.game.as_mut() else {
+        return -1;
+    };
     let result = apply_advance(state, unit_id as u32, target, registry);
     e.state_cache = None;
-    match result { Ok(_) => 0, Err(error) => action_err_code(error) }
+    match result {
+        Ok(_) => 0,
+        Err(error) => action_err_code(error),
+    }
 }
 
 #[no_mangle]
@@ -1242,25 +1271,60 @@ pub unsafe extern "C" fn norrust_get_reachable_hexes(
 /// Canonical legal moves.  Unlike the legacy reachable API, null/-1 means
 /// error and an empty successful result is represented by a non-null pointer.
 #[no_mangle]
-pub unsafe extern "C" fn norrust_legal_moves(engine: *mut NorRustEngine, unit_id: i32, out_len: *mut i32) -> *mut i32 {
-    if !out_len.is_null() { *out_len = -1; }
-    let Some(e) = engine.as_ref() else { return std::ptr::null_mut(); };
-    let Some(state) = e.game.as_ref() else { return std::ptr::null_mut(); };
-    let Ok(hexes) = legal_moves(state, unit_id as u32) else { return std::ptr::null_mut(); };
+pub unsafe extern "C" fn norrust_legal_moves(
+    engine: *mut NorRustEngine,
+    unit_id: i32,
+    out_len: *mut i32,
+) -> *mut i32 {
+    if !out_len.is_null() {
+        *out_len = -1;
+    }
+    let Some(e) = engine.as_ref() else {
+        return std::ptr::null_mut();
+    };
+    let Some(state) = e.game.as_ref() else {
+        return std::ptr::null_mut();
+    };
+    let Ok(hexes) = legal_moves(state, unit_id as u32) else {
+        return std::ptr::null_mut();
+    };
     let mut values = Vec::with_capacity(hexes.len() * 2);
-    for hex in hexes { let (col,row)=hex.to_offset(); values.extend([col,row]); }
-    if !out_len.is_null() { *out_len = values.len() as i32; }
-    let ptr = values.into_boxed_slice(); Box::into_raw(ptr) as *mut i32
+    for hex in hexes {
+        let (col, row) = hex.to_offset();
+        values.extend([col, row]);
+    }
+    if !out_len.is_null() {
+        *out_len = values.len() as i32;
+    }
+    let ptr = values.into_boxed_slice();
+    Box::into_raw(ptr) as *mut i32
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn norrust_legal_targets(engine: *mut NorRustEngine, unit_id: i32, col: i32, row: i32, out_len: *mut i32) -> *mut i32 {
-    if !out_len.is_null() { *out_len = -1; }
-    let Some(e) = engine.as_ref() else { return std::ptr::null_mut(); };
-    let Some(state) = e.game.as_ref() else { return std::ptr::null_mut(); };
-    let Ok(ids) = legal_targets(state, unit_id as u32, Hex::from_offset(col,row)) else { return std::ptr::null_mut(); };
-    if !out_len.is_null() { *out_len = ids.len() as i32; }
-    let ptr = ids.into_boxed_slice(); Box::into_raw(ptr) as *mut i32
+pub unsafe extern "C" fn norrust_legal_targets(
+    engine: *mut NorRustEngine,
+    unit_id: i32,
+    col: i32,
+    row: i32,
+    out_len: *mut i32,
+) -> *mut i32 {
+    if !out_len.is_null() {
+        *out_len = -1;
+    }
+    let Some(e) = engine.as_ref() else {
+        return std::ptr::null_mut();
+    };
+    let Some(state) = e.game.as_ref() else {
+        return std::ptr::null_mut();
+    };
+    let Ok(ids) = legal_targets(state, unit_id as u32, Hex::from_offset(col, row)) else {
+        return std::ptr::null_mut();
+    };
+    if !out_len.is_null() {
+        *out_len = ids.len() as i32;
+    }
+    let ptr = ids.into_boxed_slice();
+    Box::into_raw(ptr) as *mut i32
 }
 
 /// Find shortest path from a unit's current position to a destination hex.
@@ -2611,9 +2675,15 @@ pub unsafe extern "C" fn norrust_simulate_combat(
 
     // Attacker terrain defense at ghost position
     let atk_hex = Hex::from_offset(attacker_col, attacker_row);
-    if num_sims < 1 || num_sims > 1000 { return preview_error_json(PreviewError::InvalidNSims); }
-    if attacker.faction == defender.faction { return preview_error_json(PreviewError::FriendlyTarget); }
-    if !state.board.contains(atk_hex) { return preview_error_json(PreviewError::InvalidGhost); }
+    if num_sims < 1 || num_sims > 1000 {
+        return preview_error_json(PreviewError::InvalidNSims);
+    }
+    if attacker.faction == defender.faction {
+        return preview_error_json(PreviewError::FriendlyTarget);
+    }
+    if !state.board.contains(atk_hex) {
+        return preview_error_json(PreviewError::InvalidGhost);
+    }
     let atk_terrain_defense = if let Some(tile) = state.board.tile_at(atk_hex) {
         let terrain_id = &tile.terrain_id;
         attacker
@@ -2648,7 +2718,9 @@ pub unsafe extern "C" fn norrust_simulate_combat(
         2 => "ranged",
         _ => return preview_error_json(PreviewError::OutOfRange),
     };
-    if !attacker.attacks.iter().any(|a| a.range == range_needed) { return preview_error_json(PreviewError::OutOfRange); }
+    if !attacker.attacks.iter().any(|a| a.range == range_needed) {
+        return preview_error_json(PreviewError::OutOfRange);
+    }
 
     // Backstab flanking check: is there an ally of the attacker on the opposite side of the defender?
     let flanked = {
@@ -2986,11 +3058,9 @@ pub unsafe extern "C" fn norrust_load_json(engine: *mut NorRustEngine, json: *co
         state.rng = Rng::new(save.rng_state);
         state.turn = save.turn;
         state.active_faction = save.active_faction;
-        state.sides_acted_this_round = save.sides_acted_this_round.unwrap_or(if save.active_faction == 1 {
-            1
-        } else {
-            0
-        });
+        state.sides_acted_this_round = save
+            .sides_acted_this_round
+            .unwrap_or(if save.active_faction == 1 { 1 } else { 0 });
         state.gold = save.gold;
         if let Some(mt) = save.max_turns {
             state.max_turns = Some(mt);

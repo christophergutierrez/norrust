@@ -1,8 +1,8 @@
 //! Combat resolution with deterministic RNG, time-of-day modifiers, and Monte Carlo simulation.
 
-use crate::schema::AttackDef;
 use crate::game_state::GameState;
 use crate::hex::Hex;
+use crate::schema::AttackDef;
 use crate::unit::{has_special, Alignment, Unit};
 
 /// Time of day phase — drives alignment-based damage modifiers.
@@ -31,9 +31,17 @@ pub fn time_of_day(turn: u32) -> TimeOfDay {
 }
 
 /// Six-phase playbook labels; Day and Night intentionally each occur twice.
-pub fn tod_phase(turn: u32) -> u8 { turn.saturating_sub(1) as u8 % 6 }
+pub fn tod_phase(turn: u32) -> u8 {
+    turn.saturating_sub(1) as u8 % 6
+}
 pub fn tod_label(turn: u32) -> &'static str {
-    match tod_phase(turn) { 0 => "Dawn", 1 | 2 => "Day", 3 => "Dusk", 4 | 5 => "Night", _ => unreachable!() }
+    match tod_phase(turn) {
+        0 => "Dawn",
+        1 | 2 => "Day",
+        3 => "Dusk",
+        4 | 5 => "Night",
+        _ => unreachable!(),
+    }
 }
 
 /// Damage modifier in percentage points for the given alignment at this time of day.
@@ -154,24 +162,82 @@ pub enum PreviewError {
 }
 
 /// Preview an engagement with the attacker standing on `ghost_hex`.
-pub fn preview_combat(state: &GameState, attacker_id: u32, defender_id: u32, ghost_hex: Hex, n_sims: u32) -> Result<CombatPreview, PreviewError> {
-    if !(1..=1000).contains(&n_sims) { return Err(PreviewError::InvalidNSims); }
-    let attacker = state.units.get(&attacker_id).ok_or(PreviewError::UnitNotFound)?;
-    let defender = state.units.get(&defender_id).ok_or(PreviewError::UnitNotFound)?;
-    if attacker.faction == defender.faction { return Err(PreviewError::FriendlyTarget); }
-    let defender_hex = *state.positions.get(&defender_id).ok_or(PreviewError::UnitNotFound)?;
-    if !state.board.contains(ghost_hex) { return Err(PreviewError::InvalidGhost); }
+pub fn preview_combat(
+    state: &GameState,
+    attacker_id: u32,
+    defender_id: u32,
+    ghost_hex: Hex,
+    n_sims: u32,
+) -> Result<CombatPreview, PreviewError> {
+    if !(1..=1000).contains(&n_sims) {
+        return Err(PreviewError::InvalidNSims);
+    }
+    let attacker = state
+        .units
+        .get(&attacker_id)
+        .ok_or(PreviewError::UnitNotFound)?;
+    let defender = state
+        .units
+        .get(&defender_id)
+        .ok_or(PreviewError::UnitNotFound)?;
+    if attacker.faction == defender.faction {
+        return Err(PreviewError::FriendlyTarget);
+    }
+    let defender_hex = *state
+        .positions
+        .get(&defender_id)
+        .ok_or(PreviewError::UnitNotFound)?;
+    if !state.board.contains(ghost_hex) {
+        return Err(PreviewError::InvalidGhost);
+    }
     let dist = ghost_hex.distance(defender_hex);
-    let range = match dist { 1 => "melee", 2 => "ranged", _ => return Err(PreviewError::OutOfRange) };
-    if !attacker.attacks.iter().any(|a| a.range == range) { return Err(PreviewError::OutOfRange); }
-    let atk_def = state.board.tile_at(ghost_hex).map(|t| attacker.defense.get(&t.terrain_id).copied().unwrap_or(t.defense)).unwrap_or(attacker.default_defense);
-    let def_def = state.board.tile_at(defender_hex).map(|t| defender.defense.get(&t.terrain_id).copied().unwrap_or(t.defense)).unwrap_or(defender.default_defense);
+    let range = match dist {
+        1 => "melee",
+        2 => "ranged",
+        _ => return Err(PreviewError::OutOfRange),
+    };
+    if !attacker.attacks.iter().any(|a| a.range == range) {
+        return Err(PreviewError::OutOfRange);
+    }
+    let atk_def = state
+        .board
+        .tile_at(ghost_hex)
+        .map(|t| {
+            attacker
+                .defense
+                .get(&t.terrain_id)
+                .copied()
+                .unwrap_or(t.defense)
+        })
+        .unwrap_or(attacker.default_defense);
+    let def_def = state
+        .board
+        .tile_at(defender_hex)
+        .map(|t| {
+            defender
+                .defense
+                .get(&t.terrain_id)
+                .copied()
+                .unwrap_or(t.defense)
+        })
+        .unwrap_or(defender.default_defense);
     let mut ghost_state = state.clone();
     ghost_state.positions.insert(attacker_id, ghost_hex);
     let leadership = crate::game_state::leadership_bonus(&ghost_state, attacker_id);
     let def_leadership = crate::game_state::leadership_bonus(state, defender_id);
     let flanked = false;
-    Ok(simulate_combat(attacker, defender, atk_def, def_def, state.turn, n_sims, range, flanked, leadership, def_leadership))
+    Ok(simulate_combat(
+        attacker,
+        defender,
+        atk_def,
+        def_def,
+        state.turn,
+        n_sims,
+        range,
+        flanked,
+        leadership,
+        def_leadership,
+    ))
 }
 
 /// Run `num_simulations` Monte Carlo combat simulations without mutating game state.

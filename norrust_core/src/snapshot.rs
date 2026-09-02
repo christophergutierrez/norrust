@@ -2,8 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::game_state::{Action, GameState};
 use crate::combat::{tod_label, tod_phase};
+use crate::game_state::{Action, GameState};
 use crate::hex::Hex;
 use crate::visibility::compute_visibility;
 
@@ -204,7 +204,16 @@ impl StateSnapshot {
             terrain,
             units,
             gold: state.gold,
-            factions: state.faction_ids.iter().enumerate().map(|(side, id)| FactionSnapshot { side: side as u8, id: id.clone(), recruit_ids: state.recruit_ids[side].clone() }).collect(),
+            factions: state
+                .faction_ids
+                .iter()
+                .enumerate()
+                .map(|(side, id)| FactionSnapshot {
+                    side: side as u8,
+                    id: id.clone(),
+                    recruit_ids: state.recruit_ids[side].clone(),
+                })
+                .collect(),
             max_turns: state.max_turns,
             objective_col,
             objective_row,
@@ -323,7 +332,16 @@ impl StateSnapshot {
             terrain,
             units,
             gold: state.gold,
-            factions: state.faction_ids.iter().enumerate().map(|(side, id)| FactionSnapshot { side: side as u8, id: id.clone(), recruit_ids: state.recruit_ids[side].clone() }).collect(),
+            factions: state
+                .faction_ids
+                .iter()
+                .enumerate()
+                .map(|(side, id)| FactionSnapshot {
+                    side: side as u8,
+                    id: id.clone(),
+                    recruit_ids: state.recruit_ids[side].clone(),
+                })
+                .collect(),
             max_turns: state.max_turns,
             objective_col,
             objective_row,

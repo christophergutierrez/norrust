@@ -153,8 +153,11 @@ where
 pub fn expand_recruits(faction: &FactionDef, groups: &Registry<RecruitGroup>) -> Vec<String> {
     let mut ids = Vec::new();
     for entry in &faction.recruits {
-        if let Some(group) = groups.get(entry) { ids.extend(group.members.iter().cloned()); }
-        else { ids.push(entry.clone()); }
+        if let Some(group) = groups.get(entry) {
+            ids.extend(group.members.iter().cloned());
+        } else {
+            ids.push(entry.clone());
+        }
     }
     ids.sort();
     ids.dedup();
