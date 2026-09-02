@@ -161,14 +161,13 @@ pub enum PreviewError {
     InvalidNSims,
 }
 
-/// Preview an engagement with the attacker standing on `ghost_hex`.
-pub fn preview_combat(
+pub fn validate_combat_preview(
     state: &GameState,
     attacker_id: u32,
     defender_id: u32,
     ghost_hex: Hex,
     n_sims: u32,
-) -> Result<CombatPreview, PreviewError> {
+) -> Result<(), PreviewError> {
     if !(1..=1000).contains(&n_sims) {
         return Err(PreviewError::InvalidNSims);
     }
@@ -190,8 +189,7 @@ pub fn preview_combat(
     if !state.board.contains(ghost_hex) {
         return Err(PreviewError::InvalidGhost);
     }
-    let dist = ghost_hex.distance(defender_hex);
-    let range = match dist {
+    let range = match ghost_hex.distance(defender_hex) {
         1 => "melee",
         2 => "ranged",
         _ => return Err(PreviewError::OutOfRange),
@@ -199,6 +197,35 @@ pub fn preview_combat(
     if !attacker.attacks.iter().any(|a| a.range == range) {
         return Err(PreviewError::OutOfRange);
     }
+    Ok(())
+}
+
+/// Preview an engagement with the attacker standing on `ghost_hex`.
+pub fn preview_combat(
+    state: &GameState,
+    attacker_id: u32,
+    defender_id: u32,
+    ghost_hex: Hex,
+    n_sims: u32,
+) -> Result<CombatPreview, PreviewError> {
+    validate_combat_preview(state, attacker_id, defender_id, ghost_hex, n_sims)?;
+    let attacker = state
+        .units
+        .get(&attacker_id)
+        .ok_or(PreviewError::UnitNotFound)?;
+    let defender = state
+        .units
+        .get(&defender_id)
+        .ok_or(PreviewError::UnitNotFound)?;
+    let defender_hex = *state
+        .positions
+        .get(&defender_id)
+        .ok_or(PreviewError::UnitNotFound)?;
+    let range = if ghost_hex.distance(defender_hex) == 1 {
+        "melee"
+    } else {
+        "ranged"
+    };
     let atk_def = state
         .board
         .tile_at(ghost_hex)

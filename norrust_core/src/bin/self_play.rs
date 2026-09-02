@@ -273,17 +273,22 @@ fn recruit(
 ) -> u32 {
     let mut recruited = 0;
     loop {
-        let keep = state.positions.iter().find_map(|(&id, &h)| {
-            let u = state.units.get(&id)?;
-            (u.faction == side
-                && u.can_recruit
-                && state
-                    .board
-                    .tile_at(h)
-                    .map(|t| t.terrain_id == "keep")
-                    .unwrap_or(false))
-            .then_some(h)
-        });
+        let keep = state
+            .positions
+            .iter()
+            .filter_map(|(&id, &h)| {
+                let u = state.units.get(&id)?;
+                (u.faction == side
+                    && u.can_recruit
+                    && state
+                        .board
+                        .tile_at(h)
+                        .map(|t| t.terrain_id == "keep")
+                        .unwrap_or(false))
+                .then_some((h.to_offset(), id, h))
+            })
+            .min_by_key(|(offset, id, _)| (*offset, *id))
+            .map(|(_, _, h)| h);
         let Some(keep) = keep else { break };
         let mut dest = keep.neighbors().iter().copied().find(|h| {
             state

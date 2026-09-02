@@ -704,20 +704,21 @@ pub unsafe extern "C" fn norrust_ai_recruit(
     for _ in 0..12 {
         let action: Option<(String, i32, i32)> = e.game.as_ref().and_then(|state| {
             let active = state.active_faction;
-            let keep = state.positions.iter().find_map(|(&u, &hex)| {
-                let unit = state.units.get(&u)?;
-                if unit.faction != active {
-                    return None;
-                }
-                if !unit.can_recruit {
-                    return None;
-                }
-                state
-                    .board
-                    .tile_at(hex)
-                    .filter(|t| t.terrain_id == "keep")
-                    .map(|_| hex)
-            })?;
+            let keep = state
+                .positions
+                .iter()
+                .filter_map(|(&u, &hex)| {
+                    let unit = state.units.get(&u)?;
+                    (unit.faction == active
+                        && unit.can_recruit
+                        && state
+                            .board
+                            .tile_at(hex)
+                            .is_some_and(|t| t.terrain_id == "keep"))
+                    .then_some((hex.to_offset(), u, hex))
+                })
+                .min_by_key(|(offset, uid, _)| (*offset, *uid))
+                .map(|(_, _, hex)| hex)?;
             let dest = keep.neighbors().iter().copied().find(|&h| {
                 state.board.contains(h)
                     && state
@@ -1816,20 +1817,21 @@ pub unsafe extern "C" fn norrust_place_veteran_unit(
     }
     // Leader must be on a keep tile
     let active = state.active_faction;
-    let keep_hex = state.positions.iter().find_map(|(&u, &hex)| {
-        let unit = state.units.get(&u)?;
-        if unit.faction != active {
-            return None;
-        }
-        if !unit.can_recruit {
-            return None;
-        }
-        state
-            .board
-            .tile_at(hex)
-            .filter(|t| t.terrain_id == "keep")
-            .map(|_| hex)
-    });
+    let keep_hex = state
+        .positions
+        .iter()
+        .filter_map(|(&u, &hex)| {
+            let unit = state.units.get(&u)?;
+            (unit.faction == active
+                && unit.can_recruit
+                && state
+                    .board
+                    .tile_at(hex)
+                    .is_some_and(|t| t.terrain_id == "keep"))
+            .then_some((hex.to_offset(), u, hex))
+        })
+        .min_by_key(|(offset, uid, _)| (*offset, *uid))
+        .map(|(_, _, hex)| hex);
     let Some(keep_hex) = keep_hex else { return -10 };
     // Destination must be a castle tile adjacent to the keep
     match state.board.tile_at(destination) {

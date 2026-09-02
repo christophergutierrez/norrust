@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use norrust_core::ai::{ai_take_turn_greedy_actions, run_greedy_side_turn, GreedyTurnError};
 use norrust_core::board::Tile;
-use norrust_core::combat::preview_combat;
+use norrust_core::combat::{preview_combat, validate_combat_preview};
 use norrust_core::events::GameEvent;
 use norrust_core::game_state::{
     apply_action, apply_advance, apply_recruit, Action, AdvanceTarget, GameState, PendingSpawn,
@@ -1093,27 +1093,8 @@ fn interactive_protocol_game(c: &Config) {
                                 ));
                                 break;
                             };
-                            if !state.units.contains_key(&(attacker_id as u32))
-                                || !state.units.contains_key(&(defender_id as u32))
-                            {
-                                invalid = Some((
-                                    index,
-                                    "UnitNotFound".to_string(),
-                                    "unit is unavailable".to_string(),
-                                ));
-                                break;
-                            }
-                            if state.units[&(attacker_id as u32)].faction
-                                == state.units[&(defender_id as u32)].faction
-                            {
-                                invalid = Some((
-                                    index,
-                                    "FriendlyTarget".to_string(),
-                                    "target belongs to the same faction".to_string(),
-                                ));
-                                break;
-                            }
                             requests.push((
+                                index,
                                 attacker_id as u32,
                                 defender_id as u32,
                                 col as i32,
@@ -1123,22 +1104,29 @@ fn interactive_protocol_game(c: &Config) {
                         if let Some((index, code, message)) = invalid {
                             json!({"type":"status","ok":false,"what":what,"code":code,"index":index,"message":message})
                         } else {
-                            requests.sort_by_key(|(attacker, defender, col, row)| {
+                            requests.sort_by_key(|(_, attacker, defender, col, row)| {
                                 (*attacker, *row, *col, *defender)
                             });
-                            let mut previews = Vec::with_capacity(requests.len());
-                            for (attacker_id, defender_id, col, row) in requests {
-                                match preview_combat(&state, attacker_id, defender_id, Hex::from_offset(col, row), n_sims as u32) {
-                                    Ok(preview) => previews.push(json!({"attacker_id":attacker_id,"defender_id":defender_id,"col":col,"row":row,"body":preview})),
-                                    Err(error) => {
-                                        invalid = Some((0, format!("{:?}", error), error.to_string()));
-                                        break;
-                                    }
+                            for (index, attacker_id, defender_id, col, row) in &requests {
+                                if let Err(error) = validate_combat_preview(
+                                    &state,
+                                    *attacker_id,
+                                    *defender_id,
+                                    Hex::from_offset(*col, *row),
+                                    n_sims as u32,
+                                ) {
+                                    invalid =
+                                        Some((*index, format!("{:?}", error), error.to_string()));
+                                    break;
                                 }
                             }
-                            if let Some((_, code, message)) = invalid {
-                                json!({"type":"status","ok":false,"what":what,"code":code,"message":message})
+                            if let Some((index, code, message)) = invalid.as_ref() {
+                                json!({"type":"status","ok":false,"what":what,"code":code,"index":index,"message":message})
                             } else {
+                                let previews = requests.into_iter().map(|(_, attacker_id, defender_id, col, row)| {
+                                    let preview = preview_combat(&state, attacker_id, defender_id, Hex::from_offset(col, row), n_sims as u32).expect("validated combat preview");
+                                    json!({"attacker_id":attacker_id,"defender_id":defender_id,"col":col,"row":row,"body":preview})
+                                }).collect::<Vec<_>>();
                                 json!({"type":"status","ok":true,"what":what,"body":{"previews":previews}})
                             }
                         }
