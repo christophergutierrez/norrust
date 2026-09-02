@@ -17,9 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use norrust_core::ai::{
-    ai_take_turn_greedy_actions, run_greedy_side_turn, GreedyTurnError,
-};
+use norrust_core::ai::{ai_take_turn_greedy_actions, run_greedy_side_turn, GreedyTurnError};
 use norrust_core::board::Tile;
 use norrust_core::combat::preview_combat;
 use norrust_core::events::GameEvent;
@@ -895,6 +893,89 @@ fn interactive_protocol_game(c: &Config) {
                         json!({"type":"status","ok":false,"what":what,"code":"parse","message":"preview identifiers and ghost coordinates are required"})
                     }
                 },
+                "combat_previews" => {
+                    let n_sims = parsed.get("n_sims").and_then(Value::as_u64).unwrap_or(100);
+                    let engagements = parsed.get("engagements").and_then(Value::as_array);
+                    if engagements.is_none() {
+                        json!({"type":"status","ok":false,"what":what,"code":"parse","message":"engagements array is required"})
+                    } else if engagements.unwrap().len() > 4096 {
+                        json!({"type":"status","ok":false,"what":what,"code":"engagement_limit","message":"engagement count exceeds 4096"})
+                    } else if !(1..=1000).contains(&n_sims)
+                        || (engagements.unwrap().len() as u64).saturating_mul(n_sims) > 200_000
+                    {
+                        json!({"type":"status","ok":false,"what":what,"code": if !(1..=1000).contains(&n_sims) {"InvalidNSims"} else {"sim_limit"},"message":"simulation budget exceeded or n_sims is invalid"})
+                    } else {
+                        let engagements = engagements.unwrap();
+                        let mut requests = Vec::with_capacity(engagements.len());
+                        let mut invalid = None;
+                        for (index, engagement) in engagements.iter().enumerate() {
+                            let parsed_engagement = (
+                                engagement.get("attacker_id").and_then(Value::as_u64),
+                                engagement.get("defender_id").and_then(Value::as_u64),
+                                engagement.get("col").and_then(Value::as_i64),
+                                engagement.get("row").and_then(Value::as_i64),
+                            );
+                            let (Some(attacker_id), Some(defender_id), Some(col), Some(row)) =
+                                parsed_engagement
+                            else {
+                                invalid = Some((
+                                    index,
+                                    "parse".to_string(),
+                                    "engagement identifiers are required".to_string(),
+                                ));
+                                break;
+                            };
+                            if !state.units.contains_key(&(attacker_id as u32))
+                                || !state.units.contains_key(&(defender_id as u32))
+                            {
+                                invalid = Some((
+                                    index,
+                                    "UnitNotFound".to_string(),
+                                    "unit is unavailable".to_string(),
+                                ));
+                                break;
+                            }
+                            if state.units[&(attacker_id as u32)].faction
+                                == state.units[&(defender_id as u32)].faction
+                            {
+                                invalid = Some((
+                                    index,
+                                    "FriendlyTarget".to_string(),
+                                    "target belongs to the same faction".to_string(),
+                                ));
+                                break;
+                            }
+                            requests.push((
+                                attacker_id as u32,
+                                defender_id as u32,
+                                col as i32,
+                                row as i32,
+                            ));
+                        }
+                        if let Some((index, code, message)) = invalid {
+                            json!({"type":"status","ok":false,"what":what,"code":code,"index":index,"message":message})
+                        } else {
+                            requests.sort_by_key(|(attacker, defender, col, row)| {
+                                (*attacker, *row, *col, *defender)
+                            });
+                            let mut previews = Vec::with_capacity(requests.len());
+                            for (attacker_id, defender_id, col, row) in requests {
+                                match preview_combat(&state, attacker_id, defender_id, Hex::from_offset(col, row), n_sims as u32) {
+                                    Ok(preview) => previews.push(json!({"attacker_id":attacker_id,"defender_id":defender_id,"col":col,"row":row,"body":preview})),
+                                    Err(error) => {
+                                        invalid = Some((0, format!("{:?}", error), error.to_string()));
+                                        break;
+                                    }
+                                }
+                            }
+                            if let Some((_, code, message)) = invalid {
+                                json!({"type":"status","ok":false,"what":what,"code":code,"message":message})
+                            } else {
+                                json!({"type":"status","ok":true,"what":what,"body":{"previews":previews}})
+                            }
+                        }
+                    }
+                }
                 "turn_options" => {
                     let mut ids: Vec<u32> = state
                         .units
