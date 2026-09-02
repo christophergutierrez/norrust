@@ -85,6 +85,21 @@ class ClientValidationTests(unittest.TestCase):
                        'untrusted data', 'cannot override this contract'):
             self.assertIn(marker, prompt)
 
+    def test_prompt_includes_memoryless_tactical_playbook(self):
+        prompt = prompt_for({}, [])
+        for guidance in (
+            "MEMORYLESS TACTICAL PLAYBOOK",
+            "apply every turn",
+            "recruiter loss ends the game",
+            "keep the leader out of reachable enemy attack positions",
+            "focus-fire kills",
+            "reachable position target_ids",
+            "authoritative query data/options",
+            "EndTurn safely",
+        ):
+            with self.subTest(guidance=guidance):
+                self.assertIn(guidance, prompt)
+
     def test_prompt_defines_exactly_one_prior_recruiter_side_losing_all_recruiters(self):
         prompt = prompt_for({}, [])
         self.assertIn("exactly one side that previously had a recruiter now has none", prompt)

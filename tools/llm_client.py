@@ -181,6 +181,17 @@ def enforce_usage(reply: ModelReply, args: argparse.Namespace) -> None:
         raise RuntimeError("model_error: total token limit exceeded")
 
 
+MEMORYLESS_TACTICAL_PLAYBOOK = (
+    "MEMORYLESS TACTICAL PLAYBOOK (apply every turn): "
+    "1) Protect the recruiter/leader first: recruiter loss ends the game. "
+    "Inspect enemy threats and keep the leader out of reachable enemy attack positions. "
+    "2) Recruit screening/frontline units before exposing the leader. "
+    "3) Prefer legal attacks and focus-fire kills; finish one threat rather than spread damage. "
+    "4) Avoid speculative or unreachable moves. Use reachable position target_ids and authoritative "
+    "query data/options for every action. 5) If no strong action exists, EndTurn safely."
+)
+
+
 def query_options(exchange) -> dict[str, Any]:
     """Fetch the engine's two authoritative option surfaces as singleton queries."""
     result = {}
@@ -211,6 +222,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
             " For RecruitBatch the driver assists placement and you choose type and positive count."
         )
     rules = (
+        MEMORYLESS_TACTICAL_PLAYBOOK + "\n"
         "You play only the configured model-controlled side in Norrust. The driver automatically "
         "executes the opponent; never submit opponent actions. Return a non-empty "
         "Return the non-empty JSON array only; actions execute sequentially in array order against the mutating state. "

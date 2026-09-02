@@ -7,6 +7,16 @@ the batch. The model controls only the configured `--llm-side`; after its final
 `EndTurn`, the driver automatically runs the opponent's transactional greedy turn
 (including driver-supplied recruitment) and returns a new model-side boundary.
 
+### MEMORYLESS TACTICAL PLAYBOOK
+
+Apply this every turn:
+
+1. Protect the recruiter/leader first: recruiter loss ends the game. Inspect enemy threats and keep the leader out of reachable enemy attack positions.
+2. Recruit screening/frontline units before exposing the leader.
+3. Prefer legal attacks and focus-fire kills; finish one threat rather than spread damage.
+4. Avoid speculative or unreachable moves. Use reachable position `target_ids` and authoritative query data/options for every action.
+5. If no strong action exists, `EndTurn` safely.
+
 ## Build and run
 
 Build the driver from the repository root:
