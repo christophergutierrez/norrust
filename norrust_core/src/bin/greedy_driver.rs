@@ -386,11 +386,22 @@ fn run_driver_greedy_turn(
     units: &Registry<UnitDef>,
     next_id: &mut u32,
 ) -> Result<Vec<GameEvent>, GreedyTurnError> {
+    // Test-only failure injection; release builds must never activate it.
+    let injected_failure = if cfg!(debug_assertions) {
+        env::var("NORRUST_TEST_GREEDY_FAILURE").ok()
+    } else {
+        None
+    };
     let mut candidate_id = *next_id;
     let mut recruitment_events = Vec::new();
     let events = run_greedy_side_turn(
         state,
         |working| {
+            if injected_failure.as_deref() == Some("prepare") {
+                return Err(GreedyTurnError::Callback(
+                    "test-injected greedy prepare failure".into(),
+                ));
+            }
             recruit_with_events(
                 working,
                 side,
@@ -403,10 +414,62 @@ fn run_driver_greedy_turn(
             );
             Ok(std::mem::take(&mut recruitment_events))
         },
-        |working| ai_take_turn_greedy_actions(working, side).map_err(Into::into),
+        |working| {
+            if injected_failure.as_deref() == Some("planner") {
+                return Err(GreedyTurnError::Callback(
+                    "test-injected greedy planner failure".into(),
+                ));
+            }
+            ai_take_turn_greedy_actions(working, side).map_err(Into::into)
+        },
     )?;
     *next_id = candidate_id;
     Ok(events)
+}
+
+fn authorize_model_batch(
+    orders: &[Value],
+    state: &GameState,
+    model_side: u8,
+) -> Result<(), (&'static str, &'static str)> {
+    if state.active_faction != model_side {
+        return Err((
+            "unauthorized_side",
+            "model actions are not authorized while the opponent is active",
+        ));
+    }
+    for order in orders {
+        let actor_id = match order.get("action").and_then(Value::as_str) {
+            Some("Move") | Some("Advance") => order.get("unit_id"),
+            Some("Attack") => order.get("attacker_id"),
+            _ => None,
+        };
+        let Some(actor_id) = actor_id.and_then(Value::as_u64) else {
+            continue;
+        };
+        if state
+            .units
+            .get(&(actor_id as u32))
+            .is_some_and(|unit| unit.faction != model_side)
+        {
+            return Err((
+                "unauthorized_unit",
+                "model actions may reference only model-side units",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn greedy_infrastructure_failure(state: &GameState, side_turns: u32) -> Value {
+    json!({
+        "type": "game_end",
+        "reason": "infrastructure_failure",
+        "code": "greedy_turn_failed",
+        "message": "greedy opponent turn failed",
+        "turns": state.turn,
+        "side_turns": side_turns,
+    })
 }
 
 fn game_state_to_json(state: &GameState, units: &Registry<UnitDef>) -> Value {
@@ -580,11 +643,19 @@ fn scripted_game(c: &Config) {
     // Run greedy-vs-greedy smoke test
     for _turn in 0..c.max_turns {
         let side = state.active_faction;
-        if side == 0 {
-            let _ = run_driver_greedy_turn(&mut state, 0, &f0, &units, &mut next_id);
+        let result = if side == 0 {
+            run_driver_greedy_turn(&mut state, 0, &f0, &units, &mut next_id)
         } else {
-            let _ = run_driver_greedy_turn(&mut state, 1, &f1, &units, &mut next_id);
-        }
+            run_driver_greedy_turn(&mut state, 1, &f1, &units, &mut next_id)
+        };
+        let events = match result {
+            Ok(events) => events,
+            Err(_) => {
+                println!("{}", greedy_infrastructure_failure(&state, 0));
+                return;
+            }
+        };
+        print_events(&events, "greedy", "greedy");
 
         if let Some(winner) = state.check_winner() {
             eprintln!(
@@ -817,7 +888,10 @@ fn interactive_game(c: &Config) {
             }
         } else {
             // Faction 1 (greedy AI) turn
-            let _ = run_driver_greedy_turn(&mut state, 1, &f1, &units, &mut next_id);
+            if run_driver_greedy_turn(&mut state, 1, &f1, &units, &mut next_id).is_err() {
+                println!("{}", greedy_infrastructure_failure(&state, 0));
+                return;
+            }
             eprintln!("[AI_TURN] Faction 1 greedy turn complete");
         }
     }
@@ -891,8 +965,14 @@ fn interactive_protocol_game(c: &Config) {
 
     if c.llm_side == 1 {
         let side = 0usize;
-        let events = run_driver_greedy_turn(&mut state, 0, &factions[side], &units, &mut next_id)
-            .unwrap_or_default();
+        let events =
+            match run_driver_greedy_turn(&mut state, 0, &factions[side], &units, &mut next_id) {
+                Ok(events) => events,
+                Err(_) => {
+                    println!("{}", greedy_infrastructure_failure(&state, side_turns));
+                    return;
+                }
+            };
         side_turns += 1;
         print_events(&events, "greedy", "greedy");
     }
@@ -900,6 +980,13 @@ fn interactive_protocol_game(c: &Config) {
         println!(
             "{}",
             json!({"type":"game_end","reason":"winner","winner":state.check_winner(),"turns":state.turn})
+        );
+        return;
+    }
+    if c.llm_side == 1 && side_turns >= c.max_turns {
+        println!(
+            "{}",
+            json!({"type":"game_end","reason":"max_turns","turns":state.turn,"side_turns":side_turns})
         );
         return;
     }
@@ -1173,35 +1260,42 @@ fn interactive_protocol_game(c: &Config) {
                 "recruit_options" => {
                     let side = state.active_faction as usize;
                     let faction = &factions[side];
-                    let placement_hexes: Vec<Value> = state
-                        .positions
+                    let mut placement_hexes: Vec<Hex> = state
+                        .units
                         .iter()
-                        .filter_map(|(_, h)| {
-                            state.board.tile_at(*h).filter(|t| t.terrain_id == "keep")?;
-                            Some(
-                                h.neighbors()
-                                    .iter()
-                                    .filter_map(|dest| {
-                                        state
-                                            .board
-                                            .tile_at(*dest)
-                                            .filter(|t| t.terrain_id == "castle")
-                                            .and_then(|_| {
-                                                (!state.hex_to_unit.contains_key(dest))
-                                                    .then_some(dest)
-                                            })
-                                            .map(|d| {
-                                                let (c, r) = d.to_offset();
-                                                json!({"col":c,"row":r})
-                                            })
-                                    })
-                                    .collect::<Vec<_>>(),
-                            )
+                        .filter(|(_, unit)| {
+                            unit.faction == state.active_faction && unit.can_recruit
                         })
-                        .flatten()
+                        .filter_map(|(id, _)| state.positions.get(id))
+                        .filter(|h| {
+                            state
+                                .board
+                                .tile_at(**h)
+                                .is_some_and(|tile| tile.terrain_id == "keep")
+                        })
+                        .flat_map(|h| h.neighbors())
+                        .filter(|dest| {
+                            state
+                                .board
+                                .tile_at(*dest)
+                                .is_some_and(|tile| tile.terrain_id == "castle")
+                                && !state.hex_to_unit.contains_key(dest)
+                        })
+                        .collect();
+                    placement_hexes.sort_unstable_by_key(|hex| {
+                        let (col, row) = hex.to_offset();
+                        (row, col)
+                    });
+                    placement_hexes.dedup();
+                    let placement_hexes: Vec<Value> = placement_hexes
+                        .into_iter()
+                        .map(|h| {
+                            let (c, r) = h.to_offset();
+                            json!({"col":c,"row":r})
+                        })
                         .collect();
                     let options: Vec<Value> = faction.recruits.iter().filter_map(|id| units.get(id).map(|d| json!({"def_id":id,"cost":d.cost,"affordable":state.gold[side] >= d.cost}))).collect();
-                    json!({"type":"status","ok":true,"what":what,"body":{"faction_id":faction.def.id,"side_can_place":!placement_hexes.is_empty(),"placement_hexes":placement_hexes,"options":options,"batch_macro_enabled":true}})
+                    json!({"type":"status","ok":true,"what":what,"body":{"faction_id":faction.def.id,"side_can_place":!placement_hexes.is_empty(),"placement_hexes":placement_hexes,"options":options,"batch_macro_enabled":!c.disable_recruit_batch}})
                 }
                 _ => {
                     json!({"type":"status","ok":false,"what":what,"code":"unknown_query","message":"unknown query"})
@@ -1296,6 +1390,14 @@ fn interactive_protocol_game(c: &Config) {
                 "{}",
                 json!({"type":"status","ok":false,"code":"parse","message":"invalid action shape"})
             );
+            continue;
+        }
+        if let Err((code, message)) = authorize_model_batch(&orders, &state, c.llm_side) {
+            println!(
+                "{}",
+                json!({"type":"status","ok":false,"code":code,"message":message})
+            );
+            io::stdout().flush().unwrap();
             continue;
         }
         action_count += orders.len() as u32;
@@ -1455,15 +1557,29 @@ fn interactive_protocol_game(c: &Config) {
         print_events(&events, "llm", "llm");
         if did_end && state.check_winner().is_none() {
             side_turns += 1;
+            if side_turns >= c.max_turns {
+                println!(
+                    "{}",
+                    json!({"type":"game_end","reason":"max_turns","turns":state.turn,"side_turns":side_turns})
+                );
+                terminal = true;
+                break;
+            }
             let greedy_side = 1 - c.llm_side;
-            let greedy_events = run_driver_greedy_turn(
+            let greedy_events = match run_driver_greedy_turn(
                 &mut state,
                 greedy_side,
                 &factions[greedy_side as usize],
                 &units,
                 &mut next_id,
-            )
-            .unwrap_or_default();
+            ) {
+                Ok(events) => events,
+                Err(_) => {
+                    println!("{}", greedy_infrastructure_failure(&state, side_turns));
+                    terminal = true;
+                    break;
+                }
+            };
             side_turns += 1;
             print_events(&greedy_events, "greedy", "greedy");
         }
@@ -1478,7 +1594,7 @@ fn interactive_protocol_game(c: &Config) {
         if side_turns >= c.max_turns {
             println!(
                 "{}",
-                json!({"type":"game_end","reason":"max_turns","turns":state.turn})
+                json!({"type":"game_end","reason":"max_turns","turns":state.turn,"side_turns":side_turns})
             );
             terminal = true;
             break;
@@ -1506,5 +1622,24 @@ fn main() {
         scripted_game(&c);
     } else {
         interactive_protocol_game(&c);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn authorize_model_batch_rejects_wrong_active_side_including_end_turn() {
+        let state = GameState::new(norrust_core::board::Board::new(1, 1));
+        let orders = vec![json!({"action":"EndTurn"})];
+
+        assert_eq!(
+            authorize_model_batch(&orders, &state, 1),
+            Err((
+                "unauthorized_side",
+                "model actions are not authorized while the opponent is active"
+            ))
+        );
     }
 }
