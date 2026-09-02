@@ -136,12 +136,12 @@ fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
 }
 
-fn load_factions(data: &Path) -> Vec<Faction> {
-    let groups: Registry<RecruitGroup> =
-        Registry::load_from_dir(&data.join("recruit_groups")).expect("load recruit groups");
-    let registry: Registry<FactionDef> =
-        Registry::load_from_dir(&data.join("factions")).expect("load factions");
-    registry
+fn load_factions(data: &Path) -> Result<Vec<Faction>, String> {
+    let groups: Registry<RecruitGroup> = Registry::load_from_dir(&data.join("recruit_groups"))
+        .map_err(|e| format!("load recruit groups: {}", e))?;
+    let registry: Registry<FactionDef> = Registry::load_from_dir(&data.join("factions"))
+        .map_err(|e| format!("load factions: {}", e))?;
+    Ok(registry
         .all()
         .map(|def| {
             let recruits = expand_recruits(def, &groups);
@@ -150,7 +150,7 @@ fn load_factions(data: &Path) -> Vec<Faction> {
                 recruits,
             }
         })
-        .collect()
+        .collect())
 }
 
 fn upgrade_tiles(state: &mut GameState, terrain: &Registry<TerrainDef>) {
@@ -166,7 +166,7 @@ fn upgrade_tiles(state: &mut GameState, terrain: &Registry<TerrainDef>) {
     }
 }
 
-fn keep_for(state: &GameState, side: u8) -> Hex {
+fn keep_for(state: &GameState, side: u8) -> Option<Hex> {
     let mut keeps: Vec<Hex> = (0..state.board.width as i32)
         .flat_map(|c| (0..state.board.height as i32).map(move |r| Hex::from_offset(c, r)))
         .filter(|h| {
@@ -179,9 +179,9 @@ fn keep_for(state: &GameState, side: u8) -> Hex {
         .collect();
     keeps.sort_by_key(|h| h.x);
     if side == 0 {
-        keeps[0]
+        keeps.first().copied()
     } else {
-        *keeps.last().expect("scenario needs two keeps")
+        keeps.last().copied()
     }
 }
 
@@ -383,51 +383,52 @@ fn valid_action_shape(order: &Value) -> bool {
             || object.contains_key("target_index") != object.contains_key("def_id"))
 }
 
-fn init_game(c: &Config) -> (GameState, Faction, Faction, Registry<UnitDef>) {
+fn init_game(c: &Config) -> Result<(GameState, Faction, Faction, Registry<UnitDef>), String> {
     let base = root();
     let data = base.join("data");
     let units: Registry<UnitDef> =
-        Registry::load_from_dir(&data.join("units")).expect("load units");
-    let terrain: Registry<TerrainDef> =
-        Registry::load_from_dir(&data.join("terrain")).expect("load terrain");
-    let factions = load_factions(&data);
+        Registry::load_from_dir(&data.join("units")).map_err(|e| format!("load units: {}", e))?;
+    let terrain: Registry<TerrainDef> = Registry::load_from_dir(&data.join("terrain"))
+        .map_err(|e| format!("load terrain: {}", e))?;
+    let factions = load_factions(&data)?;
 
     let f0 = factions
         .iter()
         .find(|f| f.def.id == c.faction0)
-        .unwrap_or_else(|| panic!("unknown faction {}", c.faction0))
+        .ok_or_else(|| format!("unknown faction {}", c.faction0))?
         .clone();
     let f1 = factions
         .iter()
         .find(|f| f.def.id == c.faction1)
-        .unwrap_or_else(|| panic!("unknown faction {}", c.faction1))
+        .ok_or_else(|| format!("unknown faction {}", c.faction1))?
         .clone();
 
     let board = load_board(&base.join("scenarios").join(&c.scenario).join("board.toml"))
-        .expect("load board");
+        .map_err(|e| e.to_string())?;
 
     let mut state = GameState::new_seeded(board.board, c.seed);
     state.objective_hex = None;
     upgrade_tiles(&mut state, &terrain);
 
     // Place leaders on keeps
-    let k0 = keep_for(&state, 0);
-    let k1 = keep_for(&state, 1);
+    let k0 = keep_for(&state, 0).ok_or("scenario needs a faction 0 keep")?;
+    let k1 = keep_for(&state, 1).ok_or("scenario needs two keeps")?;
 
-    state.place_unit(
-        Unit::from_def(1, units.get(&f0.def.leader_def).unwrap(), 0),
-        k0,
-    );
-    state.place_unit(
-        Unit::from_def(2, units.get(&f1.def.leader_def).unwrap(), 1),
-        k1,
-    );
+    let leader0 = units
+        .get(&f0.def.leader_def)
+        .ok_or_else(|| format!("leader definition not found: {}", f0.def.leader_def))?;
+    let leader1 = units
+        .get(&f1.def.leader_def)
+        .ok_or_else(|| format!("leader definition not found: {}", f1.def.leader_def))?;
+    state.place_unit(Unit::from_def(1, leader0, 0), k0);
+    state.place_unit(Unit::from_def(2, leader1, 1), k1);
 
     // Load scenario triggers only. Scenario unit placements and scenario win
     // conditions belong to campaign setup and must not contaminate this duel.
     let units_path = base.join("scenarios").join(&c.scenario).join("units.toml");
     if units_path.exists() {
-        if let Ok(units_def) = load_units_file(&units_path) {
+        let units_def = load_units_file(&units_path)?;
+        {
             for trigger in units_def.triggers {
                 let spawns = trigger
                     .spawns
@@ -468,13 +469,22 @@ fn init_game(c: &Config) -> (GameState, Faction, Faction, Registry<UnitDef>) {
         k0_col, k0_row, k1_col, k1_row
     );
 
-    (state, f0, f1, units)
+    Ok((state, f0, f1, units))
 }
 
 fn scripted_game(c: &Config) {
     println!("{}", json!({"type":"protocol","version":1}));
     io::stdout().flush().unwrap();
-    let (mut state, f0, f1, units) = init_game(c);
+    let (mut state, f0, f1, units) = match init_game(c) {
+        Ok(game) => game,
+        Err(message) => {
+            println!(
+                "{}",
+                json!({"type":"game_end","reason":"setup_error","code":"invalid_setup","message":message})
+            );
+            return;
+        }
+    };
     let mut next_id = state.next_unit_id;
 
     // Verify initial setup
@@ -489,8 +499,10 @@ fn scripted_game(c: &Config) {
             .values()
             .filter(|u| u.faction == 1 && u.abilities.iter().any(|a| a == "leader"))
             .count();
-        assert_eq!(f0_leaders, 1, "Faction 0 must have exactly 1 leader");
-        assert_eq!(f1_leaders, 1, "Faction 1 must have exactly 1 leader");
+        if f0_leaders != 1 || f1_leaders != 1 {
+            println!("{}", json!({"type":"game_end","reason":"setup_error","code":"invalid_setup","message":"each faction must have exactly one leader"}));
+            return;
+        }
         eprintln!("[ASSERT] Each faction has exactly 1 leader on keep. ✓");
     }
 
@@ -537,7 +549,16 @@ fn scripted_game(c: &Config) {
 }
 
 fn interactive_game(c: &Config) {
-    let (mut state, f0, f1, units) = init_game(c);
+    let (mut state, f0, f1, units) = match init_game(c) {
+        Ok(game) => game,
+        Err(message) => {
+            println!(
+                "{}",
+                json!({"type":"game_end","reason":"setup_error","code":"invalid_setup","message":message})
+            );
+            return;
+        }
+    };
     let mut next_id = 3;
 
     // Verify initial setup
@@ -557,7 +578,8 @@ fn interactive_game(c: &Config) {
                 "[ERROR] Setup failed: f0 leaders={}, f1 leaders={}",
                 f0_leaders, f1_leaders
             );
-            std::process::exit(1);
+            println!("{}", json!({"type":"game_end","reason":"setup_error","code":"invalid_setup","message":"each faction must have exactly one leader"}));
+            return;
         }
     }
     eprintln!("[OK] Both factions have exactly 1 leader.");
@@ -777,7 +799,16 @@ fn interactive_protocol_game(c: &Config) {
         );
         return;
     }
-    let (mut state, f0, f1, units) = init_game(c);
+    let (mut state, f0, f1, units) = match init_game(c) {
+        Ok(game) => game,
+        Err(message) => {
+            println!(
+                "{}",
+                json!({"type":"game_end","reason":"setup_error","code":"invalid_setup","message":message})
+            );
+            return;
+        }
+    };
     let mut next_id = state.next_unit_id;
     let factions = [f0, f1];
     let mut side_turns = 0u32;
