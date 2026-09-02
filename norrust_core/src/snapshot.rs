@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::game_state::{Action, GameState};
+use crate::combat::{tod_label, tod_phase};
 use crate::hex::Hex;
 use crate::visibility::compute_visibility;
 
@@ -31,6 +32,7 @@ pub struct AttackSnapshot {
     pub damage: u32,
     pub strikes: u32,
     pub range: String,
+    pub attack_type: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub specials: Vec<String>,
 }
@@ -56,6 +58,13 @@ pub struct UnitSnapshot {
     pub abilities: Vec<String>,
     pub poisoned: bool,
     pub slowed: bool,
+    pub cost: u32,
+    pub advances_to: Vec<String>,
+    pub can_recruit: bool,
+    pub resistances: std::collections::HashMap<String, i32>,
+    pub defense: std::collections::HashMap<String, u32>,
+    pub default_defense: u32,
+    pub alignment: String,
 }
 
 /// A visible hex position for fog-of-war snapshots.
@@ -73,12 +82,13 @@ pub struct VisibleHex {
 pub struct StateSnapshot {
     pub turn: u32,
     pub active_faction: u8,
+    pub tod_phase: u8,
+    pub time_of_day: String,
     pub cols: u32,
     pub rows: u32,
     pub terrain: Vec<TileSnapshot>,
     pub units: Vec<UnitSnapshot>,
     pub gold: [u32; 2],
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub objective_col: Option<i32>,
@@ -119,7 +129,7 @@ impl StateSnapshot {
             .collect();
 
         // Collect all units with their positions
-        let units = state
+        let mut units = state
             .positions
             .iter()
             .filter_map(|(&uid, &hex)| {
@@ -149,15 +159,24 @@ impl StateSnapshot {
                             damage: a.damage,
                             strikes: a.strikes,
                             range: a.range.clone(),
+                            attack_type: a.attack_type.clone(),
                             specials: a.specials.clone(),
                         })
                         .collect(),
                     abilities: unit.abilities.clone(),
                     poisoned: unit.poisoned,
                     slowed: unit.slowed,
+                    cost: unit.cost,
+                    advances_to: unit.advances_to.clone(),
+                    can_recruit: unit.abilities.iter().any(|a| a == "leader"),
+                    resistances: unit.resistances.clone(),
+                    defense: unit.defense.clone(),
+                    default_defense: unit.default_defense,
+                    alignment: format!("{:?}", unit.alignment).to_lowercase(),
                 })
             })
-            .collect();
+            .collect::<Vec<_>>();
+        units.sort_by_key(|u| u.id);
 
         let (objective_col, objective_row) = match state.objective_hex {
             Some(hex) => {
@@ -170,6 +189,8 @@ impl StateSnapshot {
         StateSnapshot {
             turn: state.turn,
             active_faction: state.active_faction,
+            tod_phase: tod_phase(state.turn),
+            time_of_day: tod_label(state.turn).into(),
             cols,
             rows,
             terrain,
@@ -214,7 +235,7 @@ impl StateSnapshot {
             .collect();
 
         // Units: include friendly always, enemy only if on visible hex
-        let units = state
+        let mut units = state
             .positions
             .iter()
             .filter_map(|(&uid, &hex)| {
@@ -247,15 +268,24 @@ impl StateSnapshot {
                             damage: a.damage,
                             strikes: a.strikes,
                             range: a.range.clone(),
+                            attack_type: a.attack_type.clone(),
                             specials: a.specials.clone(),
                         })
                         .collect(),
                     abilities: unit.abilities.clone(),
                     poisoned: unit.poisoned,
                     slowed: unit.slowed,
+                    cost: unit.cost,
+                    advances_to: unit.advances_to.clone(),
+                    can_recruit: unit.abilities.iter().any(|a| a == "leader"),
+                    resistances: unit.resistances.clone(),
+                    defense: unit.defense.clone(),
+                    default_defense: unit.default_defense,
+                    alignment: format!("{:?}", unit.alignment).to_lowercase(),
                 })
             })
-            .collect();
+            .collect::<Vec<_>>();
+        units.sort_by_key(|u| u.id);
 
         let (objective_col, objective_row) = match state.objective_hex {
             Some(hex) => {
@@ -265,17 +295,20 @@ impl StateSnapshot {
             None => (None, None),
         };
 
-        let visible_hexes: Vec<VisibleHex> = visible
+        let mut visible_hexes: Vec<VisibleHex> = visible
             .iter()
             .map(|h| {
                 let (col, row) = h.to_offset();
                 VisibleHex { col, row }
             })
             .collect();
+        visible_hexes.sort_by_key(|h| (h.row, h.col));
 
         StateSnapshot {
             turn: state.turn,
             active_faction: state.active_faction,
+            tod_phase: tod_phase(state.turn),
+            time_of_day: tod_label(state.turn).into(),
             cols,
             rows,
             terrain,

@@ -67,6 +67,8 @@ pub struct Unit {
     pub slowed: bool,
     /// Vision range in hexes for fog of war. 0 = use movement as vision range.
     pub vision_range: u32,
+    pub cost: u32,
+    pub advances_to: Vec<String>,
 }
 
 /// Advance `unit` to the stats defined by `new_def`.
@@ -105,6 +107,8 @@ impl Unit {
         self.level = def.level;
         self.abilities = def.abilities.clone();
         self.vision_range = def.vision_range;
+        self.cost = def.cost;
+        self.advances_to = def.advances_to.clone();
     }
 
     /// Create a unit from a UnitDef blueprint, fully populated with stats.
@@ -139,6 +143,8 @@ impl Unit {
             poisoned: false,
             slowed: false,
             vision_range: 0,
+            cost: 0,
+            advances_to: Vec::new(),
         }
     }
 }

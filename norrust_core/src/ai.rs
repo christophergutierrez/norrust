@@ -7,6 +7,7 @@ use serde::Serialize;
 use crate::board::Board;
 use crate::combat::{time_of_day, tod_damage_modifier};
 use crate::game_state::{apply_action, Action, GameState};
+use crate::events::GameEvent;
 use crate::hex::Hex;
 use crate::pathfinding::{get_zoc_hexes, reachable_hexes};
 use crate::schema::AttackDef;
@@ -1329,6 +1330,17 @@ pub fn ai_take_turn_greedy_lookahead(
 /// Fast baseline AI: process units in ID order and choose each unit's best
 /// immediate move or attack without simulating the opponent's reply.
 pub fn ai_take_turn_greedy(state: &mut GameState, faction: u8) {
+    let _ = ai_take_turn_greedy_actions(state, faction);
+    apply_action(state, Action::EndTurn).expect("EndTurn must always succeed");
+}
+
+/// Execute only the unit actions of the fast baseline planner and return the
+/// authoritative engine events.  The caller owns the turn boundary.
+pub fn ai_take_turn_greedy_actions(
+    state: &mut GameState,
+    faction: u8,
+) -> Result<Vec<GameEvent>, crate::game_state::ActionError> {
+    let mut events = Vec::new();
     let mut ids: Vec<u32> = state
         .units
         .iter()
@@ -1342,28 +1354,28 @@ pub fn ai_take_turn_greedy(state: &mut GameState, faction: u8) {
         }
         if let Some((dest, target)) = plan_unit_action(state, uid, faction, 1) {
             if dest != state.positions[&uid] {
-                let _ = apply_action(
+                events.extend(apply_action(
                     state,
                     Action::Move {
                         unit_id: uid,
                         destination: dest,
                     },
-                );
+                )?);
             }
             if let Some(defender_id) = target {
                 if state.units.contains_key(&uid) && state.units.contains_key(&defender_id) {
-                    let _ = apply_action(
+                    events.extend(apply_action(
                         state,
                         Action::Attack {
                             attacker_id: uid,
                             defender_id,
                         },
-                    );
+                    )?);
                 }
             }
         }
     }
-    apply_action(state, Action::EndTurn).expect("EndTurn must always succeed");
+    Ok(events)
 }
 
 /// AI turn with recruit simulation: placeholder recruits are simulated in the

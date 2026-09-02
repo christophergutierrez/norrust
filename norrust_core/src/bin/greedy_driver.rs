@@ -15,11 +15,12 @@ use std::env;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
-use norrust_core::ai::ai_take_turn_greedy;
+use norrust_core::ai::{ai_take_turn_greedy, ai_take_turn_greedy_actions};
+use norrust_core::events::GameEvent;
 use norrust_core::board::Tile;
 use norrust_core::game_state::{apply_action, apply_recruit, Action, GameState};
 use norrust_core::hex::Hex;
-use norrust_core::loader::Registry;
+use norrust_core::loader::{expand_recruits, Registry};
 use norrust_core::pathfinding::{get_zoc_hexes, reachable_hexes};
 use norrust_core::scenario::load_board;
 use norrust_core::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
@@ -34,6 +35,8 @@ struct Config {
     gold: u32,
     seed: u64,
     scripted: bool,
+    llm_side: u8,
+    max_turns: u32,
 }
 
 #[derive(Clone)]
@@ -52,6 +55,8 @@ Options:
   --faction1 ID         Faction for side 1 (default: undead)
   --gold N              Starting gold for both factions (default: 300)
   --seed N              Deterministic seed (default: 42)
+  --llm-side 0|1        Side controlled by stdin (default: 0)
+  --max-turns N         Side-turn safety cap (default: 200)
   --scripted            Run full game unattended with greedy-vs-greedy (for testing)
   -h, --help            Show this help"
     );
@@ -66,6 +71,8 @@ fn parse_args() -> Config {
         gold: 300,
         seed: 42,
         scripted: false,
+        llm_side: 0,
+        max_turns: 200,
     };
     let args: Vec<String> = env::args().skip(1).collect();
     let mut i = 0;
@@ -89,6 +96,8 @@ fn parse_args() -> Config {
             "--faction1" => c.faction1 = value.clone(),
             "--gold" => c.gold = value.parse().unwrap_or_else(|_| usage()),
             "--seed" => c.seed = value.parse().unwrap_or_else(|_| usage()),
+            "--llm-side" => c.llm_side = value.parse().unwrap_or_else(|_| usage()),
+            "--max-turns" => c.max_turns = value.parse().unwrap_or_else(|_| usage()),
             _ => usage(),
         }
         i += 2;
@@ -108,16 +117,7 @@ fn load_factions(data: &Path) -> Vec<Faction> {
     registry
         .all()
         .map(|def| {
-            let mut recruits = Vec::new();
-            for entry in &def.recruits {
-                if let Some(group) = groups.get(entry) {
-                    recruits.extend(group.members.iter().cloned());
-                } else {
-                    recruits.push(entry.clone());
-                }
-            }
-            let mut seen = HashSet::new();
-            recruits.retain(|id| seen.insert(id.clone()));
+            let recruits = expand_recruits(def, &groups);
             Faction {
                 def: def.clone(),
                 recruits,
@@ -297,34 +297,9 @@ fn recruit(
 }
 
 fn game_state_to_json(state: &GameState, units: &Registry<UnitDef>) -> Value {
-    let mut unit_list = Vec::new();
-    for (&id, unit) in &state.units {
-        let def = units
-            .get(&unit.def_id)
-            .map(|d| d.cost)
-            .unwrap_or_default();
-        let pos = state.positions.get(&id).map(|h| h.to_offset()).unwrap_or((0, 0));
-        unit_list.push(json!({
-            "unit_id": id,
-            "def_id": unit.def_id,
-            "faction": unit.faction,
-            "col": pos.0,
-            "row": pos.1,
-            "hp": unit.hp,
-            "moved": unit.moved,
-            "attacked": unit.attacked,
-            "xp": unit.xp,
-            "cost": def,
-        }));
-    }
-
-    json!({
-        "turn": state.turn,
-        "active_faction": state.active_faction,
-        "gold": state.gold,
-        "units": unit_list,
-        "winner": state.check_winner(),
-    })
+    let _ = units;
+    serde_json::to_value(norrust_core::snapshot::StateSnapshot::from_game_state(state))
+        .unwrap_or_else(|_| json!({}))
 }
 
 fn init_game(c: &Config) -> (GameState, Faction, Faction, Registry<UnitDef>) {
@@ -582,12 +557,176 @@ fn interactive_game(c: &Config) {
     }
 }
 
+fn event_value(event: &GameEvent, source: &str) -> Value {
+    let mut value = serde_json::to_value(event).unwrap_or_else(|_| json!({}));
+    if let Some(object) = value.as_object_mut() {
+        object.insert("source".into(), Value::String(source.into()));
+    }
+    value
+}
+
+fn print_events(events: &[GameEvent], envelope_source: &str, event_source: &str) {
+    if events.is_empty() { return; }
+    let body: Vec<Value> = events.iter().map(|event| event_value(event, event_source)).collect();
+    println!("{}", json!({"type":"events", "source": envelope_source, "events": body}));
+    io::stdout().flush().unwrap();
+}
+
+fn print_boundary(state: &GameState, units: &Registry<UnitDef>) {
+    let mut value = game_state_to_json(state, units);
+    if let Some(object) = value.as_object_mut() {
+        object.insert("type".into(), json!("state"));
+        object.insert("winner".into(), json!(state.check_winner()));
+    }
+    println!("{}", value);
+    io::stdout().flush().unwrap();
+}
+
+/// Protocol driver.  Queries are deliberately kept at the boundary: the
+/// engine remains the sole authority for mutation and legality.
+fn interactive_protocol_game(c: &Config) {
+    println!("{}", json!({"type":"protocol", "version":1}));
+    io::stdout().flush().unwrap();
+    if c.seed == 0 || c.llm_side > 1 || c.max_turns == 0 {
+        println!("{}", json!({"type":"game_end","reason":"setup_error","code":"invalid_seed","message":"invalid driver configuration"}));
+        return;
+    }
+    let (mut state, f0, f1, units) = init_game(c);
+    let mut next_id = state.next_unit_id;
+    let factions = [f0, f1];
+    let mut side_turns = 0u32;
+    let mut terminal = false;
+
+    if c.llm_side == 1 {
+        let side = 0usize;
+        recruit(&mut state, 0, &factions[side], &units, &mut next_id, None, None);
+        let mut events = ai_take_turn_greedy_actions(&mut state, 0).unwrap_or_default();
+        if let Ok(mut end) = apply_action(&mut state, Action::EndTurn) { events.append(&mut end); }
+        side_turns += 1;
+        print_events(&events, "greedy", "greedy");
+    }
+    if state.check_winner().is_some() {
+        println!("{}", json!({"type":"game_end","reason":"winner","winner":state.check_winner(),"turns":state.turn}));
+        return;
+    }
+    print_boundary(&state, &units);
+
+    let stdin = io::stdin();
+    for line_result in stdin.lock().lines() {
+        let line = match line_result { Ok(line) => line, Err(_) => break };
+        if line.len() > 1024 * 1024 {
+            println!("{}", json!({"type":"status","ok":false,"code":"line_too_large","message":"input line exceeds 1 MiB"}));
+            continue;
+        }
+        let parsed: Value = match serde_json::from_str(&line) {
+            Ok(value) => value,
+            Err(error) => { println!("{}", json!({"type":"status","ok":false,"code":"parse","message":error.to_string()})); continue; }
+        };
+        if parsed.get("action").and_then(Value::as_str) == Some("Query") {
+            if parsed.get("what").and_then(Value::as_str) == Some("state") {
+                println!("{}", json!({"type":"status","ok":true,"what":"state","body":game_state_to_json(&state, &units)}));
+            } else {
+                println!("{}", json!({"type":"status","ok":false,"what":parsed.get("what"),"code":"unknown_query","message":"unknown query"}));
+            }
+            io::stdout().flush().unwrap();
+            continue;
+        }
+        let orders = if let Some(array) = parsed.as_array() { array.clone() } else { vec![parsed] };
+        if orders.is_empty() || orders.len() > 256 {
+            println!("{}", json!({"type":"status","ok":false,"code":"parse","message":"invalid action batch"}));
+            continue;
+        }
+        let names: Vec<Option<&str>> = orders.iter().map(|o| o.get("action").and_then(Value::as_str)).collect();
+        if names.iter().any(|name| *name == Some("Query")) {
+            println!("{}", json!({"type":"status","ok":false,"code":"parse","message":"Query must be a singleton line"}));
+            continue;
+        }
+        if names.iter().any(|name| name.is_none() || !matches!(name, Some("Move"|"Attack"|"Recruit"|"RecruitBatch"|"EndTurn"|"Advance"))) {
+            println!("{}", json!({"type":"status","ok":false,"code":"unknown_action","message":"unknown or missing action"}));
+            continue;
+        }
+        if names.iter().filter(|name| **name == Some("EndTurn")).count() > 1 || names.iter().position(|name| *name == Some("EndTurn")).is_some_and(|i| i + 1 != names.len()) {
+            println!("{}", json!({"type":"status","ok":false,"code":"parse","message":"invalid action batch structure"}));
+            continue;
+        }
+        let mut results = Vec::with_capacity(orders.len());
+        let mut events = Vec::new();
+        let mut did_end = false;
+        for order in orders {
+            let action_name = order.get("action").and_then(Value::as_str);
+            if did_end { results.push(json!({"ok":false,"code":"game_over","skipped":true})); continue; }
+            let result = match action_name {
+                Some("Move") => {
+                    let id = order.get("unit_id").and_then(Value::as_u64);
+                    let col = order.get("col").and_then(Value::as_i64);
+                    let row = order.get("row").and_then(Value::as_i64);
+                    match (id, col, row) { (Some(id),Some(col),Some(row)) => apply_action(&mut state, Action::Move { unit_id:id as u32, destination:Hex::from_offset(col as i32,row as i32) }), _ => Err(norrust_core::game_state::ActionError::UnitNotFound(0)) }
+                }
+                Some("Attack") => {
+                    match (order.get("attacker_id").and_then(Value::as_u64), order.get("defender_id").and_then(Value::as_u64)) {
+                        (Some(a),Some(d)) => apply_action(&mut state, Action::Attack { attacker_id:a as u32, defender_id:d as u32 }),
+                        _ => Err(norrust_core::game_state::ActionError::UnitNotFound(0)),
+                    }
+                }
+                Some("Recruit") => {
+                    match (order.get("def_id").and_then(Value::as_str), order.get("col").and_then(Value::as_i64), order.get("row").and_then(Value::as_i64)) {
+                        (Some(def_id),Some(col),Some(row)) => match units.get(def_id) {
+                            Some(def) => apply_recruit(&mut state, Unit::from_def(next_id, def, c.llm_side), Hex::from_offset(col as i32,row as i32), def.cost).map(|e| { next_id += 1; e }),
+                            None => Err(norrust_core::game_state::ActionError::UnitNotFound(next_id)),
+                        },
+                        _ => Err(norrust_core::game_state::ActionError::UnitNotFound(0)),
+                    }
+                }
+                Some("RecruitBatch") => {
+                    match (order.get("def_id").and_then(Value::as_str), order.get("count").and_then(Value::as_u64)) {
+                        (Some(def_id),Some(count)) => { recruit(&mut state,c.llm_side,&factions[c.llm_side as usize],&units,&mut next_id,Some(def_id),Some(count as u32)); Ok(Vec::new()) }
+                        _ => Err(norrust_core::game_state::ActionError::UnitNotFound(0)),
+                    }
+                }
+                Some("EndTurn") => apply_action(&mut state, Action::EndTurn),
+                Some(_) | None => Err(norrust_core::game_state::ActionError::NotAdjacent),
+            };
+            match result {
+                Ok(mut produced) => { events.append(&mut produced); results.push(json!({"ok":true})); if action_name == Some("EndTurn") { did_end = true; } }
+                Err(error) => results.push(json!({"ok":false,"code":error.code(),"message":error.to_string()})),
+            }
+            if state.check_winner().is_some() { did_end = true; }
+        }
+        println!("{}", json!({"type":"status","ok":true,"results":results}));
+        io::stdout().flush().unwrap();
+        print_events(&events, "llm", "llm");
+        if did_end && state.check_winner().is_none() {
+            side_turns += 1;
+            let greedy_side = 1 - c.llm_side;
+            recruit(&mut state, greedy_side, &factions[greedy_side as usize], &units, &mut next_id, None, None);
+            let mut greedy_events = ai_take_turn_greedy_actions(&mut state, greedy_side).unwrap_or_default();
+            if let Ok(mut end) = apply_action(&mut state, Action::EndTurn) { greedy_events.append(&mut end); }
+            side_turns += 1;
+            print_events(&greedy_events, "greedy", "greedy");
+        }
+        if let Some(winner) = state.check_winner() {
+            println!("{}", json!({"type":"game_end","reason":"winner","winner":winner,"turns":state.turn}));
+            terminal = true;
+            break;
+        }
+        if side_turns >= c.max_turns {
+            println!("{}", json!({"type":"game_end","reason":"max_turns","turns":state.turn}));
+            terminal = true;
+            break;
+        }
+        if did_end { print_boundary(&state, &units); }
+    }
+    if !terminal && state.check_winner().is_none() {
+        println!("{}", json!({"type":"game_end","reason":"eof","turns":state.turn}));
+    }
+}
+
 fn main() {
     let c = parse_args();
 
     if c.scripted {
         scripted_game(&c);
     } else {
-        interactive_game(&c);
+        interactive_protocol_game(&c);
     }
 }

@@ -132,6 +132,8 @@ fn action_err_code(e: ActionError) -> i32 {
         ActionError::UnitAlreadyMoved => -5,
         ActionError::DestinationUnreachable => -6,
         ActionError::NotAdjacent => -7,
+        ActionError::FriendlyTarget => -12,
+        ActionError::UnitAlreadyAttacked => -14,
         ActionError::NotEnoughGold => -8,
         ActionError::DestinationNotCastle => -9,
         ActionError::LeaderNotOnKeep => -10,
@@ -638,7 +640,7 @@ pub unsafe extern "C" fn norrust_recruit_unit_at(
         return -1;
     };
     match apply_recruit(state, unit, destination, cost) {
-        Ok(()) => {
+        Ok(_) => {
             e.state_cache = None;
             uid as i32
         }
@@ -736,7 +738,7 @@ pub unsafe extern "C" fn norrust_ai_recruit(
 
         let Some(state) = e.game.as_mut() else { break };
         match apply_recruit(state, unit, destination, cost) {
-            Ok(()) => {
+            Ok(_) => {
                 recruited += 1;
                 *recruited_counts.entry(did.clone()).or_insert(0) += 1;
                 rotation_idx += 1;
@@ -1018,7 +1020,7 @@ pub unsafe extern "C" fn norrust_apply_move(
                 destination: Hex::from_offset(col, row),
             },
         ) {
-            Ok(()) => 0,
+            Ok(_) => 0,
             Err(err) => action_err_code(err),
         }
     })
@@ -1038,7 +1040,7 @@ pub unsafe extern "C" fn norrust_apply_attack(
                 defender_id: defender_id as u32,
             },
         ) {
-            Ok(()) => 0,
+            Ok(_) => 0,
             Err(err) => action_err_code(err),
         }
     })
@@ -1155,7 +1157,7 @@ pub unsafe extern "C" fn norrust_apply_advance(
 pub unsafe extern "C" fn norrust_end_turn(engine: *mut NorRustEngine) -> i32 {
     with_game_mut!(engine, _e, state, -1, {
         match apply_action(state, Action::EndTurn) {
-            Ok(()) => 0,
+            Ok(_) => 0,
             Err(err) => action_err_code(err),
         }
     })
@@ -1192,7 +1194,7 @@ pub unsafe extern "C" fn norrust_apply_action_json(
                     return -1;
                 };
                 let result = match apply_action(state, other.into()) {
-                    Ok(()) => 0,
+                    Ok(_) => 0,
                     Err(err) => action_err_code(err),
                 };
                 e.state_cache = None;

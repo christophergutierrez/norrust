@@ -4,23 +4,57 @@ use std::collections::HashMap;
 
 use crate::board::Board;
 use crate::combat::{resolve_attack, time_of_day, tod_damage_modifier, Rng};
+use crate::events::{AttackUnitEvent, GameEvent, OffsetHex};
 use crate::hex::Hex;
-use crate::pathfinding::{find_path, get_zoc_hexes};
+use crate::pathfinding::{find_path, get_zoc_hexes, reachable_hexes};
 use crate::unit::{has_special, Unit};
 
 /// Errors returned by `apply_action` and `apply_recruit` when an action is invalid.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ActionError {
+    #[error("unit {0} was not found")]
     UnitNotFound(u32),
+    #[error("it is not this unit's turn")]
     NotYourTurn,
+    #[error("destination is out of bounds")]
     DestinationOutOfBounds,
+    #[error("destination is occupied")]
     DestinationOccupied,
+    #[error("unit has already moved")]
     UnitAlreadyMoved,
+    #[error("destination is unreachable")]
     DestinationUnreachable,
+    #[error("units are not in attack range")]
     NotAdjacent,
+    #[error("defender belongs to the same faction")]
+    FriendlyTarget,
+    #[error("unit has already attacked")]
+    UnitAlreadyAttacked,
+    #[error("not enough gold")]
     NotEnoughGold,
+    #[error("destination is not a castle")]
     DestinationNotCastle,
+    #[error("recruiting leader is not on a keep")]
     LeaderNotOnKeep,
+}
+
+impl ActionError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::UnitNotFound(_) => "UnitNotFound",
+            Self::NotYourTurn => "NotYourTurn",
+            Self::DestinationOutOfBounds => "DestinationOutOfBounds",
+            Self::DestinationOccupied => "DestinationOccupied",
+            Self::UnitAlreadyMoved => "UnitAlreadyMoved",
+            Self::DestinationUnreachable => "DestinationUnreachable",
+            Self::NotAdjacent => "NotAdjacent",
+            Self::FriendlyTarget => "FriendlyTarget",
+            Self::UnitAlreadyAttacked => "UnitAlreadyAttacked",
+            Self::NotEnoughGold => "NotEnoughGold",
+            Self::DestinationNotCastle => "DestinationNotCastle",
+            Self::LeaderNotOnKeep => "LeaderNotOnKeep",
+        }
+    }
 }
 
 /// A unit waiting to be spawned when a trigger zone fires.
@@ -193,11 +227,43 @@ pub fn leadership_bonus(state: &GameState, unit_id: u32) -> u32 {
     best_diff * 25
 }
 
+/// Canonical legal destinations for a unit's current move.
+pub fn legal_moves(state: &GameState, unit_id: u32) -> Result<Vec<Hex>, ActionError> {
+    let unit = state.units.get(&unit_id).ok_or(ActionError::UnitNotFound(unit_id))?;
+    if unit.faction != state.active_faction { return Err(ActionError::NotYourTurn); }
+    if unit.moved { return Ok(Vec::new()); }
+    let from = *state.positions.get(&unit_id).ok_or(ActionError::UnitNotFound(unit_id))?;
+    let movement = if unit.slowed { unit.movement / 2 } else { unit.movement };
+    let zoc = get_zoc_hexes(state, unit.faction);
+    let mut result = reachable_hexes(&state.board, &unit.movement_costs, 1, from, movement, &zoc, false)
+        .into_iter().filter(|h| *h != from && !state.hex_to_unit.contains_key(h)).collect::<Vec<_>>();
+    result.sort_by_key(|h| { let (c,r)=h.to_offset(); (r,c) });
+    Ok(result)
+}
+
+/// Enemies attackable from a current or legal ghost position.
+pub fn legal_targets(state: &GameState, unit_id: u32, from: Hex) -> Result<Vec<u32>, ActionError> {
+    let unit = state.units.get(&unit_id).ok_or(ActionError::UnitNotFound(unit_id))?;
+    if unit.faction != state.active_faction { return Err(ActionError::NotYourTurn); }
+    if unit.attacked { return Ok(Vec::new()); }
+    let current = *state.positions.get(&unit_id).ok_or(ActionError::UnitNotFound(unit_id))?;
+    if from != current && !legal_moves(state, unit_id)?.contains(&from) { return Err(ActionError::DestinationUnreachable); }
+    let mut result = state.positions.iter().filter_map(|(&id, &hex)| {
+        if id == unit_id || hex.distance(from) > 2 || hex.distance(from) < 1 { return None; }
+        let target = state.units.get(&id)?;
+        if target.faction == unit.faction { return None; }
+        let range = if hex.distance(from) == 1 { "melee" } else { "ranged" };
+        unit.attacks.iter().any(|a| a.range == range).then_some(id)
+    }).collect::<Vec<_>>();
+    result.sort_unstable();
+    Ok(result)
+}
+
 /// Validate and apply `action` to `state`, mutating it in place.
 ///
 /// Returns `Ok(())` on success or an `ActionError` describing why the
 /// action was rejected. State is unchanged on error.
-pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionError> {
+pub fn apply_action(state: &mut GameState, action: Action) -> Result<Vec<GameEvent>, ActionError> {
     match action {
         Action::Move {
             unit_id,
@@ -246,7 +312,8 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                 }
             }
 
-            if let Some(&old_hex) = state.positions.get(&unit_id) {
+            let old_hex = state.positions.get(&unit_id).copied().unwrap_or(destination);
+            if state.positions.contains_key(&unit_id) {
                 state.hex_to_unit.remove(&old_hex);
             }
             state.positions.insert(unit_id, destination);
@@ -255,25 +322,35 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
 
             // Check trigger zones: spawn enemies if a matching zone is entered
             let mover_faction = state.active_faction;
-            let mut spawns_to_place: Vec<PendingSpawn> = Vec::new();
-            for tz in &mut state.trigger_zones {
+            let mut spawns_to_place: Vec<(usize, PendingSpawn)> = Vec::new();
+            for (trigger, tz) in state.trigger_zones.iter_mut().enumerate() {
                 if !tz.triggered
                     && tz.trigger_hex == destination
                     && tz.trigger_faction == mover_faction
                 {
                     tz.triggered = true;
-                    spawns_to_place.extend(tz.spawns.drain(..));
+                    spawns_to_place.extend(tz.spawns.drain(..).map(|spawn| (trigger, spawn)));
                 }
             }
-            for spawn in spawns_to_place {
+            let mut events = vec![GameEvent::Move {
+                unit: unit_id,
+                from: OffsetHex::new(old_hex.to_offset().0, old_hex.to_offset().1),
+                to: OffsetHex::new(destination.to_offset().0, destination.to_offset().1),
+            }];
+            for (trigger, spawn) in spawns_to_place {
                 if state.board.contains(spawn.destination)
                     && !state.hex_to_unit.contains_key(&spawn.destination)
                 {
+                    let id = spawn.unit.id;
+                    let (col, row) = spawn.destination.to_offset();
+                    let def_id = spawn.unit.def_id.clone();
+                    let faction = spawn.unit.faction;
                     state.place_unit(spawn.unit, spawn.destination);
+                    events.push(GameEvent::Spawn { unit: id, def_id, faction, col, row, trigger });
                 }
             }
 
-            Ok(())
+            Ok(events)
         }
 
         Action::Attack {
@@ -290,7 +367,10 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                     return Err(ActionError::NotYourTurn);
                 }
                 if attacker.attacked {
-                    return Err(ActionError::UnitAlreadyMoved);
+                    return Err(ActionError::UnitAlreadyAttacked);
+                }
+                if let Some(defender) = state.units.get(&defender_id) {
+                    if defender.faction == attacker.faction { return Err(ActionError::FriendlyTarget); }
                 }
             }
 
@@ -312,10 +392,16 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
             };
 
             let attack = {
-                let unit = state.units.get(&attacker_id).unwrap();
+                let unit = state.units.get(&attacker_id).unwrap().clone();
                 if unit.attacks.is_empty() {
                     state.units.get_mut(&attacker_id).unwrap().attacked = true;
-                    return Ok(());
+                    let a = unit.clone();
+                    let d = state.units.get(&defender_id).cloned().ok_or(ActionError::UnitNotFound(defender_id))?;
+                    return Ok(vec![GameEvent::Attack {
+                        attacker: AttackUnitEvent { unit: a.id, hp: a.hp, xp: a.xp, killed: false, poisoned: a.poisoned, slowed: a.slowed },
+                        defender: AttackUnitEvent { unit: d.id, hp: d.hp, xp: d.xp, killed: false, poisoned: d.poisoned, slowed: d.slowed },
+                        damage_to_defender: 0, damage_to_attacker: 0,
+                    }]);
                 }
                 unit.attacks
                     .iter()
@@ -577,10 +663,22 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                 }
             }
 
-            Ok(())
+            let attacker_event = state.units.get(&attacker_id).map(|u| AttackUnitEvent {
+                unit: attacker_id, hp: u.hp, xp: u.xp, killed: false, poisoned: u.poisoned, slowed: u.slowed,
+            }).unwrap_or(AttackUnitEvent { unit: attacker_id, hp: 0, xp: 0, killed: true, poisoned: false, slowed: false });
+            let defender_event = state.units.get(&defender_id).map(|u| AttackUnitEvent {
+                unit: defender_id, hp: u.hp, xp: u.xp, killed: false, poisoned: u.poisoned, slowed: u.slowed,
+            }).unwrap_or(AttackUnitEvent { unit: defender_id, hp: 0, xp: 0, killed: true, poisoned: false, slowed: false });
+            Ok(vec![GameEvent::Attack {
+                attacker: attacker_event,
+                defender: defender_event,
+                damage_to_defender: damage,
+                damage_to_attacker: 0,
+            }])
         }
 
         Action::EndTurn => {
+            let mut events = Vec::new();
             // Capture villages where the ending faction's units are standing.
             // Ownership persists after the unit leaves until an enemy ends a turn on it.
             let ending_faction = state.active_faction as i8;
@@ -597,8 +695,12 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                         .unwrap_or(false)
                 })
                 .collect();
+            let mut captures = captures;
+            captures.sort_by_key(|h| { let (c,r)=h.to_offset(); (r,c) });
             for hex in captures {
                 state.village_owners.insert(hex, ending_faction);
+                let (col,row)=hex.to_offset();
+                events.push(GameEvent::Village { col, row, owner: ending_faction as u8 });
             }
 
             // Poison tick for ending faction: village cures, otherwise 8 damage
@@ -620,8 +722,10 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                 let unit = state.units.get_mut(&uid).unwrap();
                 if on_village {
                     unit.poisoned = false;
+                    events.push(GameEvent::Poison { unit: uid, damage: 0, hp: unit.hp, cured: true, killed: false });
                 } else {
                     unit.hp = unit.hp.saturating_sub(8);
+                    events.push(GameEvent::Poison { unit: uid, damage: 8, hp: unit.hp, cured: false, killed: unit.hp == 0 });
                     if unit.hp == 0 {
                         poison_dead.push(uid);
                     }
@@ -642,6 +746,12 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
             }
 
             // Clear slowed for newly active faction (slow wears off at start of your turn)
+            let mut slow_ids: Vec<u32> = state.units.iter().filter_map(|(&id,u)| (u.faction == state.active_faction && u.slowed).then_some(id)).collect();
+            slow_ids.sort_unstable();
+            for uid in slow_ids {
+                state.units.get_mut(&uid).unwrap().slowed = false;
+                events.push(GameEvent::Slow { unit: uid, slowed: false, reason: "turn_start".into() });
+            }
             for unit in state.units.values_mut() {
                 if unit.faction == state.active_faction && unit.slowed {
                     unit.slowed = false;
@@ -657,6 +767,7 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                 .count() as u32
                 * 2;
             state.gold[state.active_faction as usize] += income;
+            if income > 0 { events.push(GameEvent::Gold { faction: state.active_faction, delta: income as i32, balance: state.gold[state.active_faction as usize], reason: "village_income".into() }); }
 
             for unit in state.units.values_mut() {
                 unit.moved = false;
@@ -665,24 +776,27 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
 
             // Heal units of the newly-active faction based on their terrain.
             let active = state.active_faction;
-            let to_heal: Vec<u32> = state
+            let mut to_heal: Vec<u32> = state
                 .units
                 .iter()
                 .filter(|(_, u)| u.faction == active)
                 .map(|(id, _)| *id)
                 .collect();
+            to_heal.sort_unstable();
             for uid in to_heal {
                 if let Some(&hex) = state.positions.get(&uid) {
                     let healing = state.board.tile_at(hex).map(|t| t.healing).unwrap_or(0);
                     if healing > 0 {
                         let unit = state.units.get_mut(&uid).unwrap();
+                        let before = unit.hp;
                         unit.hp = (unit.hp + healing).min(unit.max_hp);
+                        if unit.hp != before { events.push(GameEvent::Heal { unit: uid, amount: unit.hp-before, hp: unit.hp, reason: "terrain".into() }); }
                     }
                 }
             }
 
             // Regenerates: units with "regenerates_N" ability heal N HP and cure poison
-            let regen_units: Vec<(u32, u32)> = state
+            let mut regen_units: Vec<(u32, u32)> = state
                 .units
                 .iter()
                 .filter(|(_, u)| u.faction == active)
@@ -697,13 +811,21 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<(), ActionE
                     None
                 })
                 .collect();
+            regen_units.sort_by_key(|(id,_)| *id);
             for (uid, heal_amount) in regen_units {
                 let unit = state.units.get_mut(&uid).unwrap();
+                let before = unit.hp;
                 unit.hp = (unit.hp + heal_amount).min(unit.max_hp);
                 unit.poisoned = false;
+                if unit.hp != before { events.push(GameEvent::Heal { unit: uid, amount: unit.hp-before, hp: unit.hp, reason: "regenerates".into() }); }
             }
 
-            Ok(())
+            events.push(GameEvent::EndTurn {
+                ended_faction: ending_faction as u8,
+                active_faction: state.active_faction,
+                turn: state.turn,
+            });
+            Ok(events)
         }
     }
 }
@@ -717,12 +839,13 @@ pub fn apply_recruit(
     unit: Unit,
     destination: Hex,
     cost: u32,
-) -> Result<(), ActionError> {
+) -> Result<Vec<GameEvent>, ActionError> {
     if !state.board.contains(destination) {
         return Err(ActionError::DestinationOutOfBounds);
     }
     // The active faction's leader (unit with "leader" ability) must be on a keep tile.
     let active = state.active_faction;
+    if unit.faction != active { return Err(ActionError::NotYourTurn); }
     let keep_hex = state.positions.iter().find_map(|(&uid, &hex)| {
         let unit = state.units.get(&uid)?;
         if unit.faction != active {
@@ -754,8 +877,12 @@ pub fn apply_recruit(
         return Err(ActionError::NotEnoughGold);
     }
     state.gold[faction] -= cost;
+    let id = unit.id;
+    let def_id = unit.def_id.clone();
+    let faction = unit.faction;
+    let (col, row) = destination.to_offset();
     state.place_unit(unit, destination);
-    Ok(())
+    Ok(vec![GameEvent::Recruit { unit: id, def_id, faction, col, row, cost }])
 }
 
 #[cfg(test)]
@@ -787,7 +914,7 @@ mod tests {
                 destination: dest,
             },
         );
-        assert_eq!(result, Ok(()));
+        assert!(result.is_ok());
         assert_eq!(state.positions[&1], dest);
         assert!(state.units[&1].moved);
     }
@@ -901,7 +1028,7 @@ mod tests {
                 defender_id: 2,
             },
         );
-        assert_eq!(result, Ok(()));
+        assert!(result.is_ok());
         assert!(
             !state.units.contains_key(&2),
             "defender must be removed after death"

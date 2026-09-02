@@ -124,7 +124,7 @@ fn ai_recruit(
 
         let unit = Unit::from_def(*next_id, def, faction);
         match apply_recruit(state, unit, dest_hex, cost) {
-            Ok(()) => {
+            Ok(_) => {
                 *next_id += 1;
             }
             Err(_) => break,

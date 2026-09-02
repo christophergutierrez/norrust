@@ -62,7 +62,7 @@ All functions take an opaque `NorRustEngine*` pointer as their first argument (e
 
 | Function | Signature | Returns | Description |
 |----------|-----------|---------|-------------|
-| `norrust_recruit_unit_at` | `(*engine, unit_id, *def_id, col, row) -> i32` | 0=ok, negative=error | Recruit a unit at a castle hex |
+| `norrust_recruit_unit_at` | `(*engine, *def_id, col, row) -> i32` | positive unit id, negative error | Recruit a unit at a castle hex |
 | `norrust_ai_recruit` | `(*engine, *faction_id, start_unit_id) -> i32` | Next available unit ID | AI auto-recruitment for a faction |
 | `norrust_apply_starting_gold` | `(*engine, *f0_id, *f1_id) -> i32` | 1=ok | Set starting gold from faction definitions |
 
@@ -102,7 +102,7 @@ All functions take an opaque `NorRustEngine*` pointer as their first argument (e
 | `norrust_apply_move` | `(*engine, unit_id, col, row) -> i32` | 0=ok | Move unit to hex |
 | `norrust_apply_attack` | `(*engine, attacker_id, defender_id) -> i32` | 0=ok | Attack adjacent enemy |
 | `norrust_get_advance_options` | `(*engine, unit_id) -> *char` | JSON array | Get available advancement choices |
-| `norrust_apply_advance` | `(*engine, unit_id) -> i32` | 0=ok | Advance (promote) a unit |
+| `norrust_apply_advance` | `(*engine, unit_id, target_index) -> i32` | 0=ok, negative error | Advance (promote) a unit |
 | `norrust_end_turn` | `(*engine) -> i32` | 0=ok | End current faction's turn |
 | `norrust_apply_action_json` | `(*engine, *json) -> i32` | 0=ok | Submit action as JSON string |
 
@@ -132,7 +132,7 @@ All functions take an opaque `NorRustEngine*` pointer as their first argument (e
 | Function | Signature | Returns | Description |
 |----------|-----------|---------|-------------|
 | `norrust_save_json` | `(*engine) -> *char` | JSON | Serialize full game state to JSON |
-| `norrust_load_json` | `(*engine, *json) -> i32` | 1=ok | Restore game state from JSON |
+| `norrust_load_json` | `(*engine, *json) -> i32` | 0=ok, -1=failure | Restore game state from JSON |
 | `norrust_set_faction_gold` | `(*engine, faction, gold)` | void | Set faction's gold directly |
 | `norrust_set_turn` | `(*engine, turn)` | void | Set current turn number |
 | `norrust_set_active_faction` | `(*engine, faction)` | void | Set the active faction |

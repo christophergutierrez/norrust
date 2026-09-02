@@ -1,6 +1,8 @@
 //! Combat resolution with deterministic RNG, time-of-day modifiers, and Monte Carlo simulation.
 
 use crate::schema::AttackDef;
+use crate::game_state::GameState;
+use crate::hex::Hex;
 use crate::unit::{has_special, Alignment, Unit};
 
 /// Time of day phase — drives alignment-based damage modifiers.
@@ -26,6 +28,12 @@ pub fn time_of_day(turn: u32) -> TimeOfDay {
         4 | 5 => TimeOfDay::Night,
         _ => TimeOfDay::Neutral,
     }
+}
+
+/// Six-phase playbook labels; Day and Night intentionally each occur twice.
+pub fn tod_phase(turn: u32) -> u8 { turn.saturating_sub(1) as u8 % 6 }
+pub fn tod_label(turn: u32) -> &'static str {
+    match tod_phase(turn) { 0 => "Dawn", 1 | 2 => "Day", 3 => "Dusk", 4 | 5 => "Night", _ => unreachable!() }
 }
 
 /// Damage modifier in percentage points for the given alignment at this time of day.
@@ -128,6 +136,41 @@ pub struct CombatPreview {
     pub defender_hp: u32,
     pub attacker_terrain_defense: u32,
     pub defender_terrain_defense: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PreviewError {
+    #[error("unit not found")]
+    UnitNotFound,
+    #[error("ghost position is invalid")]
+    InvalidGhost,
+    #[error("target belongs to the same faction")]
+    FriendlyTarget,
+    #[error("units are out of attack range")]
+    OutOfRange,
+    #[error("n_sims must be between 1 and 1000")]
+    InvalidNSims,
+}
+
+/// Preview an engagement with the attacker standing on `ghost_hex`.
+pub fn preview_combat(state: &GameState, attacker_id: u32, defender_id: u32, ghost_hex: Hex, n_sims: u32) -> Result<CombatPreview, PreviewError> {
+    if !(1..=1000).contains(&n_sims) { return Err(PreviewError::InvalidNSims); }
+    let attacker = state.units.get(&attacker_id).ok_or(PreviewError::UnitNotFound)?;
+    let defender = state.units.get(&defender_id).ok_or(PreviewError::UnitNotFound)?;
+    if attacker.faction == defender.faction { return Err(PreviewError::FriendlyTarget); }
+    let defender_hex = *state.positions.get(&defender_id).ok_or(PreviewError::UnitNotFound)?;
+    if !state.board.contains(ghost_hex) { return Err(PreviewError::InvalidGhost); }
+    let dist = ghost_hex.distance(defender_hex);
+    let range = match dist { 1 => "melee", 2 => "ranged", _ => return Err(PreviewError::OutOfRange) };
+    if !attacker.attacks.iter().any(|a| a.range == range) { return Err(PreviewError::OutOfRange); }
+    let atk_def = state.board.tile_at(ghost_hex).map(|t| attacker.defense.get(&t.terrain_id).copied().unwrap_or(t.defense)).unwrap_or(attacker.default_defense);
+    let def_def = state.board.tile_at(defender_hex).map(|t| defender.defense.get(&t.terrain_id).copied().unwrap_or(t.defense)).unwrap_or(defender.default_defense);
+    let mut ghost_state = state.clone();
+    ghost_state.positions.insert(attacker_id, ghost_hex);
+    let leadership = crate::game_state::leadership_bonus(&ghost_state, attacker_id);
+    let def_leadership = crate::game_state::leadership_bonus(state, defender_id);
+    let flanked = false;
+    Ok(simulate_combat(attacker, defender, atk_def, def_def, state.turn, n_sims, range, flanked, leadership, def_leadership))
 }
 
 /// Run `num_simulations` Monte Carlo combat simulations without mutating game state.
@@ -405,6 +448,8 @@ mod tests {
             poisoned: false,
             slowed: false,
             vision_range: 0,
+            cost: 0,
+            advances_to: Vec::new(),
         };
         let defender = Unit {
             id: 2,
@@ -429,6 +474,8 @@ mod tests {
             poisoned: false,
             slowed: false,
             vision_range: 0,
+            cost: 0,
+            advances_to: Vec::new(),
         };
         let preview = simulate_combat(&attacker, &defender, 40, 50, 1, 1000, "melee", false, 0, 0);
 
