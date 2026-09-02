@@ -22,13 +22,14 @@ use norrust_core::board::Tile;
 use norrust_core::combat::preview_combat;
 use norrust_core::events::GameEvent;
 use norrust_core::game_state::{
-    apply_action, apply_advance, apply_recruit, Action, AdvanceTarget, GameState,
+    apply_action, apply_advance, apply_recruit, Action, AdvanceTarget, GameState, PendingSpawn,
+    TriggerZone,
 };
 use norrust_core::game_state::{legal_moves, legal_targets};
 use norrust_core::hex::Hex;
 use norrust_core::loader::{expand_recruits, Registry};
 use norrust_core::pathfinding::{get_zoc_hexes, reachable_hexes};
-use norrust_core::scenario::load_board;
+use norrust_core::scenario::{load_board, load_units_file};
 use norrust_core::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
 use norrust_core::unit::Unit;
 use serde_json::{json, Value};
@@ -421,6 +422,35 @@ fn init_game(c: &Config) -> (GameState, Faction, Faction, Registry<UnitDef>) {
         Unit::from_def(2, units.get(&f1.def.leader_def).unwrap(), 1),
         k1,
     );
+
+    // Load scenario triggers only. Scenario unit placements and scenario win
+    // conditions belong to campaign setup and must not contaminate this duel.
+    let units_path = base.join("scenarios").join(&c.scenario).join("units.toml");
+    if units_path.exists() {
+        if let Ok(units_def) = load_units_file(&units_path) {
+            for trigger in units_def.triggers {
+                let spawns = trigger
+                    .spawns
+                    .iter()
+                    .filter_map(|spawn| {
+                        let def = units.get(&spawn.unit_type)?;
+                        let id = state.next_unit_id;
+                        state.next_unit_id += 1;
+                        Some(PendingSpawn {
+                            unit: Unit::from_def(id, def, spawn.faction),
+                            destination: Hex::from_offset(spawn.col, spawn.row),
+                        })
+                    })
+                    .collect();
+                state.trigger_zones.push(TriggerZone {
+                    trigger_hex: Hex::from_offset(trigger.trigger_col, trigger.trigger_row),
+                    trigger_faction: trigger.trigger_faction,
+                    spawns,
+                    triggered: false,
+                });
+            }
+        }
+    }
 
     state.gold = [c.gold, c.gold];
     state.faction_ids = [f0.def.id.clone(), f1.def.id.clone()];
