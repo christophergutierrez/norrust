@@ -2196,4 +2196,33 @@ mod tests {
         let snap = StateSnapshot::from_game_state(&state);
         assert_eq!(snap.units[0].level, 2);
     }
+
+    #[test]
+    fn test_recruiter_loss_wins_without_eliminating_army() {
+        let mut state = GameState::new(Board::new(4, 3));
+        let mut recruiter = Unit::new(1, "commander", 1, 0);
+        recruiter.can_recruit = true;
+        state.place_unit(recruiter, Hex::from_offset(0, 0));
+        state.place_unit(Unit::new(2, "soldier", 10, 0), Hex::from_offset(1, 0));
+        let mut enemy_recruiter = Unit::new(3, "enemy_commander", 10, 1);
+        enemy_recruiter.can_recruit = true;
+        state.place_unit(enemy_recruiter, Hex::from_offset(3, 2));
+        state.place_unit(Unit::new(4, "enemy_soldier", 10, 1), Hex::from_offset(2, 2));
+
+        state.positions.remove(&1);
+        state.hex_to_unit.retain(|_, id| *id != 1);
+        state.units.remove(&1);
+
+        assert_eq!(state.check_winner(), Some(1));
+    }
+
+    #[test]
+    fn test_both_recruiters_lost_does_not_choose_by_faction_order() {
+        let mut state = GameState::new(Board::new(4, 3));
+        state.had_recruiter = [true, true];
+        state.place_unit(Unit::new(1, "soldier", 10, 0), Hex::from_offset(0, 0));
+        state.place_unit(Unit::new(2, "soldier", 10, 1), Hex::from_offset(3, 2));
+
+        assert_eq!(state.check_winner(), None);
+    }
 }

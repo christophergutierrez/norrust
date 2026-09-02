@@ -208,4 +208,21 @@ mod tests {
         );
         assert!(!unit.advancement_pending);
     }
+
+    #[test]
+    fn test_recruiter_flag_survives_advancement() {
+        let mut unit = Unit::new(1, "commander", 30, 0);
+        unit.can_recruit = true;
+        let promoted = UnitDef {
+            id: "promoted".into(),
+            max_hp: 35,
+            advances_to: vec![],
+            ..Default::default()
+        };
+
+        advance_unit(&mut unit, &promoted);
+
+        assert!(unit.can_recruit);
+        assert!(unit.abilities.is_empty());
+    }
 }
