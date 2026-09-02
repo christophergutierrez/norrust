@@ -1553,7 +1553,10 @@ fn interactive_protocol_game(c: &Config) {
         for order in orders {
             let action_name = order.get("action").and_then(Value::as_str);
             if did_end {
-                results.push(json!({"ok":false,"code":"game_over","skipped":true}));
+                // A mid-batch recruiter kill (or elimination) already ended the
+                // game. Trailing actions, including the required final EndTurn,
+                // are no-ops: they must not fail the batch or roll back the win.
+                results.push(json!({"ok":true,"code":"game_over","skipped":true}));
                 continue;
             }
             if action_name == Some("RecruitBatch") && c.disable_recruit_batch {

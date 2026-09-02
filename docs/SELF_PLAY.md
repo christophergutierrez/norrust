@@ -132,7 +132,7 @@ new sample, use a disjoint range (for example `S+N`).
 | `--ai1` / `--ai2` | Role |
 | --- | --- |
 | `greedy` | Fast baseline: every reachable hex, expected-damage combat, ID order |
-| `greedy-look-ahead` | Slower: structured beam (keep, attacks, villages, defense, march), skip bad melee terrain trades, expected-damage scoring plus a local opponent reply, sit on keep/village instead of a losing trade. Leader fights unless this plan actually recruited. |
+| `greedy-look-ahead` | Slower: structured beam (keep, attacks, villages, defense, march), skip bad melee terrain trades, expected-damage scoring plus a local opponent reply, sit on keep/village instead of a losing trade. Recruiters stay on a keep and fight from it, or walk back if they are off keep. |
 | `random` | Legal-move uniform random |
 
 Look-ahead is ~40–50× slower than greedy on this map. Time 10 games before

@@ -175,11 +175,12 @@ There are two built-in planners (see [SELF_PLAY.md](SELF_PLAY.md) for how to
 run them headless):
 
 - **`greedy`** (`ai_take_turn_greedy`): every reachable hex, expected-damage
-  combat, no opponent reply. Fast.
+  combat, no opponent reply. Recruiters stay on a keep (or walk back). Fast.
 - **`greedy-look-ahead`**: structured candidate beam, skip bad melee terrain
-  trades, expected-damage scoring plus a local opponent reply. Slower and
-  stronger than greedy on `big_battle_6` (about 76% vs greedy in 200 Undead
-  games). In that sample it also won more often going second than going first.
+  trades, expected-damage scoring plus a local opponent reply. Recruiters stay
+  on a keep (or walk back). Slower and stronger than greedy on `big_battle_6`
+  (about 76% vs greedy in 200 Undead games). In that sample it also won more
+  often going second than going first.
 
 The greedy N=0 scorer:
 

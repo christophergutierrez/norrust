@@ -25,14 +25,12 @@ Report: opponent algorithm, who moved first, faction, scenario, gold, wins–los
 
 | Name in docs | What it does | How you actually face it |
 | --- | --- | --- |
-| **Greedy** | Each unit, in ID order: every reachable hex, expected-damage fight (`hit% × damage × strikes`, ×3 if that would kill), else walk toward the nearest enemy. No reply, no “is this forest?”, no focus fire, no village hunt. Fast. | `self-play --ai2 greedy`, or the headless LLM client described below. **Not** the Love2D “AI” controller. |
-| **Look-ahead** (`greedy-look-ahead`) | Same game, but scores a **structured beam** (current hex, attack tiles, villages, high defense, one march hex), drops bad melee terrain trades unless a kill is likely, uses expected damage (not one combat roll), and simulates nearby enemy replies. Slower. | Love2D opponent set to **AI**, and the agent-server command `ai_turn N`. Both call `norrust_ai_take_turn`, which is look-ahead. Also `self-play --ai2 greedy-look-ahead`. |
+| **Greedy** | Each unit, in ID order: every reachable hex, expected-damage fight (`hit% × damage × strikes`, ×3 if that would kill), else walk toward the nearest enemy. Recruiters stay on a keep and may attack from it, or walk back if off keep. No reply, no “is this forest?”, no focus fire, no village hunt. Fast. | `self-play --ai2 greedy`, or the headless LLM client described below. **Not** the Love2D “AI” controller. |
+| **Look-ahead** (`greedy-look-ahead`) | Same game, but scores a **structured beam** (current hex, attack tiles, villages, high defense, one march hex), drops bad melee terrain trades unless a kill is likely, uses expected damage (not one combat roll), and simulates nearby enemy replies. Recruiters stay on a keep (or return to it). Slower. | Love2D opponent set to **AI**, and the agent-server command `ai_turn N`. Both call `norrust_ai_take_turn`, which is look-ahead. Also `self-play --ai2 greedy-look-ahead`. |
 
-Greedy weaknesses to play against: it walks onto 30% flat to poke 60% castle; it does not stack attacks on one wounded unit; it does not park on villages; it does not respect ToD except insofar as damage numbers change this turn; it will leave the leader if a fight scores well.
+Greedy weaknesses to play against: it walks onto 30% flat to poke 60% castle; it does not stack attacks on one wounded unit; it does not park on villages; it does not respect ToD except insofar as damage numbers change this turn. It does **not** march the recruiter off the keep to chase a fight.
 
-That last one is worth more than it sounds, and it is measurable. Greedy can march its leader off the keep and stop recruiting. Any economy claim should cite a committed run log with its seed, command, and result.
-
-Two consequences for anyone designing a match. A side that keeps its own leader home out-produces greedy several-fold over a long game, so an equal-unit opening is **not** a symmetric position—it diverges in the other side's favour from turn 3. And greedy's lone leader is a high-value target that walks to you. Do not report a win over greedy as a tactical result without saying which of these did the work.
+If a log shows greedy's leader walking the map, that is a planner regression, not a documented baseline leak. Do not treat recruiter-hunting as the intended greedy match.
 
 Look-ahead is harder: it already likes villages, defense, and not taking stupid melee trades. It can still be baited if you threaten something its local 3-enemy / 7-hex reply window does not see, or if you win the economy and ToD war.
 
@@ -182,7 +180,7 @@ Other factions (Loyalists, Rebels, Northerners) are in `data/units/` and `data/f
 
 ## Starter strategy
 
-1. **Leader on keep, fill castle, then fight.** Recruits need the leader on the keep. After the castle is full, the leader can leave; if you want more recruits later, bring them back.
+1. **Leader on keep, fill castle, then fight.** Recruits need the leader on the keep. Built-in greedy and look-ahead keep the recruiter on the keep (and walk it back if it is already off). After the castle is full a human or model may still choose to leave; if you want more recruits later, bring them back.
 2. **Take villages and stay on them until they are yours.** End the turn on the hex. Heal there. Greedy often will not contest this on purpose.
 3. **Fight from forest, hills, village, castle.** Do not step onto flat to melee someone in a castle unless you will kill them. That is the main greedy leak.
 4. **Focus fire.** Pick one enemy you can finish this turn; pile on. Greedy picks a local best fight per unit and leaves wounded threats alive.

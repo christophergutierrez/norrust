@@ -469,6 +469,98 @@ fn leader_should_return_to_keep(state: &GameState, faction: u8, cheapest_cost: u
     Some(keep_hex)
 }
 
+fn hex_is_keep(state: &GameState, hex: Hex) -> bool {
+    state
+        .board
+        .tile_at(hex)
+        .map(|t| t.terrain_id == "keep")
+        .unwrap_or(false)
+}
+
+fn best_attack_from(state: &GameState, uid: u32, from: Hex, faction: u8) -> Option<u32> {
+    let unit = state.units.get(&uid)?;
+    let mut enemies: Vec<u32> = state
+        .units
+        .iter()
+        .filter(|(_, other)| other.faction != faction)
+        .map(|(&id, _)| id)
+        .collect();
+    enemies.sort_unstable();
+    let mut best_id = None;
+    let mut best_score = f32::NEG_INFINITY;
+    for eid in enemies {
+        let Some(&epos) = state.positions.get(&eid) else {
+            continue;
+        };
+        let Some(defender) = state.units.get(&eid) else {
+            continue;
+        };
+        if !can_engage(unit, from, epos) {
+            continue;
+        }
+        let score = score_attack(unit, from, defender, epos, state);
+        if score > best_score {
+            best_score = score;
+            best_id = Some(eid);
+        }
+    }
+    best_id
+}
+
+fn step_toward(state: &GameState, uid: u32, faction: u8, goal: Hex) -> Option<Hex> {
+    let start = *state.positions.get(&uid)?;
+    let unit = state.units.get(&uid)?;
+    let movement = if unit.slowed {
+        unit.movement / 2
+    } else {
+        unit.movement
+    };
+    let zoc = get_zoc_hexes(state, faction);
+    let reachable = reachable_hexes(
+        &state.board,
+        &unit.movement_costs,
+        1,
+        start,
+        movement,
+        &zoc,
+        false,
+    );
+    let occupied: HashSet<Hex> = state
+        .hex_to_unit
+        .iter()
+        .filter(|(_, &id)| id != uid)
+        .map(|(&h, _)| h)
+        .collect();
+    reachable
+        .iter()
+        .copied()
+        .filter(|&hex| hex != start && !occupied.contains(&hex))
+        .min_by_key(|hex| (hex.distance(goal), *hex))
+        .filter(|hex| hex.distance(goal) < start.distance(goal))
+}
+
+/// Recruiters stay on a keep and fight from it. Off keep, they walk back.
+fn plan_recruiter_action(
+    state: &GameState,
+    uid: u32,
+    faction: u8,
+) -> Option<(Hex, Option<u32>)> {
+    let start = *state.positions.get(&uid)?;
+    let unit = state.units.get(&uid)?;
+    if !unit.can_recruit || !greedy_unit_is_available(unit) {
+        return None;
+    }
+    if hex_is_keep(state, start) {
+        return Some((start, best_attack_from(state, uid, start, faction)));
+    }
+    if let Some(keep) = find_faction_keep(state, faction) {
+        if let Some(dest) = step_toward(state, uid, faction, keep) {
+            return Some((dest, best_attack_from(state, uid, dest, faction)));
+        }
+    }
+    Some((start, best_attack_from(state, uid, start, faction)))
+}
+
 // ── State evaluation ────────────────────────────────────────────────────────
 
 /// Evaluate a game state from the perspective of `faction`.
@@ -996,7 +1088,7 @@ fn simulate_recruitment(
 /// Returns (action_records, final_score).
 ///
 /// Order: non-leaders move first → recruit into freed castle slots → new recruits
-/// move → leader decides last (stay on keep if can recruit, else plan normally).
+/// move → leader decides last (stay on keep, or walk back to keep).
 fn run_turn_ordering(
     state: &GameState,
     faction: u8,
@@ -1011,8 +1103,7 @@ fn run_turn_ordering(
 
     // Initial recruitment
     let initial_recruits = simulate_recruitment(&mut clone, faction, recruit_defs);
-    let mut did_recruit = !initial_recruits.is_empty();
-    if did_recruit {
+    if !initial_recruits.is_empty() {
         records.push(ActionRecord::Recruit);
     }
 
@@ -1113,7 +1204,6 @@ fn run_turn_ordering(
         if new_ids.is_empty() {
             break;
         }
-        did_recruit = true;
         records.push(ActionRecord::Recruit);
         for &uid in &new_ids {
             if !clone.units.contains_key(&uid) {
@@ -1157,117 +1247,38 @@ fn run_turn_ordering(
         }
     }
 
-    // Leader decides last. Stay on keep only if this plan actually recruited.
+    // Leader decides last: stay on keep (and fight from it), or walk back to keep.
     if let Some(lid) = leader_id {
-        if clone.units.contains_key(&lid) && greedy_unit_is_available(&clone.units[&lid]) {
-            if did_recruit {
-                // Stay on keep, but attack adjacent enemies
-                let leader_hex = clone.positions[&lid];
-                let adjacent_enemy = clone
-                    .units
-                    .iter()
-                    .filter(|(_, u)| u.faction != faction)
-                    .find_map(|(&eid, _)| {
-                        let epos = clone.positions[&eid];
-                        if leader_hex.neighbors().contains(&epos) {
-                            Some(eid)
-                        } else {
-                            None
-                        }
-                    });
-                if let Some(eid) = adjacent_enemy {
-                    if clone.units.contains_key(&lid) && clone.units.contains_key(&eid) {
-                        records.push(ActionRecord::Attack {
-                            attacker_id: lid,
-                            defender_id: eid,
-                        });
-                        let _ = apply_action(
-                            &mut clone,
-                            Action::Attack {
-                                attacker_id: lid,
-                                defender_id: eid,
-                            },
-                        );
-                    }
-                }
-            } else if let Some(keep_hex) = _return_keep {
-                let start = clone.positions[&lid];
-                let unit_ref = &clone.units[&lid];
-                let movement = if unit_ref.slowed {
-                    unit_ref.movement / 2
-                } else {
-                    unit_ref.movement
-                };
-                let zoc = get_zoc_hexes(&clone, faction);
-                let keep_candidates = reachable_hexes(
-                    &clone.board,
-                    &clone.units[&lid].movement_costs,
-                    1,
-                    start,
-                    movement,
-                    &zoc,
-                    false,
-                );
-                let occupied: HashSet<Hex> = clone
-                    .hex_to_unit
-                    .iter()
-                    .filter(|(_, &id)| id != lid)
-                    .map(|(&h, _)| h)
-                    .collect();
-                if let Some(&march_dest) = keep_candidates
-                    .iter()
-                    .filter(|&&h| h != start && !occupied.contains(&h))
-                    .min_by_key(|&&c| c.distance(keep_hex))
-                {
-                    if march_dest.distance(keep_hex) < start.distance(keep_hex) {
-                        let (c, r) = march_dest.to_offset();
-                        records.push(ActionRecord::Move {
-                            unit_id: lid,
-                            to_col: c,
-                            to_row: r,
-                        });
-                        let _ = apply_action(
-                            &mut clone,
-                            Action::Move {
-                                unit_id: lid,
-                                destination: march_dest,
-                            },
-                        );
-                    }
-                }
-            } else if let Some((dest, target)) =
-                plan_unit_action(&clone, lid, faction, MACHINE_LOOKAHEAD_DEPTH)
-            {
-                let start = clone.positions[&lid];
-                if dest != start {
-                    let (c, r) = dest.to_offset();
-                    records.push(ActionRecord::Move {
+        if let Some((dest, target)) = plan_recruiter_action(&clone, lid, faction) {
+            let start = clone.positions[&lid];
+            if dest != start {
+                let (c, r) = dest.to_offset();
+                records.push(ActionRecord::Move {
+                    unit_id: lid,
+                    to_col: c,
+                    to_row: r,
+                });
+                let _ = apply_action(
+                    &mut clone,
+                    Action::Move {
                         unit_id: lid,
-                        to_col: c,
-                        to_row: r,
+                        destination: dest,
+                    },
+                );
+            }
+            if let Some(eid) = target {
+                if clone.units.contains_key(&lid) && clone.units.contains_key(&eid) {
+                    records.push(ActionRecord::Attack {
+                        attacker_id: lid,
+                        defender_id: eid,
                     });
                     let _ = apply_action(
                         &mut clone,
-                        Action::Move {
-                            unit_id: lid,
-                            destination: dest,
-                        },
-                    );
-                }
-                if let Some(eid) = target {
-                    if clone.units.contains_key(&lid) && clone.units.contains_key(&eid) {
-                        records.push(ActionRecord::Attack {
+                        Action::Attack {
                             attacker_id: lid,
                             defender_id: eid,
-                        });
-                        let _ = apply_action(
-                            &mut clone,
-                            Action::Attack {
-                                attacker_id: lid,
-                                defender_id: eid,
-                            },
-                        );
-                    }
+                        },
+                    );
                 }
             }
         }
@@ -1366,6 +1377,7 @@ pub fn ai_take_turn_greedy_lookahead(
 
 /// Fast baseline AI: process units in ID order and choose each unit's best
 /// immediate move or attack without simulating the opponent's reply.
+/// Recruiters stay on a keep (or walk back to one) instead of chasing fights.
 pub fn ai_take_turn_greedy(state: &mut GameState, faction: u8) {
     let _ = ai_take_turn_greedy_actions(state, faction);
     apply_action(state, Action::EndTurn).expect("EndTurn must always succeed");
@@ -1389,7 +1401,12 @@ pub fn ai_take_turn_greedy_actions(
         if !state.units.contains_key(&uid) || !greedy_unit_is_available(&state.units[&uid]) {
             continue;
         }
-        if let Some((dest, target)) = plan_unit_action(state, uid, faction, 1) {
+        let planned = if state.units[&uid].can_recruit {
+            plan_recruiter_action(state, uid, faction)
+        } else {
+            plan_unit_action(state, uid, faction, 1)
+        };
+        if let Some((dest, target)) = planned {
             if dest != state.positions[&uid] {
                 events.extend(apply_action(
                     state,
@@ -1945,6 +1962,68 @@ mod tests {
         assert!(
             leader_attacked,
             "Leader should attack when no gold: {:?}",
+            records
+        );
+        let leader_moved = records
+            .iter()
+            .any(|r| matches!(r, ActionRecord::Move { unit_id: 1, .. }));
+        assert!(
+            !leader_moved,
+            "Leader should still fight from the keep when gold is 0: {:?}",
+            records
+        );
+    }
+
+    #[test]
+    fn test_greedy_leader_stays_on_keep() {
+        let board = setup_keep_board(0, 0);
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+        state.gold[0] = 100;
+        let keep = Hex::from_offset(0, 0);
+        state.place_unit(make_leader(1, 0), keep);
+        state.place_unit(make_fighter(2, 1, 30), Hex::from_offset(3, 2));
+
+        ai_take_turn_greedy_actions(&mut state, 0).expect("greedy turn");
+        assert_eq!(
+            state.positions[&1], keep,
+            "greedy recruiter must not leave the keep to chase a fight"
+        );
+    }
+
+    #[test]
+    fn test_greedy_leader_stays_on_keep_without_gold() {
+        let board = setup_keep_board(0, 0);
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+        state.gold[0] = 0;
+        let keep = Hex::from_offset(0, 0);
+        state.place_unit(make_leader(1, 0), keep);
+        state.place_unit(make_fighter(2, 1, 30), Hex::from_offset(3, 2));
+
+        ai_take_turn_greedy_actions(&mut state, 0).expect("greedy turn");
+        assert_eq!(
+            state.positions[&1], keep,
+            "greedy recruiter must not leave the keep after gold is spent"
+        );
+    }
+
+    #[test]
+    fn test_lookahead_leader_stays_on_keep_without_gold() {
+        let board = setup_keep_board(0, 2);
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+        state.gold[0] = 0;
+        state.place_unit(make_leader(1, 0), Hex::from_offset(0, 2));
+        state.place_unit(make_fighter(2, 1, 30), Hex::from_offset(7, 2));
+
+        let records = ai_plan_turn(&state, 0, 15);
+        let leader_moved = records
+            .iter()
+            .any(|r| matches!(r, ActionRecord::Move { unit_id: 1, .. }));
+        assert!(
+            !leader_moved,
+            "look-ahead recruiter must not leave the keep when gold is 0, got: {:?}",
             records
         );
     }
@@ -2705,8 +2784,7 @@ mod tests {
         let enemy = make_fighter(2, 1, 30);
         state.place_unit(enemy, Hex::from_offset(7, 2));
 
-        // With recruit_defs, the planner simulates recruits so leader stays.
-        // But even without recruits, 2-ply leader should recognize leaving is bad.
+        // Recruiters stay on keep even without a simulated recruit wave.
         let records = ai_plan_turn(&state, 0, 15);
 
         // Leader should NOT move off keep
