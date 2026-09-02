@@ -47,7 +47,10 @@ class OrdersBackend(ModelBackend):
             raise RuntimeError("model_error: invalid or exhausted orders file") from exc
         if not isinstance(obj, dict) or not isinstance(obj.get("text"), str):
             raise RuntimeError("model_error: orders line must be a ModelReply object")
-        return ModelReply(obj["text"], obj.get("usage"))
+        usage = obj.get("usage")
+        if usage is not None and not isinstance(usage, dict):
+            raise RuntimeError("model_error: usage must be an object")
+        return ModelReply(obj["text"], usage)
 
 
 class CommandBackend(ModelBackend):
@@ -159,9 +162,13 @@ def enforce_usage(reply: ModelReply, args: argparse.Namespace) -> None:
     if reply.usage is None:
         return
     usage = reply.usage
+    if not isinstance(usage, dict):
+        raise RuntimeError("model_error: malformed usage")
     input_tokens = usage.get("input_tokens")
     output_tokens = usage.get("output_tokens")
-    if not isinstance(input_tokens, int) or not isinstance(output_tokens, int):
+    if (not isinstance(input_tokens, int) or isinstance(input_tokens, bool)
+            or not isinstance(output_tokens, int) or isinstance(output_tokens, bool)
+            or input_tokens < 0 or output_tokens < 0):
         raise RuntimeError("model_error: malformed usage")
     total = input_tokens + output_tokens
     if args.token_input_limit is not None and input_tokens > args.token_input_limit:

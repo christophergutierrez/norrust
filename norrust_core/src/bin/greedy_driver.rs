@@ -589,6 +589,20 @@ fn valid_action_shape(order: &Value) -> bool {
     let integer = |value: &Value| {
         !value.is_boolean() && (value.as_i64().is_some() || value.as_u64().is_some())
     };
+    let in_range = |field: &str, value: &Value| {
+        if matches!(
+            field,
+            "unit_id" | "attacker_id" | "defender_id" | "target_index" | "count"
+        ) {
+            value
+                .as_u64()
+                .is_some_and(|number| number <= u32::MAX as u64)
+        } else {
+            value
+                .as_i64()
+                .is_some_and(|number| (i32::MIN as i64..=i32::MAX as i64).contains(&number))
+        }
+    };
     let strings = match action {
         "Recruit" | "RecruitBatch" => ["def_id"].as_slice(),
         "Advance" => {
@@ -618,9 +632,11 @@ fn valid_action_shape(order: &Value) -> bool {
         && required.iter().all(|key| object.contains_key(*key))
         && (action != "Advance"
             || object.contains_key("target_index") != object.contains_key("def_id"))
-        && integer_fields
-            .iter()
-            .all(|field| object.get(*field).is_some_and(integer))
+        && integer_fields.iter().all(|field| {
+            object
+                .get(*field)
+                .is_some_and(|value| integer(value) && in_range(field, value))
+        })
         && strings
             .iter()
             .all(|field| object.get(*field).is_some_and(Value::is_string))

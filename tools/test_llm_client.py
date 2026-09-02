@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from .llm_client import prompt_for, query_options, run, validate_orders
+from .llm_client import ModelReply, enforce_usage, prompt_for, query_options, run, validate_orders
 
 
 class FakeDriverProcess:
@@ -108,6 +108,15 @@ class ClientValidationTests(unittest.TestCase):
         ]:
             with self.subTest(order=order), self.assertRaises(ValueError):
                 validate_orders(json.dumps([order, {"action": "EndTurn"}]))
+
+    def test_usage_metadata_rejects_wrong_type_boolean_and_negative_counts(self):
+        args = argparse.Namespace(token_input_limit=None, token_output_limit=None,
+                                  token_total_limit=None)
+        for usage in [[], {"input_tokens": True, "output_tokens": 1},
+                      {"input_tokens": -1, "output_tokens": 1},
+                      {"input_tokens": 1, "output_tokens": -1}]:
+            with self.subTest(usage=usage), self.assertRaises(RuntimeError):
+                enforce_usage(ModelReply("[]", usage), args)
 
     def test_query_options_are_singleton_and_preserve_success_body(self):
         calls = []

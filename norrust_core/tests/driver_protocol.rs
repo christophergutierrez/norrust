@@ -182,7 +182,7 @@ fn undead_recruitment_is_roster_gated_and_valid_recruitment_still_works() {
             "--gold",
             "100",
         ],
-        "{\"action\":\"Recruit\",\"def_id\":\"Skeleton\",\"col\":2,\"row\":6}\n",
+        "[{\"action\":\"Recruit\",\"def_id\":\"Skeleton\",\"col\":2,\"row\":6},{\"action\":\"EndTurn\"}]\n",
     );
     let accepted_status = accepted
         .iter()
@@ -234,7 +234,7 @@ fn recruit_batch_reports_actual_partial_progress_and_rejects_unknown_type() {
             "--gold",
             "15",
         ],
-        "{\"action\":\"RecruitBatch\",\"def_id\":\"Skeleton\",\"count\":2}\n",
+        "[{\"action\":\"RecruitBatch\",\"def_id\":\"Skeleton\",\"count\":2},{\"action\":\"EndTurn\"}]\n",
     );
     let partial_status = partial
         .iter()
