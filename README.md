@@ -124,16 +124,20 @@ optional `RecruitBatch` (string `def_id`, positive integer `count`), `Advance`
 `EndTurn` (`action` only). The configured model-side restriction includes
 `EndTurn` and referenced-unit ownership.
 
-The gameplay win precedence is scenario objective, scenario turn limit, recruiter
-loss, then elimination. Recruiter loss applies when exactly one side that
-previously had recruiting capability has no living recruiter; that side loses. If
-both or neither meet that predicate, evaluation falls through to elimination.
-Opponent execution failures are typed `game_end` results with
-`reason: "infrastructure_failure"`; the client records
-`infrastructure_invalid: true` and exits nonzero, never reporting a draw or win.
-`--max-turns` caps completed side-turns, distinct from the engine round counter and
-scenario limits; a failed greedy turn consumes neither a side turn nor normal
-state. An LLM win is neither guaranteed nor required. Balance tests are excluded.
+For this headless client, `greedy_driver` explicitly disables `objective_hex` and
+scenario turn-limit win conditions. Headless win evaluation is recruiter loss,
+then elimination: recruiter loss applies when exactly one side that previously
+had recruiting capability has no living recruiter; that side loses. If both or
+neither meet that predicate, evaluation falls through to elimination.
+`--max-turns` is an external safety cap on completed side-turns, distinct from the
+engine round counter and scenario rules. A completed model side-turn and a
+completed greedy side-turn each count once; a failed greedy turn adds no opponent
+side-turn, while the preceding completed model side-turn remains counted.
+Terminal reasons `winner` and `max_turns` are gameplay-valid. `setup_error`,
+`timeout`, `eof`, `infrastructure_failure`, and unknown or malformed terminal
+reasons are infrastructure-invalid; the client records
+`infrastructure_invalid: true` and exits nonzero. An LLM win is neither guaranteed
+nor required. Balance tests are excluded.
 
 For the lower-level C ABI, actions return integer codes: `0` = success and negative
 values are typed errors. See [docs/BRIDGE_API.md](docs/BRIDGE_API.md) for that

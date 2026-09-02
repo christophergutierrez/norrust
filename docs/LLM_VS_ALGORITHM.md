@@ -71,7 +71,11 @@ EndTurn      {action}
 
 Greedy recruitment, planning, actions, and its successful turn boundary form one transaction. A failure emits a typed `game_end` with `reason: "infrastructure_failure"`, a stable `code`, and a `message`, without committing state, events, allocated IDs, or side-turn accounting. The client records `infrastructure_invalid: true` and exits nonzero; the result is not a draw, win, or continuation.
 
-`--max-turns` is a completed-side-turn safety cap, distinct from the engine round counter and scenario turn limit. Each completed model turn and completed greedy turn increments it once. A failed greedy turn adds no side-turn count and is terminal; the preceding successful model turn remains counted.
+The headless driver explicitly disables `objective_hex` and scenario turn-limit win conditions. Headless win evaluation is recruiter loss, then elimination. Recruiter loss applies when exactly one side that previously had recruiting capability has no living recruiter; that side loses. If both sides or neither side meet that predicate, evaluation falls through to elimination. The broader GUI/campaign win rule below remains useful for those modes, but does not describe this driver.
+
+`--max-turns` is an external completed-side-turn safety cap, distinct from the engine round counter and scenario rules. Each completed model side-turn and completed greedy side-turn increments it once. A failed greedy turn adds no opponent side-turn and is terminal; the preceding completed model side-turn remains counted.
+
+For the headless client, terminal reasons `winner` and `max_turns` are gameplay-valid. `setup_error`, `timeout`, `eof`, `infrastructure_failure`, and unknown or malformed terminal reasons are infrastructure-invalid; the client exits nonzero and records `infrastructure_invalid: true`.
 
 ## How to play
 
@@ -136,7 +140,7 @@ Round clock: **both sides share the same ToD** on the same round (turn advances 
 
 **Keep / castle:** no gold. A recruiter on a **keep** recruits onto adjacent empty **castle** hexes for gold.
 
-**Win:** precedence is scenario objective, scenario turn limit, recruiter loss, then elimination. Recruiter loss applies when exactly one side that previously had recruiting capability has no living recruiter; that side loses. If both sides or neither side meet that predicate, winner evaluation falls through to elimination. This rule applies to `big_battle_6` too.
+**Win (GUI/campaign rules):** precedence is scenario objective, scenario turn limit, recruiter loss, then elimination. Recruiter loss applies when exactly one side that previously had recruiting capability has no living recruiter; that side loses. If both sides or neither side meet that predicate, winner evaluation falls through to elimination. This broader rule applies to GUI/campaign gameplay, including `big_battle_6`; the headless driver disables the first two conditions and uses recruiter loss then elimination.
 
 **XP:** 1 per hit landed, +8 for a kill. At `xp_needed`, advance (`A` or Advance action).
 

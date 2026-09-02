@@ -95,18 +95,26 @@ commit state, events, allocated IDs, or counters, print a normal boundary, or be
 empty events, a draw, a win, or continuation. Logs identify this with
 `infrastructure_invalid: true` and exits nonzero.
 
-The gameplay win rule has this precedence: scenario objective, scenario turn
-limit, recruiter loss, then elimination. Recruiter loss applies when exactly one
-side that previously had recruiting capability has no living recruiter; that side
-loses. If both sides or neither side meet that predicate, winner evaluation falls
-through to elimination. A gameplay result may also be a cap or loss; an LLM win is
-neither guaranteed nor required for a valid run.
+The headless driver explicitly disables `objective_hex` and scenario turn-limit
+win conditions. Its gameplay win evaluation is recruiter loss, then elimination.
+Recruiter loss applies when exactly one side that previously had recruiting
+capability has no living recruiter; that side loses. If both sides or neither side
+meet that predicate, evaluation falls through to elimination. This is the
+headless-client rule; broader GUI/campaign rules may also include scenario
+objectives and scenario turn limits.
 
-`--max-turns` is a completed-side-turn safety cap, not the engine's displayed round
-counter and not a scenario turn limit. One completed model turn and one completed
-greedy turn each increment it once. A failed greedy turn adds no side-turn count
-and is terminal; the preceding successful model turn remains counted. The terminal
-metadata records the configured cap and match conditions.
+`--max-turns` is an external completed-side-turn safety cap, not the engine's
+displayed round counter or a scenario turn limit. One completed model side-turn
+and one completed greedy side-turn each increment it once. A failed greedy turn
+adds no opponent side-turn and is terminal; the preceding completed model
+side-turn remains counted.
+
+Terminal reasons `winner` and `max_turns` are gameplay-valid. `setup_error`,
+`timeout`, `eof`, `infrastructure_failure`, and unknown or malformed terminal
+reasons are infrastructure-invalid; the client records
+`infrastructure_invalid: true` and exits nonzero. An LLM win is neither guaranteed
+nor required for a valid run. The terminal metadata records the configured cap and
+match conditions.
 
 Balance tests are explicitly excluded from this client milestone and must not be
 run.
