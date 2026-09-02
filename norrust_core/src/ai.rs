@@ -70,6 +70,10 @@ const LOCAL_RESPONSE_LIMIT: usize = 3;
 const LOCAL_RESPONSE_RADIUS: u32 = 7;
 const TERRAIN_TRADE_MARGIN: i32 = 15;
 
+fn greedy_unit_is_available(unit: &Unit) -> bool {
+    !unit.moved && !unit.attacked
+}
+
 /// Expected damage dealt by one attack exchange (floating-point HP).
 ///
 /// `resistance` is the defender's resistance to this attack type — positive
@@ -695,6 +699,9 @@ fn plan_unit_action(
 ) -> Option<(Hex, Option<u32>)> {
     let start = *state.positions.get(&uid)?;
     let unit = state.units.get(&uid)?;
+    if !greedy_unit_is_available(unit) {
+        return None;
+    }
     let movement = if unit.slowed {
         unit.movement / 2
     } else {
@@ -1014,7 +1021,7 @@ fn run_turn_ordering(
         if leader_id == Some(uid) {
             continue;
         } // Leader goes last
-        if !clone.units.contains_key(&uid) || clone.units[&uid].attacked {
+        if !clone.units.contains_key(&uid) || !greedy_unit_is_available(&clone.units[&uid]) {
             continue;
         }
 
@@ -1152,7 +1159,7 @@ fn run_turn_ordering(
 
     // Leader decides last. Stay on keep only if this plan actually recruited.
     if let Some(lid) = leader_id {
-        if clone.units.contains_key(&lid) && !clone.units[&lid].attacked {
+        if clone.units.contains_key(&lid) && greedy_unit_is_available(&clone.units[&lid]) {
             if did_recruit {
                 // Stay on keep, but attack adjacent enemies
                 let leader_hex = clone.positions[&lid];
@@ -1287,7 +1294,7 @@ fn plan_full_turn(
     let mut non_leader_ids: Vec<u32> = state
         .units
         .iter()
-        .filter(|(_, u)| u.faction == faction && !u.attacked)
+        .filter(|(_, u)| u.faction == faction && greedy_unit_is_available(u))
         .filter(|(&id, _)| leader_id != Some(id))
         .map(|(&id, _)| id)
         .collect();
@@ -1374,12 +1381,12 @@ pub fn ai_take_turn_greedy_actions(
     let mut ids: Vec<u32> = state
         .units
         .iter()
-        .filter(|(_, u)| u.faction == faction && !u.attacked)
+        .filter(|(_, u)| u.faction == faction && greedy_unit_is_available(u))
         .map(|(&id, _)| id)
         .collect();
     ids.sort_unstable();
     for uid in ids {
-        if !state.units.contains_key(&uid) || state.units[&uid].attacked {
+        if !state.units.contains_key(&uid) || !greedy_unit_is_available(&state.units[&uid]) {
             continue;
         }
         if let Some((dest, target)) = plan_unit_action(state, uid, faction, 1) {
@@ -1516,7 +1523,7 @@ pub fn start_planning(
     let mut non_leader_ids: Vec<u32> = state
         .units
         .iter()
-        .filter(|(_, u)| u.faction == faction && !u.attacked)
+        .filter(|(_, u)| u.faction == faction && greedy_unit_is_available(u))
         .filter(|(&id, _)| leader_id != Some(id))
         .map(|(&id, _)| id)
         .collect();
@@ -1608,6 +1615,98 @@ mod tests {
     use crate::game_state::GameState;
     use crate::schema::AttackDef;
     use crate::unit::Unit;
+
+    #[test]
+    fn greedy_transaction_discards_callback_mutations_and_events_on_failure() {
+        let mut state = GameState::new(Board::new(3, 3));
+        state.gold[0] = 25;
+        state.next_unit_id = 7;
+        let before = format!("{:?}", state);
+
+        let result = run_greedy_side_turn(
+            &mut state,
+            |working| {
+                working.gold[0] = 0;
+                working.next_unit_id += 1;
+                Err(GreedyTurnError::Callback("recruitment failed".to_string()))
+            },
+            |_| Ok(Vec::new()),
+        );
+
+        assert!(matches!(result, Err(GreedyTurnError::Callback(_))));
+        assert_eq!(format!("{:?}", state), before);
+    }
+
+    #[test]
+    fn greedy_transaction_preserves_action_errors_and_state_on_failure() {
+        let mut board = Board::new(3, 3);
+        for col in 0..3 {
+            for row in 0..3 {
+                board.set_terrain(Hex::from_offset(col, row), "flat");
+            }
+        }
+        let mut state = GameState::new(board);
+        state.active_faction = 1;
+        state.place_unit(Unit::new(1, "fighter", 10, 1), Hex::from_offset(1, 1));
+        state.place_unit(Unit::new(2, "fighter", 10, 0), Hex::from_offset(2, 1));
+        let before = format!("{:?}", state);
+
+        let result = run_greedy_side_turn(
+            &mut state,
+            |_| Ok(Vec::new()),
+            |working| {
+                apply_action(
+                    working,
+                    Action::Move {
+                        unit_id: 99,
+                        destination: Hex::from_offset(1, 1),
+                    },
+                )
+                .map_err(GreedyTurnError::from)
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(GreedyTurnError::Action(
+                crate::game_state::ActionError::UnitNotFound(99)
+            ))
+        ));
+        assert_eq!(format!("{:?}", state), before);
+    }
+
+    #[test]
+    fn greedy_planner_skips_spent_recruit_but_plans_existing_unit() {
+        let mut board = Board::new(8, 3);
+        for col in 0..8 {
+            for row in 0..3 {
+                board.set_terrain(Hex::from_offset(col, row), "flat");
+            }
+        }
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+        state.place_unit(make_fighter(1, 0, 30), Hex::from_offset(1, 1));
+        let mut spent_recruit = make_fighter(2, 0, 30);
+        spent_recruit.moved = true;
+        state.place_unit(spent_recruit, Hex::from_offset(2, 1));
+        state.place_unit(make_fighter(3, 1, 30), Hex::from_offset(7, 1));
+
+        let records = ai_plan_turn(&state, 0, 0);
+
+        assert!(
+            records
+                .iter()
+                .any(|record| matches!(record, ActionRecord::Move { unit_id: 1, .. })),
+            "an eligible existing unit should still be planned: {records:?}"
+        );
+        assert!(
+            !records.iter().any(|record| matches!(
+                record,
+                ActionRecord::Move { unit_id: 2, .. } | ActionRecord::Attack { attacker_id: 2, .. }
+            )),
+            "a spent recruit must not be selected: {records:?}"
+        );
+    }
 
     #[test]
     fn test_expected_damage_no_defense() {
