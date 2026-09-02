@@ -114,6 +114,26 @@ def validate_orders(text: str, strict: bool = False) -> list[dict[str, Any]]:
             raise ValueError(f"missing field at index {i}")
         if action == "Advance" and (("target_index" in order) == ("def_id" in order)):
             raise ValueError(f"Advance needs exactly one target at index {i}")
+        integer_fields = {
+            "Move": ("unit_id", "col", "row"),
+            "Attack": ("attacker_id", "defender_id"),
+            "Recruit": ("col", "row"),
+            "RecruitBatch": ("count",),
+            "Advance": ("unit_id", "target_index"),
+        }.get(action, ())
+        for field in integer_fields:
+            if field in order and (not isinstance(order[field], int) or isinstance(order[field], bool)):
+                raise ValueError(f"{field} must be an integer at index {i}")
+        string_fields = {
+            "Recruit": ("def_id",),
+            "RecruitBatch": ("def_id",),
+            "Advance": ("def_id",),
+        }.get(action, ())
+        for field in string_fields:
+            if field in order and not isinstance(order[field], str):
+                raise ValueError(f"{field} must be a string at index {i}")
+        if action == "RecruitBatch" and order["count"] <= 0:
+            raise ValueError(f"count must be positive at index {i}")
         if strict and action == "RecruitBatch":
             raise ValueError("RecruitBatch is disabled in strict mode")
         end_indices += [i] if action == "EndTurn" else []
@@ -139,12 +159,53 @@ def enforce_usage(reply: ModelReply, args: argparse.Namespace) -> None:
         raise RuntimeError("model_error: total token limit exceeded")
 
 
-def prompt_for(state: dict[str, Any], events: list[dict[str, Any]]) -> str:
-    rules = ("You play Norrust. Choose legal tactical actions from the supplied board. "
-             "The win rule is objective, scenario turn limit, exactly-one recruiter loss, then elimination. "
-             "Return only a JSON array of actions, ending with EndTurn. "
-             "Move, Attack, Recruit, Advance, and EndTurn are available.")
-    return rules + "\nBOARD:\n" + json.dumps(state, sort_keys=True, separators=(",", ":")) + \
+def query_options(exchange) -> dict[str, Any]:
+    """Fetch the engine's two authoritative option surfaces as singleton queries."""
+    result = {}
+    for what in ("turn_options", "recruit_options"):
+        response = exchange({"action": "Query", "what": what})
+        if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
+            message = response.get("message", "query failed") if isinstance(response, dict) else "invalid query response"
+            raise RuntimeError(f"query_error: {what}: {message}")
+        result[what] = response["body"]
+    return result
+
+
+def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
+               recruit_options: Optional[dict[str, Any]] = None,
+               recruit_batch_enabled: bool = True) -> str:
+    schemas = [
+        'Move: {"action":"Move","unit_id": integer,"col": integer,"row": integer}',
+        'Attack: {"action":"Attack","attacker_id": integer,"defender_id": integer}',
+        'Recruit: {"action":"Recruit","def_id": string,"col": integer,"row": integer}',
+        'Advance: {"action":"Advance","unit_id": integer}; exactly one of integer target_index or string def_id',
+        'EndTurn: {"action":"EndTurn"}',
+    ]
+    if recruit_batch_enabled:
+        schemas.insert(3, 'RecruitBatch: {"action":"RecruitBatch","def_id": string,"count": positive integer}; placement is driver-assisted')
+    recruitment_guidance = ""
+    if recruit_batch_enabled:
+        recruitment_guidance = (
+            " For RecruitBatch the driver assists placement and you choose type and positive count."
+        )
+    rules = (
+        "You play only the configured model-controlled side in Norrust. The driver automatically "
+        "executes the opponent; never submit opponent actions. Return a non-empty "
+        "JSON array of at most 256 objects with exactly one final {\"action\":\"EndTurn\"}. "
+        "Each object has exactly one of these schemas: " + "; ".join(schemas) + ". "
+        "turn_options supplies current-unit positions and target IDs. recruit_options supplies "
+        "faction-legal definitions, costs, affordability, and placement hexes." + recruitment_guidance +
+        " engine responses "
+        "remain authoritative: do not reconstruct legality in the client. The win rule is the "
+        "objective, scenario turn limit, recruiter-loss rule (a faction loses when its sole "
+        "recruiter is lost; when the recruiter loses, that faction loses), then elimination. One completed model or greedy turn increments "
+        "the side-turn counter once; --max-turns is a side-turn safety cap, distinct from the "
+        "engine round counter and scenario turn limit."
+    )
+    body = dict(state)
+    if recruit_options is not None:
+        body["recruit_options"] = recruit_options
+    return rules + "\nBOARD:\n" + json.dumps(body, sort_keys=True, separators=(",", ":")) + \
         "\nEVENTS:\n" + json.dumps(events, sort_keys=True, separators=(",", ":"))
 
 
@@ -212,23 +273,32 @@ def run(args: argparse.Namespace) -> int:
                 state = line
                 # Ask the engine for the complete legal action surface before
                 # the model call; legality is never reconstructed in Python.
-                proc.stdin.write(json.dumps({"action": "Query", "what": "turn_options"}) + "\n")
-                proc.stdin.flush()
-                query_raw = proc.stdout.readline()
-                if not query_raw:
+                def exchange(request: dict[str, str]) -> dict[str, Any]:
+                    proc.stdin.write(json.dumps(request) + "\n")
+                    proc.stdin.flush()
+                    query_raw = proc.stdout.readline()
+                    if not query_raw:
+                        raise RuntimeError("query_error: driver closed query stream")
+                    try:
+                        query_line = json.loads(query_raw)
+                    except json.JSONDecodeError as exc:
+                        raise RuntimeError("query_error: invalid driver response") from exc
+                    metadata["queries"] += 1
+                    record({"type": "query", "line": query_line})
+                    return query_line
+                try:
+                    option_bodies = query_options(exchange)
+                except RuntimeError as first:
                     metadata["infrastructure_invalid"] = True
-                    durable({"type": "driver_crash", "returncode": proc.poll(), **metadata})
+                    durable({"type": "query_error", "message": str(first)})
                     return 1
-                query_line = json.loads(query_raw)
-                metadata["queries"] += 1
-                record({"type": "query", "line": query_line})
-                if query_line.get("ok") and query_line.get("body"):
-                    state = dict(state)
-                    state["turn_options"] = query_line["body"]
+                state = dict(state)
+                state.update(option_bodies)
                 record({"type": "state_hash", "sha256": hashlib.sha256(
                     json.dumps(state, sort_keys=True, separators=(",", ":")).encode()
                 ).hexdigest()})
-                prompt = prompt_for(state, events)
+                prompt = prompt_for(state, events,
+                                    recruit_batch_enabled=not args.no_recruit_macro)
                 prompt_bytes = prompt.encode()
                 prompt_hash = hashlib.sha256(prompt_bytes).hexdigest()
                 if len(prompt_bytes) > args.max_prompt_bytes:
