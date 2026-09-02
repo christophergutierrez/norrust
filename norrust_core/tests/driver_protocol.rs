@@ -254,7 +254,7 @@ fn recruit_batch_reports_actual_partial_progress_and_rejects_unknown_type() {
             "--faction1",
             "undead",
         ],
-        "{\"action\":\"RecruitBatch\",\"def_id\":\"Orcish Grunt\",\"count\":1}\n",
+        "[{\"action\":\"RecruitBatch\",\"def_id\":\"Orcish Grunt\",\"count\":1},{\"action\":\"EndTurn\"}]\n",
     );
     let unknown_status = unknown
         .iter()

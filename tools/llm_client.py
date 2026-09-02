@@ -67,6 +67,8 @@ class CommandBackend(ModelBackend):
             raise RuntimeError(f"model_error: exit {proc.returncode}: {proc.stderr[-400:]}")
         try:
             obj = json.loads(proc.stdout)
+            if not isinstance(obj, dict) or not isinstance(obj.get("text"), str):
+                raise ValueError("model reply must be an object with text")
             usage = obj.get("usage")
             if usage is not None and not isinstance(usage, dict):
                 raise ValueError("usage must be an object")
