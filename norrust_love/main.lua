@@ -230,7 +230,7 @@ local function select_unit(uid)
     sel.unit_id = uid
     sel.inspect_id = uid
     sel.inspect_terrain = nil
-    sel.reachable_cells = norrust.get_reachable_hexes(vars.engine, uid)
+    sel.reachable_cells = norrust.legal_moves(vars.engine, uid) or {}
     sel.reachable_set = {}
     for _, cell in ipairs(sel.reachable_cells) do
         sel.reachable_set[cell.col .. "," .. cell.row] = true
@@ -304,7 +304,19 @@ end
 --- Odd-r offset neighbor table
 --- Find enemy units within attack range of (col, row).
 -- max_range: 1 for melee-only, 2 if unit has a ranged attack.
-local function get_attackable_enemies(pos_map, col, row, faction, max_range)
+local function get_attackable_enemies(pos_map, col, row, faction, max_range, unit_id)
+    if unit_id then
+        local ids = norrust.legal_targets(vars.engine, unit_id, col, row)
+        if ids then
+            local result = {}
+            for _, id in ipairs(ids) do
+                for _, occ in pairs(pos_map) do
+                    if occ.id == id then result[#result + 1] = occ; break end
+                end
+            end
+            return result
+        end
+    end
     max_range = max_range or 1
     local enemies = {}
     for key, occ in pairs(pos_map) do

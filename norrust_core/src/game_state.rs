@@ -30,6 +30,18 @@ pub enum ActionError {
     FriendlyTarget,
     #[error("unit has already attacked")]
     UnitAlreadyAttacked,
+    #[error("advancement needs a target")]
+    AdvanceNeedsTarget,
+    #[error("advancement target is out of range")]
+    AdvanceTargetOutOfRange,
+    #[error("advancement target is not allowed")]
+    AdvanceTargetNotAllowed,
+    #[error("unit is not pending advancement")]
+    AdvanceNotPending,
+    #[error("recruit list is not initialized")]
+    RecruitListUnset,
+    #[error("unit definition is not in the recruit list")]
+    NotInRecruitList,
     #[error("not enough gold")]
     NotEnoughGold,
     #[error("destination is not a castle")]
@@ -50,6 +62,12 @@ impl ActionError {
             Self::NotAdjacent => "NotAdjacent",
             Self::FriendlyTarget => "FriendlyTarget",
             Self::UnitAlreadyAttacked => "UnitAlreadyAttacked",
+            Self::AdvanceNeedsTarget => "AdvanceNeedsTarget",
+            Self::AdvanceTargetOutOfRange => "AdvanceTargetOutOfRange",
+            Self::AdvanceTargetNotAllowed => "AdvanceTargetNotAllowed",
+            Self::AdvanceNotPending => "AdvanceNotPending",
+            Self::RecruitListUnset => "RecruitListUnset",
+            Self::NotInRecruitList => "NotInRecruitList",
             Self::NotEnoughGold => "NotEnoughGold",
             Self::DestinationNotCastle => "DestinationNotCastle",
             Self::LeaderNotOnKeep => "LeaderNotOnKeep",
@@ -81,6 +99,25 @@ pub enum Action {
     EndTurn,
 }
 
+pub enum AdvanceTarget { Index(usize), DefId(String) }
+
+pub fn apply_advance(state: &mut GameState, unit_id: u32, target: AdvanceTarget, units: &crate::loader::Registry<crate::schema::UnitDef>) -> Result<Vec<GameEvent>, ActionError> {
+    let unit = state.units.get(&unit_id).ok_or(ActionError::UnitNotFound(unit_id))?;
+    if unit.faction != state.active_faction { return Err(ActionError::NotYourTurn); }
+    if !unit.advancement_pending { return Err(ActionError::AdvanceNotPending); }
+    let current = units.get(&unit.def_id).ok_or(ActionError::AdvanceTargetNotAllowed)?;
+    let target_id = match target {
+        AdvanceTarget::Index(index) => current.advances_to.get(index).cloned().ok_or(ActionError::AdvanceTargetOutOfRange)?,
+        AdvanceTarget::DefId(id) => if current.advances_to.contains(&id) { id } else { return Err(ActionError::AdvanceTargetNotAllowed); },
+    };
+    let new_def = units.get(&target_id).ok_or(ActionError::AdvanceTargetNotAllowed)?;
+    let from_def = unit.def_id.clone();
+    state.units.get_mut(&unit_id).unwrap().apply_def(new_def);
+    let unit_ref = state.units.get_mut(&unit_id).unwrap();
+    unit_ref.xp = 0; unit_ref.advancement_pending = false; unit_ref.poisoned = false; unit_ref.slowed = false;
+    Ok(vec![GameEvent::Advance { unit: unit_id, from_def, to_def: target_id }])
+}
+
 /// Complete snapshot of a game in progress.
 #[derive(Debug, Clone)]
 pub struct GameState {
@@ -107,6 +144,9 @@ pub struct GameState {
     pub trigger_zones: Vec<TriggerZone>,
     /// Next available unit ID for auto-assigned units (trigger spawns, etc.).
     pub next_unit_id: u32,
+    /// Faction identity and expanded recruit roster for each side.
+    pub faction_ids: [String; 2],
+    pub recruit_ids: [Vec<String>; 2],
 }
 
 impl GameState {
@@ -127,6 +167,8 @@ impl GameState {
             max_turns: None,
             trigger_zones: Vec::new(),
             next_unit_id: 1,
+            faction_ids: [String::new(), String::new()],
+            recruit_ids: [Vec::new(), Vec::new()],
         }
     }
 
@@ -883,6 +925,25 @@ pub fn apply_recruit(
     let (col, row) = destination.to_offset();
     state.place_unit(unit, destination);
     Ok(vec![GameEvent::Recruit { unit: id, def_id, faction, col, row, cost }])
+}
+
+pub fn recruit_from_def(
+    state: &mut GameState,
+    side: u8,
+    def_id: &str,
+    destination: Hex,
+    allowed: &[String],
+    units: &crate::loader::Registry<crate::schema::UnitDef>,
+    next_id: &mut u32,
+) -> Result<Vec<GameEvent>, ActionError> {
+    if side != state.active_faction { return Err(ActionError::NotYourTurn); }
+    if allowed.is_empty() { return Err(ActionError::RecruitListUnset); }
+    if !allowed.iter().any(|id| id == def_id) { return Err(ActionError::NotInRecruitList); }
+    let def = units.get(def_id).ok_or(ActionError::NotInRecruitList)?;
+    let unit = Unit::from_def(*next_id, def, side);
+    let events = apply_recruit(state, unit, destination, def.cost)?;
+    *next_id += 1;
+    Ok(events)
 }
 
 #[cfg(test)]

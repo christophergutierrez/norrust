@@ -17,8 +17,10 @@ use std::path::{Path, PathBuf};
 
 use norrust_core::ai::{ai_take_turn_greedy, ai_take_turn_greedy_actions};
 use norrust_core::events::GameEvent;
+use norrust_core::combat::preview_combat;
 use norrust_core::board::Tile;
-use norrust_core::game_state::{apply_action, apply_recruit, Action, GameState};
+use norrust_core::game_state::{apply_action, apply_advance, apply_recruit, AdvanceTarget, Action, GameState};
+use norrust_core::game_state::{legal_moves, legal_targets};
 use norrust_core::hex::Hex;
 use norrust_core::loader::{expand_recruits, Registry};
 use norrust_core::pathfinding::{get_zoc_hexes, reachable_hexes};
@@ -343,6 +345,8 @@ fn init_game(c: &Config) -> (GameState, Faction, Faction, Registry<UnitDef>) {
     );
 
     state.gold = [c.gold, c.gold];
+    state.faction_ids = [f0.def.id.clone(), f1.def.id.clone()];
+    state.recruit_ids = [f0.recruits.clone(), f1.recruits.clone()];
     state.active_faction = 0;
 
     eprintln!(
@@ -357,8 +361,10 @@ fn init_game(c: &Config) -> (GameState, Faction, Faction, Registry<UnitDef>) {
 }
 
 fn scripted_game(c: &Config) {
+    println!("{}", json!({"type":"protocol","version":1}));
+    io::stdout().flush().unwrap();
     let (mut state, f0, f1, units) = init_game(c);
-    let mut next_id = 3;
+    let mut next_id = state.next_unit_id;
 
     // Verify initial setup
     {
@@ -378,7 +384,7 @@ fn scripted_game(c: &Config) {
     }
 
     // Run greedy-vs-greedy smoke test
-    for _turn in 0..200 {
+    for _turn in 0..c.max_turns {
         let side = state.active_faction;
         if side == 0 {
             recruit(&mut state, 0, &f0, &units, &mut next_id, None, None);
@@ -396,10 +402,12 @@ fn scripted_game(c: &Config) {
             let unit_count = [0, 1]
                 .map(|faction| state.units.values().filter(|u| u.faction == faction).count());
             eprintln!("[RESULT] Units: faction 0: {}, faction 1: {}", unit_count[0], unit_count[1]);
+            println!("{}", json!({"type":"game_end","reason":"winner","winner":winner,"turns":state.turn}));
             return;
         }
     }
-    eprintln!("[RESULT] Draw after 200 turns (safety limit).");
+    eprintln!("[RESULT] Draw after {} side-turns (safety limit).", c.max_turns);
+    println!("{}", json!({"type":"game_end","reason":"max_turns","turns":state.turn}));
 }
 
 fn interactive_game(c: &Config) {
@@ -623,11 +631,40 @@ fn interactive_protocol_game(c: &Config) {
             Err(error) => { println!("{}", json!({"type":"status","ok":false,"code":"parse","message":error.to_string()})); continue; }
         };
         if parsed.get("action").and_then(Value::as_str) == Some("Query") {
-            if parsed.get("what").and_then(Value::as_str) == Some("state") {
-                println!("{}", json!({"type":"status","ok":true,"what":"state","body":game_state_to_json(&state, &units)}));
-            } else {
-                println!("{}", json!({"type":"status","ok":false,"what":parsed.get("what"),"code":"unknown_query","message":"unknown query"}));
-            }
+            let what = parsed.get("what").and_then(Value::as_str).unwrap_or("");
+            let response = match what {
+                "state" => json!({"type":"status","ok":true,"what":"state","body":game_state_to_json(&state, &units)}),
+                "legal_moves" => match parsed.get("unit_id").and_then(Value::as_u64).and_then(|id| legal_moves(&state,id as u32).ok()) {
+                    Some(hexes) => json!({"type":"status","ok":true,"what":what,"body":{"hexes":hexes.iter().map(|h| { let (c,r)=h.to_offset(); json!({"col":c,"row":r}) }).collect::<Vec<_>>()}}),
+                    None => json!({"type":"status","ok":false,"what":what,"code":"UnitNotFound","message":"unit is unavailable"}),
+                },
+                "legal_targets" => match (parsed.get("unit_id").and_then(Value::as_u64), parsed.get("col").and_then(Value::as_i64), parsed.get("row").and_then(Value::as_i64)) {
+                    (Some(id),Some(c),Some(r)) => match legal_targets(&state,id as u32,Hex::from_offset(c as i32,r as i32)) {
+                        Ok(ids) => json!({"type":"status","ok":true,"what":what,"body":{"ids":ids}}),
+                        Err(e) => json!({"type":"status","ok":false,"what":what,"code":e.code(),"message":e.to_string()}),
+                    },
+                    _ => json!({"type":"status","ok":false,"what":what,"code":"parse","message":"unit_id, col, and row are required"}),
+                },
+                "combat_preview" => match (parsed.get("attacker_id").and_then(Value::as_u64), parsed.get("defender_id").and_then(Value::as_u64), parsed.get("col").and_then(Value::as_i64), parsed.get("row").and_then(Value::as_i64)) {
+                    (Some(a),Some(d),Some(c),Some(r)) => match preview_combat(&state,a as u32,d as u32,Hex::from_offset(c as i32,r as i32),parsed.get("n_sims").and_then(Value::as_u64).unwrap_or(100) as u32) {
+                        Ok(preview) => json!({"type":"status","ok":true,"what":what,"attacker_id":a,"defender_id":d,"col":c,"row":r,"body":serde_json::to_value(preview).unwrap()}),
+                        Err(error) => json!({"type":"status","ok":false,"what":what,"code":format!("{:?}",error),"message":error.to_string()}),
+                    },
+                    _ => json!({"type":"status","ok":false,"what":what,"code":"parse","message":"preview identifiers and ghost coordinates are required"}),
+                },
+                "recruit_options" => {
+                    let side = state.active_faction as usize;
+                    let faction = &factions[side];
+                    let placement_hexes: Vec<Value> = state.positions.iter().filter_map(|(_,h)| {
+                        state.board.tile_at(*h).filter(|t| t.terrain_id == "keep")?;
+                        Some(h.neighbors().iter().filter_map(|dest| state.board.tile_at(*dest).filter(|t| t.terrain_id == "castle").and_then(|_| (!state.hex_to_unit.contains_key(dest)).then_some(dest)).map(|d| { let (c,r)=d.to_offset(); json!({"col":c,"row":r}) })).collect::<Vec<_>>())
+                    }).flatten().collect();
+                    let options: Vec<Value> = faction.recruits.iter().filter_map(|id| units.get(id).map(|d| json!({"def_id":id,"cost":d.cost,"affordable":state.gold[side] >= d.cost}))).collect();
+                    json!({"type":"status","ok":true,"what":what,"body":{"faction_id":faction.def.id,"side_can_place":!placement_hexes.is_empty(),"placement_hexes":placement_hexes,"options":options,"batch_macro_enabled":true}})
+                },
+                _ => json!({"type":"status","ok":false,"what":what,"code":"unknown_query","message":"unknown query"}),
+            };
+            println!("{}", response);
             io::stdout().flush().unwrap();
             continue;
         }
@@ -684,6 +721,17 @@ fn interactive_protocol_game(c: &Config) {
                     }
                 }
                 Some("EndTurn") => apply_action(&mut state, Action::EndTurn),
+                Some("Advance") => {
+                    let id = order.get("unit_id").and_then(Value::as_u64);
+                    let target = order.get("target_index").and_then(Value::as_i64)
+                        .map(|i| if i < 0 { AdvanceTarget::Index(usize::MAX) } else { AdvanceTarget::Index(i as usize) })
+                        .or_else(|| order.get("def_id").and_then(Value::as_str).map(|id| AdvanceTarget::DefId(id.to_string())));
+                    match (id, target) {
+                        (Some(id), Some(target)) => apply_advance(&mut state, id as u32, target, &units),
+                        (Some(_), None) => Err(norrust_core::game_state::ActionError::AdvanceNeedsTarget),
+                        _ => Err(norrust_core::game_state::ActionError::UnitNotFound(0)),
+                    }
+                }
                 Some(_) | None => Err(norrust_core::game_state::ActionError::NotAdjacent),
             };
             match result {

@@ -210,6 +210,8 @@ ffi.cdef[[
 
     // Pathfinding
     int32_t* norrust_get_reachable_hexes(NorRustEngine* engine, int32_t unit_id, int32_t* out_len);
+    int32_t* norrust_legal_moves(NorRustEngine* engine, int32_t unit_id, int32_t* out_len);
+    int32_t* norrust_legal_targets(NorRustEngine* engine, int32_t unit_id, int32_t col, int32_t row, int32_t* out_len);
     int32_t* norrust_find_path(NorRustEngine* engine, int32_t unit_id, int32_t dest_col, int32_t dest_row, int32_t* out_len);
 
     // AI
@@ -540,6 +542,26 @@ function M.get_reachable_hexes(engine, unit_id)
     return result
 end
 
+function M.legal_moves(engine, unit_id)
+    local out_len = ffi.new("int32_t[1]")
+    local arr = lib.norrust_legal_moves(engine, unit_id, out_len)
+    local len, result = out_len[0], {}
+    if arr == nil or len < 0 then return nil end
+    for i = 0, len - 1, 2 do result[#result + 1] = {col = arr[i], row = arr[i + 1]} end
+    if arr ~= nil then lib.norrust_free_int_array(arr, len) end
+    return result
+end
+
+function M.legal_targets(engine, unit_id, col, row)
+    local out_len = ffi.new("int32_t[1]")
+    local arr = lib.norrust_legal_targets(engine, unit_id, col, row, out_len)
+    local len, result = out_len[0], {}
+    if arr == nil or len < 0 then return nil end
+    for i = 0, len - 1 do result[#result + 1] = arr[i] end
+    if arr ~= nil then lib.norrust_free_int_array(arr, len) end
+    return result
+end
+
 --- Find shortest path from unit's position to destination. Returns {col, row} table or empty.
 function M.find_path(engine, unit_id, dest_col, dest_row)
     local out_len = ffi.new("int32_t[1]")
@@ -746,7 +768,9 @@ end
 function M.simulate_combat(engine, attacker_id, defender_id, attacker_col, attacker_row, num_sims)
     local raw = get_string(lib.norrust_simulate_combat(engine, attacker_id, defender_id, attacker_col, attacker_row, num_sims or 100))
     if raw == "" then return nil end
-    return json_decode(raw)
+    local result = json_decode(raw)
+    if type(result) == "table" and result.ok == false then return nil end
+    return result
 end
 
 -- ── Trigger zones ─────────────────────────────────────────────────────────

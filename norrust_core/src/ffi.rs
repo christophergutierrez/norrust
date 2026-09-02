@@ -23,10 +23,10 @@ use serde::Serialize;
 
 use crate::board::Tile;
 use crate::campaign::{self, CampaignState};
-use crate::combat::{simulate_combat, time_of_day, Rng, TimeOfDay};
+use crate::combat::{simulate_combat, time_of_day, PreviewError, Rng, TimeOfDay};
 use crate::dialogue::DialogueState;
 use crate::game_state::{
-    apply_action, apply_recruit, Action, ActionError, GameState, PendingSpawn, TriggerZone,
+    apply_action, apply_recruit, apply_advance, legal_moves, legal_targets, AdvanceTarget, Action, ActionError, GameState, PendingSpawn, TriggerZone,
 };
 use crate::hex::Hex;
 use crate::loader::Registry;
@@ -34,7 +34,7 @@ use crate::pathfinding::{find_path, get_zoc_hexes, reachable_hexes};
 use crate::save::SaveState;
 use crate::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
 use crate::snapshot::{ActionRequest, StateSnapshot};
-use crate::unit::{advance_unit, Unit};
+use crate::unit::Unit;
 
 // ── FFI helper macros ────────────────────────────────────────────────────────
 
@@ -134,10 +134,27 @@ fn action_err_code(e: ActionError) -> i32 {
         ActionError::NotAdjacent => -7,
         ActionError::FriendlyTarget => -12,
         ActionError::UnitAlreadyAttacked => -14,
+        ActionError::AdvanceNeedsTarget => -15,
+        ActionError::AdvanceTargetOutOfRange => -16,
+        ActionError::AdvanceTargetNotAllowed => -17,
+        ActionError::AdvanceNotPending => -18,
+        ActionError::NotInRecruitList => -11,
+        ActionError::RecruitListUnset => -13,
         ActionError::NotEnoughGold => -8,
         ActionError::DestinationNotCastle => -9,
         ActionError::LeaderNotOnKeep => -10,
     }
+}
+
+fn preview_error_json(error: PreviewError) -> *mut c_char {
+    let code = match error {
+        PreviewError::UnitNotFound => "UnitNotFound",
+        PreviewError::InvalidGhost => "InvalidGhost",
+        PreviewError::FriendlyTarget => "FriendlyTarget",
+        PreviewError::OutOfRange => "OutOfRange",
+        PreviewError::InvalidNSims => "InvalidNSims",
+    };
+    to_c_string(&serde_json::json!({"ok":false,"code":code,"message":error.to_string()}).to_string())
 }
 
 /// Convert a C string pointer to a Rust &str. Returns "" for null or invalid UTF-8.
@@ -624,6 +641,10 @@ pub unsafe extern "C" fn norrust_recruit_unit_at(
         Some(def) => def.cost,
         None => return -1,
     };
+    if let Some(state) = e.game.as_ref() {
+        if state.recruit_ids[state.active_faction as usize].is_empty() { return -13; }
+        if !state.recruit_ids[state.active_faction as usize].iter().any(|id| id == &did) { return -11; }
+    }
 
     let (faction, uid) = {
         let Some(state) = e.game.as_mut() else {
@@ -775,6 +796,11 @@ pub unsafe extern "C" fn norrust_apply_starting_gold(
     match (gold0, gold1) {
         (Some(g0), Some(g1)) => {
             state.gold = [g0, g1];
+            state.faction_ids = [f0.clone(), f1.clone()];
+            state.recruit_ids = [
+                e.factions.iter().find(|(f, _)| f.id == f0).map(|(_, ids)| ids.clone()).unwrap_or_default(),
+                e.factions.iter().find(|(f, _)| f.id == f1).map(|(_, ids)| ids.clone()).unwrap_or_default(),
+            ];
             e.state_cache = None;
             1
         }
@@ -1100,57 +1126,12 @@ pub unsafe extern "C" fn norrust_apply_advance(
     target_index: i32,
 ) -> i32 {
     let Some(e) = engine.as_mut() else { return -1 };
-    let uid = unit_id as u32;
-
-    let (current_def_id, advancement_pending, faction) = {
-        let Some(state) = e.game.as_ref() else {
-            return -1;
-        };
-        match state.units.get(&uid) {
-            Some(u) => (u.def_id.clone(), u.advancement_pending, u.faction),
-            None => return -1,
-        }
-    };
-
-    let Some(state) = e.game.as_ref() else {
-        return -1;
-    };
-    if faction != state.active_faction {
-        return -2;
-    }
-    if !advancement_pending {
-        return -8;
-    }
-
-    let idx = if target_index < 0 {
-        0usize
-    } else {
-        target_index as usize
-    };
-    let target_def_id = match e
-        .units
-        .as_ref()
-        .and_then(|r| r.get(&current_def_id))
-        .and_then(|def| def.advances_to.get(idx).cloned())
-    {
-        Some(id) => id,
-        None => return -9,
-    };
-
-    let new_def = match e.units.as_ref().and_then(|r| r.get(&target_def_id)) {
-        Some(def) => def.clone(),
-        None => return -10,
-    };
-
-    let Some(state) = e.game.as_mut() else {
-        return -1;
-    };
-    let Some(unit) = state.units.get_mut(&uid) else {
-        return -11;
-    };
-    advance_unit(unit, &new_def);
+    let Some(registry) = e.units.as_ref() else { return -1 };
+    let target = if target_index < 0 { return -16 } else { AdvanceTarget::Index(target_index as usize) };
+    let Some(state) = e.game.as_mut() else { return -1 };
+    let result = apply_advance(state, unit_id as u32, target, registry);
     e.state_cache = None;
-    0
+    match result { Ok(_) => 0, Err(error) => action_err_code(error) }
 }
 
 #[no_mangle]
@@ -1265,6 +1246,30 @@ pub unsafe extern "C" fn norrust_get_reachable_hexes(
 
     let boxed = arr.into_boxed_slice();
     Box::into_raw(boxed) as *mut i32
+}
+
+/// Canonical legal moves.  Unlike the legacy reachable API, null/-1 means
+/// error and an empty successful result is represented by a non-null pointer.
+#[no_mangle]
+pub unsafe extern "C" fn norrust_legal_moves(engine: *mut NorRustEngine, unit_id: i32, out_len: *mut i32) -> *mut i32 {
+    if !out_len.is_null() { *out_len = -1; }
+    let Some(e) = engine.as_ref() else { return std::ptr::null_mut(); };
+    let Some(state) = e.game.as_ref() else { return std::ptr::null_mut(); };
+    let Ok(hexes) = legal_moves(state, unit_id as u32) else { return std::ptr::null_mut(); };
+    let mut values = Vec::with_capacity(hexes.len() * 2);
+    for hex in hexes { let (col,row)=hex.to_offset(); values.extend([col,row]); }
+    if !out_len.is_null() { *out_len = values.len() as i32; }
+    let ptr = values.into_boxed_slice(); Box::into_raw(ptr) as *mut i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn norrust_legal_targets(engine: *mut NorRustEngine, unit_id: i32, col: i32, row: i32, out_len: *mut i32) -> *mut i32 {
+    if !out_len.is_null() { *out_len = -1; }
+    let Some(e) = engine.as_ref() else { return std::ptr::null_mut(); };
+    let Some(state) = e.game.as_ref() else { return std::ptr::null_mut(); };
+    let Ok(ids) = legal_targets(state, unit_id as u32, Hex::from_offset(col,row)) else { return std::ptr::null_mut(); };
+    if !out_len.is_null() { *out_len = ids.len() as i32; }
+    let ptr = ids.into_boxed_slice(); Box::into_raw(ptr) as *mut i32
 }
 
 /// Find shortest path from a unit's current position to a destination hex.
@@ -2607,14 +2612,17 @@ pub unsafe extern "C" fn norrust_simulate_combat(
     let atk_uid = attacker_id as u32;
     let def_uid = defender_id as u32;
     let Some(attacker) = state.units.get(&atk_uid) else {
-        return to_c_string("");
+        return preview_error_json(PreviewError::UnitNotFound);
     };
     let Some(defender) = state.units.get(&def_uid) else {
-        return to_c_string("");
+        return preview_error_json(PreviewError::UnitNotFound);
     };
 
     // Attacker terrain defense at ghost position
     let atk_hex = Hex::from_offset(attacker_col, attacker_row);
+    if num_sims < 1 || num_sims > 1000 { return preview_error_json(PreviewError::InvalidNSims); }
+    if attacker.faction == defender.faction { return preview_error_json(PreviewError::FriendlyTarget); }
+    if !state.board.contains(atk_hex) { return preview_error_json(PreviewError::InvalidGhost); }
     let atk_terrain_defense = if let Some(tile) = state.board.tile_at(atk_hex) {
         let terrain_id = &tile.terrain_id;
         attacker
@@ -2629,7 +2637,7 @@ pub unsafe extern "C" fn norrust_simulate_combat(
     // Defender terrain defense at current position
     let def_pos = match state.positions.get(&def_uid) {
         Some(p) => *p,
-        None => return to_c_string(""),
+        None => return preview_error_json(PreviewError::UnitNotFound),
     };
     let def_terrain_defense = if let Some(tile) = state.board.tile_at(def_pos) {
         let terrain_id = &tile.terrain_id;
@@ -2646,8 +2654,10 @@ pub unsafe extern "C" fn norrust_simulate_combat(
     let dist = atk_hex.distance(def_pos);
     let range_needed = match dist {
         1 => "melee",
-        _ => "ranged",
+        2 => "ranged",
+        _ => return preview_error_json(PreviewError::OutOfRange),
     };
+    if !attacker.attacks.iter().any(|a| a.range == range_needed) { return preview_error_json(PreviewError::OutOfRange); }
 
     // Backstab flanking check: is there an ally of the attacker on the opposite side of the defender?
     let flanked = {
@@ -2677,7 +2687,7 @@ pub unsafe extern "C" fn norrust_simulate_combat(
     let atk_leadership = crate::game_state::leadership_bonus(state, atk_uid);
     let def_leadership = crate::game_state::leadership_bonus(state, def_uid);
 
-    let n = if num_sims > 0 { num_sims as u32 } else { 100 };
+    let n = num_sims as u32;
     let preview = simulate_combat(
         attacker,
         defender,

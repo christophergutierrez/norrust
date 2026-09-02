@@ -388,7 +388,7 @@ function M.mousepressed(col, row, clicked_key, state, pos_map, active, x, y)
             cancel_combat_preview()
             ghost.col = col
             ghost.row = row
-            ghost.attackable = get_attackable_enemies(pos_map, col, row, active, unit_max_range(ghost.unit_id))
+            ghost.attackable = get_attackable_enemies(pos_map, col, row, active, unit_max_range(ghost.unit_id), ghost.unit_id)
             ghost.path = mods.norrust.find_path(vars.engine, ghost.unit_id, col, row)
             -- Auto-preview: if previously previewed enemy is still in range, re-show preview
             if prev_target ~= -1 then
@@ -446,7 +446,7 @@ function M.mousepressed(col, row, clicked_key, state, pos_map, active, x, y)
         ghost.col = col
         ghost.row = row
         ghost.unit_id = sel.unit_id
-        ghost.attackable = get_attackable_enemies(pos_map, col, row, active, unit_max_range(sel.unit_id))
+        ghost.attackable = get_attackable_enemies(pos_map, col, row, active, unit_max_range(sel.unit_id), sel.unit_id)
         ghost.path = mods.norrust.find_path(vars.engine, sel.unit_id, col, row)
 
     -- Select friendly unit

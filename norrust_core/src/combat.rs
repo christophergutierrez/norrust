@@ -115,6 +115,7 @@ pub fn resolve_attack(
 }
 
 /// Result of a Monte Carlo combat simulation, containing damage distributions and kill probabilities for both sides.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct CombatPreview {
     pub attacker_hit_pct: u32,
     pub defender_hit_pct: u32,
