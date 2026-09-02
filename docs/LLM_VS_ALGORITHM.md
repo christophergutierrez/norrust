@@ -30,11 +30,24 @@ Report: opponent algorithm, who moved first, faction, scenario, gold, wins–los
 
 Greedy weaknesses to play against: it walks onto 30% flat to poke 60% castle; it does not stack attacks on one wounded unit; it does not park on villages; it does not respect ToD except insofar as damage numbers change this turn; it will leave the leader if a fight scores well.
 
+That last one is worth more than it sounds, and it is measurable. Greedy marches its leader off the keep on turn 2 and never returns it. Recruiting requires a leader standing on a keep, so **greedy's economy dies the moment it starts fighting**: it spends its whole opening purse on turn 1, then accumulates village income it can never spend. On `big_battle_6` at 300 gold it fields 20 Skeletons plus the leader and stays at 21 units for the rest of the game, sitting on 84 unspent gold by turn 15 while its leader wanders alone into enemy territory.
+
+Two consequences for anyone designing a match. A side that keeps its own leader home out-produces greedy several-fold over a long game, so an equal-unit opening is **not** a symmetric position — it diverges in the other side's favour from turn 3. And greedy's lone leader is a high-value target that walks to you. Do not report a win over greedy as a tactical result without saying which of these did the work.
+
 Look-ahead is harder: it already likes villages, defense, and not taking stupid melee trades. It can still be baited if you threaten something its local 3-enemy / 7-hex reply window does not see, or if you win the economy and ToD war.
 
 Default self-play gold is not the GUI. For a fair algorithm match on `big_battle_6` use **300 gold** and **`--second-gold 0`** unless you are testing a second-player bonus. See [SELF_PLAY.md](SELF_PLAY.md).
 
-There is **no Love2D toggle for greedy** today. An LLM-vs-greedy series needs either a thin loop that applies the LLM’s JSON on one side and `ai_take_turn_greedy` on the other, or a future `ai_turn greedy N` on the agent server. Until that exists, **GUI and `ai_turn` are look-ahead.**
+There is **no Love2D toggle for greedy** today, and **GUI and `ai_turn` are look-ahead.** The thin loop now exists as `norrust_core/src/bin/greedy_driver.rs`: it applies the LLM’s JSON on faction 0 and calls `ai_take_turn_greedy` on faction 1.
+
+```bash
+cd norrust_core && cargo build --bin greedy_driver
+./target/debug/greedy_driver --scenario big_battle_6 --faction0 undead \
+  --faction1 undead --gold 300 --seed 202          # LLM on stdin, greedy opponent
+./target/debug/greedy_driver ... --scripted        # unattended greedy-vs-greedy baseline
+```
+
+Two caveats before you quote numbers from it. Engine greedy has **no recruitment logic of its own** — the driver supplies one — so the opponent is engine greedy movement and combat plus a driver heuristic, and its results are not directly comparable to the algorithm baselines in [SELF_PLAY.md](SELF_PLAY.md). And the driver is still under repair: see `tmp/LLM_CLIENT_PLAN.md` for known match-integrity bugs, including recruitment that is not restricted to the faction list and a recruit path that moves your own units without telling you.
 
 ## How to play
 
