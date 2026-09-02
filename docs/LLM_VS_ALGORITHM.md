@@ -67,9 +67,17 @@ Advance      {action, unit_id: integer, exactly one of target_index: integer or 
 EndTurn      {action}
 ```
 
-`RecruitBatch` is driver-assisted placement and is unavailable with `--disable-recruit-batch`. The configured model-side restriction applies to every action, including `EndTurn`; actor IDs must belong to that side. The model never submits `Query` or opponent actions.
+`RecruitBatch` is driver-assisted placement, attempts up to the requested positive
+count, and reports actual progress; it is unavailable with
+`--disable-recruit-batch`. The configured model-side restriction applies to every
+action, including `EndTurn`; actor IDs must belong to that side. The model never
+submits `Query` or opponent actions.
 
 Greedy recruitment, planning, actions, and its successful turn boundary form one transaction. A failure emits a typed `game_end` with `reason: "infrastructure_failure"`, a stable `code`, and a `message`, without committing state, events, allocated IDs, or side-turn accounting. The client records `infrastructure_invalid: true` and exits nonzero; the result is not a draw, win, or continuation.
+
+Any failed driver status after forwarding a model batch is also an
+infrastructure-invalid client result, so malformed or illegal model output cannot
+deadlock the match.
 
 The headless driver explicitly disables `objective_hex` and scenario turn-limit win conditions. Headless win evaluation is recruiter loss, then elimination. Recruiter loss applies when exactly one side that previously had recruiting capability has no living recruiter; that side loses. If both sides or neither side meet that predicate, evaluation falls through to elimination. The broader GUI/campaign win rule below remains useful for those modes, but does not describe this driver.
 

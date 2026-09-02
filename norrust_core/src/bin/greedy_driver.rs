@@ -22,8 +22,8 @@ use norrust_core::board::Tile;
 use norrust_core::combat::{preview_combat, validate_combat_preview};
 use norrust_core::events::GameEvent;
 use norrust_core::game_state::{
-    apply_action, apply_advance, apply_recruit, Action, AdvanceTarget, GameState, PendingSpawn,
-    TriggerZone,
+    apply_action, apply_advance, apply_recruit, recruit_from_def, Action, AdvanceTarget, GameState,
+    PendingSpawn, TriggerZone,
 };
 use norrust_core::game_state::{legal_moves, legal_targets};
 use norrust_core::hex::Hex;
@@ -379,6 +379,66 @@ fn recruit_with_events(
     )
 }
 
+fn recruit_batch_with_events(
+    state: &mut GameState,
+    side: u8,
+    faction: &Faction,
+    units: &Registry<UnitDef>,
+    next_id: &mut u32,
+    def_id: &str,
+    count: u32,
+    events: &mut Vec<GameEvent>,
+) -> Result<u32, norrust_core::game_state::ActionError> {
+    if !faction.recruits.iter().any(|id| id == def_id) {
+        return Err(norrust_core::game_state::ActionError::NotInRecruitList);
+    }
+    let def = units
+        .get(def_id)
+        .ok_or(norrust_core::game_state::ActionError::NotInRecruitList)?;
+    let mut recruited = 0;
+    for _ in 0..count {
+        let mut working = state.clone();
+        let mut candidate_id = *next_id;
+        let mut attempt_events = Vec::new();
+        let attempt = recruit_with_events(
+            &mut working,
+            side,
+            faction,
+            units,
+            &mut candidate_id,
+            Some(def_id),
+            Some(1),
+            &mut attempt_events,
+        );
+        if attempt != 1 {
+            break;
+        }
+        *state = working;
+        *next_id = candidate_id;
+        events.extend(attempt_events);
+        recruited += 1;
+    }
+    if recruited > 0 {
+        return Ok(recruited);
+    }
+    if state.gold[side as usize] < def.cost {
+        Err(norrust_core::game_state::ActionError::NotEnoughGold)
+    } else if !state.units.values().any(|unit| {
+        unit.faction == side
+            && unit.can_recruit
+            && state.positions.get(&unit.id).is_some_and(|hex| {
+                state
+                    .board
+                    .tile_at(*hex)
+                    .is_some_and(|tile| tile.terrain_id == "keep")
+            })
+    }) {
+        Err(norrust_core::game_state::ActionError::LeaderNotOnKeep)
+    } else {
+        Err(norrust_core::game_state::ActionError::DestinationOccupied)
+    }
+}
+
 fn run_driver_greedy_turn(
     state: &mut GameState,
     side: u8,
@@ -392,6 +452,24 @@ fn run_driver_greedy_turn(
     } else {
         None
     };
+    run_driver_greedy_turn_with_failure(
+        state,
+        side,
+        faction,
+        units,
+        next_id,
+        injected_failure.as_deref(),
+    )
+}
+
+fn run_driver_greedy_turn_with_failure(
+    state: &mut GameState,
+    side: u8,
+    faction: &Faction,
+    units: &Registry<UnitDef>,
+    next_id: &mut u32,
+    injected_failure: Option<&str>,
+) -> Result<Vec<GameEvent>, GreedyTurnError> {
     let mut candidate_id = *next_id;
     let mut recruitment_events = Vec::new();
     let events = run_greedy_side_turn(
@@ -508,10 +586,49 @@ fn valid_action_shape(order: &Value) -> bool {
         ),
         _ => return false,
     };
+    let integer = |value: &Value| {
+        !value.is_boolean() && (value.as_i64().is_some() || value.as_u64().is_some())
+    };
+    let strings = match action {
+        "Recruit" | "RecruitBatch" => ["def_id"].as_slice(),
+        "Advance" => {
+            if object.contains_key("def_id") {
+                &["def_id"][..]
+            } else {
+                &[][..]
+            }
+        }
+        _ => &[][..],
+    };
+    let integer_fields: &[&str] = match action {
+        "Move" => &["unit_id", "col", "row"],
+        "Attack" => &["attacker_id", "defender_id"],
+        "Recruit" => &["col", "row"],
+        "RecruitBatch" => &["count"],
+        "Advance" => {
+            if object.contains_key("target_index") {
+                &["unit_id", "target_index"]
+            } else {
+                &["unit_id"]
+            }
+        }
+        _ => &[],
+    };
     object.keys().all(|key| allowed.contains(&key.as_str()))
         && required.iter().all(|key| object.contains_key(*key))
         && (action != "Advance"
             || object.contains_key("target_index") != object.contains_key("def_id"))
+        && integer_fields
+            .iter()
+            .all(|field| object.get(*field).is_some_and(integer))
+        && strings
+            .iter()
+            .all(|field| object.get(*field).is_some_and(Value::is_string))
+        && (action != "RecruitBatch"
+            || object
+                .get("count")
+                .and_then(Value::as_u64)
+                .is_some_and(|count| (1..=u32::MAX as u64).contains(&count)))
 }
 
 fn init_game(c: &Config) -> Result<(GameState, Faction, Faction, Registry<UnitDef>), String> {
@@ -1467,21 +1584,15 @@ fn interactive_protocol_game(c: &Config) {
                         order.get("col").and_then(Value::as_i64),
                         order.get("row").and_then(Value::as_i64),
                     ) {
-                        (Some(def_id), Some(col), Some(row)) => match units.get(def_id) {
-                            Some(def) => apply_recruit(
-                                &mut state,
-                                Unit::from_def(next_id, def, c.llm_side),
-                                Hex::from_offset(col as i32, row as i32),
-                                def.cost,
-                            )
-                            .map(|e| {
-                                next_id += 1;
-                                e
-                            }),
-                            None => {
-                                Err(norrust_core::game_state::ActionError::UnitNotFound(next_id))
-                            }
-                        },
+                        (Some(def_id), Some(col), Some(row)) => recruit_from_def(
+                            &mut state,
+                            c.llm_side,
+                            def_id,
+                            Hex::from_offset(col as i32, row as i32),
+                            &factions[c.llm_side as usize].recruits,
+                            &units,
+                            &mut next_id,
+                        ),
                         _ => Err(norrust_core::game_state::ActionError::UnitNotFound(0)),
                     }
                 }
@@ -1490,19 +1601,22 @@ fn interactive_protocol_game(c: &Config) {
                         order.get("def_id").and_then(Value::as_str),
                         order.get("count").and_then(Value::as_u64),
                     ) {
-                        (Some(def_id), Some(count)) => {
-                            recruit_with_events(
-                                &mut state,
-                                c.llm_side,
-                                &factions[c.llm_side as usize],
-                                &units,
-                                &mut next_id,
-                                Some(def_id),
-                                Some(count as u32),
-                                &mut events,
-                            );
-                            Ok(Vec::new())
-                        }
+                        (Some(def_id), Some(count)) => match recruit_batch_with_events(
+                            &mut state,
+                            c.llm_side,
+                            &factions[c.llm_side as usize],
+                            &units,
+                            &mut next_id,
+                            def_id,
+                            count as u32,
+                            &mut events,
+                        ) {
+                            Ok(recruited) => {
+                                results.push(json!({"ok":true,"requested":count,"recruited":recruited,"partial":(recruited as u64) < count}));
+                                continue;
+                            }
+                            Err(error) => Err(error),
+                        },
                         _ => Err(norrust_core::game_state::ActionError::UnitNotFound(0)),
                     }
                 }
@@ -1622,6 +1736,99 @@ fn main() {
         scripted_game(&c);
     } else {
         interactive_protocol_game(&c);
+    }
+}
+
+#[cfg(test)]
+mod protocol_tests {
+    use super::*;
+
+    #[test]
+    fn greedy_planner_failure_rolls_back_real_recruitment_and_accounting() {
+        let config = Config {
+            scenario: "big_battle_6".into(),
+            faction0: "undead".into(),
+            faction1: "undead".into(),
+            gold: 100,
+            seed: 42,
+            scripted: false,
+            llm_side: 0,
+            max_turns: 4,
+            turn_timeout: 1,
+            query_timeout: 1,
+            max_queries: 1,
+            disable_recruit_batch: false,
+        };
+        let (mut state, faction0, _, units) = init_game(&config).expect("valid fixture");
+        let before = state.clone();
+        let before_next_id = state.next_unit_id;
+        let mut next_id = state.next_unit_id;
+        let result = run_driver_greedy_turn_with_failure(
+            &mut state,
+            0,
+            &faction0,
+            &units,
+            &mut next_id,
+            Some("planner"),
+        );
+
+        assert!(matches!(result, Err(GreedyTurnError::Callback(_))));
+        assert_eq!(state.gold, before.gold);
+        assert_eq!(format!("{:?}", state.units), format!("{:?}", before.units));
+        assert_eq!(state.positions, before.positions);
+        assert_eq!(state.next_unit_id, before_next_id);
+        assert_eq!(next_id, before_next_id);
+        assert_eq!(state.active_faction, before.active_faction);
+        assert_eq!(state.turn, before.turn);
+    }
+
+    #[test]
+    fn failed_batch_attempt_does_not_commit_castle_vacate_or_accounting() {
+        let config = Config {
+            scenario: "big_battle_6".into(),
+            faction0: "undead".into(),
+            faction1: "undead".into(),
+            gold: 0,
+            seed: 42,
+            scripted: false,
+            llm_side: 0,
+            max_turns: 4,
+            turn_timeout: 1,
+            query_timeout: 1,
+            max_queries: 1,
+            disable_recruit_batch: false,
+        };
+        let (mut state, faction0, _, units) = init_game(&config).expect("valid fixture");
+        let castle = Hex::from_offset(2, 6);
+        let def = units.get("Skeleton").expect("fixture unit");
+        state.place_unit(Unit::from_def(state.next_unit_id, def, 0), castle);
+        state.next_unit_id += 1;
+        let before = state.clone();
+        let mut next_id = state.next_unit_id;
+        let mut events = Vec::new();
+
+        let result = recruit_batch_with_events(
+            &mut state,
+            0,
+            &faction0,
+            &units,
+            &mut next_id,
+            "Skeleton",
+            1,
+            &mut events,
+        );
+
+        assert_eq!(
+            result,
+            Err(norrust_core::game_state::ActionError::NotEnoughGold)
+        );
+        assert_eq!(state.gold, before.gold);
+        assert_eq!(format!("{:?}", state.units), format!("{:?}", before.units));
+        assert_eq!(state.positions, before.positions);
+        assert_eq!(state.hex_to_unit, before.hex_to_unit);
+        assert_eq!(state.next_unit_id, before.next_unit_id);
+        assert_eq!(next_id, before.next_unit_id);
+        assert!(events.is_empty());
     }
 }
 

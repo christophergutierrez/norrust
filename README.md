@@ -122,7 +122,9 @@ The model returns a non-empty array of at most 256 objects with exactly one fina
 optional `RecruitBatch` (string `def_id`, positive integer `count`), `Advance`
 (integer `unit_id` and exactly one integer `target_index` or string `def_id`), and
 `EndTurn` (`action` only). The configured model-side restriction includes
-`EndTurn` and referenced-unit ownership.
+`EndTurn` and referenced-unit ownership. `RecruitBatch` attempts up to its count
+and reports actual progress; a failed driver status after forwarding an action is
+recorded as infrastructure-invalid so the client cannot deadlock.
 
 For this headless client, `greedy_driver` explicitly disables `objective_hex` and
 scenario turn-limit win conditions. Headless win evaluation is recruiter loss,

@@ -49,7 +49,8 @@ has exactly the fields shown below. There is exactly one final
 `Move` has integer `unit_id`, `col`, and `row`. `Attack` has integer
 `attacker_id` and `defender_id`. `Recruit` has string `def_id` and integer
 `col` and `row`. `RecruitBatch` is optional driver assistance: it has string
-`def_id` and positive integer `count`; the driver chooses legal placement hexes.
+`def_id` and positive integer `count`; the driver attempts up to that many legal
+placements and reports the actual `recruited` count and `partial` flag.
 It is rejected when the driver is started with `--disable-recruit-batch`.
 `Advance` has integer `unit_id` and exactly one selector: integer `target_index`
 or string `def_id`. `EndTurn` has only `action`.
@@ -58,7 +59,9 @@ The client rejects malformed JSON, unknown fields, missing fields, non-integer
 numeric fields, non-positive batch counts, and invalid batch structure before
 forwarding it. A validation failure may receive one repair call from the model;
 provider/model/query failures are infrastructure-invalid results with a nonzero
-client exit, not gameplay losses or draws.
+client exit, not gameplay losses or draws. A driver status rejection after
+forwarding an action is also recorded as infrastructure-invalid so the client
+cannot wait indefinitely for a new boundary.
 
 ## Singleton engine queries
 

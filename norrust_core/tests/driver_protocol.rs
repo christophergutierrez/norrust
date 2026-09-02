@@ -149,6 +149,121 @@ fn model_rejects_foreign_unit_reference_at_model_boundary() {
     );
 }
 
+#[test]
+fn undead_recruitment_is_roster_gated_and_valid_recruitment_still_works() {
+    let rejected = run_driver(
+        &[
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+            "--gold",
+            "100",
+        ],
+        "[{\"action\":\"Recruit\",\"def_id\":\"Orcish Grunt\",\"col\":2,\"row\":6},{\"action\":\"EndTurn\"}]\n",
+    );
+    let rejected_status = rejected
+        .iter()
+        .find(|line| line["type"] == "status")
+        .unwrap();
+    assert_eq!(rejected_status["results"][0]["ok"], false);
+    assert_eq!(rejected_status["results"][0]["code"], "NotInRecruitList");
+
+    let accepted = run_driver(
+        &[
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+            "--gold",
+            "100",
+        ],
+        "{\"action\":\"Recruit\",\"def_id\":\"Skeleton\",\"col\":2,\"row\":6}\n",
+    );
+    let accepted_status = accepted
+        .iter()
+        .find(|line| line["type"] == "status")
+        .unwrap();
+    assert_eq!(accepted_status["results"][0]["ok"], true);
+    assert!(accepted.iter().any(|line| {
+        line["type"] == "events"
+            && line["source"] == "llm"
+            && line["events"]
+                .as_array()
+                .is_some_and(|events| events.iter().any(|event| event["kind"] == "recruit"))
+    }));
+}
+
+#[test]
+fn rust_action_shape_rejects_wrong_scalars_and_batch_count_overflow() {
+    let lines = run_driver(
+        &[
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+        ],
+        "{\"action\":\"Move\",\"unit_id\":true,\"col\":1,\"row\":1}\n{\"action\":\"RecruitBatch\",\"def_id\":\"Skeleton\",\"count\":0}\n{\"action\":\"RecruitBatch\",\"def_id\":\"Skeleton\",\"count\":4294967296}\n{\"action\":\"Advance\",\"unit_id\":1,\"target_index\":1,\"def_id\":\"Skeleton\"}\n",
+    );
+    let statuses: Vec<&Value> = lines
+        .iter()
+        .filter(|line| line["type"] == "status")
+        .collect();
+    assert_eq!(statuses.len(), 4);
+    assert!(statuses
+        .iter()
+        .all(|status| { status["ok"] == false && status["code"] == "parse" }));
+}
+
+#[test]
+fn recruit_batch_reports_actual_partial_progress_and_rejects_unknown_type() {
+    let partial = run_driver(
+        &[
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+            "--gold",
+            "15",
+        ],
+        "{\"action\":\"RecruitBatch\",\"def_id\":\"Skeleton\",\"count\":2}\n",
+    );
+    let partial_status = partial
+        .iter()
+        .find(|line| line["type"] == "status")
+        .unwrap();
+    assert_eq!(partial_status["results"][0]["ok"], true);
+    assert_eq!(partial_status["results"][0]["requested"], 2);
+    assert_eq!(partial_status["results"][0]["recruited"], 1);
+    assert_eq!(partial_status["results"][0]["partial"], true);
+
+    let unknown = run_driver(
+        &[
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+        ],
+        "{\"action\":\"RecruitBatch\",\"def_id\":\"Orcish Grunt\",\"count\":1}\n",
+    );
+    let unknown_status = unknown
+        .iter()
+        .find(|line| line["type"] == "status")
+        .unwrap();
+    assert_eq!(unknown_status["results"][0]["ok"], false);
+    assert_eq!(unknown_status["results"][0]["code"], "NotInRecruitList");
+}
+
 fn recruit_options_query(args: &[&str]) -> Value {
     let lines = run_driver(
         args,
