@@ -82,6 +82,7 @@ All functions take an opaque `NorRustEngine*` pointer as their first argument (e
 | `norrust_get_active_faction` | `(*engine) -> i32` | Faction index | 0 or 1 |
 | `norrust_get_turn` | `(*engine) -> i32` | Turn number | Starting from 1 |
 | `norrust_get_time_of_day_name` | `(*engine) -> *char` | ToD name | "Day", "Dusk", "Night", "Dawn" |
+| `norrust_get_tod_phase` | `(*engine) -> i32` | Phase | Canonical six-step ToD phase (0..=5), or -1 |
 | `norrust_get_winner` | `(*engine) -> i32` | -1=none, 0/1=faction | Check for game end |
 | `norrust_get_state_json` | `(*engine) -> *char` | Full JSON snapshot | Complete game state as JSON (cached) |
 | `norrust_get_state_json_fow` | `(*engine, faction) -> *char` | Filtered JSON | Game state filtered by fog of war (uncached) |
@@ -147,6 +148,7 @@ All functions take an opaque `NorRustEngine*` pointer as their first argument (e
 | `norrust_get_survivors_json` | `(*engine) -> *char` | JSON array | Get surviving units after scenario |
 | `norrust_get_carry_gold` | `(*engine, faction, gold_carry_percent, early_finish_bonus) -> i32` | Gold amount | Calculate gold carried to next scenario |
 | `norrust_place_veteran_unit` | `(*engine, *def_id, faction, col, row, hp, xp, xp_needed, adv_pending) -> i32` | Unit ID | Place a veteran unit with carried stats (hp=0 heals to full) |
+| `norrust_place_veteran_unit_json` | `(*engine, *json) -> *char` | JSON | Place a veteran with explicit can_recruit; returns status and unit_id |
 | `norrust_campaign_commit_deployment` | `(*engine, *json) -> *char` | JSON status | Finalize deployment phase unit placements |
 | `norrust_campaign_add_unit` | `(*engine, *uuid, *def_id, faction) -> i32` | 1=ok | Add unit to campaign roster |
 | `norrust_campaign_map_id` | `(*engine, *uuid, unit_id) -> i32` | 1=ok | Map a roster UUID to an in-game unit ID |

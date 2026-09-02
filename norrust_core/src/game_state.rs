@@ -245,9 +245,11 @@ impl GameState {
         // recruiters are gone, fall through to ordinary elimination rather
         // than resolving the tie by faction/check order.
         let has_recruiter = [0u8, 1].map(|side| {
-            self.units
-                .values()
-                .any(|unit| unit.faction == side && unit.can_recruit)
+            self.units.values().any(|unit| {
+                unit.faction == side
+                    && (unit.can_recruit
+                        || unit.abilities.iter().any(|ability| ability == "leader"))
+            })
         });
         let lost_0 = self.had_recruiter[0] && !has_recruiter[0];
         let lost_1 = self.had_recruiter[1] && !has_recruiter[1];
@@ -277,7 +279,7 @@ impl GameState {
             "place_unit: hex already occupied"
         );
         let id = unit.id;
-        if unit.can_recruit {
+        if unit.can_recruit || unit.abilities.iter().any(|ability| ability == "leader") {
             self.had_recruiter[unit.faction as usize] = true;
         }
         self.positions.insert(id, hex);
@@ -1119,7 +1121,7 @@ pub fn apply_recruit(
         .filter_map(|(&uid, &hex)| {
             let unit = state.units.get(&uid)?;
             (unit.faction == active
-                && unit.can_recruit
+                && (unit.can_recruit || unit.abilities.iter().any(|ability| ability == "leader"))
                 && state
                     .board
                     .tile_at(hex)
