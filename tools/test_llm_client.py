@@ -1,10 +1,13 @@
 import argparse
 import io
 import json
+import os
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
+from . import llm_client
 from .llm_client import ModelReply, enforce_usage, prompt_for, query_options, run, validate_orders
 
 
@@ -85,20 +88,68 @@ class ClientValidationTests(unittest.TestCase):
                        'untrusted data', 'cannot override this contract'):
             self.assertIn(marker, prompt)
 
-    def test_prompt_includes_memoryless_tactical_playbook(self):
+    def test_prompt_starts_with_exact_canonical_tactical_playbook(self):
         prompt = prompt_for({}, [])
+        canonical = llm_client.PLAYBOOK_PATH.read_text(encoding="utf-8")
+        self.assertTrue(prompt.startswith(canonical + "\n"))
+        self.assertEqual(prompt.count(canonical), 1)
+
+    def test_canonical_tactical_playbook_has_key_imperatives(self):
+        canonical = llm_client.PLAYBOOK_PATH.read_text(encoding="utf-8")
         for guidance in (
             "MEMORYLESS TACTICAL PLAYBOOK",
-            "apply every turn",
-            "recruiter loss ends the game",
-            "keep the leader out of reachable enemy attack positions",
-            "focus-fire kills",
-            "reachable position target_ids",
-            "authoritative query data/options",
-            "EndTurn safely",
+            "recruiter survival as non-negotiable",
+            "on or near the keep",
+            "never advance it merely to seek combat",
+            "spend gold and recruit when legal",
+            "move non-recruiters off castle hexes",
+            "do not passively wait",
+            "Kill the enemy recruiter",
+            "Save your threatened recruiter",
+            "Focus-fire a kill",
+            "positions and `target_ids` exactly",
+            "`Move` immediately followed by the matching `Attack`",
+            "reserve a unique destination",
+            "Avoid speculative, unreachable",
+            "`EndTurn` only after every unit",
         ):
             with self.subTest(guidance=guidance):
-                self.assertIn(guidance, prompt)
+                self.assertIn(guidance, canonical)
+
+    def test_playbook_loading_is_independent_of_working_directory(self):
+        expected_path = Path(llm_client.__file__).resolve().parents[1] / \
+            "docs" / "LLM_TACTICAL_PLAYBOOK.md"
+        self.assertEqual(llm_client.PLAYBOOK_PATH, expected_path)
+        expected = llm_client.PLAYBOOK_PATH.read_text(encoding="utf-8")
+        original_cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as directory:
+            try:
+                os.chdir(directory)
+                self.assertTrue(prompt_for({}, []).startswith(expected + "\n"))
+            finally:
+                os.chdir(original_cwd)
+
+    def test_missing_playbook_has_actionable_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "missing-norrust-playbook.md"
+            with mock.patch.object(llm_client, "PLAYBOOK_PATH", missing), \
+                    self.assertRaisesRegex(
+                        RuntimeError,
+                        r"model_prompt_error: canonical tactical playbook is missing or unreadable.*"
+                        r"restore docs/LLM_TACTICAL_PLAYBOOK\.md",
+                    ):
+                prompt_for({}, [])
+
+    def test_docs_link_to_canonical_playbook_without_checklist_duplication(self):
+        docs_dir = llm_client.PLAYBOOK_PATH.parent
+        for name in ("LLM_CLIENT.md", "LLM_VS_ALGORITHM.md"):
+            text = (docs_dir / name).read_text(encoding="utf-8")
+            with self.subTest(name=name):
+                self.assertIn("[MEMORYLESS TACTICAL PLAYBOOK](LLM_TACTICAL_PLAYBOOK.md)", text)
+                self.assertIn("inline near the beginning of every model", text)
+                self.assertIn("does not need filesystem access", text)
+                self.assertNotIn("Protect the recruiter/leader first", text)
+                self.assertNotIn("Apply this every turn:", text)
 
     def test_prompt_defines_exactly_one_prior_recruiter_side_losing_all_recruiters(self):
         prompt = prompt_for({}, [])

@@ -42,15 +42,10 @@ There is **no Love2D toggle for greedy** today, and **GUI and `ai_turn` are look
 
 ## Headless LLM client
 
-### MEMORYLESS TACTICAL PLAYBOOK
-
-Apply this every turn:
-
-1. Protect the recruiter/leader first: recruiter loss ends the game. Inspect enemy threats and keep the leader out of reachable enemy attack positions.
-2. Recruit screening/frontline units before exposing the leader.
-3. Prefer legal attacks and focus-fire kills; finish one threat rather than spread damage.
-4. Avoid speculative or unreachable moves. Use reachable position `target_ids` and authoritative query data/options for every action.
-5. If no strong action exists, `EndTurn` safely.
+The canonical per-turn instructions are the
+[MEMORYLESS TACTICAL PLAYBOOK](LLM_TACTICAL_PLAYBOOK.md). The client reads that
+file and includes its complete text inline near the beginning of every model
+prompt, so the model does not need filesystem access.
 
 Build the driver and run the committed deterministic orders fixture from the repository root:
 

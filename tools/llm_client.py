@@ -181,15 +181,18 @@ def enforce_usage(reply: ModelReply, args: argparse.Namespace) -> None:
         raise RuntimeError("model_error: total token limit exceeded")
 
 
-MEMORYLESS_TACTICAL_PLAYBOOK = (
-    "MEMORYLESS TACTICAL PLAYBOOK (apply every turn): "
-    "1) Protect the recruiter/leader first: recruiter loss ends the game. "
-    "Inspect enemy threats and keep the leader out of reachable enemy attack positions. "
-    "2) Recruit screening/frontline units before exposing the leader. "
-    "3) Prefer legal attacks and focus-fire kills; finish one threat rather than spread damage. "
-    "4) Avoid speculative or unreachable moves. Use reachable position target_ids and authoritative "
-    "query data/options for every action. 5) If no strong action exists, EndTurn safely."
-)
+PLAYBOOK_PATH = Path(__file__).resolve().parents[1] / "docs" / "LLM_TACTICAL_PLAYBOOK.md"
+
+
+def load_tactical_playbook() -> str:
+    """Load the canonical instructions independently of the process working directory."""
+    try:
+        return PLAYBOOK_PATH.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(
+            "model_prompt_error: canonical tactical playbook is missing or unreadable at "
+            f"{PLAYBOOK_PATH}; restore docs/LLM_TACTICAL_PLAYBOOK.md"
+        ) from exc
 
 
 def query_options(exchange) -> dict[str, Any]:
@@ -222,10 +225,10 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
             " For RecruitBatch the driver assists placement and you choose type and positive count."
         )
     rules = (
-        MEMORYLESS_TACTICAL_PLAYBOOK + "\n"
+        load_tactical_playbook() + "\n"
         "You play only the configured model-controlled side in Norrust. The driver automatically "
-        "executes the opponent; never submit opponent actions. Return a non-empty "
-        "Return the non-empty JSON array only; actions execute sequentially in array order against the mutating state. "
+        "executes the opponent; never submit opponent actions. Return the non-empty JSON array only; "
+        "actions execute sequentially in array order against the mutating state. "
         "The array has at most 256 objects with exactly one final {\"action\":\"EndTurn\"}. "
         "Each object has exactly one of these schemas: " + "; ".join(schemas) + ". "
         "turn_options supplies current-unit positions and target IDs. For Advance, target_index "
