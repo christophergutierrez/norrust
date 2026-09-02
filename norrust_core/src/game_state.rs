@@ -731,6 +731,7 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<Vec<GameEve
             }
 
             // Retaliation: defender strikes back if still alive and has attacks
+            let mut damage_to_attacker = 0;
             if state.units.contains_key(&defender_id) {
                 let ret_attack = state
                     .units
@@ -797,6 +798,7 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<Vec<GameEve
                         ret_defense,
                         ret_tod,
                     );
+                    damage_to_attacker = ret_damage;
                     state.units.get_mut(&defender_id).unwrap().attacked = true;
 
                     // Drain: heal defender for retaliation damage dealt
@@ -890,7 +892,7 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<Vec<GameEve
                 attacker: attacker_event,
                 defender: defender_event,
                 damage_to_defender: damage,
-                damage_to_attacker: 0,
+                damage_to_attacker,
             }])
         }
 
