@@ -285,6 +285,7 @@ impl CampaignState {
                     uuid,
                     deployed: is_leader || i < available_slots,
                     is_leader,
+                    can_recruit: vet.can_recruit,
                 }
             })
             .collect()
@@ -350,6 +351,8 @@ pub struct VeteranInfo {
     pub uuid: Option<String>,
     pub deployed: bool,
     pub is_leader: bool,
+    #[serde(default)]
+    pub can_recruit: bool,
 }
 
 /// Result of loading the next campaign scenario.
