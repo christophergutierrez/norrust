@@ -57,7 +57,21 @@ class CommandBackend(ModelBackend):
             obj = json.loads(proc.stdout)
             return ModelReply(obj["text"], obj.get("usage"))
         except (ValueError, KeyError, TypeError) as exc:
-            raise RuntimeError("model_error: invalid JSON reply") from exc
+            raise ValueError("invalid JSON model reply") from exc
+
+
+def source_metadata() -> dict[str, Any]:
+    def git(*args: str) -> str:
+        try:
+            return subprocess.check_output(["git", *args], text=True, stderr=subprocess.DEVNULL).strip()
+        except (OSError, subprocess.CalledProcessError):
+            return ""
+    commit = git("rev-parse", "HEAD")
+    dirty = git("diff", "--binary")
+    return {
+        "source_commit": commit,
+        "dirty_patch_hash": hashlib.sha256(dirty.encode()).hexdigest() if dirty else None,
+    }
 
 
 def validate_orders(text: str, strict: bool = False) -> list[dict[str, Any]]:
@@ -71,11 +85,32 @@ def validate_orders(text: str, strict: bool = False) -> list[dict[str, Any]]:
     for i, order in enumerate(orders):
         if not isinstance(order, dict) or order.get("action") not in ACTIONS:
             raise ValueError(f"invalid action at index {i}")
-        if order["action"] == "Query":
-            raise ValueError("Query is not a model action")
-        if strict and order["action"] == "RecruitBatch":
+        action = order["action"]
+        allowed = {
+            "Move": {"action", "unit_id", "col", "row"},
+            "Attack": {"action", "attacker_id", "defender_id"},
+            "Recruit": {"action", "def_id", "col", "row"},
+            "RecruitBatch": {"action", "def_id", "count"},
+            "EndTurn": {"action"},
+            "Advance": {"action", "unit_id", "target_index", "def_id"},
+        }[action]
+        if set(order) - allowed:
+            raise ValueError(f"unknown key at index {i}")
+        required = {
+            "Move": {"unit_id", "col", "row"},
+            "Attack": {"attacker_id", "defender_id"},
+            "Recruit": {"def_id", "col", "row"},
+            "RecruitBatch": {"def_id", "count"},
+            "EndTurn": set(),
+            "Advance": {"unit_id"},
+        }[action]
+        if not required.issubset(order):
+            raise ValueError(f"missing field at index {i}")
+        if action == "Advance" and (("target_index" in order) == ("def_id" in order)):
+            raise ValueError(f"Advance needs exactly one target at index {i}")
+        if strict and action == "RecruitBatch":
             raise ValueError("RecruitBatch is disabled in strict mode")
-        end_indices += [i] if order["action"] == "EndTurn" else []
+        end_indices += [i] if action == "EndTurn" else []
     if len(end_indices) != 1 or end_indices[0] != len(orders) - 1:
         raise ValueError("exactly one final EndTurn is required")
     return orders
@@ -93,7 +128,10 @@ def run(args: argparse.Namespace) -> int:
     driver = args.driver
     cmd = [driver, "--scenario", args.scenario, "--faction0", args.faction0,
            "--faction1", args.faction1, "--gold", str(args.gold), "--seed", str(args.seed),
-           "--max-turns", str(args.max_turns), "--llm-side", str(args.llm_side)]
+           "--max-turns", str(args.max_turns), "--llm-side", str(args.llm_side),
+           "--turn-timeout", str(args.turn_timeout),
+           "--query-budget-seconds", str(args.query_budget_seconds),
+           "--max-queries-per-turn", str(args.max_queries_per_turn)]
     if args.no_recruit_macro:
         cmd.append("--disable-recruit-batch")
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -103,17 +141,35 @@ def run(args: argparse.Namespace) -> int:
     state: Optional[dict[str, Any]] = None
     metadata = {"scenario": args.scenario, "faction0": args.faction0, "faction1": args.faction1,
                 "gold": args.gold, "seed": args.seed, "llm_side": args.llm_side,
+                "first_player": 0 if args.llm_side == 0 else 1,
                 "model_backend": "orders-file" if args.orders_file else "model-command",
                 "llm_recruit_macro": not args.no_recruit_macro,
                 "opponent": "greedy+driver-recruit", "opponent_recruit_policy": "standard_driver_macro",
                 "opponent_planner": "no_skirmisher_pathing", "turn_format": "single_batch",
-                "win_rule": "elimination_only", "queries": 0, "model_orders": 0, "model_calls": 0}
+                "win_rule": "elimination_only", "queries": 0, "model_orders": 0, "model_calls": 0,
+                "max_turns": args.max_turns, "turn_timeout_seconds": args.turn_timeout,
+                "query_budget_seconds": args.query_budget_seconds,
+                "max_queries_per_turn": args.max_queries_per_turn,
+                "max_model_calls_per_turn": 2, "max_prompt_bytes": args.max_prompt_bytes,
+                "token_input_limit": args.token_input_limit,
+                "token_output_limit": args.token_output_limit,
+                "token_total_limit": args.token_total_limit,
+                "prompt_cache": False, "usage_measured": True,
+                "sampling": None, "llm_authored_extra": False,
+                "winner": None, "reason": None, "infrastructure_invalid": False,
+                **source_metadata()}
     log = open(args.log, "a", buffering=1) if args.log else None
     def record(obj: dict[str, Any]) -> None:
         if log:
             log.write(json.dumps(obj, sort_keys=True) + "\n")
             log.flush()
-    record({"type": "metadata", **metadata})
+    def durable(obj: dict[str, Any]) -> None:
+        record(obj)
+        if log:
+            os.fsync(log.fileno())
+    record({"type": "metadata", **metadata, "driver_command": cmd,
+            "model_command_hash": hashlib.sha256(args.model_command.encode()).hexdigest()
+            if args.model_command else None})
     try:
         while True:
             raw = proc.stdout.readline()
@@ -139,21 +195,49 @@ def run(args: argparse.Namespace) -> int:
                     state = dict(state)
                     state["turn_options"] = query_line["body"]
                 prompt = prompt_for(state, events)
+                prompt_bytes = prompt.encode()
+                prompt_hash = hashlib.sha256(prompt_bytes).hexdigest()
+                if len(prompt_bytes) > args.max_prompt_bytes:
+                    metadata["infrastructure_invalid"] = True
+                    durable({"type": "preflight_error", "code": "prompt_too_large",
+                             "bytes": len(prompt_bytes), "limit": args.max_prompt_bytes})
+                    return 1
                 metadata["model_calls"] += 1
                 try:
                     reply = backend.complete(prompt)
-                    orders = validate_orders(reply.text, args.no_recruit_macro)
+                    record({"type": "model", "call": metadata["model_calls"],
+                            "prompt_hash": prompt_hash, "prompt_bytes": len(prompt_bytes),
+                            "raw_output": reply.text, "usage": reply.usage})
+                    if reply.usage is None:
+                        metadata["usage_measured"] = False
+                    try:
+                        orders = validate_orders(reply.text, args.no_recruit_macro)
+                    except ValueError as first:
+                        repair_prompt = prompt + "\nVALIDATION_ERROR: " + str(first) + \
+                            "\nReturn one corrected JSON action array only."
+                        metadata["model_calls"] += 1
+                        repaired = backend.complete(repair_prompt)
+                        record({"type": "repair", "call": metadata["model_calls"],
+                                "prompt_hash": hashlib.sha256(repair_prompt.encode()).hexdigest(),
+                                "raw_output": repaired.text, "usage": repaired.usage,
+                                "validation_error": str(first)})
+                        if repaired.usage is None:
+                            metadata["usage_measured"] = False
+                        orders = validate_orders(repaired.text, args.no_recruit_macro)
                 except (RuntimeError, ValueError) as first:
-                    record({"type": "model_error", "message": str(first)})
+                    metadata["infrastructure_invalid"] = True
+                    durable({"type": "model_error", "message": str(first)})
                     return 1
                 metadata["model_orders"] += len(orders)
+                record({"type": "forwarded_orders", "orders": orders,
+                        "prompt_hash": prompt_hash})
                 proc.stdin.write(json.dumps(orders, separators=(",", ":")) + "\n")
                 proc.stdin.flush()
             elif line.get("type") == "events":
                 events.extend(line.get("events", []))
             elif line.get("type") == "game_end":
                 metadata.update({"winner": line.get("winner"), "reason": line.get("reason")})
-                record({"type": "terminal", **metadata})
+                durable({"type": "terminal", **metadata})
                 return 0
     finally:
         if log:
@@ -175,6 +259,13 @@ def main() -> int:
     p.add_argument("--orders-file")
     p.add_argument("--model-command")
     p.add_argument("--model-timeout", type=float, default=300)
+    p.add_argument("--turn-timeout", type=int, default=300)
+    p.add_argument("--query-budget-seconds", type=int, default=300)
+    p.add_argument("--max-queries-per-turn", type=int, default=256)
+    p.add_argument("--max-prompt-bytes", type=int, default=16 * 1024 * 1024)
+    p.add_argument("--token-input-limit", type=int)
+    p.add_argument("--token-output-limit", type=int)
+    p.add_argument("--token-total-limit", type=int)
     p.add_argument("--no-recruit-macro", action="store_true")
     p.add_argument("--log")
     a = p.parse_args()

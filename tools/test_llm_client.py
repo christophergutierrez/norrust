@@ -28,6 +28,14 @@ class ClientValidationTests(unittest.TestCase):
         state = {"units": [{"id": 2}, {"id": 1}]}
         self.assertEqual(prompt_for(state, []), prompt_for(state, []))
 
+    def test_unknown_key_rejected(self):
+        with self.assertRaises(ValueError):
+            validate_orders('[{"action":"EndTurn","surprise":true}]')
+
+    def test_advance_requires_one_selector(self):
+        with self.assertRaises(ValueError):
+            validate_orders('[{"action":"Advance","unit_id":1},{"action":"EndTurn"}]')
+
 
 if __name__ == "__main__":
     unittest.main()
