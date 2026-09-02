@@ -141,6 +141,7 @@ def enforce_usage(reply: ModelReply, args: argparse.Namespace) -> None:
 
 def prompt_for(state: dict[str, Any], events: list[dict[str, Any]]) -> str:
     rules = ("You play Norrust. Choose legal tactical actions from the supplied board. "
+             "The win rule is objective, scenario turn limit, exactly-one recruiter loss, then elimination. "
              "Return only a JSON array of actions, ending with EndTurn. "
              "Move, Attack, Recruit, Advance, and EndTurn are available.")
     return rules + "\nBOARD:\n" + json.dumps(state, sort_keys=True, separators=(",", ":")) + \
@@ -174,7 +175,7 @@ def run(args: argparse.Namespace) -> int:
                 "llm_recruit_macro": not args.no_recruit_macro,
                 "opponent": "greedy+driver-recruit", "opponent_recruit_policy": "standard_driver_macro",
                 "opponent_planner": "no_skirmisher_pathing", "turn_format": "single_batch",
-                "win_rule": "elimination_only", "queries": 0, "model_orders": 0, "model_calls": 0,
+                "win_rule": "recruiter_loss", "queries": 0, "model_orders": 0, "model_calls": 0,
                 "max_turns": args.max_turns, "turn_timeout_seconds": args.turn_timeout,
                 "query_budget_seconds": args.query_budget_seconds,
                 "max_queries_per_turn": args.max_queries_per_turn,
