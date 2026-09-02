@@ -500,7 +500,10 @@ fn scripted_game(c: &Config) {
             .filter(|u| u.faction == 1 && u.abilities.iter().any(|a| a == "leader"))
             .count();
         if f0_leaders != 1 || f1_leaders != 1 {
-            println!("{}", json!({"type":"game_end","reason":"setup_error","code":"invalid_setup","message":"each faction must have exactly one leader"}));
+            println!(
+                "{}",
+                json!({"type":"game_end","reason":"setup_error","code":"invalid_setup","message":"each faction must have exactly one leader"})
+            );
             return;
         }
         eprintln!("[ASSERT] Each faction has exactly 1 leader on keep. ✓");
@@ -578,7 +581,10 @@ fn interactive_game(c: &Config) {
                 "[ERROR] Setup failed: f0 leaders={}, f1 leaders={}",
                 f0_leaders, f1_leaders
             );
-            println!("{}", json!({"type":"game_end","reason":"setup_error","code":"invalid_setup","message":"each faction must have exactly one leader"}));
+            println!(
+                "{}",
+                json!({"type":"game_end","reason":"setup_error","code":"invalid_setup","message":"each faction must have exactly one leader"})
+            );
             return;
         }
     }
