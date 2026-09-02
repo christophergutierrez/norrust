@@ -436,21 +436,28 @@ pub fn count_available_slots(state: &GameState, keep: Hex, castles: &[Hex]) -> u
 
 /// Extract surviving units of the given faction from the current game state.
 pub fn get_survivors(state: &GameState, faction: u8) -> Vec<VeteranUnit> {
-    state
+    let mut survivors: Vec<(u32, VeteranUnit)> = state
         .units
-        .values()
-        .filter(|u| u.faction == faction)
-        .map(|u| VeteranUnit {
-            def_id: u.def_id.clone(),
-            hp: u.hp,
-            max_hp: u.max_hp,
-            xp: u.xp,
-            xp_needed: u.xp_needed,
-            advancement_pending: u.advancement_pending,
-            abilities: u.abilities.clone(),
-            can_recruit: u.can_recruit,
+        .iter()
+        .filter(|(_, u)| u.faction == faction)
+        .map(|(&id, u)| {
+            (
+                id,
+                VeteranUnit {
+                    def_id: u.def_id.clone(),
+                    hp: u.hp,
+                    max_hp: u.max_hp,
+                    xp: u.xp,
+                    xp_needed: u.xp_needed,
+                    advancement_pending: u.advancement_pending,
+                    abilities: u.abilities.clone(),
+                    can_recruit: u.can_recruit,
+                },
+            )
         })
-        .collect()
+        .collect();
+    survivors.sort_by_key(|(id, _)| *id);
+    survivors.into_iter().map(|(_, veteran)| veteran).collect()
 }
 
 /// Calculate carry-over gold for the next scenario.

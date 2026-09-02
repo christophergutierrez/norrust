@@ -344,6 +344,7 @@ fn recruit_internal(
     recruited
 }
 
+#[allow(dead_code)]
 fn recruit(
     state: &mut GameState,
     side: u8,
@@ -618,6 +619,7 @@ fn scripted_game(c: &Config) {
     );
 }
 
+#[allow(dead_code)]
 fn interactive_game(c: &Config) {
     let (mut state, f0, f1, units) = match init_game(c) {
         Ok(game) => game,
