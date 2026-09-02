@@ -348,6 +348,40 @@ fn game_state_to_json(state: &GameState, units: &Registry<UnitDef>) -> Value {
     .unwrap_or_else(|_| json!({}))
 }
 
+fn valid_action_shape(order: &Value) -> bool {
+    let Some(object) = order.as_object() else {
+        return false;
+    };
+    let Some(action) = object.get("action").and_then(Value::as_str) else {
+        return false;
+    };
+    let (allowed, required): (&[&str], &[&str]) = match action {
+        "Move" => (
+            &["action", "unit_id", "col", "row"],
+            &["unit_id", "col", "row"],
+        ),
+        "Attack" => (
+            &["action", "attacker_id", "defender_id"],
+            &["attacker_id", "defender_id"],
+        ),
+        "Recruit" => (
+            &["action", "def_id", "col", "row"],
+            &["def_id", "col", "row"],
+        ),
+        "RecruitBatch" => (&["action", "def_id", "count"], &["def_id", "count"]),
+        "EndTurn" => (&["action"], &[]),
+        "Advance" => (
+            &["action", "unit_id", "target_index", "def_id"],
+            &["unit_id"],
+        ),
+        _ => return false,
+    };
+    object.keys().all(|key| allowed.contains(&key.as_str()))
+        && required.iter().all(|key| object.contains_key(*key))
+        && (action != "Advance"
+            || object.contains_key("target_index") != object.contains_key("def_id"))
+}
+
 fn init_game(c: &Config) -> (GameState, Faction, Faction, Registry<UnitDef>) {
     let base = root();
     let data = base.join("data");
@@ -1130,6 +1164,13 @@ fn interactive_protocol_game(c: &Config) {
             println!(
                 "{}",
                 json!({"type":"status","ok":false,"code":"unknown_action","message":"unknown or missing action"})
+            );
+            continue;
+        }
+        if orders.iter().any(|order| !valid_action_shape(order)) {
+            println!(
+                "{}",
+                json!({"type":"status","ok":false,"code":"parse","message":"invalid action shape"})
             );
             continue;
         }
