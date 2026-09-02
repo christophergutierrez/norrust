@@ -170,7 +170,7 @@ def run(args: argparse.Namespace) -> int:
     metadata = {"scenario": args.scenario, "faction0": args.faction0, "faction1": args.faction1,
                 "gold": args.gold, "seed": args.seed, "llm_side": args.llm_side,
                 "first_player": 0 if args.llm_side == 0 else 1,
-                "model_backend": "orders-file" if args.orders_file else "model-command",
+                "model_backend": "interactive" if args.interactive_model else ("orders-file" if args.orders_file else "model-command"),
                 "llm_recruit_macro": not args.no_recruit_macro,
                 "opponent": "greedy+driver-recruit", "opponent_recruit_policy": "standard_driver_macro",
                 "opponent_planner": "no_skirmisher_pathing", "turn_format": "single_batch",
@@ -202,7 +202,8 @@ def run(args: argparse.Namespace) -> int:
         while True:
             raw = proc.stdout.readline()
             if not raw:
-                record({"type": "driver_crash", "returncode": proc.poll()})
+                metadata["infrastructure_invalid"] = True
+                durable({"type": "driver_crash", "returncode": proc.poll(), **metadata})
                 return 1
             line = json.loads(raw)
             record({"type": "driver", "line": line})
@@ -214,7 +215,8 @@ def run(args: argparse.Namespace) -> int:
                 proc.stdin.flush()
                 query_raw = proc.stdout.readline()
                 if not query_raw:
-                    record({"type": "driver_crash", "returncode": proc.poll()})
+                    metadata["infrastructure_invalid"] = True
+                    durable({"type": "driver_crash", "returncode": proc.poll(), **metadata})
                     return 1
                 query_line = json.loads(query_raw)
                 metadata["queries"] += 1
@@ -222,6 +224,9 @@ def run(args: argparse.Namespace) -> int:
                 if query_line.get("ok") and query_line.get("body"):
                     state = dict(state)
                     state["turn_options"] = query_line["body"]
+                record({"type": "state_hash", "sha256": hashlib.sha256(
+                    json.dumps(state, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest()})
                 prompt = prompt_for(state, events)
                 prompt_bytes = prompt.encode()
                 prompt_hash = hashlib.sha256(prompt_bytes).hexdigest()
