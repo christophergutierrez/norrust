@@ -124,7 +124,8 @@ optional `RecruitBatch` (string `def_id`, positive integer `count`), `Advance`
 `EndTurn` (`action` only). The configured model-side restriction includes
 `EndTurn` and referenced-unit ownership. `RecruitBatch` attempts up to its count
 and reports actual progress; a failed driver status after forwarding an action is
-recorded as infrastructure-invalid so the client cannot deadlock.
+recorded as infrastructure-invalid so the client cannot deadlock. `Advance`'s
+`target_index` selects the matching entry in the unit's `advances_to` list.
 
 For this headless client, `greedy_driver` explicitly disables `objective_hex` and
 scenario turn-limit win conditions. Headless win evaluation is recruiter loss,

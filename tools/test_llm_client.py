@@ -68,6 +68,7 @@ class ClientValidationTests(unittest.TestCase):
             'Attack', '"attacker_id": integer', '"defender_id": integer',
             'Recruit', '"def_id": string', 'RecruitBatch', '"count": positive integer',
             'Advance', 'exactly one of integer target_index or string def_id',
+            "target_index indexes the unit's advances_to list",
             'turn_options', 'current-unit positions', 'target IDs', 'recruit_options',
             'faction-legal definitions', 'costs', 'affordability', 'placement hexes',
             'engine responses remain authoritative', 'automatically executes the opponent',
@@ -101,6 +102,9 @@ class ClientValidationTests(unittest.TestCase):
             {"action": "Recruit", "def_id": 3, "col": 1, "row": 1},
             {"action": "RecruitBatch", "def_id": "Skeleton", "count": 0},
             {"action": "RecruitBatch", "def_id": "Skeleton", "count": True},
+            {"action": "Move", "unit_id": 2**32, "col": 1, "row": 1},
+            {"action": "Move", "unit_id": 1, "col": 2**31, "row": 1},
+            {"action": "Advance", "unit_id": 1, "target_index": -1},
         ]:
             with self.subTest(order=order), self.assertRaises(ValueError):
                 validate_orders(json.dumps([order, {"action": "EndTurn"}]))

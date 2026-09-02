@@ -53,7 +53,8 @@ has exactly the fields shown below. There is exactly one final
 placements and reports the actual `recruited` count and `partial` flag.
 It is rejected when the driver is started with `--disable-recruit-batch`.
 `Advance` has integer `unit_id` and exactly one selector: integer `target_index`
-or string `def_id`. `EndTurn` has only `action`.
+or string `def_id`; `target_index` indexes that unit's `advances_to` list in the
+order shown in the board data. `EndTurn` has only `action`.
 
 The client rejects malformed JSON, unknown fields, missing fields, non-integer
 numeric fields, non-positive batch counts, and invalid batch structure before

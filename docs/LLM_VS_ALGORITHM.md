@@ -73,6 +73,10 @@ count, and reports actual progress; it is unavailable with
 action, including `EndTurn`; actor IDs must belong to that side. The model never
 submits `Query` or opponent actions.
 
+For `Advance`, `target_index` selects the corresponding entry in that unit's
+`advances_to` list, in the order shown in the board data; `def_id` can be used
+instead when the target name is known.
+
 Greedy recruitment, planning, actions, and its successful turn boundary form one transaction. A failure emits a typed `game_end` with `reason: "infrastructure_failure"`, a stable `code`, and a `message`, without committing state, events, allocated IDs, or side-turn accounting. The client records `infrastructure_invalid: true` and exits nonzero; the result is not a draw, win, or continuation.
 
 Any failed driver status after forwarding a model batch is also an

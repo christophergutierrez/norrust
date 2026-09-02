@@ -30,7 +30,10 @@ class ModelBackend:
 class InteractiveBackend(ModelBackend):
     def complete(self, prompt: str) -> ModelReply:
         print(prompt, file=sys.stderr, flush=True)
-        return ModelReply(input("model> "))
+        try:
+            return ModelReply(input("model> "))
+        except EOFError as exc:
+            raise RuntimeError("model_error: interactive input closed") from exc
 
 
 class OrdersBackend(ModelBackend):
@@ -61,7 +64,10 @@ class CommandBackend(ModelBackend):
             raise RuntimeError(f"model_error: exit {proc.returncode}: {proc.stderr[-400:]}")
         try:
             obj = json.loads(proc.stdout)
-            return ModelReply(obj["text"], obj.get("usage"))
+            usage = obj.get("usage")
+            if usage is not None and not isinstance(usage, dict):
+                raise ValueError("usage must be an object")
+            return ModelReply(obj["text"], usage)
         except (ValueError, KeyError, TypeError) as exc:
             raise ValueError("invalid JSON model reply") from exc
 
@@ -124,6 +130,13 @@ def validate_orders(text: str, strict: bool = False) -> list[dict[str, Any]]:
         for field in integer_fields:
             if field in order and (not isinstance(order[field], int) or isinstance(order[field], bool)):
                 raise ValueError(f"{field} must be an integer at index {i}")
+            if field in order:
+                value = order[field]
+                if field in {"unit_id", "attacker_id", "defender_id", "target_index", "count"}:
+                    if not 0 <= value <= 2**32 - 1:
+                        raise ValueError(f"{field} is out of range at index {i}")
+                elif not -(2**31) <= value <= 2**31 - 1:
+                    raise ValueError(f"{field} is out of range at index {i}")
         string_fields = {
             "Recruit": ("def_id",),
             "RecruitBatch": ("def_id",),
@@ -191,9 +204,11 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
     rules = (
         "You play only the configured model-controlled side in Norrust. The driver automatically "
         "executes the opponent; never submit opponent actions. Return a non-empty "
-        "JSON array of at most 256 objects with exactly one final {\"action\":\"EndTurn\"}. "
+        "Return the non-empty JSON array only; actions execute sequentially in array order against the mutating state. "
+        "The array has at most 256 objects with exactly one final {\"action\":\"EndTurn\"}. "
         "Each object has exactly one of these schemas: " + "; ".join(schemas) + ". "
-        "turn_options supplies current-unit positions and target IDs. recruit_options supplies "
+        "turn_options supplies current-unit positions and target IDs. For Advance, target_index "
+        "indexes the unit's advances_to list in the order shown in the board data. recruit_options supplies "
         "faction-legal definitions, costs, affordability, and placement hexes." + recruitment_guidance +
         " engine responses "
         "remain authoritative: do not reconstruct legality in the client. The headless driver "

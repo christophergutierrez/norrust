@@ -1517,23 +1517,20 @@ fn interactive_protocol_game(c: &Config) {
             io::stdout().flush().unwrap();
             continue;
         }
-        action_count += orders.len() as u32;
-        if names
+        let end_turn_count = names
             .iter()
             .filter(|name| **name == Some("EndTurn"))
-            .count()
-            > 1
-            || names
-                .iter()
-                .position(|name| *name == Some("EndTurn"))
-                .is_some_and(|i| i + 1 != names.len())
-        {
+            .count();
+        if end_turn_count != 1 || !matches!(names.last(), Some(Some("EndTurn"))) {
             println!(
                 "{}",
                 json!({"type":"status","ok":false,"code":"parse","message":"invalid action batch structure"})
             );
             continue;
         }
+        let mut batch_state = state.clone();
+        let mut batch_next_id = next_id;
+        let batch_len = orders.len() as u32;
         let mut results = Vec::with_capacity(orders.len());
         let mut events = Vec::new();
         let mut did_end = false;
@@ -1554,7 +1551,7 @@ fn interactive_protocol_game(c: &Config) {
                     let row = order.get("row").and_then(Value::as_i64);
                     match (id, col, row) {
                         (Some(id), Some(col), Some(row)) => apply_action(
-                            &mut state,
+                            &mut batch_state,
                             Action::Move {
                                 unit_id: id as u32,
                                 destination: Hex::from_offset(col as i32, row as i32),
@@ -1569,7 +1566,7 @@ fn interactive_protocol_game(c: &Config) {
                         order.get("defender_id").and_then(Value::as_u64),
                     ) {
                         (Some(a), Some(d)) => apply_action(
-                            &mut state,
+                            &mut batch_state,
                             Action::Attack {
                                 attacker_id: a as u32,
                                 defender_id: d as u32,
@@ -1585,13 +1582,13 @@ fn interactive_protocol_game(c: &Config) {
                         order.get("row").and_then(Value::as_i64),
                     ) {
                         (Some(def_id), Some(col), Some(row)) => recruit_from_def(
-                            &mut state,
+                            &mut batch_state,
                             c.llm_side,
                             def_id,
                             Hex::from_offset(col as i32, row as i32),
                             &factions[c.llm_side as usize].recruits,
                             &units,
-                            &mut next_id,
+                            &mut batch_next_id,
                         ),
                         _ => Err(norrust_core::game_state::ActionError::UnitNotFound(0)),
                     }
@@ -1602,11 +1599,11 @@ fn interactive_protocol_game(c: &Config) {
                         order.get("count").and_then(Value::as_u64),
                     ) {
                         (Some(def_id), Some(count)) => match recruit_batch_with_events(
-                            &mut state,
+                            &mut batch_state,
                             c.llm_side,
                             &factions[c.llm_side as usize],
                             &units,
-                            &mut next_id,
+                            &mut batch_next_id,
                             def_id,
                             count as u32,
                             &mut events,
@@ -1620,7 +1617,7 @@ fn interactive_protocol_game(c: &Config) {
                         _ => Err(norrust_core::game_state::ActionError::UnitNotFound(0)),
                     }
                 }
-                Some("EndTurn") => apply_action(&mut state, Action::EndTurn),
+                Some("EndTurn") => apply_action(&mut batch_state, Action::EndTurn),
                 Some("Advance") => {
                     let id = order.get("unit_id").and_then(Value::as_u64);
                     let target = order
@@ -1641,7 +1638,7 @@ fn interactive_protocol_game(c: &Config) {
                         });
                     match (id, target) {
                         (Some(id), Some(target)) => {
-                            apply_advance(&mut state, id as u32, target, &units)
+                            apply_advance(&mut batch_state, id as u32, target, &units)
                         }
                         (Some(_), None) => {
                             Err(norrust_core::game_state::ActionError::AdvanceNeedsTarget)
@@ -1662,9 +1659,20 @@ fn interactive_protocol_game(c: &Config) {
                 Err(error) => results
                     .push(json!({"ok":false,"code":error.code(),"message":error.to_string()})),
             }
-            if state.check_winner().is_some() {
+            if batch_state.check_winner().is_some() {
                 did_end = true;
             }
+        }
+        let batch_succeeded = results
+            .iter()
+            .all(|result| result.get("ok") == Some(&Value::Bool(true)));
+        if batch_succeeded {
+            state = batch_state;
+            next_id = batch_next_id;
+            action_count += batch_len;
+        } else {
+            events.clear();
+            did_end = false;
         }
         println!("{}", json!({"type":"status","ok":true,"results":results}));
         io::stdout().flush().unwrap();
