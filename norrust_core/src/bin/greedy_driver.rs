@@ -17,7 +17,9 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use norrust_core::ai::{ai_take_turn_greedy, ai_take_turn_greedy_actions};
+use norrust_core::ai::{
+    ai_take_turn_greedy_actions, run_greedy_side_turn, GreedyTurnError,
+};
 use norrust_core::board::Tile;
 use norrust_core::combat::preview_combat;
 use norrust_core::events::GameEvent;
@@ -320,6 +322,26 @@ fn recruit(
     recruited
 }
 
+fn run_driver_greedy_turn(
+    state: &mut GameState,
+    side: u8,
+    faction: &Faction,
+    units: &Registry<UnitDef>,
+    next_id: &mut u32,
+) -> Result<Vec<GameEvent>, GreedyTurnError> {
+    let mut candidate_id = *next_id;
+    let events = run_greedy_side_turn(
+        state,
+        |working| {
+            recruit(working, side, faction, units, &mut candidate_id, None, None);
+            Ok(Vec::new())
+        },
+        |working| ai_take_turn_greedy_actions(working, side).map_err(Into::into),
+    )?;
+    *next_id = candidate_id;
+    Ok(events)
+}
+
 fn game_state_to_json(state: &GameState, units: &Registry<UnitDef>) -> Value {
     let _ = units;
     serde_json::to_value(norrust_core::snapshot::StateSnapshot::from_game_state(
@@ -414,11 +436,9 @@ fn scripted_game(c: &Config) {
     for _turn in 0..c.max_turns {
         let side = state.active_faction;
         if side == 0 {
-            recruit(&mut state, 0, &f0, &units, &mut next_id, None, None);
-            ai_take_turn_greedy(&mut state, 0);
+            let _ = run_driver_greedy_turn(&mut state, 0, &f0, &units, &mut next_id);
         } else {
-            recruit(&mut state, 1, &f1, &units, &mut next_id, None, None);
-            ai_take_turn_greedy(&mut state, 1);
+            let _ = run_driver_greedy_turn(&mut state, 1, &f1, &units, &mut next_id);
         }
 
         if let Some(winner) = state.check_winner() {
@@ -638,8 +658,7 @@ fn interactive_game(c: &Config) {
             }
         } else {
             // Faction 1 (greedy AI) turn
-            recruit(&mut state, 1, &f1, &units, &mut next_id, None, None);
-            ai_take_turn_greedy(&mut state, 1);
+            let _ = run_driver_greedy_turn(&mut state, 1, &f1, &units, &mut next_id);
             eprintln!("[AI_TURN] Faction 1 greedy turn complete");
         }
     }
@@ -704,19 +723,8 @@ fn interactive_protocol_game(c: &Config) {
 
     if c.llm_side == 1 {
         let side = 0usize;
-        recruit(
-            &mut state,
-            0,
-            &factions[side],
-            &units,
-            &mut next_id,
-            None,
-            None,
-        );
-        let mut events = ai_take_turn_greedy_actions(&mut state, 0).unwrap_or_default();
-        if let Ok(mut end) = apply_action(&mut state, Action::EndTurn) {
-            events.append(&mut end);
-        }
+        let events = run_driver_greedy_turn(&mut state, 0, &factions[side], &units, &mut next_id)
+            .unwrap_or_default();
         side_turns += 1;
         print_events(&events, "greedy", "greedy");
     }
@@ -1201,20 +1209,14 @@ fn interactive_protocol_game(c: &Config) {
         if did_end && state.check_winner().is_none() {
             side_turns += 1;
             let greedy_side = 1 - c.llm_side;
-            recruit(
+            let greedy_events = run_driver_greedy_turn(
                 &mut state,
                 greedy_side,
                 &factions[greedy_side as usize],
                 &units,
                 &mut next_id,
-                None,
-                None,
-            );
-            let mut greedy_events =
-                ai_take_turn_greedy_actions(&mut state, greedy_side).unwrap_or_default();
-            if let Ok(mut end) = apply_action(&mut state, Action::EndTurn) {
-                greedy_events.append(&mut end);
-            }
+            )
+            .unwrap_or_default();
             side_turns += 1;
             print_events(&greedy_events, "greedy", "greedy");
         }

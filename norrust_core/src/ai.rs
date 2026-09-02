@@ -13,6 +13,41 @@ use crate::pathfinding::{get_zoc_hexes, reachable_hexes};
 use crate::schema::AttackDef;
 use crate::unit::Unit;
 
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum GreedyTurnError {
+    #[error("greedy action failed: {0}")]
+    Action(#[from] crate::game_state::ActionError),
+    #[error("greedy turn callback failed: {0}")]
+    Callback(String),
+}
+
+/// Execute one greedy side-turn transactionally.
+///
+/// The callbacks operate on a private clone. The clone is committed only when
+/// recruitment, planning, and the turn boundary all succeed. If an action
+/// makes the game terminal, the transaction commits immediately without
+/// attempting another action or EndTurn.
+pub fn run_greedy_side_turn<P, R>(
+    state: &mut GameState,
+    prepare: P,
+    planner: R,
+) -> Result<Vec<GameEvent>, GreedyTurnError>
+where
+    P: FnOnce(&mut GameState) -> Result<Vec<GameEvent>, GreedyTurnError>,
+    R: FnOnce(&mut GameState) -> Result<Vec<GameEvent>, GreedyTurnError>,
+{
+    let mut working = state.clone();
+    let mut events = prepare(&mut working)?;
+    if working.check_winner().is_none() {
+        events.extend(planner(&mut working)?);
+    }
+    if working.check_winner().is_none() {
+        events.extend(apply_action(&mut working, Action::EndTurn)?);
+    }
+    *state = working;
+    Ok(events)
+}
+
 /// A recorded AI action for animated replay on the client side.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "action")]
