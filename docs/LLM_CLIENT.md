@@ -1,20 +1,112 @@
 # Norrust LLM client
 
-`tools/llm_client.py` drives the headless `greedy_driver` through a
-provider-neutral `ModelBackend`. The model receives a canonical `state` line,
-returns one JSON action array ending in `EndTurn`, and never emits `Query`.
+`tools/llm_client.py` is a provider-neutral client for the headless
+`greedy_driver` JSON-lines protocol. It asks the engine for authoritative options,
+gives those options to a memoryless model, validates one action batch, and forwards
+the batch. The model controls only the configured `--llm-side`; after its final
+`EndTurn`, the driver automatically runs the opponent's transactional greedy turn
+(including driver-supplied recruitment) and returns a new model-side boundary.
 
-Queries are singleton JSON-lines requests and receive `status` replies. Action
-lines receive a `status`, followed by zero or more event envelopes and then a
-new boundary `state` or terminal `game_end`. Events are authoritative engine
-facts; clients must not simulate them locally.
+## Build and run
 
-Example deterministic run:
+Build the driver from the repository root:
 
 ```bash
-python -m tools.llm_client --orders-file orders.jsonl --log match.ndjson
+cargo build --bin greedy_driver --manifest-path norrust_core/Cargo.toml
 ```
 
-The header records the side, faction pair, seed, opponent policy, assistance
-mode, cadence, recruiter-loss win rule, and model order/query counts so runs with different
-conditions are not compared as one experiment.
+An executable deterministic run uses the committed orders fixture:
+
+```bash
+python -m tools.llm_client \
+  --driver norrust_core/target/debug/greedy_driver \
+  --orders-file tools/orders_fixture.jsonl \
+  --scenario big_battle_6 --faction0 undead --faction1 undead \
+  --gold 300 --seed 42 --llm-side 0 --max-turns 4 \
+  --log /tmp/norrust-llm-match.ndjson
+```
+
+For a live provider-neutral session, replace `--orders-file` with exactly one of
+`--interactive-model` or `--model-command 'COMMAND'`. The command backend must
+write a JSON object such as `{"text":"[{\"action\":\"EndTurn\"}]"}` to stdout.
+
+## Model action batch
+
+The model returns only a non-empty JSON array of at most 256 objects. Every object
+has exactly the fields shown below. There is exactly one final
+`{"action":"EndTurn"}`; `EndTurn` is not optional and no action follows it.
+
+```json
+{"action":"Move","unit_id":12,"col":4,"row":7}
+{"action":"Attack","attacker_id":12,"defender_id":19}
+{"action":"Recruit","def_id":"Skeleton","col":3,"row":6}
+{"action":"RecruitBatch","def_id":"Skeleton","count":2}
+{"action":"Advance","unit_id":12,"target_index":0}
+{"action":"Advance","unit_id":12,"def_id":"Veteran Skeleton"}
+{"action":"EndTurn"}
+```
+
+`Move` has integer `unit_id`, `col`, and `row`. `Attack` has integer
+`attacker_id` and `defender_id`. `Recruit` has string `def_id` and integer
+`col` and `row`. `RecruitBatch` is optional driver assistance: it has string
+`def_id` and positive integer `count`; the driver chooses legal placement hexes.
+It is rejected when the driver is started with `--disable-recruit-batch`.
+`Advance` has integer `unit_id` and exactly one selector: integer `target_index`
+or string `def_id`. `EndTurn` has only `action`.
+
+The client rejects malformed JSON, unknown fields, missing fields, non-integer
+numeric fields, non-positive batch counts, and invalid batch structure before
+forwarding it. A validation failure may receive one repair call from the model;
+provider/model/query failures are infrastructure-invalid results with a nonzero
+client exit, not gameplay losses or draws.
+
+## Singleton engine queries
+
+The client—not the model—sends queries as singleton JSON lines before each model
+call. A model action batch must never contain `Query`:
+
+```json
+{"action":"Query","what":"turn_options"}
+{"action":"Query","what":"recruit_options"}
+```
+
+`turn_options` returns `body.units`. Each unit entry contains `unit_id` and
+`positions`; each position contains integer `col`, integer `row`, and `target_ids`.
+The current position and reachable positions therefore map directly to `Move` and
+`Attack` choices. `recruit_options` returns the active faction's `faction_id`,
+`side_can_place`, `placement_hexes`, each legal definition's `def_id`, `cost`, and
+`affordable`, plus `batch_macro_enabled`. These engine responses are authoritative:
+the client does not reconstruct movement, combat, recruitment, or placement
+legality. Additional engine query failures are typed status failures.
+
+## Turn ownership, outcomes, and failures
+
+Every submitted action, including `EndTurn`, is accepted only when the configured
+model side equals the active faction and every referenced unit belongs to that
+faction. An unauthorized action is rejected without state, event, or side-turn
+mutation. The model never submits the opponent's turn.
+
+After a successful model `EndTurn`, the driver automatically performs one greedy
+opponent side-turn: recruitment, greedy movement/combat, and its successful turn
+boundary. The opponent transaction runs on private state. A preparation, planner,
+action, or boundary error produces a typed terminal `game_end` with an additive
+`reason` of `infrastructure_failure`, stable `code`, and `message`; it does not
+commit state, events, allocated IDs, or counters, print a normal boundary, or become
+empty events, a draw, a win, or continuation. Logs identify this with
+`infrastructure_invalid: true` and exits nonzero.
+
+The gameplay win rule has this precedence: scenario objective, scenario turn
+limit, recruiter loss, then elimination. Recruiter loss applies when exactly one
+side that previously had recruiting capability has no living recruiter; that side
+loses. If both sides or neither side meet that predicate, winner evaluation falls
+through to elimination. A gameplay result may also be a cap or loss; an LLM win is
+neither guaranteed nor required for a valid run.
+
+`--max-turns` is a completed-side-turn safety cap, not the engine's displayed round
+counter and not a scenario turn limit. One completed model turn and one completed
+greedy turn each increment it once. A failed greedy turn adds no side-turn count
+and is terminal; the preceding successful model turn remains counted. The terminal
+metadata records the configured cap and match conditions.
+
+Balance tests are explicitly excluded from this client milestone and must not be
+run.

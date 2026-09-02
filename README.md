@@ -102,26 +102,46 @@ love norrust_love
 
 ## For AI Developers
 
-The simulation core exposes a JSON interface designed to be consumed by external agents.
-Read the game state with `norrust_get_state_json()`. Submit actions with `norrust_apply_move()`,
-`norrust_apply_attack()`, or `norrust_apply_action_json()`.
+The simulation core exposes JSON interfaces for external agents. For an LLM match,
+use the ready headless `greedy_driver` through [docs/LLM_CLIENT.md](docs/LLM_CLIENT.md):
+the model controls only `--llm-side`, and the driver automatically executes the
+opponent's recruitment, greedy movement, and combat after the model's final
+`EndTurn`. Before each model call, the client—not the model—issues singleton
+`turn_options` and `recruit_options` queries and treats their responses as
+authoritative data.
 
 ```json
-// Read state — units, board, turn, active faction
-{ "turn": 4, "active_faction": "red", "units": [ ... ], "terrain": [ ... ] }
-
-// Submit an action via JSON
-{ "action": "Move", "unit_id": 1, "col": 3, "row": 2 }
-{ "action": "Attack", "attacker_id": 1, "defender_id": 5 }
-{ "action": "EndTurn" }
+{"action":"Query","what":"turn_options"}
+{"action":"Query","what":"recruit_options"}
+[{"action":"Move","unit_id":1,"col":3,"row":2},{"action":"EndTurn"}]
 ```
 
-Actions return integer codes: `0` = success, negative = typed error (unit not found,
-destination unreachable, etc.).
+The model returns a non-empty array of at most 256 objects with exactly one final
+`EndTurn`. Schemas are `Move` (integer `unit_id`, `col`, `row`), `Attack` (integer
+`attacker_id`, `defender_id`), `Recruit` (string `def_id`, integer `col`, `row`),
+optional `RecruitBatch` (string `def_id`, positive integer `count`), `Advance`
+(integer `unit_id` and exactly one integer `target_index` or string `def_id`), and
+`EndTurn` (`action` only). The configured model-side restriction includes
+`EndTurn` and referenced-unit ownership.
 
-The built-in greedy AI (`ai_take_turn`) plays using this same interface — no special access.
-Its weaknesses (no positional awareness, ignores terrain defense, doesn't block) are documented
-so you know exactly what a better agent should exploit.
+The gameplay win precedence is scenario objective, scenario turn limit, recruiter
+loss, then elimination. Recruiter loss applies when exactly one side that
+previously had recruiting capability has no living recruiter; that side loses. If
+both or neither meet that predicate, evaluation falls through to elimination.
+Opponent execution failures are typed `game_end` results with
+`reason: "infrastructure_failure"`; the client records
+`infrastructure_invalid: true` and exits nonzero, never reporting a draw or win.
+`--max-turns` caps completed side-turns, distinct from the engine round counter and
+scenario limits; a failed greedy turn consumes neither a side turn nor normal
+state. An LLM win is neither guaranteed nor required. Balance tests are excluded.
+
+For the lower-level C ABI, actions return integer codes: `0` = success and negative
+values are typed errors. See [docs/BRIDGE_API.md](docs/BRIDGE_API.md) for that
+interface; it is separate from the headless LLM client contract.
+
+Executable headless setup and provider-neutral examples are in
+[docs/LLM_CLIENT.md](docs/LLM_CLIENT.md). Matchup guidance is in
+[docs/LLM_VS_ALGORITHM.md](docs/LLM_VS_ALGORITHM.md).
 
 > C ABI function reference: [docs/BRIDGE_API.md](docs/BRIDGE_API.md)
 > Agent strategy guide: [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md)

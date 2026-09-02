@@ -1,22 +1,22 @@
 # LLM vs Algorithm
 
-Use this when the question is: **can a language model play The Clash for Norrust**, not whether it can call an existing planner.
+Use this when the question is: **can a language model play The Clash for Norrust**, not whether it can call an existing planner. A win is useful evidence, but it is neither guaranteed nor required.
 
-Headless AI-vs-AI recipes, board fairness, and algorithm baselines live in [SELF_PLAY.md](SELF_PLAY.md). Combat math, ZOC, and the TCP protocol live in [AGENT_GUIDE.md](AGENT_GUIDE.md). This document is the playbook for an LLM sitting in the player’s chair.
+Headless AI-vs-AI recipes, board fairness, and algorithm baselines live in [SELF_PLAY.md](SELF_PLAY.md). Combat math, ZOC, and the TCP protocol live in [AGENT_GUIDE.md](AGENT_GUIDE.md). This document is the playbook for an LLM sitting in the player's chair.
 
 ## What this measures
 
-The LLM must **choose actions**. Legal actions are Move, Attack, Recruit, Advance, EndTurn.
+The LLM must **choose actions**. Legal actions are Move, Attack, Recruit, optional RecruitBatch, Advance, and EndTurn.
 
 **Does not count** as an LLM playing:
 
-- Calling `greedy` or `greedy-look-ahead` (`ai_take_turn`, `ai_turn`, “just run the AI”) on the LLM’s faction
-- Copying another model’s move list without seeing the state
+- Calling `greedy` or `greedy-look-ahead` (`ai_take_turn`, `ai_turn`, “just run the AI”) on the LLM's faction
+- Copying another model's move list without seeing the state
 - Playing a different game and calling it Norrust
 
 **Does count:**
 
-- The model reads the board (GUI or `get_state` JSON) and outputs moves
+- The model reads the board (GUI, `get_state` JSON, or the headless client prompt) and outputs moves
 - A tool the **LLM wrote** for this match (a script, a scoring function). If it is good, consider adding it as a third algorithm later. Label the match **LLM+its-code vs greedy**, not “the LLM played by hand.”
 
 Report: opponent algorithm, who moved first, faction, scenario, gold, wins–losses, and whether the LLM used extra code it authored.
@@ -25,29 +25,53 @@ Report: opponent algorithm, who moved first, faction, scenario, gold, wins–los
 
 | Name in docs | What it does | How you actually face it |
 | --- | --- | --- |
-| **Greedy** | Each unit, in ID order: every reachable hex, expected-damage fight (`hit% × damage × strikes`, ×3 if that would kill), else walk toward the nearest enemy. No reply, no “is this forest?”, no focus fire, no village hunt. Fast. | `self-play --ai2 greedy`. **Not** the Love2D “AI” controller. |
+| **Greedy** | Each unit, in ID order: every reachable hex, expected-damage fight (`hit% × damage × strikes`, ×3 if that would kill), else walk toward the nearest enemy. No reply, no “is this forest?”, no focus fire, no village hunt. Fast. | `self-play --ai2 greedy`, or the headless LLM client described below. **Not** the Love2D “AI” controller. |
 | **Look-ahead** (`greedy-look-ahead`) | Same game, but scores a **structured beam** (current hex, attack tiles, villages, high defense, one march hex), drops bad melee terrain trades unless a kill is likely, uses expected damage (not one combat roll), and simulates nearby enemy replies. Slower. | Love2D opponent set to **AI**, and the agent-server command `ai_turn N`. Both call `norrust_ai_take_turn`, which is look-ahead. Also `self-play --ai2 greedy-look-ahead`. |
 
 Greedy weaknesses to play against: it walks onto 30% flat to poke 60% castle; it does not stack attacks on one wounded unit; it does not park on villages; it does not respect ToD except insofar as damage numbers change this turn; it will leave the leader if a fight scores well.
 
 That last one is worth more than it sounds, and it is measurable. Greedy can march its leader off the keep and stop recruiting. Any economy claim should cite a committed run log with its seed, command, and result.
 
-Two consequences for anyone designing a match. A side that keeps its own leader home out-produces greedy several-fold over a long game, so an equal-unit opening is **not** a symmetric position — it diverges in the other side's favour from turn 3. And greedy's lone leader is a high-value target that walks to you. Do not report a win over greedy as a tactical result without saying which of these did the work.
+Two consequences for anyone designing a match. A side that keeps its own leader home out-produces greedy several-fold over a long game, so an equal-unit opening is **not** a symmetric position—it diverges in the other side's favour from turn 3. And greedy's lone leader is a high-value target that walks to you. Do not report a win over greedy as a tactical result without saying which of these did the work.
 
 Look-ahead is harder: it already likes villages, defense, and not taking stupid melee trades. It can still be baited if you threaten something its local 3-enemy / 7-hex reply window does not see, or if you win the economy and ToD war.
 
 Default self-play gold is not the GUI. For a fair algorithm match on `big_battle_6` use **300 gold** and **`--second-gold 0`** unless you are testing a second-player bonus. See [SELF_PLAY.md](SELF_PLAY.md).
 
-There is **no Love2D toggle for greedy** today, and **GUI and `ai_turn` are look-ahead.** The thin loop now exists as `norrust_core/src/bin/greedy_driver.rs`: it applies the LLM’s JSON on faction 0 and calls `ai_take_turn_greedy` on faction 1.
+There is **no Love2D toggle for greedy** today, and **GUI and `ai_turn` are look-ahead.** The ready headless loop is `norrust_core/src/bin/greedy_driver.rs`. It accepts one configured `--llm-side`; after the model's successful final `EndTurn`, it automatically supplies faction-legal recruitment and executes movement and combat for the greedy opponent.
+
+## Headless LLM client
+
+Build the driver and run the committed deterministic orders fixture from the repository root:
 
 ```bash
-cd norrust_core && cargo build --bin greedy_driver
-./target/debug/greedy_driver --scenario big_battle_6 --faction0 undead \
-  --faction1 undead --gold 300 --seed 202          # LLM on stdin, greedy opponent
-./target/debug/greedy_driver ... --scripted        # unattended greedy-vs-greedy baseline
+cargo build --bin greedy_driver --manifest-path norrust_core/Cargo.toml
+python -m tools.llm_client \
+  --driver norrust_core/target/debug/greedy_driver \
+  --orders-file tools/orders_fixture.jsonl \
+  --scenario big_battle_6 --faction0 undead --faction1 undead \
+  --gold 300 --seed 202 --llm-side 0 --max-turns 4 \
+  --log /tmp/norrust-llm-vs-greedy.ndjson
 ```
 
-Two caveats before you quote numbers from it. Engine greedy has **no recruitment logic of its own** — the driver supplies one — so the opponent is engine greedy movement and combat plus a driver heuristic, and its results are not directly comparable to the algorithm baselines in [SELF_PLAY.md](SELF_PLAY.md). And the driver is still under repair: see `tmp/LLM_CLIENT_PLAN.md` for known match-integrity bugs, including recruitment that is not restricted to the faction list and a recruit path that moves your own units without telling you.
+The client—not the model—issues singleton `{"action":"Query","what":"turn_options"}` and `{"action":"Query","what":"recruit_options"}` requests before each memoryless model call. `turn_options` maps current and reachable positions to target IDs. `recruit_options` supplies the active faction, legal definitions, costs, affordability, placement hexes, and macro availability. Engine responses are authoritative; the client and model must not reconstruct legality.
+
+The model returns only a non-empty JSON array of at most 256 objects, with exactly one final `{"action":"EndTurn"}`. Each object has exactly the fields in one schema:
+
+```text
+Move         {action, unit_id: integer, col: integer, row: integer}
+Attack       {action, attacker_id: integer, defender_id: integer}
+Recruit      {action, def_id: string, col: integer, row: integer}
+RecruitBatch {action, def_id: string, count: positive integer}  [optional]
+Advance      {action, unit_id: integer, exactly one of target_index: integer or def_id: string}
+EndTurn      {action}
+```
+
+`RecruitBatch` is driver-assisted placement and is unavailable with `--disable-recruit-batch`. The configured model-side restriction applies to every action, including `EndTurn`; actor IDs must belong to that side. The model never submits `Query` or opponent actions.
+
+Greedy recruitment, planning, actions, and its successful turn boundary form one transaction. A failure emits a typed `game_end` with `reason: "infrastructure_failure"`, a stable `code`, and a `message`, without committing state, events, allocated IDs, or side-turn accounting. The client records `infrastructure_invalid: true` and exits nonzero; the result is not a draw, win, or continuation.
+
+`--max-turns` is a completed-side-turn safety cap, distinct from the engine round counter and scenario turn limit. Each completed model turn and completed greedy turn increments it once. A failed greedy turn adds no side-turn count and is terminal; the preceding successful model turn remains counted.
 
 ## How to play
 
@@ -72,7 +96,7 @@ Do not press anything that runs AI on **your** side.
 
 Start Love2D with `--agent-server` (Port controller and/or `P` in play). TCP `localhost:9876`, one command per line. Client: `tools/agent_client.py`. Details: [AGENT_GUIDE.md](AGENT_GUIDE.md).
 
-On the LLM’s turn, **only** send actions, for example:
+On the LLM's turn, **only** send actions, for example:
 
 ```json
 {"action": "Move", "unit_id": 1, "col": 4, "row": 7}
@@ -82,7 +106,7 @@ On the LLM’s turn, **only** send actions, for example:
 
 `0` is success. Then `get_state` again.
 
-On the opponent’s turn, `ai_turn 1` (or `0`) runs **look-ahead** for that faction. Do **not** `ai_turn` your faction.
+On the opponent's turn, `ai_turn 1` (or `0`) runs **look-ahead** for that faction. Do **not** `ai_turn` your faction.
 
 Recruit and advance JSON are in [BRIDGE_API.md](BRIDGE_API.md). Prefer `get_state` fields `moved` / `attacked` / `advancement_pending` so you do not double-act.
 
@@ -92,11 +116,11 @@ Hex game, **odd-r** offset (`col`, `row`). Distance 1 = adjacent (six neighbors,
 
 **A turn (your faction):** each of your living units may **move once** and **attack once** (move then attack, or attack in place). Then recruit if you still can, advance anyone with `advancement_pending`, **EndTurn**.
 
-**Move:** unoccupied hex, within that unit’s movement points after terrain costs. Stepping **adjacent to an enemy** ends that unit’s move (**ZOC**), unless it has **skirmisher**.
+**Move:** unoccupied hex, within that unit's movement points after terrain costs. Stepping **adjacent to an enemy** ends that unit's move (**ZOC**), unless it has **skirmisher**.
 
 **Attack:** melee if hex distance is 1 and the unit has a melee weapon. Ranged if distance is 2 and it has a ranged weapon. Defender **retaliates** with a weapon of the **same range** (melee vs melee, ranged vs ranged). No retaliation if you shoot from range 2 and they have no ranged weapon.
 
-**Hit chance** = `100 − defender’s terrain defense` (percent). Forest/hills/village ~50%, castle/keep/mountains ~60%, flat ~30%. **Marksman** = 60% always. **Magical** = 70% always.
+**Hit chance** = `100 − defender's terrain defense` (percent). Forest/hills/village ~50%, castle/keep/mountains ~60%, flat ~30%. **Marksman** = 60% always. **Magical** = 70% always.
 
 Each weapon: `damage` per hit × `strikes` swings. ToD then scales damage:
 
@@ -106,13 +130,13 @@ Each weapon: `damage` per hit × `strikes` swings. ToD then scales damage:
 | Chaotic | −25% | +25% | none |
 | Neutral / Liminal | none | none | none |
 
-Round clock: **both sides share the same ToD** on the same round (turn advances after both have acted). Cycle of six round numbers: Dawn, Day, Day, Dusk, Night, Night, repeat. Undead are **chaotic** — push at Night, do not take even fights at Day.
+Round clock: **both sides share the same ToD** on the same round (turn advances after both have acted). Cycle of six round numbers: Dawn, Day, Day, Dusk, Night, Night, repeat. Undead are **chaotic**—push at Night, do not take even fights at Day.
 
 **Villages** (not keeps) pay **2 gold per owned village** at the start of your turn. Capture by **ending your turn standing on it**. Ownership stays when you walk off until the enemy ends a turn on it. Neutral village = 0 gold. Villages also **heal 8 HP** (and clear poison) at turn start for the unit on them.
 
-**Keep / castle:** no gold. Leader on **keep** recruits onto adjacent empty **castle** hexes for gold.
+**Keep / castle:** no gold. A recruiter on a **keep** recruits onto adjacent empty **castle** hexes for gold.
 
-**Win (self-play / fair duel):** wipe the other side. Campaign maps may also have an objective hex or a turn limit (defender wins on timeout). For LLM-vs-algorithm on `big_battle_6`, play elimination; ignore campaign objectives unless you loaded a campaign scenario.
+**Win:** precedence is scenario objective, scenario turn limit, recruiter loss, then elimination. Recruiter loss applies when exactly one side that previously had recruiting capability has no living recruiter; that side loses. If both sides or neither side meet that predicate, winner evaluation falls through to elimination. This rule applies to `big_battle_6` too.
 
 **XP:** 1 per hit landed, +8 for a kill. At `xp_needed`, advance (`A` or Advance action).
 
@@ -129,7 +153,7 @@ Leader on this faction is **Dark Sorcerer**. All listed are **chaotic**.
 | Dark Adept | 16 | 28 | 5 | 10×2 cold **ranged**, 7×2 arcane ranged | Magician; stay back |
 | Ghoul | 16 | 33 | 5 | 4×3 blade melee | Durable-ish |
 | Ghost | 19 | 18 | 7 | 4×3 arcane melee, 3×3 cold ranged | Fast; forest often costs 1 |
-| Dark Sorcerer | 34 | 48 | 5 | 4×3 impact melee, **13×2 cold ranged**, 9×2 arcane ranged | **Leader** — keep alive to recruit |
+| Dark Sorcerer | 34 | 48 | 5 | 4×3 impact melee, **13×2 cold ranged**, 9×2 arcane ranged | **Leader**—keep alive to recruit |
 
 Resistances in data files: **negative = resists** (takes less), **positive = weak**. Skeletons: strong vs blade/pierce/cold, weak vs fire/arcane.
 
@@ -147,8 +171,10 @@ Other factions (Loyalists, Rebels, Northerners) are in `data/units/` and `data/f
 8. **Do not chase.** If greedy walks onto your forest, hit it; do not follow it onto its forest.
 9. vs **look-ahead:** expect it to sit on villages and refuse bad trades. Win by numbers, ToD, and threats outside its short reply range—not by offering it a 30% vs 60% melee.
 
-Suggested first match: Undead vs Undead on `big_battle_6`, you Blue, opponent look-ahead (GUI AI), 300 gold if you can set it, you first. Then the same vs greedy once a greedy opponent hook exists.
+Suggested first match: Undead vs Undead on `big_battle_6`, you Blue, opponent look-ahead (GUI AI), 300 gold if you can set it, you first. Then use the headless client above for the same matchup against greedy.
 
 ## After the match
 
-Write down: model name, opponent (`greedy` or `look-ahead`), first player, scenario, gold, result, and whether extra LLM-authored code ran. Do not mix those games into [SELF_PLAY.md](SELF_PLAY.md) algorithm-vs-algorithm tables.
+Write down: model name, opponent (`greedy` or `look-ahead`), first player, scenario, factions, gold, seed, source revision, configured model side, win rule, side-turn cap, terminal result, and whether extra LLM-authored code ran. Also record whether the model issued a non-`EndTurn` action and whether greedy recruitment/events occurred. A loss or safety-cap result can still be valid evidence; an infrastructure-invalid result cannot. Do not mix these games into [SELF_PLAY.md](SELF_PLAY.md) algorithm-vs-algorithm tables.
+
+Balance tests are excluded from this client/documentation milestone and must not be run.
