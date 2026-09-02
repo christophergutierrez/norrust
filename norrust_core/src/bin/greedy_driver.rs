@@ -12,7 +12,9 @@
 
 use std::collections::HashSet;
 use std::env;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::time::{Duration, Instant};
 use std::path::{Path, PathBuf};
 
 use norrust_core::ai::{ai_take_turn_greedy, ai_take_turn_greedy_actions};
@@ -39,6 +41,8 @@ struct Config {
     scripted: bool,
     llm_side: u8,
     max_turns: u32,
+    turn_timeout: u64,
+    max_queries: u32,
 }
 
 #[derive(Clone)]
@@ -59,6 +63,8 @@ Options:
   --seed N              Deterministic seed (default: 42)
   --llm-side 0|1        Side controlled by stdin (default: 0)
   --max-turns N         Side-turn safety cap (default: 200)
+  --turn-timeout N      Model stdin wall-clock budget in seconds (default: 300)
+  --max-queries-per-turn N  Query cap (default: 256)
   --scripted            Run full game unattended with greedy-vs-greedy (for testing)
   -h, --help            Show this help"
     );
@@ -75,6 +81,8 @@ fn parse_args() -> Config {
         scripted: false,
         llm_side: 0,
         max_turns: 200,
+        turn_timeout: 300,
+        max_queries: 256,
     };
     let args: Vec<String> = env::args().skip(1).collect();
     let mut i = 0;
@@ -100,6 +108,8 @@ fn parse_args() -> Config {
             "--seed" => c.seed = value.parse().unwrap_or_else(|_| usage()),
             "--llm-side" => c.llm_side = value.parse().unwrap_or_else(|_| usage()),
             "--max-turns" => c.max_turns = value.parse().unwrap_or_else(|_| usage()),
+            "--turn-timeout" => c.turn_timeout = value.parse().unwrap_or_else(|_| usage()),
+            "--max-queries-per-turn" => c.max_queries = value.parse().unwrap_or_else(|_| usage()),
             _ => usage(),
         }
         i += 2;
@@ -619,18 +629,59 @@ fn interactive_protocol_game(c: &Config) {
     }
     print_boundary(&state, &units);
 
-    let stdin = io::stdin();
-    for line_result in stdin.lock().lines() {
-        let line = match line_result { Ok(line) => line, Err(_) => break };
-        if line.len() > 1024 * 1024 {
-            println!("{}", json!({"type":"status","ok":false,"code":"line_too_large","message":"input line exceeds 1 MiB"}));
-            continue;
+    let (line_tx, line_rx) = mpsc::sync_channel::<Result<String, String>>(8);
+    std::thread::spawn(move || {
+        let stdin = io::stdin();
+        let mut input = stdin.lock();
+        loop {
+            let mut bytes = Vec::new();
+            match input.read_until(b'\n', &mut bytes) {
+                Ok(0) => break,
+                Ok(_) if bytes.len() > 1024 * 1024 => {
+                    bytes.clear();
+                    while !bytes.ends_with(b"\n") {
+                        let mut tail = [0u8; 4096];
+                        match input.read(&mut tail) { Ok(0) => break, Ok(n) => bytes.extend_from_slice(&tail[..n]), Err(_) => break }
+                    }
+                    if line_tx.send(Err("line_too_large".into())).is_err() { break; }
+                }
+                Ok(_) => {
+                    let line = String::from_utf8_lossy(&bytes).trim_end_matches(['\r','\n']).to_string();
+                    if line_tx.send(Ok(line)).is_err() { break; }
+                }
+                Err(error) => { let _ = line_tx.send(Err(error.to_string())); break; }
+            }
         }
+    });
+    let mut deadline = Instant::now() + Duration::from_secs(c.turn_timeout);
+    let mut query_count = 0u32;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let line_result = match line_rx.recv_timeout(remaining) {
+            Ok(line) => line,
+            Err(RecvTimeoutError::Timeout) => {
+                println!("{}", json!({"type":"game_end","reason":"timeout","turns":state.turn}));
+                terminal = true;
+                break;
+            }
+            Err(RecvTimeoutError::Disconnected) => Err("eof".into()),
+        };
+        let line = match line_result {
+            Ok(line) => line,
+            Err(error) if error == "line_too_large" => { println!("{}", json!({"type":"status","ok":false,"code":"line_too_large","message":"input line exceeds 1 MiB"})); continue; }
+            Err(error) if error == "eof" => break,
+            Err(_) => break,
+        };
         let parsed: Value = match serde_json::from_str(&line) {
             Ok(value) => value,
             Err(error) => { println!("{}", json!({"type":"status","ok":false,"code":"parse","message":error.to_string()})); continue; }
         };
         if parsed.get("action").and_then(Value::as_str) == Some("Query") {
+            if query_count >= c.max_queries {
+                println!("{}", json!({"type":"status","ok":false,"code":"query_limit","message":"query limit exceeded"}));
+                continue;
+            }
+            query_count += 1;
             let what = parsed.get("what").and_then(Value::as_str).unwrap_or("");
             let response = match what {
                 "state" => json!({"type":"status","ok":true,"what":"state","body":game_state_to_json(&state, &units)}),
@@ -785,7 +836,7 @@ fn interactive_protocol_game(c: &Config) {
             terminal = true;
             break;
         }
-        if did_end { print_boundary(&state, &units); }
+        if did_end { query_count = 0; print_boundary(&state, &units); deadline = Instant::now() + Duration::from_secs(c.turn_timeout); }
     }
     if !terminal && state.check_winner().is_none() {
         println!("{}", json!({"type":"game_end","reason":"eof","turns":state.turn}));
