@@ -208,6 +208,47 @@ class ClientValidationTests(unittest.TestCase):
         self.assertFalse(terminal["infrastructure_invalid"])
         self.assertEqual(terminal["reason"], "max_turns")
 
+    def test_action_repair_budget_resets_each_turn(self):
+        action_failure = {"type": "status", "ok": True,
+                          "results": [{"ok": False, "code": "MoveError",
+                                       "message": "invalid move"}]}
+        lines = [
+            {"type": "state", "active_faction": 0},
+            {"type": "status", "ok": True, "what": "turn_options", "body": {}},
+            {"type": "status", "ok": True, "what": "recruit_options", "body": {}},
+            action_failure,
+            {"type": "state", "active_faction": 0},
+            {"type": "status", "ok": True, "what": "turn_options", "body": {}},
+            {"type": "status", "ok": True, "what": "recruit_options", "body": {}},
+            action_failure,
+            {"type": "game_end", "reason": "max_turns", "winner": None},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = directory + "/client.jsonl"
+            orders_path = directory + "/orders.jsonl"
+            with open(orders_path, "w") as orders:
+                for _ in range(4):
+                    orders.write('{"text":"[{\\"action\\":\\"EndTurn\\"}]"}\n')
+            args = argparse.Namespace(
+                driver="driver", scenario="scenario", faction0="a", faction1="b",
+                gold=1, seed=2, max_turns=3, llm_side=0, turn_timeout=4,
+                query_budget_seconds=5, max_queries_per_turn=6,
+                no_recruit_macro=False, interactive_model=False, orders_file=orders_path,
+                model_command=None, model_timeout=7, log=log_path,
+                max_prompt_bytes=16 * 1024 * 1024, token_input_limit=None,
+                token_output_limit=None, token_total_limit=None,
+            )
+            process = FakeDriverProcess(lines)
+            with mock.patch("tools.llm_client.subprocess.Popen", return_value=process), \
+                    mock.patch("tools.llm_client.source_metadata", return_value={}), \
+                    mock.patch("tools.llm_client.os.fsync"):
+                code = run(args)
+            with open(log_path) as log:
+                records = [json.loads(raw) for raw in log]
+        self.assertEqual(code, 0)
+        self.assertEqual(len([record for record in records
+                              if record["type"] == "action_repair"]), 2)
+
     def run_terminal(self, line):
         with tempfile.TemporaryDirectory() as directory:
             log_path = directory + "/client.jsonl"

@@ -287,6 +287,7 @@ def run(args: argparse.Namespace) -> int:
     state: Optional[dict[str, Any]] = None
     pending_action = False
     action_repair_attempted = False
+    model_calls_this_turn = 0
     metadata = {"scenario": args.scenario, "faction0": args.faction0, "faction1": args.faction1,
                 "gold": args.gold, "seed": args.seed, "llm_side": args.llm_side,
                 "first_player": 0 if args.llm_side == 0 else 1,
@@ -344,11 +345,12 @@ def run(args: argparse.Namespace) -> int:
                 if failure is not None:
                     if (line.get("ok") is True and pending_action
                             and not action_repair_attempted
-                            and metadata["model_calls"] < metadata["max_model_calls_per_turn"]):
+                            and model_calls_this_turn < metadata["max_model_calls_per_turn"]):
                         repair_prompt = prompt + "\nENGINE_ACTION_ERROR: " + json.dumps(
                             failure, sort_keys=True, separators=(",", ":")
                         ) + "\nReturn one corrected JSON action array only."
                         action_repair_attempted = True
+                        model_calls_this_turn += 1
                         metadata["model_calls"] += 1
                         try:
                             repaired = backend.complete(repair_prompt)
@@ -388,6 +390,7 @@ def run(args: argparse.Namespace) -> int:
                 state = line
                 pending_action = False
                 action_repair_attempted = False
+                model_calls_this_turn = 0
                 # Ask the engine for the complete legal action surface before
                 # the model call; legality is never reconstructed in Python.
                 def exchange(request: dict[str, str]) -> dict[str, Any]:
@@ -424,6 +427,7 @@ def run(args: argparse.Namespace) -> int:
                              "bytes": len(prompt_bytes), "limit": args.max_prompt_bytes})
                     return 1
                 metadata["model_calls"] += 1
+                model_calls_this_turn += 1
                 try:
                     reply = backend.complete(prompt)
                     enforce_usage(reply, args)
@@ -437,6 +441,7 @@ def run(args: argparse.Namespace) -> int:
                     except ValueError as first:
                         repair_prompt = prompt + "\nVALIDATION_ERROR: " + str(first) + \
                             "\nReturn one corrected JSON action array only."
+                        model_calls_this_turn += 1
                         metadata["model_calls"] += 1
                         repaired = backend.complete(repair_prompt)
                         enforce_usage(repaired, args)
