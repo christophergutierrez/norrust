@@ -2757,8 +2757,10 @@ pub unsafe extern "C" fn norrust_simulate_combat(
         }
     };
 
-    // Leadership bonuses
-    let atk_leadership = crate::game_state::leadership_bonus(state, atk_uid);
+    // Leadership follows the same ghost position as terrain and backstab.
+    let mut ghost_state = state.clone();
+    ghost_state.positions.insert(atk_uid, atk_hex);
+    let atk_leadership = crate::game_state::leadership_bonus(&ghost_state, atk_uid);
     let def_leadership = crate::game_state::leadership_bonus(state, def_uid);
 
     let n = num_sims as u32;
