@@ -285,6 +285,8 @@ def run(args: argparse.Namespace) -> int:
         backend = CommandBackend(args.model_command, args.model_timeout)
     events: list[dict[str, Any]] = []
     state: Optional[dict[str, Any]] = None
+    pending_action = False
+    action_repair_attempted = False
     metadata = {"scenario": args.scenario, "faction0": args.faction0, "faction1": args.faction1,
                 "gold": args.gold, "seed": args.seed, "llm_side": args.llm_side,
                 "first_player": 0 if args.llm_side == 0 else 1,
@@ -340,6 +342,36 @@ def run(args: argparse.Namespace) -> int:
             if line.get("type") == "status":
                 failure = status_failure(line)
                 if failure is not None:
+                    if (line.get("ok") is True and pending_action
+                            and not action_repair_attempted
+                            and metadata["model_calls"] < metadata["max_model_calls_per_turn"]):
+                        repair_prompt = prompt + "\nENGINE_ACTION_ERROR: " + json.dumps(
+                            failure, sort_keys=True, separators=(",", ":")
+                        ) + "\nReturn one corrected JSON action array only."
+                        action_repair_attempted = True
+                        metadata["model_calls"] += 1
+                        try:
+                            repaired = backend.complete(repair_prompt)
+                            enforce_usage(repaired, args)
+                            record({"type": "action_repair", "call": metadata["model_calls"],
+                                    "prompt_hash": hashlib.sha256(repair_prompt.encode()).hexdigest(),
+                                    "raw_output": repaired.text, "usage": repaired.usage,
+                                    "engine_error": failure})
+                            if repaired.usage is None:
+                                metadata["usage_measured"] = False
+                            orders = validate_orders(repaired.text, args.no_recruit_macro)
+                        except (RuntimeError, ValueError) as repair_error:
+                            metadata["infrastructure_invalid"] = True
+                            durable({"type": "model_error", **metadata,
+                                     "message": str(repair_error)})
+                            return 1
+                        metadata["model_orders"] += len(orders)
+                        record({"type": "forwarded_orders", "orders": orders,
+                                "prompt_hash": hashlib.sha256(repair_prompt.encode()).hexdigest(),
+                                "repair": True})
+                        proc.stdin.write(json.dumps(orders, separators=(",", ":")) + "\n")
+                        proc.stdin.flush()
+                        continue
                     metadata.update({
                         "winner": None,
                         "reason": "infrastructure_failure",
@@ -354,6 +386,8 @@ def run(args: argparse.Namespace) -> int:
                 continue
             if line.get("type") == "state":
                 state = line
+                pending_action = False
+                action_repair_attempted = False
                 # Ask the engine for the complete legal action surface before
                 # the model call; legality is never reconstructed in Python.
                 def exchange(request: dict[str, str]) -> dict[str, Any]:
@@ -422,6 +456,7 @@ def run(args: argparse.Namespace) -> int:
                         "prompt_hash": prompt_hash})
                 proc.stdin.write(json.dumps(orders, separators=(",", ":")) + "\n")
                 proc.stdin.flush()
+                pending_action = True
             elif line.get("type") == "events":
                 events.extend(line.get("events", []))
             elif line.get("type") == "game_end":
