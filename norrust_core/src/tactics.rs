@@ -348,4 +348,29 @@ mod tests {
         assert_eq!(state.state_revision, revision);
         assert_eq!(state.turn, 1);
     }
+
+    #[test]
+    fn economy_facts_report_income_and_only_movable_non_recruiters() {
+        let mut board = Board::new(4, 4);
+        for col in 0..4 {
+            for row in 0..4 {
+                board.set_tile(Hex::from_offset(col, row), crate::board::Tile::new("flat"));
+            }
+        }
+        board.set_tile(Hex::from_offset(1, 1), crate::board::Tile::new("castle"));
+        let mut state = GameState::new(board);
+        state.village_owners.insert(Hex::from_offset(0, 0), 0);
+        let mut unit = Unit::new(2, "skeleton", 10, 0);
+        unit.movement = 1;
+        unit.movement_costs.insert("flat".into(), 1);
+        state.place_unit(unit, Hex::from_offset(1, 1));
+        let (income, vacatable) = economy_facts(&state, 0).unwrap();
+        assert_eq!(income, 2);
+        assert_eq!(vacatable.len(), 1);
+        assert_eq!(vacatable[0].unit_id, 2);
+        assert!(vacatable[0]
+            .destinations
+            .iter()
+            .all(|destination| destination.col != 1 || destination.row != 1));
+    }
 }
