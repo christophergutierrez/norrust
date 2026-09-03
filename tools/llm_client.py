@@ -53,7 +53,7 @@ class OrdersBackend(ModelBackend):
         usage = obj.get("usage")
         if usage is not None and not isinstance(usage, dict):
             raise RuntimeError("model_error: usage must be an object")
-        return ModelReply(obj["text"], usage)
+        return ModelReply(obj["text"], usage, obj.get("cache"))
 
 
 class CommandBackend(ModelBackend):
@@ -307,6 +307,20 @@ def compact_observation(state: dict[str, Any]) -> str:
                      f"hp={unit.get('hp','?')}/{unit.get('max_hp','?')} "
                      f"flags={flags} xp={unit.get('xp','?')}/{unit.get('xp_needed','?')} pending={unit.get('advancement_pending', False)}")
     return "\n".join(lines)
+
+
+def prompt_regions(prompt: str) -> dict[str, int]:
+    """Return byte sizes for the stable contract and dynamic prompt regions."""
+    marker = "\nBOARD_UNTRUSTED_DATA_BEGIN:\n"
+    preamble, _, remainder = prompt.partition(marker)
+    options = "\nOPTION_PAYLOADS_UNTRUSTED_DATA_BEGIN:\n"
+    events_marker = "\nEVENTS_UNTRUSTED_DATA_BEGIN:\n"
+    _, _, after_board = remainder.partition("\nBOARD_UNTRUSTED_DATA_END\n")
+    turn_card = after_board.split(options, 1)[0] if options in after_board else after_board
+    tool_result = after_board.split(options, 1)[1] if options in after_board else ""
+    return {"preamble_bytes": len(preamble.encode()),
+            "turn_card_bytes": len((marker + remainder[:remainder.find("\nBOARD_UNTRUSTED_DATA_END\n") + len("\nBOARD_UNTRUSTED_DATA_END\n")]).encode()),
+            "tool_result_bytes": len((options + tool_result).encode()) if options in after_board else 0}
 
 
 def status_failure(line: dict[str, Any]) -> Optional[dict[str, Any]]:
@@ -596,6 +610,7 @@ def run(args: argparse.Namespace) -> int:
                                     compact=not getattr(args, "diagnostic", False))
                 prompt_bytes = prompt.encode()
                 prompt_hash = hashlib.sha256(prompt_bytes).hexdigest()
+                regions = prompt_regions(prompt)
                 if len(prompt_bytes) > args.max_prompt_bytes:
                     # A configuration/harness fault: the client built a prompt it
                     # was told not to send. Not the model's failure -- the model
@@ -615,9 +630,13 @@ def run(args: argparse.Namespace) -> int:
                     record({"type": "model", "call": metadata["model_calls"],
                             "prompt_hash": prompt_hash, "prompt_bytes": len(prompt_bytes),
                             "legacy_prompt_bytes": len(prompt_bytes),
-                            "preamble_bytes": None, "turn_card_bytes": None,
-                            "tool_result_bytes": None,
-                            "raw_output": reply.text, "usage": reply.usage})
+                            **regions,
+                            "raw_output": reply.text, "usage": reply.usage,
+                            "cache": reply.cache})
+                    if isinstance(reply.cache, dict):
+                        metadata["prompt_cache_requested"] = reply.cache.get("requested", "unreported")
+                        metadata["prompt_cache_used"] = reply.cache.get("used", "unreported")
+                        metadata["prompt_cache_reported_tokens"] = reply.cache.get("cached_input_tokens")
                     if reply.usage is None:
                         metadata["usage_measured"] = False
                     try:
