@@ -13,7 +13,7 @@ Command: `python3 -m unittest tools.test_llm_client -v`
 
 Source commit before this phase: `82946d1`.
 
-Result: 31 tests passed.
+Result: 32 tests passed.
 
 The historical eight-call observation corpus described by the implementation
 plan is not present in this checkout (only `tmp/test_match.ndjson`, a seed-42
