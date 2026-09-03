@@ -121,9 +121,19 @@ or one read-only preview request containing one or two complete candidate arrays
 ```
 
 Each candidate follows the same action-batch rules as a final response. The
-preview does not submit actions or sample combat. After receiving preview results,
-the model must return a final action array; a second preview request is not
-accepted.
+preview does not submit actions or sample combat. The model may also inspect one
+friendly unit at a time:
+
+```json
+{"tool":"inspect_unit","unit_id":12}
+```
+
+That result contains the unit's legal destinations and legal targets from each
+origin with exact exchange forecasts. Tool calls are read-only and revision
+pinned. `--max-tool-calls-per-turn` bounds them (default 4), while
+`--max-model-calls-per-turn` remains the overall model-call bound. A second
+preview request is not accepted; after using tools, the model must eventually
+return a final action array.
 
 A final action array is a non-empty JSON array of at most 256 objects. Every
 object has exactly the fields shown below. There is exactly one final

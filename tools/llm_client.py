@@ -257,6 +257,28 @@ def query_preview_batch(exchange, candidates: list[list[dict[str, Any]]], state_
     return response["body"]
 
 
+def validate_inspect_unit_request(request: dict[str, Any]) -> int:
+    if set(request) != {"tool", "unit_id"} or request.get("tool") != "inspect_unit":
+        raise ValueError("inspect_unit request must contain only tool and unit_id")
+    unit_id = request.get("unit_id")
+    if not isinstance(unit_id, int) or isinstance(unit_id, bool) or not 0 <= unit_id <= 2**32 - 1:
+        raise ValueError("inspect_unit unit_id must be a uint32")
+    return unit_id
+
+
+def query_inspect_unit(exchange, unit_id: int, state_revision: int) -> dict[str, Any]:
+    response = exchange({"action": "Query", "what": "inspect_unit",
+                         "state_revision": state_revision, "unit_id": unit_id})
+    if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
+        message = response.get("message", "inspection query failed") if isinstance(response, dict) else "invalid inspection response"
+        raise RuntimeError(f"query_error: inspect_unit: {message}")
+    return response["body"]
+
+
+def compact_unit_inspection(unit: dict[str, Any]) -> str:
+    return compact_tactical_surface({"units": [unit]})
+
+
 def compact_batch_preview(preview: dict[str, Any]) -> str:
     """Render candidate consequences without repeating detailed threat origins."""
     lines = ["PREVIEW sampling=%s" % preview.get("sampling", "?")]
@@ -391,7 +413,8 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "E income assumes current village ownership persists; E vacate lists legal off-castle destinations and is not a recommendation. "
         "Copy individual Recruit coordinates only from R `open`. You may instead request one read-only preview by returning "
         "{\"tool\":\"preview_batch\",\"candidates\":[[actions...]]}; provide at most two complete candidates, each ending EndTurn. "
-        "The preview is exact and non-sampling, and does not submit actions. After seeing it, return the final action array."
+        "You may inspect one friendly unit with {\"tool\":\"inspect_unit\",\"unit_id\":N}. Tools are read-only and do not submit actions. "
+        "After tool results, either request another allowed tool within budget or return the final action array."
         if isinstance(state.get("tactical_surface"), dict) else
         "Use turn_options positions exactly for every move and re-check sequential destinations before submitting. "
         "turn_options lists, per unit, the hexes it may attack from and the target IDs reachable from each. "
@@ -618,6 +641,7 @@ def run(args: argparse.Namespace) -> int:
                 "query_budget_seconds": args.query_budget_seconds,
                 "max_queries_per_turn": args.max_queries_per_turn,
                 "max_model_calls_per_turn": getattr(args, "max_model_calls_per_turn", 4), "max_prompt_bytes": args.max_prompt_bytes,
+                "max_tool_calls_per_turn": getattr(args, "max_tool_calls_per_turn", 4),
                 "token_input_limit": args.token_input_limit,
                 "token_output_limit": args.token_output_limit,
                 "token_total_limit": args.token_total_limit,
@@ -843,37 +867,61 @@ def run(args: argparse.Namespace) -> int:
                     if reply.usage is None:
                         metadata["usage_measured"] = False
                     try:
-                        decoded = json.loads(reply.text)
-                        if isinstance(decoded, dict) and decoded.get("tool") == "preview_batch":
-                            candidates = validate_preview_request(reply.text, args.no_recruit_macro)
+                        current_reply = reply
+                        tool_context = ""
+                        tool_calls_this_turn = 0
+                        preview_candidates = None
+                        while True:
+                            decoded = json.loads(current_reply.text)
+                            if not isinstance(decoded, dict):
+                                orders = validate_orders(current_reply.text, args.no_recruit_macro)
+                                break
+                            tool = decoded.get("tool")
+                            if tool_calls_this_turn >= metadata["max_tool_calls_per_turn"]:
+                                raise ValueError("tool call budget exhausted")
                             if model_calls_this_turn >= metadata["max_model_calls_per_turn"]:
-                                raise ValueError("preview request exhausted the per-turn model call budget")
-                            preview = query_preview_batch(exchange, candidates, int(state.get("state_revision", 0)))
-                            compact_preview = compact_batch_preview(preview)
-                            record({"type": "batch_preview", "tool": "preview_batch",
-                                    "candidate_count": len(candidates),
-                                    "result_bytes": len(compact_preview.encode()),
-                                    "candidates": candidates, "body": preview})
-                            final_prompt = (
-                                prompt + "\nBATCH_PREVIEW_RESULT_UNTRUSTED_DATA_BEGIN:\n" +
-                                compact_preview +
-                                "\nBATCH_PREVIEW_RESULT_UNTRUSTED_DATA_END\nReturn the final JSON action array only."
-                            )
+                                raise ValueError("model call budget exhausted before final actions")
+                            if tool == "preview_batch":
+                                if preview_candidates is not None:
+                                    raise ValueError("preview_batch may be requested only once per turn")
+                                preview_candidates = validate_preview_request(
+                                    current_reply.text, args.no_recruit_macro)
+                                result = query_preview_batch(
+                                    exchange, preview_candidates, int(state.get("state_revision", 0)))
+                                rendered = compact_batch_preview(result)
+                                record({"type": "batch_preview", "tool": tool,
+                                        "candidate_count": len(preview_candidates),
+                                        "result_bytes": len(rendered.encode()),
+                                        "candidates": preview_candidates, "body": result})
+                            elif tool == "inspect_unit":
+                                unit_id = validate_inspect_unit_request(decoded)
+                                result = query_inspect_unit(
+                                    exchange, unit_id, int(state.get("state_revision", 0)))
+                                rendered = compact_unit_inspection(result)
+                                record({"type": "tool_result", "tool": tool,
+                                        "request": decoded, "result_bytes": len(rendered.encode()),
+                                        "body": result})
+                            else:
+                                raise ValueError("unknown tool request")
+                            tool_calls_this_turn += 1
+                            tool_context += ("\nTOOL_RESULT_UNTRUSTED_DATA_BEGIN tool=" + tool + ":\n" +
+                                             rendered + "\nTOOL_RESULT_UNTRUSTED_DATA_END\n")
+                            followup_prompt = prompt + tool_context + (
+                                "Return another allowed tool request within budget or the final JSON action array only.")
                             model_calls_this_turn += 1
                             metadata["model_calls"] += 1
-                            final_reply = backend.complete(final_prompt)
-                            enforce_usage(final_reply, args)
-                            record({"type": "preview_followup", "call": metadata["model_calls"],
-                                    "prompt_hash": hashlib.sha256(final_prompt.encode()).hexdigest(),
-                                    "raw_output": final_reply.text, "usage": final_reply.usage})
-                            if final_reply.usage is None:
+                            current_reply = backend.complete(followup_prompt)
+                            enforce_usage(current_reply, args)
+                            record({"type": "tool_followup", "tool": tool,
+                                    "call": metadata["model_calls"],
+                                    "prompt_hash": hashlib.sha256(followup_prompt.encode()).hexdigest(),
+                                    "raw_output": current_reply.text, "usage": current_reply.usage})
+                            if current_reply.usage is None:
                                 metadata["usage_measured"] = False
-                            orders = validate_orders(final_reply.text, args.no_recruit_macro)
+                        if preview_candidates is not None:
                             record({"type": "preview_selection",
-                                    "matched_candidate": next((index for index, candidate in enumerate(candidates)
+                                    "matched_candidate": next((index for index, candidate in enumerate(preview_candidates)
                                                                if candidate == orders), None)})
-                        else:
-                            orders = validate_orders(reply.text, args.no_recruit_macro)
                     except ValueError as first:
                         repair_prompt = prompt + "\nVALIDATION_ERROR: " + str(first) + \
                             "\nReturn one corrected JSON action array only."
@@ -1035,6 +1083,8 @@ def main() -> int:
     p.set_defaults(validate_before_submit=True)
     p.add_argument("--max-model-calls-per-turn", type=int, default=4,
                    help="initial model call plus bounded repairs allowed per turn")
+    p.add_argument("--max-tool-calls-per-turn", type=int, default=4,
+                   help="maximum read-only model tool requests per turn")
     p.add_argument("--event-window-observations", type=int, default=1)
     p.add_argument("--log")
     a = p.parse_args()
@@ -1044,6 +1094,8 @@ def main() -> int:
         p.error("--event-window-observations must be positive")
     if a.max_model_calls_per_turn < 1:
         p.error("--max-model-calls-per-turn must be positive")
+    if a.max_tool_calls_per_turn < 0:
+        p.error("--max-tool-calls-per-turn must be non-negative")
     if a.turn_timeout < a.query_budget_seconds + 2 * a.model_timeout:
         print("warning: --turn-timeout is below query budget + 2*model timeout", file=sys.stderr)
     return run(a)

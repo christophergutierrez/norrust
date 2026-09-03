@@ -14,7 +14,8 @@ from .llm_client import (
     TERMINAL_MODEL_INVALID, ModelReply, classify_terminal, enforce_usage,
     compact_batch_preview, compact_observation, compact_tactical_surface, prompt_for, query_options,
     query_tactical_surface, query_validate_batch, query_preview_batch,
-    run, validate_orders, validate_preview_request,
+    query_inspect_unit, run, validate_inspect_unit_request, validate_orders,
+    validate_preview_request,
 )
 
 
@@ -34,6 +35,22 @@ class FakeDriverProcess:
 
 
 class ClientValidationTests(unittest.TestCase):
+    def test_inspect_unit_request_is_exact_and_revision_pinned(self):
+        self.assertEqual(validate_inspect_unit_request({"tool": "inspect_unit", "unit_id": 7}), 7)
+        for request in (
+            {"tool": "inspect_unit", "unit_id": True},
+            {"tool": "inspect_unit", "unit_id": -1},
+            {"tool": "inspect_unit", "unit_id": 7, "extra": 1},
+        ):
+            with self.assertRaises(ValueError):
+                validate_inspect_unit_request(request)
+        requests = []
+        body = {"unit_id": 7, "origins": []}
+        self.assertEqual(query_inspect_unit(lambda request: requests.append(request) or
+                                            {"ok": True, "body": body}, 7, 19), body)
+        self.assertEqual(requests, [{"action": "Query", "what": "inspect_unit",
+                                    "state_revision": 19, "unit_id": 7}])
+
     def test_compact_batch_preview_uses_recruiter_aggregate_not_origins(self):
         rendered = compact_batch_preview({"sampling": False, "candidates": [{
             "valid": True,
@@ -544,11 +561,14 @@ class ClientValidationTests(unittest.TestCase):
             orders_path = directory + "/orders.jsonl"
             log_path = directory + "/client.jsonl"
             with open(orders_path, "w") as orders_file:
+                orders_file.write(json.dumps({"text": json.dumps({"tool": "inspect_unit", "unit_id": 1})}) + "\n")
                 orders_file.write(json.dumps({"text": preview_request}) + "\n")
                 orders_file.write(json.dumps({"text": json.dumps(second)}) + "\n")
             process = FakeDriverProcess([
                 {"type": "state", "active_faction": 0, "state_revision": 7},
                 {"type": "status", "ok": True, "what": "tactical_surface", "body": {"units": []}},
+                {"type": "status", "ok": True, "what": "inspect_unit", "body": {
+                    "unit_id": 1, "origins": []}},
                 {"type": "status", "ok": True, "what": "preview_batch", "body": {
                     "sampling": False, "candidates": [
                         {"valid": True, "summary": {}, "forecasts": [], "recruiter_threats": {"recruiters": []}},
@@ -576,9 +596,10 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual(code, 0)
         sent = [json.loads(line) for line in process.stdin.getvalue().splitlines()]
         self.assertEqual(sent[0]["what"], "tactical_surface")
-        self.assertEqual(sent[1]["what"], "preview_batch")
-        self.assertEqual(sent[2]["what"], "validate_batch")
-        self.assertEqual(sent[3], second)
+        self.assertEqual(sent[1]["what"], "inspect_unit")
+        self.assertEqual(sent[2]["what"], "preview_batch")
+        self.assertEqual(sent[3]["what"], "validate_batch")
+        self.assertEqual(sent[4], second)
         self.assertEqual([record for record in records if record["type"] == "preview_selection"][0]["matched_candidate"], 1)
 
     def test_model_output_invalid_twice_is_model_invalid(self):
@@ -594,6 +615,20 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual(terminal["terminal_class"], TERMINAL_MODEL_INVALID)
         self.assertFalse(terminal["infrastructure_invalid"])
         self.assertFalse(terminal["gameplay_valid"])
+        self.assertEqual(terminal["code"], "action_validation_invalid")
+
+    def test_tool_budget_exhaustion_is_model_invalid(self):
+        request = json.dumps({"tool": "inspect_unit", "unit_id": 1})
+        code, terminal = self.run_with_orders(
+            [request, request, request],
+            [{"type": "state", "active_faction": 0, "state_revision": 1},
+             {"type": "status", "ok": True, "what": "tactical_surface", "body": {"units": []}},
+             {"type": "status", "ok": True, "what": "inspect_unit",
+              "body": {"unit_id": 1, "origins": []}}],
+            max_model_calls_per_turn=4,
+            max_tool_calls_per_turn=1,
+        )
+        self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID])
         self.assertEqual(terminal["code"], "action_validation_invalid")
 
     def test_backend_transport_failure_stays_infrastructure(self):
@@ -709,7 +744,7 @@ class ClientValidationTests(unittest.TestCase):
         return code, records[-1], fsync.call_count
 
     def run_with_orders(self, order_texts, driver_lines, validate_before_submit=False,
-                        max_model_calls_per_turn=4):
+                        max_model_calls_per_turn=4, max_tool_calls_per_turn=4):
         """Drive the client with N canned model replies and explicit driver output."""
         with tempfile.TemporaryDirectory() as directory:
             log_path = directory + "/client.jsonl"
@@ -727,6 +762,7 @@ class ClientValidationTests(unittest.TestCase):
                 token_output_limit=None, token_total_limit=None,
                 validate_before_submit=validate_before_submit,
                 max_model_calls_per_turn=max_model_calls_per_turn,
+                max_tool_calls_per_turn=max_tool_calls_per_turn,
             )
             process = FakeDriverProcess(driver_lines)
             with mock.patch("tools.llm_client.subprocess.Popen", return_value=process), \

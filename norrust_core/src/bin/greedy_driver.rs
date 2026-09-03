@@ -34,7 +34,7 @@ use norrust_core::pathfinding::{get_zoc_hexes, reachable_hexes};
 use norrust_core::scenario::{load_board, load_units_file};
 use norrust_core::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
 use norrust_core::tactics::{
-    economy_facts, recruiter_threats_after_end_turn, turn_tactics, ThreatSurface,
+    economy_facts, recruiter_threats_after_end_turn, turn_tactics, unit_tactics, ThreatSurface,
 };
 use norrust_core::unit::Unit;
 use serde_json::{json, Value};
@@ -1686,6 +1686,35 @@ fn interactive_protocol_game(c: &Config) {
                             Err(error) => {
                                 json!({"type":"status","ok":false,"what":what,"code":"tactical_surface_error","message":error.to_string()})
                             }
+                        }
+                    }
+                }
+                "inspect_unit" => {
+                    let requested_revision = parsed.get("state_revision").and_then(Value::as_u64);
+                    let unit_id = parsed.get("unit_id").and_then(Value::as_u64);
+                    if requested_revision != Some(state.state_revision) {
+                        json!({"type":"status","ok":false,"what":what,"code":"stale_state","message":"requested state revision is no longer current","state_revision":state.state_revision})
+                    } else if state.active_faction != c.llm_side {
+                        json!({"type":"status","ok":false,"what":what,"code":"unauthorized_side","message":"model queries are not authorized while the opponent is active"})
+                    } else if unit_id.is_none() || unit_id > Some(u32::MAX as u64) {
+                        json!({"type":"status","ok":false,"what":what,"code":"parse","message":"unit_id is required"})
+                    } else {
+                        let unit_id = unit_id.unwrap() as u32;
+                        match state.units.get(&unit_id) {
+                            None => {
+                                json!({"type":"status","ok":false,"what":what,"code":"UnitNotFound","message":"unit is unavailable"})
+                            }
+                            Some(unit) if unit.faction != c.llm_side => {
+                                json!({"type":"status","ok":false,"what":what,"code":"unauthorized_unit","message":"only model-side units may be inspected"})
+                            }
+                            Some(_) => match unit_tactics(&state, unit_id) {
+                                Ok(tactics) => {
+                                    json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,"body":tactics})
+                                }
+                                Err(error) => {
+                                    json!({"type":"status","ok":false,"what":what,"code":"inspect_unit_error","message":error.to_string()})
+                                }
+                            },
                         }
                     }
                 }
