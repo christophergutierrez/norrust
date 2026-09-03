@@ -342,7 +342,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
     if compact and isinstance(state.get("tactical_surface"), dict):
         body = {"briefing": compact_observation(state),
                 "tactical_surface": compact_tactical_surface(state["tactical_surface"])}
-        option_payloads = {"tactical_surface": state["tactical_surface"]}
+        option_payloads = {}
     elif compact:
         compact_options = []
         option_units = (state.get("turn_options") or {}).get("units", [])
@@ -395,14 +395,18 @@ def compact_observation(state: dict[str, Any]) -> str:
                   for tile in state.get("terrain", []) if isinstance(tile, dict)}
     units = sorted((u for u in state.get("units", []) if isinstance(u, dict)),
                    key=lambda u: (u.get("faction", 255), u.get("id", 0)))
+    tactical = state.get("tactical_surface")
+    visibility = tactical.get("visibility", "?") if isinstance(tactical, dict) else "?"
+    next_tod = tactical.get("next_time_of_day", "?") if isinstance(tactical, dict) else "?"
     lines = [f"turn={state.get('turn', '?')} active_faction={state.get('active_faction', '?')} "
-             f"time_of_day={state.get('time_of_day', '?')} map={state.get('cols', '?')}x{state.get('rows', '?')}",
+             f"time_of_day={state.get('time_of_day', '?')} next_time_of_day={next_tod} "
+             f"visibility={visibility} map={state.get('cols', '?')}x{state.get('rows', '?')}",
              f"gold={state.get('gold', '?')} terrain_types={','.join(sorted(terrain))}", "units:"]
     for unit in units:
         flags = ''.join(flag for flag, present in (("m", unit.get("moved")), ("a", unit.get("attacked"))) if present) or "-"
         terrain_name = terrain_at.get((unit.get("col"), unit.get("row")), "?")
         lines.append(f"  id={unit.get('id','?')} faction={unit.get('faction','?')} def={unit.get('def_id','?')} "
-                     f"pos=({unit.get('row','?')},{unit.get('col','?')}) terrain={terrain_name} "
+                     f"pos=({unit.get('col','?')},{unit.get('row','?')}) terrain={terrain_name} "
                      f"hp={unit.get('hp','?')}/{unit.get('max_hp','?')} "
                      f"flags={flags} xp={unit.get('xp','?')}/{unit.get('xp_needed','?')} pending={unit.get('advancement_pending', False)}")
     return "\n".join(lines)

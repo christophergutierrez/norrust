@@ -129,12 +129,26 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual(by_hex[(2, 7)]["target_ids"], [9])
 
     def test_tactical_prompt_names_coordinate_sources_and_recruitment_choice(self):
-        prompt = prompt_for({"tactical_surface": {"units": []}}, [], compact=True)
+        prompt = prompt_for({"tactical_surface": {"units": [], "visibility": "full",
+                                                    "next_time_of_day": "Night"}}, [], compact=True)
         for text in (
                 "COORDS=col,row", "copy Move", "`moves`", "individual Recruit coordinates",
                 "RecruitBatch", "saving gold is allowed"):
             with self.subTest(text=text):
                 self.assertIn(text, prompt)
+        self.assertIn("visibility=full", prompt)
+        self.assertIn("next_time_of_day=Night", prompt)
+        self.assertNotIn('"origins"', prompt)
+        self.assertNotIn('"outcome_bps"', prompt)
+
+    def test_compact_observation_uses_col_row_coordinates(self):
+        state = {"units": [{"id": 1, "faction": 0, "def_id": "leader",
+                             "col": 3, "row": 7, "hp": 1, "max_hp": 1}],
+                 "terrain": [], "tactical_surface": {"visibility": "full",
+                                                        "next_time_of_day": "Dawn"}}
+        rendered = compact_observation(state)
+        self.assertIn("pos=(3,7)", rendered)
+        self.assertNotIn("pos=(7,3)", rendered)
 
     def test_real_driver_turn_options_mark_current_and_movable_hexes(self):
         driver = Path(__file__).resolve().parents[1] / "norrust_core" / "target" / "debug" / "greedy_driver"

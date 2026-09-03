@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use norrust_core::ai::{ai_take_turn_greedy_actions, run_greedy_side_turn, GreedyTurnError};
 use norrust_core::board::Tile;
-use norrust_core::combat::{preview_combat, validate_combat_preview};
+use norrust_core::combat::{preview_combat, tod_label, validate_combat_preview};
 use norrust_core::events::GameEvent;
 use norrust_core::game_state::{
     apply_action, apply_advance, apply_recruit, recruit_from_def, Action, AdvanceTarget, GameState,
@@ -1498,7 +1498,7 @@ fn interactive_protocol_game(c: &Config) {
                                     })
                                     .collect();
                                 let options: Vec<Value> = faction.recruits.iter().filter_map(|id| units.get(id).map(|def| json!({"def_id":id,"cost":def.cost,"affordable":state.gold[side] >= def.cost}))).collect();
-                                json!({"type":"status","ok":true,"what":what,"body":{"units":tactical_units,"recruitment":{"gold":state.gold[side],"placement_hexes":placement_hexes,"options":options,"batch_macro_enabled":!c.disable_recruit_batch}}})
+                                json!({"type":"status","ok":true,"what":what,"body":{"visibility":"full","time_of_day":tod_label(state.turn),"next_time_of_day":tod_label(state.turn.saturating_add(1)),"units":tactical_units,"recruitment":{"gold":state.gold[side],"placement_hexes":placement_hexes,"options":options,"batch_macro_enabled":!c.disable_recruit_batch}}})
                             }
                             Err(error) => {
                                 json!({"type":"status","ok":false,"what":what,"code":"tactical_surface_error","message":error.to_string()})
