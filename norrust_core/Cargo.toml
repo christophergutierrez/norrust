@@ -25,3 +25,8 @@ panic = "abort"
 
 [profile.dev]
 panic = "abort"
+
+# Integration tests use Cargo's unwind-based test harness even though the
+# production/debug library is built with abort semantics.
+[profile.test]
+panic = "unwind"
