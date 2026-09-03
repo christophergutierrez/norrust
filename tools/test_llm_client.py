@@ -13,7 +13,7 @@ from .llm_client import (
     TERMINAL_EXIT_CODES, TERMINAL_GAMEPLAY, TERMINAL_INFRASTRUCTURE,
     TERMINAL_MODEL_INVALID, ModelReply, classify_terminal, enforce_usage,
     compact_observation, compact_tactical_surface, prompt_for, query_options,
-    query_tactical_surface, run, validate_orders,
+    query_tactical_surface, query_validate_batch, run, validate_orders,
 )
 
 
@@ -33,6 +33,18 @@ class FakeDriverProcess:
 
 
 class ClientValidationTests(unittest.TestCase):
+    def test_validate_batch_query_is_revision_pinned_and_preserves_orders(self):
+        requests = []
+        orders = [{"action": "EndTurn"}]
+
+        def exchange(request):
+            requests.append(request)
+            return {"ok": True, "body": {"valid": True, "results": [{"ok": True}]}}
+
+        self.assertEqual(query_validate_batch(exchange, orders, 17)["valid"], True)
+        self.assertEqual(requests, [{"action": "Query", "what": "validate_batch",
+                                    "state_revision": 17, "orders": orders}])
+
     def test_tactical_surface_query_is_singleton_and_revision_pinned(self):
         requests = []
         def exchange(request):
