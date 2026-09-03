@@ -7,3 +7,7 @@ preserving untrusted-data delimiters. No legality is reconstructed in Python.
 
 Historical corpus byte measurements remain unavailable because the source
 eight-call log is not present in this checkout.
+
+Fresh seed-2001 smoke measurement: one compact prompt was 8,676 bytes
+(preamble 5,789; turn card 418; tool result 0). This is not the missing
+eight-call baseline.
