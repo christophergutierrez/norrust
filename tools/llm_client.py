@@ -311,6 +311,7 @@ def run(args: argparse.Namespace) -> int:
                 "opponent": "greedy+driver-recruit", "opponent_recruit_policy": "standard_driver_macro",
                 "opponent_planner": "no_skirmisher_pathing", "turn_format": "single_batch",
                 "win_rule": "recruiter_loss", "queries": 0, "model_orders": 0, "model_calls": 0,
+                "action_failures": 0,
                 "max_turns": args.max_turns, "turn_timeout_seconds": args.turn_timeout,
                 "query_budget_seconds": args.query_budget_seconds,
                 "max_queries_per_turn": args.max_queries_per_turn,
@@ -388,6 +389,19 @@ def run(args: argparse.Namespace) -> int:
                                 "repair": True})
                         proc.stdin.write(json.dumps(orders, separators=(",", ":")) + "\n")
                         proc.stdin.flush()
+                        continue
+                    if line.get("ok") is True:
+                        # Per-action failures inside an accepted batch are ordinary
+                        # gameplay, not an infrastructure fault. The batch contract is
+                        # "skip that order and continue", and the driver already did:
+                        # it applied every other order and reported this one in
+                        # `results`. Killing a defender with an earlier attacker in the
+                        # same batch makes a later queued Attack return UnitNotFound —
+                        # correct play, and previously fatal once the single repair was
+                        # spent, which punished focus fire and voided valid matches.
+                        metadata["action_failures"] = metadata.get("action_failures", 0) + 1
+                        record({"type": "action_failure", "driver_failure": failure,
+                                "driver_status": line, "repair_available": False})
                         continue
                     metadata.update({
                         "winner": None,
