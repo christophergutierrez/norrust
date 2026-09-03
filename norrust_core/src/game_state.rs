@@ -110,6 +110,19 @@ pub fn apply_advance(
     target: AdvanceTarget,
     units: &crate::loader::Registry<crate::schema::UnitDef>,
 ) -> Result<Vec<GameEvent>, ActionError> {
+    let result = apply_advance_inner(state, unit_id, target, units);
+    if result.is_ok() {
+        state.bump_revision();
+    }
+    result
+}
+
+fn apply_advance_inner(
+    state: &mut GameState,
+    unit_id: u32,
+    target: AdvanceTarget,
+    units: &crate::loader::Registry<crate::schema::UnitDef>,
+) -> Result<Vec<GameEvent>, ActionError> {
     let unit = state
         .units
         .get(&unit_id)
@@ -185,6 +198,8 @@ pub struct GameState {
     pub recruit_ids: [Vec<String>; 2],
     /// Whether each faction has ever fielded a recruiting commander.
     pub had_recruiter: [bool; 2],
+    /// Monotonic revision of successful externally requested mutations.
+    pub state_revision: u64,
 }
 
 impl GameState {
@@ -208,7 +223,12 @@ impl GameState {
             faction_ids: [String::new(), String::new()],
             recruit_ids: [Vec::new(), Vec::new()],
             had_recruiter: [false, false],
+            state_revision: 0,
         }
+    }
+
+    pub(crate) fn bump_revision(&mut self) {
+        self.state_revision = self.state_revision.saturating_add(1);
     }
 
     /// Create a `GameState` with a specific RNG seed (for reproducible tests).
@@ -417,6 +437,14 @@ pub fn legal_targets(state: &GameState, unit_id: u32, from: Hex) -> Result<Vec<u
 /// Returns `Ok(())` on success or an `ActionError` describing why the
 /// action was rejected. State is unchanged on error.
 pub fn apply_action(state: &mut GameState, action: Action) -> Result<Vec<GameEvent>, ActionError> {
+    let result = apply_action_inner(state, action);
+    if result.is_ok() {
+        state.bump_revision();
+    }
+    result
+}
+
+fn apply_action_inner(state: &mut GameState, action: Action) -> Result<Vec<GameEvent>, ActionError> {
     match action {
         Action::Move {
             unit_id,
@@ -1104,6 +1132,19 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<Vec<GameEve
 /// Validates: destination in bounds, is a castle hex, is unoccupied, faction has enough gold.
 /// On success: deducts `cost` from `state.gold[unit.faction as usize]` and places the unit.
 pub fn apply_recruit(
+    state: &mut GameState,
+    unit: Unit,
+    destination: Hex,
+    cost: u32,
+) -> Result<Vec<GameEvent>, ActionError> {
+    let result = apply_recruit_inner(state, unit, destination, cost);
+    if result.is_ok() {
+        state.bump_revision();
+    }
+    result
+}
+
+fn apply_recruit_inner(
     state: &mut GameState,
     unit: Unit,
     destination: Hex,

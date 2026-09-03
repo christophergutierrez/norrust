@@ -87,6 +87,7 @@ pub struct FactionSnapshot {
 /// even though `Board` stores them as `width`/`height` internally.
 #[derive(Debug, Serialize)]
 pub struct StateSnapshot {
+    pub state_revision: u64,
     pub turn: u32,
     pub active_faction: u8,
     pub tod_phase: u8,
@@ -195,6 +196,7 @@ impl StateSnapshot {
         };
 
         StateSnapshot {
+            state_revision: state.state_revision,
             turn: state.turn,
             active_faction: state.active_faction,
             tod_phase: tod_phase(state.turn),
@@ -323,6 +325,7 @@ impl StateSnapshot {
         visible_hexes.sort_by_key(|h| (h.row, h.col));
 
         StateSnapshot {
+            state_revision: state.state_revision,
             turn: state.turn,
             active_faction: state.active_faction,
             tod_phase: tod_phase(state.turn),

@@ -76,17 +76,16 @@ python -m tools.llm_client \
   --scenario big_battle_6 --faction0 undead --faction1 undead \
   --gold 300 --seed 2001 --llm-side 0 \
   --max-turns 30 \
-  --turn-timeout 900 --query-budget-seconds 900 \
+  --turn-timeout 930 --query-budget-seconds 900 \
   --log /path/to/match.ndjson
 ```
 
-**Raise `--turn-timeout` for any live model.** The 300-second default is too
-tight once a turn needs an action repair. A repair means a *second* model call in
-the same side-turn, plus engine query round-trips; with per-call latency of a
-minute or more that exceeds 300s, the driver self-terminates mid-turn, and the
-client dies with `BrokenPipeError` writing to a closed stdin — producing **no
-terminal record at all**. Use 900 for backends answering in 1-2 minutes, more if
-slower. This is the single most common way a live run is lost.
+The default `--turn-timeout` is 930 seconds. The client keeps the model command
+timeout and driver query budget independently. It warns when the turn timeout
+is below `query_budget_seconds + 2 * model_timeout`, since an action repair can
+require two model calls. Driver EOF and broken-pipe failures are written as
+durable typed terminal records with the last event count and a bounded stderr
+diagnostic tail.
 
 Budget wall-clock accordingly. `--max-turns 30` is ~15 model side-turns; at 2-4
 minutes each that is 30-60 minutes, longer with repairs. If you wrap the run in
@@ -100,7 +99,7 @@ completed match leaves nothing to analyse.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| `BrokenPipeError` on `proc.stdin.write`, no terminal record | driver hit `--turn-timeout`, usually on a repair turn | raise `--turn-timeout` and `--query-budget-seconds` |
+| `driver_broken_pipe` terminal | driver exited while the client was writing | inspect the recorded stderr tail and timeout budgets |
 | Terminal `max_turns`, no winner | cap too low to reach a decision | raise `--max-turns` to 24+ |
 | `model_error` after one repair | backend emitted prose, fences, or a non-array | strip fences in the backend |
 | Log stops growing for minutes | normal during a slow model call | check log mtime over minutes, not seconds |
@@ -201,7 +200,11 @@ typically around side-turn 10-14, so a low cap cuts the match off before any
 combat happens. Short caps are for protocol smoke tests, like the `--max-turns 4`
 fixture example above, not for measuring whether a model can win.
 
-Terminal reasons `winner` and `max_turns` are gameplay-valid. `setup_error`,
+Terminal reasons `winner` and `max_turns` are gameplay-valid. A rejected batch
+after its repair is `model_invalid` (exit 2), a completed evaluation that is
+neither gameplay nor harness failure. Its counters are `rejected_batches` (one
+per rolled-back batch) and `rejected_action_items` (failed result items).
+Terminal reasons `setup_error`,
 `timeout`, `eof`, `infrastructure_failure`, and unknown or malformed terminal
 reasons are infrastructure-invalid; the client records
 `infrastructure_invalid: true` and exits nonzero. An LLM win is neither guaranteed

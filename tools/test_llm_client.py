@@ -11,7 +11,7 @@ from . import llm_client
 from .llm_client import (
     TERMINAL_EXIT_CODES, TERMINAL_GAMEPLAY, TERMINAL_INFRASTRUCTURE,
     TERMINAL_MODEL_INVALID, ModelReply, classify_terminal, enforce_usage,
-    prompt_for, query_options, run, validate_orders,
+    compact_observation, prompt_for, query_options, run, validate_orders,
 )
 
 
@@ -31,6 +31,21 @@ class FakeDriverProcess:
 
 
 class ClientValidationTests(unittest.TestCase):
+    def test_compact_observation_is_deterministic_and_keeps_instance_facts(self):
+        state = {"turn": 2, "active_faction": 0, "time_of_day": "day", "cols": 3, "rows": 2,
+                 "gold": [4, 5],
+                 "terrain": [{"col": 0, "row": 0, "terrain_id": "keep"}],
+                 "units": [{"id": 2, "faction": 1, "def_id": "orc", "col": 0, "row": 0,
+                            "hp": 7, "max_hp": 9, "moved": True, "attacked": False,
+                            "xp": 1, "xp_needed": 4, "advancement_pending": False},
+                           {"id": 1, "faction": 0, "def_id": "leader", "col": 1, "row": 0,
+                            "hp": 10, "max_hp": 10, "moved": False, "attacked": False,
+                            "xp": 0, "xp_needed": 4, "advancement_pending": True}]}
+        rendered = compact_observation(state)
+        self.assertEqual(rendered, compact_observation(dict(state)))
+        self.assertIn("id=1", rendered)
+        self.assertIn("terrain=keep", rendered)  # occupied terrain is recoverable
+        self.assertIn("pending=True", rendered)
     def test_final_end_turn(self):
         self.assertEqual(validate_orders('[{"action":"Move","unit_id":1,"col":1,"row":1},{"action":"EndTurn"}]')[-1]["action"], "EndTurn")
 
