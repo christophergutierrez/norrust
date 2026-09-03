@@ -2,7 +2,7 @@
 
 Use this when the question is: **can a language model play The Clash for Norrust**, not whether it can call an existing planner. A win is useful evidence, but it is neither guaranteed nor required.
 
-Headless AI-vs-AI recipes, board fairness, and algorithm baselines live in [SELF_PLAY.md](SELF_PLAY.md). Combat math, ZOC, and the TCP protocol live in [AGENT_GUIDE.md](AGENT_GUIDE.md). This document is the playbook for an LLM sitting in the player's chair.
+Headless AI-vs-AI recipes, board fairness, and algorithm baselines live in [SELF_PLAY.md](SELF_PLAY.md). Combat math, ZOC, and the TCP protocol live in [AGENT_GUIDE.md](AGENT_GUIDE.md). Per-turn action choice is the [MEMORYLESS TACTICAL PLAYBOOK](LLM_TACTICAL_PLAYBOOK.md). This document is the match protocol, unit table, and reporting rules for an LLM sitting in the player's chair.
 
 ## What this measures
 
@@ -180,15 +180,9 @@ Other factions (Loyalists, Rebels, Northerners) are in `data/units/` and `data/f
 
 ## Starter strategy
 
-1. **Leader on keep, fill castle, then fight.** Recruits need the leader on the keep. Built-in greedy and look-ahead keep the recruiter on the keep (and walk it back if it is already off). After the castle is full a human or model may still choose to leave; if you want more recruits later, bring them back.
-2. **Take villages and stay on them until they are yours.** End the turn on the hex. Heal there. Greedy often will not contest this on purpose.
-3. **Fight from forest, hills, village, castle.** Do not step onto flat to melee someone in a castle unless you will kill them. That is the main greedy leak.
-4. **Focus fire.** Pick one enemy you can finish this turn; pile on. Greedy picks a local best fight per unit and leaves wounded threats alive.
-5. **Range 2 if you have a bow or cold wave.** They often cannot hit back. Dark Adept / Sorcerer / Skeleton Archer should not walk into melee.
-6. **ToD.** Chaotic: take even or losing fights at Night, not at Day. Delay a bad engagement one round if Dawn is next.
-7. **ZOC.** One unit in a choke stops a walker. Do not feed units adjacent to three enemies on open ground.
-8. **Do not chase.** If greedy walks onto your forest, hit it; do not follow it onto its forest.
-9. vs **look-ahead:** expect it to sit on villages and refuse bad trades. Win by numbers, ToD, and threats outside its short reply range—not by offering it a 30% vs 60% melee.
+Per-turn action choice is the [MEMORYLESS TACTICAL PLAYBOOK](LLM_TACTICAL_PLAYBOOK.md); the client inlines it. Do not keep a second move checklist here.
+
+Usual Undead spend order against the table above: Vampire Bat ×1–2, then Skeleton or Walking Corpse as the keep screen and front line, then Dark Adept or Skeleton Archer. Other factions: read `data/units/` and `data/factions/` and apply the same scout / melee / ranged mix from `recruit_options`. Built-in greedy and look-ahead keep their recruiter on the keep.
 
 Suggested first match: Undead vs Undead on `big_battle_6`, you Blue, opponent look-ahead (GUI AI), 300 gold if you can set it, you first. Then use the headless client above for the same matchup against greedy.
 
