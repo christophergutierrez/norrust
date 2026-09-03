@@ -273,6 +273,25 @@ def compact_tactical_surface(surface: dict[str, Any]) -> str:
         slots = ",".join("%s,%s" % (item.get("col", "?"), item.get("row", "?"))
                          for item in recruitment.get("placement_hexes", []) if isinstance(item, dict))
         lines.insert(0, "R g%s open=%s defs=%s" % (recruitment.get("gold", "?"), slots, options))
+    for recruiter in surface.get("threats", {}).get("recruiters", []):
+        if not isinstance(recruiter, dict):
+            continue
+        threat_lines = []
+        for threat in recruiter.get("threats", []):
+            if not isinstance(threat, dict):
+                continue
+            forecast = threat.get("forecast", {})
+            threat_lines.append("U%s@%s,%s%s p%s e%s m%s" % (
+                threat.get("attacker_id", "?"), threat.get("origin_col", "?"),
+                threat.get("origin_row", "?"), "~" if threat.get("moved") else "",
+                forecast.get("outcome_bps", ["?", "?", "?"]),
+                forecast.get("expected_damage_tenths", ["?", "?"]),
+                threat.get("max_damage", "?")))
+        lines.append("THREAT R%s hp=%s at=%s,%s tod=%s %s" % (
+            recruiter.get("recruiter_id", "?"), recruiter.get("hp", "?"),
+            recruiter.get("col", "?"), recruiter.get("row", "?"),
+            surface.get("threats", {}).get("projected_time_of_day", "?"),
+            " ".join(threat_lines) if threat_lines else "none"))
     if lines:
         lines.insert(0, "COORDS=col,row")
     return "\n".join(lines)
@@ -300,7 +319,9 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
     tactical_guidance = (
         "Use tactical_surface exactly. COORDS=col,row. `at` is current and never a Move destination; copy Move "
         "coordinates only from `moves`. `attacks` gives origin>target, p[defender-killed,both-survive,attacker-killed] "
-        "odds, and e[defender,attacker] damage. Copy individual Recruit coordinates only from R `open`."
+        "odds, and e[defender,attacker] damage. THREAT lines are complete-information forecasts if you EndTurn now; "
+        "`@col,row` is the enemy attack origin, `~` means it moves first, and `m` is maximum damage. "
+        "Copy individual Recruit coordinates only from R `open`."
         if isinstance(state.get("tactical_surface"), dict) else
         "Use turn_options positions exactly for every move and re-check sequential destinations before submitting. "
         "turn_options lists, per unit, the hexes it may attack from and the target IDs reachable from each. "

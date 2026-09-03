@@ -31,7 +31,7 @@ use norrust_core::loader::{expand_recruits, Registry};
 use norrust_core::pathfinding::{get_zoc_hexes, reachable_hexes};
 use norrust_core::scenario::{load_board, load_units_file};
 use norrust_core::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
-use norrust_core::tactics::turn_tactics;
+use norrust_core::tactics::{recruiter_threats_after_end_turn, turn_tactics};
 use norrust_core::unit::Unit;
 use serde_json::{json, Value};
 
@@ -1498,7 +1498,12 @@ fn interactive_protocol_game(c: &Config) {
                                     })
                                     .collect();
                                 let options: Vec<Value> = faction.recruits.iter().filter_map(|id| units.get(id).map(|def| json!({"def_id":id,"cost":def.cost,"affordable":state.gold[side] >= def.cost}))).collect();
-                                json!({"type":"status","ok":true,"what":what,"body":{"visibility":"full","time_of_day":tod_label(state.turn),"next_time_of_day":tod_label(state.turn.saturating_add(1)),"units":tactical_units,"recruitment":{"gold":state.gold[side],"placement_hexes":placement_hexes,"options":options,"batch_macro_enabled":!c.disable_recruit_batch}}})
+                                let threats = recruiter_threats_after_end_turn(&state, state.active_faction)
+                                    .map_err(|error| error.to_string());
+                                match threats {
+                                    Ok(threats) => json!({"type":"status","ok":true,"what":what,"body":{"visibility":"full","time_of_day":tod_label(state.turn),"next_time_of_day":tod_label(state.turn.saturating_add(1)),"units":tactical_units,"threats":threats,"recruitment":{"gold":state.gold[side],"placement_hexes":placement_hexes,"options":options,"batch_macro_enabled":!c.disable_recruit_batch}}}),
+                                    Err(message) => json!({"type":"status","ok":false,"what":what,"code":"tactical_surface_error","message":message}),
+                                }
                             }
                             Err(error) => {
                                 json!({"type":"status","ok":false,"what":what,"code":"tactical_surface_error","message":error.to_string()})
