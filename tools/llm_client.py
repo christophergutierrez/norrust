@@ -275,9 +275,47 @@ def status_failure(line: dict[str, Any]) -> Optional[dict[str, Any]]:
     return None
 
 
-def terminal_is_infrastructure_invalid(line: dict[str, Any]) -> bool:
-    """Only the driver's two genuine gameplay terminals are successful exits."""
-    return line.get("reason") not in ("winner", "max_turns")
+# Terminal taxonomy. Three outcomes, not two: a model that cannot produce a
+# legal turn is a completed evaluation, not a broken harness. Collapsing it into
+# INFRASTRUCTURE voids a match the model actually lost, and that escalation can
+# only ever void the model's match and never greedy's.
+TERMINAL_GAMEPLAY = "gameplay"          # winner / max_turns: a real result
+TERMINAL_MODEL_INVALID = "model_invalid"  # model could not emit a legal turn
+TERMINAL_INFRASTRUCTURE = "infrastructure"  # the harness or driver broke
+
+GAMEPLAY_REASONS = ("winner", "max_turns")
+
+# Exit codes are distinct so a caller can tell the three apart without parsing
+# the log. 0 = usable gameplay result, 1 = harness fault, 2 = model fault.
+TERMINAL_EXIT_CODES = {
+    TERMINAL_GAMEPLAY: 0,
+    TERMINAL_INFRASTRUCTURE: 1,
+    TERMINAL_MODEL_INVALID: 2,
+}
+
+
+def classify_terminal(reason: Optional[str]) -> str:
+    """Map a terminal reason to one of the three terminal classes."""
+    if reason in GAMEPLAY_REASONS:
+        return TERMINAL_GAMEPLAY
+    if reason == TERMINAL_MODEL_INVALID:
+        return TERMINAL_MODEL_INVALID
+    return TERMINAL_INFRASTRUCTURE
+
+
+def set_terminal(metadata: dict[str, Any], terminal_class: str,
+                 **fields: Any) -> str:
+    """Stamp the three-way terminal classification onto metadata.
+
+    `infrastructure_invalid` is retained as a derived boolean so existing log
+    consumers keep working; `terminal_class` is the authoritative field. A
+    model_invalid run is neither infrastructure-invalid nor gameplay-valid.
+    """
+    metadata.update(fields)
+    metadata["terminal_class"] = terminal_class
+    metadata["infrastructure_invalid"] = terminal_class == TERMINAL_INFRASTRUCTURE
+    metadata["gameplay_valid"] = terminal_class == TERMINAL_GAMEPLAY
+    return terminal_class
 
 
 def run(args: argparse.Namespace) -> int:
@@ -321,7 +359,8 @@ def run(args: argparse.Namespace) -> int:
                 "token_total_limit": args.token_total_limit,
                 "prompt_cache": False, "usage_measured": True,
                 "sampling": None, "llm_authored_extra": False,
-                "winner": None, "reason": None, "infrastructure_invalid": False,
+                "winner": None, "reason": None, "terminal_class": None,
+                "infrastructure_invalid": False, "gameplay_valid": False,
                 **source_metadata()}
     log = open(args.log, "a", buffering=1) if args.log else None
     def record(obj: dict[str, Any]) -> None:
@@ -339,22 +378,22 @@ def run(args: argparse.Namespace) -> int:
         while True:
             raw = proc.stdout.readline()
             if not raw:
-                metadata["infrastructure_invalid"] = True
+                set_terminal(metadata, TERMINAL_INFRASTRUCTURE,
+                             reason="eof", code="driver_closed_stdout",
+                             message="driver closed stdout without a terminal")
                 durable({"type": "driver_crash", "returncode": proc.poll(), **metadata})
-                return 1
+                return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
             try:
                 line = json.loads(raw)
             except json.JSONDecodeError:
-                metadata.update({
-                    "winner": None,
-                    "reason": "infrastructure_failure",
-                    "code": "driver_protocol_invalid_json",
-                    "message": "driver emitted invalid JSON",
-                    "raw_line": raw.rstrip("\r\n"),
-                    "infrastructure_invalid": True,
-                })
+                set_terminal(metadata, TERMINAL_INFRASTRUCTURE,
+                             winner=None,
+                             reason="infrastructure_failure",
+                             code="driver_protocol_invalid_json",
+                             message="driver emitted invalid JSON",
+                             raw_line=raw.rstrip("\r\n"))
                 durable({"type": "terminal", **metadata})
-                return 1
+                return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
             record({"type": "driver", "line": line})
             if line.get("type") == "status":
                 failure = status_failure(line)
@@ -379,10 +418,24 @@ def run(args: argparse.Namespace) -> int:
                                 metadata["usage_measured"] = False
                             orders = validate_orders(repaired.text, args.no_recruit_macro)
                         except (RuntimeError, ValueError) as repair_error:
-                            metadata["infrastructure_invalid"] = True
-                            durable({"type": "model_error", **metadata,
-                                     "message": str(repair_error)})
-                            return 1
+                            # ValueError comes from validate_orders: the model's
+                            # repaired output was still not a legal batch.
+                            # RuntimeError comes from the backend or usage
+                            # enforcement: transport, not the model's play.
+                            terminal_class = (TERMINAL_MODEL_INVALID
+                                              if isinstance(repair_error, ValueError)
+                                              else TERMINAL_INFRASTRUCTURE)
+                            set_terminal(metadata, terminal_class,
+                                         winner=None,
+                                         reason=(TERMINAL_MODEL_INVALID
+                                                 if terminal_class == TERMINAL_MODEL_INVALID
+                                                 else "infrastructure_failure"),
+                                         code=("action_repair_invalid"
+                                               if terminal_class == TERMINAL_MODEL_INVALID
+                                               else "model_backend_failure"),
+                                         message=str(repair_error))
+                            durable({"type": "model_error", **metadata})
+                            return TERMINAL_EXIT_CODES[terminal_class]
                         metadata["model_orders"] += len(orders)
                         record({"type": "forwarded_orders", "orders": orders,
                                 "prompt_hash": hashlib.sha256(repair_prompt.encode()).hexdigest(),
@@ -390,30 +443,46 @@ def run(args: argparse.Namespace) -> int:
                         proc.stdin.write(json.dumps(orders, separators=(",", ":")) + "\n")
                         proc.stdin.flush()
                         continue
-                    if line.get("ok") is True:
-                        # Per-action failures inside an accepted batch are ordinary
-                        # gameplay, not an infrastructure fault. The batch contract is
-                        # "skip that order and continue", and the driver already did:
-                        # it applied every other order and reported this one in
-                        # `results`. Killing a defender with an earlier attacker in the
-                        # same batch makes a later queued Attack return UnitNotFound —
-                        # correct play, and previously fatal once the single repair was
-                        # spent, which punished focus fire and voided valid matches.
-                        metadata["action_failures"] = metadata.get("action_failures", 0) + 1
-                        record({"type": "action_failure", "driver_failure": failure,
-                                "driver_status": line, "repair_available": False})
-                        continue
-                    metadata.update({
-                        "winner": None,
-                        "reason": "infrastructure_failure",
-                        "code": "driver_status_failure",
-                        "message": "driver returned a failed status",
-                        "driver_status": line,
-                        "driver_failure": failure,
-                        "infrastructure_invalid": True,
-                    })
+                    metadata["action_failures"] = metadata.get("action_failures", 0) + 1
+                    record({"type": "action_failure", "driver_failure": failure,
+                            "driver_status": line, "repair_available": False})
+                    # A top-level ok:false is the driver rejecting the request
+                    # itself (bad side, malformed envelope): a harness fault.
+                    #
+                    # A failed item inside an ok:true batch is the model's batch
+                    # being illegal. The driver applies the batch to a clone and
+                    # commits it ONLY if every result is ok
+                    # (greedy_driver.rs:1685-1694); on any failure it discards the
+                    # clone, clears events, and leaves did_end false. It therefore
+                    # emits no new state boundary and does not run greedy. The
+                    # batch contract is NOT "skip that order and continue" -- the
+                    # whole turn is rolled back -- so continuing here blocks the
+                    # client forever on a boundary that will never arrive.
+                    #
+                    # With the repair budget spent, that is the model failing to
+                    # produce a legal turn: model_invalid. It is deliberately not
+                    # infrastructure_invalid, because that escalation punished
+                    # focus fire (UnitNotFound after an earlier attacker's kill is
+                    # correct play) and could only ever void the model's match,
+                    # never greedy's.
+                    if line.get("ok") is False:
+                        set_terminal(metadata, TERMINAL_INFRASTRUCTURE,
+                                     winner=None,
+                                     reason="infrastructure_failure",
+                                     code="driver_status_failure",
+                                     message="driver returned a failed status",
+                                     driver_status=line, driver_failure=failure)
+                    else:
+                        set_terminal(metadata, TERMINAL_MODEL_INVALID,
+                                     winner=None,
+                                     reason=TERMINAL_MODEL_INVALID,
+                                     code="action_batch_rejected",
+                                     message="model could not produce a legal "
+                                             "action batch within the repair budget",
+                                     driver_status=line, driver_failure=failure,
+                                     rolled_back=True)
                     durable({"type": "terminal", **metadata})
-                    return 1
+                    return TERMINAL_EXIT_CODES[metadata["terminal_class"]]
                 continue
             if line.get("type") == "state":
                 state = line
@@ -438,9 +507,11 @@ def run(args: argparse.Namespace) -> int:
                 try:
                     option_bodies = query_options(exchange)
                 except RuntimeError as first:
-                    metadata["infrastructure_invalid"] = True
-                    durable({"type": "query_error", "message": str(first)})
-                    return 1
+                    set_terminal(metadata, TERMINAL_INFRASTRUCTURE,
+                                 winner=None, reason="infrastructure_failure",
+                                 code="query_error", message=str(first))
+                    durable({"type": "query_error", **metadata})
+                    return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
                 state = dict(state)
                 state.update(option_bodies)
                 record({"type": "state_hash", "sha256": hashlib.sha256(
@@ -451,10 +522,16 @@ def run(args: argparse.Namespace) -> int:
                 prompt_bytes = prompt.encode()
                 prompt_hash = hashlib.sha256(prompt_bytes).hexdigest()
                 if len(prompt_bytes) > args.max_prompt_bytes:
-                    metadata["infrastructure_invalid"] = True
-                    durable({"type": "preflight_error", "code": "prompt_too_large",
+                    # A configuration/harness fault: the client built a prompt it
+                    # was told not to send. Not the model's failure -- the model
+                    # never saw it.
+                    set_terminal(metadata, TERMINAL_INFRASTRUCTURE,
+                                 winner=None, reason="infrastructure_failure",
+                                 code="prompt_too_large",
+                                 message="assembled prompt exceeds max_prompt_bytes")
+                    durable({"type": "preflight_error", **metadata,
                              "bytes": len(prompt_bytes), "limit": args.max_prompt_bytes})
-                    return 1
+                    return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
                 metadata["model_calls"] += 1
                 model_calls_this_turn += 1
                 try:
@@ -482,9 +559,22 @@ def run(args: argparse.Namespace) -> int:
                             metadata["usage_measured"] = False
                         orders = validate_orders(repaired.text, args.no_recruit_macro)
                 except (RuntimeError, ValueError) as first:
-                    metadata["infrastructure_invalid"] = True
-                    durable({"type": "model_error", "message": str(first)})
-                    return 1
+                    # Same split: a ValueError here means the model failed
+                    # validation twice (initial plus repair).
+                    terminal_class = (TERMINAL_MODEL_INVALID
+                                      if isinstance(first, ValueError)
+                                      else TERMINAL_INFRASTRUCTURE)
+                    set_terminal(metadata, terminal_class,
+                                 winner=None,
+                                 reason=(TERMINAL_MODEL_INVALID
+                                         if terminal_class == TERMINAL_MODEL_INVALID
+                                         else "infrastructure_failure"),
+                                 code=("action_validation_invalid"
+                                       if terminal_class == TERMINAL_MODEL_INVALID
+                                       else "model_backend_failure"),
+                                 message=str(first))
+                    durable({"type": "model_error", **metadata})
+                    return TERMINAL_EXIT_CODES[terminal_class]
                 metadata["model_orders"] += len(orders)
                 record({"type": "forwarded_orders", "orders": orders,
                         "prompt_hash": prompt_hash})
@@ -498,9 +588,10 @@ def run(args: argparse.Namespace) -> int:
                 for key in ("code", "message"):
                     if key in line:
                         metadata[key] = line[key]
-                metadata["infrastructure_invalid"] = terminal_is_infrastructure_invalid(line)
+                terminal_class = set_terminal(
+                    metadata, classify_terminal(line.get("reason")))
                 durable({"type": "terminal", **metadata})
-                return 1 if metadata["infrastructure_invalid"] else 0
+                return TERMINAL_EXIT_CODES[terminal_class]
     finally:
         if log:
             log.close()

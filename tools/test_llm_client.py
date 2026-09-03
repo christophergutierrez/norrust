@@ -8,7 +8,11 @@ from pathlib import Path
 from unittest import mock
 
 from . import llm_client
-from .llm_client import ModelReply, enforce_usage, prompt_for, query_options, run, validate_orders
+from .llm_client import (
+    TERMINAL_EXIT_CODES, TERMINAL_GAMEPLAY, TERMINAL_INFRASTRUCTURE,
+    TERMINAL_MODEL_INVALID, ModelReply, classify_terminal, enforce_usage,
+    prompt_for, query_options, run, validate_orders,
+)
 
 
 class FakeDriverProcess:
@@ -232,6 +236,8 @@ class ClientValidationTests(unittest.TestCase):
                 code, terminal, fsync_calls = self.run_terminal(line)
                 self.assertEqual(code, 1)
                 self.assertTrue(terminal["infrastructure_invalid"])
+                self.assertFalse(terminal["gameplay_valid"])
+                self.assertEqual(terminal["terminal_class"], TERMINAL_INFRASTRUCTURE)
                 self.assertEqual(terminal.get("reason"), reason)
                 self.assertEqual(terminal["code"], "driver_code")
                 self.assertEqual(terminal["message"], "driver message")
@@ -241,6 +247,7 @@ class ClientValidationTests(unittest.TestCase):
         code, terminal, fsync_calls = self.run_terminal("not json\n")
         self.assertEqual(code, 1)
         self.assertTrue(terminal["infrastructure_invalid"])
+        self.assertEqual(terminal["terminal_class"], TERMINAL_INFRASTRUCTURE)
         self.assertEqual(terminal["reason"], "infrastructure_failure")
         self.assertEqual(terminal["code"], "driver_protocol_invalid_json")
         self.assertEqual(terminal["message"], "driver emitted invalid JSON")
@@ -256,6 +263,8 @@ class ClientValidationTests(unittest.TestCase):
                 code, terminal, fsync_calls = self.run_terminal(line)
                 self.assertEqual(code, 0)
                 self.assertFalse(terminal["infrastructure_invalid"])
+                self.assertTrue(terminal["gameplay_valid"])
+                self.assertEqual(terminal["terminal_class"], TERMINAL_GAMEPLAY)
                 self.assertEqual(terminal["reason"], line["reason"])
                 self.assertGreaterEqual(fsync_calls, 1)
 
@@ -265,19 +274,118 @@ class ClientValidationTests(unittest.TestCase):
         code, terminal, _ = self.run_after_forwarded_orders(line)
         self.assertEqual(code, 1)
         self.assertTrue(terminal["infrastructure_invalid"])
+        self.assertEqual(terminal["terminal_class"], TERMINAL_INFRASTRUCTURE)
         self.assertEqual(terminal["reason"], "infrastructure_failure")
         self.assertEqual(terminal["code"], "driver_status_failure")
         self.assertEqual(terminal["message"], "driver returned a failed status")
         self.assertEqual(terminal["driver_failure"]["code"], "unauthorized_side")
 
     def test_status_nested_failed_result_is_durable_failure_without_waiting_for_more_input(self):
+        # One canned reply only: the nested failure triggers a repair, the orders
+        # file is exhausted, and the backend raises. An exhausted fixture is a
+        # harness fault, so this stays infrastructure -- it does not exercise the
+        # model_invalid path (see the two-reply test below).
         line = {"type": "status", "ok": True,
                 "results": [{"ok": True}, {"ok": False, "code": "MoveError",
                                              "message": "invalid move"}]}
         code, terminal, _ = self.run_after_forwarded_orders(line)
         self.assertEqual(code, 1)
         self.assertTrue(terminal["infrastructure_invalid"])
+        self.assertEqual(terminal["terminal_class"], TERMINAL_INFRASTRUCTURE)
         self.assertIn(terminal.get("type"), {"model_error", "driver_crash", "terminal"})
+
+    def test_classify_terminal_is_three_way(self):
+        for reason in ("winner", "max_turns"):
+            self.assertEqual(classify_terminal(reason), TERMINAL_GAMEPLAY)
+        self.assertEqual(classify_terminal("model_invalid"), TERMINAL_MODEL_INVALID)
+        for reason in ("setup_error", "timeout", "eof", "infrastructure_failure",
+                       "mystery", None):
+            self.assertEqual(classify_terminal(reason), TERMINAL_INFRASTRUCTURE)
+        self.assertEqual(
+            sorted(TERMINAL_EXIT_CODES.values()), [0, 1, 2],
+            "the three classes must be distinguishable by exit code alone")
+
+    def test_nested_failure_with_repair_exhausted_is_model_invalid(self):
+        """The batch is rolled back and the model had its repair. That is a model
+        failure, not a broken harness: it must not void the run as
+        infrastructure_invalid, and it must not be recorded as gameplay."""
+        end_turn = '[{"action":"EndTurn"}]'
+        failure = {"type": "status", "ok": True,
+                   "results": [{"ok": False, "code": "MoveError",
+                                "message": "invalid move"}]}
+        code, terminal = self.run_with_orders(
+            [end_turn, end_turn],
+            [{"type": "state", "active_faction": 0},
+             {"type": "status", "ok": True, "what": "turn_options", "body": {}},
+             {"type": "status", "ok": True, "what": "recruit_options", "body": {}},
+             failure,   # first rejection -> one repair is spent
+             failure],  # second rejection -> budget gone
+        )
+        self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID])
+        self.assertEqual(terminal["terminal_class"], TERMINAL_MODEL_INVALID)
+        self.assertFalse(terminal["infrastructure_invalid"])
+        self.assertFalse(terminal["gameplay_valid"])
+        self.assertEqual(terminal["reason"], "model_invalid")
+        self.assertEqual(terminal["code"], "action_batch_rejected")
+        self.assertTrue(terminal["rolled_back"])
+        self.assertEqual(terminal["driver_failure"]["code"], "MoveError")
+
+    def test_model_output_invalid_twice_is_model_invalid(self):
+        """Validation failure on both the first call and the repair is the model
+        failing to emit a legal batch -- classified as model, not harness."""
+        code, terminal = self.run_with_orders(
+            ["not a json array", "still not a json array"],
+            [{"type": "state", "active_faction": 0},
+             {"type": "status", "ok": True, "what": "turn_options", "body": {}},
+             {"type": "status", "ok": True, "what": "recruit_options", "body": {}}],
+        )
+        self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID])
+        self.assertEqual(terminal["terminal_class"], TERMINAL_MODEL_INVALID)
+        self.assertFalse(terminal["infrastructure_invalid"])
+        self.assertFalse(terminal["gameplay_valid"])
+        self.assertEqual(terminal["code"], "action_validation_invalid")
+
+    def test_backend_transport_failure_stays_infrastructure(self):
+        """A RuntimeError from the backend is transport, not play. The model
+        never emitted an illegal batch, so it must not be blamed for one."""
+        code, terminal = self.run_with_orders(
+            [],  # exhausted immediately: backend raises RuntimeError
+            [{"type": "state", "active_faction": 0},
+             {"type": "status", "ok": True, "what": "turn_options", "body": {}},
+             {"type": "status", "ok": True, "what": "recruit_options", "body": {}}],
+        )
+        self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE])
+        self.assertEqual(terminal["terminal_class"], TERMINAL_INFRASTRUCTURE)
+        self.assertTrue(terminal["infrastructure_invalid"])
+        self.assertEqual(terminal["code"], "model_backend_failure")
+
+    def test_model_invalid_is_never_counted_as_gameplay_or_infrastructure(self):
+        """The whole point of the third bucket: a model_invalid run is a
+        completed evaluation that is neither a gameplay result nor harness
+        breakage. Asserted as an invariant over all three classes."""
+        end_turn = '[{"action":"EndTurn"}]'
+        failure = {"type": "status", "ok": True,
+                   "results": [{"ok": False, "code": "MoveError", "message": "x"}]}
+        cases = [
+            (TERMINAL_GAMEPLAY, [end_turn],
+             [{"type": "game_end", "reason": "max_turns", "winner": None}]),
+            (TERMINAL_MODEL_INVALID, [end_turn, end_turn],
+             [{"type": "state", "active_faction": 0},
+              {"type": "status", "ok": True, "what": "turn_options", "body": {}},
+              {"type": "status", "ok": True, "what": "recruit_options", "body": {}},
+              failure, failure]),
+            (TERMINAL_INFRASTRUCTURE, [end_turn],
+             [{"type": "game_end", "reason": "timeout", "winner": None}]),
+        ]
+        for expected, orders, lines in cases:
+            with self.subTest(terminal_class=expected):
+                code, terminal = self.run_with_orders(orders, lines)
+                self.assertEqual(terminal["terminal_class"], expected)
+                self.assertEqual(code, TERMINAL_EXIT_CODES[expected])
+                self.assertEqual(terminal["gameplay_valid"],
+                                 expected == TERMINAL_GAMEPLAY)
+                self.assertEqual(terminal["infrastructure_invalid"],
+                                 expected == TERMINAL_INFRASTRUCTURE)
 
     def test_success_status_continues_to_game_end(self):
         status = {"type": "status", "ok": True, "results": [{"ok": True}]}
@@ -348,6 +456,32 @@ class ClientValidationTests(unittest.TestCase):
             with open(log_path) as log:
                 records = [json.loads(raw) for raw in log]
         return code, records[-1], fsync.call_count
+
+    def run_with_orders(self, order_texts, driver_lines):
+        """Drive the client with N canned model replies and explicit driver output."""
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = directory + "/client.jsonl"
+            orders_path = directory + "/orders.jsonl"
+            with open(orders_path, "w") as orders:
+                for text in order_texts:
+                    orders.write(json.dumps({"text": text}) + "\n")
+            args = argparse.Namespace(
+                driver="driver", scenario="scenario", faction0="a", faction1="b",
+                gold=1, seed=2, max_turns=3, llm_side=0, turn_timeout=4,
+                query_budget_seconds=5, max_queries_per_turn=6,
+                no_recruit_macro=False, interactive_model=False, orders_file=orders_path,
+                model_command=None, model_timeout=7, log=log_path,
+                max_prompt_bytes=16 * 1024 * 1024, token_input_limit=None,
+                token_output_limit=None, token_total_limit=None,
+            )
+            process = FakeDriverProcess(driver_lines)
+            with mock.patch("tools.llm_client.subprocess.Popen", return_value=process), \
+                    mock.patch("tools.llm_client.source_metadata", return_value={}), \
+                    mock.patch("tools.llm_client.os.fsync"):
+                code = run(args)
+            with open(log_path) as log:
+                records = [json.loads(raw) for raw in log]
+        return code, records[-1]
 
     def run_after_forwarded_orders(self, action_status, tail=None):
         with tempfile.TemporaryDirectory() as directory:
