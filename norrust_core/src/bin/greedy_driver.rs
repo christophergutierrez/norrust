@@ -1223,7 +1223,7 @@ fn interactive_protocol_game(c: &Config) {
             }
             let query_started = Instant::now();
             let what = parsed.get("what").and_then(Value::as_str).unwrap_or("");
-            let response = match what {
+            let mut response = match what {
                 "state" => {
                     json!({"type":"status","ok":true,"what":"state","body":game_state_to_json(&state, &units)})
                 }
@@ -1435,6 +1435,9 @@ fn interactive_protocol_game(c: &Config) {
                 }
             };
             query_elapsed += query_started.elapsed();
+            if let Some(object) = response.as_object_mut() {
+                object.insert("state_revision".into(), json!(state.state_revision));
+            }
             if query_elapsed > query_budget {
                 println!(
                     "{}",
@@ -1693,7 +1696,8 @@ fn interactive_protocol_game(c: &Config) {
             events.clear();
             did_end = false;
         }
-        println!("{}", json!({"type":"status","ok":true,"results":results}));
+        println!("{}", json!({"type":"status","ok":true,"results":results,
+            "state_revision":state.state_revision}));
         io::stdout().flush().unwrap();
         print_events(&events, "llm", "llm");
         if did_end && state.check_winner().is_none() {
