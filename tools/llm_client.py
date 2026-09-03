@@ -525,7 +525,7 @@ def run(args: argparse.Namespace) -> int:
                 "max_turns": args.max_turns, "turn_timeout_seconds": args.turn_timeout,
                 "query_budget_seconds": args.query_budget_seconds,
                 "max_queries_per_turn": args.max_queries_per_turn,
-                "max_model_calls_per_turn": 2, "max_prompt_bytes": args.max_prompt_bytes,
+                "max_model_calls_per_turn": getattr(args, "max_model_calls_per_turn", 4), "max_prompt_bytes": args.max_prompt_bytes,
                 "token_input_limit": args.token_input_limit,
                 "token_output_limit": args.token_output_limit,
                 "token_total_limit": args.token_total_limit,
@@ -797,12 +797,12 @@ def run(args: argparse.Namespace) -> int:
                             "valid": validation.get("valid"),
                             "results": validation.get("results"),
                             "failed_index": validation.get("failed_index")})
-                    if validation.get("valid") is not True:
+                    while validation.get("valid") is not True:
                         if model_calls_this_turn >= metadata["max_model_calls_per_turn"]:
                             set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
                                          reason=TERMINAL_MODEL_INVALID,
                                          code="action_batch_rejected",
-                                         message="pre-submit batch validation failed")
+                                         message="pre-submit batch validation failed within repair budget")
                             durable({"type": "model_error", **metadata})
                             return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
                         repair_prompt = prompt + "\nENGINE_ACTION_ERROR: " + json.dumps(
@@ -810,7 +810,7 @@ def run(args: argparse.Namespace) -> int:
                              "failed_index": validation.get("failed_index"),
                              "results": validation.get("results")},
                             sort_keys=True, separators=(",", ":")) + \
-                            "\nROLLBACK_NOTICE: the batch was rejected before submission; the state is unchanged. Return one corrected JSON action array only."
+                            "\nROLLBACK_NOTICE: the batch was rejected before submission; the state and revision are unchanged. Return one corrected JSON action array only."
                         action_repair_attempted = True
                         model_calls_this_turn += 1
                         metadata["model_calls"] += 1
@@ -818,34 +818,33 @@ def run(args: argparse.Namespace) -> int:
                             repaired = backend.complete(repair_prompt)
                             enforce_usage(repaired, args)
                             record({"type": "action_repair", "call": metadata["model_calls"],
+                                    "attempt": model_calls_this_turn,
                                     "prompt_hash": hashlib.sha256(repair_prompt.encode()).hexdigest(),
                                     "raw_output": repaired.text, "usage": repaired.usage,
                                     "engine_error": validation})
                             orders = validate_orders(repaired.text, args.no_recruit_macro)
-                            validation = query_validate_batch(
-                                exchange, orders, int(state.get("state_revision", 0)))
-                        except (RuntimeError, ValueError) as repair_error:
-                            terminal_class = (TERMINAL_MODEL_INVALID
-                                              if isinstance(repair_error, ValueError)
-                                              else TERMINAL_INFRASTRUCTURE)
-                            set_terminal(metadata, terminal_class, winner=None,
-                                         reason=(TERMINAL_MODEL_INVALID if terminal_class == TERMINAL_MODEL_INVALID else "infrastructure_failure"),
-                                         code=("action_repair_invalid" if terminal_class == TERMINAL_MODEL_INVALID else "validate_batch_error"),
+                        except ValueError as repair_error:
+                            validation = {"valid": False, "failed_index": None,
+                                          "results": [], "parse_error": str(repair_error)}
+                            record({"type": "batch_validation", "orders": [],
+                                    "valid": False, "failed_index": None,
+                                    "results": [], "parse_error": str(repair_error),
+                                    "repair": True})
+                            continue
+                        except RuntimeError as repair_error:
+                            set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
+                                         reason="infrastructure_failure",
+                                         code="validate_batch_error",
                                          message=str(repair_error))
                             durable({"type": "model_error", **metadata})
-                            return TERMINAL_EXIT_CODES[terminal_class]
+                            return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
+                        validation = query_validate_batch(
+                            exchange, orders, int(state.get("state_revision", 0)))
                         record({"type": "batch_validation", "orders": orders,
                                 "valid": validation.get("valid"),
                                 "results": validation.get("results"),
                                 "failed_index": validation.get("failed_index"),
                                 "repair": True})
-                        if validation.get("valid") is not True:
-                            set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
-                                         reason=TERMINAL_MODEL_INVALID,
-                                         code="action_batch_rejected",
-                                         message="corrected batch failed pre-submit validation")
-                            durable({"type": "model_error", **metadata})
-                            return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
                 metadata["model_orders"] += len(orders)
                 record({"type": "forwarded_orders", "orders": orders,
                         "prompt_hash": prompt_hash})
@@ -905,8 +904,15 @@ def main() -> int:
     p.add_argument("--no-recruit-macro", action="store_true")
     p.add_argument("--diagnostic", action="store_true",
                    help="send the full legacy snapshot instead of the compact briefing")
-    p.add_argument("--validate-before-submit", action="store_true",
-                   help="validate each model batch against its revision before submitting it")
+    validation = p.add_mutually_exclusive_group()
+    validation.add_argument("--validate-before-submit", dest="validate_before_submit",
+                            action="store_true", help=argparse.SUPPRESS)
+    validation.add_argument("--no-validate-before-submit", dest="validate_before_submit",
+                            action="store_false",
+                            help="skip revision-pinned validation before submitting model batches")
+    p.set_defaults(validate_before_submit=True)
+    p.add_argument("--max-model-calls-per-turn", type=int, default=4,
+                   help="initial model call plus bounded repairs allowed per turn")
     p.add_argument("--event-window-observations", type=int, default=1)
     p.add_argument("--log")
     a = p.parse_args()
@@ -914,6 +920,8 @@ def main() -> int:
         p.error("choose exactly one of --orders-file, --model-command, or --interactive-model")
     if a.event_window_observations < 1:
         p.error("--event-window-observations must be positive")
+    if a.max_model_calls_per_turn < 1:
+        p.error("--max-model-calls-per-turn must be positive")
     if a.turn_timeout < a.query_budget_seconds + 2 * a.model_timeout:
         print("warning: --turn-timeout is below query budget + 2*model timeout", file=sys.stderr)
     return run(a)

@@ -458,6 +458,25 @@ class ClientValidationTests(unittest.TestCase):
         self.assertTrue(terminal["rolled_back"])
         self.assertEqual(terminal["driver_failure"]["code"], "MoveError")
 
+    def test_pre_submit_validation_retries_until_a_valid_batch(self):
+        end_turn = '[{"action":"EndTurn"}]'
+        invalid = {"type": "status", "ok": True, "what": "validate_batch",
+                   "body": {"valid": False, "failed_index": 0,
+                             "results": [{"ok": False, "code": "MoveError",
+                                          "message": "invalid move"}]}}
+        valid = {"type": "status", "ok": True, "what": "validate_batch",
+                 "body": {"valid": True, "failed_index": None,
+                           "results": [{"ok": True}]}}
+        code, terminal = self.run_with_orders(
+            [end_turn, end_turn, end_turn],
+            [{"type": "state", "active_faction": 0},
+             {"type": "status", "ok": True, "what": "tactical_surface", "body": {"units": []}},
+             invalid, invalid, valid,
+             {"type": "game_end", "reason": "max_turns", "winner": None}],
+            validate_before_submit=True)
+        self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_GAMEPLAY])
+        self.assertEqual(terminal["reason"], "max_turns")
+
     def test_model_output_invalid_twice_is_model_invalid(self):
         """Validation failure on both the first call and the repair is the model
         failing to emit a legal batch -- classified as model, not harness."""
@@ -585,7 +604,8 @@ class ClientValidationTests(unittest.TestCase):
                 records = [json.loads(raw) for raw in log]
         return code, records[-1], fsync.call_count
 
-    def run_with_orders(self, order_texts, driver_lines):
+    def run_with_orders(self, order_texts, driver_lines, validate_before_submit=False,
+                        max_model_calls_per_turn=4):
         """Drive the client with N canned model replies and explicit driver output."""
         with tempfile.TemporaryDirectory() as directory:
             log_path = directory + "/client.jsonl"
@@ -601,6 +621,8 @@ class ClientValidationTests(unittest.TestCase):
                 model_command=None, model_timeout=7, log=log_path,
                 max_prompt_bytes=16 * 1024 * 1024, token_input_limit=None,
                 token_output_limit=None, token_total_limit=None,
+                validate_before_submit=validate_before_submit,
+                max_model_calls_per_turn=max_model_calls_per_turn,
             )
             process = FakeDriverProcess(driver_lines)
             with mock.patch("tools.llm_client.subprocess.Popen", return_value=process), \
