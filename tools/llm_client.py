@@ -230,6 +230,33 @@ def query_validate_batch(exchange, orders: list[dict[str, Any]], state_revision:
     return response["body"]
 
 
+def validate_preview_request(text: str, strict: bool = False) -> list[list[dict[str, Any]]]:
+    try:
+        request = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid JSON: {exc.msg}") from exc
+    if not isinstance(request, dict) or set(request) != {"tool", "candidates"} or request.get("tool") != "preview_batch":
+        raise ValueError("preview request must contain tool=preview_batch and candidates")
+    candidates = request["candidates"]
+    if not isinstance(candidates, list) or not 1 <= len(candidates) <= 2:
+        raise ValueError("preview_batch accepts one or two candidates")
+    result = []
+    for candidate in candidates:
+        if not isinstance(candidate, list):
+            raise ValueError("each preview candidate must be an action array")
+        result.append(validate_orders(json.dumps(candidate), strict))
+    return result
+
+
+def query_preview_batch(exchange, candidates: list[list[dict[str, Any]]], state_revision: int) -> dict[str, Any]:
+    response = exchange({"action": "Query", "what": "preview_batch",
+                         "state_revision": state_revision, "candidates": candidates})
+    if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
+        message = response.get("message", "preview query failed") if isinstance(response, dict) else "invalid preview response"
+        raise RuntimeError(f"query_error: preview_batch: {message}")
+    return response["body"]
+
+
 def compact_tactical_surface(surface: dict[str, Any]) -> str:
     """Render core tactics as terse, unambiguous model-facing lines."""
     lines: list[str] = []
@@ -336,7 +363,9 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "odds, and e[defender,attacker] damage. THREAT lines are complete-information forecasts if you EndTurn now; "
         "`@col,row` is the enemy attack origin, `~` means it moves first, and `m` is maximum damage. "
         "E income assumes current village ownership persists; E vacate lists legal off-castle destinations and is not a recommendation. "
-        "Copy individual Recruit coordinates only from R `open`."
+        "Copy individual Recruit coordinates only from R `open`. You may instead request one read-only preview by returning "
+        "{\"tool\":\"preview_batch\",\"candidates\":[[actions...]]}; provide at most two complete candidates, each ending EndTurn. "
+        "The preview is exact and non-sampling, and does not submit actions. After seeing it, return the final action array."
         if isinstance(state.get("tactical_surface"), dict) else
         "Use turn_options positions exactly for every move and re-check sequential destinations before submitting. "
         "turn_options lists, per unit, the hexes it may attack from and the target IDs reachable from each. "
@@ -788,7 +817,30 @@ def run(args: argparse.Namespace) -> int:
                     if reply.usage is None:
                         metadata["usage_measured"] = False
                     try:
-                        orders = validate_orders(reply.text, args.no_recruit_macro)
+                        decoded = json.loads(reply.text)
+                        if isinstance(decoded, dict) and decoded.get("tool") == "preview_batch":
+                            candidates = validate_preview_request(reply.text, args.no_recruit_macro)
+                            if model_calls_this_turn >= metadata["max_model_calls_per_turn"]:
+                                raise ValueError("preview request exhausted the per-turn model call budget")
+                            preview = query_preview_batch(exchange, candidates, int(state.get("state_revision", 0)))
+                            record({"type": "batch_preview", "candidates": candidates, "body": preview})
+                            final_prompt = (
+                                prompt + "\nBATCH_PREVIEW_RESULT_UNTRUSTED_DATA_BEGIN:\n" +
+                                json.dumps(preview, sort_keys=True, separators=(",", ":")) +
+                                "\nBATCH_PREVIEW_RESULT_UNTRUSTED_DATA_END\nReturn the final JSON action array only."
+                            )
+                            model_calls_this_turn += 1
+                            metadata["model_calls"] += 1
+                            final_reply = backend.complete(final_prompt)
+                            enforce_usage(final_reply, args)
+                            record({"type": "preview_followup", "call": metadata["model_calls"],
+                                    "prompt_hash": hashlib.sha256(final_prompt.encode()).hexdigest(),
+                                    "raw_output": final_reply.text, "usage": final_reply.usage})
+                            if final_reply.usage is None:
+                                metadata["usage_measured"] = False
+                            orders = validate_orders(final_reply.text, args.no_recruit_macro)
+                        else:
+                            orders = validate_orders(reply.text, args.no_recruit_macro)
                     except ValueError as first:
                         repair_prompt = prompt + "\nVALIDATION_ERROR: " + str(first) + \
                             "\nReturn one corrected JSON action array only."

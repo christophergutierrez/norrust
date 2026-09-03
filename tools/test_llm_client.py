@@ -13,7 +13,8 @@ from .llm_client import (
     TERMINAL_EXIT_CODES, TERMINAL_GAMEPLAY, TERMINAL_INFRASTRUCTURE,
     TERMINAL_MODEL_INVALID, ModelReply, classify_terminal, enforce_usage,
     compact_observation, compact_tactical_surface, prompt_for, query_options,
-    query_tactical_surface, query_validate_batch, run, validate_orders,
+    query_tactical_surface, query_validate_batch, query_preview_batch,
+    run, validate_orders, validate_preview_request,
 )
 
 
@@ -33,6 +34,17 @@ class FakeDriverProcess:
 
 
 class ClientValidationTests(unittest.TestCase):
+    def test_preview_request_is_bounded_and_uses_normal_order_validation(self):
+        request = json.dumps({"tool": "preview_batch", "candidates": [
+            [{"action": "EndTurn"}],
+            [{"action": "Move", "unit_id": 1, "col": 2, "row": 3}, {"action": "EndTurn"}],
+        ]})
+        self.assertEqual(len(validate_preview_request(request)), 2)
+        with self.assertRaises(ValueError):
+            validate_preview_request(json.dumps({"tool": "preview_batch", "candidates": [
+                [{"action": "EndTurn"}], [{"action": "EndTurn"}], [{"action": "EndTurn"}]
+            ]}))
+
     def test_validate_batch_query_is_revision_pinned_and_preserves_orders(self):
         requests = []
         orders = [{"action": "EndTurn"}]

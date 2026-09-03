@@ -19,7 +19,9 @@ use std::time::{Duration, Instant};
 
 use norrust_core::ai::{ai_take_turn_greedy_actions, run_greedy_side_turn, GreedyTurnError};
 use norrust_core::board::Tile;
-use norrust_core::combat::{preview_combat, tod_label, validate_combat_preview};
+use norrust_core::combat::{
+    combat_parameters, exact_exchange, preview_combat, tod_label, validate_combat_preview,
+};
 use norrust_core::events::GameEvent;
 use norrust_core::game_state::{
     apply_action, apply_advance, apply_recruit, recruit_from_def, Action, AdvanceTarget, GameState,
@@ -654,6 +656,7 @@ struct BatchExecution {
     results: Vec<Value>,
     events: Vec<GameEvent>,
     did_end: bool,
+    forecasts: Vec<Value>,
 }
 
 /// Apply one model batch to an isolated state. The commit path and the
@@ -667,10 +670,12 @@ fn execute_model_batch(
     factions: &[Faction; 2],
     units: &Registry<UnitDef>,
     disable_recruit_batch: bool,
+    sample_attacks: bool,
 ) -> BatchExecution {
     let mut results = Vec::with_capacity(orders.len());
     let mut events = Vec::new();
     let mut did_end = false;
+    let mut forecasts = Vec::new();
     for order in orders {
         let action_name = order.get("action").and_then(Value::as_str);
         if did_end {
@@ -702,13 +707,44 @@ fn execute_model_batch(
                 order.get("attacker_id").and_then(Value::as_u64),
                 order.get("defender_id").and_then(Value::as_u64),
             ) {
-                (Some(attacker), Some(defender)) => apply_action(
+                (Some(attacker), Some(defender)) if sample_attacks => apply_action(
                     &mut state,
                     Action::Attack {
                         attacker_id: attacker as u32,
                         defender_id: defender as u32,
                     },
                 ),
+                (Some(attacker), Some(defender)) => {
+                    let attacker = attacker as u32;
+                    let defender = defender as u32;
+                    let validation = (|| {
+                        let unit = state.units.get(&attacker).ok_or(
+                            norrust_core::game_state::ActionError::UnitNotFound(attacker),
+                        )?;
+                        if unit.faction != state.active_faction {
+                            return Err(norrust_core::game_state::ActionError::NotYourTurn);
+                        }
+                        if unit.attacked {
+                            return Err(norrust_core::game_state::ActionError::UnitAlreadyAttacked);
+                        }
+                        let target = state.units.get(&defender).ok_or(
+                            norrust_core::game_state::ActionError::UnitNotFound(defender),
+                        )?;
+                        if target.faction == unit.faction {
+                            return Err(norrust_core::game_state::ActionError::FriendlyTarget);
+                        }
+                        let origin = *state.positions.get(&attacker).ok_or(
+                            norrust_core::game_state::ActionError::UnitNotFound(attacker),
+                        )?;
+                        let parameters = combat_parameters(&state, attacker, defender, origin)
+                            .map_err(|_| norrust_core::game_state::ActionError::NotAdjacent)?;
+                        let forecast = exact_exchange(&parameters);
+                        state.units.get_mut(&attacker).unwrap().attacked = true;
+                        forecasts.push(json!({"attacker_id":attacker,"defender_id":defender,"forecast":forecast,"sampled":false}));
+                        Ok(Vec::new())
+                    })();
+                    validation
+                }
                 _ => Err(norrust_core::game_state::ActionError::UnitNotFound(0)),
             },
             Some("Recruit") => match (
@@ -807,6 +843,7 @@ fn execute_model_batch(
         results,
         events,
         did_end,
+        forecasts,
     }
 }
 
@@ -1449,6 +1486,7 @@ fn interactive_protocol_game(c: &Config) {
                             &factions,
                             &units,
                             c.disable_recruit_batch,
+                            true,
                         );
                         let valid = execution
                             .results
@@ -1460,6 +1498,36 @@ fn interactive_protocol_game(c: &Config) {
                             .position(|result| result.get("ok") == Some(&Value::Bool(false)));
                         json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,
                             "body":{"valid":valid,"results":execution.results,"failed_index":failed_index}})
+                    }
+                }
+                "preview_batch" => {
+                    let candidates = parsed.get("candidates").and_then(Value::as_array);
+                    if parsed.get("state_revision").and_then(Value::as_u64)
+                        != Some(state.state_revision)
+                    {
+                        json!({"type":"status","ok":false,"what":what,"code":"stale_state","message":"requested state revision is no longer current","state_revision":state.state_revision})
+                    } else if state.active_faction != c.llm_side {
+                        json!({"type":"status","ok":false,"what":what,"code":"unauthorized_side","message":"model actions are not authorized while the opponent is active"})
+                    } else if candidates.is_none()
+                        || candidates.is_some_and(|items| items.is_empty() || items.len() > 2)
+                    {
+                        json!({"type":"status","ok":false,"what":what,"code":"parse","message":"candidates must contain one or two action arrays"})
+                    } else {
+                        let before_gold = state.gold[c.llm_side as usize];
+                        let before_units = state.units.len();
+                        let previews = candidates.unwrap().iter().map(|candidate| {
+                            let orders = candidate.as_array().cloned().unwrap_or_default();
+                            let execution = execute_model_batch(state.clone(), next_id, &orders, c.llm_side, &factions, &units, c.disable_recruit_batch, false);
+                            let valid = execution.results.iter().all(|result| result.get("ok") == Some(&Value::Bool(true)));
+                            let recruiter_hp: Vec<Value> = execution.state.units.iter().filter_map(|(id, unit)| {
+                                (unit.faction == c.llm_side && unit.can_recruit).then(|| json!({"unit_id":id,"hp":unit.hp}))
+                            }).collect();
+                            json!({"valid":valid,"results":execution.results,"forecasts":execution.forecasts,
+                                "summary":{"gold_before":before_gold,"gold_after":execution.state.gold[c.llm_side as usize],
+                                    "units_before":before_units,"units_after":execution.state.units.len(),"recruiters":recruiter_hp}})
+                        }).collect::<Vec<_>>();
+                        json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,
+                            "body":{"sampling":false,"candidates":previews}})
                     }
                 }
                 "tactical_surface" => {
@@ -1498,14 +1566,21 @@ fn interactive_protocol_game(c: &Config) {
                                     })
                                     .collect();
                                 let options: Vec<Value> = faction.recruits.iter().filter_map(|id| units.get(id).map(|def| json!({"def_id":id,"cost":def.cost,"affordable":state.gold[side] >= def.cost}))).collect();
-                                let threats = recruiter_threats_after_end_turn(&state, state.active_faction)
-                                    .map_err(|error| error.to_string());
+                                let threats =
+                                    recruiter_threats_after_end_turn(&state, state.active_faction)
+                                        .map_err(|error| error.to_string());
                                 let economy = economy_facts(&state, state.active_faction)
                                     .map_err(|error| error.to_string());
                                 match (threats, economy) {
-                                    (Ok(threats), Ok((next_village_income, vacatable_castles))) => json!({"type":"status","ok":true,"what":what,"body":{"visibility":"full","time_of_day":tod_label(state.turn),"next_time_of_day":tod_label(state.turn.saturating_add(1)),"units":tactical_units,"threats":threats,"economy":{"gold":state.gold[side],"next_village_income":next_village_income,"vacatable_castles":vacatable_castles},"recruitment":{"gold":state.gold[side],"placement_hexes":placement_hexes,"options":options,"batch_macro_enabled":!c.disable_recruit_batch}}}),
-                                    (Err(message), _) => json!({"type":"status","ok":false,"what":what,"code":"tactical_surface_error","message":message}),
-                                    (_, Err(message)) => json!({"type":"status","ok":false,"what":what,"code":"tactical_surface_error","message":message}),
+                                    (Ok(threats), Ok((next_village_income, vacatable_castles))) => {
+                                        json!({"type":"status","ok":true,"what":what,"body":{"visibility":"full","time_of_day":tod_label(state.turn),"next_time_of_day":tod_label(state.turn.saturating_add(1)),"units":tactical_units,"threats":threats,"economy":{"gold":state.gold[side],"next_village_income":next_village_income,"vacatable_castles":vacatable_castles},"recruitment":{"gold":state.gold[side],"placement_hexes":placement_hexes,"options":options,"batch_macro_enabled":!c.disable_recruit_batch}}})
+                                    }
+                                    (Err(message), _) => {
+                                        json!({"type":"status","ok":false,"what":what,"code":"tactical_surface_error","message":message})
+                                    }
+                                    (_, Err(message)) => {
+                                        json!({"type":"status","ok":false,"what":what,"code":"tactical_surface_error","message":message})
+                                    }
                                 }
                             }
                             Err(error) => {
@@ -1853,6 +1928,7 @@ fn interactive_protocol_game(c: &Config) {
             results,
             events,
             did_end,
+            forecasts: _,
         } = execute_model_batch(
             state.clone(),
             next_id,
@@ -1861,6 +1937,7 @@ fn interactive_protocol_game(c: &Config) {
             &factions,
             &units,
             c.disable_recruit_batch,
+            true,
         );
         let batch_succeeded = results
             .iter()
