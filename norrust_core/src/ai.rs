@@ -5,12 +5,13 @@ use std::collections::HashSet;
 use serde::Serialize;
 
 use crate::board::Board;
-use crate::combat::{time_of_day, tod_damage_modifier};
+use crate::combat::{combat_parameters, exact_exchange, time_of_day, tod_damage_modifier};
 use crate::events::GameEvent;
 use crate::game_state::{apply_action, Action, GameState};
 use crate::hex::Hex;
 use crate::pathfinding::{get_zoc_hexes, reachable_hexes};
 use crate::schema::AttackDef;
+use crate::tactics::unit_tactics;
 use crate::unit::Unit;
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -100,73 +101,15 @@ fn score_attack(
     attacker: &Unit,
     attacker_hex: Hex,
     defender: &Unit,
-    defender_hex: Hex,
+    _defender_hex: Hex,
     state: &GameState,
 ) -> f32 {
-    let tod = time_of_day(state.turn);
-    let attacker_tod = tod_damage_modifier(attacker.alignment, tod);
-    let defender_tod = tod_damage_modifier(defender.alignment, tod);
-
-    let dist = attacker_hex.distance(defender_hex);
-    let range_str = if dist == 1 { "melee" } else { "ranged" };
-    let attacker_first_atk = match attacker.attacks.iter().find(|a| a.range == range_str) {
-        Some(a) => a,
-        None => return 0.0,
+    let Ok(parameters) = combat_parameters(state, attacker.id, defender.id, attacker_hex) else {
+        return 0.0;
     };
-
-    let defender_tile = state.board.tile_at(defender_hex);
-    let attacker_tile = state.board.tile_at(attacker_hex);
-
-    let defender_defense = defender_tile
-        .and_then(|t| {
-            defender
-                .defense
-                .get(&t.terrain_id)
-                .copied()
-                .or(Some(t.defense))
-        })
-        .unwrap_or(defender.default_defense);
-    let attacker_defense = attacker_tile
-        .and_then(|t| {
-            attacker
-                .defense
-                .get(&t.terrain_id)
-                .copied()
-                .or(Some(t.defense))
-        })
-        .unwrap_or(attacker.default_defense);
-
-    let atk_resistance = defender
-        .resistances
-        .get(&attacker_first_atk.attack_type)
-        .copied()
-        .unwrap_or(0);
-
-    let dealt = expected_outgoing_damage(
-        attacker_first_atk.damage,
-        attacker_first_atk.strikes,
-        defender_defense,
-        attacker_tod,
-        atk_resistance,
-    );
-
-    let received = match defender.attacks.iter().find(|a| a.range == range_str) {
-        Some(def_atk) => {
-            let def_resistance = attacker
-                .resistances
-                .get(&def_atk.attack_type)
-                .copied()
-                .unwrap_or(0);
-            expected_outgoing_damage(
-                def_atk.damage,
-                def_atk.strikes,
-                attacker_defense,
-                defender_tod,
-                def_resistance,
-            )
-        }
-        None => 0.0,
-    };
+    let forecast = exact_exchange(&parameters);
+    let dealt = forecast.expected_damage_tenths[0] as f32 / 10.0;
+    let received = forecast.expected_damage_tenths[1] as f32 / 10.0;
 
     let kill_bonus = if dealt >= defender.hp as f32 {
         3.0
@@ -199,20 +142,10 @@ fn can_engage(unit: &Unit, from: Hex, enemy: Hex) -> bool {
     })
 }
 
-fn expected_dealt(attacker: &Unit, from: Hex, defender: &Unit, at: Hex, state: &GameState) -> f32 {
-    let dist = from.distance(at);
-    let range_str = if dist == 1 { "melee" } else { "ranged" };
-    let Some(atk) = attacker.attacks.iter().find(|a| a.range == range_str) else {
-        return 0.0;
-    };
-    let tod = tod_damage_modifier(attacker.alignment, time_of_day(state.turn));
-    let def = unit_defense_on(state, defender, at);
-    let resist = defender
-        .resistances
-        .get(&atk.attack_type)
-        .copied()
-        .unwrap_or(0);
-    expected_outgoing_damage(atk.damage, atk.strikes, def, tod, resist)
+fn expected_dealt(attacker: &Unit, from: Hex, defender: &Unit, _at: Hex, state: &GameState) -> f32 {
+    combat_parameters(state, attacker.id, defender.id, from)
+        .map(|parameters| exact_exchange(&parameters).expected_damage_tenths[0] as f32 / 10.0)
+        .unwrap_or(0.0)
 }
 
 fn bad_melee_terrain_trade(
@@ -231,13 +164,6 @@ fn bad_melee_terrain_trade(
         return false;
     }
     expected_dealt(attacker, from, defender, at, state) < defender.hp as f32
-}
-
-fn attackable_from(unit: &Unit, from: Hex, enemies: &[(u32, Hex)]) -> Vec<u32> {
-    enemies
-        .iter()
-        .filter_map(|&(eid, epos)| can_engage(unit, from, epos).then_some(eid))
-        .collect()
 }
 
 fn select_structured_beam(
@@ -540,11 +466,7 @@ fn step_toward(state: &GameState, uid: u32, faction: u8, goal: Hex) -> Option<He
 }
 
 /// Recruiters stay on a keep and fight from it. Off keep, they walk back.
-fn plan_recruiter_action(
-    state: &GameState,
-    uid: u32,
-    faction: u8,
-) -> Option<(Hex, Option<u32>)> {
+fn plan_recruiter_action(state: &GameState, uid: u32, faction: u8) -> Option<(Hex, Option<u32>)> {
     let start = *state.positions.get(&uid)?;
     let unit = state.units.get(&uid)?;
     if !unit.can_recruit || !greedy_unit_is_available(unit) {
@@ -794,35 +716,12 @@ fn plan_unit_action(
     if !greedy_unit_is_available(unit) {
         return None;
     }
-    let movement = if unit.slowed {
-        unit.movement / 2
-    } else {
-        unit.movement
-    };
-
-    let zoc = get_zoc_hexes(state, faction);
-    let candidates_raw = reachable_hexes(
-        &state.board,
-        &unit.movement_costs,
-        1,
-        start,
-        movement,
-        &zoc,
-        false,
-    );
-
-    let all_occupied: HashSet<Hex> = state
-        .hex_to_unit
+    let shared_tactics = unit_tactics(state, uid).ok()?;
+    let mut candidates: Vec<Hex> = shared_tactics
+        .origins
         .iter()
-        .filter(|(_, &id)| id != uid)
-        .map(|(&h, _)| h)
+        .map(|origin| Hex::from_offset(origin.col, origin.row))
         .collect();
-
-    let mut candidates: Vec<Hex> = candidates_raw
-        .into_iter()
-        .filter(|&h| h == start || !all_occupied.contains(&h))
-        .collect();
-    candidates.sort_unstable();
 
     // Collect enemies
     let mut enemies: Vec<(u32, Hex)> = state
@@ -854,7 +753,19 @@ fn plan_unit_action(
 
     for &cand in &candidates {
         let unit = &state.units[&uid];
-        let attackable = attackable_from(unit, cand, &enemies);
+        let shared_origin = shared_tactics
+            .origins
+            .iter()
+            .find(|origin| origin.col == cand.to_offset().0 && origin.row == cand.to_offset().1);
+        let attackable: Vec<u32> = shared_origin
+            .map(|origin| {
+                origin
+                    .engagements
+                    .iter()
+                    .map(|engagement| engagement.defender_id)
+                    .collect()
+            })
+            .unwrap_or_default();
 
         for eid in &attackable {
             let epos = state.positions[eid];
@@ -1746,7 +1657,7 @@ mod tests {
     #[test]
     fn test_score_prefers_kill() {
         let board = Board::new(5, 5);
-        let state = GameState::new(board);
+        let mut state = GameState::new(board);
 
         let sword = AttackDef {
             id: "sword".to_string(),
@@ -1766,9 +1677,18 @@ mod tests {
 
         let attacker_hex = Hex::ORIGIN;
         let enemy_hex = Hex::from_offset(1, 0);
+        state.place_unit(attacker.clone(), attacker_hex);
+        state.place_unit(enemy_weak.clone(), enemy_hex);
+        state.place_unit(enemy_strong.clone(), Hex::from_offset(2, 0));
 
         let score_weak = score_attack(&attacker, attacker_hex, &enemy_weak, enemy_hex, &state);
-        let score_strong = score_attack(&attacker, attacker_hex, &enemy_strong, enemy_hex, &state);
+        let score_strong = score_attack(
+            &attacker,
+            attacker_hex,
+            &enemy_strong,
+            Hex::from_offset(2, 0),
+            &state,
+        );
 
         assert!(
             score_weak > score_strong,

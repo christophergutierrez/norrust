@@ -5,6 +5,117 @@ use crate::hex::Hex;
 use crate::schema::AttackDef;
 use crate::unit::{has_special, Alignment, Unit};
 
+/// Fully resolved parameters for one immediate combat exchange.
+///
+/// This is a pure, engine-owned description shared by previews, tactical
+/// analysis, and AI policy code. Damage values include all live combat
+/// modifiers; hit percentages include the opposing terrain defense.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct CombatParameters {
+    pub attacker_attack_id: String,
+    pub defender_attack_id: Option<String>,
+    pub attacker_hit_pct: u32,
+    pub defender_hit_pct: u32,
+    pub attacker_damage_per_hit: u32,
+    pub attacker_strikes: u32,
+    pub defender_damage_per_hit: u32,
+    pub defender_strikes: u32,
+    pub attacker_hp: u32,
+    pub defender_hp: u32,
+    pub attacker_terrain_defense: u32,
+    pub defender_terrain_defense: u32,
+}
+
+/// Exact outcome summary for the current immediate exchange order.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ExchangeForecast {
+    /// [defender killed, both survive, attacker killed], in basis points.
+    pub outcome_bps: [u32; 3],
+    /// Expected damage [to defender, to attacker], in tenths of HP.
+    pub expected_damage_tenths: [u32; 2],
+}
+
+fn binomial_probability(strikes: u32, hits: u32, hit_pct: u32) -> f64 {
+    if hits > strikes {
+        return 0.0;
+    }
+    let p = hit_pct.min(100) as f64 / 100.0;
+    let q = 1.0 - p;
+    let mut coefficient = 1.0;
+    for i in 1..=hits {
+        coefficient *= (strikes - hits + i) as f64 / i as f64;
+    }
+    coefficient * p.powi(hits as i32) * q.powi((strikes - hits) as i32)
+}
+
+fn round_bps(probabilities: [f64; 3]) -> [u32; 3] {
+    let scaled = probabilities.map(|p| (p.max(0.0) * 10_000.0).min(10_000.0));
+    let mut result = scaled.map(|p| p.floor() as u32);
+    let mut remainder = 10_000u32.saturating_sub(result.iter().sum());
+    let mut order = [0usize, 1, 2];
+    order.sort_by(|&a, &b| {
+        scaled[b]
+            .fract()
+            .partial_cmp(&scaled[a].fract())
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.cmp(&b))
+    });
+    for index in order {
+        if remainder == 0 {
+            break;
+        }
+        result[index] += 1;
+        remainder -= 1;
+    }
+    result
+}
+
+/// Calculate exact immediate-exchange probabilities without RNG or state mutation.
+pub fn exact_exchange(parameters: &CombatParameters) -> ExchangeForecast {
+    let mut outcomes = [0.0f64; 3];
+    let mut expected_attacker_damage = 0.0f64;
+    let mut expected_defender_damage = 0.0f64;
+    for attacker_hits in 0..=parameters.attacker_strikes {
+        let attacker_probability = binomial_probability(
+            parameters.attacker_strikes,
+            attacker_hits,
+            parameters.attacker_hit_pct,
+        );
+        let attacker_damage = attacker_hits * parameters.attacker_damage_per_hit;
+        expected_defender_damage += attacker_probability * attacker_damage as f64;
+        if attacker_damage >= parameters.defender_hp {
+            outcomes[0] += attacker_probability;
+            continue;
+        }
+        if parameters.defender_strikes == 0 || parameters.defender_hit_pct == 0 {
+            outcomes[1] += attacker_probability;
+            continue;
+        }
+        for defender_hits in 0..=parameters.defender_strikes {
+            let defender_probability = binomial_probability(
+                parameters.defender_strikes,
+                defender_hits,
+                parameters.defender_hit_pct,
+            );
+            let probability = attacker_probability * defender_probability;
+            let defender_damage = defender_hits * parameters.defender_damage_per_hit;
+            expected_attacker_damage += probability * defender_damage as f64;
+            if defender_damage >= parameters.attacker_hp {
+                outcomes[2] += probability;
+            } else {
+                outcomes[1] += probability;
+            }
+        }
+    }
+    ExchangeForecast {
+        outcome_bps: round_bps(outcomes),
+        expected_damage_tenths: [
+            (expected_defender_damage * 10.0).round() as u32,
+            (expected_attacker_damage * 10.0).round() as u32,
+        ],
+    }
+}
+
 /// Time of day phase — drives alignment-based damage modifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeOfDay {
@@ -198,6 +309,155 @@ pub fn validate_combat_preview(
         return Err(PreviewError::OutOfRange);
     }
     Ok(())
+}
+
+/// Resolve the live combat modifiers for an attack from a current or legal
+/// ghost position. This function is read-only; the returned values are the
+/// same parameters consumed by the resolver's attack rules.
+pub fn combat_parameters(
+    state: &GameState,
+    attacker_id: u32,
+    defender_id: u32,
+    ghost_hex: Hex,
+) -> Result<CombatParameters, PreviewError> {
+    validate_combat_preview(state, attacker_id, defender_id, ghost_hex, 1)?;
+    let attacker = state
+        .units
+        .get(&attacker_id)
+        .ok_or(PreviewError::UnitNotFound)?;
+    let defender = state
+        .units
+        .get(&defender_id)
+        .ok_or(PreviewError::UnitNotFound)?;
+    let defender_hex = *state
+        .positions
+        .get(&defender_id)
+        .ok_or(PreviewError::UnitNotFound)?;
+    let range = if ghost_hex.distance(defender_hex) == 1 {
+        "melee"
+    } else {
+        "ranged"
+    };
+    let attack = attacker
+        .attacks
+        .iter()
+        .find(|a| a.range == range)
+        .ok_or(PreviewError::OutOfRange)?;
+    let defender_attack = defender.attacks.iter().find(|a| a.range == range);
+
+    let mut ghost_state = state.clone();
+    if let Some(old_hex) = ghost_state.positions.insert(attacker_id, ghost_hex) {
+        ghost_state.hex_to_unit.remove(&old_hex);
+    }
+    ghost_state.hex_to_unit.insert(ghost_hex, attacker_id);
+
+    let defense_on = |unit: &Unit, hex: Hex| {
+        state
+            .board
+            .tile_at(hex)
+            .and_then(|tile| {
+                unit.defense
+                    .get(&tile.terrain_id)
+                    .copied()
+                    .or(Some(tile.defense))
+            })
+            .unwrap_or(unit.default_defense)
+    };
+    let attacker_terrain_defense = defense_on(attacker, ghost_hex);
+    let defender_terrain_defense = defense_on(defender, defender_hex);
+    let tod = time_of_day(state.turn);
+
+    let mut attacker_resistance = defender
+        .resistances
+        .get(&attack.attack_type)
+        .copied()
+        .unwrap_or(0);
+    if attacker_resistance < 0 && defender.abilities.iter().any(|a| a == "steadfast") {
+        attacker_resistance = (attacker_resistance * 2).max(-100);
+    }
+    let mut attacker_damage =
+        ((attack.damage as i64 * (100 + attacker_resistance as i64)) / 100).max(0) as u32;
+    if attacker.slowed {
+        attacker_damage /= 2;
+    }
+    if has_special(attack, "charge") && range == "melee" {
+        attacker_damage *= 2;
+    }
+    if has_special(attack, "backstab") {
+        let opposite = Hex {
+            x: defender_hex.x + (defender_hex.x - ghost_hex.x),
+            y: defender_hex.y + (defender_hex.y - ghost_hex.y),
+            z: defender_hex.z + (defender_hex.z - ghost_hex.z),
+        };
+        if ghost_state
+            .hex_to_unit
+            .get(&opposite)
+            .and_then(|id| ghost_state.units.get(id))
+            .is_some_and(|unit| unit.faction == attacker.faction)
+        {
+            attacker_damage *= 2;
+        }
+    }
+    let attacker_leadership = crate::game_state::leadership_bonus(&ghost_state, attacker_id);
+    if attacker_leadership > 0 {
+        attacker_damage =
+            (attacker_damage as u64 * (100 + attacker_leadership as u64) / 100) as u32;
+    }
+    let attacker_damage = ((attacker_damage as i64
+        * (100 + tod_damage_modifier(attacker.alignment, tod) as i64))
+        / 100)
+        .max(0) as u32;
+
+    let (defender_damage, defender_strikes, defender_hit_pct, defender_attack_id) =
+        if let Some(counter) = defender_attack {
+            let mut resistance = attacker
+                .resistances
+                .get(&counter.attack_type)
+                .copied()
+                .unwrap_or(0);
+            if resistance < 0 && attacker.abilities.iter().any(|a| a == "steadfast") {
+                resistance = (resistance * 2).max(-100);
+            }
+            let mut damage =
+                ((counter.damage as i64 * (100 + resistance as i64)) / 100).max(0) as u32;
+            if defender.slowed {
+                damage /= 2;
+            }
+            if has_special(attack, "charge") && range == "melee" {
+                damage *= 2;
+            }
+            let leadership = crate::game_state::leadership_bonus(state, defender_id);
+            if leadership > 0 {
+                damage = (damage as u64 * (100 + leadership as u64) / 100) as u32;
+            }
+            let damage = ((damage as i64
+                * (100 + tod_damage_modifier(defender.alignment, tod) as i64))
+                / 100)
+                .max(0) as u32;
+            (
+                damage,
+                counter.strikes,
+                100u32.saturating_sub(attacker_terrain_defense),
+                Some(counter.id.clone()),
+            )
+        } else {
+            (0, 0, 0, None)
+        };
+
+    Ok(CombatParameters {
+        attacker_attack_id: attack.id.clone(),
+        defender_attack_id,
+        attacker_hit_pct: 100u32.saturating_sub(defender_terrain_defense),
+        defender_hit_pct,
+        attacker_damage_per_hit: attacker_damage,
+        attacker_strikes: attack.strikes,
+        defender_damage_per_hit: defender_damage,
+        defender_strikes,
+        attacker_hp: attacker.hp,
+        defender_hp: defender.hp,
+        attacker_terrain_defense,
+        defender_terrain_defense,
+    })
 }
 
 /// Preview an engagement with the attacker standing on `ghost_hex`.
@@ -600,5 +860,31 @@ mod tests {
         // Terrain defense values passed through
         assert_eq!(preview.attacker_terrain_defense, 40);
         assert_eq!(preview.defender_terrain_defense, 50);
+    }
+
+    #[test]
+    fn test_exact_exchange_has_expected_immediate_outcomes() {
+        let lethal = CombatParameters {
+            attacker_attack_id: "sword".into(),
+            defender_attack_id: Some("spear".into()),
+            attacker_hit_pct: 100,
+            defender_hit_pct: 100,
+            attacker_damage_per_hit: 10,
+            attacker_strikes: 1,
+            defender_damage_per_hit: 10,
+            defender_strikes: 1,
+            attacker_hp: 10,
+            defender_hp: 5,
+            attacker_terrain_defense: 0,
+            defender_terrain_defense: 0,
+        };
+        assert_eq!(exact_exchange(&lethal).outcome_bps, [10_000, 0, 0]);
+
+        let mixed = CombatParameters {
+            attacker_hit_pct: 50,
+            defender_hit_pct: 50,
+            ..lethal
+        };
+        assert_eq!(exact_exchange(&mixed).outcome_bps, [5_000, 2_500, 2_500]);
     }
 }

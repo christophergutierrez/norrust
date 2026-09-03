@@ -210,6 +210,49 @@ def query_options(exchange) -> dict[str, Any]:
     return result
 
 
+def query_tactical_surface(exchange, state_revision: int) -> dict[str, Any]:
+    """Fetch the single engine-owned tactical surface for one revision."""
+    response = exchange({"action": "Query", "what": "tactical_surface",
+                         "state_revision": state_revision})
+    if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
+        message = response.get("message", "query failed") if isinstance(response, dict) else "invalid query response"
+        raise RuntimeError(f"query_error: tactical_surface: {message}")
+    return response["body"]
+
+
+def compact_tactical_surface(surface: dict[str, Any]) -> str:
+    """Render core tactics as terse, stable model-facing lines."""
+    lines: list[str] = []
+    for unit in surface.get("units", []):
+        if not isinstance(unit, dict):
+            continue
+        origins = []
+        for origin in unit.get("origins", []):
+            if not isinstance(origin, dict):
+                continue
+            prefix = "@%s,%s%s" % (origin.get("col", "?"), origin.get("row", "?"),
+                                    "*" if origin.get("current") else "")
+            engagements = []
+            for engagement in origin.get("engagements", []):
+                if not isinstance(engagement, dict):
+                    continue
+                forecast = engagement.get("forecast", {})
+                engagements.append("T%s p%s e%s" % (
+                    engagement.get("defender_id", "?"),
+                    forecast.get("outcome_bps", ["?", "?", "?"]),
+                    forecast.get("expected_damage_tenths", ["?", "?"])))
+            origins.append(prefix + (" " + " ".join(engagements) if engagements else " -"))
+        lines.append("U%s %s" % (unit.get("unit_id", "?"), " | ".join(origins)))
+    recruitment = surface.get("recruitment")
+    if isinstance(recruitment, dict):
+        options = ",".join("%s:%s" % (item.get("def_id", "?"), item.get("cost", "?"))
+                           for item in recruitment.get("options", []) if isinstance(item, dict))
+        slots = ",".join("%s,%s" % (item.get("col", "?"), item.get("row", "?"))
+                         for item in recruitment.get("placement_hexes", []) if isinstance(item, dict))
+        lines.insert(0, "R g%s open=%s defs=%s" % (recruitment.get("gold", "?"), slots, options))
+    return "\n".join(lines)
+
+
 def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
                recruit_options: Optional[dict[str, Any]] = None,
                recruit_batch_enabled: bool = True,
@@ -228,6 +271,18 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         recruitment_guidance = (
             " For RecruitBatch the driver assists placement and you choose type and positive count."
         )
+    tactical_guidance = (
+        "Use tactical_surface exactly: entries marked current are attack origins, never Move destinations; "
+        "each origin lists authoritative target IDs and p[defender-killed,both-survive,attacker-killed] "
+        "basis-point odds plus expected damage e[defender,attacker]. Recruitment gold, definitions, and "
+        "open placements are in its recruitment section."
+        if isinstance(state.get("tactical_surface"), dict) else
+        "Use turn_options positions exactly for every move and re-check sequential destinations before submitting. "
+        "turn_options lists, per unit, the hexes it may attack from and the target IDs reachable from each. "
+        "An entry with \"current\":true (\"movable\":false) is the standing attack origin: attack from it WITHOUT moving, "
+        "and never issue a Move to it. "
+        "recruit_options supplies faction-legal definitions, costs, affordability, and placement hexes."
+    )
     rules = (
         load_tactical_playbook() + "\n"
         "You play only the configured model-controlled side in Norrust. The driver automatically "
@@ -240,13 +295,9 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "definitions, or castle capacity prevents another recruit. You may deliberately "
         "save gold for a better recruit next turn when that is strategically justified; "
         "otherwise do not EndTurn while recruit_options says a legal affordable recruit "
-        "and placement exists. Use turn_options positions "
-        "exactly for every move and re-check sequential destinations before submitting. "
+        "and placement exists. " + tactical_guidance + " "
         "Each object has exactly one of these schemas: " + "; ".join(schemas) + ". "
-        "turn_options lists, per unit, the hexes it may attack from and the target IDs "
-        "reachable from each. An entry with \"current\":true (\"movable\":false) is the hex the "
-        "unit already stands on: attack from it WITHOUT moving, and never issue a Move to it -- "
-        "Move onto your own hex is rejected as DestinationOccupied and rolls back your whole "
+        "For legacy turn_options, Move onto your own hex is rejected as DestinationOccupied and rolls back your whole "
         "batch. Only entries with \"movable\":true are Move destinations. For Advance, target_index "
         "indexes the unit's advances_to list in the order shown in the board data. recruit_options supplies "
         "faction-legal definitions, costs, affordability, and placement hexes." + recruitment_guidance +
@@ -263,7 +314,11 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
 
 
     body = dict(state)
-    if compact:
+    if compact and isinstance(state.get("tactical_surface"), dict):
+        body = {"briefing": compact_observation(state),
+                "tactical_surface": compact_tactical_surface(state["tactical_surface"])}
+        option_payloads = {"tactical_surface": state["tactical_surface"]}
+    elif compact:
         compact_options = []
         option_units = (state.get("turn_options") or {}).get("units", [])
         for option in option_units:
@@ -291,7 +346,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
                 "recruit_options": state.get("recruit_options", {})}
     if recruit_options is not None:
         body["recruit_options"] = recruit_options
-    option_payloads = {key: body.pop(key) for key in ("turn_options", "recruit_options") if key in body}
+    option_payloads = {key: body.pop(key) for key in ("turn_options", "recruit_options", "tactical_surface") if key in body}
     return (
         rules
         + "\nBOARD_UNTRUSTED_DATA_BEGIN:\n"
@@ -434,7 +489,7 @@ def run(args: argparse.Namespace) -> int:
                 "llm_recruit_macro": not args.no_recruit_macro,
                 "opponent": "greedy+driver-recruit", "opponent_recruit_policy": "standard_driver_macro",
                 "opponent_planner": "no_skirmisher_pathing", "turn_format": "single_batch",
-                "client_projection": "full_legacy" if getattr(args, "diagnostic", False) else "compact_v1",
+                "client_projection": "full_legacy" if getattr(args, "diagnostic", False) else "compact_tactical_v1",
                 "win_rule": "recruiter_loss", "queries": 0, "model_orders": 0, "model_calls": 0,
                 "event_window_observations": getattr(args, "event_window_observations", 1),
                 "rejected_batches": 0, "rejected_action_items": 0,
@@ -613,7 +668,11 @@ def run(args: argparse.Namespace) -> int:
                     record({"type": "query", "line": query_line})
                     return query_line
                 try:
-                    option_bodies = query_options(exchange)
+                    if getattr(args, "diagnostic", False):
+                        option_bodies = query_options(exchange)
+                    else:
+                        option_bodies = {"tactical_surface": query_tactical_surface(
+                            exchange, int(state.get("state_revision", 0)))}
                 except RuntimeError as first:
                     set_terminal(metadata, TERMINAL_INFRASTRUCTURE,
                                  winner=None, reason="infrastructure_failure",

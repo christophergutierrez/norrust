@@ -12,7 +12,8 @@ from . import llm_client
 from .llm_client import (
     TERMINAL_EXIT_CODES, TERMINAL_GAMEPLAY, TERMINAL_INFRASTRUCTURE,
     TERMINAL_MODEL_INVALID, ModelReply, classify_terminal, enforce_usage,
-    compact_observation, prompt_for, query_options, run, validate_orders,
+    compact_observation, compact_tactical_surface, prompt_for, query_options,
+    query_tactical_surface, run, validate_orders,
 )
 
 
@@ -32,6 +33,23 @@ class FakeDriverProcess:
 
 
 class ClientValidationTests(unittest.TestCase):
+    def test_tactical_surface_query_is_singleton_and_revision_pinned(self):
+        requests = []
+        def exchange(request):
+            requests.append(request)
+            return {"ok": True, "body": {"units": []}}
+        self.assertEqual(query_tactical_surface(exchange, 17), {"units": []})
+        self.assertEqual(requests, [{"action": "Query", "what": "tactical_surface",
+                                     "state_revision": 17}])
+
+    def test_compact_tactical_surface_preserves_current_and_odds(self):
+        rendered = compact_tactical_surface({"units": [{"unit_id": 5, "origins": [
+            {"col": 2, "row": 7, "current": True, "movable": False,
+             "engagements": [{"defender_id": 9, "forecast": {
+                 "outcome_bps": [7100, 2500, 400],
+                 "expected_damage_tenths": [210, 20]}}]}]}]})
+        self.assertIn("@2,7* T9 p[7100, 2500, 400] e[210, 20]", rendered)
+
     def test_compact_observation_is_deterministic_and_keeps_instance_facts(self):
         state = {"turn": 2, "active_faction": 0, "time_of_day": "day", "cols": 3, "rows": 2,
                  "gold": [4, 5],

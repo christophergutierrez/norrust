@@ -31,6 +31,7 @@ use norrust_core::loader::{expand_recruits, Registry};
 use norrust_core::pathfinding::{get_zoc_hexes, reachable_hexes};
 use norrust_core::scenario::{load_board, load_units_file};
 use norrust_core::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
+use norrust_core::tactics::turn_tactics;
 use norrust_core::unit::Unit;
 use serde_json::{json, Value};
 
@@ -1224,6 +1225,50 @@ fn interactive_protocol_game(c: &Config) {
             let query_started = Instant::now();
             let what = parsed.get("what").and_then(Value::as_str).unwrap_or("");
             let mut response = match what {
+                "tactical_surface" => {
+                    let requested_revision = parsed.get("state_revision").and_then(Value::as_u64);
+                    if requested_revision.is_some_and(|revision| revision != state.state_revision) {
+                        json!({"type":"status","ok":false,"what":what,"code":"stale_state","message":"requested state revision is no longer current","state_revision":state.state_revision})
+                    } else {
+                        match turn_tactics(&state, state.active_faction) {
+                            Ok(tactical_units) => {
+                                let side = state.active_faction as usize;
+                                let faction = &factions[side];
+                                let placement_hexes: Vec<Value> = state
+                                    .units
+                                    .iter()
+                                    .filter(|(_, unit)| {
+                                        unit.faction == state.active_faction && unit.can_recruit
+                                    })
+                                    .filter_map(|(id, _)| state.positions.get(id))
+                                    .filter(|hex| {
+                                        state
+                                            .board
+                                            .tile_at(**hex)
+                                            .is_some_and(|tile| tile.terrain_id == "keep")
+                                    })
+                                    .flat_map(|hex| hex.neighbors())
+                                    .filter(|hex| {
+                                        state
+                                            .board
+                                            .tile_at(*hex)
+                                            .is_some_and(|tile| tile.terrain_id == "castle")
+                                            && !state.hex_to_unit.contains_key(hex)
+                                    })
+                                    .map(|hex| {
+                                        let (col, row) = hex.to_offset();
+                                        json!({"col":col,"row":row})
+                                    })
+                                    .collect();
+                                let options: Vec<Value> = faction.recruits.iter().filter_map(|id| units.get(id).map(|def| json!({"def_id":id,"cost":def.cost,"affordable":state.gold[side] >= def.cost}))).collect();
+                                json!({"type":"status","ok":true,"what":what,"body":{"units":tactical_units,"recruitment":{"gold":state.gold[side],"placement_hexes":placement_hexes,"options":options,"batch_macro_enabled":!c.disable_recruit_batch}}})
+                            }
+                            Err(error) => {
+                                json!({"type":"status","ok":false,"what":what,"code":"tactical_surface_error","message":error.to_string()})
+                            }
+                        }
+                    }
+                }
                 "state" => {
                     json!({"type":"status","ok":true,"what":"state","body":game_state_to_json(&state, &units)})
                 }
@@ -1705,8 +1750,11 @@ fn interactive_protocol_game(c: &Config) {
             events.clear();
             did_end = false;
         }
-        println!("{}", json!({"type":"status","ok":true,"results":results,
-            "state_revision":state.state_revision}));
+        println!(
+            "{}",
+            json!({"type":"status","ok":true,"results":results,
+            "state_revision":state.state_revision})
+        );
         io::stdout().flush().unwrap();
         print_events(&events, "llm", "llm");
         if did_end && state.check_winner().is_none() {
