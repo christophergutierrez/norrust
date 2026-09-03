@@ -25,7 +25,7 @@ pub struct TileSnapshot {
 }
 
 /// Flat representation of a single attack in a unit's loadout.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AttackSnapshot {
     pub id: String,
     pub name: String,
@@ -79,6 +79,75 @@ pub struct FactionSnapshot {
     pub side: u8,
     pub id: String,
     pub recruit_ids: Vec<String>,
+}
+
+/// Normalized snapshot for consumers that can join static definitions locally.
+#[derive(Debug, Serialize)]
+pub struct CompactTerrainType {
+    pub id: String,
+    pub color: String,
+    pub defense: u32,
+    pub movement_cost: u32,
+    pub healing: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CompactUnitType {
+    pub id: String,
+    pub attacks: Vec<AttackSnapshot>,
+    pub abilities: Vec<String>,
+    pub movement: u32,
+    pub level: u8,
+    pub cost: u32,
+    pub advances_to: Vec<String>,
+    pub can_recruit: bool,
+    pub resistances: std::collections::HashMap<String, i32>,
+    pub defense: std::collections::HashMap<String, u32>,
+    pub default_defense: u32,
+    pub alignment: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CompactTileSnapshot {
+    pub col: i32,
+    pub row: i32,
+    pub terrain_index: u16,
+    pub owner: i32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CompactUnitSnapshot {
+    pub id: u32,
+    pub def_id: String,
+    pub col: i32,
+    pub row: i32,
+    pub faction: u8,
+    pub hp: u32,
+    pub max_hp: u32,
+    pub moved: bool,
+    pub attacked: bool,
+    pub xp: u32,
+    pub xp_needed: u32,
+    pub advancement_pending: bool,
+    pub poisoned: bool,
+    pub slowed: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CompactStateSnapshot {
+    pub state_revision: u64,
+    pub turn: u32,
+    pub active_faction: u8,
+    pub tod_phase: u8,
+    pub time_of_day: String,
+    pub cols: u32,
+    pub rows: u32,
+    pub terrain_types: Vec<CompactTerrainType>,
+    pub terrain: Vec<CompactTileSnapshot>,
+    pub unit_types: Vec<CompactUnitType>,
+    pub units: Vec<CompactUnitSnapshot>,
+    pub gold: [u32; 2],
+    pub factions: Vec<FactionSnapshot>,
 }
 
 /// Complete serializable snapshot of a GameState for external consumers.
@@ -221,6 +290,45 @@ impl StateSnapshot {
             objective_row,
             visible_hexes: None,
         }
+    }
+
+    /// Build the normalized representation without changing the compatibility
+    /// `StateSnapshot` wire shape.
+    pub fn compact_from_game_state(state: &GameState) -> CompactStateSnapshot {
+        let flat = Self::from_game_state(state);
+        let mut terrain_types = Vec::new();
+        let mut terrain_index = std::collections::HashMap::new();
+        for tile in &flat.terrain {
+            if !terrain_index.contains_key(&tile.terrain_id) {
+                let index = terrain_types.len() as u16;
+                terrain_index.insert(tile.terrain_id.clone(), index);
+                terrain_types.push(CompactTerrainType { id: tile.terrain_id.clone(), color: tile.color.clone(),
+                    defense: tile.defense, movement_cost: tile.movement_cost, healing: tile.healing });
+            }
+        }
+        let terrain = flat.terrain.into_iter().map(|tile| CompactTileSnapshot {
+            col: tile.col, row: tile.row, terrain_index: terrain_index[&tile.terrain_id], owner: tile.owner,
+        }).collect();
+        let mut unit_types = Vec::new();
+        let mut type_index = std::collections::HashSet::new();
+        let mut units = Vec::new();
+        for unit in flat.units {
+            if type_index.insert(unit.def_id.clone()) {
+                unit_types.push(CompactUnitType { id: unit.def_id.clone(), attacks: unit.attacks.clone(),
+                    abilities: unit.abilities.clone(), movement: unit.movement, level: unit.level, cost: unit.cost,
+                    advances_to: unit.advances_to.clone(), can_recruit: unit.can_recruit,
+                    resistances: unit.resistances.clone(), defense: unit.defense.clone(),
+                    default_defense: unit.default_defense, alignment: unit.alignment.clone() });
+            }
+            units.push(CompactUnitSnapshot { id: unit.id, def_id: unit.def_id, col: unit.col, row: unit.row,
+                faction: unit.faction, hp: unit.hp, max_hp: unit.max_hp, moved: unit.moved, attacked: unit.attacked,
+                xp: unit.xp, xp_needed: unit.xp_needed, advancement_pending: unit.advancement_pending,
+                poisoned: unit.poisoned, slowed: unit.slowed });
+        }
+        CompactStateSnapshot { state_revision: flat.state_revision, turn: flat.turn,
+            active_faction: flat.active_faction, tod_phase: flat.tod_phase, time_of_day: flat.time_of_day,
+            cols: flat.cols, rows: flat.rows, terrain_types, terrain, unit_types, units,
+            gold: flat.gold, factions: flat.factions }
     }
 
     /// Build a fog-of-war snapshot for `faction`: enemy units on non-visible hexes are hidden,
