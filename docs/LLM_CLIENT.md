@@ -113,6 +113,10 @@ not a hang.
 The model returns only a non-empty JSON array of at most 256 objects. Every object
 has exactly the fields shown below. There is exactly one final
 `{"action":"EndTurn"}`; `EndTurn` is not optional and no action follows it.
+Before ending a turn, the model must exhaust legal recruitment: move
+non-recruiters off castle hexes when needed, recruit into the resulting legal
+placements, and repeat until gold, definitions, or castle capacity prevents
+another recruit.
 
 ```json
 {"action":"Move","unit_id":12,"col":4,"row":7}
@@ -137,6 +141,9 @@ order shown in the board data. `EndTurn` has only `action`.
 The client rejects malformed JSON, unknown fields, missing fields, non-integer
 numeric fields, non-positive batch counts, and invalid batch structure before
 forwarding it. A validation failure may receive one repair call from the model;
+if the driver rejects a submitted batch, the entire batch was rolled back. The
+repair prompt reports that no prefix action committed and requires replanning
+from the unchanged observation using authoritative options.
 provider/model/query failures are infrastructure-invalid results with a nonzero
 client exit, not gameplay losses or draws. A driver status rejection after
 forwarding an action is also recorded as infrastructure-invalid so the client

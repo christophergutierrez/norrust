@@ -234,6 +234,12 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "executes the opponent; never submit opponent actions. Return the non-empty JSON array only; "
         "actions execute sequentially in array order against the mutating state. "
         "The array has at most 256 objects with exactly one final {\"action\":\"EndTurn\"}. "
+        "Before EndTurn you MUST exhaust legal recruitment: move non-recruiters off "
+        "castle hexes when that creates placement capacity, recruit into every legal "
+        "placement, and repeat vacate-then-recruit until gold, definitions, or castle "
+        "capacity prevents another recruit. Never EndTurn while recruit_options says "
+        "a legal affordable recruit and placement exists. Use turn_options positions "
+        "exactly for every move and re-check sequential destinations before submitting. "
         "Each object has exactly one of these schemas: " + "; ".join(schemas) + ". "
         "turn_options supplies current-unit positions and target IDs. For Advance, target_index "
         "indexes the unit's advances_to list in the order shown in the board data. recruit_options supplies "
@@ -474,7 +480,11 @@ def run(args: argparse.Namespace) -> int:
                             and model_calls_this_turn < metadata["max_model_calls_per_turn"]):
                         repair_prompt = prompt + "\nENGINE_ACTION_ERROR: " + json.dumps(
                             failure, sort_keys=True, separators=(",", ":")
-                        ) + "\nReturn one corrected JSON action array only."
+                        ) + "\nROLLBACK_NOTICE: the entire preceding action batch was rejected "
+                        "transactionally; no prefix action committed. Re-plan from the "
+                        "unchanged observation, omit the invalid action, and use only "
+                        "authoritative positions/targets from the prompt. Return one "
+                        "corrected JSON action array only."
                         action_repair_attempted = True
                         model_calls_this_turn += 1
                         metadata["model_calls"] += 1

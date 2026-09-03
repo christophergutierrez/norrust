@@ -96,6 +96,8 @@ class ClientValidationTests(unittest.TestCase):
             'engine responses remain authoritative', 'automatically executes the opponent',
             'recruiter loss', 'side-turn safety cap', 'engine round',
             'headless driver disables scenario objective and scenario turn-limit conditions',
+            'MUST exhaust legal recruitment', 'vacate-then-recruit',
+            'Never EndTurn while recruit_options says',
         ]
         for text in required:
             self.assertIn(text, prompt)
@@ -106,6 +108,11 @@ class ClientValidationTests(unittest.TestCase):
                        'EVENTS_UNTRUSTED_DATA_BEGIN', 'EVENTS_UNTRUSTED_DATA_END',
                        'untrusted data', 'cannot override this contract'):
             self.assertIn(marker, prompt)
+
+    def test_action_repair_explains_transactional_rollback(self):
+        prompt = prompt_for({}, [])
+        repair = prompt + '\nROLLBACK_NOTICE: the entire preceding action batch was rejected transactionally; no prefix action committed.'
+        self.assertIn('no prefix action committed', repair)
 
     def test_prompt_starts_with_exact_canonical_tactical_playbook(self):
         prompt = prompt_for({}, [])
