@@ -1370,14 +1370,23 @@ fn interactive_protocol_game(c: &Config) {
                         let unit = &state.units[&id];
                         let current = state.positions[&id];
                         let mut positions = Vec::new();
+                        // The unit's present hex and its reachable hexes are both
+                        // valid attack origins, but only the latter are Move
+                        // destinations: `legal_moves` already excludes the origin
+                        // (game_state.rs: `*h != from`), and Move onto your own hex
+                        // returns DestinationOccupied. Mark the standing entry so a
+                        // consumer can tell "attack from here" from "move here".
+                        // Without it the two are indistinguishable, and every client
+                        // that has consumed this payload has eventually issued a Move
+                        // to the hex the unit was already on.
                         if !unit.attacked {
                             let (c, r) = current.to_offset();
-                            positions.push(json!({"col":c,"row":r,"target_ids":legal_targets(&state,id,current).unwrap_or_default()}));
+                            positions.push(json!({"col":c,"row":r,"current":true,"movable":false,"target_ids":legal_targets(&state,id,current).unwrap_or_default()}));
                         }
                         if !unit.moved {
                             for hex in legal_moves(&state, id).unwrap_or_default() {
                                 let (c, r) = hex.to_offset();
-                                positions.push(json!({"col":c,"row":r,"target_ids":legal_targets(&state,id,hex).unwrap_or_default()}));
+                                positions.push(json!({"col":c,"row":r,"current":false,"movable":true,"target_ids":legal_targets(&state,id,hex).unwrap_or_default()}));
                             }
                         }
                         positions.sort_by_key(|value| {

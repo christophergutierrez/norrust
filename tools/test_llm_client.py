@@ -2,6 +2,7 @@ import argparse
 import io
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -65,6 +66,56 @@ class ClientValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_orders('[{"action":"RecruitBatch","def_id":"Skeleton","count":1},{"action":"EndTurn"}]', strict=True)
 
+    def test_compaction_preserves_move_legality_flags(self):
+        """D-136-3: the contract tells the model that `current` entries are attack
+        origins, not Move destinations. If compaction strips the flags the
+        contract references, the ambiguity is back and the model cannot obey it."""
+        state = {"units": [], "terrain": [], "turn_options": {"units": [
+            {"unit_id": 1, "positions": [
+                {"col": 2, "row": 7, "current": True, "movable": False, "target_ids": [9]},
+                {"col": 3, "row": 7, "current": False, "movable": True, "target_ids": []},
+            ]}]}}
+        prompt = prompt_for(state, [], compact=True)
+        blk = prompt.split("OPTION_PAYLOADS_UNTRUSTED_DATA_BEGIN:\n")[1]
+        blk = blk.split("\nOPTION_PAYLOADS_UNTRUSTED_DATA_END")[0]
+        positions = json.loads(blk)["turn_options"]["units"][0]["positions"]
+        by_hex = {(p["col"], p["row"]): p for p in positions}
+        self.assertTrue(by_hex[(2, 7)]["current"])
+        self.assertFalse(by_hex[(2, 7)]["movable"])
+        self.assertFalse(by_hex[(3, 7)]["current"])
+        self.assertTrue(by_hex[(3, 7)]["movable"])
+        # the standing hex must still be offered as an attack origin
+        self.assertEqual(by_hex[(2, 7)]["target_ids"], [9])
+
+    def test_real_driver_turn_options_mark_current_and_movable_hexes(self):
+        driver = Path(__file__).resolve().parents[1] / "norrust_core" / "target" / "debug" / "greedy_driver"
+        if not driver.exists():
+            self.skipTest("greedy_driver has not been built")
+        process = subprocess.Popen(
+            [str(driver), "--scenario", "big_battle_6", "--faction0", "undead",
+             "--faction1", "undead", "--gold", "300", "--seed", "2001",
+             "--llm-side", "0", "--max-turns", "1", "--turn-timeout", "5",
+             "--query-budget-seconds", "5"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+        )
+        try:
+            self.assertEqual(json.loads(process.stdout.readline())["type"], "protocol")
+            self.assertEqual(json.loads(process.stdout.readline())["type"], "state")
+            process.stdin.write(json.dumps({"action": "Query", "what": "turn_options"}) + "\n")
+            process.stdin.flush()
+            response = json.loads(process.stdout.readline())
+            positions = [position for unit in response["body"]["units"]
+                         for position in unit["positions"]]
+            self.assertTrue(any(position.get("current") is True and position.get("movable") is False
+                                for position in positions))
+            self.assertTrue(any(position.get("current") is False and position.get("movable") is True
+                                for position in positions))
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
+            process.stdin.close()
+            process.stdout.close()
+
     def test_prompt_is_canonical(self):
         state = {"units": [{"id": 2}, {"id": 1}]}
         self.assertEqual(prompt_for(state, []), prompt_for(state, []))
@@ -91,7 +142,12 @@ class ClientValidationTests(unittest.TestCase):
             'Recruit', '"def_id": string', 'RecruitBatch', '"count": positive integer',
             'Advance', 'exactly one of integer target_index or string def_id',
             "target_index indexes the unit's advances_to list",
-            'turn_options', 'current-unit positions', 'target IDs', 'recruit_options',
+            'turn_options', 'target IDs', 'recruit_options',
+            # The standing-hex trap: turn_options lists the unit's own hex as a
+            # legal attack origin, but Move onto it is DestinationOccupied and
+            # rolls back the batch. Two model families hit this on compact_v1.
+            '"current":true', '"movable":false', 'never issue a Move to it',
+            'DestinationOccupied', 'Only entries with "movable":true are Move destinations',
             'faction-legal definitions', 'costs', 'affordability', 'placement hexes',
             'engine responses remain authoritative', 'automatically executes the opponent',
             'recruiter loss', 'side-turn safety cap', 'engine round',

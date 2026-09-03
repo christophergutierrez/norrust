@@ -243,7 +243,11 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "and placement exists. Use turn_options positions "
         "exactly for every move and re-check sequential destinations before submitting. "
         "Each object has exactly one of these schemas: " + "; ".join(schemas) + ". "
-        "turn_options supplies current-unit positions and target IDs. For Advance, target_index "
+        "turn_options lists, per unit, the hexes it may attack from and the target IDs "
+        "reachable from each. An entry with \"current\":true (\"movable\":false) is the hex the "
+        "unit already stands on: attack from it WITHOUT moving, and never issue a Move to it -- "
+        "Move onto your own hex is rejected as DestinationOccupied and rolls back your whole "
+        "batch. Only entries with \"movable\":true are Move destinations. For Advance, target_index "
         "indexes the unit's advances_to list in the order shown in the board data. recruit_options supplies "
         "faction-legal definitions, costs, affordability, and placement hexes." + recruitment_guidance +
         " engine responses "
@@ -269,7 +273,14 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
             for position in option.get("positions", []):
                 if not isinstance(position, dict):
                     continue
-                item = {key: position[key] for key in ("col", "row", "target_ids") if key in position}
+                # `current`/`movable` MUST survive compaction: the action
+                # contract tells the model that a `current` entry is an attack
+                # origin and not a Move destination. Dropping them here restores
+                # the exact ambiguity that made two model families issue a Move
+                # onto the hex their unit already occupied (D-136-3).
+                item = {key: position[key]
+                        for key in ("col", "row", "current", "movable", "target_ids")
+                        if key in position}
                 if item.get("target_ids"):
                     positions.append(item)
                 elif not position.get("moved"):
