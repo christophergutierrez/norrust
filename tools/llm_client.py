@@ -220,6 +220,16 @@ def query_tactical_surface(exchange, state_revision: int) -> dict[str, Any]:
     return response["body"]
 
 
+def query_validate_batch(exchange, orders: list[dict[str, Any]], state_revision: int) -> dict[str, Any]:
+    """Validate a complete batch against the unchanged, revision-pinned state."""
+    response = exchange({"action": "Query", "what": "validate_batch",
+                         "state_revision": state_revision, "orders": orders})
+    if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
+        message = response.get("message", "validation query failed") if isinstance(response, dict) else "invalid validation response"
+        raise RuntimeError(f"query_error: validate_batch: {message}")
+    return response["body"]
+
+
 def compact_tactical_surface(surface: dict[str, Any]) -> str:
     """Render core tactics as terse, stable model-facing lines."""
     lines: list[str] = []
@@ -490,6 +500,7 @@ def run(args: argparse.Namespace) -> int:
                 "opponent": "greedy+driver-recruit", "opponent_recruit_policy": "standard_driver_macro",
                 "opponent_planner": "no_skirmisher_pathing", "turn_format": "single_batch",
                 "client_projection": "full_legacy" if getattr(args, "diagnostic", False) else "compact_tactical_v1",
+                "validate_before_submit": getattr(args, "validate_before_submit", False),
                 "win_rule": "recruiter_loss", "queries": 0, "model_orders": 0, "model_calls": 0,
                 "event_window_observations": getattr(args, "event_window_observations", 1),
                 "rejected_batches": 0, "rejected_action_items": 0,
@@ -754,6 +765,69 @@ def run(args: argparse.Namespace) -> int:
                                  message=str(first))
                     durable({"type": "model_error", **metadata})
                     return TERMINAL_EXIT_CODES[terminal_class]
+                if getattr(args, "validate_before_submit", False):
+                    try:
+                        validation = query_validate_batch(
+                            exchange, orders, int(state.get("state_revision", 0)))
+                    except RuntimeError as validation_error:
+                        set_terminal(metadata, TERMINAL_INFRASTRUCTURE,
+                                     winner=None, reason="infrastructure_failure",
+                                     code="validate_batch_error", message=str(validation_error))
+                        durable({"type": "query_error", **metadata})
+                        return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
+                    record({"type": "batch_validation", "orders": orders,
+                            "valid": validation.get("valid"),
+                            "results": validation.get("results"),
+                            "failed_index": validation.get("failed_index")})
+                    if validation.get("valid") is not True:
+                        if model_calls_this_turn >= metadata["max_model_calls_per_turn"]:
+                            set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
+                                         reason=TERMINAL_MODEL_INVALID,
+                                         code="action_batch_rejected",
+                                         message="pre-submit batch validation failed")
+                            durable({"type": "model_error", **metadata})
+                            return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
+                        repair_prompt = prompt + "\nENGINE_ACTION_ERROR: " + json.dumps(
+                            {"code": "validate_batch_failed",
+                             "failed_index": validation.get("failed_index"),
+                             "results": validation.get("results")},
+                            sort_keys=True, separators=(",", ":")) + \
+                            "\nROLLBACK_NOTICE: the batch was rejected before submission; the state is unchanged. Return one corrected JSON action array only."
+                        action_repair_attempted = True
+                        model_calls_this_turn += 1
+                        metadata["model_calls"] += 1
+                        try:
+                            repaired = backend.complete(repair_prompt)
+                            enforce_usage(repaired, args)
+                            record({"type": "action_repair", "call": metadata["model_calls"],
+                                    "prompt_hash": hashlib.sha256(repair_prompt.encode()).hexdigest(),
+                                    "raw_output": repaired.text, "usage": repaired.usage,
+                                    "engine_error": validation})
+                            orders = validate_orders(repaired.text, args.no_recruit_macro)
+                            validation = query_validate_batch(
+                                exchange, orders, int(state.get("state_revision", 0)))
+                        except (RuntimeError, ValueError) as repair_error:
+                            terminal_class = (TERMINAL_MODEL_INVALID
+                                              if isinstance(repair_error, ValueError)
+                                              else TERMINAL_INFRASTRUCTURE)
+                            set_terminal(metadata, terminal_class, winner=None,
+                                         reason=(TERMINAL_MODEL_INVALID if terminal_class == TERMINAL_MODEL_INVALID else "infrastructure_failure"),
+                                         code=("action_repair_invalid" if terminal_class == TERMINAL_MODEL_INVALID else "validate_batch_error"),
+                                         message=str(repair_error))
+                            durable({"type": "model_error", **metadata})
+                            return TERMINAL_EXIT_CODES[terminal_class]
+                        record({"type": "batch_validation", "orders": orders,
+                                "valid": validation.get("valid"),
+                                "results": validation.get("results"),
+                                "failed_index": validation.get("failed_index"),
+                                "repair": True})
+                        if validation.get("valid") is not True:
+                            set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
+                                         reason=TERMINAL_MODEL_INVALID,
+                                         code="action_batch_rejected",
+                                         message="corrected batch failed pre-submit validation")
+                            durable({"type": "model_error", **metadata})
+                            return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
                 metadata["model_orders"] += len(orders)
                 record({"type": "forwarded_orders", "orders": orders,
                         "prompt_hash": prompt_hash})
@@ -813,6 +887,8 @@ def main() -> int:
     p.add_argument("--no-recruit-macro", action="store_true")
     p.add_argument("--diagnostic", action="store_true",
                    help="send the full legacy snapshot instead of the compact briefing")
+    p.add_argument("--validate-before-submit", action="store_true",
+                   help="validate each model batch against its revision before submitting it")
     p.add_argument("--event-window-observations", type=int, default=1)
     p.add_argument("--log")
     a = p.parse_args()

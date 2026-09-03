@@ -648,6 +648,168 @@ fn valid_action_shape(order: &Value) -> bool {
                 .is_some_and(|count| (1..=u32::MAX as u64).contains(&count)))
 }
 
+struct BatchExecution {
+    state: GameState,
+    next_id: u32,
+    results: Vec<Value>,
+    events: Vec<GameEvent>,
+    did_end: bool,
+}
+
+/// Apply one model batch to an isolated state. The commit path and the
+/// read-only validation query deliberately share this executor so validation
+/// cannot approve a batch with different sequential semantics.
+fn execute_model_batch(
+    mut state: GameState,
+    mut next_id: u32,
+    orders: &[Value],
+    model_side: u8,
+    factions: &[Faction; 2],
+    units: &Registry<UnitDef>,
+    disable_recruit_batch: bool,
+) -> BatchExecution {
+    let mut results = Vec::with_capacity(orders.len());
+    let mut events = Vec::new();
+    let mut did_end = false;
+    for order in orders {
+        let action_name = order.get("action").and_then(Value::as_str);
+        if did_end {
+            results.push(json!({"ok":true,"code":"game_over","skipped":true}));
+            continue;
+        }
+        if action_name == Some("RecruitBatch") && disable_recruit_batch {
+            results.push(
+                json!({"ok":false,"code":"macro_disabled","message":"RecruitBatch is disabled"}),
+            );
+            continue;
+        }
+        let result = match action_name {
+            Some("Move") => match (
+                order.get("unit_id").and_then(Value::as_u64),
+                order.get("col").and_then(Value::as_i64),
+                order.get("row").and_then(Value::as_i64),
+            ) {
+                (Some(id), Some(col), Some(row)) => apply_action(
+                    &mut state,
+                    Action::Move {
+                        unit_id: id as u32,
+                        destination: Hex::from_offset(col as i32, row as i32),
+                    },
+                ),
+                _ => Err(norrust_core::game_state::ActionError::UnitNotFound(0)),
+            },
+            Some("Attack") => match (
+                order.get("attacker_id").and_then(Value::as_u64),
+                order.get("defender_id").and_then(Value::as_u64),
+            ) {
+                (Some(attacker), Some(defender)) => apply_action(
+                    &mut state,
+                    Action::Attack {
+                        attacker_id: attacker as u32,
+                        defender_id: defender as u32,
+                    },
+                ),
+                _ => Err(norrust_core::game_state::ActionError::UnitNotFound(0)),
+            },
+            Some("Recruit") => match (
+                order.get("def_id").and_then(Value::as_str),
+                order.get("col").and_then(Value::as_i64),
+                order.get("row").and_then(Value::as_i64),
+            ) {
+                (Some(def_id), Some(col), Some(row)) => recruit_from_def(
+                    &mut state,
+                    model_side,
+                    def_id,
+                    Hex::from_offset(col as i32, row as i32),
+                    &factions[model_side as usize].recruits,
+                    units,
+                    &mut next_id,
+                ),
+                _ => Err(norrust_core::game_state::ActionError::UnitNotFound(0)),
+            },
+            Some("RecruitBatch") => match (
+                order.get("def_id").and_then(Value::as_str),
+                order.get("count").and_then(Value::as_u64),
+            ) {
+                (Some(def_id), Some(count)) => match recruit_batch_with_events(
+                    &mut state,
+                    model_side,
+                    &factions[model_side as usize],
+                    units,
+                    &mut next_id,
+                    def_id,
+                    count as u32,
+                    &mut events,
+                ) {
+                    Ok(recruited) => {
+                        results.push(json!({"ok":true,"requested":count,"recruited":recruited,"partial":(recruited as u64) < count}));
+                        continue;
+                    }
+                    Err(error) => Err(error),
+                },
+                _ => Err(norrust_core::game_state::ActionError::UnitNotFound(0)),
+            },
+            Some("EndTurn") => apply_action(&mut state, Action::EndTurn),
+            Some("Advance") => {
+                let id = order.get("unit_id").and_then(Value::as_u64);
+                let target = order
+                    .get("target_index")
+                    .and_then(Value::as_i64)
+                    .map(|index| {
+                        AdvanceTarget::Index(if index < 0 {
+                            usize::MAX
+                        } else {
+                            index as usize
+                        })
+                    })
+                    .or_else(|| {
+                        order
+                            .get("def_id")
+                            .and_then(Value::as_str)
+                            .map(|id| AdvanceTarget::DefId(id.to_string()))
+                    });
+                match (id, target) {
+                    (Some(id), Some(target)) => apply_advance(&mut state, id as u32, target, units),
+                    (Some(_), None) => {
+                        Err(norrust_core::game_state::ActionError::AdvanceNeedsTarget)
+                    }
+                    _ => Err(norrust_core::game_state::ActionError::UnitNotFound(0)),
+                }
+            }
+            Some(_) | None => Err(norrust_core::game_state::ActionError::NotAdjacent),
+        };
+        match result {
+            Ok(mut produced) => {
+                events.append(&mut produced);
+                results.push(json!({"ok":true}));
+                if action_name == Some("EndTurn") {
+                    did_end = true;
+                }
+            }
+            Err(error) => {
+                results.push(json!({"ok":false,"code":error.code(),"message":error.to_string()}))
+            }
+        }
+        if state.check_winner().is_some() {
+            did_end = true;
+        }
+    }
+    let succeeded = results
+        .iter()
+        .all(|result| result.get("ok") == Some(&Value::Bool(true)));
+    if !succeeded {
+        events.clear();
+        did_end = false;
+    }
+    BatchExecution {
+        state,
+        next_id,
+        results,
+        events,
+        did_end,
+    }
+}
+
 fn init_game(c: &Config) -> Result<(GameState, Faction, Faction, Registry<UnitDef>), String> {
     let base = root();
     let data = base.join("data");
@@ -1225,6 +1387,81 @@ fn interactive_protocol_game(c: &Config) {
             let query_started = Instant::now();
             let what = parsed.get("what").and_then(Value::as_str).unwrap_or("");
             let mut response = match what {
+                "validate_batch" => {
+                    let requested_revision = parsed.get("state_revision").and_then(Value::as_u64);
+                    let orders = parsed.get("orders").and_then(Value::as_array);
+                    let error = if requested_revision != Some(state.state_revision) {
+                        Some(
+                            json!({"code":"stale_state","message":"requested state revision is no longer current"}),
+                        )
+                    } else if state.active_faction != c.llm_side {
+                        Some(
+                            json!({"code":"unauthorized_side","message":"model actions are not authorized while the opponent is active"}),
+                        )
+                    } else if orders.is_none() || orders.is_some_and(|items| items.is_empty()) {
+                        Some(json!({"code":"parse","message":"orders must be a non-empty array"}))
+                    } else if orders.is_some_and(|items| items.len() > 256) {
+                        Some(
+                            json!({"code":"batch_too_large","message":"action batch exceeds 256 objects"}),
+                        )
+                    } else if orders
+                        .is_some_and(|items| items.iter().any(|order| !valid_action_shape(order)))
+                    {
+                        Some(json!({"code":"parse","message":"invalid action shape"}))
+                    } else if orders.is_some_and(|items| {
+                        let names: Vec<Option<&str>> = items
+                            .iter()
+                            .map(|order| order.get("action").and_then(Value::as_str))
+                            .collect();
+                        names
+                            .iter()
+                            .filter(|name| **name == Some("EndTurn"))
+                            .count()
+                            != 1
+                            || !matches!(names.last(), Some(Some("EndTurn")))
+                    }) {
+                        Some(json!({"code":"parse","message":"invalid action batch structure"}))
+                    } else if let Some(items) = orders {
+                        match authorize_model_batch(items, &state, c.llm_side) {
+                            Ok(()) => None,
+                            Err((code, message)) => Some(json!({"code":code,"message":message})),
+                        }
+                    } else {
+                        unreachable!()
+                    };
+                    if let Some(error) = error {
+                        let mut response = json!({"type":"status","ok":false,"what":what,"state_revision":state.state_revision});
+                        response.as_object_mut().unwrap().extend(
+                            error
+                                .as_object()
+                                .unwrap()
+                                .iter()
+                                .map(|(key, value)| (key.clone(), value.clone())),
+                        );
+                        response
+                    } else {
+                        let items = orders.unwrap();
+                        let execution = execute_model_batch(
+                            state.clone(),
+                            next_id,
+                            items,
+                            c.llm_side,
+                            &factions,
+                            &units,
+                            c.disable_recruit_batch,
+                        );
+                        let valid = execution
+                            .results
+                            .iter()
+                            .all(|result| result.get("ok") == Some(&Value::Bool(true)));
+                        let failed_index = execution
+                            .results
+                            .iter()
+                            .position(|result| result.get("ok") == Some(&Value::Bool(false)));
+                        json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,
+                            "body":{"valid":valid,"results":execution.results,"failed_index":failed_index}})
+                    }
+                }
                 "tactical_surface" => {
                     let requested_revision = parsed.get("state_revision").and_then(Value::as_u64);
                     if requested_revision.is_some_and(|revision| revision != state.state_revision) {
@@ -1601,144 +1838,22 @@ fn interactive_protocol_game(c: &Config) {
             );
             continue;
         }
-        let mut batch_state = state.clone();
-        let mut batch_next_id = next_id;
         let batch_len = orders.len() as u32;
-        let mut results = Vec::with_capacity(orders.len());
-        let mut events = Vec::new();
-        let mut did_end = false;
-        for order in orders {
-            let action_name = order.get("action").and_then(Value::as_str);
-            if did_end {
-                // A mid-batch recruiter kill (or elimination) already ended the
-                // game. Trailing actions, including the required final EndTurn,
-                // are no-ops: they must not fail the batch or roll back the win.
-                results.push(json!({"ok":true,"code":"game_over","skipped":true}));
-                continue;
-            }
-            if action_name == Some("RecruitBatch") && c.disable_recruit_batch {
-                results.push(json!({"ok":false,"code":"macro_disabled","message":"RecruitBatch is disabled"}));
-                continue;
-            }
-            let result = match action_name {
-                Some("Move") => {
-                    let id = order.get("unit_id").and_then(Value::as_u64);
-                    let col = order.get("col").and_then(Value::as_i64);
-                    let row = order.get("row").and_then(Value::as_i64);
-                    match (id, col, row) {
-                        (Some(id), Some(col), Some(row)) => apply_action(
-                            &mut batch_state,
-                            Action::Move {
-                                unit_id: id as u32,
-                                destination: Hex::from_offset(col as i32, row as i32),
-                            },
-                        ),
-                        _ => Err(norrust_core::game_state::ActionError::UnitNotFound(0)),
-                    }
-                }
-                Some("Attack") => {
-                    match (
-                        order.get("attacker_id").and_then(Value::as_u64),
-                        order.get("defender_id").and_then(Value::as_u64),
-                    ) {
-                        (Some(a), Some(d)) => apply_action(
-                            &mut batch_state,
-                            Action::Attack {
-                                attacker_id: a as u32,
-                                defender_id: d as u32,
-                            },
-                        ),
-                        _ => Err(norrust_core::game_state::ActionError::UnitNotFound(0)),
-                    }
-                }
-                Some("Recruit") => {
-                    match (
-                        order.get("def_id").and_then(Value::as_str),
-                        order.get("col").and_then(Value::as_i64),
-                        order.get("row").and_then(Value::as_i64),
-                    ) {
-                        (Some(def_id), Some(col), Some(row)) => recruit_from_def(
-                            &mut batch_state,
-                            c.llm_side,
-                            def_id,
-                            Hex::from_offset(col as i32, row as i32),
-                            &factions[c.llm_side as usize].recruits,
-                            &units,
-                            &mut batch_next_id,
-                        ),
-                        _ => Err(norrust_core::game_state::ActionError::UnitNotFound(0)),
-                    }
-                }
-                Some("RecruitBatch") => {
-                    match (
-                        order.get("def_id").and_then(Value::as_str),
-                        order.get("count").and_then(Value::as_u64),
-                    ) {
-                        (Some(def_id), Some(count)) => match recruit_batch_with_events(
-                            &mut batch_state,
-                            c.llm_side,
-                            &factions[c.llm_side as usize],
-                            &units,
-                            &mut batch_next_id,
-                            def_id,
-                            count as u32,
-                            &mut events,
-                        ) {
-                            Ok(recruited) => {
-                                results.push(json!({"ok":true,"requested":count,"recruited":recruited,"partial":(recruited as u64) < count}));
-                                continue;
-                            }
-                            Err(error) => Err(error),
-                        },
-                        _ => Err(norrust_core::game_state::ActionError::UnitNotFound(0)),
-                    }
-                }
-                Some("EndTurn") => apply_action(&mut batch_state, Action::EndTurn),
-                Some("Advance") => {
-                    let id = order.get("unit_id").and_then(Value::as_u64);
-                    let target = order
-                        .get("target_index")
-                        .and_then(Value::as_i64)
-                        .map(|i| {
-                            if i < 0 {
-                                AdvanceTarget::Index(usize::MAX)
-                            } else {
-                                AdvanceTarget::Index(i as usize)
-                            }
-                        })
-                        .or_else(|| {
-                            order
-                                .get("def_id")
-                                .and_then(Value::as_str)
-                                .map(|id| AdvanceTarget::DefId(id.to_string()))
-                        });
-                    match (id, target) {
-                        (Some(id), Some(target)) => {
-                            apply_advance(&mut batch_state, id as u32, target, &units)
-                        }
-                        (Some(_), None) => {
-                            Err(norrust_core::game_state::ActionError::AdvanceNeedsTarget)
-                        }
-                        _ => Err(norrust_core::game_state::ActionError::UnitNotFound(0)),
-                    }
-                }
-                Some(_) | None => Err(norrust_core::game_state::ActionError::NotAdjacent),
-            };
-            match result {
-                Ok(mut produced) => {
-                    events.append(&mut produced);
-                    results.push(json!({"ok":true}));
-                    if action_name == Some("EndTurn") {
-                        did_end = true;
-                    }
-                }
-                Err(error) => results
-                    .push(json!({"ok":false,"code":error.code(),"message":error.to_string()})),
-            }
-            if batch_state.check_winner().is_some() {
-                did_end = true;
-            }
-        }
+        let BatchExecution {
+            state: batch_state,
+            next_id: batch_next_id,
+            results,
+            events,
+            did_end,
+        } = execute_model_batch(
+            state.clone(),
+            next_id,
+            &orders,
+            c.llm_side,
+            &factions,
+            &units,
+            c.disable_recruit_batch,
+        );
         let batch_succeeded = results
             .iter()
             .all(|result| result.get("ok") == Some(&Value::Bool(true)));
@@ -1746,9 +1861,6 @@ fn interactive_protocol_game(c: &Config) {
             state = batch_state;
             next_id = batch_next_id;
             action_count += batch_len;
-        } else {
-            events.clear();
-            did_end = false;
         }
         println!(
             "{}",
