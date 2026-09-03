@@ -31,9 +31,83 @@ python -m tools.llm_client \
   --log /tmp/norrust-llm-match.ndjson
 ```
 
-For a live provider-neutral session, replace `--orders-file` with exactly one of
-`--interactive-model` or `--model-command 'COMMAND'`. The command backend must
-write a JSON object such as `{"text":"[{\"action\":\"EndTurn\"}]"}` to stdout.
+That fixture run is a **protocol smoke test**. It proves the client, driver, and
+log path work. It does not play a real match — see the cap guidance below.
+
+### Running a real match against a live model
+
+Replace `--orders-file` with exactly one of `--interactive-model` or
+`--model-command 'COMMAND'`.
+
+**`--model-command`** runs an automated backend. The command receives the full
+prompt on **stdin** and must write **one JSON object** to **stdout**:
+
+```json
+{"text": "[{\"action\":\"EndTurn\"}]"}
+```
+
+`text` is the model's raw reply, which must itself be a bare JSON array of action
+objects. Optionally include `usage` (`{"input_tokens":N,"output_tokens":N}`); when
+absent, token budgets are recorded as estimated rather than measured. A minimal
+backend:
+
+```python
+#!/usr/bin/env python3
+import json, sys
+prompt = sys.stdin.read()
+reply = call_your_provider(prompt)        # returns a string
+reply = reply.strip().removeprefix("```json").removeprefix("```").removesuffix("```")
+sys.stdout.write(json.dumps({"text": reply}))
+```
+
+Strip markdown fences before emitting: models frequently wrap the array, and a
+fenced reply is a validation failure that costs a repair round.
+
+**`--interactive-model`** prints the prompt to the terminal and reads the reply
+from stdin, so a human or an agent driving the terminal *is* the model. No
+backend process is involved.
+
+A complete evaluation run:
+
+```bash
+python -m tools.llm_client \
+  --driver norrust_core/target/debug/greedy_driver \
+  --model-command 'python3 /path/to/your_backend.py' \
+  --scenario big_battle_6 --faction0 undead --faction1 undead \
+  --gold 300 --seed 2001 --llm-side 0 \
+  --max-turns 30 \
+  --turn-timeout 900 --query-budget-seconds 900 \
+  --log /path/to/match.ndjson
+```
+
+**Raise `--turn-timeout` for any live model.** The 300-second default is too
+tight once a turn needs an action repair. A repair means a *second* model call in
+the same side-turn, plus engine query round-trips; with per-call latency of a
+minute or more that exceeds 300s, the driver self-terminates mid-turn, and the
+client dies with `BrokenPipeError` writing to a closed stdin — producing **no
+terminal record at all**. Use 900 for backends answering in 1-2 minutes, more if
+slower. This is the single most common way a live run is lost.
+
+Budget wall-clock accordingly. `--max-turns 30` is ~15 model side-turns; at 2-4
+minutes each that is 30-60 minutes, longer with repairs. If you wrap the run in
+an external `timeout`, size it above that or you trade a driver timeout for a
+wall-clock one and still get no result.
+
+Always pass `--log`. The NDJSON log is the only durable record; without it a
+completed match leaves nothing to analyse.
+
+### When a run produces no result
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `BrokenPipeError` on `proc.stdin.write`, no terminal record | driver hit `--turn-timeout`, usually on a repair turn | raise `--turn-timeout` and `--query-budget-seconds` |
+| Terminal `max_turns`, no winner | cap too low to reach a decision | raise `--max-turns` to 24+ |
+| `model_error` after one repair | backend emitted prose, fences, or a non-array | strip fences in the backend |
+| Log stops growing for minutes | normal during a slow model call | check log mtime over minutes, not seconds |
+
+Judge liveness from the log's size and mtime over a multi-minute window. A model
+call in flight writes nothing while it runs, so a briefly static log is expected,
+not a hang.
 
 ## Model action batch
 
@@ -117,6 +191,15 @@ displayed round counter or a scenario turn limit. One completed model side-turn
 and one completed greedy side-turn each increment it once. A failed greedy turn
 adds no opponent side-turn and is terminal; the preceding completed model
 side-turn remains counted.
+
+**Use at least 24 for any evaluation run.** The median game runs longer than 12
+side-turns, so a cap of 12 or below reliably ends in `max_turns` before the
+match is decided — a valid terminal, but one that measures nothing about play.
+On `big_battle_6` the armies start at opposite keeps, (2,7) and (21,6), and
+spend the opening turns recruiting and closing distance; first contact is
+typically around side-turn 10-14, so a low cap cuts the match off before any
+combat happens. Short caps are for protocol smoke tests, like the `--max-turns 4`
+fixture example above, not for measuring whether a model can win.
 
 Terminal reasons `winner` and `max_turns` are gameplay-valid. `setup_error`,
 `timeout`, `eof`, `infrastructure_failure`, and unknown or malformed terminal
