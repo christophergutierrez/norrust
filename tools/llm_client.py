@@ -487,6 +487,27 @@ def compact_tactical_surface(surface: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def tool_followup_instruction(remaining_tools: int, remaining_model_calls: int) -> str:
+    """Tell the model exactly whether another tool request can be useful."""
+    if remaining_tools <= 0 or remaining_model_calls <= 1:
+        return (
+            "TOOL_BUDGET remaining=0; return the final JSON action array now. "
+            "Do not request another tool."
+        )
+    return (
+        "TOOL_BUDGET remaining=%s; return another allowed tool request or the final "
+        "JSON action array only." % remaining_tools
+    )
+
+
+def tool_budget_repair_prompt(prompt: str, tool_context: str, error: str) -> str:
+    """Preserve tool observations when correcting an over-budget tool request."""
+    return (
+        prompt + tool_context + "\nTOOL_ERROR: " + error +
+        "\nReturn one corrected JSON action array only; do not request another tool."
+    )
+
+
 def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
                recruit_options: Optional[dict[str, Any]] = None,
                recruit_batch_enabled: bool = True,
@@ -508,7 +529,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         )
     tactical_guidance = (
         "Use tactical_surface exactly. COORDS=col,row. `at` is current and never a Move destination. The base card gives "
-        "move/target counts and current-position attacks; call inspect_unit before choosing a Move destination. Forecasts use "
+        "move/target counts and current-position attacks; inspect a unit only when detailed origins are needed for a specific decision. Forecasts use "
         "p[defender-killed,both-survive,attacker-killed] and e[defender,attacker] damage. THREAT lines are complete-information "
         "upper bounds if you EndTurn now: attackers is the distinct count, max_sum adds one maximum volley per attacker, "
         "lethal_n is how many largest maximum volleys reach recruiter HP, and detail lists attacker:max-damage pairs. "
@@ -1038,8 +1059,10 @@ def run(args: argparse.Namespace) -> int:
                             metadata["tool_calls_by_name"][tool] = metadata["tool_calls_by_name"].get(tool, 0) + 1
                             tool_context += ("\nTOOL_RESULT_UNTRUSTED_DATA_BEGIN tool=" + tool + ":\n" +
                                              rendered + "\nTOOL_RESULT_UNTRUSTED_DATA_END\n")
-                            followup_prompt = prompt + tool_context + (
-                                "Return another allowed tool request within budget or the final JSON action array only.")
+                            followup_prompt = prompt + tool_context + "\n" + tool_followup_instruction(
+                                metadata["max_tool_calls_per_turn"] - tool_calls_this_turn,
+                                metadata["max_model_calls_per_turn"] - model_calls_this_turn,
+                            )
                             followup_bytes = len(followup_prompt.encode())
                             if followup_bytes > args.max_prompt_bytes:
                                 raise RuntimeError("model_prompt_error: tool results exceed max_prompt_bytes")
@@ -1061,7 +1084,8 @@ def run(args: argparse.Namespace) -> int:
                                     "matched_candidate": next((index for index, candidate in enumerate(preview_candidates)
                                                                if candidate == orders), None)})
                     except ValueError as first:
-                        repair_prompt = prompt + "\nVALIDATION_ERROR: " + str(first) + \
+                        repair_prompt = tool_budget_repair_prompt(prompt, tool_context, str(first)) \
+                            if tool_context else prompt + "\nVALIDATION_ERROR: " + str(first) + \
                             "\nReturn one corrected JSON action array only."
                         model_calls_this_turn += 1
                         metadata["model_calls"] += 1

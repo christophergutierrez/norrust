@@ -14,7 +14,7 @@ from .llm_client import (
     TERMINAL_MODEL_INVALID, ModelReply, classify_terminal, enforce_usage,
     compact_batch_preview, compact_hex_inspection, compact_observation,
     compact_target_inspection, compact_tactical_surface, prompt_for, query_options,
-    compact_unit_inspection,
+    compact_unit_inspection, tool_followup_instruction, tool_budget_repair_prompt,
     query_tactical_surface, query_validate_batch, query_preview_batch,
     query_inspect_unit, query_inspect_target, query_inspect_hex, run,
     validate_inspect_unit_request, validate_inspect_target_request,
@@ -92,6 +92,21 @@ class ClientValidationTests(unittest.TestCase):
                                             {"ok": True, "body": body}, 7, 19), body)
         self.assertEqual(requests, [{"action": "Query", "what": "inspect_unit",
                                     "state_revision": 19, "unit_id": 7}])
+
+    def test_tool_followup_requires_final_actions_when_budget_is_exhausted(self):
+        self.assertIn("remaining=0", tool_followup_instruction(0, 3))
+        self.assertIn("Do not request another tool", tool_followup_instruction(0, 3))
+        self.assertIn("remaining=0", tool_followup_instruction(2, 1))
+        self.assertIn("Do not request another tool", tool_followup_instruction(2, 1))
+        self.assertIn("another allowed tool", tool_followup_instruction(1, 2))
+
+    def test_tool_budget_repair_preserves_all_tool_context(self):
+        repaired = tool_budget_repair_prompt(
+            "ORIGINAL", "\nTOOL_RESULT unit=7: target=9", "tool call budget exhausted")
+        self.assertIn("ORIGINAL", repaired)
+        self.assertIn("target=9", repaired)
+        self.assertIn("tool call budget exhausted", repaired)
+        self.assertIn("do not request another tool", repaired.lower())
 
     def test_compact_batch_preview_uses_recruiter_aggregate_not_origins(self):
         rendered = compact_batch_preview({"sampling": False, "candidates": [{
@@ -253,7 +268,7 @@ class ClientValidationTests(unittest.TestCase):
         prompt = prompt_for({"tactical_surface": {"units": [], "visibility": "full",
                                                     "next_time_of_day": "Night"}}, [], compact=True)
         for text in (
-                "COORDS=col,row", "call inspect_unit", "Move destination", "individual Recruit coordinates",
+                "COORDS=col,row", "inspect a unit", "Move destination", "individual Recruit coordinates",
                 "RecruitBatch", "saving gold is allowed"):
             with self.subTest(text=text):
                 self.assertIn(text, prompt)
@@ -683,19 +698,21 @@ class ClientValidationTests(unittest.TestCase):
         self.assertFalse(terminal["gameplay_valid"])
         self.assertEqual(terminal["code"], "action_validation_invalid")
 
-    def test_tool_budget_exhaustion_is_model_invalid(self):
+    def test_tool_budget_exhaustion_repairs_with_context(self):
         request = json.dumps({"tool": "inspect_unit", "unit_id": 1})
+        end_turn = json.dumps([{"action": "EndTurn"}])
         code, terminal = self.run_with_orders(
-            [request, request, request],
+            [request, request, end_turn],
             [{"type": "state", "active_faction": 0, "state_revision": 1},
              {"type": "status", "ok": True, "what": "tactical_surface", "body": {"units": []}},
              {"type": "status", "ok": True, "what": "inspect_unit",
-              "body": {"unit_id": 1, "origins": []}}],
+              "body": {"unit_id": 1, "origins": []}},
+             {"type": "game_end", "reason": "max_turns", "winner": None}],
             max_model_calls_per_turn=4,
             max_tool_calls_per_turn=1,
         )
-        self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID])
-        self.assertEqual(terminal["code"], "action_validation_invalid")
+        self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_GAMEPLAY])
+        self.assertEqual(terminal["reason"], "max_turns")
 
     def test_backend_transport_failure_stays_infrastructure(self):
         """A RuntimeError from the backend is transport, not play. The model

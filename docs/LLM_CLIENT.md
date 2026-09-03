@@ -140,17 +140,22 @@ available:
 `inspect_target` lists friendly attackers and origins for one enemy.
 `inspect_hex` lists attack coverage for one hex either now or after the
 deterministic next `EndTurn`; empty hexes have no invented combat forecast.
-Tool calls are read-only and revision pinned. `--max-tool-calls-per-turn` bounds them (default 4), while
-`--max-model-calls-per-turn` remains the overall model-call bound. A second
-preview request is not accepted; after using tools, the model must eventually
-return a final action array.
+Tool calls are read-only and revision pinned. `--max-tool-calls-per-turn` bounds
+them (default 4), while `--max-model-calls-per-turn` remains the overall
+model-call bound. Every tool follow-up reports the remaining budget. When no
+tool call remains, the follow-up requires final actions only. If the model requests
+another tool anyway, the client does not execute it; its correction prompt
+retains all prior tool results and requires final actions. A second
+`preview_batch` request is still not accepted.
 
 The normal card summarizes each unit with its current hex, legal move/target
-counts, and attacks available from its current hex. Movable origins and their
-target combinations are returned by `inspect_unit`; `--diagnostic` retains the
-complete JSON surface. `--decision-metrics` adds one read-only preview of the
-final model-authored batch to the log so evaluations can compare recruiter
-danger and remaining recruitment before and after the decision.
+counts, and attacks available from its current hex. Inspect a unit when a
+specific decision needs detailed origins; do not inspect every mover by
+default. Movable origins and their target combinations are returned by
+`inspect_unit`; `--diagnostic` retains the complete JSON surface.
+`--decision-metrics` adds one read-only preview of the final model-authored
+batch to the log so evaluations can compare recruiter danger and remaining
+recruitment before and after the decision.
 
 A final action array is a non-empty JSON array of at most 256 objects. Every
 object has exactly the fields shown below. There is exactly one final
