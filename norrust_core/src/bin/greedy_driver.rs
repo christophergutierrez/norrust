@@ -693,6 +693,7 @@ struct BatchExecution {
     pre_end_threats: Option<ThreatSurface>,
     preview_error: Option<Value>,
     post_combat_conditional: bool,
+    pre_end_recruitment_remaining: Option<bool>,
 }
 
 /// Apply one model batch to an isolated state. The commit path and the
@@ -715,6 +716,7 @@ fn execute_model_batch(
     let mut pre_end_threats = None;
     let mut preview_error = None;
     let mut post_combat_conditional = false;
+    let mut pre_end_recruitment_remaining = None;
     let mut conditional_ids = HashSet::new();
     for order in orders {
         let action_name = order.get("action").and_then(Value::as_str);
@@ -840,6 +842,50 @@ fn execute_model_batch(
             },
             Some("EndTurn") => {
                 if !sample_attacks {
+                    pre_end_recruitment_remaining = Some(if disable_recruit_batch {
+                        let has_open_castle = state
+                            .units
+                            .iter()
+                            .filter(|(_, unit)| unit.faction == model_side && unit.can_recruit)
+                            .filter_map(|(id, _)| state.positions.get(id))
+                            .filter(|hex| {
+                                state
+                                    .board
+                                    .tile_at(**hex)
+                                    .is_some_and(|tile| tile.terrain_id == "keep")
+                            })
+                            .flat_map(|hex| hex.neighbors())
+                            .any(|hex| {
+                                state
+                                    .board
+                                    .tile_at(hex)
+                                    .is_some_and(|tile| tile.terrain_id == "castle")
+                                    && !state.hex_to_unit.contains_key(&hex)
+                            });
+                        has_open_castle
+                            && factions[model_side as usize]
+                                .recruits
+                                .iter()
+                                .filter_map(|id| units.get(id))
+                                .any(|def| state.gold[model_side as usize] >= def.cost)
+                    } else {
+                        factions[model_side as usize].recruits.iter().any(|def_id| {
+                            let mut candidate = state.clone();
+                            let mut candidate_id = next_id;
+                            let mut candidate_events = Vec::new();
+                            recruit_batch_with_events(
+                                &mut candidate,
+                                model_side,
+                                &factions[model_side as usize],
+                                units,
+                                &mut candidate_id,
+                                def_id,
+                                1,
+                                &mut candidate_events,
+                            )
+                            .is_ok()
+                        })
+                    });
                     match recruiter_threats_after_end_turn(&state, model_side) {
                         Ok(threats) => pre_end_threats = Some(threats),
                         Err(error) => {
@@ -919,6 +965,7 @@ fn execute_model_batch(
         pre_end_threats,
         preview_error,
         post_combat_conditional,
+        pre_end_recruitment_remaining,
     }
 }
 
@@ -1624,7 +1671,8 @@ fn interactive_protocol_game(c: &Config) {
                                 "post_combat_conditional":execution.post_combat_conditional,
                                 "assumption":if execution.post_combat_conditional {"all forecast combatants survive in place"} else {"none"},
                                 "summary":{"gold_before":before_gold,"gold_after":execution.state.gold[c.llm_side as usize],
-                                    "units_before":before_units,"units_after":execution.state.units.len(),"recruiters":recruiter_hp}})
+                                    "units_before":before_units,"units_after":execution.state.units.len(),"recruiters":recruiter_hp,
+                                    "affordable_recruitment_remaining":execution.pre_end_recruitment_remaining}})
                         }).collect::<Vec<_>>();
                             json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,
                             "body":{"sampling":false,"candidates":previews}})
@@ -2123,6 +2171,7 @@ fn interactive_protocol_game(c: &Config) {
             pre_end_threats: _,
             preview_error: _,
             post_combat_conditional: _,
+            pre_end_recruitment_remaining: _,
         } = execute_model_batch(
             state.clone(),
             next_id,

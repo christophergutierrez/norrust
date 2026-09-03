@@ -14,6 +14,7 @@ from .llm_client import (
     TERMINAL_MODEL_INVALID, ModelReply, classify_terminal, enforce_usage,
     compact_batch_preview, compact_hex_inspection, compact_observation,
     compact_target_inspection, compact_tactical_surface, prompt_for, query_options,
+    compact_unit_inspection,
     query_tactical_surface, query_validate_batch, query_preview_batch,
     query_inspect_unit, query_inspect_target, query_inspect_hex, run,
     validate_inspect_unit_request, validate_inspect_target_request,
@@ -141,29 +142,46 @@ class ClientValidationTests(unittest.TestCase):
                                      "state_revision": 17}])
 
     def test_compact_tactical_surface_separates_moves_and_attacks(self):
-        rendered = compact_tactical_surface({"units": [{"unit_id": 5, "origins": [
+        rendered = compact_unit_inspection({"unit_id": 5, "origins": [
             {"col": 2, "row": 7, "current": True, "movable": False,
              "engagements": [{"defender_id": 9, "forecast": {
                  "outcome_bps": [7100, 2500, 400],
-                 "expected_damage_tenths": [210, 20]}}]}]}]})
+                 "expected_damage_tenths": [210, 20]}}]}]})
         self.assertIn("COORDS=col,row", rendered)
         self.assertIn("U5 at=2,7 moves=- attacks=@>T9 p[7100, 2500, 400] e[210, 20]", rendered)
 
-        rendered = compact_tactical_surface({"units": [{"unit_id": 5, "origins": [
+        rendered = compact_unit_inspection({"unit_id": 5, "origins": [
             {"col": 3, "row": 7, "current": False, "movable": True,
              "engagements": [{"defender_id": 9, "forecast": {
                  "outcome_bps": [7100, 2500, 400],
                  "expected_damage_tenths": [210, 20]}}]},
             {"col": 4, "row": 7, "current": False, "movable": True,
-             "engagements": []}]}]})
+             "engagements": []}]})
         self.assertIn("U5 moves=3,7|4,7 attacks=3,7>T9 p[7100, 2500, 400] e[210, 20]", rendered)
         self.assertNotIn("at=3,7", rendered)
+
+    def test_default_tactical_card_summarizes_movable_origins(self):
+        rendered = compact_tactical_surface({"units": [{"unit_id": 5, "origins": [
+            {"col": 2, "row": 7, "current": True, "movable": False,
+             "engagements": [{"defender_id": 9, "forecast": {
+                 "outcome_bps": [1000, 9000, 0], "expected_damage_tenths": [80, 20]}}]},
+            {"col": 3, "row": 7, "current": False, "movable": True,
+             "engagements": [{"defender_id": 10, "forecast": {
+                 "outcome_bps": [0, 10000, 0], "expected_damage_tenths": [30, 0]}}]},
+        ]}]})
+        self.assertIn("U5 at=2,7 move_n=1 target_n=2", rendered)
+        self.assertIn("current_attacks=T9", rendered)
+        self.assertNotIn("3,7>T10", rendered)
+        self.assertIn("inspect=inspect_unit", rendered)
 
     def test_compact_tactical_surface_renders_threat_and_economy_facts(self):
         rendered = compact_tactical_surface({
             "units": [],
             "threats": {"projected_time_of_day": "Night", "recruiters": [{
                 "recruiter_id": 1, "hp": 20, "col": 2, "row": 7,
+                "distinct_attacker_count": 1, "max_incoming_sum": 20,
+                "lethal_attackers_needed": 1, "origins_conflict": False,
+                "attacker_max_damage": [{"attacker_id": 16, "max_damage": 20}],
                 "threats": [{"attacker_id": 16, "origin_col": 4, "origin_row": 7,
                              "moved": True, "max_damage": 20,
                              "forecast": {"outcome_bps": [1200, 8000, 800],
@@ -172,8 +190,8 @@ class ClientValidationTests(unittest.TestCase):
                         "vacatable_castles": [{"unit_id": 8, "col": 3, "row": 7,
                                                "destinations": [{"col": 4, "row": 7}]}]},
         })
-        self.assertIn("THREAT R1 hp=20 at=2,7 tod=Night U16@4,7~", rendered)
-        self.assertIn("m20", rendered)
+        self.assertIn("THREAT R1 hp=20 at=2,7 tod=Night attackers=1 max_sum=20 lethal_n=1", rendered)
+        self.assertIn("detail=U16:m20", rendered)
         self.assertIn("E g6 income=4 vacate=U8@3,7>4,7", rendered)
 
     def test_compact_observation_is_deterministic_and_keeps_instance_facts(self):
@@ -235,7 +253,7 @@ class ClientValidationTests(unittest.TestCase):
         prompt = prompt_for({"tactical_surface": {"units": [], "visibility": "full",
                                                     "next_time_of_day": "Night"}}, [], compact=True)
         for text in (
-                "COORDS=col,row", "copy Move", "`moves`", "individual Recruit coordinates",
+                "COORDS=col,row", "call inspect_unit", "Move destination", "individual Recruit coordinates",
                 "RecruitBatch", "saving gold is allowed"):
             with self.subTest(text=text):
                 self.assertIn(text, prompt)
@@ -617,6 +635,10 @@ class ClientValidationTests(unittest.TestCase):
                     ]}},
                 {"type": "status", "ok": True, "what": "validate_batch", "body": {
                     "valid": True, "failed_index": None, "results": [{"ok": True}, {"ok": True}]}},
+                {"type": "status", "ok": True, "what": "preview_batch", "body": {
+                    "sampling": False, "candidates": [{"valid": True, "summary": {
+                        "affordable_recruitment_remaining": False}, "forecasts": [],
+                        "recruiter_threats": {"recruiters": []}}]}},
                 {"type": "game_end", "reason": "max_turns", "winner": None},
             ])
             args = argparse.Namespace(
@@ -627,6 +649,7 @@ class ClientValidationTests(unittest.TestCase):
                 max_prompt_bytes=16 * 1024 * 1024, token_input_limit=None,
                 token_output_limit=None, token_total_limit=None, validate_before_submit=True,
                 max_model_calls_per_turn=4, event_window_observations=1, diagnostic=False,
+                decision_metrics=True,
             )
             with mock.patch("tools.llm_client.subprocess.Popen", return_value=process), \
                     mock.patch("tools.llm_client.source_metadata", return_value={}), \
@@ -640,8 +663,10 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual(sent[1]["what"], "inspect_unit")
         self.assertEqual(sent[2]["what"], "preview_batch")
         self.assertEqual(sent[3]["what"], "validate_batch")
-        self.assertEqual(sent[4], second)
+        self.assertEqual(sent[4]["what"], "preview_batch")
+        self.assertEqual(sent[5], second)
         self.assertEqual([record for record in records if record["type"] == "preview_selection"][0]["matched_candidate"], 1)
+        self.assertEqual(len([record for record in records if record["type"] == "final_batch_preview"]), 1)
 
     def test_model_output_invalid_twice_is_model_invalid(self):
         """Validation failure on both the first call and the repair is the model

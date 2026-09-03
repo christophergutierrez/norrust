@@ -276,7 +276,7 @@ def query_inspect_unit(exchange, unit_id: int, state_revision: int) -> dict[str,
 
 
 def compact_unit_inspection(unit: dict[str, Any]) -> str:
-    return compact_tactical_surface({"units": [unit]})
+    return "COORDS=col,row\n" + "\n".join(compact_detailed_units([unit]))
 
 
 def validate_inspect_target_request(request: dict[str, Any]) -> int:
@@ -377,10 +377,9 @@ def compact_batch_preview(preview: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def compact_tactical_surface(surface: dict[str, Any]) -> str:
-    """Render core tactics as terse, unambiguous model-facing lines."""
-    lines: list[str] = []
-    for unit in surface.get("units", []):
+def compact_detailed_units(units: list[dict[str, Any]]) -> list[str]:
+    lines = []
+    for unit in units:
         if not isinstance(unit, dict):
             continue
         current = None
@@ -413,6 +412,43 @@ def compact_tactical_surface(surface: dict[str, Any]) -> str:
         fields.append("moves=%s" % ("|".join(moves) if moves else "-"))
         fields.append("attacks=%s" % ("|".join(attacks) if attacks else "-"))
         lines.append(" ".join(fields))
+    return lines
+
+
+def compact_tactical_surface(surface: dict[str, Any]) -> str:
+    """Render the default card; detailed movable origins are inspected on demand."""
+    lines: list[str] = []
+    for unit in surface.get("units", []):
+        if not isinstance(unit, dict):
+            continue
+        current = None
+        current_attacks = []
+        move_count = 0
+        target_ids = set()
+        for origin in unit.get("origins", []):
+            if not isinstance(origin, dict):
+                continue
+            if origin.get("movable"):
+                move_count += 1
+            if origin.get("current"):
+                current = "%s,%s" % (origin.get("col", "?"), origin.get("row", "?"))
+            for engagement in origin.get("engagements", []):
+                if not isinstance(engagement, dict):
+                    continue
+                target_ids.add(engagement.get("defender_id"))
+                if origin.get("current"):
+                    forecast = engagement.get("forecast", {})
+                    current_attacks.append("T%s p%s e%s" % (
+                        engagement.get("defender_id", "?"),
+                        forecast.get("outcome_bps", ["?", "?", "?"]),
+                        forecast.get("expected_damage_tenths", ["?", "?"])))
+        fields = ["U%s" % unit.get("unit_id", "?")]
+        if current is not None:
+            fields.append("at=%s" % current)
+        fields.extend(("move_n=%s" % move_count, "target_n=%s" % len(target_ids),
+                       "current_attacks=%s" % ("|".join(current_attacks) or "-"),
+                       "inspect=inspect_unit"))
+        lines.append(" ".join(fields))
     recruitment = surface.get("recruitment")
     if isinstance(recruitment, dict):
         options = ",".join("%s:%s" % (item.get("def_id", "?"), item.get("cost", "?"))
@@ -423,22 +459,15 @@ def compact_tactical_surface(surface: dict[str, Any]) -> str:
     for recruiter in surface.get("threats", {}).get("recruiters", []):
         if not isinstance(recruiter, dict):
             continue
-        threat_lines = []
-        for threat in recruiter.get("threats", []):
-            if not isinstance(threat, dict):
-                continue
-            forecast = threat.get("forecast", {})
-            threat_lines.append("U%s@%s,%s%s p%s e%s m%s" % (
-                threat.get("attacker_id", "?"), threat.get("origin_col", "?"),
-                threat.get("origin_row", "?"), "~" if threat.get("moved") else "",
-                forecast.get("outcome_bps", ["?", "?", "?"]),
-                forecast.get("expected_damage_tenths", ["?", "?"]),
-                threat.get("max_damage", "?")))
-        lines.append("THREAT R%s hp=%s at=%s,%s tod=%s %s" % (
+        maxima = ",".join("U%s:m%s" % (item.get("attacker_id", "?"), item.get("max_damage", "?"))
+                          for item in recruiter.get("attacker_max_damage", []) if isinstance(item, dict))
+        lines.append("THREAT R%s hp=%s at=%s,%s tod=%s attackers=%s max_sum=%s lethal_n=%s conflicts=%s detail=%s" % (
             recruiter.get("recruiter_id", "?"), recruiter.get("hp", "?"),
             recruiter.get("col", "?"), recruiter.get("row", "?"),
             surface.get("threats", {}).get("projected_time_of_day", "?"),
-            " ".join(threat_lines) if threat_lines else "none"))
+            recruiter.get("distinct_attacker_count", 0), recruiter.get("max_incoming_sum", 0),
+            recruiter.get("lethal_attackers_needed"), recruiter.get("origins_conflict", False),
+            maxima or "none"))
     economy = surface.get("economy")
     if isinstance(economy, dict):
         vacatable = []
@@ -478,10 +507,11 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
             "Use individual Recruit for exact placement; saving gold is allowed."
         )
     tactical_guidance = (
-        "Use tactical_surface exactly. COORDS=col,row. `at` is current and never a Move destination; copy Move "
-        "coordinates only from `moves`. `attacks` gives origin>target, p[defender-killed,both-survive,attacker-killed] "
-        "odds, and e[defender,attacker] damage. THREAT lines are complete-information forecasts if you EndTurn now; "
-        "`@col,row` is the enemy attack origin, `~` means it moves first, and `m` is maximum damage. "
+        "Use tactical_surface exactly. COORDS=col,row. `at` is current and never a Move destination. The base card gives "
+        "move/target counts and current-position attacks; call inspect_unit before choosing a Move destination. Forecasts use "
+        "p[defender-killed,both-survive,attacker-killed] and e[defender,attacker] damage. THREAT lines are complete-information "
+        "upper bounds if you EndTurn now: attackers is the distinct count, max_sum adds one maximum volley per attacker, "
+        "lethal_n is how many largest maximum volleys reach recruiter HP, and detail lists attacker:max-damage pairs. "
         "E income assumes current village ownership persists; E vacate lists legal off-castle destinations and is not a recommendation. "
         "Copy individual Recruit coordinates only from R `open`. You may instead request one read-only preview by returning "
         "{\"tool\":\"preview_batch\",\"candidates\":[[actions...]]}; provide at most two complete candidates, each ending EndTurn. "
@@ -721,6 +751,10 @@ def run(args: argparse.Namespace) -> int:
                 "token_total_limit": args.token_total_limit,
                 "prompt_cache_requested": "unreported", "prompt_cache_used": "unreported",
                 "prompt_cache_reported_tokens": None, "usage_measured": True,
+                "tool_calls_by_name": {}, "max_observed_prompt_bytes": 0,
+                "turns_with_lethal_danger_before": 0, "turns_with_lethal_danger_after": 0,
+                "turns_with_affordable_recruitment_left": 0,
+                "decision_metrics": getattr(args, "decision_metrics", False),
                 "sampling": None, "llm_authored_extra": False,
                 "winner": None, "reason": None, "terminal_class": None,
                 "infrastructure_invalid": False, "gameplay_valid": False,
@@ -912,6 +946,13 @@ def run(args: argparse.Namespace) -> int:
                 prompt_bytes = prompt.encode()
                 prompt_hash = hashlib.sha256(prompt_bytes).hexdigest()
                 regions = prompt_regions(prompt)
+                metadata["max_observed_prompt_bytes"] = max(
+                    metadata["max_observed_prompt_bytes"], len(prompt_bytes))
+                danger_before = any(
+                    isinstance(recruiter, dict) and recruiter.get("lethal_attackers_needed") is not None
+                    for recruiter in state.get("tactical_surface", {}).get("threats", {}).get("recruiters", []))
+                if danger_before:
+                    metadata["turns_with_lethal_danger_before"] += 1
                 if len(prompt_bytes) > args.max_prompt_bytes:
                     # A configuration/harness fault: the client built a prompt it
                     # was told not to send. Not the model's failure -- the model
@@ -994,10 +1035,16 @@ def run(args: argparse.Namespace) -> int:
                             else:
                                 raise ValueError("unknown tool request")
                             tool_calls_this_turn += 1
+                            metadata["tool_calls_by_name"][tool] = metadata["tool_calls_by_name"].get(tool, 0) + 1
                             tool_context += ("\nTOOL_RESULT_UNTRUSTED_DATA_BEGIN tool=" + tool + ":\n" +
                                              rendered + "\nTOOL_RESULT_UNTRUSTED_DATA_END\n")
                             followup_prompt = prompt + tool_context + (
                                 "Return another allowed tool request within budget or the final JSON action array only.")
+                            followup_bytes = len(followup_prompt.encode())
+                            if followup_bytes > args.max_prompt_bytes:
+                                raise RuntimeError("model_prompt_error: tool results exceed max_prompt_bytes")
+                            metadata["max_observed_prompt_bytes"] = max(
+                                metadata["max_observed_prompt_bytes"], followup_bytes)
                             model_calls_this_turn += 1
                             metadata["model_calls"] += 1
                             current_reply = backend.complete(followup_prompt)
@@ -1005,6 +1052,7 @@ def run(args: argparse.Namespace) -> int:
                             record({"type": "tool_followup", "tool": tool,
                                     "call": metadata["model_calls"],
                                     "prompt_hash": hashlib.sha256(followup_prompt.encode()).hexdigest(),
+                                    "prompt_bytes": followup_bytes,
                                     "raw_output": current_reply.text, "usage": current_reply.usage})
                             if current_reply.usage is None:
                                 metadata["usage_measured"] = False
@@ -1105,6 +1153,26 @@ def run(args: argparse.Namespace) -> int:
                                 "results": validation.get("results"),
                                 "failed_index": validation.get("failed_index"),
                                 "repair": True})
+                if getattr(args, "decision_metrics", False):
+                    try:
+                        final_preview = query_preview_batch(
+                            exchange, [orders], int(state.get("state_revision", 0)))
+                        candidate_metrics = final_preview.get("candidates", [{}])[0]
+                        final_threats = candidate_metrics.get("recruiter_threats") or {}
+                        lethal_after = any(
+                            isinstance(recruiter, dict) and recruiter.get("lethal_attackers_needed") is not None
+                            for recruiter in final_threats.get("recruiters", []))
+                        recruitment_left = candidate_metrics.get("summary", {}).get(
+                            "affordable_recruitment_remaining") is True
+                        metadata["turns_with_lethal_danger_after"] += int(lethal_after)
+                        metadata["turns_with_affordable_recruitment_left"] += int(recruitment_left)
+                        record({"type": "final_batch_preview", "orders": orders,
+                                "lethal_danger_before": danger_before,
+                                "lethal_danger_after": lethal_after,
+                                "affordable_recruitment_remaining": recruitment_left,
+                                "body": final_preview})
+                    except RuntimeError as metrics_error:
+                        record({"type": "metrics_error", "message": str(metrics_error)})
                 metadata["model_orders"] += len(orders)
                 record({"type": "forwarded_orders", "orders": orders,
                         "prompt_hash": prompt_hash})
@@ -1175,6 +1243,8 @@ def main() -> int:
                    help="initial model call plus bounded repairs allowed per turn")
     p.add_argument("--max-tool-calls-per-turn", type=int, default=4,
                    help="maximum read-only model tool requests per turn")
+    p.add_argument("--decision-metrics", action="store_true",
+                   help="preview final batches for recruiter-danger and recruitment telemetry")
     p.add_argument("--event-window-observations", type=int, default=1)
     p.add_argument("--log")
     a = p.parse_args()

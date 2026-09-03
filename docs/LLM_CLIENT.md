@@ -145,6 +145,13 @@ Tool calls are read-only and revision pinned. `--max-tool-calls-per-turn` bounds
 preview request is not accepted; after using tools, the model must eventually
 return a final action array.
 
+The normal card summarizes each unit with its current hex, legal move/target
+counts, and attacks available from its current hex. Movable origins and their
+target combinations are returned by `inspect_unit`; `--diagnostic` retains the
+complete JSON surface. `--decision-metrics` adds one read-only preview of the
+final model-authored batch to the log so evaluations can compare recruiter
+danger and remaining recruitment before and after the decision.
+
 A final action array is a non-empty JSON array of at most 256 objects. Every
 object has exactly the fields shown below. There is exactly one final
 `{"action":"EndTurn"}`; `EndTurn` is not optional and no action follows it.
