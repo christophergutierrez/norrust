@@ -113,10 +113,11 @@ not a hang.
 The model returns only a non-empty JSON array of at most 256 objects. Every object
 has exactly the fields shown below. There is exactly one final
 `{"action":"EndTurn"}`; `EndTurn` is not optional and no action follows it.
-Before ending a turn, the model must exhaust legal recruitment: move
-non-recruiters off castle hexes when needed, recruit into the resulting legal
-placements, and repeat until gold, definitions, or castle capacity prevents
-another recruit.
+Before ending a turn, the model is strongly encouraged to exhaust legal
+recruitment: move non-recruiters off castle hexes when needed, recruit into the
+resulting legal placements, and repeat until gold, definitions, or castle
+capacity prevents another recruit. It may deliberately save gold for a better
+recruit next turn when that is strategically justified.
 
 ```json
 {"action":"Move","unit_id":12,"col":4,"row":7}

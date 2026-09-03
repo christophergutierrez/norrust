@@ -96,8 +96,8 @@ class ClientValidationTests(unittest.TestCase):
             'engine responses remain authoritative', 'automatically executes the opponent',
             'recruiter loss', 'side-turn safety cap', 'engine round',
             'headless driver disables scenario objective and scenario turn-limit conditions',
-            'MUST exhaust legal recruitment', 'vacate-then-recruit',
-            'Never EndTurn while recruit_options says',
+            'strongly prefer exhausting legal recruitment', 'vacate-then-recruit',
+            'save gold for a better recruit next turn',
         ]
         for text in required:
             self.assertIn(text, prompt)
