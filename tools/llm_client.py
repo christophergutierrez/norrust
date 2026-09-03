@@ -231,28 +231,41 @@ def query_validate_batch(exchange, orders: list[dict[str, Any]], state_revision:
 
 
 def compact_tactical_surface(surface: dict[str, Any]) -> str:
-    """Render core tactics as terse, stable model-facing lines."""
+    """Render core tactics as terse, unambiguous model-facing lines."""
     lines: list[str] = []
     for unit in surface.get("units", []):
         if not isinstance(unit, dict):
             continue
-        origins = []
+        current = None
+        moves = []
+        attacks = []
         for origin in unit.get("origins", []):
             if not isinstance(origin, dict):
                 continue
-            prefix = "@%s,%s%s" % (origin.get("col", "?"), origin.get("row", "?"),
-                                    "*" if origin.get("current") else "")
-            engagements = []
+            coordinate = "%s,%s" % (origin.get("col", "?"), origin.get("row", "?"))
+            if origin.get("current"):
+                current = coordinate
+                prefix = "@"
+            elif origin.get("movable"):
+                moves.append(coordinate)
+                prefix = coordinate
+            else:
+                continue
             for engagement in origin.get("engagements", []):
                 if not isinstance(engagement, dict):
                     continue
                 forecast = engagement.get("forecast", {})
-                engagements.append("T%s p%s e%s" % (
+                attacks.append("%s>T%s p%s e%s" % (
+                    prefix,
                     engagement.get("defender_id", "?"),
                     forecast.get("outcome_bps", ["?", "?", "?"]),
                     forecast.get("expected_damage_tenths", ["?", "?"])))
-            origins.append(prefix + (" " + " ".join(engagements) if engagements else " -"))
-        lines.append("U%s %s" % (unit.get("unit_id", "?"), " | ".join(origins)))
+        fields = ["U%s" % unit.get("unit_id", "?")]
+        if current is not None:
+            fields.append("at=%s" % current)
+        fields.append("moves=%s" % ("|".join(moves) if moves else "-"))
+        fields.append("attacks=%s" % ("|".join(attacks) if attacks else "-"))
+        lines.append(" ".join(fields))
     recruitment = surface.get("recruitment")
     if isinstance(recruitment, dict):
         options = ",".join("%s:%s" % (item.get("def_id", "?"), item.get("cost", "?"))
@@ -260,6 +273,8 @@ def compact_tactical_surface(surface: dict[str, Any]) -> str:
         slots = ",".join("%s,%s" % (item.get("col", "?"), item.get("row", "?"))
                          for item in recruitment.get("placement_hexes", []) if isinstance(item, dict))
         lines.insert(0, "R g%s open=%s defs=%s" % (recruitment.get("gold", "?"), slots, options))
+    if lines:
+        lines.insert(0, "COORDS=col,row")
     return "\n".join(lines)
 
 
@@ -279,13 +294,16 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
     recruitment_guidance = ""
     if recruit_batch_enabled:
         recruitment_guidance = (
-            " For RecruitBatch the driver assists placement and you choose type and positive count."
+            " When recruiting without a special placement need, use RecruitBatch because the driver handles legal "
+            "placement; choose the unit type and count. You may still use individual Recruit for exact placement, "
+            "and may save gold for a better recruit next turn."
         )
     tactical_guidance = (
-        "Use tactical_surface exactly: entries marked current are attack origins, never Move destinations; "
-        "each origin lists authoritative target IDs and p[defender-killed,both-survive,attacker-killed] "
+        "Use tactical_surface exactly. COORDS=col,row. `at` is the unit's current hex and is never a Move destination; "
+        "copy Move coordinates only from that unit's `moves` field. `attacks` lists authoritative attack origins, "
+        "target IDs, and p[defender-killed,both-survive,attacker-killed] "
         "basis-point odds plus expected damage e[defender,attacker]. Recruitment gold, definitions, and "
-        "open placements are in its recruitment section."
+        "open placements are in its R line; copy Recruit coordinates only from `open`."
         if isinstance(state.get("tactical_surface"), dict) else
         "Use turn_options positions exactly for every move and re-check sequential destinations before submitting. "
         "turn_options lists, per unit, the hexes it may attack from and the target IDs reachable from each. "
@@ -299,7 +317,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "executes the opponent; never submit opponent actions. Return the non-empty JSON array only; "
         "actions execute sequentially in array order against the mutating state. "
         "The array has at most 256 objects with exactly one final {\"action\":\"EndTurn\"}. "
-        "Before EndTurn you should strongly prefer exhausting legal recruitment: move "
+        "Before EndTurn you should strongly prefer exhausting legal recruitment. Otherwise move "
         "non-recruiters off castle hexes when that creates placement capacity, recruit "
         "into every useful legal placement, and repeat vacate-then-recruit until gold, "
         "definitions, or castle capacity prevents another recruit. You may deliberately "

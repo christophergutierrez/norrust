@@ -54,13 +54,24 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual(requests, [{"action": "Query", "what": "tactical_surface",
                                      "state_revision": 17}])
 
-    def test_compact_tactical_surface_preserves_current_and_odds(self):
+    def test_compact_tactical_surface_separates_moves_and_attacks(self):
         rendered = compact_tactical_surface({"units": [{"unit_id": 5, "origins": [
             {"col": 2, "row": 7, "current": True, "movable": False,
              "engagements": [{"defender_id": 9, "forecast": {
                  "outcome_bps": [7100, 2500, 400],
                  "expected_damage_tenths": [210, 20]}}]}]}]})
-        self.assertIn("@2,7* T9 p[7100, 2500, 400] e[210, 20]", rendered)
+        self.assertIn("COORDS=col,row", rendered)
+        self.assertIn("U5 at=2,7 moves=- attacks=@>T9 p[7100, 2500, 400] e[210, 20]", rendered)
+
+        rendered = compact_tactical_surface({"units": [{"unit_id": 5, "origins": [
+            {"col": 3, "row": 7, "current": False, "movable": True,
+             "engagements": [{"defender_id": 9, "forecast": {
+                 "outcome_bps": [7100, 2500, 400],
+                 "expected_damage_tenths": [210, 20]}}]},
+            {"col": 4, "row": 7, "current": False, "movable": True,
+             "engagements": []}]}]})
+        self.assertIn("U5 moves=3,7|4,7 attacks=3,7>T9 p[7100, 2500, 400] e[210, 20]", rendered)
+        self.assertNotIn("at=3,7", rendered)
 
     def test_compact_observation_is_deterministic_and_keeps_instance_facts(self):
         state = {"turn": 2, "active_faction": 0, "time_of_day": "day", "cols": 3, "rows": 2,
@@ -116,6 +127,15 @@ class ClientValidationTests(unittest.TestCase):
         self.assertTrue(by_hex[(3, 7)]["movable"])
         # the standing hex must still be offered as an attack origin
         self.assertEqual(by_hex[(2, 7)]["target_ids"], [9])
+
+    def test_tactical_prompt_names_coordinate_sources_and_recruitment_choice(self):
+        prompt = prompt_for({"tactical_surface": {"units": []}}, [], compact=True)
+        for text in (
+                "COORDS=col,row", "copy Move coordinates only from that unit's `moves` field",
+                "copy Recruit coordinates only from `open`", "use RecruitBatch",
+                "may save gold for a better recruit next turn"):
+            with self.subTest(text=text):
+                self.assertIn(text, prompt)
 
     def test_real_driver_turn_options_mark_current_and_movable_hexes(self):
         driver = Path(__file__).resolve().parents[1] / "norrust_core" / "target" / "debug" / "greedy_driver"
