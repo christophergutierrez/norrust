@@ -53,6 +53,77 @@ pub struct ThreatSurface {
     pub recruiters: Vec<RecruiterThreats>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Coordinate {
+    pub col: i32,
+    pub row: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VacatableCastle {
+    pub unit_id: u32,
+    pub col: i32,
+    pub row: i32,
+    pub destinations: Vec<Coordinate>,
+}
+
+/// Return current village income and castle occupants that can legally move
+/// off castle terrain. This reports facts only; it does not recommend moving.
+pub fn economy_facts(
+    state: &GameState,
+    side: u8,
+) -> Result<(u32, Vec<VacatableCastle>), TacticsError> {
+    let income = state
+        .village_owners
+        .values()
+        .filter(|&&owner| owner == side as i8)
+        .count() as u32
+        * 2;
+    let mut result = Vec::new();
+    let mut ids: Vec<u32> = state
+        .units
+        .iter()
+        .filter_map(|(&id, unit)| (unit.faction == side && !unit.can_recruit).then_some(id))
+        .collect();
+    ids.sort_unstable();
+    for unit_id in ids {
+        let Some(&hex) = state.positions.get(&unit_id) else {
+            continue;
+        };
+        if !state
+            .board
+            .tile_at(hex)
+            .is_some_and(|tile| tile.terrain_id == "castle")
+        {
+            continue;
+        }
+        let destinations = legal_moves(state, unit_id)?
+            .into_iter()
+            .filter(|destination| {
+                !state
+                    .board
+                    .tile_at(*destination)
+                    .is_some_and(|tile| tile.terrain_id == "castle")
+            })
+            .map(|destination| {
+                let (col, row) = destination.to_offset();
+                Coordinate { col, row }
+            })
+            .collect::<Vec<_>>();
+        if destinations.is_empty() {
+            continue;
+        }
+        let (col, row) = hex.to_offset();
+        result.push(VacatableCastle {
+            unit_id,
+            col,
+            row,
+            destinations,
+        });
+    }
+    Ok((income, result))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TacticsError {
     #[error(transparent)]

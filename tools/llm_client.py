@@ -292,6 +292,20 @@ def compact_tactical_surface(surface: dict[str, Any]) -> str:
             recruiter.get("col", "?"), recruiter.get("row", "?"),
             surface.get("threats", {}).get("projected_time_of_day", "?"),
             " ".join(threat_lines) if threat_lines else "none"))
+    economy = surface.get("economy")
+    if isinstance(economy, dict):
+        vacatable = []
+        for item in economy.get("vacatable_castles", []):
+            if isinstance(item, dict):
+                destinations = "|".join(
+                    "%s,%s" % (dest.get("col", "?"), dest.get("row", "?"))
+                    for dest in item.get("destinations", []) if isinstance(dest, dict))
+                vacatable.append("U%s@%s,%s>%s" % (
+                    item.get("unit_id", "?"), item.get("col", "?"),
+                    item.get("row", "?"), destinations or "-"))
+        lines.append("E g%s income=%s vacate=%s" % (
+            economy.get("gold", "?"), economy.get("next_village_income", "?"),
+            "|".join(vacatable) if vacatable else "none"))
     if lines:
         lines.insert(0, "COORDS=col,row")
     return "\n".join(lines)
@@ -321,6 +335,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "coordinates only from `moves`. `attacks` gives origin>target, p[defender-killed,both-survive,attacker-killed] "
         "odds, and e[defender,attacker] damage. THREAT lines are complete-information forecasts if you EndTurn now; "
         "`@col,row` is the enemy attack origin, `~` means it moves first, and `m` is maximum damage. "
+        "E income assumes current village ownership persists; E vacate lists legal off-castle destinations and is not a recommendation. "
         "Copy individual Recruit coordinates only from R `open`."
         if isinstance(state.get("tactical_surface"), dict) else
         "Use turn_options positions exactly for every move and re-check sequential destinations before submitting. "

@@ -73,6 +73,23 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("U5 moves=3,7|4,7 attacks=3,7>T9 p[7100, 2500, 400] e[210, 20]", rendered)
         self.assertNotIn("at=3,7", rendered)
 
+    def test_compact_tactical_surface_renders_threat_and_economy_facts(self):
+        rendered = compact_tactical_surface({
+            "units": [],
+            "threats": {"projected_time_of_day": "Night", "recruiters": [{
+                "recruiter_id": 1, "hp": 20, "col": 2, "row": 7,
+                "threats": [{"attacker_id": 16, "origin_col": 4, "origin_row": 7,
+                             "moved": True, "max_damage": 20,
+                             "forecast": {"outcome_bps": [1200, 8000, 800],
+                                          "expected_damage_tenths": [150, 20]}}]}]},
+            "economy": {"gold": 6, "next_village_income": 4,
+                        "vacatable_castles": [{"unit_id": 8, "col": 3, "row": 7,
+                                               "destinations": [{"col": 4, "row": 7}]}]},
+        })
+        self.assertIn("THREAT R1 hp=20 at=2,7 tod=Night U16@4,7~", rendered)
+        self.assertIn("m20", rendered)
+        self.assertIn("E g6 income=4 vacate=U8@3,7>4,7", rendered)
+
     def test_compact_observation_is_deterministic_and_keeps_instance_facts(self):
         state = {"turn": 2, "active_faction": 0, "time_of_day": "day", "cols": 3, "rows": 2,
                  "gold": [4, 5],
