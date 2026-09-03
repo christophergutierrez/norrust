@@ -257,6 +257,32 @@ def query_preview_batch(exchange, candidates: list[list[dict[str, Any]]], state_
     return response["body"]
 
 
+def compact_batch_preview(preview: dict[str, Any]) -> str:
+    """Render candidate consequences without repeating detailed threat origins."""
+    lines = ["PREVIEW sampling=%s" % preview.get("sampling", "?")]
+    for index, candidate in enumerate(preview.get("candidates", [])):
+        if not isinstance(candidate, dict):
+            continue
+        summary = candidate.get("summary", {})
+        lines.append("C%s valid=%s gold=%s>%s units=%s>%s" % (
+            index, candidate.get("valid", "?"), summary.get("gold_before", "?"),
+            summary.get("gold_after", "?"), summary.get("units_before", "?"),
+            summary.get("units_after", "?")))
+        for attack in candidate.get("forecasts", []):
+            forecast = attack.get("forecast", {}) if isinstance(attack, dict) else {}
+            lines.append(" C%s A%s>T%s p%s e%s" % (
+                index, attack.get("attacker_id", "?"), attack.get("defender_id", "?"),
+                forecast.get("outcome_bps", ["?", "?", "?"]),
+                forecast.get("expected_damage_tenths", ["?", "?"])))
+        threats = candidate.get("recruiter_threats", {})
+        for recruiter in threats.get("recruiters", []) if isinstance(threats, dict) else []:
+            lines.append(" C%s R%s hp=%s attackers=%s max_sum=%s lethal_n=%s conflicts=%s" % (
+                index, recruiter.get("recruiter_id", "?"), recruiter.get("hp", "?"),
+                recruiter.get("distinct_attacker_count", "?"), recruiter.get("max_incoming_sum", "?"),
+                recruiter.get("lethal_attackers_needed"), recruiter.get("origins_conflict", "?")))
+    return "\n".join(lines)
+
+
 def compact_tactical_surface(surface: dict[str, Any]) -> str:
     """Render core tactics as terse, unambiguous model-facing lines."""
     lines: list[str] = []
@@ -823,10 +849,14 @@ def run(args: argparse.Namespace) -> int:
                             if model_calls_this_turn >= metadata["max_model_calls_per_turn"]:
                                 raise ValueError("preview request exhausted the per-turn model call budget")
                             preview = query_preview_batch(exchange, candidates, int(state.get("state_revision", 0)))
-                            record({"type": "batch_preview", "candidates": candidates, "body": preview})
+                            compact_preview = compact_batch_preview(preview)
+                            record({"type": "batch_preview", "tool": "preview_batch",
+                                    "candidate_count": len(candidates),
+                                    "result_bytes": len(compact_preview.encode()),
+                                    "candidates": candidates, "body": preview})
                             final_prompt = (
                                 prompt + "\nBATCH_PREVIEW_RESULT_UNTRUSTED_DATA_BEGIN:\n" +
-                                json.dumps(preview, sort_keys=True, separators=(",", ":")) +
+                                compact_preview +
                                 "\nBATCH_PREVIEW_RESULT_UNTRUSTED_DATA_END\nReturn the final JSON action array only."
                             )
                             model_calls_this_turn += 1
@@ -839,6 +869,9 @@ def run(args: argparse.Namespace) -> int:
                             if final_reply.usage is None:
                                 metadata["usage_measured"] = False
                             orders = validate_orders(final_reply.text, args.no_recruit_macro)
+                            record({"type": "preview_selection",
+                                    "matched_candidate": next((index for index, candidate in enumerate(candidates)
+                                                               if candidate == orders), None)})
                         else:
                             orders = validate_orders(reply.text, args.no_recruit_macro)
                     except ValueError as first:

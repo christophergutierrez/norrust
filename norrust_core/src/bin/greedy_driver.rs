@@ -33,7 +33,9 @@ use norrust_core::loader::{expand_recruits, Registry};
 use norrust_core::pathfinding::{get_zoc_hexes, reachable_hexes};
 use norrust_core::scenario::{load_board, load_units_file};
 use norrust_core::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
-use norrust_core::tactics::{economy_facts, recruiter_threats_after_end_turn, turn_tactics};
+use norrust_core::tactics::{
+    economy_facts, recruiter_threats_after_end_turn, turn_tactics, ThreatSurface,
+};
 use norrust_core::unit::Unit;
 use serde_json::{json, Value};
 
@@ -650,6 +652,36 @@ fn valid_action_shape(order: &Value) -> bool {
                 .is_some_and(|count| (1..=u32::MAX as u64).contains(&count)))
 }
 
+fn validate_model_batch_contract(
+    orders: &[Value],
+    state: &GameState,
+    model_side: u8,
+) -> Result<(), (&'static str, &'static str)> {
+    if orders.is_empty() {
+        return Err(("parse", "orders must be a non-empty array"));
+    }
+    if orders.len() > 256 {
+        return Err(("batch_too_large", "action batch exceeds 256 objects"));
+    }
+    if orders.iter().any(|order| !valid_action_shape(order)) {
+        return Err(("parse", "invalid action shape"));
+    }
+    let end_turns = orders
+        .iter()
+        .filter(|order| order.get("action").and_then(Value::as_str) == Some("EndTurn"))
+        .count();
+    if end_turns != 1
+        || orders
+            .last()
+            .and_then(|order| order.get("action"))
+            .and_then(Value::as_str)
+            != Some("EndTurn")
+    {
+        return Err(("parse", "invalid action batch structure"));
+    }
+    authorize_model_batch(orders, state, model_side)
+}
+
 struct BatchExecution {
     state: GameState,
     next_id: u32,
@@ -657,6 +689,9 @@ struct BatchExecution {
     events: Vec<GameEvent>,
     did_end: bool,
     forecasts: Vec<Value>,
+    pre_end_threats: Option<ThreatSurface>,
+    preview_error: Option<Value>,
+    post_combat_conditional: bool,
 }
 
 /// Apply one model batch to an isolated state. The commit path and the
@@ -676,8 +711,17 @@ fn execute_model_batch(
     let mut events = Vec::new();
     let mut did_end = false;
     let mut forecasts = Vec::new();
+    let mut pre_end_threats = None;
+    let mut preview_error = None;
+    let mut post_combat_conditional = false;
+    let mut conditional_ids = HashSet::new();
     for order in orders {
         let action_name = order.get("action").and_then(Value::as_str);
+        let conditional_on_survival = !sample_attacks
+            && ["unit_id", "attacker_id", "defender_id"]
+                .iter()
+                .filter_map(|field| order.get(*field).and_then(Value::as_u64))
+                .any(|id| conditional_ids.contains(&(id as u32)));
         if did_end {
             results.push(json!({"ok":true,"code":"game_over","skipped":true}));
             continue;
@@ -739,6 +783,14 @@ fn execute_model_batch(
                         let parameters = combat_parameters(&state, attacker, defender, origin)
                             .map_err(|_| norrust_core::game_state::ActionError::NotAdjacent)?;
                         let forecast = exact_exchange(&parameters);
+                        if forecast.outcome_bps[0] > 0 {
+                            conditional_ids.insert(defender);
+                            post_combat_conditional = true;
+                        }
+                        if forecast.outcome_bps[2] > 0 {
+                            conditional_ids.insert(attacker);
+                            post_combat_conditional = true;
+                        }
                         state.units.get_mut(&attacker).unwrap().attacked = true;
                         forecasts.push(json!({"attacker_id":attacker,"defender_id":defender,"forecast":forecast,"sampled":false}));
                         Ok(Vec::new())
@@ -785,7 +837,19 @@ fn execute_model_batch(
                 },
                 _ => Err(norrust_core::game_state::ActionError::UnitNotFound(0)),
             },
-            Some("EndTurn") => apply_action(&mut state, Action::EndTurn),
+            Some("EndTurn") => {
+                if !sample_attacks {
+                    match recruiter_threats_after_end_turn(&state, model_side) {
+                        Ok(threats) => pre_end_threats = Some(threats),
+                        Err(error) => {
+                            preview_error = Some(
+                                json!({"code":"threat_preview_error","message":error.to_string()}),
+                            );
+                        }
+                    }
+                }
+                apply_action(&mut state, Action::EndTurn)
+            }
             Some("Advance") => {
                 let id = order.get("unit_id").and_then(Value::as_u64);
                 let target = order
@@ -817,13 +881,20 @@ fn execute_model_batch(
         match result {
             Ok(mut produced) => {
                 events.append(&mut produced);
-                results.push(json!({"ok":true}));
+                results.push(if conditional_on_survival {
+                    json!({"ok":true,"conditional_on_survival":true})
+                } else {
+                    json!({"ok":true})
+                });
                 if action_name == Some("EndTurn") {
                     did_end = true;
                 }
             }
             Err(error) => {
-                results.push(json!({"ok":false,"code":error.code(),"message":error.to_string()}))
+                results.push(json!({"ok":false,"code":error.code(),"message":error.to_string()}));
+                if !sample_attacks {
+                    break;
+                }
             }
         }
         if state.check_winner().is_some() {
@@ -844,6 +915,9 @@ fn execute_model_batch(
         events,
         did_end,
         forecasts,
+        pre_end_threats,
+        preview_error,
+        post_combat_conditional,
     }
 }
 
@@ -1513,21 +1587,47 @@ fn interactive_protocol_game(c: &Config) {
                     {
                         json!({"type":"status","ok":false,"what":what,"code":"parse","message":"candidates must contain one or two action arrays"})
                     } else {
-                        let before_gold = state.gold[c.llm_side as usize];
-                        let before_units = state.units.len();
-                        let previews = candidates.unwrap().iter().map(|candidate| {
-                            let orders = candidate.as_array().cloned().unwrap_or_default();
-                            let execution = execute_model_batch(state.clone(), next_id, &orders, c.llm_side, &factions, &units, c.disable_recruit_batch, false);
-                            let valid = execution.results.iter().all(|result| result.get("ok") == Some(&Value::Bool(true)));
-                            let recruiter_hp: Vec<Value> = execution.state.units.iter().filter_map(|(id, unit)| {
+                        let candidates = candidates.unwrap();
+                        let contract_error =
+                            candidates
+                                .iter()
+                                .enumerate()
+                                .find_map(|(index, candidate)| {
+                                    let Some(orders) = candidate.as_array() else {
+                                        return Some((
+                                            index,
+                                            "parse",
+                                            "each candidate must be an action array",
+                                        ));
+                                    };
+                                    validate_model_batch_contract(orders, &state, c.llm_side)
+                                        .err()
+                                        .map(|(code, message)| (index, code, message))
+                                });
+                        if let Some((index, code, message)) = contract_error {
+                            json!({"type":"status","ok":false,"what":what,"code":code,"message":message,"candidate_index":index})
+                        } else {
+                            let before_gold = state.gold[c.llm_side as usize];
+                            let before_units = state.units.len();
+                            let previews = candidates.iter().map(|candidate| {
+                            let orders = candidate.as_array().expect("validated candidate");
+                            let execution = execute_model_batch(state.clone(), next_id, orders, c.llm_side, &factions, &units, c.disable_recruit_batch, false);
+                            let valid = execution.preview_error.is_none() && execution.results.len() == orders.len() && execution.results.iter().all(|result| result.get("ok") == Some(&Value::Bool(true)));
+                            let mut recruiter_hp: Vec<Value> = execution.state.units.iter().filter_map(|(id, unit)| {
                                 (unit.faction == c.llm_side && unit.can_recruit).then(|| json!({"unit_id":id,"hp":unit.hp}))
                             }).collect();
+                            recruiter_hp.sort_by_key(|item| item.get("unit_id").and_then(Value::as_u64));
                             json!({"valid":valid,"results":execution.results,"forecasts":execution.forecasts,
+                                "recruiter_threats":if valid { execution.pre_end_threats } else { None },
+                                "preview_error":execution.preview_error,
+                                "post_combat_conditional":execution.post_combat_conditional,
+                                "assumption":if execution.post_combat_conditional {"all forecast combatants survive in place"} else {"none"},
                                 "summary":{"gold_before":before_gold,"gold_after":execution.state.gold[c.llm_side as usize],
                                     "units_before":before_units,"units_after":execution.state.units.len(),"recruiters":recruiter_hp}})
                         }).collect::<Vec<_>>();
-                        json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,
+                            json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,
                             "body":{"sampling":false,"candidates":previews}})
+                        }
                     }
                 }
                 "tactical_surface" => {
@@ -1929,6 +2029,9 @@ fn interactive_protocol_game(c: &Config) {
             events,
             did_end,
             forecasts: _,
+            pre_end_threats: _,
+            preview_error: _,
+            post_combat_conditional: _,
         } = execute_model_batch(
             state.clone(),
             next_id,
@@ -2133,5 +2236,61 @@ mod tests {
                 "model actions are not authorized while the opponent is active"
             ))
         );
+    }
+
+    #[test]
+    fn preview_contract_rejects_malformed_batches_before_execution() {
+        let state = GameState::new(norrust_core::board::Board::new(1, 1));
+        assert_eq!(
+            validate_model_batch_contract(&[], &state, 0),
+            Err(("parse", "orders must be a non-empty array"))
+        );
+        assert_eq!(
+            validate_model_batch_contract(&[json!({"action":"Move"})], &state, 0),
+            Err(("parse", "invalid action shape"))
+        );
+        assert_eq!(
+            validate_model_batch_contract(
+                &[json!({"action":"Move","unit_id":1,"col":0,"row":0})],
+                &state,
+                0
+            ),
+            Err(("parse", "invalid action batch structure"))
+        );
+    }
+
+    #[test]
+    fn preview_captures_pre_end_threats_without_mutating_source_rng() {
+        let config = Config {
+            scenario: "big_battle_6".into(),
+            faction0: "undead".into(),
+            faction1: "undead".into(),
+            gold: 10,
+            seed: 42,
+            scripted: false,
+            llm_side: 0,
+            max_turns: 4,
+            turn_timeout: 1,
+            query_timeout: 1,
+            max_queries: 1,
+            disable_recruit_batch: false,
+        };
+        let (state, faction0, faction1, units) = init_game(&config).expect("valid fixture");
+        let before_rng = state.rng.state();
+        let execution = execute_model_batch(
+            state.clone(),
+            state.next_unit_id,
+            &[json!({"action":"EndTurn"})],
+            0,
+            &[faction0, faction1],
+            &units,
+            false,
+            false,
+        );
+
+        assert_eq!(state.rng.state(), before_rng);
+        assert_eq!(execution.state.rng.state(), before_rng);
+        assert!(execution.pre_end_threats.is_some());
+        assert!(execution.forecasts.is_empty());
     }
 }

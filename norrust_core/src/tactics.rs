@@ -1,5 +1,7 @@
 //! Read-only, engine-owned tactical candidates shared by AI and adapters.
 
+use std::collections::{HashMap, HashSet};
+
 use serde::Serialize;
 
 use crate::combat::{combat_parameters, exact_exchange, tod_label, ExchangeForecast};
@@ -44,6 +46,17 @@ pub struct RecruiterThreats {
     pub col: i32,
     pub row: i32,
     pub threats: Vec<RecruiterThreat>,
+    pub attacker_max_damage: Vec<AttackerMaxDamage>,
+    pub distinct_attacker_count: u32,
+    pub max_incoming_sum: u32,
+    pub lethal_attackers_needed: Option<u32>,
+    pub origins_conflict: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AttackerMaxDamage {
+    pub attacker_id: u32,
+    pub max_damage: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -51,6 +64,53 @@ pub struct ThreatSurface {
     pub visibility: &'static str,
     pub projected_time_of_day: &'static str,
     pub recruiters: Vec<RecruiterThreats>,
+}
+
+fn summarize_threats(
+    hp: u32,
+    threats: &[RecruiterThreat],
+) -> (Vec<AttackerMaxDamage>, u32, Option<u32>, bool) {
+    let mut maxima = HashMap::<u32, u32>::new();
+    let mut moved_origins = HashMap::<(i32, i32), HashSet<u32>>::new();
+    for threat in threats {
+        maxima
+            .entry(threat.attacker_id)
+            .and_modify(|damage| *damage = (*damage).max(threat.max_damage))
+            .or_insert(threat.max_damage);
+        if threat.moved {
+            moved_origins
+                .entry((threat.origin_col, threat.origin_row))
+                .or_default()
+                .insert(threat.attacker_id);
+        }
+    }
+    let mut attacker_max_damage = maxima
+        .into_iter()
+        .map(|(attacker_id, max_damage)| AttackerMaxDamage {
+            attacker_id,
+            max_damage,
+        })
+        .collect::<Vec<_>>();
+    attacker_max_damage.sort_by_key(|item| item.attacker_id);
+    let mut damages = attacker_max_damage
+        .iter()
+        .map(|item| item.max_damage)
+        .collect::<Vec<_>>();
+    damages.sort_unstable_by(|left, right| right.cmp(left));
+    let max_incoming_sum = damages
+        .iter()
+        .fold(0u32, |sum, damage| sum.saturating_add(*damage));
+    let mut cumulative = 0u32;
+    let lethal_attackers_needed = damages.iter().position(|damage| {
+        cumulative = cumulative.saturating_add(*damage);
+        cumulative >= hp
+    });
+    (
+        attacker_max_damage,
+        max_incoming_sum,
+        lethal_attackers_needed.map(|index| index as u32 + 1),
+        moved_origins.values().any(|attackers| attackers.len() > 1),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -270,15 +330,20 @@ pub fn recruiter_threats_after_end_turn(
                 });
             }
         }
-        threats.sort_by_key(|threat| {
-            (threat.attacker_id, threat.origin_row, threat.origin_col)
-        });
+        threats.sort_by_key(|threat| (threat.attacker_id, threat.origin_row, threat.origin_col));
+        let (attacker_max_damage, max_incoming_sum, lethal_attackers_needed, origins_conflict) =
+            summarize_threats(recruiter.hp, &threats);
         recruiters.push(RecruiterThreats {
             recruiter_id,
             hp: recruiter.hp,
             col,
             row,
             threats,
+            distinct_attacker_count: attacker_max_damage.len() as u32,
+            attacker_max_damage,
+            max_incoming_sum,
+            lethal_attackers_needed,
+            origins_conflict,
         });
     }
     recruiters.sort_by_key(|recruiter| recruiter.recruiter_id);
@@ -295,6 +360,69 @@ mod tests {
     use crate::board::Board;
     use crate::schema::AttackDef;
     use crate::unit::Unit;
+
+    #[test]
+    fn threat_summary_uses_distinct_attacker_maxima() {
+        let forecast = ExchangeForecast {
+            outcome_bps: [0, 10_000, 0],
+            expected_damage_tenths: [84, 0],
+        };
+        let threats = vec![
+            RecruiterThreat {
+                attacker_id: 10,
+                origin_col: 3,
+                origin_row: 4,
+                moved: true,
+                forecast: forecast.clone(),
+                max_damage: 14,
+            },
+            RecruiterThreat {
+                attacker_id: 10,
+                origin_col: 4,
+                origin_row: 4,
+                moved: true,
+                forecast: forecast.clone(),
+                max_damage: 14,
+            },
+            RecruiterThreat {
+                attacker_id: 11,
+                origin_col: 3,
+                origin_row: 4,
+                moved: true,
+                forecast: forecast.clone(),
+                max_damage: 14,
+            },
+            RecruiterThreat {
+                attacker_id: 12,
+                origin_col: 5,
+                origin_row: 4,
+                moved: true,
+                forecast,
+                max_damage: 14,
+            },
+        ];
+
+        let (maxima, sum, lethal, conflict) = summarize_threats(38, &threats);
+        assert_eq!(
+            maxima,
+            vec![
+                AttackerMaxDamage {
+                    attacker_id: 10,
+                    max_damage: 14
+                },
+                AttackerMaxDamage {
+                    attacker_id: 11,
+                    max_damage: 14
+                },
+                AttackerMaxDamage {
+                    attacker_id: 12,
+                    max_damage: 14
+                },
+            ]
+        );
+        assert_eq!((sum, lethal, conflict), (42, Some(3), true));
+        assert_eq!(summarize_threats(43, &threats).2, None);
+    }
 
     #[test]
     fn standing_origin_is_not_movable() {

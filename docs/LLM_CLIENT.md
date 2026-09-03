@@ -46,10 +46,13 @@ prompt on **stdin** and must write **one JSON object** to **stdout**:
 {"text": "[{\"action\":\"EndTurn\"}]"}
 ```
 
-`text` is the model's raw reply, which must itself be a bare JSON array of action
-objects. Optionally include `usage` (`{"input_tokens":N,"output_tokens":N}`); when
-absent, token budgets are recorded as estimated rather than measured. A minimal
-backend:
+`text` is the model's raw reply. On the first call for a turn, it may contain
+either the final bare JSON action array or one `preview_batch` request as described
+below. After preview results are returned, it must contain the final bare JSON
+action array. The command-backend envelope remains unchanged for both calls:
+`{"text":"..."}`. Optionally include `usage`
+(`{"input_tokens":N,"output_tokens":N}`); when absent, token budgets are recorded
+as estimated rather than measured. A minimal backend:
 
 ```python
 #!/usr/bin/env python3
@@ -60,8 +63,8 @@ reply = reply.strip().removeprefix("```json").removeprefix("```").removesuffix("
 sys.stdout.write(json.dumps({"text": reply}))
 ```
 
-Strip markdown fences before emitting: models frequently wrap the array, and a
-fenced reply is a validation failure that costs a repair round.
+Strip markdown fences before emitting: models frequently wrap their JSON reply,
+and a fenced reply is a validation failure that costs a repair round.
 
 **`--interactive-model`** prints the prompt to the terminal and reads the reply
 from stdin, so a human or an agent driving the terminal *is* the model. No
@@ -108,10 +111,22 @@ Judge liveness from the log's size and mtime over a multi-minute window. A model
 call in flight writes nothing while it runs, so a briefly static log is expected,
 not a hang.
 
-## Model action batch
+## Model response and action batch
 
-The model returns only a non-empty JSON array of at most 256 objects. Every object
-has exactly the fields shown below. There is exactly one final
+On its first response for a turn, the model returns either its final action array
+or one read-only preview request containing one or two complete candidate arrays:
+
+```json
+{"tool":"preview_batch","candidates":[[{"action":"EndTurn"}],[{"action":"Move","unit_id":12,"col":4,"row":7},{"action":"EndTurn"}]]}
+```
+
+Each candidate follows the same action-batch rules as a final response. The
+preview does not submit actions or sample combat. After receiving preview results,
+the model must return a final action array; a second preview request is not
+accepted.
+
+A final action array is a non-empty JSON array of at most 256 objects. Every
+object has exactly the fields shown below. There is exactly one final
 `{"action":"EndTurn"}`; `EndTurn` is not optional and no action follows it.
 Before ending a turn, the model is strongly encouraged to exhaust legal
 recruitment: move non-recruiters off castle hexes when needed, recruit into the

@@ -12,7 +12,7 @@ from . import llm_client
 from .llm_client import (
     TERMINAL_EXIT_CODES, TERMINAL_GAMEPLAY, TERMINAL_INFRASTRUCTURE,
     TERMINAL_MODEL_INVALID, ModelReply, classify_terminal, enforce_usage,
-    compact_observation, compact_tactical_surface, prompt_for, query_options,
+    compact_batch_preview, compact_observation, compact_tactical_surface, prompt_for, query_options,
     query_tactical_surface, query_validate_batch, query_preview_batch,
     run, validate_orders, validate_preview_request,
 )
@@ -34,6 +34,22 @@ class FakeDriverProcess:
 
 
 class ClientValidationTests(unittest.TestCase):
+    def test_compact_batch_preview_uses_recruiter_aggregate_not_origins(self):
+        rendered = compact_batch_preview({"sampling": False, "candidates": [{
+            "valid": True,
+            "summary": {"gold_before": 20, "gold_after": 6, "units_before": 4, "units_after": 5},
+            "forecasts": [],
+            "recruiter_threats": {"recruiters": [{
+                "recruiter_id": 1, "hp": 38, "distinct_attacker_count": 3,
+                "max_incoming_sum": 42, "lethal_attackers_needed": 3,
+                "origins_conflict": True,
+                "threats": [{"attacker_id": 9, "origin_col": 4, "origin_row": 7}],
+            }]},
+        }]})
+        self.assertIn("C0 R1 hp=38 attackers=3 max_sum=42 lethal_n=3 conflicts=True", rendered)
+        self.assertNotIn("origin_col", rendered)
+        self.assertLess(len(rendered.encode()), 8192)
+
     def test_preview_request_is_bounded_and_uses_normal_order_validation(self):
         request = json.dumps({"tool": "preview_batch", "candidates": [
             [{"action": "EndTurn"}],
@@ -518,6 +534,52 @@ class ClientValidationTests(unittest.TestCase):
             validate_before_submit=True)
         self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_GAMEPLAY])
         self.assertEqual(terminal["reason"], "max_turns")
+
+    def test_preview_round_trip_forwards_model_selected_candidate(self):
+        first = [{"action": "EndTurn"}]
+        second = [{"action": "Move", "unit_id": 1, "col": 2, "row": 3},
+                  {"action": "EndTurn"}]
+        preview_request = json.dumps({"tool": "preview_batch", "candidates": [first, second]})
+        with tempfile.TemporaryDirectory() as directory:
+            orders_path = directory + "/orders.jsonl"
+            log_path = directory + "/client.jsonl"
+            with open(orders_path, "w") as orders_file:
+                orders_file.write(json.dumps({"text": preview_request}) + "\n")
+                orders_file.write(json.dumps({"text": json.dumps(second)}) + "\n")
+            process = FakeDriverProcess([
+                {"type": "state", "active_faction": 0, "state_revision": 7},
+                {"type": "status", "ok": True, "what": "tactical_surface", "body": {"units": []}},
+                {"type": "status", "ok": True, "what": "preview_batch", "body": {
+                    "sampling": False, "candidates": [
+                        {"valid": True, "summary": {}, "forecasts": [], "recruiter_threats": {"recruiters": []}},
+                        {"valid": True, "summary": {}, "forecasts": [], "recruiter_threats": {"recruiters": []}},
+                    ]}},
+                {"type": "status", "ok": True, "what": "validate_batch", "body": {
+                    "valid": True, "failed_index": None, "results": [{"ok": True}, {"ok": True}]}},
+                {"type": "game_end", "reason": "max_turns", "winner": None},
+            ])
+            args = argparse.Namespace(
+                driver="driver", scenario="scenario", faction0="a", faction1="b", gold=1,
+                seed=2, max_turns=3, llm_side=0, turn_timeout=20, query_budget_seconds=5,
+                max_queries_per_turn=6, no_recruit_macro=False, interactive_model=False,
+                orders_file=orders_path, model_command=None, model_timeout=7, log=log_path,
+                max_prompt_bytes=16 * 1024 * 1024, token_input_limit=None,
+                token_output_limit=None, token_total_limit=None, validate_before_submit=True,
+                max_model_calls_per_turn=4, event_window_observations=1, diagnostic=False,
+            )
+            with mock.patch("tools.llm_client.subprocess.Popen", return_value=process), \
+                    mock.patch("tools.llm_client.source_metadata", return_value={}), \
+                    mock.patch("tools.llm_client.os.fsync"):
+                code = run(args)
+            records = [json.loads(line) for line in Path(log_path).read_text().splitlines()]
+
+        self.assertEqual(code, 0)
+        sent = [json.loads(line) for line in process.stdin.getvalue().splitlines()]
+        self.assertEqual(sent[0]["what"], "tactical_surface")
+        self.assertEqual(sent[1]["what"], "preview_batch")
+        self.assertEqual(sent[2]["what"], "validate_batch")
+        self.assertEqual(sent[3], second)
+        self.assertEqual([record for record in records if record["type"] == "preview_selection"][0]["matched_candidate"], 1)
 
     def test_model_output_invalid_twice_is_model_invalid(self):
         """Validation failure on both the first call and the repair is the model
