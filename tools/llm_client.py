@@ -279,6 +279,78 @@ def compact_unit_inspection(unit: dict[str, Any]) -> str:
     return compact_tactical_surface({"units": [unit]})
 
 
+def validate_inspect_target_request(request: dict[str, Any]) -> int:
+    if set(request) != {"tool", "unit_id"} or request.get("tool") != "inspect_target":
+        raise ValueError("inspect_target request must contain only tool and unit_id")
+    unit_id = request.get("unit_id")
+    if not isinstance(unit_id, int) or isinstance(unit_id, bool) or not 0 <= unit_id <= 2**32 - 1:
+        raise ValueError("inspect_target unit_id must be a uint32")
+    return unit_id
+
+
+def query_inspect_target(exchange, unit_id: int, state_revision: int) -> dict[str, Any]:
+    response = exchange({"action": "Query", "what": "inspect_target",
+                         "state_revision": state_revision, "unit_id": unit_id})
+    if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
+        message = response.get("message", "inspection query failed") if isinstance(response, dict) else "invalid inspection response"
+        raise RuntimeError(f"query_error: inspect_target: {message}")
+    return response["body"]
+
+
+def compact_target_inspection(target: dict[str, Any]) -> str:
+    attacks = []
+    for attack in target.get("attacks", []):
+        forecast = attack.get("forecast", {}) if isinstance(attack, dict) else {}
+        marker = "~" if attack.get("moved") else "@"
+        attacks.append("U%s%s%s,%s p%s e%s" % (
+            attack.get("attacker_id", "?"), marker, attack.get("origin_col", "?"),
+            attack.get("origin_row", "?"), forecast.get("outcome_bps", ["?", "?", "?"]),
+            forecast.get("expected_damage_tenths", ["?", "?"])))
+    return "TARGET U%s hp=%s at=%s,%s terrain=%s attacks=%s" % (
+        target.get("target_id", "?"), target.get("hp", "?"), target.get("col", "?"),
+        target.get("row", "?"), target.get("terrain", "?"), "|".join(attacks) or "none")
+
+
+def validate_inspect_hex_request(request: dict[str, Any]) -> tuple[int, int, str]:
+    if set(request) != {"tool", "col", "row", "phase"} or request.get("tool") != "inspect_hex":
+        raise ValueError("inspect_hex request must contain only tool, col, row, and phase")
+    col, row, phase = request.get("col"), request.get("row"), request.get("phase")
+    if any(not isinstance(value, int) or isinstance(value, bool) or not -(2**31) <= value <= 2**31 - 1
+           for value in (col, row)):
+        raise ValueError("inspect_hex coordinates must be int32")
+    if phase not in {"current", "next_opponent_turn"}:
+        raise ValueError("inspect_hex phase must be current or next_opponent_turn")
+    return col, row, phase
+
+
+def query_inspect_hex(exchange, col: int, row: int, phase: str, state_revision: int) -> dict[str, Any]:
+    response = exchange({"action": "Query", "what": "inspect_hex", "state_revision": state_revision,
+                         "col": col, "row": row, "phase": phase})
+    if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
+        message = response.get("message", "inspection query failed") if isinstance(response, dict) else "invalid inspection response"
+        raise RuntimeError(f"query_error: inspect_hex: {message}")
+    return response["body"]
+
+
+def compact_hex_inspection(body: dict[str, Any]) -> str:
+    inspection = body.get("inspection", {})
+    attacks = []
+    for attack in inspection.get("attacks", []):
+        marker = "~" if attack.get("moved") else "@"
+        suffix = ""
+        if attack.get("forecast") is not None:
+            suffix = " p%s e%s m%s" % (
+                attack["forecast"].get("outcome_bps", ["?", "?", "?"]),
+                attack["forecast"].get("expected_damage_tenths", ["?", "?"]),
+                attack.get("max_damage", "?"))
+        attacks.append("U%s%s%s,%s%s" % (
+            attack.get("attacker_id", "?"), marker, attack.get("origin_col", "?"),
+            attack.get("origin_row", "?"), suffix))
+    return "HEX %s,%s phase=%s visibility=%s occupant=%s attacks=%s" % (
+        inspection.get("col", "?"), inspection.get("row", "?"), body.get("phase", "?"),
+        body.get("visibility", "?"), inspection.get("occupant_id"), "|".join(attacks) or "none")
+
+
 def compact_batch_preview(preview: dict[str, Any]) -> str:
     """Render candidate consequences without repeating detailed threat origins."""
     lines = ["PREVIEW sampling=%s" % preview.get("sampling", "?")]
@@ -414,6 +486,8 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "Copy individual Recruit coordinates only from R `open`. You may instead request one read-only preview by returning "
         "{\"tool\":\"preview_batch\",\"candidates\":[[actions...]]}; provide at most two complete candidates, each ending EndTurn. "
         "You may inspect one friendly unit with {\"tool\":\"inspect_unit\",\"unit_id\":N}. Tools are read-only and do not submit actions. "
+        "Use {\"tool\":\"inspect_target\",\"unit_id\":N} for attackers of one enemy, or "
+        "{\"tool\":\"inspect_hex\",\"col\":C,\"row\":R,\"phase\":\"current|next_opponent_turn\"} for attack coverage. "
         "After tool results, either request another allowed tool within budget or return the final action array."
         if isinstance(state.get("tactical_surface"), dict) else
         "Use turn_options positions exactly for every move and re-check sequential destinations before submitting. "
@@ -898,6 +972,22 @@ def run(args: argparse.Namespace) -> int:
                                 result = query_inspect_unit(
                                     exchange, unit_id, int(state.get("state_revision", 0)))
                                 rendered = compact_unit_inspection(result)
+                                record({"type": "tool_result", "tool": tool,
+                                        "request": decoded, "result_bytes": len(rendered.encode()),
+                                        "body": result})
+                            elif tool == "inspect_target":
+                                unit_id = validate_inspect_target_request(decoded)
+                                result = query_inspect_target(
+                                    exchange, unit_id, int(state.get("state_revision", 0)))
+                                rendered = compact_target_inspection(result)
+                                record({"type": "tool_result", "tool": tool,
+                                        "request": decoded, "result_bytes": len(rendered.encode()),
+                                        "body": result})
+                            elif tool == "inspect_hex":
+                                col, row, phase = validate_inspect_hex_request(decoded)
+                                result = query_inspect_hex(
+                                    exchange, col, row, phase, int(state.get("state_revision", 0)))
+                                rendered = compact_hex_inspection(result)
                                 record({"type": "tool_result", "tool": tool,
                                         "request": decoded, "result_bytes": len(rendered.encode()),
                                         "body": result})

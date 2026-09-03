@@ -30,6 +30,43 @@ pub struct UnitTactics {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TargetAttackOption {
+    pub attacker_id: u32,
+    pub origin_col: i32,
+    pub origin_row: i32,
+    pub moved: bool,
+    pub forecast: ExchangeForecast,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TargetInspection {
+    pub target_id: u32,
+    pub hp: u32,
+    pub col: i32,
+    pub row: i32,
+    pub terrain: String,
+    pub attacks: Vec<TargetAttackOption>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HexAttackOption {
+    pub attacker_id: u32,
+    pub origin_col: i32,
+    pub origin_row: i32,
+    pub moved: bool,
+    pub max_damage: Option<u32>,
+    pub forecast: Option<ExchangeForecast>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HexInspection {
+    pub col: i32,
+    pub row: i32,
+    pub occupant_id: Option<u32>,
+    pub attacks: Vec<HexAttackOption>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RecruiterThreat {
     pub attacker_id: u32,
     pub origin_col: i32,
@@ -263,6 +300,123 @@ pub fn turn_tactics(state: &GameState, side: u8) -> Result<Vec<UnitTactics>, Tac
     ids.into_iter().map(|id| unit_tactics(state, id)).collect()
 }
 
+/// Invert the active side's tactical surface for one enemy target.
+pub fn target_inspection(
+    state: &GameState,
+    side: u8,
+    target_id: u32,
+) -> Result<TargetInspection, TacticsError> {
+    let target = state
+        .units
+        .get(&target_id)
+        .ok_or(ActionError::UnitNotFound(target_id))?;
+    if side != state.active_faction {
+        return Err(ActionError::NotYourTurn.into());
+    }
+    if target.faction == side {
+        return Err(ActionError::FriendlyTarget.into());
+    }
+    let target_hex = *state
+        .positions
+        .get(&target_id)
+        .ok_or(ActionError::UnitNotFound(target_id))?;
+    let mut attacks = Vec::new();
+    for unit in turn_tactics(state, side)? {
+        for origin in unit.origins {
+            if let Some(engagement) = origin
+                .engagements
+                .into_iter()
+                .find(|engagement| engagement.defender_id == target_id)
+            {
+                attacks.push(TargetAttackOption {
+                    attacker_id: unit.unit_id,
+                    origin_col: origin.col,
+                    origin_row: origin.row,
+                    moved: origin.movable,
+                    forecast: engagement.forecast,
+                });
+            }
+        }
+    }
+    attacks.sort_by_key(|attack| (attack.attacker_id, attack.origin_row, attack.origin_col));
+    let (col, row) = target_hex.to_offset();
+    Ok(TargetInspection {
+        target_id,
+        hp: target.hp,
+        col,
+        row,
+        terrain: state
+            .board
+            .tile_at(target_hex)
+            .map(|tile| tile.terrain_id.clone())
+            .unwrap_or_default(),
+        attacks,
+    })
+}
+
+/// Return active-side attack origins that cover one board hex. Forecasts and
+/// damage are present only when the hex currently contains an enemy.
+pub fn hex_inspection(state: &GameState, hex: Hex) -> Result<HexInspection, TacticsError> {
+    if !state.board.contains(hex) {
+        return Err(ActionError::DestinationOutOfBounds.into());
+    }
+    let occupant_id = state.hex_to_unit.get(&hex).copied();
+    let occupant_is_enemy = occupant_id.is_some_and(|id| {
+        state
+            .units
+            .get(&id)
+            .is_some_and(|unit| unit.faction != state.active_faction)
+    });
+    let mut attacks = Vec::new();
+    for unit in turn_tactics(state, state.active_faction)? {
+        let attacker = &state.units[&unit.unit_id];
+        for origin in unit.origins {
+            let origin_hex = Hex::from_offset(origin.col, origin.row);
+            let distance = origin_hex.distance(hex);
+            let range = match distance {
+                1 => "melee",
+                2 => "ranged",
+                _ => continue,
+            };
+            if !attacker.attacks.iter().any(|attack| attack.range == range) {
+                continue;
+            }
+            if occupant_id.is_some() && !occupant_is_enemy {
+                continue;
+            }
+            let (forecast, max_damage) = if let Some(defender_id) = occupant_id {
+                let parameters = combat_parameters(state, unit.unit_id, defender_id, origin_hex)?;
+                (
+                    Some(exact_exchange(&parameters)),
+                    Some(
+                        parameters
+                            .attacker_damage_per_hit
+                            .saturating_mul(parameters.attacker_strikes),
+                    ),
+                )
+            } else {
+                (None, None)
+            };
+            attacks.push(HexAttackOption {
+                attacker_id: unit.unit_id,
+                origin_col: origin.col,
+                origin_row: origin.row,
+                moved: origin.movable,
+                max_damage,
+                forecast,
+            });
+        }
+    }
+    attacks.sort_by_key(|attack| (attack.attacker_id, attack.origin_row, attack.origin_col));
+    let (col, row) = hex.to_offset();
+    Ok(HexInspection {
+        col,
+        row,
+        occupant_id,
+        attacks,
+    })
+}
+
 /// Calculate threats to the side's recruiters if it ended its turn now.
 ///
 /// The opponent's policy is intentionally not simulated. The clone advances
@@ -434,6 +588,53 @@ mod tests {
         let tactics = unit_tactics(&state, 1).unwrap();
         assert!(tactics.origins.iter().any(|o| o.current && !o.movable));
         assert!(tactics.origins.iter().filter(|o| o.current).count() == 1);
+    }
+
+    #[test]
+    fn target_and_hex_inspections_reuse_legal_origins() {
+        let mut board = Board::new(5, 5);
+        for col in 0..5 {
+            for row in 0..5 {
+                board.set_tile(Hex::from_offset(col, row), crate::board::Tile::new("flat"));
+            }
+        }
+        let mut state = GameState::new(board);
+        let mut archer = Unit::new(1, "archer", 20, 0);
+        archer.movement = 1;
+        archer.movement_costs.insert("flat".into(), 1);
+        archer.attacks.push(AttackDef {
+            id: "bow".into(),
+            name: "bow".into(),
+            damage: 7,
+            strikes: 2,
+            attack_type: "pierce".into(),
+            range: "ranged".into(),
+            specials: Vec::new(),
+        });
+        state.place_unit(archer, Hex::from_offset(0, 2));
+        state.place_unit(Unit::new(2, "target", 18, 1), Hex::from_offset(2, 2));
+
+        let target = target_inspection(&state, 0, 2).unwrap();
+        assert_eq!(
+            (target.col, target.row, target.terrain.as_str()),
+            (2, 2, "flat")
+        );
+        assert!(target.attacks.iter().any(|attack| {
+            attack.attacker_id == 1 && attack.origin_col == 0 && attack.origin_row == 2
+        }));
+        let occupied = hex_inspection(&state, Hex::from_offset(2, 2)).unwrap();
+        assert!(occupied
+            .attacks
+            .iter()
+            .any(|attack| attack.forecast.is_some()));
+
+        state.units.remove(&2);
+        state.positions.remove(&2);
+        state.hex_to_unit.remove(&Hex::from_offset(2, 2));
+        let empty = hex_inspection(&state, Hex::from_offset(2, 2)).unwrap();
+        assert!(empty.attacks.iter().any(|attack| {
+            attack.attacker_id == 1 && attack.forecast.is_none() && attack.max_damage.is_none()
+        }));
     }
 
     #[test]

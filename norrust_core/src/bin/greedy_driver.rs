@@ -34,7 +34,8 @@ use norrust_core::pathfinding::{get_zoc_hexes, reachable_hexes};
 use norrust_core::scenario::{load_board, load_units_file};
 use norrust_core::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
 use norrust_core::tactics::{
-    economy_facts, recruiter_threats_after_end_turn, turn_tactics, unit_tactics, ThreatSurface,
+    economy_facts, hex_inspection, recruiter_threats_after_end_turn, target_inspection,
+    turn_tactics, unit_tactics, ThreatSurface,
 };
 use norrust_core::unit::Unit;
 use serde_json::{json, Value};
@@ -1715,6 +1716,67 @@ fn interactive_protocol_game(c: &Config) {
                                     json!({"type":"status","ok":false,"what":what,"code":"inspect_unit_error","message":error.to_string()})
                                 }
                             },
+                        }
+                    }
+                }
+                "inspect_target" => {
+                    let requested_revision = parsed.get("state_revision").and_then(Value::as_u64);
+                    let unit_id = parsed.get("unit_id").and_then(Value::as_u64);
+                    if requested_revision != Some(state.state_revision) {
+                        json!({"type":"status","ok":false,"what":what,"code":"stale_state","message":"requested state revision is no longer current","state_revision":state.state_revision})
+                    } else if state.active_faction != c.llm_side {
+                        json!({"type":"status","ok":false,"what":what,"code":"unauthorized_side","message":"model queries are not authorized while the opponent is active"})
+                    } else if unit_id.is_none() || unit_id > Some(u32::MAX as u64) {
+                        json!({"type":"status","ok":false,"what":what,"code":"parse","message":"unit_id is required"})
+                    } else {
+                        match target_inspection(&state, c.llm_side, unit_id.unwrap() as u32) {
+                            Ok(inspection) => {
+                                json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,"body":inspection})
+                            }
+                            Err(error) => {
+                                json!({"type":"status","ok":false,"what":what,"code":"inspect_target_error","message":error.to_string()})
+                            }
+                        }
+                    }
+                }
+                "inspect_hex" => {
+                    let requested_revision = parsed.get("state_revision").and_then(Value::as_u64);
+                    let col = parsed.get("col").and_then(Value::as_i64);
+                    let row = parsed.get("row").and_then(Value::as_i64);
+                    let phase = parsed.get("phase").and_then(Value::as_str);
+                    if requested_revision != Some(state.state_revision) {
+                        json!({"type":"status","ok":false,"what":what,"code":"stale_state","message":"requested state revision is no longer current","state_revision":state.state_revision})
+                    } else if state.active_faction != c.llm_side {
+                        json!({"type":"status","ok":false,"what":what,"code":"unauthorized_side","message":"model queries are not authorized while the opponent is active"})
+                    } else if col.is_none()
+                        || row.is_none()
+                        || phase.is_none()
+                        || col.is_some_and(|value| {
+                            !(i32::MIN as i64..=i32::MAX as i64).contains(&value)
+                        })
+                        || row.is_some_and(|value| {
+                            !(i32::MIN as i64..=i32::MAX as i64).contains(&value)
+                        })
+                    {
+                        json!({"type":"status","ok":false,"what":what,"code":"parse","message":"col, row, and phase are required"})
+                    } else if !matches!(phase, Some("current" | "next_opponent_turn")) {
+                        json!({"type":"status","ok":false,"what":what,"code":"parse","message":"phase must be current or next_opponent_turn"})
+                    } else {
+                        let mut projected = state.clone();
+                        if phase == Some("next_opponent_turn") {
+                            let _ = apply_action(&mut projected, Action::EndTurn);
+                        }
+                        match hex_inspection(
+                            &projected,
+                            Hex::from_offset(col.unwrap() as i32, row.unwrap() as i32),
+                        ) {
+                            Ok(inspection) => {
+                                json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,
+                                "body":{"phase":phase.unwrap(),"visibility":"full","inspection":inspection}})
+                            }
+                            Err(error) => {
+                                json!({"type":"status","ok":false,"what":what,"code":"inspect_hex_error","message":error.to_string()})
+                            }
                         }
                     }
                 }

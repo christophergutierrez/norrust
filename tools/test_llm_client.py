@@ -12,10 +12,12 @@ from . import llm_client
 from .llm_client import (
     TERMINAL_EXIT_CODES, TERMINAL_GAMEPLAY, TERMINAL_INFRASTRUCTURE,
     TERMINAL_MODEL_INVALID, ModelReply, classify_terminal, enforce_usage,
-    compact_batch_preview, compact_observation, compact_tactical_surface, prompt_for, query_options,
+    compact_batch_preview, compact_hex_inspection, compact_observation,
+    compact_target_inspection, compact_tactical_surface, prompt_for, query_options,
     query_tactical_surface, query_validate_batch, query_preview_batch,
-    query_inspect_unit, run, validate_inspect_unit_request, validate_orders,
-    validate_preview_request,
+    query_inspect_unit, query_inspect_target, query_inspect_hex, run,
+    validate_inspect_unit_request, validate_inspect_target_request,
+    validate_inspect_hex_request, validate_orders, validate_preview_request,
 )
 
 
@@ -35,6 +37,45 @@ class FakeDriverProcess:
 
 
 class ClientValidationTests(unittest.TestCase):
+    def test_target_and_hex_renderers_keep_facts_and_empty_hex_uncertainty(self):
+        target = compact_target_inspection({
+            "target_id": 9, "hp": 20, "col": 4, "row": 7, "terrain": "flat",
+            "attacks": [{"attacker_id": 2, "origin_col": 3, "origin_row": 7,
+                         "moved": True, "forecast": {"outcome_bps": [1000, 9000, 0],
+                                                       "expected_damage_tenths": [80, 20]}}],
+        })
+        self.assertIn("TARGET U9 hp=20 at=4,7 terrain=flat", target)
+        self.assertIn("U2~3,7 p[1000, 9000, 0]", target)
+        empty = compact_hex_inspection({
+            "phase": "next_opponent_turn", "visibility": "full",
+            "inspection": {"col": 4, "row": 7, "occupant_id": None,
+                           "attacks": [{"attacker_id": 16, "origin_col": 4,
+                                        "origin_row": 5, "moved": True,
+                                        "forecast": None, "max_damage": None}]},
+        })
+        self.assertIn("HEX 4,7 phase=next_opponent_turn visibility=full occupant=None", empty)
+        self.assertIn("U16~4,5", empty)
+        self.assertNotIn(" p[", empty)
+
+    def test_target_and_hex_requests_are_exact_and_revision_pinned(self):
+        self.assertEqual(validate_inspect_target_request(
+            {"tool": "inspect_target", "unit_id": 9}), 9)
+        self.assertEqual(validate_inspect_hex_request(
+            {"tool": "inspect_hex", "col": 4, "row": 7,
+             "phase": "next_opponent_turn"}), (4, 7, "next_opponent_turn"))
+        with self.assertRaises(ValueError):
+            validate_inspect_hex_request(
+                {"tool": "inspect_hex", "col": 4, "row": 7, "phase": "future"})
+        requests = []
+        exchange = lambda request: requests.append(request) or {"ok": True, "body": {}}
+        query_inspect_target(exchange, 9, 3)
+        query_inspect_hex(exchange, 4, 7, "current", 3)
+        self.assertEqual(requests, [
+            {"action": "Query", "what": "inspect_target", "state_revision": 3, "unit_id": 9},
+            {"action": "Query", "what": "inspect_hex", "state_revision": 3,
+             "col": 4, "row": 7, "phase": "current"},
+        ])
+
     def test_inspect_unit_request_is_exact_and_revision_pinned(self):
         self.assertEqual(validate_inspect_unit_request({"tool": "inspect_unit", "unit_id": 7}), 7)
         for request in (

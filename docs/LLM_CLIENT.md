@@ -129,8 +129,18 @@ friendly unit at a time:
 ```
 
 That result contains the unit's legal destinations and legal targets from each
-origin with exact exchange forecasts. Tool calls are read-only and revision
-pinned. `--max-tool-calls-per-turn` bounds them (default 4), while
+origin with exact exchange forecasts. Two other factual inspections are
+available:
+
+```json
+{"tool":"inspect_target","unit_id":19}
+{"tool":"inspect_hex","col":4,"row":7,"phase":"next_opponent_turn"}
+```
+
+`inspect_target` lists friendly attackers and origins for one enemy.
+`inspect_hex` lists attack coverage for one hex either now or after the
+deterministic next `EndTurn`; empty hexes have no invented combat forecast.
+Tool calls are read-only and revision pinned. `--max-tool-calls-per-turn` bounds them (default 4), while
 `--max-model-calls-per-turn` remains the overall model-call bound. A second
 preview request is not accepted; after using tools, the model must eventually
 return a final action array.
