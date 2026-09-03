@@ -294,16 +294,13 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
     recruitment_guidance = ""
     if recruit_batch_enabled:
         recruitment_guidance = (
-            " When recruiting without a special placement need, use RecruitBatch because the driver handles legal "
-            "placement; choose the unit type and count. You may still use individual Recruit for exact placement, "
-            "and may save gold for a better recruit next turn."
+            " Use RecruitBatch for ordinary recruitment; the driver handles legal placement and you choose type/count. "
+            "Use individual Recruit for exact placement; saving gold is allowed."
         )
     tactical_guidance = (
-        "Use tactical_surface exactly. COORDS=col,row. `at` is the unit's current hex and is never a Move destination; "
-        "copy Move coordinates only from that unit's `moves` field. `attacks` lists authoritative attack origins, "
-        "target IDs, and p[defender-killed,both-survive,attacker-killed] "
-        "basis-point odds plus expected damage e[defender,attacker]. Recruitment gold, definitions, and "
-        "open placements are in its R line; copy Recruit coordinates only from `open`."
+        "Use tactical_surface exactly. COORDS=col,row. `at` is current and never a Move destination; copy Move "
+        "coordinates only from `moves`. `attacks` gives origin>target, p[defender-killed,both-survive,attacker-killed] "
+        "odds, and e[defender,attacker] damage. Copy individual Recruit coordinates only from R `open`."
         if isinstance(state.get("tactical_surface"), dict) else
         "Use turn_options positions exactly for every move and re-check sequential destinations before submitting. "
         "turn_options lists, per unit, the hexes it may attack from and the target IDs reachable from each. "

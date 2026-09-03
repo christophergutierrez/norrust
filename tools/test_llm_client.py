@@ -131,9 +131,8 @@ class ClientValidationTests(unittest.TestCase):
     def test_tactical_prompt_names_coordinate_sources_and_recruitment_choice(self):
         prompt = prompt_for({"tactical_surface": {"units": []}}, [], compact=True)
         for text in (
-                "COORDS=col,row", "copy Move coordinates only from that unit's `moves` field",
-                "copy Recruit coordinates only from `open`", "use RecruitBatch",
-                "may save gold for a better recruit next turn"):
+                "COORDS=col,row", "copy Move", "`moves`", "individual Recruit coordinates",
+                "RecruitBatch", "saving gold is allowed"):
             with self.subTest(text=text):
                 self.assertIn(text, prompt)
 
