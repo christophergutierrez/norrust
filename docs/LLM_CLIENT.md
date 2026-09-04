@@ -148,8 +148,8 @@ another tool anyway, the client does not execute it; its correction prompt
 retains all prior tool results and requires final actions. A second
 `preview_batch` request is still not accepted.
 
-The normal card summarizes each unit with its current hex, legal move/target
-counts, and attacks available from its current hex. Inspect a unit when a
+The normal card summarizes each unit with its current hex, legal move count,
+attackable target IDs, and attacks available from its current hex. Inspect a unit when a
 specific decision needs detailed origins; do not inspect every mover by
 default. Movable origins and their target combinations are returned by
 `inspect_unit`; `--diagnostic` retains the complete JSON surface.

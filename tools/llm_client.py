@@ -445,7 +445,8 @@ def compact_tactical_surface(surface: dict[str, Any]) -> str:
         fields = ["U%s" % unit.get("unit_id", "?")]
         if current is not None:
             fields.append("at=%s" % current)
-        fields.extend(("move_n=%s" % move_count, "target_n=%s" % len(target_ids),
+        target_text = ",".join("U%s" % target_id for target_id in sorted(target_ids)) or "-"
+        fields.extend(("move_n=%s" % move_count, "targets=%s" % target_text,
                        "current_attacks=%s" % ("|".join(current_attacks) or "-"),
                        "inspect=inspect_unit"))
         lines.append(" ".join(fields))
