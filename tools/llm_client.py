@@ -1021,6 +1021,7 @@ def run(args: argparse.Namespace) -> int:
     action_repair_attempted = False
     model_calls_this_turn = 0
     intent_memory = ""
+    pending_intent: Optional[str] = None
     metadata = {"scenario": args.scenario, "faction0": args.faction0, "faction1": args.faction1,
                 "gold": args.gold, "seed": args.seed, "llm_side": args.llm_side,
                 "first_player": 0 if args.llm_side == 0 else 1,
@@ -1090,6 +1091,10 @@ def run(args: argparse.Namespace) -> int:
             record({"type": "driver", "line": line})
             if line.get("type") == "status":
                 failure = status_failure(line)
+                if failure is None and pending_action and pending_intent is not None:
+                    intent_memory = pending_intent
+                    record({"type": "intent_update", "intent": intent_memory})
+                    pending_intent = None
                 if failure is not None:
                     if (line.get("ok") is True and pending_action
                             and not action_repair_attempted
@@ -1114,6 +1119,9 @@ def run(args: argparse.Namespace) -> int:
                             if repaired.usage is None:
                                 metadata["usage_measured"] = False
                             orders = validate_orders(repaired.text, args.no_recruit_macro)
+                            repaired_intent = response_intent(repaired.text)
+                            if repaired_intent is not None:
+                                turn_intent = repaired_intent
                         except (RuntimeError, ValueError) as repair_error:
                             # ValueError comes from validate_orders: the model's
                             # repaired output was still not a legal batch.
@@ -1582,6 +1590,9 @@ def run(args: argparse.Namespace) -> int:
                                 )
                                 continue
                             orders = validate_orders(repaired.text, args.no_recruit_macro)
+                            repaired_intent = response_intent(repaired.text)
+                            if repaired_intent is not None:
+                                turn_intent = repaired_intent
                         except ValueError as repair_error:
                             validation = {"valid": False, "failed_index": None,
                                           "results": [], "parse_error": str(repair_error)}
@@ -1648,6 +1659,7 @@ def run(args: argparse.Namespace) -> int:
                     durable({"type": "terminal", **metadata})
                     return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
                 pending_action = True
+                pending_intent = turn_intent
                 event_intervals.append(event_window)
                 event_window = []
             elif line.get("type") == "events":
