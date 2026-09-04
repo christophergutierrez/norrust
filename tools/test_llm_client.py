@@ -307,6 +307,15 @@ class ClientValidationTests(unittest.TestCase):
         self.assertNotIn("origin_col", rendered)
         self.assertLess(len(rendered.encode()), 8192)
 
+    def test_compact_batch_preview_renders_ordered_attack_sequences(self):
+        rendered = compact_batch_preview({"sampling": False, "candidates": [{
+            "valid": True, "summary": {}, "forecasts": [],
+            "attack_sequences": [{"target_id": 7, "target_hp": 20,
+                                   "attacker_ids": [3, 4], "kill_bps": 8100,
+                                   "expected_damage_tenths": 176}],
+        }]})
+        self.assertIn("C0 OUT T7 hp=20 attackers=U3,U4 p_kill=8100 e=176", rendered)
+
     def test_preview_request_is_bounded_and_uses_normal_order_validation(self):
         request = json.dumps({"tool": "preview_batch", "candidates": [
             [{"action": "EndTurn"}],

@@ -458,6 +458,14 @@ def compact_batch_preview(preview: dict[str, Any]) -> str:
                 index, attack.get("attacker_id", "?"), attack.get("defender_id", "?"),
                 forecast.get("outcome_bps", ["?", "?", "?"]),
                 forecast.get("expected_damage_tenths", ["?", "?"])))
+        for sequence in candidate.get("attack_sequences", []):
+            if not isinstance(sequence, dict):
+                continue
+            attackers = ",".join("U%s" % unit_id for unit_id in sequence.get("attacker_ids", []))
+            lines.append(" C%s OUT T%s hp=%s attackers=%s p_kill=%s e=%s" % (
+                index, sequence.get("target_id", "?"), sequence.get("target_hp", "?"),
+                attackers or "-", sequence.get("kill_bps", "?"),
+                sequence.get("expected_damage_tenths", "?")))
         threats = candidate.get("recruiter_threats", {})
         for recruiter in threats.get("recruiters", []) if isinstance(threats, dict) else []:
             lines.append(" C%s R%s hp=%s attackers=%s max_sum=%s lethal_n=%s conflicts=%s focus_p=%s focus_e=%s" % (
@@ -751,8 +759,10 @@ def tool_budget_repair_prompt(prompt: str, tool_context: str, error: str,
 
 def compact_draft_review(preview: dict[str, Any], danger_before: bool,
                          coverage: Optional[dict[str, Any]] = None,
-                         orders: Optional[list[dict[str, Any]]] = None) -> tuple[str, bool]:
-    candidate = preview.get("candidates", [{}])[0]
+                         orders: Optional[list[dict[str, Any]]] = None,
+                         draft_index: int = 0) -> tuple[str, bool]:
+    candidates = preview.get("candidates", [{}])
+    candidate = candidates[draft_index] if draft_index < len(candidates) else {}
     threats = candidate.get("recruiter_threats", {}) if isinstance(candidate, dict) else {}
     recruiters = threats.get("recruiters", []) if isinstance(threats, dict) else []
     lethal_after = any(
@@ -803,6 +813,21 @@ def compact_draft_review(preview: dict[str, Any], danger_before: bool,
         detail = ",".join("U%s" % unit.get("unit_id", "?") for unit in exposed) or "-"
         lines.append("EXPOSURE_DRAFT threatened=%s lethal=%s detail=%s" % (
             len(exposed), len(lethal), detail))
+    if len(candidates) > 1 and isinstance(candidates[0], dict):
+        baseline = candidates[0]
+        base_summary = baseline.get("summary", {})
+        draft_summary = candidate.get("summary", {})
+        lines.append("RECRUIT baseline=%s draft=%s" % (
+            base_summary.get("affordable_recruitment_remaining", "?"),
+            draft_summary.get("affordable_recruitment_remaining", "?")))
+        for label, item in (("BASE", baseline), ("DRAFT", candidate)):
+            item_exposure = item.get("exposure", {}) if isinstance(item, dict) else {}
+            for unit in item_exposure.get("units", []) if isinstance(item_exposure, dict) else []:
+                if not isinstance(unit, dict) or not unit.get("distinct_attacker_count", 0):
+                    continue
+                lines.append("REPLY_%s U%s hp=%s focus_p=%s focus_e=%s" % (
+                    label, unit.get("unit_id", "?"), unit.get("hp", "?"),
+                    unit.get("focus_kill_bps", []), unit.get("focus_expected_damage_tenths", [])))
     return "\n".join(lines), lethal_after
 
 
@@ -1526,15 +1551,6 @@ def run(args: argparse.Namespace) -> int:
                             tool = decoded.get("tool")
                             if tool_calls_this_turn >= metadata["max_tool_calls_per_turn"]:
                                 raise ValueError("tool call budget exhausted")
-                            # A tool result is useful only if the model still gets
-                            # to turn it into actions.  When the next inference
-                            # would consume the last available call, force that
-                            # inference into action-only recovery instead of
-                            # failing the turn before the model can answer.
-                            if model_calls_this_turn >= metadata["max_model_calls_per_turn"] - 1:
-                                raise ValueError(
-                                    "model call budget reserved for final actions"
-                                )
                             if tool == "preview_batch":
                                 if preview_candidates is not None:
                                     raise ValueError("preview_batch may be requested only once per turn")
@@ -1597,7 +1613,9 @@ def run(args: argparse.Namespace) -> int:
                                 raise RuntimeError("model_prompt_error: tool results exceed max_prompt_bytes")
                             metadata["max_observed_prompt_bytes"] = max(
                                 metadata["max_observed_prompt_bytes"], followup_bytes)
-                            model_calls_this_turn += 1
+                            # Tool followups are engine-fact lookups, not extra
+                            # decision or repair calls. Keep their separate cap
+                            # without spending the turn's decision budget.
                             metadata["model_calls"] += 1
                             current_reply = backend.complete(followup_prompt)
                             enforce_usage(current_reply, args)
@@ -1650,12 +1668,17 @@ def run(args: argparse.Namespace) -> int:
                     return TERMINAL_EXIT_CODES[terminal_class]
                 if draft_needs_preview(state, orders, danger_before):
                     try:
+                        preview_candidates = [[{"action": "EndTurn"}]]
+                        draft_index = 0
+                        if orders != preview_candidates[0]:
+                            preview_candidates.append(orders)
+                            draft_index = 1
                         draft_preview = query_preview_batch(
-                            exchange, [orders], int(state.get("state_revision", 0)))
-                        candidate = draft_preview.get("candidates", [{}])[0]
+                            exchange, preview_candidates, int(state.get("state_revision", 0)))
+                        candidate = draft_preview.get("candidates", [{}])[draft_index]
                         if isinstance(candidate, dict) and candidate.get("valid") is True:
                             review_text, danger_after = compact_draft_review(
-                                draft_preview, danger_before, coverage, orders)
+                                draft_preview, danger_before, coverage, orders, draft_index)
                             unused_attackers = set(coverage["available"]) - {
                                 order.get("unit_id") for order in orders
                                 if isinstance(order, dict) and order.get("action") == "Attack"

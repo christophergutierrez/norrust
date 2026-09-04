@@ -10,7 +10,7 @@
 //! target/debug/greedy_driver --scenario big_battle_6 \
 //!   --faction0 undead --faction1 undead --gold 300 --seed 42
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::env;
 use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
@@ -20,7 +20,8 @@ use std::time::{Duration, Instant};
 use norrust_core::ai::{ai_take_turn_greedy_actions, run_greedy_side_turn, GreedyTurnError};
 use norrust_core::board::Tile;
 use norrust_core::combat::{
-    combat_parameters, exact_exchange, preview_combat, tod_label, validate_combat_preview,
+    combat_parameters, exact_damage_sequence, exact_exchange, preview_combat, tod_label,
+    validate_combat_preview, CombatParameters,
 };
 use norrust_core::events::GameEvent;
 use norrust_core::game_state::{
@@ -770,6 +771,8 @@ struct BatchExecution {
     events: Vec<GameEvent>,
     did_end: bool,
     forecasts: Vec<Value>,
+    sequence_attacks: BTreeMap<u32, (u32, Vec<(u32, CombatParameters)>)>,
+    attack_sequences: Vec<Value>,
     pre_end_threats: Option<ThreatSurface>,
     pre_end_exposure: Option<UnitThreatSurface>,
     preview_error: Option<Value>,
@@ -794,6 +797,7 @@ fn execute_model_batch(
     let mut events = Vec::new();
     let mut did_end = false;
     let mut forecasts = Vec::new();
+    let mut sequence_attacks = BTreeMap::<u32, (u32, Vec<(u32, CombatParameters)>)>::new();
     let mut pre_end_threats = None;
     let mut pre_end_exposure = None;
     let mut preview_error = None;
@@ -868,6 +872,7 @@ fn execute_model_batch(
                         let parameters = combat_parameters(&state, attacker, defender, origin)
                             .map_err(|_| norrust_core::game_state::ActionError::NotAdjacent)?;
                         let forecast = exact_exchange(&parameters);
+                        let target_hp = target.hp;
                         if forecast.outcome_bps[0] > 0 {
                             conditional_ids.insert(defender);
                             post_combat_conditional = true;
@@ -878,6 +883,11 @@ fn execute_model_batch(
                         }
                         state.units.get_mut(&attacker).unwrap().attacked = true;
                         forecasts.push(json!({"attacker_id":attacker,"defender_id":defender,"forecast":forecast,"sampled":false}));
+                        sequence_attacks
+                            .entry(defender)
+                            .or_insert_with(|| (target_hp, Vec::new()))
+                            .1
+                            .push((attacker, parameters));
                         Ok(Vec::new())
                     })();
                     validation
@@ -955,6 +965,11 @@ fn execute_model_batch(
                             next_id = sub.next_id;
                             produced.extend(sub.events);
                             forecasts.extend(sub.forecasts);
+                            for (target, (hp, attacks)) in sub.sequence_attacks {
+                                let entry =
+                                    sequence_attacks.entry(target).or_insert((hp, Vec::new()));
+                                entry.1.extend(attacks);
+                            }
                             post_combat_conditional |= sub.post_combat_conditional;
                         }
                         Ok(produced)
@@ -1130,6 +1145,21 @@ fn execute_model_batch(
         events,
         did_end,
         forecasts,
+        sequence_attacks: sequence_attacks.clone(),
+        attack_sequences: sequence_attacks
+            .clone()
+            .into_iter()
+            .map(|(target_id, (hp, attacks))| {
+                let parameters = attacks.iter().map(|(_, parameters)| parameters.clone()).collect::<Vec<_>>();
+                json!({
+                    "target_id": target_id,
+                    "target_hp": hp,
+                    "attacker_ids": attacks.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                    "kill_bps": exact_damage_sequence(hp, &parameters).kill_bps,
+                    "expected_damage_tenths": exact_damage_sequence(hp, &parameters).expected_damage_tenths,
+                })
+            })
+            .collect(),
         pre_end_threats,
         pre_end_exposure,
         preview_error,
@@ -1835,6 +1865,7 @@ fn interactive_protocol_game(c: &Config) {
                             }).collect();
                             recruiter_hp.sort_by_key(|item| item.get("unit_id").and_then(Value::as_u64));
                             json!({"valid":valid,"results":execution.results,"forecasts":execution.forecasts,
+                                "attack_sequences":execution.attack_sequences,
                                 "recruiter_threats":if valid { execution.pre_end_threats } else { None },
                                 "exposure":if valid { execution.pre_end_exposure } else { None },
                                 "preview_error":execution.preview_error,
@@ -2424,6 +2455,8 @@ fn interactive_protocol_game(c: &Config) {
             events,
             did_end,
             forecasts: _,
+            sequence_attacks: _,
+            attack_sequences: _,
             pre_end_threats: _,
             preview_error: _,
             post_combat_conditional: _,
@@ -2719,6 +2752,11 @@ mod tests {
             .iter()
             .all(|result| result.get("ok") == Some(&Value::Bool(true))));
         assert_eq!(execution.forecasts.len(), 1);
+        assert_eq!(execution.attack_sequences.len(), 1);
+        assert_eq!(
+            execution.attack_sequences[0]["attacker_ids"],
+            json!([attacker])
+        );
     }
 
     #[test]
