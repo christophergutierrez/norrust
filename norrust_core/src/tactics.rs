@@ -4,7 +4,10 @@ use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
 
-use crate::combat::{combat_parameters, exact_exchange, tod_label, ExchangeForecast};
+use crate::combat::{
+    combat_parameters, exact_damage_sequence, exact_exchange, tod_label, CombatParameters,
+    ExchangeForecast,
+};
 use crate::game_state::{apply_action, legal_moves, legal_targets, Action, ActionError, GameState};
 use crate::hex::Hex;
 
@@ -89,6 +92,8 @@ pub struct RecruiterThreats {
     pub max_incoming_sum: u32,
     pub lethal_attackers_needed: Option<u32>,
     pub origins_conflict: bool,
+    pub focus_kill_bps: Vec<u32>,
+    pub focus_expected_damage_tenths: Vec<u32>,
     pub open_threats: Vec<RecruiterThreat>,
     pub open_attacker_max_damage: Vec<AttackerMaxDamage>,
     pub open_distinct_attacker_count: u32,
@@ -108,6 +113,8 @@ pub struct UnitDestinationThreat {
     pub lethal_attackers_needed: Option<u32>,
     pub origins_conflict: bool,
     pub attacker_max_damage: Vec<AttackerMaxDamage>,
+    pub focus_kill_bps: Vec<u32>,
+    pub focus_expected_damage_tenths: Vec<u32>,
     pub open_threats: Vec<RecruiterThreat>,
     pub open_attacker_max_damage: Vec<AttackerMaxDamage>,
     pub open_distinct_attacker_count: u32,
@@ -142,6 +149,8 @@ pub struct UnitThreatSummary {
     pub max_incoming_sum: u32,
     pub lethal_attackers_needed: Option<u32>,
     pub origins_conflict: bool,
+    pub focus_kill_bps: Vec<u32>,
+    pub focus_expected_damage_tenths: Vec<u32>,
     pub open_distinct_attacker_count: u32,
     pub open_max_incoming_sum: u32,
     pub open_lethal_attackers_needed: Option<u32>,
@@ -199,6 +208,93 @@ fn summarize_threats(
         max_incoming_sum,
         lethal_attackers_needed.map(|index| index as u32 + 1),
         moved_origins.values().any(|attackers| attackers.len() > 1),
+    )
+}
+
+#[derive(Clone)]
+struct ThreatCandidate {
+    threat: RecruiterThreat,
+    parameters: CombatParameters,
+}
+
+/// Return exact kill odds and expected damage for the best compatible
+/// one-, two-, and three-attacker volleys. A moved origin can only be used by
+/// one attacker; current origins do not conflict. This is a bounded factual
+/// calculation, not a recommendation or opponent simulation.
+fn focus_fire_bounds(hp: u32, candidates: &[ThreatCandidate]) -> (Vec<u32>, Vec<u32>) {
+    let mut best = vec![None; 3];
+    fn visit(
+        hp: u32,
+        candidates: &[ThreatCandidate],
+        start: usize,
+        selected: &mut Vec<usize>,
+        used_attackers: &mut HashSet<u32>,
+        used_moved_origins: &mut HashSet<(i32, i32)>,
+        best: &mut [Option<crate::combat::DamageSequenceForecast>],
+    ) {
+        if !selected.is_empty() {
+            let attacks = selected
+                .iter()
+                .map(|&index| candidates[index].parameters.clone())
+                .collect::<Vec<_>>();
+            let forecast = exact_damage_sequence(hp, &attacks);
+            let slot = selected.len() - 1;
+            if best[slot].as_ref().map_or(true, |current| {
+                (forecast.kill_bps, forecast.expected_damage_tenths)
+                    > (current.kill_bps, current.expected_damage_tenths)
+            }) {
+                best[slot] = Some(forecast);
+            }
+        }
+        if selected.len() == 3 {
+            return;
+        }
+        for index in start..candidates.len() {
+            let candidate = &candidates[index];
+            if used_attackers.contains(&candidate.threat.attacker_id) {
+                continue;
+            }
+            let origin = (candidate.threat.origin_col, candidate.threat.origin_row);
+            if candidate.threat.moved && used_moved_origins.contains(&origin) {
+                continue;
+            }
+            used_attackers.insert(candidate.threat.attacker_id);
+            if candidate.threat.moved {
+                used_moved_origins.insert(origin);
+            }
+            selected.push(index);
+            visit(
+                hp,
+                candidates,
+                index + 1,
+                selected,
+                used_attackers,
+                used_moved_origins,
+                best,
+            );
+            selected.pop();
+            if candidate.threat.moved {
+                used_moved_origins.remove(&origin);
+            }
+            used_attackers.remove(&candidate.threat.attacker_id);
+        }
+    }
+    visit(
+        hp,
+        candidates,
+        0,
+        &mut Vec::new(),
+        &mut HashSet::new(),
+        &mut HashSet::new(),
+        &mut best,
+    );
+    (
+        best.iter()
+            .map(|item| item.as_ref().map_or(0, |v| v.kill_bps))
+            .collect(),
+        best.iter()
+            .map(|item| item.as_ref().map_or(0, |v| v.expected_damage_tenths))
+            .collect(),
     )
 }
 
@@ -561,6 +657,8 @@ pub fn unit_threats_after_end_turn(
             max_incoming_sum: direct.max_incoming_sum,
             lethal_attackers_needed: direct.lethal_attackers_needed,
             origins_conflict: direct.origins_conflict,
+            focus_kill_bps: direct.focus_kill_bps,
+            focus_expected_damage_tenths: direct.focus_expected_damage_tenths,
             open_distinct_attacker_count: open.distinct_attacker_count,
             open_max_incoming_sum: open.max_incoming_sum,
             open_lethal_attackers_needed: open.lethal_attackers_needed,
@@ -591,7 +689,7 @@ fn target_threats_in_projected(
         .tile_at(hex)
         .map(|tile| tile.terrain_id.clone())
         .unwrap_or_else(|| "unknown".to_string());
-    let mut threats = Vec::new();
+    let mut candidates = Vec::new();
     let mut attacker_ids: Vec<u32> = projected
         .units
         .iter()
@@ -621,21 +719,52 @@ fn target_threats_in_projected(
                 target_id,
                 Hex::from_offset(origin.col, origin.row),
             )?;
-            threats.push(RecruiterThreat {
-                attacker_id,
-                origin_col: origin.col,
-                origin_row: origin.row,
-                moved: origin.movable,
-                max_damage: parameters
-                    .attacker_damage_per_hit
-                    .saturating_mul(parameters.attacker_strikes),
-                forecast: engagement.forecast,
+            candidates.push(ThreatCandidate {
+                parameters: parameters.clone(),
+                threat: RecruiterThreat {
+                    attacker_id,
+                    origin_col: origin.col,
+                    origin_row: origin.row,
+                    moved: origin.movable,
+                    max_damage: parameters
+                        .attacker_damage_per_hit
+                        .saturating_mul(parameters.attacker_strikes),
+                    forecast: engagement.forecast,
+                },
             });
         }
     }
+    candidates.sort_by_key(|candidate| {
+        (
+            candidate.threat.attacker_id,
+            candidate.threat.origin_row,
+            candidate.threat.origin_col,
+        )
+    });
+    let mut threats = candidates
+        .iter()
+        .map(|candidate| candidate.threat.clone())
+        .collect::<Vec<_>>();
     threats.sort_by_key(|threat| (threat.attacker_id, threat.origin_row, threat.origin_col));
     let (attacker_max_damage, max_incoming_sum, lethal_attackers_needed, origins_conflict) =
         summarize_threats(target.hp, &threats);
+    // One representative origin per attacker keeps the bounded join cheap
+    // on large boards. Current origins win ties, then maximum volley damage;
+    // moved-origin conflicts remain visible in the selected representatives.
+    let mut focus_candidates = candidates.clone();
+    focus_candidates.sort_by_key(|candidate| {
+        (
+            candidate.threat.attacker_id,
+            candidate.threat.moved,
+            std::cmp::Reverse(candidate.threat.max_damage),
+            std::cmp::Reverse(candidate.threat.forecast.outcome_bps[0]),
+            candidate.threat.origin_row,
+            candidate.threat.origin_col,
+        )
+    });
+    focus_candidates.dedup_by_key(|candidate| candidate.threat.attacker_id);
+    let (focus_kill_bps, focus_expected_damage_tenths) =
+        focus_fire_bounds(target.hp, &focus_candidates);
     Ok(Some(RecruiterThreats {
         recruiter_id: target_id,
         hp: target.hp,
@@ -648,6 +777,8 @@ fn target_threats_in_projected(
         max_incoming_sum,
         lethal_attackers_needed,
         origins_conflict,
+        focus_kill_bps,
+        focus_expected_damage_tenths,
         open_threats: Vec::new(),
         open_attacker_max_damage: Vec::new(),
         open_distinct_attacker_count: 0,
@@ -734,6 +865,8 @@ pub fn unit_destination_threats(
             lethal_attackers_needed: summary.lethal_attackers_needed,
             origins_conflict: summary.origins_conflict,
             attacker_max_damage: summary.attacker_max_damage,
+            focus_kill_bps: summary.focus_kill_bps,
+            focus_expected_damage_tenths: summary.focus_expected_damage_tenths,
             open_threats: open.threats,
             open_attacker_max_damage: open.attacker_max_damage,
             open_distinct_attacker_count: open.distinct_attacker_count,
@@ -1131,5 +1264,51 @@ mod tests {
             .destinations
             .iter()
             .all(|destination| destination.col != 1 || destination.row != 1));
+    }
+
+    #[test]
+    fn focus_fire_bounds_are_exact_and_respect_moved_origin_conflicts() {
+        let parameters = |damage| CombatParameters {
+            attacker_attack_id: "bolt".into(),
+            defender_attack_id: None,
+            attacker_hit_pct: 100,
+            defender_hit_pct: 0,
+            attacker_damage_per_hit: damage,
+            attacker_strikes: 1,
+            defender_damage_per_hit: 0,
+            defender_strikes: 0,
+            attacker_hp: 10,
+            defender_hp: 20,
+            attacker_terrain_defense: 0,
+            defender_terrain_defense: 0,
+        };
+        let threat = |id, moved, col| RecruiterThreat {
+            attacker_id: id,
+            origin_col: col,
+            origin_row: 1,
+            moved,
+            forecast: ExchangeForecast {
+                outcome_bps: [0, 10_000, 0],
+                expected_damage_tenths: [0, 0],
+            },
+            max_damage: 10,
+        };
+        let candidates = vec![
+            ThreatCandidate {
+                threat: threat(1, true, 2),
+                parameters: parameters(10),
+            },
+            ThreatCandidate {
+                threat: threat(2, true, 2),
+                parameters: parameters(10),
+            },
+            ThreatCandidate {
+                threat: threat(2, true, 3),
+                parameters: parameters(10),
+            },
+        ];
+        let (kill, expected) = focus_fire_bounds(20, &candidates);
+        assert_eq!(kill, vec![0, 10_000, 0]);
+        assert_eq!(expected, vec![100, 200, 0]);
     }
 }

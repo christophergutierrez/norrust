@@ -321,12 +321,14 @@ def compact_unit_inspection(unit: dict[str, Any]) -> str:
             if not isinstance(destination, dict):
                 continue
             marker = "@" if destination.get("current") else "->"
-            item = "%s%s,%s a%s m%s lethal_n=%s conflict=%s" % (
+            item = "%s%s,%s a%s m%s lethal_n=%s conflict=%s focus_p=%s focus_e=%s" % (
                 marker, destination.get("col", "?"), destination.get("row", "?"),
                 destination.get("distinct_attacker_count", "?"),
                 destination.get("max_incoming_sum", "?"),
                 destination.get("lethal_attackers_needed"),
-                destination.get("origins_conflict", "?"))
+                destination.get("origins_conflict", "?"),
+                destination.get("focus_kill_bps", []),
+                destination.get("focus_expected_damage_tenths", []))
             if "open_distinct_attacker_count" in destination:
                 item += " open_a%s open_m%s open_lethal_n=%s open_conflict=%s" % (
                     destination.get("open_distinct_attacker_count", "?"),
@@ -458,10 +460,11 @@ def compact_batch_preview(preview: dict[str, Any]) -> str:
                 forecast.get("expected_damage_tenths", ["?", "?"])))
         threats = candidate.get("recruiter_threats", {})
         for recruiter in threats.get("recruiters", []) if isinstance(threats, dict) else []:
-            lines.append(" C%s R%s hp=%s attackers=%s max_sum=%s lethal_n=%s conflicts=%s" % (
+            lines.append(" C%s R%s hp=%s attackers=%s max_sum=%s lethal_n=%s conflicts=%s focus_p=%s focus_e=%s" % (
                 index, recruiter.get("recruiter_id", "?"), recruiter.get("hp", "?"),
                 recruiter.get("distinct_attacker_count", "?"), recruiter.get("max_incoming_sum", "?"),
-                recruiter.get("lethal_attackers_needed"), recruiter.get("origins_conflict", "?")))
+                recruiter.get("lethal_attackers_needed"), recruiter.get("origins_conflict", "?"),
+                recruiter.get("focus_kill_bps", []), recruiter.get("focus_expected_damage_tenths", [])))
             if "open_distinct_attacker_count" in recruiter:
                 lines.append(" C%s OPEN_R%s attackers=%s max_sum=%s lethal_n=%s conflicts=%s" % (
                     index, recruiter.get("recruiter_id", "?"),
@@ -476,10 +479,11 @@ def compact_batch_preview(preview: dict[str, Any]) -> str:
             if not (unit.get("distinct_attacker_count", 0) or
                     unit.get("open_distinct_attacker_count", 0)):
                 continue
-            lines.append(" C%s EXPOSURE U%s hp=%s at=%s,%s direct_a=%s direct_m=%s open_a=%s open_m=%s open_lethal_n=%s" % (
+            lines.append(" C%s EXPOSURE U%s hp=%s at=%s,%s direct_a=%s direct_m=%s focus_p=%s focus_e=%s open_a=%s open_m=%s open_lethal_n=%s" % (
                 index, unit.get("unit_id", "?"), unit.get("hp", "?"),
                 unit.get("col", "?"), unit.get("row", "?"),
                 unit.get("distinct_attacker_count", 0), unit.get("max_incoming_sum", 0),
+                unit.get("focus_kill_bps", []), unit.get("focus_expected_damage_tenths", []),
                 unit.get("open_distinct_attacker_count", 0), unit.get("open_max_incoming_sum", 0),
                 unit.get("open_lethal_attackers_needed")))
     return "\n".join(lines)
@@ -625,12 +629,14 @@ def compact_tactical_surface(surface: dict[str, Any]) -> str:
                           for item in recruiter.get("attacker_max_damage", []) if isinstance(item, dict))
         terrain = recruiter.get("terrain", "?")
         on_keep = terrain == "keep"
-        lines.append("THREAT R%s hp=%s at=%s,%s tod=%s attackers=%s max_sum=%s lethal_n=%s conflicts=%s detail=%s terrain=%s on_keep=%s" % (
+        lines.append("THREAT R%s hp=%s at=%s,%s tod=%s attackers=%s max_sum=%s lethal_n=%s conflicts=%s focus_p=%s focus_e=%s detail=%s terrain=%s on_keep=%s" % (
             recruiter.get("recruiter_id", "?"), recruiter.get("hp", "?"),
             recruiter.get("col", "?"), recruiter.get("row", "?"),
             surface.get("threats", {}).get("projected_time_of_day", "?"),
             recruiter.get("distinct_attacker_count", 0), recruiter.get("max_incoming_sum", 0),
-            recruiter.get("lethal_attackers_needed"), recruiter.get("origins_conflict", False),
+            recruiter.get("lethal_attackers_needed"),
+            recruiter.get("origins_conflict", False),
+            recruiter.get("focus_kill_bps", []), recruiter.get("focus_expected_damage_tenths", []),
             maxima or "none", terrain, on_keep))
         origin_groups: dict[tuple[Any, Any], dict[str, Any]] = {}
         for threat in recruiter.get("threats", []):
@@ -690,11 +696,12 @@ def compact_tactical_surface(surface: dict[str, Any]) -> str:
                 exposed.append(unit)
         if exposed:
             for unit in exposed:
-                lines.append("EXPOSURE U%s hp=%s at=%s,%s terrain=%s direct_a=%s direct_m=%s lethal_n=%s open_a=%s open_m=%s open_lethal_n=%s" % (
+                lines.append("EXPOSURE U%s hp=%s at=%s,%s terrain=%s direct_a=%s direct_m=%s lethal_n=%s focus_p=%s focus_e=%s open_a=%s open_m=%s open_lethal_n=%s" % (
                     unit.get("unit_id", "?"), unit.get("hp", "?"),
                     unit.get("col", "?"), unit.get("row", "?"), unit.get("terrain", "?"),
                     unit.get("distinct_attacker_count", 0), unit.get("max_incoming_sum", 0),
                     unit.get("lethal_attackers_needed"),
+                    unit.get("focus_kill_bps", []), unit.get("focus_expected_damage_tenths", []),
                     unit.get("open_distinct_attacker_count", 0), unit.get("open_max_incoming_sum", 0),
                     unit.get("open_lethal_attackers_needed")))
         else:
@@ -877,6 +884,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "p[defender-killed,both-survive,attacker-killed] and e[defender,attacker] damage. THREAT lines are complete-information "
         "upper bounds if you EndTurn now: attackers is the distinct count, max_sum adds one maximum volley per attacker, "
         "lethal_n is how many largest maximum volleys reach recruiter HP, and detail lists attacker:max-damage pairs. "
+        "focus_p=[p1,p2,p3] is the exact kill probability with the best compatible one-, two-, and three-attacker direct volleys; focus_e is their expected cumulative damage. "
         "OPEN_THREAT is a conservative bound that ignores unit blockers that may move or die before an attacker acts; it is not an executable opponent batch. "
         "EXPOSURE lines report the same facts for friendly units; direct is the occupied-board result and open is the blocker-removed bound. "
         "E income assumes current village ownership persists; E vacate lists legal off-castle destinations and is not a recommendation. "

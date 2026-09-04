@@ -5,6 +5,16 @@ use crate::hex::Hex;
 use crate::schema::AttackDef;
 use crate::unit::{has_special, Alignment, Unit};
 
+/// Exact cumulative damage result for one target receiving one or more
+/// independent attack volleys. This is read-only and never consumes RNG.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct DamageSequenceForecast {
+    /// Probability that cumulative damage reaches the target's starting HP.
+    pub kill_bps: u32,
+    /// Expected cumulative damage in tenths of HP.
+    pub expected_damage_tenths: u32,
+}
+
 /// Fully resolved parameters for one immediate combat exchange.
 ///
 /// This is a pure, engine-owned description shared by previews, tactical
@@ -113,6 +123,68 @@ pub fn exact_exchange(parameters: &CombatParameters) -> ExchangeForecast {
             (expected_defender_damage * 10.0).round() as u32,
             (expected_attacker_damage * 10.0).round() as u32,
         ],
+    }
+}
+
+/// Calculate the exact probability of killing a target with several volleys.
+///
+/// Each volley uses the same damage distribution as the attacker's side of
+/// `exact_exchange`. Retaliation is intentionally irrelevant here: this is a
+/// target-focused bound, and each selected attacker is assumed to reach its
+/// declared attack. Callers are responsible for selecting legal, compatible
+/// attacker origins.
+pub fn exact_damage_sequence(
+    defender_hp: u32,
+    attacks: &[CombatParameters],
+) -> DamageSequenceForecast {
+    if defender_hp == 0 {
+        return DamageSequenceForecast {
+            kill_bps: 10_000,
+            expected_damage_tenths: 0,
+        };
+    }
+    if attacks.is_empty() {
+        return DamageSequenceForecast {
+            kill_bps: 0,
+            expected_damage_tenths: 0,
+        };
+    }
+    let mut distribution = vec![(0u32, 1.0f64)];
+    let mut expected_damage = 0.0f64;
+    for parameters in attacks {
+        let mut volley = Vec::with_capacity(parameters.attacker_strikes as usize + 1);
+        for hits in 0..=parameters.attacker_strikes {
+            volley.push((
+                hits.saturating_mul(parameters.attacker_damage_per_hit),
+                binomial_probability(
+                    parameters.attacker_strikes,
+                    hits,
+                    parameters.attacker_hit_pct,
+                ),
+            ));
+        }
+        expected_damage += parameters.attacker_strikes as f64
+            * (parameters.attacker_hit_pct.min(100) as f64 / 100.0)
+            * parameters.attacker_damage_per_hit as f64;
+        let mut next = Vec::new();
+        for (prior_damage, prior_probability) in &distribution {
+            for (damage, probability) in &volley {
+                next.push((
+                    prior_damage.saturating_add(*damage),
+                    prior_probability * probability,
+                ));
+            }
+        }
+        distribution = next;
+    }
+    let kill_probability = distribution
+        .iter()
+        .filter(|(damage, _)| *damage >= defender_hp)
+        .map(|(_, probability)| *probability)
+        .sum::<f64>();
+    DamageSequenceForecast {
+        kill_bps: round_bps([kill_probability, 1.0 - kill_probability, 0.0])[0],
+        expected_damage_tenths: (expected_damage * 10.0).round() as u32,
     }
 }
 
@@ -886,5 +958,57 @@ mod tests {
             ..lethal
         };
         assert_eq!(exact_exchange(&mixed).outcome_bps, [5_000, 2_500, 2_500]);
+    }
+
+    #[test]
+    fn exact_damage_sequence_accumulates_independent_volleys() {
+        let attack = CombatParameters {
+            attacker_attack_id: "sword".into(),
+            defender_attack_id: None,
+            attacker_hit_pct: 50,
+            defender_hit_pct: 0,
+            attacker_damage_per_hit: 10,
+            attacker_strikes: 1,
+            defender_strikes: 0,
+            defender_damage_per_hit: 0,
+            attacker_hp: 10,
+            defender_hp: 20,
+            attacker_terrain_defense: 0,
+            defender_terrain_defense: 0,
+        };
+        assert_eq!(
+            exact_damage_sequence(20, &[attack.clone()]),
+            DamageSequenceForecast {
+                kill_bps: 0,
+                expected_damage_tenths: 50,
+            }
+        );
+        assert_eq!(
+            exact_damage_sequence(20, &[attack.clone(), attack]),
+            DamageSequenceForecast {
+                kill_bps: 2_500,
+                expected_damage_tenths: 100,
+            }
+        );
+    }
+
+    #[test]
+    fn exact_damage_sequence_handles_guaranteed_and_empty_attacks() {
+        let attack = CombatParameters {
+            attacker_attack_id: "sword".into(),
+            defender_attack_id: None,
+            attacker_hit_pct: 100,
+            defender_hit_pct: 0,
+            attacker_damage_per_hit: 7,
+            attacker_strikes: 2,
+            defender_strikes: 0,
+            defender_damage_per_hit: 0,
+            attacker_hp: 10,
+            defender_hp: 13,
+            attacker_terrain_defense: 0,
+            defender_terrain_defense: 0,
+        };
+        assert_eq!(exact_damage_sequence(13, &[attack]).kill_bps, 10_000);
+        assert_eq!(exact_damage_sequence(13, &[]).kill_bps, 0);
     }
 }
