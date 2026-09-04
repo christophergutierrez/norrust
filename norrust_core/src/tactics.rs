@@ -89,6 +89,12 @@ pub struct RecruiterThreats {
     pub max_incoming_sum: u32,
     pub lethal_attackers_needed: Option<u32>,
     pub origins_conflict: bool,
+    pub open_threats: Vec<RecruiterThreat>,
+    pub open_attacker_max_damage: Vec<AttackerMaxDamage>,
+    pub open_distinct_attacker_count: u32,
+    pub open_max_incoming_sum: u32,
+    pub open_lethal_attackers_needed: Option<u32>,
+    pub open_origins_conflict: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -102,6 +108,12 @@ pub struct UnitDestinationThreat {
     pub lethal_attackers_needed: Option<u32>,
     pub origins_conflict: bool,
     pub attacker_max_damage: Vec<AttackerMaxDamage>,
+    pub open_threats: Vec<RecruiterThreat>,
+    pub open_attacker_max_damage: Vec<AttackerMaxDamage>,
+    pub open_distinct_attacker_count: u32,
+    pub open_max_incoming_sum: u32,
+    pub open_lethal_attackers_needed: Option<u32>,
+    pub open_origins_conflict: bool,
 }
 
 pub type RecruiterDestinationThreat = UnitDestinationThreat;
@@ -459,9 +471,21 @@ pub fn recruiter_threats_after_end_turn(
     let mut recruiters = recruiter_ids
         .into_iter()
         .filter_map(|recruiter_id| {
-            target_threats_in_projected(&projected, recruiter_id).transpose()
+            target_threats_in_projected(&projected, recruiter_id, false).transpose()
         })
         .collect::<Result<Vec<_>, TacticsError>>()?;
+    for recruiter in &mut recruiters {
+        let Some(open) = target_threats_in_projected(&projected, recruiter.recruiter_id, true)?
+        else {
+            continue;
+        };
+        recruiter.open_threats = open.threats;
+        recruiter.open_attacker_max_damage = open.attacker_max_damage;
+        recruiter.open_distinct_attacker_count = open.distinct_attacker_count;
+        recruiter.open_max_incoming_sum = open.max_incoming_sum;
+        recruiter.open_lethal_attackers_needed = open.lethal_attackers_needed;
+        recruiter.open_origins_conflict = open.origins_conflict;
+    }
     recruiters.sort_by_key(|recruiter| recruiter.recruiter_id);
     Ok(ThreatSurface {
         visibility: "full",
@@ -473,6 +497,7 @@ pub fn recruiter_threats_after_end_turn(
 fn target_threats_in_projected(
     projected: &GameState,
     target_id: u32,
+    open_board: bool,
 ) -> Result<Option<RecruiterThreats>, TacticsError> {
     let Some(target) = projected.units.get(&target_id) else {
         return Ok(None);
@@ -494,7 +519,14 @@ fn target_threats_in_projected(
         .collect();
     attacker_ids.sort_unstable();
     for attacker_id in attacker_ids {
-        let tactics = unit_tactics(projected, attacker_id)?;
+        let open_state;
+        let tactics_state = if open_board {
+            open_state = open_board_state(projected, attacker_id, target_id);
+            &open_state
+        } else {
+            projected
+        };
+        let tactics = unit_tactics(tactics_state, attacker_id)?;
         for origin in tactics.origins {
             let Some(engagement) = origin
                 .engagements
@@ -504,7 +536,7 @@ fn target_threats_in_projected(
                 continue;
             };
             let parameters = combat_parameters(
-                projected,
+                tactics_state,
                 attacker_id,
                 target_id,
                 Hex::from_offset(origin.col, origin.row),
@@ -536,7 +568,28 @@ fn target_threats_in_projected(
         max_incoming_sum,
         lethal_attackers_needed,
         origins_conflict,
+        open_threats: Vec::new(),
+        open_attacker_max_damage: Vec::new(),
+        open_distinct_attacker_count: 0,
+        open_max_incoming_sum: 0,
+        open_lethal_attackers_needed: None,
+        open_origins_conflict: false,
     }))
+}
+
+/// Clone a projected board while removing every unit except the examined
+/// attacker and target. This is a conservative geometry bound: it answers
+/// whether the attacker could reach the target if intervening units moved or
+/// died earlier in the opponent turn. It is not an executable opponent plan.
+fn open_board_state(projected: &GameState, attacker_id: u32, target_id: u32) -> GameState {
+    let mut open = projected.clone();
+    open.units
+        .retain(|&id, _| id == attacker_id || id == target_id);
+    open.positions
+        .retain(|&id, _| id == attacker_id || id == target_id);
+    open.hex_to_unit
+        .retain(|_, id| *id == attacker_id || *id == target_id);
+    open
 }
 
 /// Report the opponent threat forecast for each legal position of a recruiter.
@@ -586,7 +639,9 @@ pub fn unit_destination_threats(
             )?;
         }
         apply_action(&mut projected, Action::EndTurn)?;
-        let summary = target_threats_in_projected(&projected, unit_id)?
+        let summary = target_threats_in_projected(&projected, unit_id, false)?
+            .ok_or(ActionError::UnitNotFound(unit_id))?;
+        let open = target_threats_in_projected(&projected, unit_id, true)?
             .ok_or(ActionError::UnitNotFound(unit_id))?;
         let (col, row) = destination.to_offset();
         result.push(UnitDestinationThreat {
@@ -599,6 +654,12 @@ pub fn unit_destination_threats(
             lethal_attackers_needed: summary.lethal_attackers_needed,
             origins_conflict: summary.origins_conflict,
             attacker_max_damage: summary.attacker_max_damage,
+            open_threats: open.threats,
+            open_attacker_max_damage: open.attacker_max_damage,
+            open_distinct_attacker_count: open.distinct_attacker_count,
+            open_max_incoming_sum: open.max_incoming_sum,
+            open_lethal_attackers_needed: open.lethal_attackers_needed,
+            open_origins_conflict: open.origins_conflict,
         });
     }
     result.sort_by_key(|destination| (!destination.current, destination.row, destination.col));
@@ -773,6 +834,46 @@ mod tests {
         assert_eq!(state.active_faction, 0);
         assert_eq!(state.state_revision, revision);
         assert_eq!(state.turn, 1);
+    }
+
+    #[test]
+    fn open_board_threat_finds_route_hidden_by_a_screen() {
+        let mut board = Board::new(1, 6);
+        for row in 0..6 {
+            board.set_tile(Hex::from_offset(0, row), crate::board::Tile::new("flat"));
+        }
+        let mut state = GameState::new_seeded(board, 103);
+        let mut recruiter = Unit::new(1, "leader", 20, 0);
+        recruiter.can_recruit = true;
+        state.place_unit(recruiter, Hex::from_offset(0, 5));
+        state.place_unit(Unit::new(3, "screen", 20, 0), Hex::from_offset(0, 2));
+
+        let mut archer = Unit::new(2, "adept", 20, 1);
+        archer.movement = 3;
+        archer.movement_costs.insert("flat".into(), 1);
+        archer.attacks.push(AttackDef {
+            id: "bolt".into(),
+            name: "bolt".into(),
+            damage: 10,
+            strikes: 2,
+            attack_type: "arcane".into(),
+            range: "ranged".into(),
+            specials: Vec::new(),
+        });
+        state.place_unit(archer, Hex::from_offset(0, 0));
+
+        let result = recruiter_threats_after_end_turn(&state, 0).unwrap();
+        let recruiter = &result.recruiters[0];
+        assert!(recruiter.threats.is_empty());
+        assert!(recruiter.open_threats.iter().any(|threat| {
+            threat.attacker_id == 2
+                && threat.origin_col == 0
+                && threat.origin_row == 3
+                && threat.moved
+        }));
+        assert_eq!(recruiter.open_distinct_attacker_count, 1);
+        assert_eq!(recruiter.open_max_incoming_sum, 20);
+        assert_eq!(recruiter.open_lethal_attackers_needed, Some(1));
     }
 
     #[test]

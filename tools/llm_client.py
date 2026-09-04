@@ -321,12 +321,19 @@ def compact_unit_inspection(unit: dict[str, Any]) -> str:
             if not isinstance(destination, dict):
                 continue
             marker = "@" if destination.get("current") else "->"
-            rendered.append("%s%s,%s a%s m%s lethal_n=%s conflict=%s" % (
+            item = "%s%s,%s a%s m%s lethal_n=%s conflict=%s" % (
                 marker, destination.get("col", "?"), destination.get("row", "?"),
                 destination.get("distinct_attacker_count", "?"),
                 destination.get("max_incoming_sum", "?"),
                 destination.get("lethal_attackers_needed"),
-                destination.get("origins_conflict", "?")))
+                destination.get("origins_conflict", "?"))
+            if "open_distinct_attacker_count" in destination:
+                item += " open_a%s open_m%s open_lethal_n=%s open_conflict=%s" % (
+                    destination.get("open_distinct_attacker_count", "?"),
+                    destination.get("open_max_incoming_sum", "?"),
+                    destination.get("open_lethal_attackers_needed"),
+                    destination.get("open_origins_conflict", "?"))
+            rendered.append(item)
         if rendered:
             lines.append("DESTINATION_DANGER " + " ".join(rendered))
     return "\n".join(lines)
@@ -427,6 +434,13 @@ def compact_batch_preview(preview: dict[str, Any]) -> str:
                 index, recruiter.get("recruiter_id", "?"), recruiter.get("hp", "?"),
                 recruiter.get("distinct_attacker_count", "?"), recruiter.get("max_incoming_sum", "?"),
                 recruiter.get("lethal_attackers_needed"), recruiter.get("origins_conflict", "?")))
+            if "open_distinct_attacker_count" in recruiter:
+                lines.append(" C%s OPEN_R%s attackers=%s max_sum=%s lethal_n=%s conflicts=%s" % (
+                    index, recruiter.get("recruiter_id", "?"),
+                    recruiter.get("open_distinct_attacker_count", "?"),
+                    recruiter.get("open_max_incoming_sum", "?"),
+                    recruiter.get("open_lethal_attackers_needed"),
+                    recruiter.get("open_origins_conflict", "?")))
     return "\n".join(lines)
 
 
@@ -595,6 +609,36 @@ def compact_tactical_surface(surface: dict[str, Any]) -> str:
             lines.append("THREAT_HEX R%s at=%s,%s%s attackers=%s max=%s" % (
                 recruiter.get("recruiter_id", "?"), col, row, marker, attackers,
                 group["max_damage"]))
+        if "open_distinct_attacker_count" in recruiter:
+            open_maxima = ",".join("U%s:m%s" % (
+                item.get("attacker_id", "?"), item.get("max_damage", "?"))
+                for item in recruiter.get("open_attacker_max_damage", [])
+                if isinstance(item, dict))
+            lines.append("OPEN_THREAT R%s attackers=%s max_sum=%s lethal_n=%s conflicts=%s detail=%s" % (
+                recruiter.get("recruiter_id", "?"),
+                recruiter.get("open_distinct_attacker_count", 0),
+                recruiter.get("open_max_incoming_sum", 0),
+                recruiter.get("open_lethal_attackers_needed"),
+                recruiter.get("open_origins_conflict", False),
+                open_maxima or "none"))
+            open_origin_groups: dict[tuple[Any, Any], dict[str, Any]] = {}
+            for threat in recruiter.get("open_threats", []):
+                if not isinstance(threat, dict):
+                    continue
+                key = (threat.get("origin_col", "?"), threat.get("origin_row", "?"))
+                group = open_origin_groups.setdefault(key, {"attackers": set(), "max_damage": 0,
+                                                              "moved": False})
+                attacker_id = threat.get("attacker_id")
+                if isinstance(attacker_id, int):
+                    group["attackers"].add(attacker_id)
+                group["max_damage"] = max(group["max_damage"], threat.get("max_damage") or 0)
+                group["moved"] = group["moved"] or bool(threat.get("moved"))
+            for (col, row), group in sorted(open_origin_groups.items(), key=lambda item: item[0]):
+                attackers = ",".join("U%s" % unit_id for unit_id in sorted(group["attackers"])) or "?"
+                marker = "~" if group["moved"] else ""
+                lines.append("OPEN_THREAT_HEX R%s at=%s,%s%s attackers=%s max=%s" % (
+                    recruiter.get("recruiter_id", "?"), col, row, marker, attackers,
+                    group["max_damage"]))
     economy = surface.get("economy")
     if isinstance(economy, dict):
         vacatable = []
@@ -645,7 +689,9 @@ def compact_draft_review(preview: dict[str, Any], danger_before: bool,
     threats = candidate.get("recruiter_threats", {}) if isinstance(candidate, dict) else {}
     recruiters = threats.get("recruiters", []) if isinstance(threats, dict) else []
     lethal_after = any(
-        isinstance(recruiter, dict) and recruiter.get("lethal_attackers_needed") is not None
+        isinstance(recruiter, dict) and (
+            recruiter.get("lethal_attackers_needed") is not None or
+            recruiter.get("open_lethal_attackers_needed") is not None)
         for recruiter in recruiters
     )
     lines = ["DRAFT_RESULT danger_before=%s danger_after=%s" % (danger_before, lethal_after)]
@@ -656,6 +702,12 @@ def compact_draft_review(preview: dict[str, Any], danger_before: bool,
             recruiter.get("recruiter_id", "?"), recruiter.get("hp", "?"),
             recruiter.get("distinct_attacker_count", "?"), recruiter.get("max_incoming_sum", "?"),
             recruiter.get("lethal_attackers_needed")))
+        if "open_distinct_attacker_count" in recruiter:
+            lines.append("OPEN_R%s attackers=%s max_sum=%s lethal_n=%s" % (
+                recruiter.get("recruiter_id", "?"),
+                recruiter.get("open_distinct_attacker_count", "?"),
+                recruiter.get("open_max_incoming_sum", "?"),
+                recruiter.get("open_lethal_attackers_needed")))
     if coverage is not None:
         planned: set[int] = set()
         for order in orders or []:
@@ -753,6 +805,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "p[defender-killed,both-survive,attacker-killed] and e[defender,attacker] damage. THREAT lines are complete-information "
         "upper bounds if you EndTurn now: attackers is the distinct count, max_sum adds one maximum volley per attacker, "
         "lethal_n is how many largest maximum volleys reach recruiter HP, and detail lists attacker:max-damage pairs. "
+        "OPEN_THREAT is a conservative bound that ignores unit blockers that may move or die before an attacker acts; it is not an executable opponent batch. "
         "E income assumes current village ownership persists; E vacate lists legal off-castle destinations and is not a recommendation. "
         "Copy individual Recruit coordinates only from R `open`. You may instead request one read-only preview by returning "
         "{\"tool\":\"preview_batch\",\"candidates\":[[actions...]]}; provide at most two complete candidates, each ending EndTurn. "

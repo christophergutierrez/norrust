@@ -7,6 +7,12 @@ the batch. The model controls only the configured `--llm-side`; after its final
 `EndTurn`, the driver automatically runs the opponent's transactional greedy turn
 (including driver-supplied recruitment) and returns a new model-side boundary.
 
+The compact board briefing includes `MAP_TERRAIN` and `MAP_UNITS` layers. Terrain
+uses two-character cells (`F.` forest, `H.` hills, `C.` castle, `K.` keep, `..`
+flat, and `V0`/`V1`/`V-` villages); unit cells use `faction:id`, and `....` is
+empty. Odd rows are indented to preserve the engine's odd-r hex geometry. The
+unit roster remains authoritative for exact type, HP, and status.
+
 The canonical per-turn instructions are the
 [MEMORYLESS TACTICAL PLAYBOOK](LLM_TACTICAL_PLAYBOOK.md). The client reads that
 file and includes its complete text inline near the beginning of every model

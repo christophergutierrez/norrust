@@ -246,6 +246,21 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("danger_before=True danger_after=True", rendered)
         self.assertIn("R1 hp=34 attackers=5 max_sum=70 lethal_n=3", rendered)
 
+    def test_compact_draft_review_treats_open_route_lethality_as_danger(self):
+        rendered, lethal = compact_draft_review({"candidates": [{
+            "valid": True,
+            "recruiter_threats": {"recruiters": [{
+                "recruiter_id": 1, "hp": 3, "distinct_attacker_count": 0,
+                "max_incoming_sum": 0, "lethal_attackers_needed": None,
+                "open_distinct_attacker_count": 1,
+                "open_max_incoming_sum": 20,
+                "open_lethal_attackers_needed": 1,
+            }]},
+        }]}, False)
+        self.assertTrue(lethal)
+        self.assertIn("danger_before=False danger_after=True", rendered)
+        self.assertIn("OPEN_R1 attackers=1 max_sum=20 lethal_n=1", rendered)
+
     def test_compact_draft_review_reports_unused_attackers(self):
         rendered, lethal = compact_draft_review(
             {"candidates": [{"valid": True, "recruiter_threats": {"recruiters": []}}]},
@@ -372,6 +387,24 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("THREAT R1 hp=20 at=2,7 tod=Night attackers=1 max_sum=20 lethal_n=1", rendered)
         self.assertIn("detail=U16:m20", rendered)
         self.assertIn("E g6 income=4 vacate=U8@3,7>4,7", rendered)
+
+    def test_compact_tactical_surface_renders_open_route_threats(self):
+        rendered = compact_tactical_surface({
+            "units": [],
+            "threats": {"projected_time_of_day": "Dawn", "recruiters": [{
+                "recruiter_id": 1, "hp": 3, "col": 0, "row": 12,
+                "distinct_attacker_count": 0, "max_incoming_sum": 0,
+                "lethal_attackers_needed": None, "origins_conflict": False,
+                "attacker_max_damage": [], "threats": [],
+                "open_distinct_attacker_count": 1, "open_max_incoming_sum": 20,
+                "open_lethal_attackers_needed": 1, "open_origins_conflict": False,
+                "open_attacker_max_damage": [{"attacker_id": 17, "max_damage": 20}],
+                "open_threats": [{"attacker_id": 17, "origin_col": 0,
+                                  "origin_row": 10, "moved": True, "max_damage": 20}],
+            }]},
+        })
+        self.assertIn("OPEN_THREAT R1 attackers=1 max_sum=20 lethal_n=1", rendered)
+        self.assertIn("OPEN_THREAT_HEX R1 at=0,10~ attackers=U17 max=20", rendered)
 
     def test_compact_tactical_surface_groups_recruiter_threat_origins(self):
         rendered = compact_tactical_surface({
