@@ -745,8 +745,9 @@ class ClientValidationTests(unittest.TestCase):
 
     def test_critical_draft_can_be_confirmed_after_preview(self):
         end_turn = json.dumps([{"action": "EndTurn"}])
+        review_tool = json.dumps({"tool": "inspect_unit", "unit_id": 1})
         code, terminal = self.run_with_orders(
-            [end_turn, end_turn],
+            [end_turn, review_tool, end_turn],
             [{"type": "state", "active_faction": 0, "state_revision": 0,
               "units": [{"id": 1, "faction": 0, "can_recruit": True}]},
              {"type": "status", "ok": True, "what": "tactical_surface", "body": {
@@ -766,6 +767,7 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual(terminal["draft_reviews"], 1)
         self.assertEqual(terminal["draft_confirmations"], 1)
         self.assertEqual(terminal["draft_revisions"], 0)
+        self.assertEqual(terminal["draft_review_repairs"], 1)
 
     def test_backend_transport_failure_stays_infrastructure(self):
         """A RuntimeError from the backend is transport, not play. The model

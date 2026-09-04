@@ -821,6 +821,7 @@ def run(args: argparse.Namespace) -> int:
                 "turns_with_lethal_danger_before": 0, "turns_with_lethal_danger_after": 0,
                 "turns_with_affordable_recruitment_left": 0,
                 "draft_reviews": 0, "draft_revisions": 0, "draft_confirmations": 0,
+                "draft_review_repairs": 0,
                 "decision_metrics": getattr(args, "decision_metrics", False),
                 "sampling": None, "llm_authored_extra": False,
                 "winner": None, "reason": None, "terminal_class": None,
@@ -1182,7 +1183,24 @@ def run(args: argparse.Namespace) -> int:
                                             "prompt_hash": hashlib.sha256(review_prompt.encode()).hexdigest(),
                                             "prompt_bytes": len(review_prompt.encode()),
                                             "raw_output": reviewed.text, "body": draft_preview})
-                                    revised_orders = validate_orders(reviewed.text, args.no_recruit_macro)
+                                    try:
+                                        revised_orders = validate_orders(reviewed.text, args.no_recruit_macro)
+                                    except ValueError as review_validation_error:
+                                        if model_calls_this_turn >= metadata["max_model_calls_per_turn"]:
+                                            raise
+                                        repair_prompt = review_prompt + "\nMODEL_RESPONSE_ERROR: " + str(review_validation_error) + (
+                                            "\nReturn one final JSON action array only. Do not request another tool.")
+                                        model_calls_this_turn += 1
+                                        metadata["model_calls"] += 1
+                                        metadata["draft_review_repairs"] += 1
+                                        repaired_review = backend.complete(repair_prompt)
+                                        enforce_usage(repaired_review, args)
+                                        record({"type": "draft_review_repair", "call": metadata["model_calls"],
+                                                "prompt_hash": hashlib.sha256(repair_prompt.encode()).hexdigest(),
+                                                "prompt_bytes": len(repair_prompt.encode()),
+                                                "raw_output": repaired_review.text,
+                                                "validation_error": str(review_validation_error)})
+                                        revised_orders = validate_orders(repaired_review.text, args.no_recruit_macro)
                                     if revised_orders == orders:
                                         metadata["draft_confirmations"] += 1
                                     else:
