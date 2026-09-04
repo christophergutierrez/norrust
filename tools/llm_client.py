@@ -872,7 +872,9 @@ def compact_observation(state: dict[str, Any]) -> str:
     lines = [f"turn={state.get('turn', '?')} active_faction={state.get('active_faction', '?')} "
              f"time_of_day={state.get('time_of_day', '?')} next_time_of_day={next_tod} "
              f"visibility={visibility} map={state.get('cols', '?')}x{state.get('rows', '?')}",
-             f"gold={state.get('gold', '?')} terrain_types={','.join(sorted(terrain))}", "units:"]
+             f"gold={state.get('gold', '?')} terrain_types={','.join(sorted(terrain))}"]
+    lines.extend(compact_spatial_map(state).splitlines())
+    lines.append("units:")
     for unit in units:
         flags = ''.join(flag for flag, present in (("m", unit.get("moved")), ("a", unit.get("attacked"))) if present) or "-"
         terrain_name = terrain_at.get((unit.get("col"), unit.get("row")), "?")
@@ -881,6 +883,84 @@ def compact_observation(state: dict[str, Any]) -> str:
                      f"hp={unit.get('hp','?')}/{unit.get('max_hp','?')} "
                      f"flags={flags} xp={unit.get('xp','?')}/{unit.get('xp_needed','?')} pending={unit.get('advancement_pending', False)}")
     return "\n".join(lines)
+
+
+_SPATIAL_TERRAIN_GLYPHS = {
+    "flat": "..",
+    "forest": "F.",
+    "hills": "H.",
+    "mountains": "M.",
+    "castle": "C.",
+    "keep": "K.",
+    "swamp_water": "S.",
+}
+
+
+def compact_spatial_map(state: dict[str, Any]) -> str:
+    """Render the complete board geometry in a small, human-readable grid.
+
+    The terrain and occupant layers deliberately remain separate: terrain is
+    useful even when a hex is empty, while the existing unit list supplies the
+    exact type, HP, and status for each occupant. Rows are indented according
+    to the engine's odd-r coordinate convention so neighboring hexes retain
+    their visual relationship.
+    """
+    cols = state.get("cols")
+    rows = state.get("rows")
+    if not isinstance(cols, int) or not isinstance(rows, int) or cols < 0 or rows < 0:
+        return "MAP unavailable"
+
+    tiles = {(tile.get("col"), tile.get("row")): tile
+             for tile in state.get("terrain", []) if isinstance(tile, dict)}
+    occupants: dict[tuple[Any, Any], dict[str, Any]] = {}
+    for unit in sorted((unit for unit in state.get("units", []) if isinstance(unit, dict)),
+                       key=lambda item: item.get("id", 0)):
+        key = (unit.get("col"), unit.get("row"))
+        if key not in occupants:
+            occupants[key] = unit
+
+    village_owner_glyph = {None: "V-", -1: "V-", 0: "V0", 1: "V1"}
+    terrain_cells: list[list[str]] = []
+    for row in range(rows):
+        cells = []
+        for col in range(cols):
+            tile = tiles.get((col, row), {})
+            terrain_id = tile.get("terrain_id")
+            if terrain_id == "village":
+                cells.append(village_owner_glyph.get(tile.get("owner"), "V?"))
+            else:
+                cells.append(_SPATIAL_TERRAIN_GLYPHS.get(terrain_id, "??"))
+        terrain_cells.append(cells)
+
+    max_id = max((unit.get("id", 0) for unit in occupants.values()
+                  if isinstance(unit.get("id"), int)), default=0)
+    id_width = max(2, len(str(max_id)))
+    unit_width = id_width + 2
+    empty = "." * unit_width
+    unit_cells: list[list[str]] = []
+    for row in range(rows):
+        cells = []
+        for col in range(cols):
+            unit = occupants.get((col, row))
+            if unit is None:
+                cells.append(empty)
+            else:
+                faction = unit.get("faction", "?")
+                unit_id = unit.get("id", "?")
+                cells.append(f"{faction}:{unit_id:0{id_width}d}" if isinstance(unit_id, int)
+                             else f"{faction}:?".ljust(unit_width))
+        unit_cells.append(cells)
+
+    terrain_header = "    " + " ".join(f"{col:02d}" for col in range(cols))
+    unit_header = "    " + " ".join(f"{col:0{id_width}d}" for col in range(cols))
+    terrain_lines = ["MAP_TERRAIN glyphs=..flat F.forest H.hills M.mountains C.castle K.keep S.swamp V0/V1/ V-neutral",
+                     terrain_header]
+    unit_lines = ["MAP_UNITS token=faction:id .=empty", unit_header]
+    for row in range(rows):
+        indent = " " if row % 2 else ""
+        terrain_lines.append(f"{indent}r{row:02d} " + " ".join(terrain_cells[row]))
+        unit_lines.append(f"{indent}r{row:02d} " + " ".join(unit_cells[row]))
+    return "\n".join(terrain_lines + unit_lines)
 
 
 def compact_strategic_briefing(state: dict[str, Any]) -> str:
@@ -894,10 +974,11 @@ def compact_strategic_briefing(state: dict[str, Any]) -> str:
     villages = [tile for tile in terrain.values() if tile.get("terrain_id") == "village"]
     owners = {tile.get("owner") for tile in villages}
     ours = state.get("active_faction")
+    neutral_owners = (None, -1, "-1", "neutral")
     counts = {
         "ours": sum(tile.get("owner") == ours for tile in villages),
-        "enemy": sum(tile.get("owner") not in (None, ours) for tile in villages),
-        "neutral": sum(tile.get("owner") is None for tile in villages),
+        "enemy": sum(tile.get("owner") not in (*neutral_owners, ours) for tile in villages),
+        "neutral": sum(tile.get("owner") in neutral_owners for tile in villages),
     }
     lines = ["VILLAGES ours=%s enemy=%s neutral=%s" %
              (counts["ours"], counts["enemy"], counts["neutral"])]

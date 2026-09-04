@@ -13,7 +13,7 @@ from .llm_client import (
     TERMINAL_EXIT_CODES, TERMINAL_GAMEPLAY, TERMINAL_INFRASTRUCTURE,
     TERMINAL_MODEL_INVALID, ModelReply, classify_terminal, enforce_usage,
     compact_batch_preview, compact_hex_inspection, compact_observation,
-    compact_target_inspection, compact_tactical_surface, prompt_for, query_options,
+    compact_target_inspection, compact_tactical_surface, compact_spatial_map, prompt_for, query_options,
     compact_unit_inspection, compact_draft_review, tool_followup_instruction, tool_budget_repair_prompt,
     compact_events, tactical_attack_coverage,
     query_tactical_surface, query_validate_batch, query_preview_batch,
@@ -64,6 +64,39 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("VILLAGES ours=1 enemy=1 neutral=1", rendered)
         self.assertIn("V 1,1 owner=1 occupant=none healing=8", rendered)
         self.assertIn("FORMATION U3 hp=12/34 allies_near=1 healing=0", rendered)
+
+    def test_compact_spatial_map_preserves_terrain_occupancy_and_odd_row_geometry(self):
+        state = {
+            "cols": 3, "rows": 2,
+            "terrain": [
+                {"col": 0, "row": 0, "terrain_id": "forest"},
+                {"col": 1, "row": 0, "terrain_id": "village", "owner": -1},
+                {"col": 2, "row": 0, "terrain_id": "keep"},
+                {"col": 0, "row": 1, "terrain_id": "hills"},
+                {"col": 1, "row": 1, "terrain_id": "castle"},
+                {"col": 2, "row": 1, "terrain_id": "flat"},
+            ],
+            "units": [
+                {"id": 2, "faction": 1, "col": 2, "row": 0},
+                {"id": 11, "faction": 0, "col": 1, "row": 1},
+            ],
+        }
+        rendered = compact_spatial_map(state)
+        self.assertIn("MAP_TERRAIN", rendered)
+        self.assertIn("F. V- K.", rendered)
+        self.assertIn("MAP_UNITS token=faction:id .=empty", rendered)
+        self.assertIn("r00 .... .... 1:02", rendered)
+        self.assertIn(" r01 .... 0:11 ....", rendered)
+
+    def test_compact_observation_includes_spatial_map_and_is_deterministic(self):
+        state = {"cols": 2, "rows": 1, "terrain": [
+            {"col": 0, "row": 0, "terrain_id": "forest"},
+            {"col": 1, "row": 0, "terrain_id": "flat"},
+        ], "units": []}
+        rendered = compact_observation(state)
+        self.assertIn("MAP_TERRAIN", rendered)
+        self.assertIn("MAP_UNITS", rendered)
+        self.assertEqual(rendered, compact_observation(dict(state)))
     def test_compact_events_preserves_facts_without_routine_json(self):
         events = [
             {"kind": "move", "source": "greedy", "unit": 9,
@@ -560,7 +593,7 @@ class ClientValidationTests(unittest.TestCase):
             "fight only from distance 2",
             "Time of day is a fight gate",
             "Use `Engage`",
-            "do not chase onto its forest",
+            "do not assume a screen will survive its turn",
             "will turtle for a hundred turns",
             "Do not wait for it to walk onto your forest",
             "Kill the enemy recruiter",
