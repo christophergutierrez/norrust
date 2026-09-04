@@ -59,15 +59,27 @@ class OrdersBackend(ModelBackend):
 class CommandBackend(ModelBackend):
     def __init__(self, command: str, timeout: float):
         self.command, self.timeout = command, timeout
+        self.transport_retries = 0
+        self.retry_causes: list[str] = []
 
     def complete(self, prompt: str) -> ModelReply:
-        try:
-            proc = subprocess.run(self.command, input=prompt, text=True, shell=True,
-                                  capture_output=True, timeout=self.timeout)
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError("model_timeout") from exc
-        if proc.returncode:
-            raise RuntimeError(f"model_error: exit {proc.returncode}: {proc.stderr[-400:]}")
+        for attempt in range(2):
+            try:
+                proc = subprocess.run(self.command, input=prompt, text=True, shell=True,
+                                      capture_output=True, timeout=self.timeout)
+            except subprocess.TimeoutExpired as exc:
+                if attempt == 0:
+                    self.transport_retries += 1
+                    self.retry_causes.append("timeout")
+                    continue
+                raise RuntimeError("model_timeout") from exc
+            if proc.returncode:
+                if attempt == 0:
+                    self.transport_retries += 1
+                    self.retry_causes.append(f"exit_{proc.returncode}")
+                    continue
+                raise RuntimeError(f"model_error: exit {proc.returncode}: {proc.stderr[-400:]}")
+            break
         try:
             obj = json.loads(proc.stdout)
             if not isinstance(obj, dict) or not isinstance(obj.get("text"), str):
@@ -391,10 +403,12 @@ def compact_target_inspection(target: dict[str, Any]) -> str:
     attacks = []
     for attack in target.get("attacks", []):
         forecast = attack.get("forecast", {}) if isinstance(attack, dict) else {}
-        marker = "~" if attack.get("moved") else "@"
-        attacks.append("U%s%s%s,%s p%s e%s" % (
-            attack.get("attacker_id", "?"), marker, attack.get("origin_col", "?"),
-            attack.get("origin_row", "?"), forecast.get("outcome_bps", ["?", "?", "?"]),
+        attacker = attack.get("attacker_id", "?")
+        col, row = attack.get("origin_col", "?"), attack.get("origin_row", "?")
+        action = "ENGAGE_STEP U%s via=%s,%s" % (attacker, col, row) \
+            if attack.get("moved") else "ATTACK U%s" % attacker
+        attacks.append("%s p%s e%s" % (
+            action, forecast.get("outcome_bps", ["?", "?", "?"]),
             forecast.get("expected_damage_tenths", ["?", "?"])))
     return "TARGET U%s hp=%s at=%s,%s terrain=%s attacks=%s" % (
         target.get("target_id", "?"), target.get("hp", "?"), target.get("col", "?"),
@@ -769,6 +783,73 @@ def tool_budget_repair_prompt(prompt: str, tool_context: str, error: str,
     )
 
 
+def planned_attackers(orders: list[dict[str, Any]]) -> set[int]:
+    """Return units explicitly used by Attack and Engage actions."""
+    planned: set[int] = set()
+    for order in orders:
+        if not isinstance(order, dict):
+            continue
+        if order.get("action") == "Attack" and isinstance(order.get("attacker_id"), int):
+            planned.add(order["attacker_id"])
+        elif order.get("action") == "Engage":
+            planned.update(
+                step.get("attacker_id") for step in order.get("steps", [])
+                if isinstance(step, dict) and isinstance(step.get("attacker_id"), int)
+            )
+    return planned
+
+
+def _positive_lethal(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def draft_risk_worsened(preview: dict[str, Any]) -> bool:
+    """Compare the EndTurn baseline to the proposed batch using engine facts."""
+    candidates = preview.get("candidates", [])
+    if len(candidates) < 2 or not all(isinstance(item, dict) for item in candidates[:2]):
+        return False
+    baseline, draft = candidates[:2]
+
+    def values(candidate: dict[str, Any], section: str, id_key: str) -> dict[Any, tuple[int, int]]:
+        body = candidate.get(section, {})
+        key = "recruiters" if section == "recruiter_threats" else "units"
+        items = body.get(key, []) if isinstance(body, dict) else []
+        return {
+            item.get(id_key): (int(item.get("max_incoming_sum") or 0),
+                               int(item.get("open_max_incoming_sum") or 0))
+            for item in items if isinstance(item, dict)
+        }
+
+    for section, id_key in (("recruiter_threats", "recruiter_id"), ("exposure", "unit_id")):
+        before, after = values(baseline, section, id_key), values(draft, section, id_key)
+        for item_id, after_values in after.items():
+            before_values = before.get(item_id, (0, 0))
+            if any(after_value > before_value
+                   for before_value, after_value in zip(before_values, after_values)):
+                return True
+    return False
+
+
+def draft_review_needed(preview: dict[str, Any], coverage: dict[str, Any],
+                        orders: list[dict[str, Any]], danger_before: bool = False) -> bool:
+    candidates = preview.get("candidates", [])
+    draft = candidates[1] if len(candidates) > 1 and isinstance(candidates[1], dict) else {}
+    summary = draft.get("summary", {})
+    unused = set(coverage.get("available", set())) - planned_attackers(orders)
+    if len(candidates) < 2:
+        threats = draft.get("recruiter_threats", {})
+        recruiters = threats.get("recruiters", []) if isinstance(threats, dict) else []
+        return danger_before or any(
+            isinstance(recruiter, dict) and
+            (_positive_lethal(recruiter.get("lethal_attackers_needed")) or
+             _positive_lethal(recruiter.get("open_lethal_attackers_needed")))
+            for recruiter in recruiters
+        ) or bool(unused)
+    return (draft_risk_worsened(preview) or
+            summary.get("affordable_recruitment_remaining") is True or
+            bool(unused))
+
+
 def compact_draft_review(preview: dict[str, Any], danger_before: bool,
                          coverage: Optional[dict[str, Any]] = None,
                          orders: Optional[list[dict[str, Any]]] = None,
@@ -779,8 +860,10 @@ def compact_draft_review(preview: dict[str, Any], danger_before: bool,
     recruiters = threats.get("recruiters", []) if isinstance(threats, dict) else []
     lethal_after = any(
         isinstance(recruiter, dict) and (
-            recruiter.get("lethal_attackers_needed") is not None or
-            recruiter.get("open_lethal_attackers_needed") is not None)
+            isinstance(recruiter.get("lethal_attackers_needed"), int) and
+            recruiter.get("lethal_attackers_needed") > 0 or
+            isinstance(recruiter.get("open_lethal_attackers_needed"), int) and
+            recruiter.get("open_lethal_attackers_needed") > 0)
         for recruiter in recruiters
     )
     lines = ["DRAFT_RESULT danger_before=%s danger_after=%s" % (danger_before, lethal_after)]
@@ -802,8 +885,8 @@ def compact_draft_review(preview: dict[str, Any], danger_before: bool,
         for order in orders or []:
             if not isinstance(order, dict):
                 continue
-            if order.get("action") == "Attack" and isinstance(order.get("unit_id"), int):
-                planned.add(order["unit_id"])
+            if order.get("action") == "Attack" and isinstance(order.get("attacker_id"), int):
+                planned.add(order["attacker_id"])
             elif order.get("action") == "Engage":
                 planned.update(step.get("attacker_id") for step in order.get("steps", [])
                                if isinstance(step, dict) and isinstance(step.get("attacker_id"), int))
@@ -1317,6 +1400,17 @@ def run(args: argparse.Namespace) -> int:
         record(obj)
         if log:
             os.fsync(log.fileno())
+    def complete_model(model_prompt: str) -> ModelReply:
+        before = getattr(backend, "transport_retries", 0)
+        try:
+            return backend.complete(model_prompt)
+        finally:
+            after = getattr(backend, "transport_retries", 0)
+            if after > before:
+                metadata["transport_retries"] = metadata.get("transport_retries", 0) + after - before
+                for cause in getattr(backend, "retry_causes", [])[before:after]:
+                    durable({"type": "model_transport_retry", "cause": cause,
+                             "retry_number": metadata["transport_retries"]})
     record({"type": "metadata", **metadata, "driver_command": cmd,
             "model_command_hash": hashlib.sha256(args.model_command.encode()).hexdigest()
             if args.model_command else None})
@@ -1363,7 +1457,7 @@ def run(args: argparse.Namespace) -> int:
                         model_calls_this_turn += 1
                         metadata["model_calls"] += 1
                         try:
-                            repaired = backend.complete(repair_prompt)
+                            repaired = complete_model(repair_prompt)
                             enforce_usage(repaired, args)
                             record({"type": "action_repair", "call": metadata["model_calls"],
                                     "prompt_hash": hashlib.sha256(repair_prompt.encode()).hexdigest(),
@@ -1513,7 +1607,9 @@ def run(args: argparse.Namespace) -> int:
                 metadata["max_observed_prompt_bytes"] = max(
                     metadata["max_observed_prompt_bytes"], len(prompt_bytes))
                 danger_before = any(
-                    isinstance(recruiter, dict) and recruiter.get("lethal_attackers_needed") is not None
+                    isinstance(recruiter, dict) and
+                    (_positive_lethal(recruiter.get("lethal_attackers_needed")) or
+                     _positive_lethal(recruiter.get("open_lethal_attackers_needed")))
                     for recruiter in state.get("tactical_surface", {}).get("threats", {}).get("recruiters", []))
                 if danger_before:
                     metadata["turns_with_lethal_danger_before"] += 1
@@ -1531,7 +1627,7 @@ def run(args: argparse.Namespace) -> int:
                 metadata["model_calls"] += 1
                 model_calls_this_turn += 1
                 try:
-                    reply = backend.complete(prompt)
+                    reply = complete_model(prompt)
                     enforce_usage(reply, args)
                     record({"type": "model", "call": metadata["model_calls"],
                             "prompt_hash": prompt_hash, "prompt_bytes": len(prompt_bytes),
@@ -1629,7 +1725,7 @@ def run(args: argparse.Namespace) -> int:
                             # decision or repair calls. Keep their separate cap
                             # without spending the turn's decision budget.
                             metadata["model_calls"] += 1
-                            current_reply = backend.complete(followup_prompt)
+                            current_reply = complete_model(followup_prompt)
                             enforce_usage(current_reply, args)
                             record({"type": "tool_followup", "tool": tool,
                                     "call": metadata["model_calls"],
@@ -1651,7 +1747,7 @@ def run(args: argparse.Namespace) -> int:
                             "\nReturn one corrected JSON action array only."
                         model_calls_this_turn += 1
                         metadata["model_calls"] += 1
-                        repaired = backend.complete(repair_prompt)
+                        repaired = complete_model(repair_prompt)
                         enforce_usage(repaired, args)
                         record({"type": "repair", "call": metadata["model_calls"],
                                 "prompt_hash": hashlib.sha256(repair_prompt.encode()).hexdigest(),
@@ -1691,16 +1787,7 @@ def run(args: argparse.Namespace) -> int:
                         if isinstance(candidate, dict) and candidate.get("valid") is True:
                             review_text, danger_after = compact_draft_review(
                                 draft_preview, danger_before, coverage, orders, draft_index)
-                            unused_attackers = set(coverage["available"]) - {
-                                order.get("unit_id") for order in orders
-                                if isinstance(order, dict) and order.get("action") == "Attack"
-                            }
-                            engage_present = any(
-                                isinstance(order, dict) and order.get("action") == "Engage"
-                                for order in orders
-                            )
-                            audit_needed = bool(unused_attackers) and not engage_present
-                            if danger_before or danger_after or audit_needed:
+                            if draft_review_needed(draft_preview, coverage, orders, danger_before):
                                 metadata["draft_reviews"] += 1
                                 if model_calls_this_turn < metadata["max_model_calls_per_turn"]:
                                     review_prompt = (
@@ -1712,7 +1799,7 @@ def run(args: argparse.Namespace) -> int:
                                         "to confirm it, or revise it if the facts warrant a different choice."))
                                     model_calls_this_turn += 1
                                     metadata["model_calls"] += 1
-                                    reviewed = backend.complete(review_prompt)
+                                    reviewed = complete_model(review_prompt)
                                     enforce_usage(reviewed, args)
                                     record({"type": "draft_review", "call": metadata["model_calls"],
                                             "prompt_hash": hashlib.sha256(review_prompt.encode()).hexdigest(),
@@ -1733,7 +1820,7 @@ def run(args: argparse.Namespace) -> int:
                                         model_calls_this_turn += 1
                                         metadata["model_calls"] += 1
                                         metadata["draft_review_repairs"] += 1
-                                        repaired_review = backend.complete(repair_prompt)
+                                        repaired_review = complete_model(repair_prompt)
                                         enforce_usage(repaired_review, args)
                                         record({"type": "draft_review_repair", "call": metadata["model_calls"],
                                                 "prompt_hash": hashlib.sha256(repair_prompt.encode()).hexdigest(),
@@ -1800,7 +1887,7 @@ def run(args: argparse.Namespace) -> int:
                         model_calls_this_turn += 1
                         metadata["model_calls"] += 1
                         try:
-                            repaired = backend.complete(repair_prompt)
+                            repaired = complete_model(repair_prompt)
                             enforce_usage(repaired, args)
                             record({"type": "action_repair", "call": metadata["model_calls"],
                                     "attempt": model_calls_this_turn,
@@ -1886,7 +1973,9 @@ def run(args: argparse.Namespace) -> int:
                         candidate_metrics = final_preview.get("candidates", [{}])[0]
                         final_threats = candidate_metrics.get("recruiter_threats") or {}
                         lethal_after = any(
-                            isinstance(recruiter, dict) and recruiter.get("lethal_attackers_needed") is not None
+                            isinstance(recruiter, dict) and
+                            (_positive_lethal(recruiter.get("lethal_attackers_needed")) or
+                             _positive_lethal(recruiter.get("open_lethal_attackers_needed")))
                             for recruiter in final_threats.get("recruiters", []))
                         recruitment_left = candidate_metrics.get("summary", {}).get(
                             "affordable_recruitment_remaining") is True
@@ -1900,19 +1989,13 @@ def run(args: argparse.Namespace) -> int:
                     except RuntimeError as metrics_error:
                         record({"type": "metrics_error", "message": str(metrics_error)})
                 metadata["model_orders"] += len(orders)
-                planned_attackers = set()
-                for order in orders:
-                    if order.get("action") == "Attack":
-                        planned_attackers.add(order.get("attacker_id"))
-                    elif order.get("action") == "Engage":
-                        planned_attackers.update(step.get("attacker_id") for step in order.get("steps", []))
-                planned_attackers.discard(None)
-                metadata["planned_attack_unit_turns"] += len(planned_attackers)
+                used_attackers = planned_attackers(orders)
+                metadata["planned_attack_unit_turns"] += len(used_attackers)
                 record({"type": "turn_attack_coverage", "available": sorted(coverage["available"]),
-                        "planned": sorted(planned_attackers),
-                        "unused": sorted(coverage["available"] - planned_attackers)})
+                        "planned": sorted(used_attackers),
+                        "unused": sorted(coverage["available"] - used_attackers)})
                 record({"type": "forwarded_orders", "orders": orders,
-                        "prompt_hash": prompt_hash})
+                        "prompt_hash": prompt_hash, "intent": turn_intent})
                 try:
                     proc.stdin.write(json.dumps(orders, separators=(",", ":")) + "\n")
                     proc.stdin.flush()

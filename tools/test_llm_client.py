@@ -161,7 +161,7 @@ class ClientValidationTests(unittest.TestCase):
                                                        "expected_damage_tenths": [80, 20]}}],
         })
         self.assertIn("TARGET U9 hp=20 at=4,7 terrain=flat", target)
-        self.assertIn("U2~3,7 p[1000, 9000, 0]", target)
+        self.assertIn("ENGAGE_STEP U2 via=3,7 p[1000, 9000, 0]", target)
         empty = compact_hex_inspection({
             "phase": "next_opponent_turn", "visibility": "full",
             "inspection": {"col": 4, "row": 7, "occupant_id": None,
@@ -286,10 +286,32 @@ class ClientValidationTests(unittest.TestCase):
             {"candidates": [{"valid": True, "recruiter_threats": {"recruiters": []}}]},
             False,
             {"available": {3, 4}, "current": {3}, "targets": {9: {3, 4}}},
-            [{"action": "Attack", "unit_id": 3, "target_id": 9}, {"action": "EndTurn"}],
+            [{"action": "Attack", "attacker_id": 3, "defender_id": 9}, {"action": "EndTurn"}],
         )
         self.assertFalse(lethal)
         self.assertIn("COVERAGE_DRAFT available=U3,U4 planned=U3 unused=U4", rendered)
+
+    def test_planned_attackers_counts_attack_and_all_engage_steps(self):
+        self.assertEqual(
+            llm_client.planned_attackers([
+                {"action": "Attack", "attacker_id": 3, "defender_id": 9},
+                {"action": "Engage", "target_id": 9,
+                 "steps": [{"attacker_id": 4, "col": 2, "row": 3},
+                            {"attacker_id": 5, "col": 3, "row": 3}]},
+            ]),
+            {3, 4, 5},
+        )
+
+    def test_zero_lethal_count_is_not_draft_danger(self):
+        rendered, lethal = compact_draft_review({"candidates": [{
+            "valid": True,
+            "recruiter_threats": {"recruiters": [{
+                "recruiter_id": 1, "hp": 34, "distinct_attacker_count": 0,
+                "max_incoming_sum": 0, "lethal_attackers_needed": 0,
+            }]},
+        }]}, False)
+        self.assertFalse(lethal)
+        self.assertIn("danger_after=False", rendered)
 
     def test_compact_batch_preview_uses_recruiter_aggregate_not_origins(self):
         rendered = compact_batch_preview({"sampling": False, "candidates": [{
@@ -1061,6 +1083,34 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual(terminal["terminal_class"], TERMINAL_INFRASTRUCTURE)
         self.assertTrue(terminal["infrastructure_invalid"])
         self.assertEqual(terminal["code"], "model_backend_failure")
+
+    def test_command_backend_retries_one_process_exit_with_same_prompt(self):
+        success = subprocess.CompletedProcess(
+            "model", 0, '{"text":"[{\\"action\\":\\"EndTurn\\"}]"}', "")
+        failure = subprocess.CompletedProcess("model", 7, "", "temporary")
+        with mock.patch("subprocess.run", side_effect=[failure, success]) as run:
+            backend = llm_client.CommandBackend("model", 1)
+            reply = backend.complete("same prompt")
+        self.assertIn("EndTurn", reply.text)
+        self.assertEqual(backend.transport_retries, 1)
+        self.assertEqual(run.call_args_list[0].kwargs["input"], "same prompt")
+        self.assertEqual(run.call_args_list[1].kwargs["input"], "same prompt")
+
+    def test_command_backend_retries_one_timeout_but_not_malformed_reply(self):
+        success = subprocess.CompletedProcess(
+            "model", 0, '{"text":"[]"}', "")
+        with mock.patch("subprocess.run", side_effect=[subprocess.TimeoutExpired("model", 1), success]):
+            backend = llm_client.CommandBackend("model", 1)
+            self.assertEqual(backend.complete("prompt").text, "[]")
+        self.assertEqual(backend.transport_retries, 1)
+
+        malformed = subprocess.CompletedProcess("model", 0, "not json", "")
+        with mock.patch("subprocess.run", return_value=malformed) as run:
+            backend = llm_client.CommandBackend("model", 1)
+            with self.assertRaises(ValueError):
+                backend.complete("prompt")
+        self.assertEqual(backend.transport_retries, 0)
+        self.assertEqual(run.call_count, 1)
 
     def test_model_invalid_is_never_counted_as_gameplay_or_infrastructure(self):
         """The whole point of the third bucket: a model_invalid run is a
