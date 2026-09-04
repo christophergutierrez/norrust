@@ -15,6 +15,7 @@ from .llm_client import (
     compact_batch_preview, compact_hex_inspection, compact_observation,
     compact_target_inspection, compact_tactical_surface, prompt_for, query_options,
     compact_unit_inspection, compact_draft_review, tool_followup_instruction, tool_budget_repair_prompt,
+    compact_events,
     query_tactical_surface, query_validate_batch, query_preview_batch,
     query_inspect_unit, query_inspect_target, query_inspect_hex, run,
     validate_inspect_unit_request, validate_inspect_target_request,
@@ -38,6 +39,38 @@ class FakeDriverProcess:
 
 
 class ClientValidationTests(unittest.TestCase):
+    def test_compact_events_preserves_facts_without_routine_json(self):
+        events = [
+            {"kind": "move", "source": "greedy", "unit": 9,
+             "from": {"col": 4, "row": 5}, "to": {"col": 3, "row": 4}},
+            {"kind": "attack", "source": "greedy",
+             "attacker": {"unit": 9, "hp": 17},
+             "defender": {"unit": 35, "hp": 0, "killed": True},
+             "damage_to_defender": 6, "damage_to_attacker": 0},
+            {"kind": "recruit", "source": "llm", "unit": 3,
+             "def_id": "Skeleton", "col": 2, "row": 6, "cost": 14},
+            {"kind": "gold", "source": "llm", "faction": 0,
+             "delta": 6, "balance": 20},
+            {"kind": "end_turn", "source": "llm", "ended_faction": 0,
+             "active_faction": 1, "turn": 4},
+        ]
+        rendered = compact_events(events)
+        self.assertIn("greedy move: U9 4,5>3,4", rendered)
+        self.assertIn("greedy attack: U9>U35 dmg=6/0 hp=0/dead", rendered)
+        self.assertIn("llm recruit: U3=Skeleton@2,6 cost=14", rendered)
+        self.assertIn("llm gold: F0 delta=6 balance=20", rendered)
+        self.assertIn("llm end_turn: F0->F1 turn=4", rendered)
+        self.assertLess(len(rendered.encode()), 2048)
+
+    def test_compact_prompt_uses_digest_and_diagnostic_prompt_keeps_raw_events(self):
+        events = [{"kind": "move", "source": "greedy", "unit": 9,
+                   "from": {"col": 4, "row": 5}, "to": {"col": 3, "row": 4}}]
+        compact = prompt_for({}, events, compact=True)
+        diagnostic = prompt_for({}, events, compact=False)
+        self.assertIn('"EVENT_DIGEST', compact)
+        self.assertIn('"kind":"move"', diagnostic)
+        self.assertNotIn('"kind":"move"', compact)
+
     def test_target_and_hex_renderers_keep_facts_and_empty_hex_uncertainty(self):
         target = compact_target_inspection({
             "target_id": 9, "hp": 20, "col": 4, "row": 7, "terrain": "flat",

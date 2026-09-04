@@ -155,6 +155,9 @@ attackable target IDs, and attacks available from its current hex. Inspect a uni
 specific decision needs detailed origins; do not inspect every mover by
 default. Movable origins and their target combinations are returned by
 `inspect_unit`; `--diagnostic` retains the complete JSON surface.
+The default `EVENTS` block is an `EVENT_DIGEST`: compact grouped movement,
+recruitment, attack, gold, village, and turn-boundary facts. Diagnostic mode
+retains the raw event objects.
 `--decision-metrics` adds one read-only preview of the final model-authored
 batch to the log so evaluations can compare recruiter danger and remaining
 recruitment before and after the decision.
