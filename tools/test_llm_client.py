@@ -702,6 +702,30 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_GAMEPLAY])
         self.assertEqual(terminal["reason"], "max_turns")
 
+    def test_action_repair_can_inspect_before_returning_corrected_batch(self):
+        end_turn = json.dumps([{"action": "EndTurn"}])
+        inspect = json.dumps({"tool": "inspect_target", "unit_id": 9})
+        invalid = {"type": "status", "ok": True, "what": "validate_batch",
+                   "body": {"valid": False, "failed_index": 0,
+                             "results": [{"ok": False, "code": "NotAdjacent",
+                                          "message": "units are not in attack range"}]}}
+        valid = {"type": "status", "ok": True, "what": "validate_batch",
+                 "body": {"valid": True, "failed_index": None,
+                           "results": [{"ok": True}]}}
+        code, terminal = self.run_with_orders(
+            [end_turn, inspect, end_turn],
+            [{"type": "state", "active_faction": 0, "state_revision": 4},
+             {"type": "status", "ok": True, "what": "tactical_surface", "body": {"units": []}},
+             invalid,
+             {"type": "status", "ok": True, "what": "inspect_target",
+              "body": {"target_id": 9, "hp": 20, "col": 2, "row": 2,
+                       "terrain": "flat", "attacks": []}},
+             valid,
+             {"type": "game_end", "reason": "max_turns", "winner": None}],
+            validate_before_submit=True)
+        self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_GAMEPLAY])
+        self.assertEqual(terminal["reason"], "max_turns")
+
     def test_preview_round_trip_forwards_model_selected_candidate(self):
         first = [{"action": "EndTurn"}]
         second = [{"action": "Move", "unit_id": 1, "col": 2, "row": 3},

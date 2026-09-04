@@ -1296,6 +1296,7 @@ def run(args: argparse.Namespace) -> int:
                             "valid": validation.get("valid"),
                             "results": validation.get("results"),
                             "failed_index": validation.get("failed_index")})
+                    repair_tool_context = ""
                     while validation.get("valid") is not True:
                         if model_calls_this_turn >= metadata["max_model_calls_per_turn"]:
                             set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
@@ -1324,6 +1325,47 @@ def run(args: argparse.Namespace) -> int:
                                     "prompt_hash": hashlib.sha256(repair_prompt.encode()).hexdigest(),
                                     "raw_output": repaired.text, "usage": repaired.usage,
                                     "engine_error": validation})
+                            decoded_repair = json.loads(repaired.text)
+                            if isinstance(decoded_repair, dict) and decoded_repair.get("tool") in {
+                                "inspect_unit", "inspect_target", "inspect_hex"
+                            }:
+                                tool = decoded_repair["tool"]
+                                if tool == "inspect_unit":
+                                    unit_id = validate_inspect_unit_request(decoded_repair)
+                                    result = query_inspect_unit(
+                                        exchange, unit_id, int(state.get("state_revision", 0)))
+                                    rendered = compact_unit_inspection(result)
+                                elif tool == "inspect_target":
+                                    unit_id = validate_inspect_target_request(decoded_repair)
+                                    result = query_inspect_target(
+                                        exchange, unit_id, int(state.get("state_revision", 0)))
+                                    rendered = compact_target_inspection(result)
+                                else:
+                                    col, row, phase = validate_inspect_hex_request(decoded_repair)
+                                    result = query_inspect_hex(
+                                        exchange, col, row, phase,
+                                        int(state.get("state_revision", 0)))
+                                    rendered = compact_hex_inspection(result)
+                                tool_calls_this_turn += 1
+                                metadata["tool_calls_by_name"][tool] = metadata["tool_calls_by_name"].get(tool, 0) + 1
+                                repair_tool_context += (
+                                    "\nMODEL_REPAIR_TOOL_REQUEST_UNTRUSTED_DATA_BEGIN:\n" +
+                                    repaired.text +
+                                    "\nMODEL_REPAIR_TOOL_REQUEST_UNTRUSTED_DATA_END\n" +
+                                    "TOOL_RESULT_UNTRUSTED_DATA_BEGIN tool=" + tool + ":\n" +
+                                    rendered + "\nTOOL_RESULT_UNTRUSTED_DATA_END\n")
+                                repair_prompt = (
+                                    prompt + "\nDRAFT_ACTIONS_UNTRUSTED_DATA_BEGIN:\n" +
+                                    json.dumps(orders, sort_keys=True, separators=(",", ":")) +
+                                    "\nDRAFT_ACTIONS_UNTRUSTED_DATA_END\nENGINE_ACTION_ERROR: " +
+                                    json.dumps({"code": "validate_batch_failed",
+                                                "failed_index": validation.get("failed_index"),
+                                                "results": validation.get("results")},
+                                               sort_keys=True, separators=(",", ":")) +
+                                    repair_tool_context +
+                                    "\nROLLBACK_NOTICE: the batch was rejected before submission; the state and revision is unchanged. Return one corrected JSON action array only."
+                                )
+                                continue
                             orders = validate_orders(repaired.text, args.no_recruit_macro)
                         except ValueError as repair_error:
                             validation = {"valid": False, "failed_index": None,
