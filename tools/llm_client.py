@@ -276,7 +276,23 @@ def query_inspect_unit(exchange, unit_id: int, state_revision: int) -> dict[str,
 
 
 def compact_unit_inspection(unit: dict[str, Any]) -> str:
-    return "COORDS=col,row\n" + "\n".join(compact_detailed_units([unit]))
+    lines = ["COORDS=col,row"] + compact_detailed_units([unit])
+    destinations = unit.get("recruiter_destinations", [])
+    if isinstance(destinations, list) and destinations:
+        rendered = []
+        for destination in destinations:
+            if not isinstance(destination, dict):
+                continue
+            marker = "@" if destination.get("current") else "->"
+            rendered.append("%s%s,%s a%s m%s lethal_n=%s conflict=%s" % (
+                marker, destination.get("col", "?"), destination.get("row", "?"),
+                destination.get("distinct_attacker_count", "?"),
+                destination.get("max_incoming_sum", "?"),
+                destination.get("lethal_attackers_needed"),
+                destination.get("origins_conflict", "?")))
+        if rendered:
+            lines.append("RECRUITER_DESTINATIONS " + " ".join(rendered))
+    return "\n".join(lines)
 
 
 def validate_inspect_target_request(request: dict[str, Any]) -> int:
@@ -538,6 +554,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "Copy individual Recruit coordinates only from R `open`. You may instead request one read-only preview by returning "
         "{\"tool\":\"preview_batch\",\"candidates\":[[actions...]]}; provide at most two complete candidates, each ending EndTurn. "
         "You may inspect one friendly unit with {\"tool\":\"inspect_unit\",\"unit_id\":N}. Tools are read-only and do not submit actions. "
+        "If inspect_unit is a recruiter, RECRUITER_DESTINATIONS gives factual next-turn threat counts for each legal position. "
         "Use {\"tool\":\"inspect_target\",\"unit_id\":N} for attackers of one enemy, or "
         "{\"tool\":\"inspect_hex\",\"col\":C,\"row\":R,\"phase\":\"current|next_opponent_turn\"} for attack coverage. "
         "After tool results, either request another allowed tool within budget or return the final action array."

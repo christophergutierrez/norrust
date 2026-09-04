@@ -58,6 +58,23 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("U16~4,5", empty)
         self.assertNotIn(" p[", empty)
 
+    def test_recruiter_inspection_renders_destination_exposure(self):
+        rendered = compact_unit_inspection({
+            "unit_id": 1,
+            "origins": [],
+            "recruiter_destinations": [
+                {"col": 2, "row": 7, "current": True,
+                 "distinct_attacker_count": 3, "max_incoming_sum": 42,
+                 "lethal_attackers_needed": 2, "origins_conflict": False},
+                {"col": 1, "row": 7, "current": False,
+                 "distinct_attacker_count": 0, "max_incoming_sum": 0,
+                 "lethal_attackers_needed": None, "origins_conflict": False},
+            ],
+        })
+        self.assertIn("RECRUITER_DESTINATIONS", rendered)
+        self.assertIn("@2,7 a3 m42 lethal_n=2", rendered)
+        self.assertIn("->1,7 a0 m0 lethal_n=None", rendered)
+
     def test_target_and_hex_requests_are_exact_and_revision_pinned(self):
         self.assertEqual(validate_inspect_target_request(
             {"tool": "inspect_target", "unit_id": 9}), 9)

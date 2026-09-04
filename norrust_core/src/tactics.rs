@@ -91,6 +91,18 @@ pub struct RecruiterThreats {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RecruiterDestinationThreat {
+    pub col: i32,
+    pub row: i32,
+    pub current: bool,
+    pub distinct_attacker_count: u32,
+    pub max_incoming_sum: u32,
+    pub lethal_attackers_needed: Option<u32>,
+    pub origins_conflict: bool,
+    pub attacker_max_damage: Vec<AttackerMaxDamage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AttackerMaxDamage {
     pub attacker_id: u32,
     pub max_damage: u32,
@@ -508,6 +520,64 @@ pub fn recruiter_threats_after_end_turn(
     })
 }
 
+/// Report the opponent threat forecast for each legal position of a recruiter.
+/// Each position is evaluated independently; no destination is ranked or recommended.
+pub fn recruiter_destination_threats(
+    state: &GameState,
+    recruiter_id: u32,
+) -> Result<Vec<RecruiterDestinationThreat>, TacticsError> {
+    let recruiter = state
+        .units
+        .get(&recruiter_id)
+        .ok_or(ActionError::UnitNotFound(recruiter_id))?;
+    if recruiter.faction != state.active_faction {
+        return Err(ActionError::NotYourTurn.into());
+    }
+    if !recruiter.can_recruit {
+        return Ok(Vec::new());
+    }
+    let current = *state
+        .positions
+        .get(&recruiter_id)
+        .ok_or(ActionError::UnitNotFound(recruiter_id))?;
+    let mut destinations = vec![(current, true)];
+    if !recruiter.moved {
+        destinations.extend(legal_moves(state, recruiter_id)?.into_iter().map(|hex| (hex, false)));
+    }
+    let mut result = Vec::with_capacity(destinations.len());
+    for (destination, is_current) in destinations {
+        let mut projected = state.clone();
+        if !is_current {
+            apply_action(
+                &mut projected,
+                Action::Move {
+                    unit_id: recruiter_id,
+                    destination,
+                },
+            )?;
+        }
+        let threats = recruiter_threats_after_end_turn(&projected, state.active_faction)?;
+        let summary = threats
+            .recruiters
+            .into_iter()
+            .find(|threat| threat.recruiter_id == recruiter_id)
+            .ok_or(ActionError::UnitNotFound(recruiter_id))?;
+        let (col, row) = destination.to_offset();
+        result.push(RecruiterDestinationThreat {
+            col,
+            row,
+            current: is_current,
+            distinct_attacker_count: summary.distinct_attacker_count,
+            max_incoming_sum: summary.max_incoming_sum,
+            lethal_attackers_needed: summary.lethal_attackers_needed,
+            origins_conflict: summary.origins_conflict,
+            attacker_max_damage: summary.attacker_max_damage,
+        });
+    }
+    result.sort_by_key(|destination| (!destination.current, destination.row, destination.col));
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -676,6 +746,60 @@ mod tests {
         assert_eq!(state.active_faction, 0);
         assert_eq!(state.state_revision, revision);
         assert_eq!(state.turn, 1);
+    }
+
+    #[test]
+    fn recruiter_destination_threats_match_independent_move_projections() {
+        let mut board = Board::new(7, 5);
+        for col in 0..7 {
+            for row in 0..5 {
+                board.set_tile(Hex::from_offset(col, row), crate::board::Tile::new("flat"));
+            }
+        }
+        let mut state = GameState::new_seeded(board, 101);
+        let mut recruiter = Unit::new(1, "leader", 20, 0);
+        recruiter.can_recruit = true;
+        recruiter.movement = 1;
+        recruiter.movement_costs.insert("flat".into(), 1);
+        state.place_unit(recruiter, Hex::from_offset(2, 2));
+        let mut archer = Unit::new(2, "adept", 20, 1);
+        archer.movement = 2;
+        archer.movement_costs.insert("flat".into(), 1);
+        archer.attacks.push(AttackDef {
+            id: "bolt".into(),
+            name: "bolt".into(),
+            damage: 10,
+            strikes: 2,
+            attack_type: "arcane".into(),
+            range: "ranged".into(),
+            specials: Vec::new(),
+        });
+        state.place_unit(archer, Hex::from_offset(4, 2));
+        let revision = state.state_revision;
+        let turn = state.turn;
+        let destinations = recruiter_destination_threats(&state, 1).unwrap();
+        assert!(destinations.iter().any(|destination| destination.current));
+        assert!(destinations.iter().any(|destination| !destination.current));
+        for destination in &destinations {
+            let mut projected = state.clone();
+            if !destination.current {
+                apply_action(
+                    &mut projected,
+                    Action::Move {
+                        unit_id: 1,
+                        destination: Hex::from_offset(destination.col, destination.row),
+                    },
+                )
+                .unwrap();
+            }
+            let expected = recruiter_threats_after_end_turn(&projected, 0).unwrap();
+            let summary = &expected.recruiters[0];
+            assert_eq!(destination.distinct_attacker_count, summary.distinct_attacker_count);
+            assert_eq!(destination.max_incoming_sum, summary.max_incoming_sum);
+            assert_eq!(destination.lethal_attackers_needed, summary.lethal_attackers_needed);
+        }
+        assert_eq!(state.state_revision, revision);
+        assert_eq!(state.turn, turn);
     }
 
     #[test]
