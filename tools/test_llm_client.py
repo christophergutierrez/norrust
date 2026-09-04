@@ -184,7 +184,7 @@ class ClientValidationTests(unittest.TestCase):
              "engagements": [{"defender_id": 10, "forecast": {
                  "outcome_bps": [0, 10000, 0], "expected_damage_tenths": [30, 0]}}]},
         ]}]})
-        self.assertIn("U5 at=2,7 move_n=1 target_n=2", rendered)
+        self.assertIn("U5 at=2,7 move_n=1 targets=U9,U10", rendered)
         self.assertIn("current_attacks=T9", rendered)
         self.assertNotIn("3,7>T10", rendered)
         self.assertIn("inspect=inspect_unit", rendered)
