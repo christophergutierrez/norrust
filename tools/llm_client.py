@@ -449,6 +449,32 @@ def compact_detailed_units(units: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
+def tactical_attack_coverage(surface: dict[str, Any]) -> dict[str, Any]:
+    available: set[int] = set()
+    current: set[int] = set()
+    targets: dict[int, set[int]] = {}
+    for unit in surface.get("units", []):
+        if not isinstance(unit, dict) or not isinstance(unit.get("unit_id"), int):
+            continue
+        unit_id = unit["unit_id"]
+        unit_has_attack = False
+        for origin in unit.get("origins", []):
+            if not isinstance(origin, dict):
+                continue
+            engagements = [e for e in origin.get("engagements", []) if isinstance(e, dict)]
+            if engagements:
+                unit_has_attack = True
+                if origin.get("current"):
+                    current.add(unit_id)
+                for engagement in engagements:
+                    target_id = engagement.get("defender_id")
+                    if isinstance(target_id, int):
+                        targets.setdefault(target_id, set()).add(unit_id)
+        if unit_has_attack:
+            available.add(unit_id)
+    return {"available": available, "current": current, "targets": targets}
+
+
 def compact_tactical_surface(surface: dict[str, Any]) -> str:
     """Render the default card; detailed movable origins are inspected on demand."""
     lines: list[str] = []
@@ -503,6 +529,14 @@ def compact_tactical_surface(surface: dict[str, Any]) -> str:
                        "current_attacks=%s" % ("|".join(current_attacks) or "-"),
                        "inspect=inspect_unit"))
         lines.append(" ".join(fields))
+    coverage = tactical_attack_coverage(surface)
+    available = ",".join("U%s" % unit_id for unit_id in sorted(coverage["available"])) or "-"
+    current = ",".join("U%s" % unit_id for unit_id in sorted(coverage["current"])) or "-"
+    target_index = ";".join(
+        "U%s:%s" % (target_id, ",".join("U%s" % unit_id for unit_id in sorted(attacker_ids)))
+        for target_id, attacker_ids in sorted(coverage["targets"].items())
+    ) or "-"
+    lines.append("COVERAGE available=%s current=%s targets=%s" % (available, current, target_index))
     recruitment = surface.get("recruitment")
     if isinstance(recruitment, dict):
         options = ",".join("%s:%s" % (item.get("def_id", "?"), item.get("cost", "?"))
@@ -657,7 +691,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         )
     tactical_guidance = (
         "Use tactical_surface exactly. COORDS=col,row. `at` is current and never a Move destination. The base card gives "
-        "move/target counts and current-position attacks; inspect a unit only when detailed origins are needed for a specific decision. Forecasts use "
+        "move/target counts, current-position attacks, and a factual target-centric COVERAGE index; inspect a unit only when detailed origins are needed for a specific decision. Forecasts use "
         "p[defender-killed,both-survive,attacker-killed] and e[defender,attacker] damage. THREAT lines are complete-information "
         "upper bounds if you EndTurn now: attackers is the distinct count, max_sum adds one maximum volley per attacker, "
         "lethal_n is how many largest maximum volleys reach recruiter HP, and detail lists attacker:max-damage pairs. "
@@ -908,6 +942,7 @@ def run(args: argparse.Namespace) -> int:
                 "tool_calls_by_name": {}, "max_observed_prompt_bytes": 0,
                 "turns_with_lethal_danger_before": 0, "turns_with_lethal_danger_after": 0,
                 "turns_with_affordable_recruitment_left": 0,
+                "attack_opportunity_unit_turns": 0, "planned_attack_unit_turns": 0,
                 "draft_reviews": 0, "draft_revisions": 0, "draft_confirmations": 0,
                 "draft_review_repairs": 0,
                 "decision_metrics": getattr(args, "decision_metrics", False),
@@ -1090,6 +1125,12 @@ def run(args: argparse.Namespace) -> int:
                     return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
                 state = dict(state)
                 state.update(option_bodies)
+                coverage = tactical_attack_coverage(state.get("tactical_surface", {}))
+                metadata["attack_opportunity_unit_turns"] += len(coverage["available"])
+                record({"type": "attack_coverage", "available": sorted(coverage["available"]),
+                        "current": sorted(coverage["current"]),
+                        "targets": {str(target): sorted(attackers)
+                                    for target, attackers in sorted(coverage["targets"].items())}})
                 record({"type": "state_hash", "sha256": hashlib.sha256(
                     json.dumps(state, sort_keys=True, separators=(",", ":")).encode()
                 ).hexdigest()})
@@ -1451,6 +1492,17 @@ def run(args: argparse.Namespace) -> int:
                     except RuntimeError as metrics_error:
                         record({"type": "metrics_error", "message": str(metrics_error)})
                 metadata["model_orders"] += len(orders)
+                planned_attackers = set()
+                for order in orders:
+                    if order.get("action") == "Attack":
+                        planned_attackers.add(order.get("attacker_id"))
+                    elif order.get("action") == "Engage":
+                        planned_attackers.update(step.get("attacker_id") for step in order.get("steps", []))
+                planned_attackers.discard(None)
+                metadata["planned_attack_unit_turns"] += len(planned_attackers)
+                record({"type": "turn_attack_coverage", "available": sorted(coverage["available"]),
+                        "planned": sorted(planned_attackers),
+                        "unused": sorted(coverage["available"] - planned_attackers)})
                 record({"type": "forwarded_orders", "orders": orders,
                         "prompt_hash": prompt_hash})
                 try:

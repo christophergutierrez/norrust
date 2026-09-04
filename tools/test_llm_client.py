@@ -15,7 +15,7 @@ from .llm_client import (
     compact_batch_preview, compact_hex_inspection, compact_observation,
     compact_target_inspection, compact_tactical_surface, prompt_for, query_options,
     compact_unit_inspection, compact_draft_review, tool_followup_instruction, tool_budget_repair_prompt,
-    compact_events,
+    compact_events, tactical_attack_coverage,
     query_tactical_surface, query_validate_batch, query_preview_batch,
     query_inspect_unit, query_inspect_target, query_inspect_hex, run,
     validate_inspect_unit_request, validate_inspect_target_request,
@@ -248,6 +248,22 @@ class ClientValidationTests(unittest.TestCase):
              "engagements": []}]})
         self.assertIn("U5 moves=3,7|4,7 attacks=3,7>T9 p[7100, 2500, 400] e[210, 20]", rendered)
         self.assertNotIn("at=3,7", rendered)
+
+    def test_attack_coverage_groups_targets_and_current_attackers(self):
+        surface = {"units": [
+            {"unit_id": 3, "origins": [
+                {"current": True, "engagements": [{"defender_id": 9}]},
+                {"current": False, "engagements": [{"defender_id": 10}]},
+            ]},
+            {"unit_id": 4, "origins": [{"current": False, "engagements": [{"defender_id": 9}]}]},
+            {"unit_id": 5, "origins": [{"current": False, "engagements": []}]},
+        ]}
+        coverage = tactical_attack_coverage(surface)
+        self.assertEqual(coverage["available"], {3, 4})
+        self.assertEqual(coverage["current"], {3})
+        self.assertEqual(coverage["targets"], {9: {3, 4}, 10: {3}})
+        rendered = compact_tactical_surface(surface)
+        self.assertIn("COVERAGE available=U3,U4 current=U3 targets=U9:U3,U4;U10:U3", rendered)
 
     def test_default_tactical_card_summarizes_movable_origins(self):
         rendered = compact_tactical_surface({"units": [{"unit_id": 5, "origins": [
