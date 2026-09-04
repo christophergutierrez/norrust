@@ -317,6 +317,21 @@ class ClientValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_orders('[{"action":"RecruitBatch","def_id":"Skeleton","count":1},{"action":"EndTurn"}]', strict=True)
 
+    def test_engage_validation_and_compact_type_profiles(self):
+        orders = '[{"action":"Engage","target_id":9,"steps":[{"attacker_id":3,"col":4,"row":7}]},{"action":"EndTurn"}]'
+        self.assertEqual(validate_orders(orders)[0]["action"], "Engage")
+        with self.assertRaises(ValueError):
+            validate_orders('[{"action":"Engage","target_id":9,"steps":[]},{"action":"EndTurn"}]')
+        rendered = compact_tactical_surface({"unit_types": [{
+            "def_id": "Dark Adept", "cost": 16, "max_hp": 28, "movement": 5,
+            "alignment": "chaotic", "attacks": [{"name": "chill", "damage": 10,
+            "strikes": 2, "range": "ranged", "type": "cold", "specials": []}],
+            "resistances": {"cold": -10}
+        }], "units": []})
+        self.assertIn("TYPE Dark Adept cost=16 hp=28 move=5", rendered)
+        self.assertIn("chill:10x2/ranged/cold", rendered)
+        self.assertIn("resist=cold:-10", rendered)
+
     def test_compaction_preserves_move_legality_flags(self):
         """D-136-3: the contract tells the model that `current` entries are attack
         origins, not Move destinations. If compaction strips the flags the
@@ -461,8 +476,8 @@ class ClientValidationTests(unittest.TestCase):
             "spend gold and recruit when legal",
             "saving gold for a better recruit next turn is valid",
             "vacate and recruit again",
-            "Recruit a mix",
-            "never dump the remaining purse",
+            "`TYPE` profiles",
+            "visible enemy roster",
             "move non-recruiters off castle hexes",
             "do not passively wait",
             "Form a line, then fight",
@@ -470,7 +485,7 @@ class ClientValidationTests(unittest.TestCase):
             "Keep recruiting after the opening dump",
             "fight only from distance 2",
             "Time of day is a fight gate",
-            "combined maximum damage",
+            "Use `Engage`",
             "do not chase onto its forest",
             "will turtle for a hundred turns",
             "Do not wait for it to walk onto your forest",

@@ -452,6 +452,25 @@ def compact_detailed_units(units: list[dict[str, Any]]) -> list[str]:
 def compact_tactical_surface(surface: dict[str, Any]) -> str:
     """Render the default card; detailed movable origins are inspected on demand."""
     lines: list[str] = []
+    for profile in surface.get("unit_types", []):
+        if not isinstance(profile, dict):
+            continue
+        attacks = []
+        for attack in profile.get("attacks", []):
+            if not isinstance(attack, dict):
+                continue
+            specials = "+".join(attack.get("specials", []))
+            suffix = "+%s" % specials if specials else ""
+            attacks.append("%s:%sx%s/%s/%s%s" % (
+                attack.get("name", "?"), attack.get("damage", "?"),
+                attack.get("strikes", "?"), attack.get("range", "?"),
+                attack.get("type", "?"), suffix))
+        resistances = ",".join("%s:%s" % (key, value)
+                               for key, value in sorted((profile.get("resistances") or {}).items()))
+        lines.append("TYPE %s cost=%s hp=%s move=%s align=%s attacks=%s resist=%s" % (
+            profile.get("def_id", "?"), profile.get("cost", "?"), profile.get("max_hp", "?"),
+            profile.get("movement", "?"), profile.get("alignment", "?"),
+            "|".join(attacks) or "-", resistances or "-"))
     for unit in surface.get("units", []):
         if not isinstance(unit, dict):
             continue
@@ -650,7 +669,9 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "Use {\"tool\":\"inspect_target\",\"unit_id\":N} for attackers of one enemy, or "
         "{\"tool\":\"inspect_hex\",\"col\":C,\"row\":R,\"phase\":\"current|next_opponent_turn\"} for attack coverage. "
         "Engage lets you declare ordered move-and-attack steps against one target; remaining steps are skipped if that target dies, "
-        "while genuinely illegal steps still reject the whole batch. After tool results, either request another allowed tool within budget or return the final action array."
+        "while genuinely illegal steps still reject the whole batch. TYPE lines are factual unit profiles; use their attacks and resistances "
+        "to choose recruits and adapt to the visible enemy roster, without following a fixed roster recipe. After tool results, either request "
+        "another allowed tool within budget or return the final action array."
         if isinstance(state.get("tactical_surface"), dict) else
         "Use turn_options positions exactly for every move and re-check sequential destinations before submitting. "
         "turn_options lists, per unit, the hexes it may attack from and the target IDs reachable from each. "

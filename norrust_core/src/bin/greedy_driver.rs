@@ -10,7 +10,7 @@
 //! target/debug/greedy_driver --scenario big_battle_6 \
 //!   --faction0 undead --faction1 undead --gold 300 --seed 42
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::env;
 use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
@@ -582,6 +582,32 @@ fn game_state_to_json(state: &GameState, units: &Registry<UnitDef>) -> Value {
         state,
     ))
     .unwrap_or_else(|_| json!({}))
+}
+
+fn unit_type_profile(def: &UnitDef) -> Value {
+    let mut resistances = serde_json::Map::new();
+    let mut resistance_keys: Vec<_> = def.resistances.keys().collect();
+    resistance_keys.sort();
+    for key in resistance_keys {
+        resistances.insert(key.clone(), json!(def.resistances[key]));
+    }
+    json!({
+        "def_id": def.id,
+        "name": def.name,
+        "cost": def.cost,
+        "max_hp": def.max_hp,
+        "movement": def.movement,
+        "alignment": def.alignment,
+        "attacks": def.attacks.iter().map(|attack| json!({
+            "name": attack.name,
+            "damage": attack.damage,
+            "strikes": attack.strikes,
+            "type": attack.attack_type,
+            "range": attack.range,
+            "specials": attack.specials,
+        })).collect::<Vec<_>>(),
+        "resistances": Value::Object(resistances),
+    })
 }
 
 fn valid_action_shape(order: &Value) -> bool {
@@ -1846,6 +1872,19 @@ fn interactive_protocol_game(c: &Config) {
                                     })
                                     .collect();
                                 let options: Vec<Value> = faction.recruits.iter().filter_map(|id| units.get(id).map(|def| json!({"def_id":id,"cost":def.cost,"affordable":state.gold[side] >= def.cost}))).collect();
+                                let mut profile_ids = BTreeSet::new();
+                                profile_ids.extend(faction.recruits.iter().cloned());
+                                profile_ids.extend(
+                                    state
+                                        .units
+                                        .values()
+                                        .filter(|unit| unit.faction != state.active_faction)
+                                        .map(|unit| unit.def_id.clone()),
+                                );
+                                let unit_types: Vec<Value> = profile_ids
+                                    .iter()
+                                    .filter_map(|id| units.get(id).map(unit_type_profile))
+                                    .collect();
                                 let threats =
                                     recruiter_threats_after_end_turn(&state, state.active_faction)
                                         .map_err(|error| error.to_string());
@@ -1853,7 +1892,7 @@ fn interactive_protocol_game(c: &Config) {
                                     .map_err(|error| error.to_string());
                                 match (threats, economy) {
                                     (Ok(threats), Ok((next_village_income, vacatable_castles))) => {
-                                        json!({"type":"status","ok":true,"what":what,"body":{"visibility":"full","time_of_day":tod_label(state.turn),"next_time_of_day":tod_label(state.turn.saturating_add(1)),"units":tactical_units,"threats":threats,"economy":{"gold":state.gold[side],"next_village_income":next_village_income,"vacatable_castles":vacatable_castles},"recruitment":{"gold":state.gold[side],"placement_hexes":placement_hexes,"options":options,"batch_macro_enabled":!c.disable_recruit_batch}}})
+                                        json!({"type":"status","ok":true,"what":what,"body":{"visibility":"full","time_of_day":tod_label(state.turn),"next_time_of_day":tod_label(state.turn.saturating_add(1)),"units":tactical_units,"unit_types":unit_types,"threats":threats,"economy":{"gold":state.gold[side],"next_village_income":next_village_income,"vacatable_castles":vacatable_castles},"recruitment":{"gold":state.gold[side],"placement_hexes":placement_hexes,"options":options,"batch_macro_enabled":!c.disable_recruit_batch}}})
                                     }
                                     (Err(message), _) => {
                                         json!({"type":"status","ok":false,"what":what,"code":"tactical_surface_error","message":message})
