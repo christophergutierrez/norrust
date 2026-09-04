@@ -541,6 +541,26 @@ fn authorize_model_batch(
                 "model actions may reference only model-side units",
             ));
         }
+        if order.get("action").and_then(Value::as_str) == Some("Engage") {
+            let Some(steps) = order.get("steps").and_then(Value::as_array) else {
+                return Err(("parse", "Engage steps must be an array"));
+            };
+            for step in steps {
+                let Some(attacker_id) = step.get("attacker_id").and_then(Value::as_u64) else {
+                    return Err(("parse", "Engage step needs attacker_id"));
+                };
+                if state
+                    .units
+                    .get(&(attacker_id as u32))
+                    .is_some_and(|unit| unit.faction != model_side)
+                {
+                    return Err((
+                        "unauthorized_unit",
+                        "model actions may reference only model-side units",
+                    ));
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -585,6 +605,7 @@ fn valid_action_shape(order: &Value) -> bool {
             &["def_id", "col", "row"],
         ),
         "RecruitBatch" => (&["action", "def_id", "count"], &["def_id", "count"]),
+        "Engage" => (&["action", "target_id", "steps"], &["target_id", "steps"]),
         "EndTurn" => (&["action"], &[]),
         "Advance" => (
             &["action", "unit_id", "target_index", "def_id"],
@@ -618,6 +639,7 @@ fn valid_action_shape(order: &Value) -> bool {
                 &[][..]
             }
         }
+        "Engage" => &[][..],
         _ => &[][..],
     };
     let integer_fields: &[&str] = match action {
@@ -632,6 +654,7 @@ fn valid_action_shape(order: &Value) -> bool {
                 &["unit_id"]
             }
         }
+        "Engage" => &[],
         _ => &[],
     };
     object.keys().all(|key| allowed.contains(&key.as_str()))
@@ -651,6 +674,36 @@ fn valid_action_shape(order: &Value) -> bool {
                 .get("count")
                 .and_then(Value::as_u64)
                 .is_some_and(|count| (1..=u32::MAX as u64).contains(&count)))
+        && (action != "Engage"
+            || object
+                .get("target_id")
+                .and_then(Value::as_u64)
+                .is_some_and(|id| id <= u32::MAX as u64)
+                && object
+                    .get("steps")
+                    .and_then(Value::as_array)
+                    .is_some_and(|steps| {
+                        !steps.is_empty()
+                            && steps.len() <= 256
+                            && steps.iter().all(|step| {
+                                let Some(step) = step.as_object() else {
+                                    return false;
+                                };
+                                let allowed = ["attacker_id", "col", "row"];
+                                step.keys().all(|key| allowed.contains(&key.as_str()))
+                                    && allowed.iter().all(|key| step.contains_key(*key))
+                                    && step
+                                        .get("attacker_id")
+                                        .and_then(Value::as_u64)
+                                        .is_some_and(|id| id <= u32::MAX as u64)
+                                    && step.get("col").and_then(Value::as_i64).is_some_and(|col| {
+                                        (i32::MIN as i64..=i32::MAX as i64).contains(&col)
+                                    })
+                                    && step.get("row").and_then(Value::as_i64).is_some_and(|row| {
+                                        (i32::MIN as i64..=i32::MAX as i64).contains(&row)
+                                    })
+                            })
+                    }))
 }
 
 fn validate_model_batch_contract(
@@ -802,6 +855,84 @@ fn execute_model_batch(
                 }
                 _ => Err(norrust_core::game_state::ActionError::UnitNotFound(0)),
             },
+            Some("Engage") => (|| {
+                let target_id = order
+                    .get("target_id")
+                    .and_then(Value::as_u64)
+                    .map(|id| id as u32)
+                    .ok_or(norrust_core::game_state::ActionError::UnitNotFound(0));
+                let steps = order.get("steps").and_then(Value::as_array);
+                match (target_id, steps) {
+                    (Ok(target_id), Some(steps)) => {
+                        let mut produced = Vec::new();
+                        for step in steps {
+                            if !state.units.contains_key(&target_id) {
+                                break;
+                            }
+                            let attacker_id = step
+                                .get("attacker_id")
+                                .and_then(Value::as_u64)
+                                .map(|id| id as u32)
+                                .ok_or(norrust_core::game_state::ActionError::UnitNotFound(0))?;
+                            let destination = Hex::from_offset(
+                                step.get("col").and_then(Value::as_i64).ok_or(
+                                    norrust_core::game_state::ActionError::UnitNotFound(
+                                        attacker_id,
+                                    ),
+                                )? as i32,
+                                step.get("row").and_then(Value::as_i64).ok_or(
+                                    norrust_core::game_state::ActionError::UnitNotFound(
+                                        attacker_id,
+                                    ),
+                                )? as i32,
+                            );
+                            let current = state.positions.get(&attacker_id).copied().ok_or(
+                                norrust_core::game_state::ActionError::UnitNotFound(attacker_id),
+                            )?;
+                            let mut sub_orders = Vec::with_capacity(2);
+                            if current != destination {
+                                sub_orders.push(json!({
+                                    "action":"Move",
+                                    "unit_id":attacker_id,
+                                    "col":step.get("col").and_then(Value::as_i64).unwrap(),
+                                    "row":step.get("row").and_then(Value::as_i64).unwrap()
+                                }));
+                            }
+                            sub_orders.push(json!({
+                                "action":"Attack",
+                                "attacker_id":attacker_id,
+                                "defender_id":target_id
+                            }));
+                            let sub = execute_model_batch(
+                                state.clone(),
+                                next_id,
+                                &sub_orders,
+                                model_side,
+                                factions,
+                                units,
+                                disable_recruit_batch,
+                                sample_attacks,
+                            );
+                            if !sub
+                                .results
+                                .iter()
+                                .all(|result| result.get("ok") == Some(&Value::Bool(true)))
+                            {
+                                return Err(norrust_core::game_state::ActionError::UnitNotFound(
+                                    attacker_id,
+                                ));
+                            }
+                            state = sub.state;
+                            next_id = sub.next_id;
+                            produced.extend(sub.events);
+                            forecasts.extend(sub.forecasts);
+                            post_combat_conditional |= sub.post_combat_conditional;
+                        }
+                        Ok(produced)
+                    }
+                    _ => Err(norrust_core::game_state::ActionError::UnitNotFound(0)),
+                }
+            })(),
             Some("Recruit") => match (
                 order.get("def_id").and_then(Value::as_str),
                 order.get("col").and_then(Value::as_i64),
@@ -2135,7 +2266,15 @@ fn interactive_protocol_game(c: &Config) {
             name.is_none()
                 || !matches!(
                     name,
-                    Some("Move" | "Attack" | "Recruit" | "RecruitBatch" | "EndTurn" | "Advance")
+                    Some(
+                        "Move"
+                            | "Attack"
+                            | "Recruit"
+                            | "RecruitBatch"
+                            | "Engage"
+                            | "EndTurn"
+                            | "Advance"
+                    )
                 )
         }) {
             println!(
@@ -2407,6 +2546,71 @@ mod tests {
             ),
             Err(("parse", "invalid action batch structure"))
         );
+    }
+
+    #[test]
+    fn engage_executes_a_legal_move_and_attack_step() {
+        let config = Config {
+            scenario: "big_battle_6".into(),
+            faction0: "undead".into(),
+            faction1: "undead".into(),
+            gold: 10,
+            seed: 42,
+            scripted: false,
+            llm_side: 0,
+            max_turns: 4,
+            turn_timeout: 1,
+            query_timeout: 1,
+            max_queries: 1,
+            disable_recruit_batch: false,
+        };
+        let (mut state, faction0, faction1, units) = init_game(&config).expect("valid fixture");
+        let (attacker, attacker_hex) = state
+            .units
+            .values()
+            .find_map(|unit| {
+                (unit.faction == 0 && !unit.attacks.is_empty())
+                    .then(|| (unit.id, state.positions[&unit.id]))
+            })
+            .expect("fixture has an attacker");
+        let target = state
+            .units
+            .values()
+            .find(|unit| unit.faction == 1)
+            .map(|unit| unit.id)
+            .expect("fixture has a target");
+        let target_old_hex = state.positions[&target];
+        let target_hex = attacker_hex
+            .neighbors()
+            .into_iter()
+            .find(|hex| state.board.tile_at(*hex).is_some() && !state.hex_to_unit.contains_key(hex))
+            .expect("attacker has an open neighboring hex");
+        state.positions.insert(target, target_hex);
+        state.hex_to_unit.remove(&target_old_hex);
+        state.hex_to_unit.insert(target_hex, target);
+        let (col, row) = attacker_hex.to_offset();
+        let order = json!({
+            "action":"Engage",
+            "target_id":target,
+            "steps":[{"attacker_id":attacker,"col":col,"row":row}]
+        });
+        assert!(valid_action_shape(&order));
+        assert!(authorize_model_batch(&[order.clone()], &state, 0).is_ok());
+        let execution = execute_model_batch(
+            state,
+            100,
+            &[order],
+            0,
+            &[faction0, faction1],
+            &units,
+            false,
+            false,
+        );
+        assert!(execution
+            .results
+            .iter()
+            .all(|result| result.get("ok") == Some(&Value::Bool(true))));
+        assert_eq!(execution.forecasts.len(), 1);
     }
 
     #[test]

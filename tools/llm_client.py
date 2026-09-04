@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "EndTurn", "Advance"}
+ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "Engage", "EndTurn", "Advance"}
 
 
 @dataclass
@@ -111,6 +111,7 @@ def validate_orders(text: str, strict: bool = False) -> list[dict[str, Any]]:
             "Attack": {"action", "attacker_id", "defender_id"},
             "Recruit": {"action", "def_id", "col", "row"},
             "RecruitBatch": {"action", "def_id", "count"},
+            "Engage": {"action", "target_id", "steps"},
             "EndTurn": {"action"},
             "Advance": {"action", "unit_id", "target_index", "def_id"},
         }[action]
@@ -121,6 +122,7 @@ def validate_orders(text: str, strict: bool = False) -> list[dict[str, Any]]:
             "Attack": {"attacker_id", "defender_id"},
             "Recruit": {"def_id", "col", "row"},
             "RecruitBatch": {"def_id", "count"},
+            "Engage": {"target_id", "steps"},
             "EndTurn": set(),
             "Advance": {"unit_id"},
         }[action]
@@ -145,6 +147,22 @@ def validate_orders(text: str, strict: bool = False) -> list[dict[str, Any]]:
                         raise ValueError(f"{field} is out of range at index {i}")
                 elif not -(2**31) <= value <= 2**31 - 1:
                     raise ValueError(f"{field} is out of range at index {i}")
+        if action == "Engage":
+            if (not isinstance(order["target_id"], int) or isinstance(order["target_id"], bool)
+                    or not 0 <= order["target_id"] <= 2**32 - 1
+                    or not isinstance(order["steps"], list) or not order["steps"]
+                    or len(order["steps"]) > 256):
+                raise ValueError(f"invalid Engage at index {i}")
+            for step in order["steps"]:
+                if not isinstance(step, dict) or set(step) != {"attacker_id", "col", "row"}:
+                    raise ValueError(f"invalid Engage step at index {i}")
+                if (not isinstance(step["attacker_id"], int) or isinstance(step["attacker_id"], bool)
+                        or not 0 <= step["attacker_id"] <= 2**32 - 1):
+                    raise ValueError(f"invalid Engage attacker at index {i}")
+                for field in ("col", "row"):
+                    if (not isinstance(step[field], int) or isinstance(step[field], bool)
+                            or not -(2**31) <= step[field] <= 2**31 - 1):
+                        raise ValueError(f"invalid Engage coordinate at index {i}")
         string_fields = {
             "Recruit": ("def_id",),
             "RecruitBatch": ("def_id",),
@@ -605,6 +623,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
     schemas = [
         'Move: {"action":"Move","unit_id": integer,"col": integer,"row": integer}',
         'Attack: {"action":"Attack","attacker_id": integer,"defender_id": integer}',
+        'Engage: {"action":"Engage","target_id": integer,"steps":[{"attacker_id": integer,"col": integer,"row": integer}]}; stops safely when the target dies',
         'Recruit: {"action":"Recruit","def_id": string,"col": integer,"row": integer}',
         'Advance: {"action":"Advance","unit_id": integer}; exactly one of integer target_index or string def_id',
         'EndTurn: {"action":"EndTurn"}',
@@ -630,7 +649,8 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "If inspect_unit is any friendly unit, DESTINATION_DANGER gives factual next-turn threat counts for each legal position. "
         "Use {\"tool\":\"inspect_target\",\"unit_id\":N} for attackers of one enemy, or "
         "{\"tool\":\"inspect_hex\",\"col\":C,\"row\":R,\"phase\":\"current|next_opponent_turn\"} for attack coverage. "
-        "After tool results, either request another allowed tool within budget or return the final action array."
+        "Engage lets you declare ordered move-and-attack steps against one target; remaining steps are skipped if that target dies, "
+        "while genuinely illegal steps still reject the whole batch. After tool results, either request another allowed tool within budget or return the final action array."
         if isinstance(state.get("tactical_surface"), dict) else
         "Use turn_options positions exactly for every move and re-check sequential destinations before submitting. "
         "turn_options lists, per unit, the hexes it may attack from and the target IDs reachable from each. "
