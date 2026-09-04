@@ -10,6 +10,8 @@ use crate::campaign::CampaignState;
 use crate::dialogue::DialogueState;
 use crate::game_state::GameState;
 use crate::hex::Hex;
+use crate::loader::Registry;
+use crate::schema::{TerrainDef, UnitDef};
 use crate::unit::Unit;
 
 /// Serializable snapshot of a single unit's runtime state.
@@ -111,6 +113,14 @@ pub struct SaveState {
     pub display_name: Option<String>,
     #[serde(default)]
     pub had_recruiter: [bool; 2],
+    /// Monotonic engine mutation revision. Old saves predate this field.
+    #[serde(default)]
+    pub state_revision: u64,
+    /// Faction identities and expanded recruit rosters used by the engine.
+    #[serde(default)]
+    pub faction_ids: [String; 2],
+    #[serde(default)]
+    pub recruit_ids: [Vec<String>; 2],
 }
 
 impl SaveState {
@@ -183,7 +193,82 @@ impl SaveState {
             campaign: campaign.cloned(),
             display_name: display_name.map(|s| s.to_string()),
             had_recruiter: state.had_recruiter,
+            state_revision: state.state_revision,
+            faction_ids: state.faction_ids.clone(),
+            recruit_ids: state.recruit_ids.clone(),
         }
+    }
+
+    /// Restore the engine state represented by this save.
+    ///
+    /// Registry definitions are intentionally supplied by the caller. This
+    /// keeps mutable runtime state in the save while retaining the existing
+    /// data-driven unit and terrain registries.
+    pub fn restore_game_state(
+        save: &SaveState,
+        units: &Registry<UnitDef>,
+        terrain: &Registry<TerrainDef>,
+    ) -> Result<GameState, String> {
+        let loaded = crate::scenario::load_board(std::path::Path::new(&save.board_path))
+            .map_err(|e| format!("load board: {}", e))?;
+        let mut state = GameState::new_seeded(loaded.board, save.rng_state);
+        state.objective_hex = loaded.objective_hex;
+        state.max_turns = loaded.max_turns;
+
+        for col in 0..state.board.width as i32 {
+            for row in 0..state.board.height as i32 {
+                let hex = Hex::from_offset(col, row);
+                if let Some(id) = state.board.terrain_at(hex).map(str::to_string) {
+                    if let Some(def) = terrain.get(&id) {
+                        state.board.set_tile(hex, crate::board::Tile::from_def(def));
+                    }
+                }
+            }
+        }
+
+        state.rng = crate::combat::Rng::new(save.rng_state);
+        state.turn = save.turn;
+        state.active_faction = save.active_faction;
+        state.sides_acted_this_round = save
+            .sides_acted_this_round
+            .unwrap_or(if save.active_faction == 1 { 1 } else { 0 });
+        state.gold = save.gold;
+        state.max_turns = save.max_turns;
+        state.objective_hex = save.objective_hex.map(|(col, row)| Hex::from_offset(col, row));
+        state.had_recruiter = save.had_recruiter;
+        state.faction_ids = save.faction_ids.clone();
+        state.recruit_ids = save.recruit_ids.clone();
+        for unit_save in &save.units {
+            let Some(def) = units.get(&unit_save.def_id) else {
+                return Err(format!("unit definition not found: {}", unit_save.def_id));
+            };
+            let mut unit = Unit::from_def(unit_save.id, def, unit_save.faction);
+            unit.hp = unit_save.hp;
+            unit.max_hp = unit_save.max_hp;
+            unit.xp = unit_save.xp;
+            unit.xp_needed = unit_save.xp_needed;
+            unit.advancement_pending = unit_save.advancement_pending;
+            unit.moved = unit_save.moved;
+            unit.attacked = unit_save.attacked;
+            unit.poisoned = unit_save.poisoned;
+            unit.slowed = unit_save.slowed;
+            unit.level = unit_save.level;
+            unit.abilities = unit_save.abilities.clone();
+            unit.can_recruit = unit_save.can_recruit
+                || unit.abilities.iter().any(|ability| ability == "leader");
+            state.place_unit(unit, Hex::from_offset(unit_save.col, unit_save.row));
+        }
+        state.next_unit_id = save.next_unit_id;
+        for (index, fired) in save.trigger_zones_fired.iter().enumerate() {
+            if let Some(zone) = state.trigger_zones.get_mut(index) {
+                zone.triggered = *fired;
+            }
+        }
+        for &(col, row, owner) in &save.village_owners {
+            state.village_owners.insert(Hex::from_offset(col, row), owner);
+        }
+        state.state_revision = save.state_revision;
+        Ok(state)
     }
 }
 
@@ -284,6 +369,9 @@ mod tests {
             campaign: None,
             display_name: Some("The Crossing".to_string()),
             had_recruiter: [true, false],
+            state_revision: 0,
+            faction_ids: [String::new(), String::new()],
+            recruit_ids: [Vec::new(), Vec::new()],
         };
 
         let json = serde_json::to_string(&save).expect("serialize");
@@ -309,6 +397,9 @@ mod tests {
         state.active_faction = 1;
         state.max_turns = Some(20);
         state.objective_hex = Some(Hex::from_offset(10, 4));
+        state.faction_ids = ["undead".into(), "elves".into()];
+        state.recruit_ids = [vec!["Skeleton".into()], vec!["Archer".into()]];
+        state.state_revision = 7;
 
         // Set village owner
         state.village_owners.insert(Hex::from_offset(4, 2), 0);
@@ -332,6 +423,9 @@ mod tests {
         assert_eq!(save.next_unit_id, state.next_unit_id);
         assert_eq!(save.village_owners, vec![(4, 2, 0)]);
         assert_eq!(save.display_name, Some("The Crossing".to_string()));
+        assert_eq!(save.faction_ids, state.faction_ids);
+        assert_eq!(save.recruit_ids, state.recruit_ids);
+        assert_eq!(save.state_revision, 7);
 
         // Verify unit order (sorted by ID)
         assert_eq!(save.units[0].id, 1);

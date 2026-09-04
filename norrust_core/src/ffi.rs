@@ -23,7 +23,7 @@ use serde::Serialize;
 
 use crate::board::Tile;
 use crate::campaign::{self, CampaignState};
-use crate::combat::{simulate_combat, time_of_day, PreviewError, Rng, TimeOfDay};
+use crate::combat::{simulate_combat, time_of_day, PreviewError, TimeOfDay};
 use crate::dialogue::DialogueState;
 use crate::game_state::{
     apply_action, apply_advance, apply_recruit, legal_moves, legal_targets, Action, ActionError,
@@ -3135,80 +3135,15 @@ pub unsafe extern "C" fn norrust_load_json(engine: *mut NorRustEngine, json: *co
             Err(_) => return -1,
         };
 
-        // 1. Reload board from saved path
-        let path = PathBuf::from(&save.board_path);
-        let loaded = match crate::scenario::load_board(&path) {
-            Ok(b) => b,
+        let (Some(units), Some(terrain)) = (e.units.as_ref(), e.terrain.as_ref()) else {
+            return -1;
+        };
+        let state = match SaveState::restore_game_state(&save, units, terrain) {
+            Ok(state) => state,
             Err(_) => return -1,
         };
-        let mut state = GameState::new_seeded(loaded.board, save.rng_state);
-        state.objective_hex = loaded.objective_hex;
-        state.max_turns = loaded.max_turns;
         e.game = Some(state);
         e.board_path = Some(save.board_path.clone());
-        upgrade_tiles_mut(e);
-
-        // 2. Override game metadata from save
-        let Some(state) = e.game.as_mut() else {
-            return -1;
-        };
-        state.rng = Rng::new(save.rng_state);
-        state.turn = save.turn;
-        state.active_faction = save.active_faction;
-        state.sides_acted_this_round = save
-            .sides_acted_this_round
-            .unwrap_or(if save.active_faction == 1 { 1 } else { 0 });
-        state.gold = save.gold;
-        if let Some(mt) = save.max_turns {
-            state.max_turns = Some(mt);
-        }
-        if let Some((col, row)) = save.objective_hex {
-            state.objective_hex = Some(Hex::from_offset(col, row));
-        }
-        state.had_recruiter = save.had_recruiter;
-
-        // 3. Restore units from registry + saved state
-        for su in &save.units {
-            let mut unit = unit_from_registry(e, su.id, &su.def_id, su.faction);
-            // Override runtime state from save
-            unit.hp = su.hp;
-            unit.max_hp = su.max_hp;
-            unit.xp = su.xp;
-            unit.xp_needed = su.xp_needed;
-            unit.advancement_pending = su.advancement_pending;
-            unit.moved = su.moved;
-            unit.attacked = su.attacked;
-            unit.poisoned = su.poisoned;
-            unit.slowed = su.slowed;
-            unit.level = su.level;
-            unit.abilities = su.abilities.clone();
-            unit.can_recruit = su.can_recruit || unit.abilities.iter().any(|a| a == "leader");
-
-            let Some(state) = e.game.as_mut() else {
-                return -1;
-            };
-            state.place_unit(unit, Hex::from_offset(su.col, su.row));
-        }
-
-        // 4. Set next_unit_id
-        let Some(state) = e.game.as_mut() else {
-            return -1;
-        };
-        state.next_unit_id = save.next_unit_id;
-
-        // 5. Restore trigger zone fired state
-        for (i, fired) in save.trigger_zones_fired.iter().enumerate() {
-            if let Some(tz) = state.trigger_zones.get_mut(i) {
-                tz.triggered = *fired;
-            }
-        }
-
-        // 6. Restore village owners
-        for &(col, row, owner) in &save.village_owners {
-            state
-                .village_owners
-                .insert(Hex::from_offset(col, row), owner);
-        }
 
         // 7. Restore dialogue
         if let Some(ref dlg_path) = save.dialogue_path {

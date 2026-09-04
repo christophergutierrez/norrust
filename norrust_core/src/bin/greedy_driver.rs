@@ -12,7 +12,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::env;
+use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
@@ -34,6 +37,7 @@ use norrust_core::loader::{expand_recruits, Registry};
 use norrust_core::pathfinding::{get_zoc_hexes, reachable_hexes};
 use norrust_core::scenario::{load_board, load_units_file};
 use norrust_core::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
+use norrust_core::save::SaveState;
 use norrust_core::tactics::{
     economy_facts, force_summaries, hex_inspection, recruiter_threats_after_end_turn,
     target_inspection, turn_tactics, unit_destination_threats, unit_tactics,
@@ -41,6 +45,8 @@ use norrust_core::tactics::{
 };
 use norrust_core::unit::Unit;
 use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[derive(Clone)]
 struct Config {
@@ -56,12 +62,106 @@ struct Config {
     query_timeout: u64,
     max_queries: u32,
     disable_recruit_batch: bool,
+    checkpoint_dir: Option<PathBuf>,
+    resume_checkpoint: Option<PathBuf>,
 }
 
 #[derive(Clone)]
 struct Faction {
     def: FactionDef,
     recruits: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DriverCheckpoint {
+    version: u32,
+    save_state: SaveState,
+    side_turns: u32,
+    next_id: u32,
+    boundary: String,
+    pending_opponent_turn: bool,
+    scenario: String,
+    faction0: String,
+    faction1: String,
+    llm_side: u8,
+    starting_gold: u32,
+    seed: u64,
+    max_turns: u32,
+    disable_recruit_batch: bool,
+    board_path: String,
+    board_sha256: String,
+}
+
+fn checkpoint_digest(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let parent = path.parent().ok_or("checkpoint has no parent")?;
+    fs::create_dir_all(parent).map_err(|e| format!("create checkpoint directory: {e}"))?;
+    let temp = parent.join(format!(".{}.tmp", std::process::id()));
+    let mut options = OpenOptions::new();
+    options.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(&temp).map_err(|e| format!("open checkpoint temp: {e}"))?;
+    file.write_all(bytes).map_err(|e| format!("write checkpoint: {e}"))?;
+    file.sync_all().map_err(|e| format!("sync checkpoint: {e}"))?;
+    drop(file);
+    fs::rename(&temp, path).map_err(|e| format!("publish checkpoint: {e}"))?;
+    let dir = OpenOptions::new().read(true).open(parent)
+        .map_err(|e| format!("open checkpoint directory: {e}"))?;
+    dir.sync_all().map_err(|e| format!("sync checkpoint directory: {e}"))?;
+    Ok(())
+}
+
+fn write_checkpoint(c: &Config, state: &GameState, side_turns: u32, next_id: u32,
+                    boundary: &str, pending_opponent_turn: bool) -> Result<Option<Value>, String> {
+    let Some(dir) = c.checkpoint_dir.as_ref() else { return Ok(None) };
+    let board_path = root().join("scenarios").join(&c.scenario).join("board.toml");
+    let board_bytes = fs::read(&board_path).map_err(|e| format!("read board for checkpoint: {e}"))?;
+    let checkpoint = DriverCheckpoint {
+        version: 1,
+        save_state: SaveState::build(state, &board_path.to_string_lossy(), None, None, None, None),
+        side_turns,
+        next_id,
+        boundary: boundary.to_string(),
+        pending_opponent_turn,
+        scenario: c.scenario.clone(),
+        faction0: c.faction0.clone(),
+        faction1: c.faction1.clone(),
+        llm_side: c.llm_side,
+        starting_gold: c.gold,
+        seed: c.seed,
+        max_turns: c.max_turns,
+        disable_recruit_batch: c.disable_recruit_batch,
+        board_path: board_path.to_string_lossy().into_owned(),
+        board_sha256: checkpoint_digest(&board_bytes),
+    };
+    let bytes = serde_json::to_vec(&checkpoint).map_err(|e| format!("encode checkpoint: {e}"))?;
+    let digest = checkpoint_digest(&bytes);
+    let filename = format!("{}-{}-{}-{}.json", side_turns, state.state_revision, boundary, digest);
+    let path = dir.join(&filename);
+    atomic_write(&path, &bytes)?;
+    Ok(Some(json!({"type":"checkpoint", "path":filename,
+        "digest":digest, "state_revision":state.state_revision, "side_turns":side_turns,
+        "boundary":boundary, "pending_opponent_turn":pending_opponent_turn})))
+}
+
+fn read_checkpoint(path: &Path) -> Result<DriverCheckpoint, String> {
+    let bytes = fs::read(path).map_err(|e| format!("read checkpoint: {e}"))?;
+    let expected = checkpoint_digest(&bytes);
+    let filename = path.file_name().and_then(|n| n.to_str()).ok_or("invalid checkpoint filename")?;
+    let actual = filename.strip_suffix(".json").and_then(|name| name.rsplit('-').next())
+        .ok_or("invalid checkpoint filename")?;
+    if actual != expected { return Err("checkpoint digest mismatch".into()); }
+    let checkpoint: DriverCheckpoint = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("decode checkpoint: {e}"))?;
+    if checkpoint.version != 1 { return Err("unsupported checkpoint version".into()); }
+    Ok(checkpoint)
 }
 
 fn usage() -> ! {
@@ -80,6 +180,8 @@ Options:
   --query-budget-seconds N  Query servicing budget per model turn (default: 300)
   --max-queries-per-turn N  Query cap (default: 256)
   --disable-recruit-batch  Reject the model-only RecruitBatch macro
+  --checkpoint-dir DIR     Atomically write resumable checkpoints here
+  --resume-checkpoint PATH Restore a driver checkpoint instead of starting a game
   --scripted            Run full game unattended with greedy-vs-greedy (for testing)
   -h, --help            Show this help"
     );
@@ -100,6 +202,8 @@ fn parse_args() -> Config {
         query_timeout: 300,
         max_queries: 256,
         disable_recruit_batch: false,
+        checkpoint_dir: None,
+        resume_checkpoint: None,
     };
     let args: Vec<String> = env::args().skip(1).collect();
     let mut i = 0;
@@ -133,6 +237,8 @@ fn parse_args() -> Config {
             "--turn-timeout" => c.turn_timeout = value.parse().unwrap_or_else(|_| usage()),
             "--query-budget-seconds" => c.query_timeout = value.parse().unwrap_or_else(|_| usage()),
             "--max-queries-per-turn" => c.max_queries = value.parse().unwrap_or_else(|_| usage()),
+            "--checkpoint-dir" => c.checkpoint_dir = Some(PathBuf::from(value)),
+            "--resume-checkpoint" => c.resume_checkpoint = Some(PathBuf::from(value)),
             _ => usage(),
         }
         i += 2;
@@ -1602,7 +1708,15 @@ fn interactive_protocol_game(c: &Config) {
         );
         return;
     }
-    let (mut state, f0, f1, units) = match init_game(c) {
+    let checkpoint = match c.resume_checkpoint.as_ref().map(|path| read_checkpoint(path)) {
+        Some(Ok(checkpoint)) => Some(checkpoint),
+        Some(Err(message)) => {
+            println!("{}", json!({"type":"game_end","reason":"setup_error","code":"invalid_checkpoint","message":message}));
+            return;
+        }
+        None => None,
+    };
+    let (initial_state, f0, f1, units) = match init_game(c) {
         Ok(game) => game,
         Err(message) => {
             println!(
@@ -1612,12 +1726,54 @@ fn interactive_protocol_game(c: &Config) {
             return;
         }
     };
-    let mut next_id = state.next_unit_id;
+    let mut state = if let Some(checkpoint) = checkpoint.as_ref() {
+        if checkpoint.scenario != c.scenario || checkpoint.faction0 != c.faction0
+            || checkpoint.faction1 != c.faction1 || checkpoint.llm_side != c.llm_side
+            || checkpoint.max_turns != c.max_turns || checkpoint.seed != c.seed
+            || checkpoint.starting_gold != c.gold
+            || checkpoint.disable_recruit_batch != c.disable_recruit_batch
+        {
+            println!("{}", json!({"type":"game_end","reason":"setup_error","code":"checkpoint_config_mismatch"}));
+            return;
+        }
+        let board_bytes = match fs::read(&checkpoint.board_path) {
+            Ok(bytes) => bytes,
+            Err(_) => { println!("{}", json!({"type":"game_end","reason":"setup_error","code":"invalid_checkpoint","message":"checkpoint board is unavailable"})); return; }
+        };
+        if checkpoint.board_sha256 != checkpoint_digest(&board_bytes) {
+            println!("{}", json!({"type":"game_end","reason":"setup_error","code":"checkpoint_board_mismatch"}));
+            return;
+        }
+        let terrain: Registry<TerrainDef> = match Registry::load_from_dir(&root().join("data").join("terrain")) {
+            Ok(registry) => registry,
+            Err(error) => { println!("{}", json!({"type":"game_end","reason":"setup_error","code":"invalid_setup","message":error.to_string()})); return; }
+        };
+        match SaveState::restore_game_state(&checkpoint.save_state, &units, &terrain) {
+            Ok(restored) => restored,
+            Err(message) => { println!("{}", json!({"type":"game_end","reason":"setup_error","code":"invalid_checkpoint","message":message})); return; }
+        }
+    } else {
+        initial_state
+    };
+    let mut next_id = checkpoint.as_ref().map(|checkpoint| checkpoint.next_id).unwrap_or(state.next_unit_id);
     let factions = [f0, f1];
-    let mut side_turns = 0u32;
+    let mut side_turns = checkpoint.as_ref().map(|checkpoint| checkpoint.side_turns).unwrap_or(0);
     let mut terminal = false;
 
-    if c.llm_side == 1 {
+    if let Some(checkpoint) = checkpoint.as_ref() {
+        if checkpoint.pending_opponent_turn {
+            let greedy_side = 1 - c.llm_side;
+            match run_driver_greedy_turn(&mut state, greedy_side, &factions[greedy_side as usize], &units, &mut next_id) {
+                Ok(events) => { side_turns += 1; print_events(&events, "greedy", "greedy"); }
+                Err(_) => { println!("{}", greedy_infrastructure_failure(&state, side_turns)); return; }
+            }
+        }
+    }
+    if state.check_winner().is_some() {
+        println!("{}", json!({"type":"game_end","reason":"winner","winner":state.check_winner(),"turns":state.turn}));
+        return;
+    }
+    if checkpoint.is_none() && c.llm_side == 1 {
         let side = 0usize;
         let events =
             match run_driver_greedy_turn(&mut state, 0, &factions[side], &units, &mut next_id) {
@@ -1643,6 +1799,10 @@ fn interactive_protocol_game(c: &Config) {
             json!({"type":"game_end","reason":"max_turns","turns":state.turn,"side_turns":side_turns})
         );
         return;
+    }
+    if let Ok(Some(reference)) = write_checkpoint(c, &state, side_turns, next_id, "model", false) {
+        println!("{}", reference);
+        io::stdout().flush().unwrap();
     }
     print_boundary(&state, &units);
 
@@ -2501,6 +2661,16 @@ fn interactive_protocol_game(c: &Config) {
             .iter()
             .all(|result| result.get("ok") == Some(&Value::Bool(true)));
         if batch_succeeded {
+            if did_end {
+                match write_checkpoint(c, &batch_state, side_turns + 1, batch_next_id, "postbatch", true) {
+                    Ok(Some(reference)) => { println!("{}", reference); io::stdout().flush().unwrap(); }
+                    Ok(None) => {}
+                    Err(message) => {
+                        println!("{}", json!({"type":"game_end","reason":"checkpoint_error","message":message}));
+                        break;
+                    }
+                }
+            }
             state = batch_state;
             next_id = batch_next_id;
             action_count += batch_len;
@@ -2560,6 +2730,10 @@ fn interactive_protocol_game(c: &Config) {
             query_count = 0;
             query_elapsed = Duration::ZERO;
             action_count = 0;
+            if let Ok(Some(reference)) = write_checkpoint(c, &state, side_turns, next_id, "model", false) {
+                println!("{}", reference);
+                io::stdout().flush().unwrap();
+            }
             print_boundary(&state, &units);
             deadline = Instant::now() + Duration::from_secs(c.turn_timeout);
         }
@@ -2601,6 +2775,8 @@ mod protocol_tests {
             query_timeout: 1,
             max_queries: 1,
             disable_recruit_batch: false,
+            checkpoint_dir: None,
+            resume_checkpoint: None,
         };
         let (mut state, faction0, _, units) = init_game(&config).expect("valid fixture");
         let before = state.clone();
@@ -2640,6 +2816,8 @@ mod protocol_tests {
             query_timeout: 1,
             max_queries: 1,
             disable_recruit_batch: false,
+            checkpoint_dir: None,
+            resume_checkpoint: None,
         };
         let (mut state, faction0, _, units) = init_game(&config).expect("valid fixture");
         let castle = Hex::from_offset(2, 6);
@@ -2678,6 +2856,29 @@ mod protocol_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checkpoint_is_digest_named_and_round_trips_atomically() {
+        let dir = std::env::temp_dir().join(format!("norrust-checkpoint-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let config = Config {
+            scenario: "big_battle_6".into(), faction0: "undead".into(), faction1: "undead".into(),
+            gold: 300, seed: 42, scripted: false, llm_side: 0, max_turns: 4,
+            turn_timeout: 1, query_timeout: 1, max_queries: 1, disable_recruit_batch: false,
+            checkpoint_dir: Some(dir.clone()), resume_checkpoint: None,
+        };
+        let state = GameState::new_seeded(norrust_core::board::Board::new(1, 1), 42);
+        let reference = write_checkpoint(&config, &state, 0, 1, "model", false)
+            .expect("write checkpoint").expect("checkpoint reference");
+        let path = dir.join(reference["path"].as_str().expect("path"));
+        assert!(path.exists());
+        assert!(path.file_name().unwrap().to_string_lossy().contains("-model-"));
+        let restored = read_checkpoint(&path).expect("read checkpoint");
+        assert_eq!(restored.save_state.rng_state, 42);
+        assert_eq!(restored.side_turns, 0);
+        assert_eq!(restored.boundary, "model");
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn authorize_model_batch_rejects_wrong_active_side_including_end_turn() {
@@ -2729,6 +2930,8 @@ mod tests {
             query_timeout: 1,
             max_queries: 1,
             disable_recruit_batch: false,
+            checkpoint_dir: None,
+            resume_checkpoint: None,
         };
         let (mut state, faction0, faction1, units) = init_game(&config).expect("valid fixture");
         let (attacker, attacker_hex) = state
@@ -2799,6 +3002,8 @@ mod tests {
             query_timeout: 1,
             max_queries: 1,
             disable_recruit_batch: false,
+            checkpoint_dir: None,
+            resume_checkpoint: None,
         };
         let (state, faction0, faction1, units) = init_game(&config).expect("valid fixture");
         let before_rng = state.rng.state();
