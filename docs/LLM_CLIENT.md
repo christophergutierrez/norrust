@@ -162,6 +162,10 @@ recruitment before and after the decision.
 A final action array is a non-empty JSON array of at most 256 objects. Every
 object has exactly the fields shown below. There is exactly one final
 `{"action":"EndTurn"}`; `EndTurn` is not optional and no action follows it.
+On turns where a submitted draft leaves the recruiter in projected lethal
+danger, the client sends one read-only draft result back to the model. The
+model may repeat the draft to confirm it or return a revised final array; the
+client never refuses a confirmed dangerous batch.
 Before ending a turn, the model is strongly encouraged to exhaust legal
 recruitment: move non-recruiters off castle hexes when needed, recruit into the
 resulting legal placements, and repeat until gold, definitions, or castle

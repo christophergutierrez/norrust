@@ -14,7 +14,7 @@ from .llm_client import (
     TERMINAL_MODEL_INVALID, ModelReply, classify_terminal, enforce_usage,
     compact_batch_preview, compact_hex_inspection, compact_observation,
     compact_target_inspection, compact_tactical_surface, prompt_for, query_options,
-    compact_unit_inspection, tool_followup_instruction, tool_budget_repair_prompt,
+    compact_unit_inspection, compact_draft_review, tool_followup_instruction, tool_budget_repair_prompt,
     query_tactical_surface, query_validate_batch, query_preview_batch,
     query_inspect_unit, query_inspect_target, query_inspect_hex, run,
     validate_inspect_unit_request, validate_inspect_target_request,
@@ -124,6 +124,18 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("target=9", repaired)
         self.assertIn("tool call budget exhausted", repaired)
         self.assertIn("do not request another tool", repaired.lower())
+
+    def test_compact_draft_review_reports_recruiter_danger_delta(self):
+        rendered, lethal = compact_draft_review({"candidates": [{
+            "valid": True,
+            "recruiter_threats": {"recruiters": [{
+                "recruiter_id": 1, "hp": 34, "distinct_attacker_count": 5,
+                "max_incoming_sum": 70, "lethal_attackers_needed": 3,
+            }]},
+        }]}, True)
+        self.assertTrue(lethal)
+        self.assertIn("danger_before=True danger_after=True", rendered)
+        self.assertIn("R1 hp=34 attackers=5 max_sum=70 lethal_n=3", rendered)
 
     def test_compact_batch_preview_uses_recruiter_aggregate_not_origins(self):
         rendered = compact_batch_preview({"sampling": False, "candidates": [{
@@ -730,6 +742,30 @@ class ClientValidationTests(unittest.TestCase):
         )
         self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_GAMEPLAY])
         self.assertEqual(terminal["reason"], "max_turns")
+
+    def test_critical_draft_can_be_confirmed_after_preview(self):
+        end_turn = json.dumps([{"action": "EndTurn"}])
+        code, terminal = self.run_with_orders(
+            [end_turn, end_turn],
+            [{"type": "state", "active_faction": 0, "state_revision": 0,
+              "units": [{"id": 1, "faction": 0, "can_recruit": True}]},
+             {"type": "status", "ok": True, "what": "tactical_surface", "body": {
+                 "threats": {"recruiters": [{"recruiter_id": 1, "lethal_attackers_needed": 1}]}}},
+             {"type": "status", "ok": True, "what": "preview_batch", "body": {
+                 "sampling": False, "candidates": [{"valid": True, "recruiter_threats": {
+                     "recruiters": [{"recruiter_id": 1, "hp": 34,
+                                     "distinct_attacker_count": 2, "max_incoming_sum": 40,
+                                     "lethal_attackers_needed": 1}]}}]}},
+             {"type": "status", "ok": True, "what": "validate_batch", "body": {
+                 "valid": True, "failed_index": None, "results": [{"ok": True}]}},
+             {"type": "game_end", "reason": "max_turns", "winner": None}],
+            max_model_calls_per_turn=4,
+            max_tool_calls_per_turn=2,
+        )
+        self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_GAMEPLAY])
+        self.assertEqual(terminal["draft_reviews"], 1)
+        self.assertEqual(terminal["draft_confirmations"], 1)
+        self.assertEqual(terminal["draft_revisions"], 0)
 
     def test_backend_transport_failure_stays_infrastructure(self):
         """A RuntimeError from the backend is transport, not play. The model

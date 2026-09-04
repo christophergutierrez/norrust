@@ -525,6 +525,33 @@ def tool_budget_repair_prompt(prompt: str, tool_context: str, error: str) -> str
     )
 
 
+def compact_draft_review(preview: dict[str, Any], danger_before: bool) -> tuple[str, bool]:
+    candidate = preview.get("candidates", [{}])[0]
+    threats = candidate.get("recruiter_threats", {}) if isinstance(candidate, dict) else {}
+    recruiters = threats.get("recruiters", []) if isinstance(threats, dict) else []
+    lethal_after = any(
+        isinstance(recruiter, dict) and recruiter.get("lethal_attackers_needed") is not None
+        for recruiter in recruiters
+    )
+    lines = ["DRAFT_RESULT danger_before=%s danger_after=%s" % (danger_before, lethal_after)]
+    for recruiter in recruiters:
+        if not isinstance(recruiter, dict):
+            continue
+        lines.append("R%s hp=%s attackers=%s max_sum=%s lethal_n=%s" % (
+            recruiter.get("recruiter_id", "?"), recruiter.get("hp", "?"),
+            recruiter.get("distinct_attacker_count", "?"), recruiter.get("max_incoming_sum", "?"),
+            recruiter.get("lethal_attackers_needed")))
+    return "\n".join(lines), lethal_after
+
+
+def draft_needs_preview(state: dict[str, Any], orders: list[dict[str, Any]],
+                        danger_before: bool) -> bool:
+    recruiters = state.get("tactical_surface", {}).get("threats", {}).get("recruiters", [])
+    if not isinstance(recruiters, list) or not recruiters:
+        return False
+    return danger_before or any(order.get("action") != "EndTurn" for order in orders)
+
+
 def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
                recruit_options: Optional[dict[str, Any]] = None,
                recruit_batch_enabled: bool = True,
@@ -793,6 +820,7 @@ def run(args: argparse.Namespace) -> int:
                 "tool_calls_by_name": {}, "max_observed_prompt_bytes": 0,
                 "turns_with_lethal_danger_before": 0, "turns_with_lethal_danger_after": 0,
                 "turns_with_affordable_recruitment_left": 0,
+                "draft_reviews": 0, "draft_revisions": 0, "draft_confirmations": 0,
                 "decision_metrics": getattr(args, "decision_metrics", False),
                 "sampling": None, "llm_authored_extra": False,
                 "winner": None, "reason": None, "terminal_class": None,
@@ -1079,7 +1107,7 @@ def run(args: argparse.Namespace) -> int:
                                              rendered + "\nTOOL_RESULT_UNTRUSTED_DATA_END\n")
                             followup_prompt = prompt + tool_context + "\n" + tool_followup_instruction(
                                 metadata["max_tool_calls_per_turn"] - tool_calls_this_turn,
-                                metadata["max_model_calls_per_turn"] - model_calls_this_turn,
+                                metadata["max_model_calls_per_turn"] - model_calls_this_turn - 2 * int(danger_before),
                             )
                             followup_bytes = len(followup_prompt.encode())
                             if followup_bytes > args.max_prompt_bytes:
@@ -1133,6 +1161,48 @@ def run(args: argparse.Namespace) -> int:
                                  message=str(first))
                     durable({"type": "model_error", **metadata})
                     return TERMINAL_EXIT_CODES[terminal_class]
+                if draft_needs_preview(state, orders, danger_before):
+                    try:
+                        draft_preview = query_preview_batch(
+                            exchange, [orders], int(state.get("state_revision", 0)))
+                        candidate = draft_preview.get("candidates", [{}])[0]
+                        if isinstance(candidate, dict) and candidate.get("valid") is True:
+                            review_text, danger_after = compact_draft_review(draft_preview, danger_before)
+                            if danger_before or danger_after:
+                                metadata["draft_reviews"] += 1
+                                if model_calls_this_turn < metadata["max_model_calls_per_turn"]:
+                                    review_prompt = prompt + tool_context + "\n" + review_text + (
+                                        "\nReturn the final JSON action array only. Repeat the draft unchanged "
+                                        "to confirm it, or revise it if the facts warrant a different choice.")
+                                    model_calls_this_turn += 1
+                                    metadata["model_calls"] += 1
+                                    reviewed = backend.complete(review_prompt)
+                                    enforce_usage(reviewed, args)
+                                    record({"type": "draft_review", "call": metadata["model_calls"],
+                                            "prompt_hash": hashlib.sha256(review_prompt.encode()).hexdigest(),
+                                            "prompt_bytes": len(review_prompt.encode()),
+                                            "raw_output": reviewed.text, "body": draft_preview})
+                                    revised_orders = validate_orders(reviewed.text, args.no_recruit_macro)
+                                    if revised_orders == orders:
+                                        metadata["draft_confirmations"] += 1
+                                    else:
+                                        metadata["draft_revisions"] += 1
+                                    orders = revised_orders
+                                else:
+                                    record({"type": "draft_review", "skipped": True,
+                                            "reason": "model_call_budget_exhausted", "body": draft_preview})
+                    except RuntimeError as review_error:
+                        set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
+                                     reason="infrastructure_failure", code="draft_review_error",
+                                     message=str(review_error))
+                        durable({"type": "model_error", **metadata})
+                        return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
+                    except ValueError as review_error:
+                        set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
+                                     reason=TERMINAL_MODEL_INVALID, code="draft_review_invalid",
+                                     message=str(review_error))
+                        durable({"type": "model_error", **metadata})
+                        return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
                 if getattr(args, "validate_before_submit", False):
                     try:
                         validation = query_validate_batch(
