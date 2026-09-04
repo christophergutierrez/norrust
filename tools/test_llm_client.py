@@ -182,6 +182,16 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("danger_before=True danger_after=True", rendered)
         self.assertIn("R1 hp=34 attackers=5 max_sum=70 lethal_n=3", rendered)
 
+    def test_compact_draft_review_reports_unused_attackers(self):
+        rendered, lethal = compact_draft_review(
+            {"candidates": [{"valid": True, "recruiter_threats": {"recruiters": []}}]},
+            False,
+            {"available": {3, 4}, "current": {3}, "targets": {9: {3, 4}}},
+            [{"action": "Attack", "unit_id": 3, "target_id": 9}, {"action": "EndTurn"}],
+        )
+        self.assertFalse(lethal)
+        self.assertIn("COVERAGE_DRAFT available=U3,U4 planned=U3 unused=U4", rendered)
+
     def test_compact_batch_preview_uses_recruiter_aggregate_not_origins(self):
         rendered = compact_batch_preview({"sampling": False, "candidates": [{
             "valid": True,

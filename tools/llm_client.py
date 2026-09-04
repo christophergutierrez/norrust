@@ -619,7 +619,9 @@ def tool_budget_repair_prompt(prompt: str, tool_context: str, error: str,
     )
 
 
-def compact_draft_review(preview: dict[str, Any], danger_before: bool) -> tuple[str, bool]:
+def compact_draft_review(preview: dict[str, Any], danger_before: bool,
+                         coverage: Optional[dict[str, Any]] = None,
+                         orders: Optional[list[dict[str, Any]]] = None) -> tuple[str, bool]:
     candidate = preview.get("candidates", [{}])[0]
     threats = candidate.get("recruiter_threats", {}) if isinstance(candidate, dict) else {}
     recruiters = threats.get("recruiters", []) if isinstance(threats, dict) else []
@@ -635,6 +637,22 @@ def compact_draft_review(preview: dict[str, Any], danger_before: bool) -> tuple[
             recruiter.get("recruiter_id", "?"), recruiter.get("hp", "?"),
             recruiter.get("distinct_attacker_count", "?"), recruiter.get("max_incoming_sum", "?"),
             recruiter.get("lethal_attackers_needed")))
+    if coverage is not None:
+        planned: set[int] = set()
+        for order in orders or []:
+            if not isinstance(order, dict):
+                continue
+            if order.get("action") == "Attack" and isinstance(order.get("unit_id"), int):
+                planned.add(order["unit_id"])
+            elif order.get("action") == "Engage":
+                planned.update(step.get("attacker_id") for step in order.get("steps", [])
+                               if isinstance(step, dict) and isinstance(step.get("attacker_id"), int))
+        available = set(coverage.get("available", set()))
+        unused = sorted(available - planned)
+        lines.append("COVERAGE_DRAFT available=%s planned=%s unused=%s" % (
+            ",".join("U%s" % unit_id for unit_id in sorted(available)) or "-",
+            ",".join("U%s" % unit_id for unit_id in sorted(planned & available)) or "-",
+            ",".join("U%s" % unit_id for unit_id in unused) or "-"))
     return "\n".join(lines), lethal_after
 
 
@@ -1330,8 +1348,18 @@ def run(args: argparse.Namespace) -> int:
                             exchange, [orders], int(state.get("state_revision", 0)))
                         candidate = draft_preview.get("candidates", [{}])[0]
                         if isinstance(candidate, dict) and candidate.get("valid") is True:
-                            review_text, danger_after = compact_draft_review(draft_preview, danger_before)
-                            if danger_before or danger_after:
+                            review_text, danger_after = compact_draft_review(
+                                draft_preview, danger_before, coverage, orders)
+                            unused_attackers = set(coverage["available"]) - {
+                                order.get("unit_id") for order in orders
+                                if isinstance(order, dict) and order.get("action") == "Attack"
+                            }
+                            engage_present = any(
+                                isinstance(order, dict) and order.get("action") == "Engage"
+                                for order in orders
+                            )
+                            audit_needed = bool(unused_attackers) and not engage_present
+                            if danger_before or danger_after or audit_needed:
                                 metadata["draft_reviews"] += 1
                                 if model_calls_this_turn < metadata["max_model_calls_per_turn"]:
                                     review_prompt = (
