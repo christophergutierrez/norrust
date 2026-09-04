@@ -549,13 +549,33 @@ def compact_tactical_surface(surface: dict[str, Any]) -> str:
             continue
         maxima = ",".join("U%s:m%s" % (item.get("attacker_id", "?"), item.get("max_damage", "?"))
                           for item in recruiter.get("attacker_max_damage", []) if isinstance(item, dict))
-        lines.append("THREAT R%s hp=%s at=%s,%s tod=%s attackers=%s max_sum=%s lethal_n=%s conflicts=%s detail=%s" % (
+        terrain = recruiter.get("terrain", "?")
+        on_keep = terrain == "keep"
+        lines.append("THREAT R%s hp=%s at=%s,%s tod=%s attackers=%s max_sum=%s lethal_n=%s conflicts=%s detail=%s terrain=%s on_keep=%s" % (
             recruiter.get("recruiter_id", "?"), recruiter.get("hp", "?"),
             recruiter.get("col", "?"), recruiter.get("row", "?"),
             surface.get("threats", {}).get("projected_time_of_day", "?"),
             recruiter.get("distinct_attacker_count", 0), recruiter.get("max_incoming_sum", 0),
             recruiter.get("lethal_attackers_needed"), recruiter.get("origins_conflict", False),
-            maxima or "none"))
+            maxima or "none", terrain, on_keep))
+        origin_groups: dict[tuple[Any, Any], dict[str, Any]] = {}
+        for threat in recruiter.get("threats", []):
+            if not isinstance(threat, dict):
+                continue
+            key = (threat.get("origin_col", "?"), threat.get("origin_row", "?"))
+            group = origin_groups.setdefault(key, {"attackers": set(), "max_damage": 0,
+                                                    "moved": False})
+            attacker_id = threat.get("attacker_id")
+            if isinstance(attacker_id, int):
+                group["attackers"].add(attacker_id)
+            group["max_damage"] = max(group["max_damage"], threat.get("max_damage") or 0)
+            group["moved"] = group["moved"] or bool(threat.get("moved"))
+        for (col, row), group in sorted(origin_groups.items(), key=lambda item: item[0]):
+            attackers = ",".join("U%s" % unit_id for unit_id in sorted(group["attackers"])) or "?"
+            marker = "~" if group["moved"] else ""
+            lines.append("THREAT_HEX R%s at=%s,%s%s attackers=%s max=%s" % (
+                recruiter.get("recruiter_id", "?"), col, row, marker, attackers,
+                group["max_damage"]))
     economy = surface.get("economy")
     if isinstance(economy, dict):
         vacatable = []

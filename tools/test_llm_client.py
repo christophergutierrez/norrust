@@ -299,6 +299,23 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("detail=U16:m20", rendered)
         self.assertIn("E g6 income=4 vacate=U8@3,7>4,7", rendered)
 
+    def test_compact_tactical_surface_groups_recruiter_threat_origins(self):
+        rendered = compact_tactical_surface({
+            "threats": {"visibility": "full", "projected_time_of_day": "Night", "recruiters": [{
+                "recruiter_id": 1, "hp": 20, "col": 2, "row": 7, "terrain": "keep",
+                "distinct_attacker_count": 2, "max_incoming_sum": 40,
+                "lethal_attackers_needed": 1, "origins_conflict": False,
+                "threats": [
+                    {"attacker_id": 16, "origin_col": 4, "origin_row": 7,
+                     "moved": True, "max_damage": 20},
+                    {"attacker_id": 18, "origin_col": 4, "origin_row": 7,
+                     "moved": True, "max_damage": 20},
+                ],
+            }]},
+        })
+        self.assertIn("terrain=keep on_keep=True", rendered)
+        self.assertIn("THREAT_HEX R1 at=4,7~ attackers=U16,U18 max=20", rendered)
+
     def test_compact_observation_is_deterministic_and_keeps_instance_facts(self):
         state = {"turn": 2, "active_faction": 0, "time_of_day": "day", "cols": 3, "rows": 2,
                  "gold": [4, 5],

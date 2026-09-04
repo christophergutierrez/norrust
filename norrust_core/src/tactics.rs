@@ -82,6 +82,7 @@ pub struct RecruiterThreats {
     pub hp: u32,
     pub col: i32,
     pub row: i32,
+    pub terrain: String,
     pub threats: Vec<RecruiterThreat>,
     pub attacker_max_damage: Vec<AttackerMaxDamage>,
     pub distinct_attacker_count: u32,
@@ -480,6 +481,11 @@ fn target_threats_in_projected(
         return Ok(None);
     };
     let (col, row) = hex.to_offset();
+    let terrain = projected
+        .board
+        .tile_at(hex)
+        .map(|tile| tile.terrain_id.clone())
+        .unwrap_or_else(|| "unknown".to_string());
     let mut threats = Vec::new();
     let mut attacker_ids: Vec<u32> = projected
         .units
@@ -523,6 +529,7 @@ fn target_threats_in_projected(
         hp: target.hp,
         col,
         row,
+        terrain,
         threats,
         distinct_attacker_count: attacker_max_damage.len() as u32,
         attacker_max_damage,
