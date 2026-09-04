@@ -18,6 +18,7 @@ from .llm_client import (
     compact_events, tactical_attack_coverage,
     query_tactical_surface, query_validate_batch, query_preview_batch,
     query_inspect_unit, query_inspect_target, query_inspect_hex, run,
+    response_intent, compact_strategic_briefing,
     validate_inspect_unit_request, validate_inspect_target_request,
     validate_inspect_hex_request, validate_orders, validate_preview_request,
 )
@@ -39,6 +40,30 @@ class FakeDriverProcess:
 
 
 class ClientValidationTests(unittest.TestCase):
+    def test_action_envelope_preserves_legacy_engine_orders_and_bounds_intent(self):
+        text = json.dumps({"actions": [{"action": "EndTurn"}],
+                           "intent": "scouts contest villages; main advances together"})
+        self.assertEqual(validate_orders(text), [{"action": "EndTurn"}])
+        self.assertEqual(response_intent(text), "scouts contest villages; main advances together")
+        with self.assertRaises(ValueError):
+            validate_orders(json.dumps({"actions": [{"action": "EndTurn"}], "intent": "x" * 600}))
+
+    def test_compact_strategic_briefing_reports_villages_and_formation_facts(self):
+        rendered = compact_strategic_briefing({
+            "active_faction": 0,
+            "terrain": [
+                {"col": 1, "row": 1, "terrain_id": "village", "owner": 1, "healing": 8},
+                {"col": 3, "row": 1, "terrain_id": "village", "owner": 0, "healing": 8},
+                {"col": 5, "row": 1, "terrain_id": "village", "healing": 8},
+            ],
+            "units": [
+                {"id": 3, "faction": 0, "col": 2, "row": 1, "hp": 12, "max_hp": 34},
+                {"id": 4, "faction": 0, "col": 2, "row": 2, "hp": 34, "max_hp": 34},
+            ],
+        })
+        self.assertIn("VILLAGES ours=1 enemy=1 neutral=1", rendered)
+        self.assertIn("V 1,1 owner=1 occupant=none healing=8", rendered)
+        self.assertIn("FORMATION U3 hp=12/34 allies_near=1 healing=0", rendered)
     def test_compact_events_preserves_facts_without_routine_json(self):
         events = [
             {"kind": "move", "source": "greedy", "unit": 9,
@@ -70,6 +95,12 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn('"EVENT_DIGEST', compact)
         self.assertIn('"kind":"move"', diagnostic)
         self.assertNotIn('"kind":"move"', compact)
+
+    def test_prompt_carries_intent_as_bounded_board_memory(self):
+        prompt = prompt_for({}, [], compact=True, intent="main force advances together")
+        self.assertIn("previous_intent", prompt)
+        self.assertIn("main force advances together", prompt)
+        self.assertIn("optional intent", prompt)
 
     def test_target_and_hex_renderers_keep_facts_and_empty_hex_uncertainty(self):
         target = compact_target_inspection({
