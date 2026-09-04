@@ -171,6 +171,14 @@ retains the raw event objects.
 `--decision-metrics` adds one read-only preview of the final model-authored
 batch to the log so evaluations can compare recruiter danger and remaining
 recruitment before and after the decision.
+The tactical card also includes exact direct focus vectors: `focus_p` contains
+kill probabilities in basis points for the best compatible one-, two-, and
+three-attacker volleys, while `focus_e` contains expected cumulative damage in
+tenths. These are bounds, not recommendations. Automatic draft review compares
+the draft with an unchanged `EndTurn` baseline and labels reply exposure with
+the assumption that forecast combatants survive in place. Whole-force `FORCE`
+and mechanical `RECRUIT` lines are observations; they do not force recruitment
+and saving gold remains legal.
 
 A final action array is a non-empty JSON array of at most 256 objects. Every
 object has exactly the fields shown below. There is exactly one final

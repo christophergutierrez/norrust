@@ -164,6 +164,65 @@ pub struct UnitThreatSurface {
     pub units: Vec<UnitThreatSummary>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ForceSummary {
+    pub side: u8,
+    pub units: u32,
+    pub hp: u32,
+    pub max_hp: u32,
+    pub recruit_cost: u32,
+    pub low_hp: u32,
+    pub healthy_hp: u32,
+    pub recruiters: u32,
+    pub recruiters_on_keep: u32,
+}
+
+/// Factual whole-force totals for both sides. The 25% and 75% thresholds are
+/// deliberately raw boundaries, not a strength score or recommendation.
+pub fn force_summaries(state: &GameState) -> Vec<ForceSummary> {
+    (0..=1)
+        .map(|side| {
+            let mut summary = ForceSummary {
+                side,
+                units: 0,
+                hp: 0,
+                max_hp: 0,
+                recruit_cost: 0,
+                low_hp: 0,
+                healthy_hp: 0,
+                recruiters: 0,
+                recruiters_on_keep: 0,
+            };
+            for (id, unit) in state.units.iter().filter(|(_, unit)| unit.faction == side) {
+                summary.units += 1;
+                summary.hp = summary.hp.saturating_add(unit.hp);
+                summary.max_hp = summary.max_hp.saturating_add(unit.max_hp);
+                summary.recruit_cost = summary.recruit_cost.saturating_add(unit.cost);
+                if unit.max_hp > 0 {
+                    if unit.hp.saturating_mul(4) <= unit.max_hp {
+                        summary.low_hp += 1;
+                    }
+                    if unit.hp.saturating_mul(4) >= unit.max_hp.saturating_mul(3) {
+                        summary.healthy_hp += 1;
+                    }
+                }
+                if unit.can_recruit {
+                    summary.recruiters += 1;
+                    if state
+                        .positions
+                        .get(id)
+                        .and_then(|hex| state.board.tile_at(*hex))
+                        .is_some_and(|tile| tile.terrain_id == "keep")
+                    {
+                        summary.recruiters_on_keep += 1;
+                    }
+                }
+            }
+            summary
+        })
+        .collect()
+}
+
 fn summarize_threats(
     hp: u32,
     threats: &[RecruiterThreat],

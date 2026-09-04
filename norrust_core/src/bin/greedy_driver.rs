@@ -35,9 +35,9 @@ use norrust_core::pathfinding::{get_zoc_hexes, reachable_hexes};
 use norrust_core::scenario::{load_board, load_units_file};
 use norrust_core::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
 use norrust_core::tactics::{
-    economy_facts, hex_inspection, recruiter_threats_after_end_turn, target_inspection,
-    turn_tactics, unit_destination_threats, unit_tactics, unit_threats_after_end_turn,
-    ThreatSurface, UnitThreatSurface,
+    economy_facts, force_summaries, hex_inspection, recruiter_threats_after_end_turn,
+    target_inspection, turn_tactics, unit_destination_threats, unit_tactics,
+    unit_threats_after_end_turn, ThreatSurface, UnitThreatSurface,
 };
 use norrust_core::unit::Unit;
 use serde_json::{json, Value};
@@ -1916,6 +1916,31 @@ fn interactive_protocol_game(c: &Config) {
                                     })
                                     .collect();
                                 let options: Vec<Value> = faction.recruits.iter().filter_map(|id| units.get(id).map(|def| json!({"def_id":id,"cost":def.cost,"affordable":state.gold[side] >= def.cost}))).collect();
+                                let recruiter_on_keep = state.units.iter().any(|(id, unit)| {
+                                    unit.faction == state.active_faction
+                                        && unit.can_recruit
+                                        && state
+                                            .positions
+                                            .get(id)
+                                            .and_then(|hex| state.board.tile_at(*hex))
+                                            .is_some_and(|tile| tile.terrain_id == "keep")
+                                });
+                                let affordable = faction.recruits.iter().any(|id| {
+                                    units
+                                        .get(id)
+                                        .is_some_and(|def| state.gold[side] >= def.cost)
+                                });
+                                let legal_now =
+                                    recruiter_on_keep && affordable && !placement_hexes.is_empty();
+                                let recruit_reason = if legal_now {
+                                    "none"
+                                } else if !recruiter_on_keep {
+                                    "recruiter_off_keep"
+                                } else if !affordable {
+                                    "insufficient_gold"
+                                } else {
+                                    "no_capacity"
+                                };
                                 let mut profile_ids = BTreeSet::new();
                                 profile_ids.extend(faction.recruits.iter().cloned());
                                 profile_ids.extend(
@@ -1943,7 +1968,7 @@ fn interactive_protocol_game(c: &Config) {
                                         Ok(exposure),
                                         Ok((next_village_income, vacatable_castles)),
                                     ) => {
-                                        json!({"type":"status","ok":true,"what":what,"body":{"visibility":"full","time_of_day":tod_label(state.turn),"next_time_of_day":tod_label(state.turn.saturating_add(1)),"units":tactical_units,"unit_types":unit_types,"threats":threats,"exposure":exposure,"economy":{"gold":state.gold[side],"next_village_income":next_village_income,"vacatable_castles":vacatable_castles},"recruitment":{"gold":state.gold[side],"placement_hexes":placement_hexes,"options":options,"batch_macro_enabled":!c.disable_recruit_batch}}})
+                                        json!({"type":"status","ok":true,"what":what,"body":{"visibility":"full","time_of_day":tod_label(state.turn),"next_time_of_day":tod_label(state.turn.saturating_add(1)),"units":tactical_units,"unit_types":unit_types,"threats":threats,"exposure":exposure,"force":force_summaries(&state),"economy":{"gold":state.gold[side],"next_village_income":next_village_income,"vacatable_castles":vacatable_castles},"recruitment":{"gold":state.gold[side],"placement_hexes":placement_hexes,"options":options,"legal_now":legal_now,"reason":recruit_reason,"recruiter_on_keep":recruiter_on_keep,"batch_macro_enabled":!c.disable_recruit_batch}}})
                                     }
                                     (Err(message), _, _) => {
                                         json!({"type":"status","ok":false,"what":what,"code":"tactical_surface_error","message":message})

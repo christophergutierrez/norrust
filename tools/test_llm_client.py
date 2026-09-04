@@ -316,6 +316,19 @@ class ClientValidationTests(unittest.TestCase):
         }]})
         self.assertIn("C0 OUT T7 hp=20 attackers=U3,U4 p_kill=8100 e=176", rendered)
 
+    def test_compact_tactical_surface_renders_force_and_recruitment_facts(self):
+        rendered = compact_tactical_surface({
+            "units": [], "unit_types": [], "threats": {"recruiters": []},
+            "recruitment": {"gold": 14, "legal_now": False,
+                            "reason": "recruiter_off_keep", "placement_hexes": [],
+                            "options": [{"def_id": "archer", "cost": 8, "affordable": True}]},
+            "force": [{"side": 0, "units": 4, "hp": 40, "max_hp": 80,
+                       "recruit_cost": 32, "low_hp": 1, "healthy_hp": 2,
+                       "recruiters": 1, "recruiters_on_keep": 0}],
+        })
+        self.assertIn("RECRUIT g=14 legal_now=False reason=recruiter_off_keep", rendered)
+        self.assertIn("FORCE F0 units=4 hp=40/80 cost=32 low=1 healthy=2 recruiter=1 keep=0", rendered)
+
     def test_preview_request_is_bounded_and_uses_normal_order_validation(self):
         request = json.dumps({"tool": "preview_batch", "candidates": [
             [{"action": "EndTurn"}],

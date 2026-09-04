@@ -630,6 +630,18 @@ def compact_tactical_surface(surface: dict[str, Any]) -> str:
         slots = ",".join("%s,%s" % (item.get("col", "?"), item.get("row", "?"))
                          for item in recruitment.get("placement_hexes", []) if isinstance(item, dict))
         lines.insert(0, "R g%s open=%s defs=%s" % (recruitment.get("gold", "?"), slots, options))
+        affordable = ",".join(item.get("def_id", "?") for item in recruitment.get("options", [])
+                               if isinstance(item, dict) and item.get("affordable")) or "-"
+        lines.insert(1, "RECRUIT g=%s legal_now=%s reason=%s affordable=%s open=%s" % (
+            recruitment.get("gold", "?"), recruitment.get("legal_now", "?"),
+            recruitment.get("reason", "?"), affordable, len(recruitment.get("placement_hexes", []))))
+    for force in surface.get("force", []):
+        if isinstance(force, dict):
+            lines.append("FORCE F%s units=%s hp=%s/%s cost=%s low=%s healthy=%s recruiter=%s keep=%s" % (
+                force.get("side", "?"), force.get("units", "?"), force.get("hp", "?"),
+                force.get("max_hp", "?"), force.get("recruit_cost", "?"), force.get("low_hp", "?"),
+                force.get("healthy_hp", "?"), force.get("recruiters", "?"),
+                force.get("recruiters_on_keep", "?")))
     for recruiter in surface.get("threats", {}).get("recruiters", []):
         if not isinstance(recruiter, dict):
             continue
