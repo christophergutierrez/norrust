@@ -146,6 +146,10 @@ available:
 ```
 
 `inspect_target` lists friendly attackers and origins for one enemy.
+
+`inspect_targets` accepts `unit_ids` with one to eight unique visible enemy IDs
+and returns the same inspections in one read-only query. It is a batching
+optimization only; singular inspection remains supported.
 `inspect_hex` lists attack coverage for one hex either now or after the
 deterministic next `EndTurn`; empty hexes have no invented combat forecast.
 Tool calls are read-only and revision pinned. `--max-tool-calls-per-turn` bounds
