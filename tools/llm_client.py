@@ -357,6 +357,34 @@ def query_inspect_target(exchange, unit_id: int, state_revision: int) -> dict[st
     return response["body"]
 
 
+def validate_inspect_targets_request(request: dict[str, Any]) -> list[int]:
+    if set(request) != {"tool", "unit_ids"} or request.get("tool") != "inspect_targets":
+        raise ValueError("inspect_targets request must contain only tool and unit_ids")
+    unit_ids = request.get("unit_ids")
+    if not isinstance(unit_ids, list) or not 1 <= len(unit_ids) <= 8:
+        raise ValueError("inspect_targets unit_ids must contain 1 to 8 ids")
+    if any(not isinstance(unit_id, int) or isinstance(unit_id, bool) or not 0 <= unit_id <= 2**32 - 1
+           for unit_id in unit_ids) or len(set(unit_ids)) != len(unit_ids):
+        raise ValueError("inspect_targets unit_ids must be unique uint32 values")
+    return unit_ids
+
+
+def query_inspect_targets(exchange, unit_ids: list[int], state_revision: int) -> list[dict[str, Any]]:
+    response = exchange({"action": "Query", "what": "inspect_targets",
+                         "state_revision": state_revision, "unit_ids": unit_ids})
+    if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
+        message = response.get("message", "inspection query failed") if isinstance(response, dict) else "invalid inspection response"
+        raise RuntimeError(f"query_error: inspect_targets: {message}")
+    body = response["body"]
+    if not isinstance(body, dict) or not isinstance(body.get("targets"), list):
+        raise RuntimeError("query_error: inspect_targets: invalid target list")
+    return body["targets"]
+
+
+def compact_targets_inspection(targets: list[dict[str, Any]]) -> str:
+    return "TARGETS " + " ".join(compact_target_inspection(target) for target in targets)
+
+
 def compact_target_inspection(target: dict[str, Any]) -> str:
     attacks = []
     for attack in target.get("attacks", []):
@@ -441,6 +469,19 @@ def compact_batch_preview(preview: dict[str, Any]) -> str:
                     recruiter.get("open_max_incoming_sum", "?"),
                     recruiter.get("open_lethal_attackers_needed"),
                     recruiter.get("open_origins_conflict", "?")))
+        exposure = candidate.get("exposure", {})
+        for unit in exposure.get("units", []) if isinstance(exposure, dict) else []:
+            if not isinstance(unit, dict):
+                continue
+            if not (unit.get("distinct_attacker_count", 0) or
+                    unit.get("open_distinct_attacker_count", 0)):
+                continue
+            lines.append(" C%s EXPOSURE U%s hp=%s at=%s,%s direct_a=%s direct_m=%s open_a=%s open_m=%s open_lethal_n=%s" % (
+                index, unit.get("unit_id", "?"), unit.get("hp", "?"),
+                unit.get("col", "?"), unit.get("row", "?"),
+                unit.get("distinct_attacker_count", 0), unit.get("max_incoming_sum", 0),
+                unit.get("open_distinct_attacker_count", 0), unit.get("open_max_incoming_sum", 0),
+                unit.get("open_lethal_attackers_needed")))
     return "\n".join(lines)
 
 
@@ -639,6 +680,25 @@ def compact_tactical_surface(surface: dict[str, Any]) -> str:
                 lines.append("OPEN_THREAT_HEX R%s at=%s,%s%s attackers=%s max=%s" % (
                     recruiter.get("recruiter_id", "?"), col, row, marker, attackers,
                     group["max_damage"]))
+    exposure = surface.get("exposure")
+    if isinstance(exposure, dict):
+        exposed = []
+        for unit in exposure.get("units", []):
+            if not isinstance(unit, dict):
+                continue
+            if unit.get("distinct_attacker_count", 0) or unit.get("open_distinct_attacker_count", 0):
+                exposed.append(unit)
+        if exposed:
+            for unit in exposed:
+                lines.append("EXPOSURE U%s hp=%s at=%s,%s terrain=%s direct_a=%s direct_m=%s lethal_n=%s open_a=%s open_m=%s open_lethal_n=%s" % (
+                    unit.get("unit_id", "?"), unit.get("hp", "?"),
+                    unit.get("col", "?"), unit.get("row", "?"), unit.get("terrain", "?"),
+                    unit.get("distinct_attacker_count", 0), unit.get("max_incoming_sum", 0),
+                    unit.get("lethal_attackers_needed"),
+                    unit.get("open_distinct_attacker_count", 0), unit.get("open_max_incoming_sum", 0),
+                    unit.get("open_lethal_attackers_needed")))
+        else:
+            lines.append("EXPOSURE none")
     economy = surface.get("economy")
     if isinstance(economy, dict):
         vacatable = []
@@ -724,6 +784,18 @@ def compact_draft_review(preview: dict[str, Any], danger_before: bool,
             ",".join("U%s" % unit_id for unit_id in sorted(available)) or "-",
             ",".join("U%s" % unit_id for unit_id in sorted(planned & available)) or "-",
             ",".join("U%s" % unit_id for unit_id in unused) or "-"))
+    exposure = candidate.get("exposure", {})
+    if isinstance(exposure, dict):
+        exposed = [unit for unit in exposure.get("units", [])
+                   if isinstance(unit, dict) and
+                   (unit.get("distinct_attacker_count", 0) or
+                    unit.get("open_distinct_attacker_count", 0))]
+        lethal = [unit.get("unit_id", "?") for unit in exposed
+                  if unit.get("lethal_attackers_needed") is not None or
+                  unit.get("open_lethal_attackers_needed") is not None]
+        detail = ",".join("U%s" % unit.get("unit_id", "?") for unit in exposed) or "-"
+        lines.append("EXPOSURE_DRAFT threatened=%s lethal=%s detail=%s" % (
+            len(exposed), len(lethal), detail))
     return "\n".join(lines), lethal_after
 
 
@@ -806,12 +878,14 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "upper bounds if you EndTurn now: attackers is the distinct count, max_sum adds one maximum volley per attacker, "
         "lethal_n is how many largest maximum volleys reach recruiter HP, and detail lists attacker:max-damage pairs. "
         "OPEN_THREAT is a conservative bound that ignores unit blockers that may move or die before an attacker acts; it is not an executable opponent batch. "
+        "EXPOSURE lines report the same facts for friendly units; direct is the occupied-board result and open is the blocker-removed bound. "
         "E income assumes current village ownership persists; E vacate lists legal off-castle destinations and is not a recommendation. "
         "Copy individual Recruit coordinates only from R `open`. You may instead request one read-only preview by returning "
         "{\"tool\":\"preview_batch\",\"candidates\":[[actions...]]}; provide at most two complete candidates, each ending EndTurn. "
         "You may inspect one friendly unit with {\"tool\":\"inspect_unit\",\"unit_id\":N}. Tools are read-only and do not submit actions. "
         "If inspect_unit is any friendly unit, DESTINATION_DANGER gives factual next-turn threat counts for each legal position. "
         "Use {\"tool\":\"inspect_target\",\"unit_id\":N} for attackers of one enemy, or "
+        "use {\"tool\":\"inspect_targets\",\"unit_ids\":[N,...]} to inspect up to eight enemies in one factual query. "
         "{\"tool\":\"inspect_hex\",\"col\":C,\"row\":R,\"phase\":\"current|next_opponent_turn\"} for attack coverage. "
         "Engage lets you declare ordered move-and-attack steps against one target; remaining steps are skipped if that target dies, "
         "while genuinely illegal steps still reject the whole batch. TYPE lines are factual unit profiles; use their attacks and resistances "
@@ -1481,6 +1555,14 @@ def run(args: argparse.Namespace) -> int:
                                 record({"type": "tool_result", "tool": tool,
                                         "request": decoded, "result_bytes": len(rendered.encode()),
                                         "body": result})
+                            elif tool == "inspect_targets":
+                                unit_ids = validate_inspect_targets_request(decoded)
+                                result = query_inspect_targets(
+                                    exchange, unit_ids, int(state.get("state_revision", 0)))
+                                rendered = compact_targets_inspection(result)
+                                record({"type": "tool_result", "tool": tool,
+                                        "request": decoded, "result_bytes": len(rendered.encode()),
+                                        "body": {"targets": result}})
                             elif tool == "inspect_hex":
                                 col, row, phase = validate_inspect_hex_request(decoded)
                                 result = query_inspect_hex(
@@ -1684,7 +1766,7 @@ def run(args: argparse.Namespace) -> int:
                                     "engine_error": validation})
                             decoded_repair = json.loads(repaired.text)
                             if isinstance(decoded_repair, dict) and decoded_repair.get("tool") in {
-                                "inspect_unit", "inspect_target", "inspect_hex"
+                                "inspect_unit", "inspect_target", "inspect_targets", "inspect_hex"
                             }:
                                 tool = decoded_repair["tool"]
                                 if tool == "inspect_unit":
@@ -1697,6 +1779,11 @@ def run(args: argparse.Namespace) -> int:
                                     result = query_inspect_target(
                                         exchange, unit_id, int(state.get("state_revision", 0)))
                                     rendered = compact_target_inspection(result)
+                                elif tool == "inspect_targets":
+                                    unit_ids = validate_inspect_targets_request(decoded_repair)
+                                    result = query_inspect_targets(
+                                        exchange, unit_ids, int(state.get("state_revision", 0)))
+                                    rendered = compact_targets_inspection(result)
                                 else:
                                     col, row, phase = validate_inspect_hex_request(decoded_repair)
                                     result = query_inspect_hex(

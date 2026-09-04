@@ -17,9 +17,9 @@ from .llm_client import (
     compact_unit_inspection, compact_draft_review, tool_followup_instruction, tool_budget_repair_prompt,
     compact_events, tactical_attack_coverage,
     query_tactical_surface, query_validate_batch, query_preview_batch,
-    query_inspect_unit, query_inspect_target, query_inspect_hex, run,
+    query_inspect_unit, query_inspect_target, query_inspect_targets, query_inspect_hex, run,
     response_intent, compact_strategic_briefing,
-    validate_inspect_unit_request, validate_inspect_target_request,
+    validate_inspect_unit_request, validate_inspect_target_request, validate_inspect_targets_request,
     validate_inspect_hex_request, validate_orders, validate_preview_request,
 )
 
@@ -40,6 +40,24 @@ class FakeDriverProcess:
 
 
 class ClientValidationTests(unittest.TestCase):
+    def test_batched_target_inspection_is_bounded_and_compact(self):
+        self.assertEqual(validate_inspect_targets_request(
+            {"tool": "inspect_targets", "unit_ids": [9, 10]}), [9, 10])
+        with self.assertRaises(ValueError):
+            validate_inspect_targets_request({"tool": "inspect_targets", "unit_ids": [9, 9]})
+        with self.assertRaises(ValueError):
+            validate_inspect_targets_request({"tool": "inspect_targets", "unit_ids": []})
+        requests = []
+        body = {"ok": True, "body": {"targets": [
+            {"target_id": 9, "hp": 20, "col": 1, "row": 2, "terrain": "flat", "attacks": []},
+            {"target_id": 10, "hp": 12, "col": 3, "row": 4, "terrain": "forest", "attacks": []},
+        ]}}
+        result = query_inspect_targets(
+            lambda request: (requests.append(request) or body), [9, 10], 3)
+        self.assertEqual([target["target_id"] for target in result], [9, 10])
+        self.assertEqual(requests[0]["what"], "inspect_targets")
+        self.assertIn("TARGETS TARGET U9", llm_client.compact_targets_inspection(result))
+
     def test_action_envelope_preserves_legacy_engine_orders_and_bounds_intent(self):
         text = json.dumps({"actions": [{"action": "EndTurn"}],
                            "intent": "scouts contest villages; main advances together"})

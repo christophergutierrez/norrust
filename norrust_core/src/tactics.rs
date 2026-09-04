@@ -131,6 +131,30 @@ pub struct ThreatSurface {
     pub recruiters: Vec<RecruiterThreats>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UnitThreatSummary {
+    pub unit_id: u32,
+    pub hp: u32,
+    pub col: i32,
+    pub row: i32,
+    pub terrain: String,
+    pub distinct_attacker_count: u32,
+    pub max_incoming_sum: u32,
+    pub lethal_attackers_needed: Option<u32>,
+    pub origins_conflict: bool,
+    pub open_distinct_attacker_count: u32,
+    pub open_max_incoming_sum: u32,
+    pub open_lethal_attackers_needed: Option<u32>,
+    pub open_origins_conflict: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UnitThreatSurface {
+    pub visibility: &'static str,
+    pub projected_time_of_day: &'static str,
+    pub units: Vec<UnitThreatSummary>,
+}
+
 fn summarize_threats(
     hp: u32,
     threats: &[RecruiterThreat],
@@ -491,6 +515,62 @@ pub fn recruiter_threats_after_end_turn(
         visibility: "full",
         projected_time_of_day: tod_label(projected.turn),
         recruiters,
+    })
+}
+
+/// Calculate next-opponent-turn exposure for every active-side unit.
+///
+/// This is a factual aggregate, not a recommendation. Units with no threat in
+/// either occupancy model are retained so a consumer can distinguish an empty
+/// result from a missing calculation.
+pub fn unit_threats_after_end_turn(
+    state: &GameState,
+    side: u8,
+) -> Result<UnitThreatSurface, TacticsError> {
+    if side != state.active_faction {
+        return Ok(UnitThreatSurface {
+            visibility: "full",
+            projected_time_of_day: tod_label(state.turn),
+            units: Vec::new(),
+        });
+    }
+    let mut target_ids: Vec<u32> = state
+        .units
+        .iter()
+        .filter_map(|(&id, unit)| (unit.faction == side).then_some(id))
+        .collect();
+    target_ids.sort_unstable();
+    let mut projected = state.clone();
+    apply_action(&mut projected, Action::EndTurn)?;
+    let projected_time_of_day = tod_label(projected.turn);
+    let mut units = Vec::with_capacity(target_ids.len());
+    for unit_id in target_ids {
+        let Some(direct) = target_threats_in_projected(&projected, unit_id, false)? else {
+            continue;
+        };
+        let Some(open) = target_threats_in_projected(&projected, unit_id, true)? else {
+            continue;
+        };
+        units.push(UnitThreatSummary {
+            unit_id,
+            hp: direct.hp,
+            col: direct.col,
+            row: direct.row,
+            terrain: direct.terrain,
+            distinct_attacker_count: direct.distinct_attacker_count,
+            max_incoming_sum: direct.max_incoming_sum,
+            lethal_attackers_needed: direct.lethal_attackers_needed,
+            origins_conflict: direct.origins_conflict,
+            open_distinct_attacker_count: open.distinct_attacker_count,
+            open_max_incoming_sum: open.max_incoming_sum,
+            open_lethal_attackers_needed: open.lethal_attackers_needed,
+            open_origins_conflict: open.origins_conflict,
+        });
+    }
+    Ok(UnitThreatSurface {
+        visibility: "full",
+        projected_time_of_day,
+        units,
     })
 }
 
@@ -874,6 +954,56 @@ mod tests {
         assert_eq!(recruiter.open_distinct_attacker_count, 1);
         assert_eq!(recruiter.open_max_incoming_sum, 20);
         assert_eq!(recruiter.open_lethal_attackers_needed, Some(1));
+    }
+
+    #[test]
+    fn unit_threat_surface_includes_all_friendly_units() {
+        let mut board = Board::new(7, 5);
+        for col in 0..7 {
+            for row in 0..5 {
+                board.set_tile(Hex::from_offset(col, row), crate::board::Tile::new("flat"));
+            }
+        }
+        let mut state = GameState::new_seeded(board, 104);
+        let mut recruiter = Unit::new(1, "leader", 20, 0);
+        recruiter.can_recruit = true;
+        state.place_unit(recruiter, Hex::from_offset(2, 2));
+        state.place_unit(Unit::new(3, "fighter", 20, 0), Hex::from_offset(2, 1));
+        let mut archer = Unit::new(2, "adept", 20, 1);
+        archer.movement = 2;
+        archer.movement_costs.insert("flat".into(), 1);
+        archer.attacks.push(AttackDef {
+            id: "bolt".into(),
+            name: "bolt".into(),
+            damage: 10,
+            strikes: 2,
+            attack_type: "arcane".into(),
+            range: "ranged".into(),
+            specials: Vec::new(),
+        });
+        state.place_unit(archer, Hex::from_offset(4, 2));
+
+        let surface = unit_threats_after_end_turn(&state, 0).unwrap();
+        assert_eq!(
+            surface
+                .units
+                .iter()
+                .map(|unit| unit.unit_id)
+                .collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+        let recruiters = recruiter_threats_after_end_turn(&state, 0).unwrap();
+        let leader = surface.units.iter().find(|unit| unit.unit_id == 1).unwrap();
+        let recruiter = &recruiters.recruiters[0];
+        assert_eq!(
+            leader.distinct_attacker_count,
+            recruiter.distinct_attacker_count
+        );
+        assert_eq!(leader.max_incoming_sum, recruiter.max_incoming_sum);
+        assert_eq!(
+            leader.open_distinct_attacker_count,
+            recruiter.open_distinct_attacker_count
+        );
     }
 
     #[test]

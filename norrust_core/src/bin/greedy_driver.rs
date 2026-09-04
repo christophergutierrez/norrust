@@ -35,7 +35,8 @@ use norrust_core::scenario::{load_board, load_units_file};
 use norrust_core::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
 use norrust_core::tactics::{
     economy_facts, hex_inspection, recruiter_threats_after_end_turn, target_inspection,
-    turn_tactics, unit_destination_threats, unit_tactics, ThreatSurface,
+    turn_tactics, unit_destination_threats, unit_tactics, unit_threats_after_end_turn,
+    ThreatSurface, UnitThreatSurface,
 };
 use norrust_core::unit::Unit;
 use serde_json::{json, Value};
@@ -770,6 +771,7 @@ struct BatchExecution {
     did_end: bool,
     forecasts: Vec<Value>,
     pre_end_threats: Option<ThreatSurface>,
+    pre_end_exposure: Option<UnitThreatSurface>,
     preview_error: Option<Value>,
     post_combat_conditional: bool,
     pre_end_recruitment_remaining: Option<bool>,
@@ -793,6 +795,7 @@ fn execute_model_batch(
     let mut did_end = false;
     let mut forecasts = Vec::new();
     let mut pre_end_threats = None;
+    let mut pre_end_exposure = None;
     let mut preview_error = None;
     let mut post_combat_conditional = false;
     let mut pre_end_recruitment_remaining = None;
@@ -1051,6 +1054,14 @@ fn execute_model_batch(
                             );
                         }
                     }
+                    match unit_threats_after_end_turn(&state, model_side) {
+                        Ok(exposure) => pre_end_exposure = Some(exposure),
+                        Err(error) => {
+                            preview_error = Some(
+                                json!({"code":"exposure_preview_error","message":error.to_string()}),
+                            );
+                        }
+                    }
                 }
                 apply_action(&mut state, Action::EndTurn)
             }
@@ -1120,6 +1131,7 @@ fn execute_model_batch(
         did_end,
         forecasts,
         pre_end_threats,
+        pre_end_exposure,
         preview_error,
         post_combat_conditional,
         pre_end_recruitment_remaining,
@@ -1824,6 +1836,7 @@ fn interactive_protocol_game(c: &Config) {
                             recruiter_hp.sort_by_key(|item| item.get("unit_id").and_then(Value::as_u64));
                             json!({"valid":valid,"results":execution.results,"forecasts":execution.forecasts,
                                 "recruiter_threats":if valid { execution.pre_end_threats } else { None },
+                                "exposure":if valid { execution.pre_end_exposure } else { None },
                                 "preview_error":execution.preview_error,
                                 "post_combat_conditional":execution.post_combat_conditional,
                                 "assumption":if execution.post_combat_conditional {"all forecast combatants survive in place"} else {"none"},
@@ -1888,16 +1901,26 @@ fn interactive_protocol_game(c: &Config) {
                                 let threats =
                                     recruiter_threats_after_end_turn(&state, state.active_faction)
                                         .map_err(|error| error.to_string());
+                                let exposure =
+                                    unit_threats_after_end_turn(&state, state.active_faction)
+                                        .map_err(|error| error.to_string());
                                 let economy = economy_facts(&state, state.active_faction)
                                     .map_err(|error| error.to_string());
-                                match (threats, economy) {
-                                    (Ok(threats), Ok((next_village_income, vacatable_castles))) => {
-                                        json!({"type":"status","ok":true,"what":what,"body":{"visibility":"full","time_of_day":tod_label(state.turn),"next_time_of_day":tod_label(state.turn.saturating_add(1)),"units":tactical_units,"unit_types":unit_types,"threats":threats,"economy":{"gold":state.gold[side],"next_village_income":next_village_income,"vacatable_castles":vacatable_castles},"recruitment":{"gold":state.gold[side],"placement_hexes":placement_hexes,"options":options,"batch_macro_enabled":!c.disable_recruit_batch}}})
+                                match (threats, exposure, economy) {
+                                    (
+                                        Ok(threats),
+                                        Ok(exposure),
+                                        Ok((next_village_income, vacatable_castles)),
+                                    ) => {
+                                        json!({"type":"status","ok":true,"what":what,"body":{"visibility":"full","time_of_day":tod_label(state.turn),"next_time_of_day":tod_label(state.turn.saturating_add(1)),"units":tactical_units,"unit_types":unit_types,"threats":threats,"exposure":exposure,"economy":{"gold":state.gold[side],"next_village_income":next_village_income,"vacatable_castles":vacatable_castles},"recruitment":{"gold":state.gold[side],"placement_hexes":placement_hexes,"options":options,"batch_macro_enabled":!c.disable_recruit_batch}}})
                                     }
-                                    (Err(message), _) => {
+                                    (Err(message), _, _) => {
                                         json!({"type":"status","ok":false,"what":what,"code":"tactical_surface_error","message":message})
                                     }
-                                    (_, Err(message)) => {
+                                    (_, Err(message), _) => {
+                                        json!({"type":"status","ok":false,"what":what,"code":"tactical_surface_error","message":message})
+                                    }
+                                    (_, _, Err(message)) => {
                                         json!({"type":"status","ok":false,"what":what,"code":"tactical_surface_error","message":message})
                                     }
                                 }
@@ -1963,6 +1986,51 @@ fn interactive_protocol_game(c: &Config) {
                             }
                             Err(error) => {
                                 json!({"type":"status","ok":false,"what":what,"code":"inspect_target_error","message":error.to_string()})
+                            }
+                        }
+                    }
+                }
+                "inspect_targets" => {
+                    let requested_revision = parsed.get("state_revision").and_then(Value::as_u64);
+                    let ids = parsed.get("unit_ids").and_then(Value::as_array);
+                    let parsed_ids = ids
+                        .map(|values| {
+                            values
+                                .iter()
+                                .map(|value| value.as_u64())
+                                .collect::<Option<Vec<_>>>()
+                        })
+                        .flatten();
+                    let valid_ids = parsed_ids.as_ref().is_some_and(|values| {
+                        !values.is_empty()
+                            && values.len() <= 8
+                            && values.iter().all(|id| *id <= u32::MAX as u64)
+                            && values.iter().copied().collect::<BTreeSet<_>>().len() == values.len()
+                    });
+                    if requested_revision != Some(state.state_revision) {
+                        json!({"type":"status","ok":false,"what":what,"code":"stale_state","message":"requested state revision is no longer current","state_revision":state.state_revision})
+                    } else if state.active_faction != c.llm_side {
+                        json!({"type":"status","ok":false,"what":what,"code":"unauthorized_side","message":"model queries are not authorized while the opponent is active"})
+                    } else if !valid_ids {
+                        json!({"type":"status","ok":false,"what":what,"code":"parse","message":"unit_ids must contain 1 to 8 unique uint32 ids"})
+                    } else {
+                        let mut targets = Vec::new();
+                        let mut error = None;
+                        for id in parsed_ids.unwrap() {
+                            match target_inspection(&state, c.llm_side, id as u32) {
+                                Ok(inspection) => targets.push(inspection),
+                                Err(err) => {
+                                    error = Some(err);
+                                    break;
+                                }
+                            }
+                        }
+                        match error {
+                            Some(error) => {
+                                json!({"type":"status","ok":false,"what":what,"code":"inspect_targets_error","message":error.to_string()})
+                            }
+                            None => {
+                                json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,"body":{"targets":targets}})
                             }
                         }
                     }
@@ -2360,6 +2428,7 @@ fn interactive_protocol_game(c: &Config) {
             preview_error: _,
             post_combat_conditional: _,
             pre_end_recruitment_remaining: _,
+            pre_end_exposure: _,
         } = execute_model_batch(
             state.clone(),
             next_id,
