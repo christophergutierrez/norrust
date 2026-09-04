@@ -517,10 +517,13 @@ def tool_followup_instruction(remaining_tools: int, remaining_model_calls: int) 
     )
 
 
-def tool_budget_repair_prompt(prompt: str, tool_context: str, error: str) -> str:
+def tool_budget_repair_prompt(prompt: str, tool_context: str, error: str,
+                              model_output: str = "") -> str:
     """Preserve tool observations when correcting an over-budget tool request."""
+    attempted = ("\nMODEL_RESPONSE_UNTRUSTED_DATA_BEGIN:\n" + model_output +
+                 "\nMODEL_RESPONSE_UNTRUSTED_DATA_END\n") if model_output else ""
     return (
-        prompt + tool_context + "\nTOOL_ERROR: " + error +
+        prompt + tool_context + attempted + "\nTOOL_ERROR: " + error +
         "\nReturn one corrected JSON action array only; do not request another tool."
     )
 
@@ -1104,7 +1107,10 @@ def run(args: argparse.Namespace) -> int:
                                 raise ValueError("unknown tool request")
                             tool_calls_this_turn += 1
                             metadata["tool_calls_by_name"][tool] = metadata["tool_calls_by_name"].get(tool, 0) + 1
-                            tool_context += ("\nTOOL_RESULT_UNTRUSTED_DATA_BEGIN tool=" + tool + ":\n" +
+                            tool_context += ("\nMODEL_TOOL_REQUEST_UNTRUSTED_DATA_BEGIN:\n" +
+                                             current_reply.text +
+                                             "\nMODEL_TOOL_REQUEST_UNTRUSTED_DATA_END\n" +
+                                             "TOOL_RESULT_UNTRUSTED_DATA_BEGIN tool=" + tool + ":\n" +
                                              rendered + "\nTOOL_RESULT_UNTRUSTED_DATA_END\n")
                             followup_prompt = prompt + tool_context + "\n" + tool_followup_instruction(
                                 metadata["max_tool_calls_per_turn"] - tool_calls_this_turn,
@@ -1131,8 +1137,11 @@ def run(args: argparse.Namespace) -> int:
                                     "matched_candidate": next((index for index, candidate in enumerate(preview_candidates)
                                                                if candidate == orders), None)})
                     except ValueError as first:
-                        repair_prompt = tool_budget_repair_prompt(prompt, tool_context, str(first)) \
+                        repair_prompt = tool_budget_repair_prompt(
+                            prompt, tool_context, str(first), current_reply.text) \
                             if tool_context else prompt + "\nVALIDATION_ERROR: " + str(first) + \
+                            "\nMODEL_RESPONSE_UNTRUSTED_DATA_BEGIN:\n" + current_reply.text + \
+                            "\nMODEL_RESPONSE_UNTRUSTED_DATA_END" + \
                             "\nReturn one corrected JSON action array only."
                         model_calls_this_turn += 1
                         metadata["model_calls"] += 1
@@ -1172,9 +1181,13 @@ def run(args: argparse.Namespace) -> int:
                             if danger_before or danger_after:
                                 metadata["draft_reviews"] += 1
                                 if model_calls_this_turn < metadata["max_model_calls_per_turn"]:
-                                    review_prompt = prompt + tool_context + "\n" + review_text + (
+                                    review_prompt = (
+                                        prompt + tool_context +
+                                        "\nDRAFT_ACTIONS_UNTRUSTED_DATA_BEGIN:\n" +
+                                        json.dumps(orders, sort_keys=True, separators=(",", ":")) +
+                                        "\nDRAFT_ACTIONS_UNTRUSTED_DATA_END\n" + review_text + (
                                         "\nReturn the final JSON action array only. Repeat the draft unchanged "
-                                        "to confirm it, or revise it if the facts warrant a different choice.")
+                                        "to confirm it, or revise it if the facts warrant a different choice."))
                                     model_calls_this_turn += 1
                                     metadata["model_calls"] += 1
                                     reviewed = backend.complete(review_prompt)
@@ -1188,8 +1201,12 @@ def run(args: argparse.Namespace) -> int:
                                     except ValueError as review_validation_error:
                                         if model_calls_this_turn >= metadata["max_model_calls_per_turn"]:
                                             raise
-                                        repair_prompt = review_prompt + "\nMODEL_RESPONSE_ERROR: " + str(review_validation_error) + (
+                                        repair_prompt = (
+                                            review_prompt +
+                                            "\nREVIEW_RESPONSE_UNTRUSTED_DATA_BEGIN:\n" + reviewed.text +
+                                            "\nREVIEW_RESPONSE_UNTRUSTED_DATA_END\nMODEL_RESPONSE_ERROR: " + str(review_validation_error) + (
                                             "\nReturn one final JSON action array only. Do not request another tool.")
+                                        )
                                         model_calls_this_turn += 1
                                         metadata["model_calls"] += 1
                                         metadata["draft_review_repairs"] += 1
@@ -1243,12 +1260,15 @@ def run(args: argparse.Namespace) -> int:
                                          message="pre-submit batch validation failed within repair budget")
                             durable({"type": "model_error", **metadata})
                             return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
-                        repair_prompt = prompt + "\nENGINE_ACTION_ERROR: " + json.dumps(
+                        repair_prompt = (prompt + "\nDRAFT_ACTIONS_UNTRUSTED_DATA_BEGIN:\n" + json.dumps(
+                            orders, sort_keys=True, separators=(",", ":")) +
+                            "\nDRAFT_ACTIONS_UNTRUSTED_DATA_END\nENGINE_ACTION_ERROR: " + json.dumps(
                             {"code": "validate_batch_failed",
                              "failed_index": validation.get("failed_index"),
                              "results": validation.get("results")},
                             sort_keys=True, separators=(",", ":")) + \
                             "\nROLLBACK_NOTICE: the batch was rejected before submission; the state and revision are unchanged. Return one corrected JSON action array only."
+                        )
                         action_repair_attempted = True
                         model_calls_this_turn += 1
                         metadata["model_calls"] += 1

@@ -119,11 +119,23 @@ class ClientValidationTests(unittest.TestCase):
 
     def test_tool_budget_repair_preserves_all_tool_context(self):
         repaired = tool_budget_repair_prompt(
-            "ORIGINAL", "\nTOOL_RESULT unit=7: target=9", "tool call budget exhausted")
+            "ORIGINAL", "\nTOOL_RESULT unit=7: target=9", "tool call budget exhausted",
+            '{"tool":"inspect_unit","unit_id":7}')
         self.assertIn("ORIGINAL", repaired)
         self.assertIn("target=9", repaired)
+        self.assertIn('"unit_id":7', repaired)
+        self.assertIn("MODEL_RESPONSE_UNTRUSTED_DATA_BEGIN", repaired)
         self.assertIn("tool call budget exhausted", repaired)
         self.assertIn("do not request another tool", repaired.lower())
+
+    def test_followup_context_echoes_tool_request_and_preview_candidates(self):
+        request = '{"tool":"preview_batch","candidates":[[{"action":"EndTurn"}]]}'
+        context = ("MODEL_TOOL_REQUEST_UNTRUSTED_DATA_BEGIN:\n" + request +
+                   "\nMODEL_TOOL_REQUEST_UNTRUSTED_DATA_END\n" +
+                   "TOOL_RESULT_UNTRUSTED_DATA_BEGIN tool=preview_batch:\n" +
+                   "PREVIEW C0 valid=True\nTOOL_RESULT_UNTRUSTED_DATA_END\n")
+        self.assertIn(request, context)
+        self.assertIn("PREVIEW C0", context)
 
     def test_compact_draft_review_reports_recruiter_danger_delta(self):
         rendered, lethal = compact_draft_review({"candidates": [{
@@ -407,12 +419,14 @@ class ClientValidationTests(unittest.TestCase):
     def test_canonical_tactical_playbook_has_key_imperatives(self):
         canonical = llm_client.PLAYBOOK_PATH.read_text(encoding="utf-8")
         for guidance in (
-            "MEMORYLESS TACTICAL PLAYBOOK",
+            "TACTICAL DECISION PRIORITIES",
+            "they do not prescribe a single move",
             "recruiter survival as non-negotiable",
-            "on or near the keep",
-            "never advance it merely to seek combat",
+            "Prefer the keep and a screen",
+            "compare legal destinations and retreat when that reduces the threat",
+            "survival takes priority over remaining there",
             "spend gold and recruit when legal",
-            "Do not bank gold",
+            "saving gold for a better recruit next turn is valid",
             "vacate and recruit again",
             "Recruit a mix",
             "never dump the remaining purse",
@@ -659,12 +673,13 @@ class ClientValidationTests(unittest.TestCase):
         first = [{"action": "EndTurn"}]
         second = [{"action": "Move", "unit_id": 1, "col": 2, "row": 3},
                   {"action": "EndTurn"}]
+        inspect_request = json.dumps({"tool": "inspect_unit", "unit_id": 1})
         preview_request = json.dumps({"tool": "preview_batch", "candidates": [first, second]})
         with tempfile.TemporaryDirectory() as directory:
             orders_path = directory + "/orders.jsonl"
             log_path = directory + "/client.jsonl"
             with open(orders_path, "w") as orders_file:
-                orders_file.write(json.dumps({"text": json.dumps({"tool": "inspect_unit", "unit_id": 1})}) + "\n")
+                orders_file.write(json.dumps({"text": inspect_request}) + "\n")
                 orders_file.write(json.dumps({"text": preview_request}) + "\n")
                 orders_file.write(json.dumps({"text": json.dumps(second)}) + "\n")
             process = FakeDriverProcess([
@@ -695,7 +710,13 @@ class ClientValidationTests(unittest.TestCase):
                 max_model_calls_per_turn=4, event_window_observations=1, diagnostic=False,
                 decision_metrics=True,
             )
-            with mock.patch("tools.llm_client.subprocess.Popen", return_value=process), \
+            prompts = []
+            original_complete = llm_client.OrdersBackend.complete
+            def capture_prompt(backend, prompt):
+                prompts.append(prompt)
+                return original_complete(backend, prompt)
+            with mock.patch.object(llm_client.OrdersBackend, "complete", capture_prompt), \
+                    mock.patch("tools.llm_client.subprocess.Popen", return_value=process), \
                     mock.patch("tools.llm_client.source_metadata", return_value={}), \
                     mock.patch("tools.llm_client.os.fsync"):
                 code = run(args)
@@ -709,6 +730,10 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual(sent[3]["what"], "validate_batch")
         self.assertEqual(sent[4]["what"], "preview_batch")
         self.assertEqual(sent[5], second)
+        self.assertIn(inspect_request, prompts[1])
+        self.assertIn(preview_request, prompts[2])
+        self.assertIn(json.dumps(first), prompts[2])
+        self.assertIn(json.dumps(second), prompts[2])
         self.assertEqual([record for record in records if record["type"] == "preview_selection"][0]["matched_candidate"], 1)
         self.assertEqual(len([record for record in records if record["type"] == "final_batch_preview"]), 1)
 
