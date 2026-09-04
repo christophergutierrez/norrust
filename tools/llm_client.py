@@ -1191,8 +1191,15 @@ def run(args: argparse.Namespace) -> int:
                             tool = decoded.get("tool")
                             if tool_calls_this_turn >= metadata["max_tool_calls_per_turn"]:
                                 raise ValueError("tool call budget exhausted")
-                            if model_calls_this_turn >= metadata["max_model_calls_per_turn"]:
-                                raise ValueError("model call budget exhausted before final actions")
+                            # A tool result is useful only if the model still gets
+                            # to turn it into actions.  When the next inference
+                            # would consume the last available call, force that
+                            # inference into action-only recovery instead of
+                            # failing the turn before the model can answer.
+                            if model_calls_this_turn >= metadata["max_model_calls_per_turn"] - 1:
+                                raise ValueError(
+                                    "model call budget reserved for final actions"
+                                )
                             if tool == "preview_batch":
                                 if preview_candidates is not None:
                                     raise ValueError("preview_batch may be requested only once per turn")
@@ -1240,7 +1247,7 @@ def run(args: argparse.Namespace) -> int:
                                              rendered + "\nTOOL_RESULT_UNTRUSTED_DATA_END\n")
                             followup_prompt = prompt + tool_context + "\n" + tool_followup_instruction(
                                 metadata["max_tool_calls_per_turn"] - tool_calls_this_turn,
-                                metadata["max_model_calls_per_turn"] - model_calls_this_turn - 2 * int(danger_before),
+                                metadata["max_model_calls_per_turn"] - model_calls_this_turn - 1,
                             )
                             followup_bytes = len(followup_prompt.encode())
                             if followup_bytes > args.max_prompt_bytes:
