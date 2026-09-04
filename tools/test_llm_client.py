@@ -95,7 +95,7 @@ class ClientValidationTests(unittest.TestCase):
         rendered = compact_unit_inspection({
             "unit_id": 1,
             "origins": [],
-            "recruiter_destinations": [
+            "destination_threats": [
                 {"col": 2, "row": 7, "current": True,
                  "distinct_attacker_count": 3, "max_incoming_sum": 42,
                  "lethal_attackers_needed": 2, "origins_conflict": False},
@@ -104,7 +104,7 @@ class ClientValidationTests(unittest.TestCase):
                  "lethal_attackers_needed": None, "origins_conflict": False},
             ],
         })
-        self.assertIn("RECRUITER_DESTINATIONS", rendered)
+        self.assertIn("DESTINATION_DANGER", rendered)
         self.assertIn("@2,7 a3 m42 lethal_n=2", rendered)
         self.assertIn("->1,7 a0 m0 lethal_n=None", rendered)
 

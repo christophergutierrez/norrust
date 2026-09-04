@@ -129,9 +129,9 @@ friendly unit at a time:
 ```
 
 That result contains the unit's legal destinations and legal targets from each
-origin with exact exchange forecasts. For a recruiter, it also includes the
-next-turn threat summary for each legal position; these are facts, not ranked
-escape recommendations. Two other factual inspections are
+origin with exact exchange forecasts. It also includes `destination_threats`,
+the next-turn threat summary for each legal position; these are facts, not
+ranked move recommendations. Two other factual inspections are
 available:
 
 ```json

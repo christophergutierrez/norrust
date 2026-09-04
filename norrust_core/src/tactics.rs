@@ -91,16 +91,19 @@ pub struct RecruiterThreats {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct RecruiterDestinationThreat {
+pub struct UnitDestinationThreat {
     pub col: i32,
     pub row: i32,
     pub current: bool,
+    pub threats: Vec<RecruiterThreat>,
     pub distinct_attacker_count: u32,
     pub max_incoming_sum: u32,
     pub lethal_attackers_needed: Option<u32>,
     pub origins_conflict: bool,
     pub attacker_max_damage: Vec<AttackerMaxDamage>,
 }
+
+pub type RecruiterDestinationThreat = UnitDestinationThreat;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AttackerMaxDamage {
@@ -452,66 +455,12 @@ pub fn recruiter_threats_after_end_turn(
         .collect();
     let mut projected = state.clone();
     apply_action(&mut projected, Action::EndTurn)?;
-    let mut recruiters = Vec::new();
-    for recruiter_id in recruiter_ids {
-        let Some(recruiter) = projected.units.get(&recruiter_id) else {
-            continue;
-        };
-        let Some(&hex) = projected.positions.get(&recruiter_id) else {
-            continue;
-        };
-        let (col, row) = hex.to_offset();
-        let mut threats = Vec::new();
-        let mut attacker_ids: Vec<u32> = projected
-            .units
-            .iter()
-            .filter_map(|(&id, unit)| (unit.faction == projected.active_faction).then_some(id))
-            .collect();
-        attacker_ids.sort_unstable();
-        for attacker_id in attacker_ids {
-            let tactics = unit_tactics(&projected, attacker_id)?;
-            for origin in tactics.origins {
-                let Some(engagement) = origin
-                    .engagements
-                    .into_iter()
-                    .find(|engagement| engagement.defender_id == recruiter_id)
-                else {
-                    continue;
-                };
-                let parameters = combat_parameters(
-                    &projected,
-                    attacker_id,
-                    recruiter_id,
-                    Hex::from_offset(origin.col, origin.row),
-                )?;
-                threats.push(RecruiterThreat {
-                    attacker_id,
-                    origin_col: origin.col,
-                    origin_row: origin.row,
-                    moved: origin.movable,
-                    max_damage: parameters
-                        .attacker_damage_per_hit
-                        .saturating_mul(parameters.attacker_strikes),
-                    forecast: engagement.forecast,
-                });
-            }
-        }
-        threats.sort_by_key(|threat| (threat.attacker_id, threat.origin_row, threat.origin_col));
-        let (attacker_max_damage, max_incoming_sum, lethal_attackers_needed, origins_conflict) =
-            summarize_threats(recruiter.hp, &threats);
-        recruiters.push(RecruiterThreats {
-            recruiter_id,
-            hp: recruiter.hp,
-            col,
-            row,
-            threats,
-            distinct_attacker_count: attacker_max_damage.len() as u32,
-            attacker_max_damage,
-            max_incoming_sum,
-            lethal_attackers_needed,
-            origins_conflict,
-        });
-    }
+    let mut recruiters = recruiter_ids
+        .into_iter()
+        .filter_map(|recruiter_id| {
+            target_threats_in_projected(&projected, recruiter_id).transpose()
+        })
+        .collect::<Result<Vec<_>, TacticsError>>()?;
     recruiters.sort_by_key(|recruiter| recruiter.recruiter_id);
     Ok(ThreatSurface {
         visibility: "full",
@@ -520,29 +469,102 @@ pub fn recruiter_threats_after_end_turn(
     })
 }
 
+fn target_threats_in_projected(
+    projected: &GameState,
+    target_id: u32,
+) -> Result<Option<RecruiterThreats>, TacticsError> {
+    let Some(target) = projected.units.get(&target_id) else {
+        return Ok(None);
+    };
+    let Some(&hex) = projected.positions.get(&target_id) else {
+        return Ok(None);
+    };
+    let (col, row) = hex.to_offset();
+    let mut threats = Vec::new();
+    let mut attacker_ids: Vec<u32> = projected
+        .units
+        .iter()
+        .filter_map(|(&id, unit)| (unit.faction == projected.active_faction).then_some(id))
+        .collect();
+    attacker_ids.sort_unstable();
+    for attacker_id in attacker_ids {
+        let tactics = unit_tactics(projected, attacker_id)?;
+        for origin in tactics.origins {
+            let Some(engagement) = origin
+                .engagements
+                .into_iter()
+                .find(|engagement| engagement.defender_id == target_id)
+            else {
+                continue;
+            };
+            let parameters = combat_parameters(
+                projected,
+                attacker_id,
+                target_id,
+                Hex::from_offset(origin.col, origin.row),
+            )?;
+            threats.push(RecruiterThreat {
+                attacker_id,
+                origin_col: origin.col,
+                origin_row: origin.row,
+                moved: origin.movable,
+                max_damage: parameters
+                    .attacker_damage_per_hit
+                    .saturating_mul(parameters.attacker_strikes),
+                forecast: engagement.forecast,
+            });
+        }
+    }
+    threats.sort_by_key(|threat| (threat.attacker_id, threat.origin_row, threat.origin_col));
+    let (attacker_max_damage, max_incoming_sum, lethal_attackers_needed, origins_conflict) =
+        summarize_threats(target.hp, &threats);
+    Ok(Some(RecruiterThreats {
+        recruiter_id: target_id,
+        hp: target.hp,
+        col,
+        row,
+        threats,
+        distinct_attacker_count: attacker_max_damage.len() as u32,
+        attacker_max_damage,
+        max_incoming_sum,
+        lethal_attackers_needed,
+        origins_conflict,
+    }))
+}
+
 /// Report the opponent threat forecast for each legal position of a recruiter.
 /// Each position is evaluated independently; no destination is ranked or recommended.
 pub fn recruiter_destination_threats(
     state: &GameState,
     recruiter_id: u32,
 ) -> Result<Vec<RecruiterDestinationThreat>, TacticsError> {
-    let recruiter = state
+    unit_destination_threats(state, recruiter_id)
+}
+
+/// Report opponent threat forecasts for every legal position of an active-side unit.
+/// Each position is evaluated independently; no destination is ranked or recommended.
+pub fn unit_destination_threats(
+    state: &GameState,
+    unit_id: u32,
+) -> Result<Vec<UnitDestinationThreat>, TacticsError> {
+    let unit = state
         .units
-        .get(&recruiter_id)
-        .ok_or(ActionError::UnitNotFound(recruiter_id))?;
-    if recruiter.faction != state.active_faction {
+        .get(&unit_id)
+        .ok_or(ActionError::UnitNotFound(unit_id))?;
+    if unit.faction != state.active_faction {
         return Err(ActionError::NotYourTurn.into());
-    }
-    if !recruiter.can_recruit {
-        return Ok(Vec::new());
     }
     let current = *state
         .positions
-        .get(&recruiter_id)
-        .ok_or(ActionError::UnitNotFound(recruiter_id))?;
+        .get(&unit_id)
+        .ok_or(ActionError::UnitNotFound(unit_id))?;
     let mut destinations = vec![(current, true)];
-    if !recruiter.moved {
-        destinations.extend(legal_moves(state, recruiter_id)?.into_iter().map(|hex| (hex, false)));
+    if !unit.moved {
+        destinations.extend(
+            legal_moves(state, unit_id)?
+                .into_iter()
+                .map(|hex| (hex, false)),
+        );
     }
     let mut result = Vec::with_capacity(destinations.len());
     for (destination, is_current) in destinations {
@@ -551,22 +573,20 @@ pub fn recruiter_destination_threats(
             apply_action(
                 &mut projected,
                 Action::Move {
-                    unit_id: recruiter_id,
+                    unit_id,
                     destination,
                 },
             )?;
         }
-        let threats = recruiter_threats_after_end_turn(&projected, state.active_faction)?;
-        let summary = threats
-            .recruiters
-            .into_iter()
-            .find(|threat| threat.recruiter_id == recruiter_id)
-            .ok_or(ActionError::UnitNotFound(recruiter_id))?;
+        apply_action(&mut projected, Action::EndTurn)?;
+        let summary = target_threats_in_projected(&projected, unit_id)?
+            .ok_or(ActionError::UnitNotFound(unit_id))?;
         let (col, row) = destination.to_offset();
-        result.push(RecruiterDestinationThreat {
+        result.push(UnitDestinationThreat {
             col,
             row,
             current: is_current,
+            threats: summary.threats,
             distinct_attacker_count: summary.distinct_attacker_count,
             max_incoming_sum: summary.max_incoming_sum,
             lethal_attackers_needed: summary.lethal_attackers_needed,
@@ -794,12 +814,60 @@ mod tests {
             }
             let expected = recruiter_threats_after_end_turn(&projected, 0).unwrap();
             let summary = &expected.recruiters[0];
-            assert_eq!(destination.distinct_attacker_count, summary.distinct_attacker_count);
+            assert_eq!(
+                destination.distinct_attacker_count,
+                summary.distinct_attacker_count
+            );
             assert_eq!(destination.max_incoming_sum, summary.max_incoming_sum);
-            assert_eq!(destination.lethal_attackers_needed, summary.lethal_attackers_needed);
+            assert_eq!(
+                destination.lethal_attackers_needed,
+                summary.lethal_attackers_needed
+            );
         }
         assert_eq!(state.state_revision, revision);
         assert_eq!(state.turn, turn);
+    }
+
+    #[test]
+    fn unit_destination_threats_cover_non_recruiters() {
+        let mut board = Board::new(7, 5);
+        for col in 0..7 {
+            for row in 0..5 {
+                board.set_tile(Hex::from_offset(col, row), crate::board::Tile::new("flat"));
+            }
+        }
+        let mut state = GameState::new_seeded(board, 102);
+        let mut fighter = Unit::new(1, "fighter", 20, 0);
+        fighter.movement = 1;
+        fighter.movement_costs.insert("flat".into(), 1);
+        state.place_unit(fighter, Hex::from_offset(2, 2));
+        let mut archer = Unit::new(2, "adept", 20, 1);
+        archer.movement = 2;
+        archer.movement_costs.insert("flat".into(), 1);
+        archer.attacks.push(AttackDef {
+            id: "bolt".into(),
+            name: "bolt".into(),
+            damage: 10,
+            strikes: 2,
+            attack_type: "arcane".into(),
+            range: "ranged".into(),
+            specials: Vec::new(),
+        });
+        state.place_unit(archer, Hex::from_offset(4, 2));
+
+        let destinations = unit_destination_threats(&state, 1).unwrap();
+        let current = destinations
+            .iter()
+            .find(|destination| destination.current)
+            .unwrap();
+        assert_eq!(current.distinct_attacker_count, 1);
+        assert_eq!(current.max_incoming_sum, 20);
+        assert_eq!(current.lethal_attackers_needed, Some(1));
+        assert!(current
+            .threats
+            .iter()
+            .any(|threat| { threat.attacker_id == 2 && threat.max_damage == 20 }));
+        assert!(destinations.iter().any(|destination| !destination.current));
     }
 
     #[test]

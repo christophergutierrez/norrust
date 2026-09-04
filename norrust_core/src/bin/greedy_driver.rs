@@ -34,9 +34,8 @@ use norrust_core::pathfinding::{get_zoc_hexes, reachable_hexes};
 use norrust_core::scenario::{load_board, load_units_file};
 use norrust_core::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
 use norrust_core::tactics::{
-    economy_facts, hex_inspection, recruiter_destination_threats,
-    recruiter_threats_after_end_turn, target_inspection, turn_tactics, unit_tactics,
-    ThreatSurface,
+    economy_facts, hex_inspection, recruiter_threats_after_end_turn, target_inspection,
+    turn_tactics, unit_destination_threats, unit_tactics, ThreatSurface,
 };
 use norrust_core::unit::Unit;
 use serde_json::{json, Value};
@@ -1757,21 +1756,18 @@ fn interactive_protocol_game(c: &Config) {
                             Some(unit) if unit.faction != c.llm_side => {
                                 json!({"type":"status","ok":false,"what":what,"code":"unauthorized_unit","message":"only model-side units may be inspected"})
                             }
-                            Some(unit) => match unit_tactics(&state, unit_id) {
+                            Some(_unit) => match unit_tactics(&state, unit_id) {
                                 Ok(tactics) => {
-                                    let mut body = serde_json::to_value(tactics).unwrap_or_else(|_| json!({}));
-                                    if unit.can_recruit {
-                                        match recruiter_destination_threats(&state, unit_id) {
-                                            Ok(destinations) => {
-                                                body["recruiter_destinations"] = json!(destinations);
-                                                json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,"body":body})
-                                            }
-                                            Err(error) => {
-                                                json!({"type":"status","ok":false,"what":what,"code":"inspect_unit_error","message":error.to_string()})
-                                            }
+                                    let mut body =
+                                        serde_json::to_value(tactics).unwrap_or_else(|_| json!({}));
+                                    match unit_destination_threats(&state, unit_id) {
+                                        Ok(destinations) => {
+                                            body["destination_threats"] = json!(destinations);
+                                            json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,"body":body})
                                         }
-                                    } else {
-                                        json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,"body":body})
+                                        Err(error) => {
+                                            json!({"type":"status","ok":false,"what":what,"code":"inspect_unit_error","message":error.to_string()})
+                                        }
                                     }
                                 }
                                 Err(error) => {
