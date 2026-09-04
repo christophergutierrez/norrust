@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import io
 import json
 import os
@@ -19,6 +20,8 @@ from .llm_client import (
     query_tactical_surface, query_validate_batch, query_preview_batch,
     query_inspect_unit, query_inspect_target, query_inspect_targets, query_inspect_hex, run,
     response_intent, compact_strategic_briefing,
+    checkpoint_dir_for_log, validate_checkpoint_reference, select_resume_checkpoint,
+    load_resume_checkpoint,
     validate_inspect_unit_request, validate_inspect_target_request, validate_inspect_targets_request,
     validate_inspect_hex_request, validate_orders, validate_preview_request,
 )
@@ -40,6 +43,89 @@ class FakeDriverProcess:
 
 
 class ClientValidationTests(unittest.TestCase):
+    def test_checkpoint_reference_confines_path_and_verifies_digest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "match.ckpt"
+            root.mkdir()
+            payload = b'{"state_revision":4,"side_turns":2}'
+            path = root / "state.json"
+            path.write_bytes(payload)
+            digest = hashlib.sha256(payload).hexdigest()
+            reference = validate_checkpoint_reference(
+                {"path": "state.json", "digest": digest, "state_revision": 4,
+                 "side_turns": 2, "boundary": "model_decision"}, root)
+            self.assertEqual(reference["absolute_path"], str(path.resolve()))
+            with self.assertRaises(ValueError):
+                validate_checkpoint_reference(
+                    {"path": "../state.json", "digest": digest}, root)
+            with self.assertRaises(ValueError):
+                validate_checkpoint_reference(
+                    {"path": "state.json", "digest": "0" * 64}, root)
+
+    def test_resume_log_ignores_truncated_line_and_falls_back_to_valid_sidecar(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "match.ndjson"
+            ckpt = checkpoint_dir_for_log(log)
+            ckpt.mkdir()
+            old = b'{"state_revision":1,"side_turns":1,"boundary":"model_decision"}'
+            new = b'{"state_revision":2,"side_turns":2,"boundary":"post_batch"}'
+            old_path, new_path = ckpt / "old.json", ckpt / "new.json"
+            old_path.write_bytes(old)
+            new_path.write_bytes(new)
+            old_ref = {"type": "checkpoint_ref", "path": "old.json",
+                       "digest": hashlib.sha256(old).hexdigest(), "state_revision": 1,
+                       "side_turns": 1, "boundary": "model_decision"}
+            # The newest sidecar is durable but its audit reference was lost.
+            log.write_text(json.dumps(old_ref) + "\n{" )
+            selected, records = select_resume_checkpoint(log)
+            self.assertEqual(selected["path"], "new.json")
+            self.assertTrue(selected["orphan_discovered"])
+            self.assertEqual(len(records), 1)
+
+    def test_direct_resume_checkpoint_reports_content_digest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "checkpoint.json"
+            path.write_text('{"state_revision":9,"side_turns":3}')
+            loaded = load_resume_checkpoint(path)
+            self.assertEqual(loaded["state_revision"], 9)
+            self.assertEqual(loaded["side_turns"], 3)
+
+    def test_logged_run_wires_checkpoint_dir_and_durably_records_reference(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "match.ndjson"
+            ckpt = checkpoint_dir_for_log(log)
+            payload = b'{"state_revision":1,"side_turns":0,"boundary":"model_decision"}'
+            digest = hashlib.sha256(payload).hexdigest()
+
+            class CheckpointProcess(FakeDriverProcess):
+                pass
+
+            def start(command, **kwargs):
+                self.assertIn("--checkpoint-dir", command)
+                self.assertIn(str(ckpt), command)
+                (ckpt / "initial.json").write_bytes(payload)
+                return CheckpointProcess([
+                    {"type": "checkpoint", "path": "initial.json", "digest": digest,
+                     "state_revision": 1, "side_turns": 0,
+                     "boundary": "model_decision", "pending_opponent_turn": False},
+                    {"type": "game_end", "reason": "max_turns", "winner": None},
+                ])
+
+            args = argparse.Namespace(
+                driver="driver", scenario="scenario", faction0="a", faction1="b", gold=1,
+                seed=2, max_turns=3, llm_side=0, turn_timeout=4, query_budget_seconds=5,
+                max_queries_per_turn=6, no_recruit_macro=False, interactive_model=True,
+                orders_file=None, model_command=None, model_timeout=7, log=str(log),
+                max_prompt_bytes=16 * 1024 * 1024, token_input_limit=None,
+                token_output_limit=None, token_total_limit=None)
+            with mock.patch("tools.llm_client.subprocess.Popen", side_effect=start), \
+                    mock.patch("tools.llm_client.source_metadata", return_value={}), \
+                    mock.patch("tools.llm_client.os.fsync"):
+                self.assertEqual(run(args), 0)
+            records = [json.loads(line) for line in log.read_text().splitlines()]
+            refs = [record for record in records if record["type"] == "checkpoint_ref"]
+            self.assertEqual(len(refs), 1)
+            self.assertEqual(refs[0]["digest"], digest)
     def test_batched_target_inspection_is_bounded_and_compact(self):
         self.assertEqual(validate_inspect_targets_request(
             {"tool": "inspect_targets", "unit_ids": [9, 10]}), [9, 10])

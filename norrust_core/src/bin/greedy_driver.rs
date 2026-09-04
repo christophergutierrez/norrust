@@ -1773,6 +1773,10 @@ fn interactive_protocol_game(c: &Config) {
         println!("{}", json!({"type":"game_end","reason":"winner","winner":state.check_winner(),"turns":state.turn}));
         return;
     }
+    if side_turns >= c.max_turns {
+        println!("{}", json!({"type":"game_end","reason":"max_turns","turns":state.turn,"side_turns":side_turns}));
+        return;
+    }
     if checkpoint.is_none() && c.llm_side == 1 {
         let side = 0usize;
         let events =

@@ -16,6 +16,179 @@ from pathlib import Path
 from typing import Any, Optional
 
 ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "Engage", "EndTurn", "Advance"}
+CHECKPOINT_REF_DIGEST_BYTES = 64
+
+
+def checkpoint_dir_for_log(log_path: str | os.PathLike[str]) -> Path:
+    """Return the sidecar directory associated with an audit log."""
+    return Path(log_path).with_suffix(".ckpt")
+
+
+def _checkpoint_path(checkpoint_dir: Path, relative_path: str) -> Path:
+    if not isinstance(relative_path, str) or not relative_path:
+        raise ValueError("checkpoint path must be a non-empty relative string")
+    candidate = Path(relative_path)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise ValueError("checkpoint path escapes checkpoint directory")
+    root = checkpoint_dir.resolve()
+    path = (checkpoint_dir / candidate).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("checkpoint path escapes checkpoint directory") from exc
+    return path
+
+
+def validate_checkpoint_reference(reference: dict[str, Any], checkpoint_dir: Path) -> dict[str, Any]:
+    """Validate a driver checkpoint reference and its digest, then return it."""
+    if not isinstance(reference, dict):
+        raise ValueError("checkpoint reference must be an object")
+    relative = reference.get("path")
+    digest = reference.get("digest")
+    if (not isinstance(digest, str) or len(digest) != CHECKPOINT_REF_DIGEST_BYTES
+            or any(char not in "0123456789abcdefABCDEF" for char in digest)):
+        raise ValueError("checkpoint reference has an invalid digest")
+    path = _checkpoint_path(checkpoint_dir, relative)
+    try:
+        payload = path.read_bytes()
+    except OSError as exc:
+        raise ValueError(f"checkpoint sidecar is unavailable: {relative}") from exc
+    actual = hashlib.sha256(payload).hexdigest()
+    if actual.lower() != digest.lower():
+        raise ValueError("checkpoint digest mismatch")
+    try:
+        envelope = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise ValueError("checkpoint sidecar is not valid JSON") from exc
+    if not isinstance(envelope, dict):
+        raise ValueError("checkpoint sidecar must contain an object")
+    result = dict(reference)
+    result["absolute_path"] = str(path)
+    result["envelope"] = envelope
+    return result
+
+
+def _read_log_records(log_path: Path) -> list[dict[str, Any]]:
+    """Read complete NDJSON records, ignoring a truncated final line."""
+    records: list[dict[str, Any]] = []
+    try:
+        lines = log_path.read_text().splitlines()
+    except OSError as exc:
+        raise ValueError(f"cannot read resume log: {log_path}") from exc
+    for index, raw in enumerate(lines):
+        if not raw.strip():
+            continue
+        try:
+            record = json.loads(raw)
+        except json.JSONDecodeError:
+            if index == len(lines) - 1:
+                break
+            raise ValueError(f"invalid NDJSON record at line {index + 1}")
+        if isinstance(record, dict):
+            records.append(record)
+    return records
+
+
+def _checkpoint_order(reference: dict[str, Any]) -> tuple[int, int, int]:
+    boundary = reference.get("boundary")
+    boundary_rank = 1 if boundary in {"post_batch", "postbatch", "post-batch"} else 0
+    def number(value: Any) -> int:
+        return value if isinstance(value, int) and not isinstance(value, bool) else -1
+    return (number(reference.get("side_turns")),
+            number(reference.get("state_revision")), boundary_rank)
+
+
+def validate_checkpoint_identity(envelope: dict[str, Any], args: argparse.Namespace) -> None:
+    """Reject identity mismatches when the checkpoint exposes those fields.
+
+    Rust remains authoritative for its complete schema. This client-side check
+    catches obvious accidental continuation mistakes without assuming fields
+    that older checkpoint envelopes do not contain.
+    """
+    identity = envelope.get("config", envelope)
+    if not isinstance(identity, dict):
+        return
+    expected = {"scenario": getattr(args, "scenario", None),
+                "faction0": getattr(args, "faction0", None),
+                "faction1": getattr(args, "faction1", None),
+                "gold": getattr(args, "gold", None),
+                "seed": getattr(args, "seed", None),
+                "llm_side": getattr(args, "llm_side", None),
+                "max_turns": getattr(args, "max_turns", None)}
+    for key, value in expected.items():
+        if key in identity and identity[key] != value:
+            raise ValueError(f"resume configuration mismatch: {key}")
+
+
+def select_resume_checkpoint(log_path: str | os.PathLike[str]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Select the newest valid referenced or orphaned checkpoint from a log."""
+    log = Path(log_path)
+    checkpoint_dir = checkpoint_dir_for_log(log)
+    records = _read_log_records(log)
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for record in records:
+        if record.get("type") != "checkpoint_ref":
+            continue
+        try:
+            reference = validate_checkpoint_reference(record, checkpoint_dir)
+        except ValueError:
+            continue
+        reference["orphan_discovered"] = False
+        candidates.append(reference)
+        seen.add(reference["path"])
+    if checkpoint_dir.is_dir():
+        for path in checkpoint_dir.glob("*.json"):
+            if path.name in seen:
+                continue
+            try:
+                payload = path.read_bytes()
+                digest = hashlib.sha256(payload).hexdigest()
+                envelope = json.loads(payload)
+                if not isinstance(envelope, dict):
+                    continue
+            except (OSError, json.JSONDecodeError):
+                continue
+            reference = {"path": path.relative_to(checkpoint_dir).as_posix(),
+                         "digest": digest, "orphan_discovered": True,
+                         "envelope": envelope, "absolute_path": str(path)}
+            for key in ("state_revision", "side_turns", "boundary", "pending_opponent_turn"):
+                if key in envelope:
+                    reference[key] = envelope[key]
+            candidates.append(reference)
+    if not candidates:
+        raise ValueError(f"no valid checkpoint found for resume log: {log}")
+    candidates.sort(key=_checkpoint_order)
+    return candidates[-1], records
+
+
+def load_resume_checkpoint(path: str | os.PathLike[str]) -> dict[str, Any]:
+    """Validate a directly selected checkpoint, using its content digest."""
+    checkpoint = Path(path)
+    if not checkpoint.is_file():
+        raise ValueError(f"checkpoint sidecar is unavailable: {checkpoint}")
+    try:
+        payload = checkpoint.read_bytes()
+        envelope = json.loads(payload)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"checkpoint sidecar is invalid: {checkpoint}") from exc
+    if not isinstance(envelope, dict):
+        raise ValueError("checkpoint sidecar must contain an object")
+    digest = hashlib.sha256(payload).hexdigest()
+    return {"path": checkpoint.name, "digest": digest,
+            "absolute_path": str(checkpoint.resolve()), "envelope": envelope,
+            "orphan_discovered": False,
+            **{key: envelope[key] for key in
+               ("state_revision", "side_turns", "boundary", "pending_opponent_turn")
+               if key in envelope}}
+
+
+def parent_log_for_checkpoint(path: str | os.PathLike[str]) -> Optional[Path]:
+    """Infer MATCH.ndjson from a conventional MATCH.ckpt sidecar path."""
+    checkpoint = Path(path).resolve()
+    if checkpoint.parent.suffix != ".ckpt":
+        return None
+    return checkpoint.parent.with_suffix(".ndjson")
 
 
 @dataclass
@@ -1327,6 +1500,36 @@ def set_terminal(metadata: dict[str, Any], terminal_class: str,
 
 def run(args: argparse.Namespace) -> int:
     driver = args.driver
+    log_path = getattr(args, "log", None)
+    resume_log = getattr(args, "resume_log", None)
+    resume_checkpoint = getattr(args, "resume_checkpoint", None)
+    if resume_log and resume_checkpoint:
+        raise ValueError("--resume-log and --resume-checkpoint are mutually exclusive")
+    if (resume_log or resume_checkpoint) and not log_path:
+        raise ValueError("resume requires --log (the destination audit log)")
+    selected_checkpoint = None
+    parent_records: list[dict[str, Any]] = []
+    if resume_log:
+        selected_checkpoint, parent_records = select_resume_checkpoint(resume_log)
+        if Path(log_path).resolve() != Path(resume_log).resolve():
+            raise ValueError("--resume-log must be the same path supplied to --log")
+        terminal = next((record for record in reversed(parent_records)
+                         if record.get("type") == "terminal"), None)
+        if isinstance(terminal, dict) and terminal.get("terminal_class") != TERMINAL_INFRASTRUCTURE:
+            raise ValueError("cannot resume a log with a completed terminal result")
+    elif resume_checkpoint:
+        selected_checkpoint = load_resume_checkpoint(resume_checkpoint)
+        inferred_parent = parent_log_for_checkpoint(resume_checkpoint)
+        if inferred_parent is not None and inferred_parent == Path(log_path).resolve():
+            raise ValueError("--resume-checkpoint requires a new --log")
+    if selected_checkpoint is not None:
+        validate_checkpoint_identity(selected_checkpoint["envelope"], args)
+    checkpoint_dir = checkpoint_dir_for_log(log_path) if log_path else None
+    if selected_checkpoint and resume_checkpoint and resume_log is None:
+        # A branch gets a new sidecar directory. The source remains immutable.
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    elif checkpoint_dir is not None:
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
     cmd = [driver, "--scenario", args.scenario, "--faction0", args.faction0,
            "--faction1", args.faction1, "--gold", str(args.gold), "--seed", str(args.seed),
            "--max-turns", str(args.max_turns), "--llm-side", str(args.llm_side),
@@ -1335,6 +1538,10 @@ def run(args: argparse.Namespace) -> int:
            "--max-queries-per-turn", str(args.max_queries_per_turn)]
     if args.no_recruit_macro:
         cmd.append("--disable-recruit-batch")
+    if checkpoint_dir is not None:
+        cmd.extend(["--checkpoint-dir", str(checkpoint_dir)])
+    if selected_checkpoint is not None:
+        cmd.extend(["--resume-checkpoint", selected_checkpoint["absolute_path"]])
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, bufsize=1)
     stderr_tail = deque(maxlen=40)
@@ -1391,7 +1598,37 @@ def run(args: argparse.Namespace) -> int:
                 "winner": None, "reason": None, "terminal_class": None,
                 "infrastructure_invalid": False, "gameplay_valid": False,
                 **source_metadata()}
-    log = open(args.log, "a", buffering=1) if args.log else None
+    if parent_records:
+        previous_metadata = next((record for record in reversed(parent_records)
+                                  if record.get("type") in {"terminal", "metadata"}), {})
+        identity_keys = ("scenario", "faction0", "faction1", "gold", "seed", "llm_side",
+                         "max_turns", "llm_recruit_macro")
+        for key in identity_keys:
+            if key in previous_metadata and metadata.get(key) != previous_metadata[key]:
+                raise ValueError(f"resume configuration mismatch: {key}")
+        for key in ("queries", "model_orders", "model_calls", "rejected_batches",
+                    "rejected_action_items", "draft_reviews", "draft_revisions",
+                    "draft_confirmations", "draft_review_repairs", "transport_retries",
+                    "attack_opportunity_unit_turns", "planned_attack_unit_turns"):
+            if isinstance(previous_metadata.get(key), int):
+                metadata[key] = previous_metadata[key]
+        previous_tools = previous_metadata.get("tool_calls_by_name")
+        if isinstance(previous_tools, dict):
+            metadata["tool_calls_by_name"] = dict(previous_tools)
+        for record in parent_records:
+            if record.get("type") == "intent_update" and isinstance(record.get("intent"), str):
+                intent_memory = record["intent"]
+            elif record.get("type") == "forwarded_orders" and isinstance(record.get("intent"), str):
+                # A post-batch checkpoint can precede the intent_update emitted
+                # after the driver's successful status. Preserve it regardless.
+                intent_memory = record["intent"]
+            if record.get("type") == "driver":
+                line = record.get("line")
+                if isinstance(line, dict) and line.get("type") == "events":
+                    events = line.get("events", []) if isinstance(line.get("events"), list) else []
+        if events:
+            event_window.extend(events)
+    log = open(log_path, "a", buffering=1) if log_path else None
     def record(obj: dict[str, Any]) -> None:
         if log:
             log.write(json.dumps(obj, sort_keys=True) + "\n")
@@ -1414,6 +1651,18 @@ def run(args: argparse.Namespace) -> int:
     record({"type": "metadata", **metadata, "driver_command": cmd,
             "model_command_hash": hashlib.sha256(args.model_command.encode()).hexdigest()
             if args.model_command else None})
+    if selected_checkpoint is not None:
+        resume_record = {"type": "resume", "source": selected_checkpoint["absolute_path"],
+                 "digest": selected_checkpoint["digest"],
+                 "orphan_discovered": selected_checkpoint.get("orphan_discovered", False),
+                 "boundary": selected_checkpoint.get("boundary"),
+                 "state_revision": selected_checkpoint.get("state_revision"),
+                 "side_turns": selected_checkpoint.get("side_turns")}
+        if resume_checkpoint:
+            parent = parent_log_for_checkpoint(resume_checkpoint)
+            if parent is not None and parent.exists():
+                resume_record["parent_log"] = str(parent)
+        durable(resume_record)
     try:
         while True:
             raw = proc.stdout.readline()
@@ -1436,6 +1685,30 @@ def run(args: argparse.Namespace) -> int:
                 durable({"type": "terminal", **metadata})
                 return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
             record({"type": "driver", "line": line})
+            if line.get("type") == "checkpoint":
+                if checkpoint_dir is None:
+                    set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
+                                 reason="infrastructure_failure", code="checkpoint_without_log",
+                                 message="driver emitted a checkpoint without a log")
+                    durable({"type": "terminal", **metadata})
+                    return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
+                try:
+                    reference = validate_checkpoint_reference(line, checkpoint_dir)
+                except ValueError as checkpoint_error:
+                    set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
+                                 reason="infrastructure_failure", code="checkpoint_invalid",
+                                 message=str(checkpoint_error))
+                    durable({"type": "checkpoint_error", **metadata})
+                    return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
+                # The reference is the only checkpoint record consumed by resume.
+                # Keep the body out of the audit log and retain the driver's
+                # compact boundary metadata for inspection.
+                durable({"type": "checkpoint_ref",
+                         **{key: line[key] for key in
+                            ("path", "digest", "state_revision", "side_turns",
+                             "boundary", "pending_opponent_turn") if key in line},
+                         "intent": pending_intent or intent_memory})
+                continue
             if line.get("type") == "status":
                 failure = status_failure(line)
                 if failure is None and pending_action and pending_intent is not None:
@@ -1489,9 +1762,9 @@ def run(args: argparse.Namespace) -> int:
                             durable({"type": "model_error", **metadata})
                             return TERMINAL_EXIT_CODES[terminal_class]
                         metadata["model_orders"] += len(orders)
-                        record({"type": "forwarded_orders", "orders": orders,
+                        durable({"type": "forwarded_orders", "orders": orders,
                                 "prompt_hash": hashlib.sha256(repair_prompt.encode()).hexdigest(),
-                                "repair": True})
+                                "repair": True, "intent": turn_intent})
                         try:
                             proc.stdin.write(json.dumps(orders, separators=(",", ":")) + "\n")
                             proc.stdin.flush()
@@ -1994,8 +2267,8 @@ def run(args: argparse.Namespace) -> int:
                 record({"type": "turn_attack_coverage", "available": sorted(coverage["available"]),
                         "planned": sorted(used_attackers),
                         "unused": sorted(coverage["available"] - used_attackers)})
-                record({"type": "forwarded_orders", "orders": orders,
-                        "prompt_hash": prompt_hash, "intent": turn_intent})
+                durable({"type": "forwarded_orders", "orders": orders,
+                         "prompt_hash": prompt_hash, "intent": turn_intent})
                 try:
                     proc.stdin.write(json.dumps(orders, separators=(",", ":")) + "\n")
                     proc.stdin.flush()
@@ -2068,6 +2341,11 @@ def main() -> int:
                    help="preview final batches for recruiter-danger and recruitment telemetry")
     p.add_argument("--event-window-observations", type=int, default=1)
     p.add_argument("--log")
+    resume = p.add_mutually_exclusive_group()
+    resume.add_argument("--resume-log",
+                        help="continue the latest valid checkpoint in this audit log")
+    resume.add_argument("--resume-checkpoint",
+                        help="branch from this checkpoint into a new --log")
     a = p.parse_args()
     if sum(bool(value) for value in (a.orders_file, a.model_command, a.interactive_model)) != 1:
         p.error("choose exactly one of --orders-file, --model-command, or --interactive-model")
@@ -2077,6 +2355,12 @@ def main() -> int:
         p.error("--max-model-calls-per-turn must be positive")
     if a.max_tool_calls_per_turn < 0:
         p.error("--max-tool-calls-per-turn must be non-negative")
+    if a.resume_log and not a.log:
+        p.error("--resume-log requires --log pointing to the same audit log")
+    if a.resume_log and Path(a.resume_log).resolve() != Path(a.log).resolve():
+        p.error("--resume-log must match --log")
+    if a.resume_checkpoint and not a.log:
+        p.error("--resume-checkpoint requires a new --log")
     if a.turn_timeout < a.query_budget_seconds + 2 * a.model_timeout:
         print("warning: --turn-timeout is below query budget + 2*model timeout", file=sys.stderr)
     return run(a)
