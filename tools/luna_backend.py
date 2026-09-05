@@ -9,6 +9,11 @@ import sys
 import tempfile
 from pathlib import Path
 
+try:
+    from .luna_request_journal import RequestJournal
+except ImportError:  # pragma: no cover - direct script compatibility
+    from luna_request_journal import RequestJournal
+
 MODEL = "gpt-5.6-luna"
 EFFORT = "high"
 
@@ -121,26 +126,48 @@ def main() -> int:
             raise RuntimeError("invalid Luna session sidecar") from exc
     thread_id = state.get("thread_id") if isinstance(state.get("thread_id"), str) else None
     turn = int(state.get("turns", 0)) + 1
-    write_artifact("request", turn, prompt)
-    new_thread, answer, events = run_native(
-        prompt, thread_id, float(os.environ.get("NORRUST_LUNA_TIMEOUT", "840")))
-    if not new_thread:
-        raise RuntimeError("native Codex did not report a thread id")
-    write_state(path, {"thread_id": new_thread, "model": MODEL, "reasoning_effort": EFFORT,
-                       "transport": "codex-exec-resume", "turns": turn})
-    forbidden = {"command_execution", "web_search", "skill", "connector"}
-    observed = [event.get("item", {}).get("type") for event in events
-                if isinstance(event.get("item"), dict)]
-    if any(item in forbidden for item in observed):
-        raise RuntimeError("native tool restriction violated")
-    write_artifact("result", turn, {"thread_id": new_thread, "answer": answer,
-                                     "events": events, "model": MODEL,
-                                     "reasoning_effort": EFFORT})
-    sys.stdout.write(json.dumps({"text": answer, "cache": {
-        "native_session_id": new_thread, "transport": "codex-exec-resume",
-        "runtime_model": MODEL, "runtime_reasoning_effort": EFFORT,
-        "tool_restriction": "read-only game prompt; unrelated tools rejected",
-    }}, separators=(",", ":")))
+    artifact_root = Path(os.environ.get("NORRUST_LUNA_ARTIFACT_DIR", path.parent / "artifacts"))
+    session_id = os.environ.get("NORRUST_LUNA_MATCH_ID", str(path))
+    journal_root = artifact_root / "requests"
+    metadata = {"turn": turn, "prompt_sha256": __import__("hashlib").sha256(prompt.encode()).hexdigest(),
+                "engine_revision": os.environ.get("NORRUST_ENGINE_REVISION"),
+                "deadline_seconds": os.environ.get("NORRUST_LUNA_TIMEOUT", "840")}
+    with RequestJournal(journal_root, session_id) as journal:
+        request = journal.prepare(metadata)
+        request.mark_dispatched(native_thread_id=thread_id)
+        try:
+            write_artifact("request", turn, prompt)
+            new_thread, answer, events = run_native(
+                prompt, thread_id, float(os.environ.get("NORRUST_LUNA_TIMEOUT", "840")))
+            for event in events:
+                request.append_event(event)
+            if not new_thread:
+                raise RuntimeError("native Codex did not report a thread id")
+            if not any(event.get("type") == "turn.completed" for event in events):
+                request.mark_unknown(reason="native response lacked turn.completed")
+                raise RuntimeError("native Codex response lacked a completed turn")
+            forbidden = {"command_execution", "web_search", "skill", "connector"}
+            observed = [event.get("item", {}).get("type") for event in events
+                        if isinstance(event.get("item"), dict)]
+            if any(item in forbidden for item in observed):
+                request.fail(reason="native tool restriction violated")
+                raise RuntimeError("native tool restriction violated")
+            result = {"thread_id": new_thread, "answer": answer, "events": events,
+                      "model": MODEL, "reasoning_effort": EFFORT}
+            request.complete(result, reply_id=new_thread, native_thread_id=new_thread)
+            write_state(path, {"thread_id": new_thread, "model": MODEL, "reasoning_effort": EFFORT,
+                               "transport": "codex-exec-resume", "turns": turn})
+            write_artifact("result", turn, result)
+            sys.stdout.write(json.dumps({"text": answer, "cache": {
+                "native_session_id": new_thread, "transport": "codex-exec-resume",
+                "runtime_model": MODEL, "runtime_reasoning_effort": EFFORT,
+                "tool_restriction": "read-only game prompt; unrelated tools rejected",
+                "request_id": request.request_id,
+            }}, separators=(",", ":")))
+        except RuntimeError as exc:
+            if request.state == "dispatched":
+                request.mark_unknown(error=str(exc))
+            raise
     return 0
 
 
