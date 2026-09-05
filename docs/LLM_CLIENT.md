@@ -355,5 +355,23 @@ reasons are infrastructure-invalid; the client records
 nor required for a valid run. The terminal metadata records the configured cap and
 match conditions.
 
+The 2026-09-05 controlled checkpoint probes ran six fresh native conversations,
+two side turns per arm, with identical checkpoint/RNG/model settings. All six
+were gameplay-valid `max_turns` probes. The agenda-enabled arms emitted no
+agenda updates, so the comparison measured sweep and prompt changes rather than
+objective execution: A-on had 22 unique movers and 1 Luna attack versus A-off's
+17 and 4; B-on had 23 and 8 versus B-off's 19 and 10; C-on had 15 and 2 versus
+C-off's 14 and 9. This is diagnostic evidence of changed behavior, not evidence
+of improved play or a win-rate effect.
+
+The three final 50-side-turn attempts were preserved under
+`tmp/luna_agenda_eval/`. Seed 2031 completed 9 model side turns before a native
+timeout retry encountered an active thread writer (`infrastructure`); seed 2032
+completed 6 before a partial-limit repair exhausted (`model_invalid`); seed 2033
+completed 6 before the same active-writer timeout conflict (`infrastructure`).
+None produced a gameplay-valid terminal result or winner. The timeout retry was
+then removed and committed separately; these attempts are an earlier-build
+cohort and must not be resumed as a clean comparison.
+
 Balance tests are explicitly excluded from this client milestone and must not be
 run.
