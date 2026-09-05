@@ -200,24 +200,30 @@ def _import_turns(conn: sqlite3.Connection, game_id: str, records: list[dict[str
            sb, eb, sh, eh, codec, digest(payload)))
 
 def _import_requests(conn: sqlite3.Connection, game_id: str, records: list[dict[str, Any]]) -> None:
-    for index, record in enumerate(r for r in records if r.get("type") == "model"):
+    request_records = [r for r in records if r.get("type") == "model_request"]
+    if not request_records:
+        request_records = [r for r in records if r.get("type") == "model"]
+    for index, record in enumerate(request_records):
         raw = record.get("raw_output") if isinstance(record.get("raw_output"), str) else None
         prompt = record.get("prompt") if isinstance(record.get("prompt"), str) else None
         req_id = record.get("request_id") or f"{game_id}:request:{index + 1}"
         usage = record.get("usage") if isinstance(record.get("usage"), dict) else {}
         conn.execute("""INSERT INTO model_requests
-          (request_id,game_id,sequence,status,input_tokens,cached_input_tokens,output_tokens,
+          (request_id,game_id,sequence,status,error_message,elapsed_ms,input_tokens,cached_input_tokens,output_tokens,
            reasoning_tokens,prompt_bytes,response_bytes,prompt_blob,response_blob,prompt_hash,
            response_hash,payload_codec,raw_usage_json,record_hash)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(request_id) DO NOTHING""",
-          (req_id, game_id, index + 1, "completed", usage.get("input_tokens"),
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(request_id) DO NOTHING""",
+          (req_id, game_id, record.get("sequence", index + 1), record.get("status", "completed"),
+           record.get("error"), record.get("elapsed_ms"), usage.get("input_tokens"),
            usage.get("cached_input_tokens"), usage.get("output_tokens"),
            usage.get("reasoning_output_tokens"), len(prompt.encode()) if prompt else None,
-           len(raw.encode()) if raw else None, zlib.compress(prompt.encode()) if prompt else None,
+           record.get("prompt_bytes") or (len(prompt.encode()) if prompt else None),
+           record.get("response_bytes") or (len(raw.encode()) if raw else None),
+           zlib.compress(prompt.encode()) if prompt else None,
            zlib.compress(raw.encode()) if raw else None, record.get("prompt_hash"),
            hashlib.sha256(raw.encode()).hexdigest() if raw else None,
            "zlib" if prompt or raw else None, json.dumps(usage, sort_keys=True),
-           digest({"request_id": req_id, "raw_output": raw})))
+           digest({"request_id": req_id, "record": record})))
 
 def _import_actions(conn: sqlite3.Connection, game_id: str, records: list[dict[str, Any]]) -> None:
     sequence = 0
