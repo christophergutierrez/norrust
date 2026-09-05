@@ -1120,6 +1120,31 @@ fn validate_model_batch_contract(
     authorize_model_batch(orders, state, model_side)
 }
 
+fn validate_partial_preview_contract(
+    orders: &[Value],
+    state: &GameState,
+    model_side: u8,
+) -> Result<(), (&'static str, &'static str)> {
+    if orders.is_empty() {
+        return Err(("parse", "orders must be a non-empty array"));
+    }
+    if orders.len() > 256 {
+        return Err(("batch_too_large", "action batch exceeds 256 objects"));
+    }
+    if orders.iter().any(|order| !valid_action_shape(order)) {
+        return Err(("parse", "invalid action shape"));
+    }
+    if orders.iter().any(|order| {
+        matches!(
+            order.get("action").and_then(Value::as_str),
+            Some("EndTurn") | Some("DoneWithImportantMoves") | Some("FinishWithGreedy")
+        )
+    }) {
+        return Err(("parse", "partial preview cannot contain a turn boundary"));
+    }
+    authorize_model_batch(orders, state, model_side)
+}
+
 struct BatchExecution {
     state: GameState,
     next_id: u32,
@@ -2423,12 +2448,15 @@ fn interactive_protocol_game(c: &Config) {
                 }
                 "preview_batch" => {
                     let candidates = parsed.get("candidates").and_then(Value::as_array);
+                    let phase = parsed.get("phase").and_then(Value::as_str).unwrap_or("final");
                     if parsed.get("state_revision").and_then(Value::as_u64)
                         != Some(state.state_revision)
                     {
                         json!({"type":"status","ok":false,"what":what,"code":"stale_state","message":"requested state revision is no longer current","state_revision":state.state_revision})
                     } else if state.active_faction != c.llm_side {
                         json!({"type":"status","ok":false,"what":what,"code":"unauthorized_side","message":"model actions are not authorized while the opponent is active"})
+                    } else if !matches!(phase, "final" | "partial") {
+                        json!({"type":"status","ok":false,"what":what,"code":"parse","message":"phase must be final or partial"})
                     } else if candidates.is_none()
                         || candidates.is_some_and(|items| items.is_empty() || items.len() > 2)
                     {
@@ -2447,7 +2475,11 @@ fn interactive_protocol_game(c: &Config) {
                                             "each candidate must be an action array",
                                         ));
                                     };
-                                    validate_model_batch_contract(orders, &state, c.llm_side)
+                                    if phase == "partial" {
+                                        validate_partial_preview_contract(orders, &state, c.llm_side)
+                                    } else {
+                                        validate_model_batch_contract(orders, &state, c.llm_side)
+                                    }
                                         .err()
                                         .map(|(code, message)| (index, code, message))
                                 });
@@ -2476,7 +2508,7 @@ fn interactive_protocol_game(c: &Config) {
                                     "affordable_recruitment_remaining":execution.pre_end_recruitment_remaining}})
                         }).collect::<Vec<_>>();
                             json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,
-                            "body":{"sampling":false,"candidates":previews}})
+                            "body":{"sampling":false,"phase":phase,"coverage":{"forecast":"conditional","delegated_sweep":if phase == "final" {"modeled"} else {"unavailable"}},"candidates":previews}})
                         }
                     }
                 }

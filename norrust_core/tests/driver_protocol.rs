@@ -64,6 +64,25 @@ fn malformed_requests_get_one_typed_status_each() {
 }
 
 #[test]
+fn partial_preview_accepts_prefix_and_labels_unavailable_sweep() {
+    let lines = run_driver(
+        &[
+            "--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
+            "--gold", "300", "--max-turns", "1", "--incremental-turns",
+        ],
+        r#"{"action":"Query","what":"preview_batch","state_revision":0,"phase":"partial","candidates":[[{"action":"RecruitBatch","def_id":"Skeleton","count":1}]]}
+{"action":"Query","what":"preview_batch","state_revision":0,"phase":"partial","candidates":[[{"action":"EndTurn"}]]}
+"#,
+    );
+    let statuses: Vec<&Value> = lines.iter().filter(|line| line["type"] == "status").collect();
+    assert_eq!(statuses[0]["ok"], true);
+    assert_eq!(statuses[0]["body"]["phase"], "partial");
+    assert_eq!(statuses[0]["body"]["coverage"]["delegated_sweep"], "unavailable");
+    assert_eq!(statuses[1]["ok"], false);
+    assert_eq!(statuses[1]["code"], "parse");
+}
+
+#[test]
 fn invalid_setup_is_reported_as_game_end() {
     let lines = run_driver(
         &[

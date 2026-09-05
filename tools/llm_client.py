@@ -593,9 +593,13 @@ def validate_preview_request(text: str, strict: bool = False) -> list[list[dict[
     return result
 
 
-def query_preview_batch(exchange, candidates: list[list[dict[str, Any]]], state_revision: int) -> dict[str, Any]:
+def query_preview_batch(exchange, candidates: list[list[dict[str, Any]]], state_revision: int,
+                        phase: str = "final") -> dict[str, Any]:
+    if phase not in {"final", "partial"}:
+        raise ValueError("preview phase must be final or partial")
     response = exchange({"action": "Query", "what": "preview_batch",
-                         "state_revision": state_revision, "candidates": candidates})
+                         "state_revision": state_revision, "phase": phase,
+                         "candidates": candidates})
     if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
         message = response.get("message", "preview query failed") if isinstance(response, dict) else "invalid preview response"
         raise RuntimeError(f"query_error: preview_batch: {message}")
@@ -753,7 +757,11 @@ def compact_hex_inspection(body: dict[str, Any]) -> str:
 
 def compact_batch_preview(preview: dict[str, Any]) -> str:
     """Render candidate consequences without repeating detailed threat origins."""
-    lines = ["PREVIEW sampling=%s" % preview.get("sampling", "?")]
+    lines = ["PREVIEW phase=%s coverage=%s sweep=%s sampling=%s" % (
+        preview.get("phase", "unknown"),
+        (preview.get("coverage") or {}).get("forecast", "unknown"),
+        (preview.get("coverage") or {}).get("delegated_sweep", "unknown"),
+        preview.get("sampling", "?"))]
     for index, candidate in enumerate(preview.get("candidates", [])):
         if not isinstance(candidate, dict):
             continue
@@ -1336,12 +1344,13 @@ def select_event_window(event_intervals: list[list[dict[str, Any]]],
 
 def draft_needs_preview(state: dict[str, Any], orders: list[dict[str, Any]],
                         danger_before: bool) -> bool:
-    if state.get("incremental_turns") is True:
-        # The driver preview contract intentionally models complete candidates
-        # ending in EndTurn; a partial batch is committed and reassessed instead.
-        return False
     recruiters = state.get("tactical_surface", {}).get("threats", {}).get("recruiters", [])
     if not isinstance(recruiters, list) or not recruiters:
+        return False
+    if state.get("incremental_turns") is True and finish_kind_for_orders(orders) is None:
+        # Partial batches are measured after acceptance.  The bounded review is
+        # reserved for the handoff, where the candidate includes its finish
+        # policy and the engine can model the complete boundary.
         return False
     return danger_before or any(order.get("action") != "EndTurn" for order in orders)
 
@@ -2710,7 +2719,8 @@ def run(args: argparse.Namespace) -> int:
                 if getattr(args, "decision_metrics", False):
                     try:
                         final_preview = query_preview_batch(
-                            exchange, [orders], int(state.get("state_revision", 0)))
+                            exchange, [orders], int(state.get("state_revision", 0)),
+                            phase="final" if finish_kind_for_orders(orders) is not None else "partial")
                         candidate_metrics = final_preview.get("candidates", [{}])[0]
                         final_threats = candidate_metrics.get("recruiter_threats") or {}
                         lethal_after = any(
@@ -2722,7 +2732,7 @@ def run(args: argparse.Namespace) -> int:
                             "affordable_recruitment_remaining") is True
                         metadata["turns_with_lethal_danger_after"] += int(lethal_after)
                         metadata["turns_with_affordable_recruitment_left"] += int(recruitment_left)
-                        record({"type": "final_batch_preview", "orders": orders,
+                        record({"type": "final_batch_preview", "phase": final_preview.get("phase", "unknown"), "orders": orders,
                                 "lethal_danger_before": danger_before,
                                 "lethal_danger_after": lethal_after,
                                 "affordable_recruitment_remaining": recruitment_left,
