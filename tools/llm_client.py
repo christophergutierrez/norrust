@@ -449,6 +449,16 @@ def query_validate_batch(exchange, orders: list[dict[str, Any]], state_revision:
     """Validate a complete batch against the unchanged, revision-pinned state."""
     response = exchange({"action": "Query", "what": "validate_batch",
                          "state_revision": state_revision, "orders": orders})
+    if isinstance(response, dict) and response.get("code") in {
+        "partial_limit", "parse", "batch_too_large", "stale_state",
+        "unauthorized_side", "unauthorized_unit", "action_limit",
+    }:
+        # Boundary/contract failures are model-action feedback, not query
+        # infrastructure failures. Let the bounded repair path handle them.
+        return {"valid": False, "failed_index": response.get("failed_index"),
+                "results": response.get("results", []),
+                "error_code": response.get("code"),
+                "error_message": response.get("message", "validation failed")}
     if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
         message = response.get("message", "validation query failed") if isinstance(response, dict) else "invalid validation response"
         raise RuntimeError(f"query_error: validate_batch: {message}")
@@ -1333,7 +1343,9 @@ def compact_observation(state: dict[str, Any]) -> str:
              f"time_of_day={state.get('time_of_day', '?')} next_time_of_day={next_tod} "
              f"visibility={visibility} map={state.get('cols', '?')}x{state.get('rows', '?')} "
              f"boundary={state.get('turn_boundary', 'turn')} "
-             f"incremental={state.get('incremental_turns', False)}",
+             f"incremental={state.get('incremental_turns', False)} "
+             f"final_only={state.get('final_only', False)} "
+             f"partials_left={state.get('remaining_partial_batches', '?')}",
              f"gold={state.get('gold', '?')} terrain_types={','.join(sorted(terrain))}"]
     lines.extend(compact_spatial_map(state).splitlines())
     lines.append("units:")
