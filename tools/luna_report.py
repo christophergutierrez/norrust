@@ -77,6 +77,8 @@ def classify(records: list[dict[str, Any]]) -> dict[str, Any]:
     delegated_kills = 0
     delegated_villages = 0
     generated_end_turns = 0
+    generated_model_end_turns = 0
+    generated_opponent_end_turns = 0
     for item in events:
         if item.get("type") == "state":
             for unit in item.get("units", []):
@@ -92,6 +94,10 @@ def classify(records: list[dict[str, Any]]) -> dict[str, Any]:
                 delegated_event_counts[kind] += 1
                 if kind == "end_turn":
                     generated_end_turns += 1
+                    if source == "delegated_greedy":
+                        generated_model_end_turns += 1
+                    elif source == "greedy":
+                        generated_opponent_end_turns += 1
                 if kind in {"village", "capture_village", "village_capture"}:
                     delegated_villages += 1
                 for participant_key in ("attacker", "defender"):
@@ -119,17 +125,28 @@ def classify(records: list[dict[str, Any]]) -> dict[str, Any]:
                 unit = event.get("unit") or event.get("dead") or {}
                 faction = unit.get("faction") if isinstance(unit, dict) else event.get("faction", "unknown")
                 deaths[str(faction)] += 1
+    resolved_side_turns = None
+    terminal_reason = terminal.get("reason")
     if driver_side_turns:
-        completed_side_turns = driver_side_turns[-1]
-    elif telemetry_available and generated_end_turns:
-        completed_side_turns = generated_end_turns
+        resolved_side_turns = driver_side_turns[-1]
+    elif generated_end_turns:
+        # A winner can terminate during an action before emitting EndTurn.
+        resolved_side_turns = generated_end_turns + (1 if terminal_reason == "winner" else 0)
+    if resolved_side_turns is not None:
+        completed_side_turns = resolved_side_turns
     else:
         completed_side_turns = len(side_turns)
+    model_turns = len(boundaries)
+    engine_rounds = next((item.get("turns") for item in reversed(events)
+                          if item.get("type") == "game_end"
+                          and isinstance(item.get("turns"), int)), None)
 
     mismatch_reasons = []
     if driver_side_turns and generated_end_turns and driver_side_turns[-1] != generated_end_turns:
         mismatch_reasons.append("terminal_side_turns_vs_generated_end_turns")
-    if telemetry_available and boundaries and generated_end_turns < len(boundaries):
+    if (telemetry_available and boundaries
+            and generated_model_end_turns < len(boundaries)
+            and terminal_reason != "winner"):
         mismatch_reasons.append("accepted_boundaries_vs_generated_end_turns")
     failure = next((item for item in reversed(records) if item.get("type") == "model_error"), {})
     terminal_class = terminal.get("terminal_class") or failure.get("terminal_class")
@@ -143,6 +160,9 @@ def classify(records: list[dict[str, Any]]) -> dict[str, Any]:
         "winner": terminal.get("winner"),
         "reason": terminal.get("reason"),
         "completed_side_turns": completed_side_turns,
+        "resolved_side_turns": resolved_side_turns,
+        "model_turns": model_turns,
+        "engine_rounds": engine_rounds,
         "accepted_event_batches": len(accepted),
         "attacks_by_source": dict(attacks),
         "deaths_by_faction": dict(deaths),
@@ -186,6 +206,8 @@ def classify(records: list[dict[str, Any]]) -> dict[str, Any]:
             "villages": delegated_villages,
             "end_turns": generated_end_turns,
         },
+        "model_end_turns": generated_model_end_turns,
+        "opponent_end_turns": generated_opponent_end_turns,
         "protected_units": len(protected_units),
         "protected_recruiters": len(protected_recruiters) if protected_recruiters else None,
         "protected_critical_units": len(protected_critical) if protected_critical else None,

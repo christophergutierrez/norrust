@@ -251,6 +251,17 @@ def backup_history(source: str, destination: str) -> None:
     with dst: src.backup(dst)
     dst.close(); src.close()
 
+def verify_history(path: str | os.PathLike[str]) -> dict[str, Any]:
+    conn = sqlite3.connect(path)
+    integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+    foreign_keys = conn.execute("PRAGMA foreign_key_check").fetchall()
+    counts = {}
+    for table in ("games", "game_players", "side_turns", "model_requests",
+                  "action_batches", "actions", "evaluation_runs", "decision_evaluations"):
+        counts[table] = conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+    conn.close()
+    return {"integrity": integrity, "foreign_key_errors": len(foreign_keys), "counts": counts}
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)

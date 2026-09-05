@@ -3,7 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from .game_history import decode_payload, encode_payload, import_game, list_side_turns, open_history, summarize_game
+from .game_history import (backup_history, decode_payload, encode_payload, import_game,
+                           list_side_turns, open_history, summarize_game, verify_history)
 
 class GameHistoryTests(unittest.TestCase):
     def test_payload_round_trip(self):
@@ -30,6 +31,10 @@ class GameHistoryTests(unittest.TestCase):
             self.assertEqual(list_side_turns(conn, game_id)[0]["finish_kind"], "explicit_done")
             self.assertEqual(conn.execute("SELECT count(*) FROM games").fetchone()[0], 1)
             self.assertEqual(conn.execute("SELECT count(*) FROM side_turns").fetchone()[0], 1)
+            backup = root / "backup.sqlite"
+            conn.close()
+            backup_history(str(root / "history.sqlite"), str(backup))
+            self.assertEqual(verify_history(backup)["integrity"], "ok")
 
 if __name__ == "__main__":
     unittest.main()
