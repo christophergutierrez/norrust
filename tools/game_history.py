@@ -203,7 +203,10 @@ def _import_turns(conn: sqlite3.Connection, game_id: str, records: list[dict[str
            "terminal" if terminal and i == len(boundaries) else "ended",
            boundary.get("authored_finish_kind"), int(bool(boundary.get("executed_finish_kind"))),
            before.get("state_revision") if before else None, after.get("state_revision") if after else None,
-           sb, eb, sh, eh, codec, json.dumps({"handoff_review": payload.get("handoff_review")}, sort_keys=True), digest(payload)))
+           sb, eb, sh, eh, codec,
+           json.dumps({"handoff_review": payload["handoff_review"]}, sort_keys=True)
+           if "handoff_review" in payload else "{}",
+           digest(payload)))
 
 def _import_requests(conn: sqlite3.Connection, game_id: str, records: list[dict[str, Any]]) -> None:
     request_records = [r for r in records if r.get("type") == "model_request"]
