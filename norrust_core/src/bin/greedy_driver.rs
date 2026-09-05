@@ -1863,7 +1863,9 @@ fn interactive_protocol_game(c: &Config) {
             || checkpoint.faction0 != c.faction0
             || checkpoint.faction1 != c.faction1
             || checkpoint.llm_side != c.llm_side
-            || checkpoint.max_turns != c.max_turns
+            // A resumed branch may choose a new safety cap for a controlled
+            // probe, provided it does not terminate before the checkpoint.
+            || checkpoint.side_turns > c.max_turns
             || checkpoint.seed != c.seed
             || checkpoint.starting_gold != c.gold
             || checkpoint.disable_recruit_batch != c.disable_recruit_batch

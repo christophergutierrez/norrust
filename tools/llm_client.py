@@ -123,6 +123,15 @@ def validate_checkpoint_identity(envelope: dict[str, Any], args: argparse.Namesp
                 "max_turns": getattr(args, "max_turns", None),
                 "incremental_turns": getattr(args, "incremental_turns", None)}
     for key, value in expected.items():
+        if key == "max_turns":
+            # A branch may deliberately use a new safety cap.  It must still
+            # allow the checkpoint's already-completed side turns, but an
+            # identical parent cap is not required for controlled probes.
+            checkpoint_turns = envelope.get("side_turns")
+            if isinstance(checkpoint_turns, int) and isinstance(value, int):
+                if value < checkpoint_turns:
+                    raise ValueError("resume configuration mismatch: max_turns below checkpoint")
+                continue
         if key in identity and identity[key] != value:
             raise ValueError(f"resume configuration mismatch: {key}")
 
@@ -1713,6 +1722,7 @@ def run(args: argparse.Namespace) -> int:
                 "prompt_cache_reported_tokens": None, "usage_measured": True,
                 "tool_calls_by_name": {}, "max_observed_prompt_bytes": 0,
                 "agenda": None,
+                "agenda_observations": 0,
                 "turns_with_lethal_danger_before": 0, "turns_with_lethal_danger_after": 0,
                 "turns_with_affordable_recruitment_left": 0,
                 "attack_opportunity_unit_turns": 0, "planned_attack_unit_turns": 0,
@@ -2092,6 +2102,10 @@ def run(args: argparse.Namespace) -> int:
                         ",".join("U%s" % unit for unit in sorted(turn_progress_attacked)) or "-",
                         ",".join("U%s" % unit for unit in sorted(unassigned)) or "-",
                         ",".join("U%s" % unit for unit in sorted(held)) or "-")
+                    metadata["agenda_observations"] += 1
+                    record({"type": "agenda_observation", "agenda": agenda_memory,
+                            "sweep": sweep, "side_turn": state.get("side_turns", state.get("turn")),
+                            "state_revision": state.get("state_revision")})
                 record({"type": "turn_progress", "turn": state.get("turn"),
                         **state["turn_progress"]})
                 metadata["attack_opportunity_unit_turns"] += len(coverage["available"])

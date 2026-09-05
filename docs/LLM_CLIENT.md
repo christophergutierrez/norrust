@@ -32,6 +32,9 @@ sidecar and resumes that exact thread; it never uses `--last` or ephemeral
 sessions. Engine state, revision, and fresh options remain authoritative after
 every accepted batch.
 
+Checkpoint branches may choose a new `--max-turns` cap for a controlled probe as
+long as the cap is not below the checkpoint's completed side-turn count.
+
 Responses may include an optional full `agenda` replacement with up to eight
 tasks (`id`, `goal`, `units`, `status`) and deliberate `holds`. Agenda data is
 bookkeeping and never creates engine actions. Malformed agenda data is logged and
