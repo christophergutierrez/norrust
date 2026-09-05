@@ -61,7 +61,7 @@ def run_native(prompt: str, thread_id: str | None, timeout: float) -> tuple[str,
     root = Path(__file__).resolve().parents[1]
     if thread_id:
         command = ["codex", "exec", "resume", thread_id, "--json", "--ignore-user-config",
-                   "--ignore-rules", "--sandbox", "read-only", "--color", "never",
+                   "--ignore-rules",
                    "-m", MODEL, "-c", f"model_reasoning_effort={EFFORT}",
                    native_instruction(prompt)]
     else:
@@ -102,6 +102,18 @@ def run_native(prompt: str, thread_id: str | None, timeout: float) -> tuple[str,
             events.append(item)
     new_thread, answer = extract(events)
     return new_thread or thread_id or "", answer, events
+
+
+def completion_usage(events: list[dict[str, object]]) -> dict[str, int] | None:
+    """Return the provider usage attached to the completed native turn."""
+    for event in reversed(events):
+        if event.get("type") != "turn.completed":
+            continue
+        usage = event.get("usage")
+        if isinstance(usage, dict):
+            return {key: value for key, value in usage.items()
+                    if isinstance(key, str) and isinstance(value, int) and not isinstance(value, bool)}
+    return None
 
 
 def write_state(path: Path, state: dict[str, object]) -> None:
@@ -173,12 +185,13 @@ def main() -> int:
                 request.fail(reason="native tool restriction violated")
                 raise RuntimeError("native tool restriction violated")
             result = {"thread_id": new_thread, "answer": answer, "events": events,
-                      "model": MODEL, "reasoning_effort": EFFORT}
+                      "model": MODEL, "reasoning_effort": EFFORT,
+                      "usage": completion_usage(events)}
             request.complete(result, reply_id=new_thread, native_thread_id=new_thread)
             write_state(path, {"thread_id": new_thread, "model": MODEL, "reasoning_effort": EFFORT,
                                "transport": "codex-exec-resume", "turns": turn})
             write_artifact("result", turn, result)
-            sys.stdout.write(json.dumps({"text": answer, "cache": {
+            sys.stdout.write(json.dumps({"text": answer, "usage": completion_usage(events), "cache": {
                 "native_session_id": new_thread, "transport": "codex-exec-resume",
                 "runtime_model": MODEL, "runtime_reasoning_effort": EFFORT,
                 "tool_restriction": "read-only game prompt; unrelated tools rejected",

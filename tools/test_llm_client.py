@@ -1331,6 +1331,15 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual(backend.transport_retries, 0)
         self.assertEqual(run.call_count, 1)
 
+    def test_command_backend_does_not_retry_native_launch_failure(self):
+        failure = subprocess.CompletedProcess("model", 2, "", "native Codex failed: bad resume flags")
+        with mock.patch("subprocess.run", return_value=failure) as run:
+            backend = llm_client.CommandBackend("model", 1)
+            with self.assertRaisesRegex(RuntimeError, "model_backend_failure"):
+                backend.complete("prompt")
+        self.assertEqual(backend.transport_retries, 0)
+        self.assertEqual(run.call_count, 1)
+
         malformed = subprocess.CompletedProcess("model", 0, "not json", "")
         with mock.patch("subprocess.run", return_value=malformed) as run:
             backend = llm_client.CommandBackend("model", 1)

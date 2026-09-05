@@ -266,9 +266,11 @@ class CommandBackend(ModelBackend):
                 # persistent backend, so stop here rather than guessing.
                 raise RuntimeError("model_timeout") from exc
             if proc.returncode:
+                if proc.stderr and "native Codex failed" in proc.stderr:
+                    raise RuntimeError(f"model_backend_failure: {proc.stderr[-400:]}")
                 uncertain = proc.stderr and any(marker in proc.stderr for marker in (
                     "native_model_timeout", "request_conflict", "request_unknown",
-                    "request_active", "request already active", "native Codex failed"))
+                    "request_active", "request already active"))
                 if uncertain:
                     raise RuntimeError(f"model_request_uncertain: {proc.stderr[-400:]}")
                 if attempt == 0:
@@ -2476,7 +2478,7 @@ def run(args: argparse.Namespace) -> int:
                     if (isinstance(first, RuntimeError)
                             and getattr(args, "timeout_finish", False)
                             and any(marker in str(first) for marker in
-                                    ("model_timeout", "model_request_uncertain", "native_model_timeout"))):
+                                    ("model_timeout", "native_model_timeout"))):
                         orders = timeout_finish_orders(state, args.llm_side, agenda_memory)
                         timeout_fallback = True
                         metadata["timeout_finishes"] += 1
