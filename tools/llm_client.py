@@ -1801,7 +1801,9 @@ def run(args: argparse.Namespace) -> int:
                 if failure is not None:
                     if (line.get("ok") is True and pending_action
                             and not action_repair_attempted
-                            and model_calls_this_turn < metadata["max_model_calls_per_turn"]):
+                            # Leave one additional decision slot for the common
+                            # case where a repair asks for one more engine fact.
+                            and model_calls_this_turn < metadata["max_model_calls_per_turn"] - 1):
                         repair_prompt = prompt + "\nENGINE_ACTION_ERROR: " + json.dumps(
                             failure, sort_keys=True, separators=(",", ":")
                         ) + "\nROLLBACK_NOTICE: the entire preceding action batch was rejected "
@@ -1821,7 +1823,40 @@ def run(args: argparse.Namespace) -> int:
                                     "engine_error": failure})
                             if repaired.usage is None:
                                 metadata["usage_measured"] = False
+                            try:
                                 orders = validate_model_orders(repaired.text)
+                            except ValueError:
+                                # A repair is asked for actions, but models may
+                                # still request one inspection after seeing the
+                                # engine error. Give that fact lookup one bounded
+                                # follow-up instead of classifying the run as
+                                # invalid before the model can correct itself.
+                                try:
+                                    repair_request = json.loads(repaired.text)
+                                except json.JSONDecodeError:
+                                    raise
+                                if (not isinstance(repair_request, dict)
+                                        or "tool" not in repair_request
+                                        or model_calls_this_turn >= metadata["max_model_calls_per_turn"]):
+                                    raise
+                                model_calls_this_turn += 1
+                                metadata["model_calls"] += 1
+                                forced_prompt = (repair_prompt +
+                                                  "\nYour repair response requested a tool. "
+                                                  "That lookup is unavailable in this repair step. "
+                                                  "Return a corrected JSON action array now, using "
+                                                  "only the current authoritative observation and "
+                                                  "the engine error above.")
+                                followup = complete_model(forced_prompt)
+                                enforce_usage(followup, args)
+                                record({"type": "action_repair_followup",
+                                        "call": metadata["model_calls"],
+                                        "prompt_hash": hashlib.sha256(forced_prompt.encode()).hexdigest(),
+                                        "raw_output": followup.text, "usage": followup.usage,
+                                        "rejected_tool": repaired.text})
+                                if followup.usage is None:
+                                    metadata["usage_measured"] = False
+                                orders = validate_model_orders(followup.text)
                             repaired_intent = response_intent(repaired.text)
                             if repaired_intent is not None:
                                 turn_intent = repaired_intent

@@ -1083,6 +1083,26 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_GAMEPLAY])
         self.assertEqual(terminal["reason"], "max_turns")
 
+    def test_action_repair_tool_request_gets_one_bounded_action_followup(self):
+        invalid = json.dumps([{"action": "Attack", "attacker_id": 1, "defender_id": 9},
+                              {"action": "EndTurn"}])
+        tool = json.dumps({"tool": "inspect_unit", "unit_id": 1})
+        corrected = json.dumps([{"action": "EndTurn"}])
+        failure = {"type": "status", "ok": True,
+                   "results": [{"ok": False, "code": "NotAdjacent",
+                                "message": "units are not in attack range"}]}
+        success = {"type": "status", "ok": True,
+                   "results": [{"ok": True}]}
+        code, terminal = self.run_with_orders(
+            [invalid, tool, corrected],
+            [{"type": "state", "active_faction": 0},
+             {"type": "status", "ok": True, "what": "tactical_surface", "body": {"units": []}},
+             failure, success,
+             {"type": "game_end", "reason": "max_turns", "winner": None}],
+        )
+        self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_GAMEPLAY])
+        self.assertEqual(terminal["reason"], "max_turns")
+
     def test_preview_round_trip_forwards_model_selected_candidate(self):
         first = [{"action": "EndTurn"}]
         second = [{"action": "Move", "unit_id": 1, "col": 2, "row": 3},
