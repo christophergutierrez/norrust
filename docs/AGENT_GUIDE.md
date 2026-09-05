@@ -42,6 +42,11 @@ that a move was strategically good. Training exports require an explicit review 
 and the exporter does not invent hidden reasoning. Keep generated greedy actions attributed
 to the algorithm and model-authored handoffs attributed to the model.
 
+For Luna experiments, inspect resume health before judging play. A successful
+engine result can still be invalid for model comparison if native requests failed
+and greedy fallback completed the game. Check `terminal_class`, request statuses,
+native session IDs, token coverage, and fallback counts in the archive and catalog.
+
 ## Fog of War
 
 The game supports fog of war based on unit vision ranges. When FOW is enabled:
