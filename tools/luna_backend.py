@@ -94,6 +94,20 @@ def write_state(path: Path, state: dict[str, object]) -> None:
             pass
 
 
+def write_artifact(kind: str, turn: int, value: str | dict[str, object]) -> None:
+    directory = os.environ.get("NORRUST_LUNA_ARTIFACT_DIR")
+    if not directory:
+        return
+    path = Path(directory)
+    path.mkdir(parents=True, exist_ok=True)
+    suffix = "txt" if isinstance(value, str) else "json"
+    target = path / (f"{turn:05d}-{kind}.{suffix}")
+    if isinstance(value, str):
+        target.write_text(value)
+    else:
+        target.write_text(json.dumps(value, sort_keys=True, indent=2))
+
+
 def main() -> int:
     prompt = sys.stdin.read()
     path = session_path()
@@ -106,17 +120,22 @@ def main() -> int:
         except (OSError, json.JSONDecodeError) as exc:
             raise RuntimeError("invalid Luna session sidecar") from exc
     thread_id = state.get("thread_id") if isinstance(state.get("thread_id"), str) else None
+    turn = int(state.get("turns", 0)) + 1
+    write_artifact("request", turn, prompt)
     new_thread, answer, events = run_native(
         prompt, thread_id, float(os.environ.get("NORRUST_LUNA_TIMEOUT", "840")))
     if not new_thread:
         raise RuntimeError("native Codex did not report a thread id")
     write_state(path, {"thread_id": new_thread, "model": MODEL, "reasoning_effort": EFFORT,
-                       "transport": "codex-exec-resume", "turns": int(state.get("turns", 0)) + 1})
+                       "transport": "codex-exec-resume", "turns": turn})
     forbidden = {"command_execution", "web_search", "skill", "connector"}
     observed = [event.get("item", {}).get("type") for event in events
                 if isinstance(event.get("item"), dict)]
     if any(item in forbidden for item in observed):
         raise RuntimeError("native tool restriction violated")
+    write_artifact("result", turn, {"thread_id": new_thread, "answer": answer,
+                                     "events": events, "model": MODEL,
+                                     "reasoning_effort": EFFORT})
     sys.stdout.write(json.dumps({"text": answer, "cache": {
         "native_session_id": new_thread, "transport": "codex-exec-resume",
         "runtime_model": MODEL, "runtime_reasoning_effort": EFFORT,
