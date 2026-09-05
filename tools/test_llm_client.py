@@ -424,6 +424,29 @@ class ClientValidationTests(unittest.TestCase):
         }]})
         self.assertIn("C0 OUT T7 hp=20 attackers=U3,U4 p_kill=8100 e=176", rendered)
 
+    def test_compact_batch_preview_reports_typed_failure_and_assumption(self):
+        rendered = compact_batch_preview({"sampling": False, "candidates": [{
+            "valid": False,
+            "results": [{"ok": True},
+                        {"ok": False, "code": "NotAdjacent",
+                         "message": "attacker is not adjacent to target"}],
+            "preview_error": {"code": "conditional", "message": "later steps depend on combat"},
+            "assumption": "all forecast combatants survive in place",
+            "summary": {},
+        }]})
+        self.assertIn("C0 FAIL index=1 code=NotAdjacent", rendered)
+        self.assertIn("C0 PREVIEW_ERROR code=conditional", rendered)
+        self.assertIn("C0 ASSUMPTION all forecast combatants survive in place", rendered)
+
+    def test_compact_batch_preview_reports_conditional_action_indices(self):
+        rendered = compact_batch_preview({"sampling": False, "candidates": [{
+            "valid": True,
+            "results": [{"ok": True},
+                        {"ok": True, "conditional_on_survival": True}],
+            "summary": {},
+        }]})
+        self.assertIn("C0 CONDITIONAL action_indices=[1]", rendered)
+
     def test_compact_tactical_surface_renders_force_and_recruitment_facts(self):
         rendered = compact_tactical_surface({
             "units": [], "unit_types": [], "threats": {"recruiters": []},
@@ -774,7 +797,7 @@ class ClientValidationTests(unittest.TestCase):
             "Expect attrition",
             "Keep recruiting after the opening dump",
             "fight only from distance 2",
-            "Time of day is a fight gate",
+            "fight gate",
             "Use `Engage`",
             "do not assume a screen will survive its turn",
             "will turtle for a hundred turns",
@@ -786,7 +809,7 @@ class ClientValidationTests(unittest.TestCase):
             "`Move` immediately followed by the matching `Attack`",
             "reserve a unique destination",
             "Avoid speculative, unreachable",
-            "`EndTurn` only after every unit",
+            "Emit `EndTurn` after every useful unit",
         ):
             with self.subTest(guidance=guidance):
                 self.assertIn(guidance, canonical)

@@ -639,6 +639,27 @@ def compact_batch_preview(preview: dict[str, Any]) -> str:
             index, candidate.get("valid", "?"), summary.get("gold_before", "?"),
             summary.get("gold_after", "?"), summary.get("units_before", "?"),
             summary.get("units_after", "?")))
+        results = candidate.get("results", [])
+        if isinstance(results, list):
+            failure = next(((action_index, result) for action_index, result in enumerate(results)
+                            if isinstance(result, dict) and result.get("ok") is False), None)
+            if failure is not None:
+                action_index, result = failure
+                message = str(result.get("message", "action failed")).replace("\n", " ")[:240]
+                lines.append(" C%s FAIL index=%s code=%s message=%s" % (
+                    index, action_index, result.get("code", "?"), message))
+            conditional = [action_index for action_index, result in enumerate(results)
+                           if isinstance(result, dict) and result.get("conditional_on_survival")]
+            if conditional:
+                lines.append(" C%s CONDITIONAL action_indices=%s" % (index, conditional))
+        preview_error = candidate.get("preview_error")
+        if isinstance(preview_error, dict):
+            message = str(preview_error.get("message", "preview failed")).replace("\n", " ")[:240]
+            lines.append(" C%s PREVIEW_ERROR code=%s message=%s" % (
+                index, preview_error.get("code", "?"), message))
+        assumption = candidate.get("assumption")
+        if assumption not in (None, "none"):
+            lines.append(" C%s ASSUMPTION %s" % (index, str(assumption).replace("\n", " ")))
         for attack in candidate.get("forecasts", []):
             forecast = attack.get("forecast", {}) if isinstance(attack, dict) else {}
             lines.append(" C%s A%s>T%s p%s e%s" % (
@@ -2109,6 +2130,10 @@ def run(args: argparse.Namespace) -> int:
                                     orders = revised_orders
                                     if reviewed_intent is not None:
                                         turn_intent = reviewed_intent
+                                    elif revised_orders != orders:
+                                        # The earlier intent described the abandoned
+                                        # draft. Do not carry it into the next turn.
+                                        turn_intent = None
                                 else:
                                     record({"type": "draft_review", "skipped": True,
                                             "reason": "model_call_budget_exhausted", "body": draft_preview})
