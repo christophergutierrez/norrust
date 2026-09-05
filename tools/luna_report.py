@@ -27,6 +27,7 @@ def classify(records: list[dict[str, Any]]) -> dict[str, Any]:
     accepted = [item for item in events if item.get("type") == "events"]
     boundaries = [item for item in records
                   if item.get("type") == "turn_boundary" and item.get("accepted") is True]
+    handoff_reviews = [item for item in records if item.get("type") == "handoff_review"]
     telemetry_declared = metadata.get("finish_telemetry_available") is True
     telemetry_available = telemetry_declared or any(
         isinstance(item.get("authored_finish_kind"), str)
@@ -169,6 +170,8 @@ def classify(records: list[dict[str, Any]]) -> dict[str, Any]:
         "unique_movers": len(moved),
         "model_calls": terminal.get("model_calls", failure.get("model_calls")),
         "tool_calls": terminal.get("queries"),
+        "handoff_reviews": len(handoff_reviews),
+        "handoff_outcomes": dict(Counter(item.get("outcome", "unknown") for item in handoff_reviews)),
     }
     if not telemetry_available:
         report.update({

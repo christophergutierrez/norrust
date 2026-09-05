@@ -21,6 +21,9 @@ class GameHistoryTests(unittest.TestCase):
                 {"type": "metadata", "seed": 9, "scenario": "test", "faction0": "a", "faction1": "b", "gold": 10, "first_player": 0, "source_commit": "abc"},
                 {"type": "driver", "line": {"type": "state", "state_revision": 0, "turn": 1, "active_faction": 0, "units": []}},
                 {"type": "turn_boundary", "accepted": True, "authored_finish_kind": "explicit_done", "state_revision": 1},
+                {"type": "handoff_review", "version": 1, "state_revision": 0,
+                 "outcome": "confirmed", "trigger_reasons": ["affordable_recruitment"],
+                 "audit": {"gold": 20}},
                 {"type": "driver", "line": {"type": "state", "state_revision": 1, "turn": 1, "active_faction": 1, "units": []}},
                 {"type": "terminal", "reason": "winner", "winner": 0},
             ]
@@ -30,6 +33,8 @@ class GameHistoryTests(unittest.TestCase):
             import_game(conn, root, "cohort", game_id)
             self.assertEqual(summarize_game(conn, game_id)["resolved_turns"], 1)
             self.assertEqual(list_side_turns(conn, game_id)[0]["finish_kind"], "explicit_done")
+            metrics = conn.execute("SELECT metrics_json FROM side_turns WHERE game_id=?", (game_id,)).fetchone()[0]
+            self.assertIn("affordable_recruitment", metrics)
             self.assertEqual(conn.execute("SELECT count(*) FROM games").fetchone()[0], 1)
             self.assertEqual(conn.execute("SELECT count(*) FROM side_turns").fetchone()[0], 1)
             backup = root / "backup.sqlite"

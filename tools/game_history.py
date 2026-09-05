@@ -180,6 +180,7 @@ def import_game(conn: sqlite3.Connection, archive: str | os.PathLike[str],
 def _import_turns(conn: sqlite3.Connection, game_id: str, records: list[dict[str, Any]],
                   lines: list[dict[str, Any]], states: list[dict[str, Any]], terminal: dict[str, Any]) -> None:
     boundaries = [r for r in records if r.get("type") == "turn_boundary" and r.get("accepted") is True]
+    reviews = [r for r in records if r.get("type") == "handoff_review"]
     for i, boundary in enumerate(boundaries, 1):
         before = states[i - 1] if i - 1 < len(states) else None
         after = states[i] if i < len(states) else before
@@ -187,19 +188,22 @@ def _import_turns(conn: sqlite3.Connection, game_id: str, records: list[dict[str
         payload = {"sequence": i, "finish": boundary.get("authored_finish_kind"),
                    "start_revision": before.get("state_revision") if before else None,
                    "end_revision": after.get("state_revision") if after else None}
+        if i <= len(reviews):
+            payload["handoff_review"] = reviews[i - 1]
         conn.execute("""INSERT INTO side_turns
           (side_turn_id,game_id,sequence,round_number,side,status,finish_kind,end_turn_emitted,
            start_revision,end_revision,start_state_blob,end_state_blob,start_state_hash,
-           end_state_hash,state_codec,record_hash)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(side_turn_id) DO UPDATE SET
+           end_state_hash,state_codec,metrics_json,record_hash)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(side_turn_id) DO UPDATE SET
           finish_kind=excluded.finish_kind,end_state_blob=excluded.end_state_blob,
-          end_state_hash=excluded.end_state_hash,status=excluded.status""",
+          end_state_hash=excluded.end_state_hash,status=excluded.status,
+          metrics_json=excluded.metrics_json""",
           (f"{game_id}:turn:{i}", game_id, i, after.get("turn") if after else None,
            before.get("active_faction", 0) if before else None,
            "terminal" if terminal and i == len(boundaries) else "ended",
            boundary.get("authored_finish_kind"), int(bool(boundary.get("executed_finish_kind"))),
            before.get("state_revision") if before else None, after.get("state_revision") if after else None,
-           sb, eb, sh, eh, codec, digest(payload)))
+           sb, eb, sh, eh, codec, json.dumps({"handoff_review": payload.get("handoff_review")}, sort_keys=True), digest(payload)))
 
 def _import_requests(conn: sqlite3.Connection, game_id: str, records: list[dict[str, Any]]) -> None:
     request_records = [r for r in records if r.get("type") == "model_request"]

@@ -2577,7 +2577,9 @@ def run(args: argparse.Namespace) -> int:
                         durable({"type": "model_error", **metadata})
                         return TERMINAL_EXIT_CODES[terminal_class]
                 audit = handoff_audit(state, orders, coverage)
+                handoff_outcome = "not_triggered"
                 if not timeout_fallback and not handoff_review_used and draft_needs_preview(state, orders, danger_before, audit):
+                    handoff_outcome = "preview_only"
                     try:
                         preview_candidates = [[{"action": "EndTurn"}]]
                         draft_index = 0
@@ -2592,6 +2594,7 @@ def run(args: argparse.Namespace) -> int:
                                 draft_preview, danger_before, coverage, orders, draft_index, audit)
                             if draft_review_needed(draft_preview, coverage, orders, danger_before, audit):
                                 handoff_review_used = True
+                                handoff_outcome = "skipped"
                                 metadata["draft_reviews"] += 1
                                 if model_calls_this_turn < metadata["max_model_calls_per_turn"]:
                                     review_prompt = (
@@ -2639,8 +2642,10 @@ def run(args: argparse.Namespace) -> int:
                                     draft_orders = orders
                                     if revised_orders == draft_orders:
                                         metadata["draft_confirmations"] += 1
+                                        handoff_outcome = "confirmed"
                                     else:
                                         metadata["draft_revisions"] += 1
+                                        handoff_outcome = "revised"
                                     orders = revised_orders
                                     if reviewed_intent is not None:
                                         turn_intent = reviewed_intent
@@ -2663,6 +2668,15 @@ def run(args: argparse.Namespace) -> int:
                                      message=str(review_error))
                         durable({"type": "model_error", **metadata})
                         return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
+                if audit.get("trigger_reasons"):
+                    record({"type": "handoff_review", "version": 1,
+                            "state_revision": state.get("state_revision"),
+                            "side_turn": state.get("side_turns", state.get("turn")),
+                            "candidate_digest": hashlib.sha256(json.dumps(
+                                orders, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+                            "trigger_reasons": audit.get("trigger_reasons"),
+                            "audit": audit, "outcome": handoff_outcome,
+                            "review_used": handoff_review_used})
                 if getattr(args, "validate_before_submit", False):
                     try:
                         validation = query_validate_batch(
