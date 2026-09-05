@@ -1168,6 +1168,10 @@ def compact_events(events: list[dict[str, Any]]) -> str:
 
 def draft_needs_preview(state: dict[str, Any], orders: list[dict[str, Any]],
                         danger_before: bool) -> bool:
+    if state.get("incremental_turns") is True:
+        # The driver preview contract intentionally models complete candidates
+        # ending in EndTurn; a partial batch is committed and reassessed instead.
+        return False
     recruiters = state.get("tactical_surface", {}).get("threats", {}).get("recruiters", [])
     if not isinstance(recruiters, list) or not recruiters:
         return False
