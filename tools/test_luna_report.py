@@ -38,6 +38,53 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(report["deaths_by_faction"], {"1": 1})
         self.assertEqual(report["attacks_by_source"], {"llm": 1})
 
+    def test_new_telemetry_counts_only_accepted_boundaries(self):
+        report = classify([
+            {"type": "metadata", "finish_telemetry_available": True},
+            {"type": "turn_boundary", "accepted": True,
+             "authored_finish_kind": "explicit_done", "executed_finish_kind": "explicit_done",
+             "delegated_unit_ids": [3], "protected_unit_ids": [4]},
+            {"type": "turn_boundary", "accepted": False,
+             "authored_finish_kind": "implicit_end_turn", "executed_finish_kind": "implicit_end_turn"},
+            {"type": "turn_boundary", "accepted": True,
+             "authored_finish_kind": "implicit_end_turn", "executed_finish_kind": "implicit_end_turn",
+             "delegated_unit_ids": [5]},
+            {"type": "driver", "line": {"type": "events", "events": [
+                {"kind": "move", "source": "delegated_greedy", "unit": 3},
+                {"kind": "attack", "source": "delegated_greedy",
+                 "attacker": {"unit": 3, "killed": False},
+                 "defender": {"unit": 9, "killed": True}},
+                {"kind": "end_turn", "source": "delegated_greedy"},
+                {"kind": "end_turn", "source": "greedy"},
+            ]}},
+            {"type": "driver", "line": {"type": "game_end", "side_turns": 2}},
+            {"type": "terminal", "terminal_class": "gameplay"},
+        ])
+        self.assertTrue(report["finish_telemetry_available"])
+        self.assertEqual(report["finish_counts"], {
+            "explicit_done": 1, "implicit_end_turn": 1, "selective": 0, "timeout": 0})
+        self.assertEqual(report["awareness_numerator"], 1)
+        self.assertEqual(report["awareness_denominator"], 2)
+        self.assertEqual(report["awareness_rate"], 0.5)
+        self.assertEqual(report["delegated"], {
+            "units": 2, "moves": 1, "attacks": 1, "kills": 1,
+            "villages": 0, "end_turns": 1})
+        self.assertEqual(report["completed_side_turns"], 2)
+        self.assertEqual(report["protected_units"], 1)
+        self.assertIsNone(report["protected_recruiters"])
+        self.assertTrue(report["accounting_mismatch"])
+
+    def test_historical_logs_mark_finish_awareness_unavailable(self):
+        report = classify([
+            {"type": "driver", "line": {"type": "state", "side_turns": 1}},
+            {"type": "driver", "line": {"type": "events", "events": [
+                {"kind": "end_turn", "source": "llm"}]}},
+            {"type": "terminal", "terminal_class": "gameplay", "reason": "winner"},
+        ])
+        self.assertFalse(report["finish_telemetry_available"])
+        self.assertIsNone(report["awareness_rate"])
+        self.assertIsNone(report["finish_counts"])
+
 
 if __name__ == "__main__":
     unittest.main()
