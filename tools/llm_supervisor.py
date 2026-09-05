@@ -9,6 +9,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+try:
+    from .luna_reconcile import reconcile_request
+except ImportError:  # Direct ``python tools/llm_supervisor.py`` invocation.
+    from luna_reconcile import reconcile_request
+
 
 def _records(path: Path) -> list[dict]:
     if not path.exists():
@@ -54,7 +59,8 @@ def _append(log: Path, value: dict) -> None:
         os.fsync(stream.fileno())
 
 
-def run(command: list[str], log: Path, max_restarts: int) -> int:
+def run(command: list[str], log: Path, max_restarts: int,
+        request_state: Path | None = None) -> int:
     restarts = 0
     while True:
         invocation = command if restarts == 0 else command + ["--resume-log", str(log)]
@@ -62,6 +68,22 @@ def run(command: list[str], log: Path, max_restarts: int) -> int:
         terminal = _last_terminal(log)
         terminal_class = terminal.get("terminal_class") if terminal else None
         recoverable = completed.returncode < 0 or terminal_class == "infrastructure"
+        if recoverable and request_state is not None:
+            try:
+                reconciliation = reconcile_request(
+                    request_state, log, checkpoint_dir=log.with_suffix(".ckpt"))
+            except (OSError, ValueError) as exc:
+                _append(log, {"type": "supervisor_reconciliation", "state": "unknown",
+                              "safe_to_restart": False,
+                              "reason": f"reconciliation error: {exc}", "request_id": None})
+                recoverable = False
+            else:
+                _append(log, {"type": "supervisor_reconciliation",
+                              "state": reconciliation.state,
+                              "safe_to_restart": reconciliation.safe_to_restart,
+                              "reason": reconciliation.reason,
+                              "request_id": reconciliation.request_id})
+                recoverable = reconciliation.safe_to_restart
         if not recoverable or restarts >= max_restarts or not _has_checkpoint(log):
             return completed.returncode
         restarts += 1
@@ -74,6 +96,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--log", required=True, type=Path)
     parser.add_argument("--max-restarts", type=int, default=3)
+    parser.add_argument("--request-state", type=Path,
+                        help="durable Luna request state used to authorize recovery")
     parser.add_argument("command", nargs=argparse.REMAINDER,
                         help="client command after --")
     args = parser.parse_args(argv)
@@ -84,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("a client command is required after --")
     if "--log" not in command:
         parser.error("the client command must include --log")
-    return run(command, args.log, args.max_restarts)
+    return run(command, args.log, args.max_restarts, args.request_state)
 
 
 if __name__ == "__main__":
