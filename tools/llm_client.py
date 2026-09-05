@@ -265,6 +265,11 @@ class CommandBackend(ModelBackend):
                 # persistent backend, so stop here rather than guessing.
                 raise RuntimeError("model_timeout") from exc
             if proc.returncode:
+                uncertain = proc.stderr and any(marker in proc.stderr for marker in (
+                    "native_model_timeout", "request_conflict", "request_unknown",
+                    "request_active"))
+                if uncertain:
+                    raise RuntimeError(f"model_request_uncertain: {proc.stderr[-400:]}")
                 if attempt == 0:
                     self.transport_retries += 1
                     self.retry_causes.append(f"exit_{proc.returncode}")
@@ -395,10 +400,17 @@ def validate_orders(text: str, strict: bool = False, require_end_turn: bool = Tr
             delegated: set[int] = set()
             held: set[int] = set()
             for group in groups:
-                if not isinstance(group, dict) or set(group) != {"mode", "unit_ids"}:
+                if not isinstance(group, dict) or not {"mode", "unit_ids"}.issubset(group):
                     raise ValueError(f"invalid FinishWithGreedy group at index {i}")
-                if group["mode"] != "greedy":
+                mode = group["mode"]
+                expected = {"mode", "unit_ids"} if mode == "greedy" else {"mode", "unit_ids", "col", "row"}
+                if mode not in {"greedy", "toward_hex"} or set(group) != expected:
                     raise ValueError(f"unsupported FinishWithGreedy mode at index {i}")
+                if mode == "toward_hex":
+                    if any(not isinstance(group[field], int) or isinstance(group[field], bool)
+                           or not -(2**31) <= group[field] <= 2**31 - 1
+                           for field in ("col", "row")):
+                        raise ValueError(f"invalid FinishWithGreedy target at index {i}")
                 ids = group["unit_ids"]
                 if not isinstance(ids, list) or not ids:
                     raise ValueError(f"FinishWithGreedy unit_ids must be non-empty at index {i}")
@@ -1294,6 +1306,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         'Recruit: {"action":"Recruit","def_id": string,"col": integer,"row": integer}',
         'Advance: {"action":"Advance","unit_id": integer}; exactly one of integer target_index or string def_id',
         'EndTurn: {"action":"EndTurn"}',
+        'FinishWithGreedy: {"action":"FinishWithGreedy","groups":[{"mode":"greedy"|"toward_hex","unit_ids":[integer,...],"col":integer,"row":integer}],"holds":[{"unit_id":integer,"reason":string}]}; toward_hex is movement-only; final and replaces EndTurn',
     ]
     if recruit_batch_enabled:
         schemas.insert(3, 'RecruitBatch: {"action":"RecruitBatch","def_id": string,"count": positive integer}; placement is driver-assisted')
@@ -1333,14 +1346,14 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
     )
     boundary_guidance = (
         " In incremental mode, a partial non-empty action array may omit EndTurn; use it for a coherent small step, "
-        "then reassess the fresh state. EndTurn remains required to finish the side turn."
+        "then reassess the fresh state. EndTurn or FinishWithGreedy remains required to finish the side turn."
         if state.get("incremental_turns") is True else "")
     rules = (
         load_tactical_playbook() + "\n"
         "You play only the configured model-controlled side in Norrust. The driver automatically "
         "executes the opponent; never submit opponent actions. Return the non-empty JSON array only; "
         "actions execute sequentially in array order against the mutating state. "
-        "The array has at most 256 objects. In normal mode it has exactly one final {\"action\":\"EndTurn\"}. "
+        "The array has at most 256 objects. In normal mode it has exactly one final {\"action\":\"EndTurn\"} or a final FinishWithGreedy boundary. "
         "Before EndTurn you should strongly prefer exhausting legal recruitment. Otherwise move "
         "non-recruiters off castle hexes when that creates placement capacity, recruit "
         "into every useful legal placement, and repeat vacate-then-recruit until gold, "
@@ -1361,6 +1374,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "model or greedy turn increments the side-turn counter once; --max-turns is an external "
         "side-turn safety cap, distinct from the engine round counter and any scenario turn limit. "
         "Return either the action array or {\"actions\":[...],\"intent\":\"short plan\",\"agenda\":{\"tasks\":[...],\"holds\":[...]}}. "
+        "When routine work remains, FinishWithGreedy may be the final action: list only units you release to greedy, and list deliberate holds with short reasons. Units omitted from groups remain under your control and are left unchanged. FinishWithGreedy never recruits; recruitment and saving gold remain your explicit decisions. "
         "The optional intent is client memory, must be under 512 UTF-8 bytes, and is not an engine action. "
         "The optional agenda is a full replacement of at most eight small objectives. Each task has only id, goal, units, and status; it is bookkeeping, not an executable order. "
         "Choose objectives, focus on the active one, observe results, revise or continue, then sweep the army. Keep independent jobs visible. "

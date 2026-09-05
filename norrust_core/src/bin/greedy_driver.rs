@@ -21,8 +21,8 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use norrust_core::ai::{
-    ai_take_selected_greedy_actions, ai_take_turn_greedy_actions, run_greedy_side_turn,
-    GreedyTurnError,
+    ai_take_selected_greedy_actions, ai_take_turn_greedy_actions, choose_toward_hex_destination,
+    run_greedy_side_turn, GreedyTurnError,
 };
 use norrust_core::board::Tile;
 use norrust_core::combat::{
@@ -883,10 +883,27 @@ fn valid_action_shape(order: &Value) -> bool {
             let Some(group) = group.as_object() else {
                 return false;
             };
+            let mode = group.get("mode").and_then(Value::as_str);
+            let allowed_keys: &[&str] = match mode {
+                Some("greedy") => &["mode", "unit_ids"],
+                Some("toward_hex") => &["mode", "unit_ids", "col", "row"],
+                _ => return false,
+            };
             if group
                 .keys()
-                .any(|key| !["mode", "unit_ids"].contains(&key.as_str()))
-                || group.get("mode").and_then(Value::as_str) != Some("greedy")
+                .any(|key| !allowed_keys.contains(&key.as_str()))
+            {
+                return false;
+            }
+            if mode == Some("toward_hex")
+                && (!group
+                    .get("col")
+                    .and_then(Value::as_i64)
+                    .is_some_and(|v| (i32::MIN as i64..=i32::MAX as i64).contains(&v))
+                    || !group
+                        .get("row")
+                        .and_then(Value::as_i64)
+                        .is_some_and(|v| (i32::MIN as i64..=i32::MAX as i64).contains(&v)))
             {
                 return false;
             }
@@ -1340,21 +1357,49 @@ fn execute_model_batch(
             },
             Some("FinishWithGreedy") => (|| {
                 let mut selected = Vec::new();
+                let mut generated = Vec::new();
                 for group in order
                     .get("groups")
                     .and_then(Value::as_array)
                     .into_iter()
                     .flatten()
                 {
+                    let mode = group
+                        .get("mode")
+                        .and_then(Value::as_str)
+                        .unwrap_or("greedy");
                     if let Some(ids) = group.get("unit_ids").and_then(Value::as_array) {
-                        selected.extend(ids.iter().filter_map(Value::as_u64).map(|id| id as u32));
+                        if mode == "toward_hex" {
+                            let col = group.get("col").and_then(Value::as_i64).unwrap_or(0) as i32;
+                            let row = group.get("row").and_then(Value::as_i64).unwrap_or(0) as i32;
+                            let target = Hex::from_offset(col, row);
+                            for id in ids.iter().filter_map(Value::as_u64).map(|id| id as u32) {
+                                if let Some(destination) =
+                                    choose_toward_hex_destination(&state, id, target)
+                                {
+                                    if state.units.contains_key(&id) {
+                                        generated.extend(apply_action(
+                                            &mut state,
+                                            Action::Move {
+                                                unit_id: id,
+                                                destination,
+                                            },
+                                        )?);
+                                    }
+                                }
+                            }
+                        } else {
+                            selected
+                                .extend(ids.iter().filter_map(Value::as_u64).map(|id| id as u32));
+                        }
                     }
                 }
                 selected.sort_unstable();
                 selected.dedup();
                 delegated_event_start = Some(events.len());
-                let mut generated =
-                    ai_take_selected_greedy_actions(&mut state, model_side, &selected)?;
+                generated.extend(ai_take_selected_greedy_actions(
+                    &mut state, model_side, &selected,
+                )?);
                 if state.check_winner().is_none() {
                     generated.extend(apply_action(&mut state, Action::EndTurn)?);
                 }

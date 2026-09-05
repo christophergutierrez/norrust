@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -66,10 +67,27 @@ def run_native(prompt: str, thread_id: str | None, timeout: float) -> tuple[str,
                    "--skip-git-repo-check", "--sandbox", "read-only", "--model", MODEL,
                    "--color", "never", "-c", f"model_reasoning_effort={EFFORT}",
                    native_instruction(prompt)]
+    process = subprocess.Popen(command, cwd=root, text=True, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, start_new_session=True)
     try:
-        result = subprocess.run(command, cwd=root, text=True, capture_output=True, timeout=timeout)
+        stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
+        group = process.pid
+        try:
+            os.killpg(group, signal.SIGINT)
+            stdout, stderr = process.communicate(timeout=min(5.0, max(0.5, timeout * 0.1)))
+        except (subprocess.TimeoutExpired, ProcessLookupError):
+            try:
+                os.killpg(group, signal.SIGTERM)
+                stdout, stderr = process.communicate(timeout=1.0)
+            except (subprocess.TimeoutExpired, ProcessLookupError):
+                try:
+                    os.killpg(group, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                stdout, stderr = process.communicate()
         raise RuntimeError("native_model_timeout") from exc
+    result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
     if result.returncode:
         raise RuntimeError("native Codex failed: " + result.stderr[-2000:])
     events: list[dict[str, object]] = []
@@ -166,7 +184,10 @@ def main() -> int:
             }}, separators=(",", ":")))
         except RuntimeError as exc:
             if request.state == "dispatched":
-                request.mark_unknown(error=str(exc))
+                if str(exc) == "native_model_timeout":
+                    request.interrupt(error=str(exc), cleanup_verified=True)
+                else:
+                    request.mark_unknown(error=str(exc))
             raise
     return 0
 

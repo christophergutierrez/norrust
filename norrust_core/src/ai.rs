@@ -433,15 +433,37 @@ fn best_attack_from(state: &GameState, uid: u32, from: Hex, faction: u8) -> Opti
     best_id
 }
 
-fn step_toward(state: &GameState, uid: u32, faction: u8, goal: Hex) -> Option<Hex> {
+/// Choose a legal movement destination that moves a selected unit strictly
+/// closer to `target`.
+///
+/// The target is only a direction/rally point: it need not be empty. The
+/// result is movement-only, so no attack is selected or applied here. Ties
+/// are deterministic by Hex coordinates after distance to the target.
+pub fn choose_toward_hex_destination(state: &GameState, uid: u32, target: Hex) -> Option<Hex> {
+    let faction = state.units.get(&uid)?.faction;
+    if faction != state.active_faction {
+        return None;
+    }
+    choose_toward_hex_destination_for_faction(state, uid, faction, target)
+}
+
+fn choose_toward_hex_destination_for_faction(
+    state: &GameState,
+    uid: u32,
+    faction: u8,
+    target: Hex,
+) -> Option<Hex> {
     let start = *state.positions.get(&uid)?;
     let unit = state.units.get(&uid)?;
+    if unit.faction != faction || unit.moved {
+        return None;
+    }
     let movement = if unit.slowed {
         unit.movement / 2
     } else {
         unit.movement
     };
-    let zoc = get_zoc_hexes(state, faction);
+    let zoc = get_zoc_hexes(state, unit.faction);
     let reachable = reachable_hexes(
         &state.board,
         &unit.movement_costs,
@@ -461,8 +483,12 @@ fn step_toward(state: &GameState, uid: u32, faction: u8, goal: Hex) -> Option<He
         .iter()
         .copied()
         .filter(|&hex| hex != start && !occupied.contains(&hex))
-        .min_by_key(|hex| (hex.distance(goal), *hex))
-        .filter(|hex| hex.distance(goal) < start.distance(goal))
+        .min_by_key(|hex| (hex.distance(target), *hex))
+        .filter(|hex| hex.distance(target) < start.distance(target))
+}
+
+fn step_toward(state: &GameState, uid: u32, faction: u8, goal: Hex) -> Option<Hex> {
+    choose_toward_hex_destination_for_faction(state, uid, faction, goal)
 }
 
 /// Recruiters stay on a keep and fight from it. Off keep, they walk back.
@@ -1815,6 +1841,57 @@ mod tests {
         )));
         assert!(state.units[&2].attacked);
         assert!(state.units[&3].moved || state.positions[&3] == Hex::from_offset(1, 2));
+    }
+
+    #[test]
+    fn toward_hex_selects_deterministic_strictly_closer_destination() {
+        let mut board = Board::new(7, 5);
+        for col in 0..7 {
+            for row in 0..5 {
+                board.set_terrain(Hex::from_offset(col, row), "flat");
+            }
+        }
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+        let mut unit = make_fighter(1, 0, 30);
+        unit.movement = 2;
+        let start = Hex::from_offset(1, 2);
+        let target = Hex::from_offset(5, 2);
+        state.place_unit(unit, start);
+
+        let first = choose_toward_hex_destination(&state, 1, target);
+        let second = choose_toward_hex_destination(&state, 1, target);
+
+        assert_eq!(first, second);
+        let destination = first.expect("an open board has a closer destination");
+        assert!(destination.distance(target) < start.distance(target));
+        assert_ne!(destination, start);
+    }
+
+    #[test]
+    fn toward_hex_skips_occupied_destination_and_spent_units() {
+        let mut board = Board::new(5, 3);
+        for col in 0..5 {
+            for row in 0..3 {
+                board.set_terrain(Hex::from_offset(col, row), "flat");
+            }
+        }
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+        let start = Hex::from_offset(0, 1);
+        let target = Hex::from_offset(3, 1);
+        let mut unit = make_fighter(1, 0, 30);
+        unit.movement = 3;
+        state.place_unit(unit, start);
+        state.place_unit(make_fighter(2, 1, 30), Hex::from_offset(2, 1));
+
+        let destination = choose_toward_hex_destination(&state, 1, target)
+            .expect("an alternate closer destination should remain available");
+        assert_ne!(destination, Hex::from_offset(2, 1));
+        assert!(destination.distance(target) < start.distance(target));
+
+        state.units.get_mut(&1).unwrap().moved = true;
+        assert_eq!(choose_toward_hex_destination(&state, 1, target), None);
     }
 
     #[test]
