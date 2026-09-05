@@ -1138,6 +1138,46 @@ def finish_kind_for_orders(orders: list[dict[str, Any]], timeout: bool = False) 
     }.get(action)
 
 
+def handoff_audit(state: dict[str, Any], orders: list[dict[str, Any]],
+                  coverage: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Summarize authoritative facts needed before routine finishing."""
+    side = state.get("active_faction")
+    units = [unit for unit in state.get("units", [])
+             if isinstance(unit, dict) and unit.get("faction") == side]
+    held: set[int] = set()
+    delegated: set[int] = set()
+    for order in orders:
+        if not isinstance(order, dict) or order.get("action") != "FinishWithGreedy":
+            continue
+        for group in order.get("groups", []):
+            if isinstance(group, dict):
+                delegated.update(item for item in group.get("unit_ids", []) if isinstance(item, int))
+        for item in order.get("holds", []):
+            if isinstance(item, dict) and isinstance(item.get("unit_id"), int):
+                held.add(item["unit_id"])
+    healthy_idle = {unit["id"] for unit in units
+                    if isinstance(unit.get("id"), int) and not unit.get("can_recruit")
+                    and unit.get("hp", 0) * 3 > unit.get("max_hp", 1)
+                    and not unit.get("moved") and not unit.get("attacked")}
+    available = set((coverage or {}).get("available", set()))
+    actionable_idle = healthy_idle & available
+    recruitment = state.get("tactical_surface", {}).get("recruitment", {})
+    options = recruitment.get("options", []) if isinstance(recruitment, dict) else []
+    affordable = sorted(item.get("def_id") for item in options
+                        if isinstance(item, dict) and item.get("affordable") is True)
+    placements = recruitment.get("placement_hexes", []) if isinstance(recruitment, dict) else []
+    reasons = []
+    if healthy_idle and healthy_idle <= held and not delegated and (actionable_idle or placements):
+        reasons.append("all_healthy_idle_held")
+    if finish_kind_for_orders(orders) is not None and affordable and placements:
+        reasons.append("affordable_recruitment")
+    return {"healthy_idle": sorted(healthy_idle), "held": sorted(held),
+            "delegated": sorted(delegated), "actionable_idle": sorted(actionable_idle),
+            "affordable_recruitment": affordable, "placement_count": len(placements),
+            "gold": recruitment.get("gold") if isinstance(recruitment, dict) else None,
+            "trigger_reasons": reasons}
+
+
 def replay_accepted_progress(records: list[dict[str, Any]], faction: int) -> tuple[set[int], set[int]]:
     """Rebuild current-side-turn progress from accepted engine event envelopes."""
     moved: set[int] = set()
@@ -1195,7 +1235,10 @@ def draft_risk_worsened(preview: dict[str, Any]) -> bool:
 
 
 def draft_review_needed(preview: dict[str, Any], coverage: dict[str, Any],
-                        orders: list[dict[str, Any]], danger_before: bool = False) -> bool:
+                        orders: list[dict[str, Any]], danger_before: bool = False,
+                        audit: Optional[dict[str, Any]] = None) -> bool:
+    if audit and audit.get("trigger_reasons"):
+        return True
     candidates = preview.get("candidates", [])
     draft = candidates[1] if len(candidates) > 1 and isinstance(candidates[1], dict) else {}
     summary = draft.get("summary", {})
@@ -1217,7 +1260,8 @@ def draft_review_needed(preview: dict[str, Any], coverage: dict[str, Any],
 def compact_draft_review(preview: dict[str, Any], danger_before: bool,
                          coverage: Optional[dict[str, Any]] = None,
                          orders: Optional[list[dict[str, Any]]] = None,
-                         draft_index: int = 0) -> tuple[str, bool]:
+                         draft_index: int = 0,
+                         audit: Optional[dict[str, Any]] = None) -> tuple[str, bool]:
     candidates = preview.get("candidates", [{}])
     candidate = candidates[draft_index] if draft_index < len(candidates) else {}
     threats = candidate.get("recruiter_threats", {}) if isinstance(candidate, dict) else {}
@@ -1231,6 +1275,15 @@ def compact_draft_review(preview: dict[str, Any], danger_before: bool,
         for recruiter in recruiters
     )
     lines = ["DRAFT_RESULT danger_before=%s danger_after=%s" % (danger_before, lethal_after)]
+    if audit is not None:
+        lines.append("HANDOFF idle=%s held=%s delegated=%s actionable=%s affordable=%s placements=%s gold=%s reasons=%s" % (
+            ",".join("U%s" % value for value in audit.get("healthy_idle", [])) or "-",
+            ",".join("U%s" % value for value in audit.get("held", [])) or "-",
+            ",".join("U%s" % value for value in audit.get("delegated", [])) or "-",
+            ",".join("U%s" % value for value in audit.get("actionable_idle", [])) or "-",
+            ",".join(audit.get("affordable_recruitment", [])) or "-",
+            audit.get("placement_count", "?"), audit.get("gold", "?"),
+            ",".join(audit.get("trigger_reasons", [])) or "-"))
     for recruiter in recruiters:
         if not isinstance(recruiter, dict):
             continue
@@ -1343,14 +1396,15 @@ def select_event_window(event_intervals: list[list[dict[str, Any]]],
 
 
 def draft_needs_preview(state: dict[str, Any], orders: list[dict[str, Any]],
-                        danger_before: bool) -> bool:
+                        danger_before: bool, audit: Optional[dict[str, Any]] = None) -> bool:
+    if state.get("incremental_turns") is True and finish_kind_for_orders(orders) is None:
+        # Partial prefixes are measured without a review; review the complete
+        # handoff once the model supplies its finish policy.
+        return False
+    if audit and audit.get("trigger_reasons"):
+        return True
     recruiters = state.get("tactical_surface", {}).get("threats", {}).get("recruiters", [])
     if not isinstance(recruiters, list) or not recruiters:
-        return False
-    if state.get("incremental_turns") is True and finish_kind_for_orders(orders) is None:
-        # Partial batches are measured after acceptance.  The bounded review is
-        # reserved for the handoff, where the candidate includes its finish
-        # policy and the engine can model the complete boundary.
         return False
     return danger_before or any(order.get("action") != "EndTurn" for order in orders)
 
@@ -1808,6 +1862,7 @@ def run(args: argparse.Namespace) -> int:
     action_repair_attempted = False
     model_calls_this_turn = 0
     tool_calls_this_turn = 0
+    handoff_review_used = False
     intent_memory = ""
     pending_intent: Optional[str] = None
     agenda_memory: Optional[dict[str, Any]] = None
@@ -2244,6 +2299,7 @@ def run(args: argparse.Namespace) -> int:
                 if not is_partial_boundary:
                     model_calls_this_turn = 0
                     tool_calls_this_turn = 0
+                    handoff_review_used = False
                     turn_progress_moved.clear()
                     turn_progress_attacked.clear()
                     if agenda_memory is not None:
@@ -2520,7 +2576,8 @@ def run(args: argparse.Namespace) -> int:
                                      message=str(first))
                         durable({"type": "model_error", **metadata})
                         return TERMINAL_EXIT_CODES[terminal_class]
-                if not timeout_fallback and draft_needs_preview(state, orders, danger_before):
+                audit = handoff_audit(state, orders, coverage)
+                if not timeout_fallback and not handoff_review_used and draft_needs_preview(state, orders, danger_before, audit):
                     try:
                         preview_candidates = [[{"action": "EndTurn"}]]
                         draft_index = 0
@@ -2532,8 +2589,9 @@ def run(args: argparse.Namespace) -> int:
                         candidate = draft_preview.get("candidates", [{}])[draft_index]
                         if isinstance(candidate, dict) and candidate.get("valid") is True:
                             review_text, danger_after = compact_draft_review(
-                                draft_preview, danger_before, coverage, orders, draft_index)
-                            if draft_review_needed(draft_preview, coverage, orders, danger_before):
+                                draft_preview, danger_before, coverage, orders, draft_index, audit)
+                            if draft_review_needed(draft_preview, coverage, orders, danger_before, audit):
+                                handoff_review_used = True
                                 metadata["draft_reviews"] += 1
                                 if model_calls_this_turn < metadata["max_model_calls_per_turn"]:
                                     review_prompt = (
@@ -2550,7 +2608,8 @@ def run(args: argparse.Namespace) -> int:
                                     record({"type": "draft_review", "call": metadata["model_calls"],
                                             "prompt_hash": hashlib.sha256(review_prompt.encode()).hexdigest(),
                                             "prompt_bytes": len(review_prompt.encode()),
-                                            "raw_output": reviewed.text, "body": draft_preview})
+                                            "raw_output": reviewed.text, "body": draft_preview,
+                                            "handoff_audit": audit})
                                     try:
                                         revised_orders = validate_model_orders(reviewed.text)
                                         capture_agenda(reviewed.text)

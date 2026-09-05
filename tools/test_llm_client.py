@@ -399,6 +399,25 @@ class ClientValidationTests(unittest.TestCase):
         self.assertFalse(lethal)
         self.assertIn("COVERAGE_DRAFT available=U3,U4 planned=U3 unused=U4", rendered)
 
+    def test_handoff_audit_distinguishes_held_idle_units_and_recruitment(self):
+        audit = llm_client.handoff_audit(
+            {"active_faction": 0, "units": [
+                {"id": 3, "faction": 0, "hp": 10, "max_hp": 10, "moved": False, "attacked": False},
+                {"id": 4, "faction": 0, "hp": 2, "max_hp": 10, "moved": False, "attacked": False},
+            ], "tactical_surface": {"recruitment": {
+                "gold": 20, "options": [{"def_id": "Skeleton", "affordable": True}],
+                "placement_hexes": [{"col": 1, "row": 1}],
+            }}},
+            [{"action": "FinishWithGreedy", "groups": [],
+              "holds": [{"unit_id": 3, "reason": "guard"}]}],
+            {"available": {3}, "current": {3}, "targets": {}},
+        )
+        self.assertEqual(audit["healthy_idle"], [3])
+        self.assertEqual(audit["held"], [3])
+        self.assertEqual(audit["actionable_idle"], [3])
+        self.assertEqual(audit["affordable_recruitment"], ["Skeleton"])
+        self.assertEqual(audit["trigger_reasons"], ["all_healthy_idle_held", "affordable_recruitment"])
+
     def test_planned_attackers_counts_attack_and_all_engage_steps(self):
         self.assertEqual(
             llm_client.planned_attackers([
