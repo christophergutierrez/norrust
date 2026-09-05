@@ -2394,8 +2394,8 @@ def main() -> int:
                             action="store_false",
                             help="skip revision-pinned validation before submitting model batches")
     p.set_defaults(validate_before_submit=True)
-    p.add_argument("--max-model-calls-per-turn", type=int, default=4,
-                   help="initial model call plus bounded repairs allowed per turn")
+    p.add_argument("--max-model-calls-per-turn", type=int, default=8,
+                   help="decision and repair calls allowed per model turn")
     p.add_argument("--max-tool-calls-per-turn", type=int, default=4,
                    help="maximum read-only model tool requests per turn")
     p.add_argument("--decision-metrics", action="store_true",
