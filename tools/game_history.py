@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS model_requests (
  cached_input_tokens INTEGER, output_tokens INTEGER, reasoning_tokens INTEGER, usage_source TEXT,
  prompt_bytes INTEGER, response_bytes INTEGER, prompt_blob BLOB, response_blob BLOB,
  prompt_hash TEXT, response_hash TEXT, payload_codec TEXT, context_complete INTEGER,
+ reasoning_blob BLOB, reasoning_kind TEXT, reasoning_source TEXT,
  raw_usage_json TEXT, record_hash TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS action_batches (
@@ -105,6 +106,14 @@ def open_history(path: str | os.PathLike[str]) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(SCHEMA)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(model_requests)")}
+    for name, definition in (
+        ("reasoning_blob", "BLOB"),
+        ("reasoning_kind", "TEXT"),
+        ("reasoning_source", "TEXT"),
+    ):
+        if name not in columns:
+            conn.execute(f"ALTER TABLE model_requests ADD COLUMN {name} {definition}")
     return conn
 
 def _records(path: Path) -> list[dict[str, Any]]:
@@ -262,15 +271,40 @@ def verify_history(path: str | os.PathLike[str]) -> dict[str, Any]:
     conn.close()
     return {"integrity": integrity, "foreign_key_errors": len(foreign_keys), "counts": counts}
 
+def import_review(conn: sqlite3.Connection, path: str | os.PathLike[str],
+                  evaluation_run_id: str, evaluator_version: str = "review_v1") -> int:
+    """Import explicit review JSONL without changing immutable game records."""
+    rows = [json.loads(line) for line in Path(path).read_text().splitlines() if line.strip()]
+    with conn:
+        conn.execute("""INSERT INTO evaluation_runs
+          (evaluation_run_id,evaluator_name,evaluator_version,config_json,status)
+          VALUES(?, 'review', ?, '{}', 'complete') ON CONFLICT(evaluation_run_id) DO NOTHING""",
+          (evaluation_run_id, evaluator_version))
+        for row in rows:
+            conn.execute("""INSERT INTO decision_evaluations
+              (evaluation_run_id,request_id,verdict,reason_codes_json,metrics_json,evidence_json,
+               preferred_request_id) VALUES(?,?,?,?,?,?,?)
+              ON CONFLICT(evaluation_run_id,request_id) DO UPDATE SET verdict=excluded.verdict,
+              reason_codes_json=excluded.reason_codes_json,metrics_json=excluded.metrics_json,
+              evidence_json=excluded.evidence_json,preferred_request_id=excluded.preferred_request_id""",
+              (evaluation_run_id, row["request_id"], row["verdict"],
+               json.dumps(row.get("reason_codes", []), sort_keys=True),
+               json.dumps(row.get("metrics", {}), sort_keys=True),
+               json.dumps(row.get("evidence", {}), sort_keys=True),
+               row.get("preferred_request_id")))
+    return len(rows)
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
     imp = sub.add_parser("import"); imp.add_argument("--db", required=True); imp.add_argument("archive"); imp.add_argument("--cohort")
+    review = sub.add_parser("review"); review.add_argument("--db", required=True); review.add_argument("--run-id", required=True); review.add_argument("path")
     show = sub.add_parser("game"); show.add_argument("--db", required=True); show.add_argument("game_id")
     turns = sub.add_parser("turns"); turns.add_argument("--db", required=True); turns.add_argument("game_id")
     args = parser.parse_args(argv)
     conn = open_history(args.db)
     if args.command == "import": value = import_game(conn, args.archive, args.cohort)
+    elif args.command == "review": value = import_review(conn, args.path, args.run_id)
     elif args.command == "game": value = summarize_game(conn, args.game_id)
     else: value = list_side_turns(conn, args.game_id)
     print(json.dumps(value, sort_keys=True, default=lambda value: value.hex() if isinstance(value, bytes) else value))
