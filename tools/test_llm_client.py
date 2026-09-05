@@ -1254,13 +1254,13 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual(run.call_args_list[0].kwargs["input"], "same prompt")
         self.assertEqual(run.call_args_list[1].kwargs["input"], "same prompt")
 
-    def test_command_backend_retries_one_timeout_but_not_malformed_reply(self):
-        success = subprocess.CompletedProcess(
-            "model", 0, '{"text":"[]"}', "")
-        with mock.patch("subprocess.run", side_effect=[subprocess.TimeoutExpired("model", 1), success]):
+    def test_command_backend_does_not_retry_uncertain_timeout(self):
+        with mock.patch("subprocess.run", side_effect=subprocess.TimeoutExpired("model", 1)) as run:
             backend = llm_client.CommandBackend("model", 1)
-            self.assertEqual(backend.complete("prompt").text, "[]")
-        self.assertEqual(backend.transport_retries, 1)
+            with self.assertRaisesRegex(RuntimeError, "model_timeout"):
+                backend.complete("prompt")
+        self.assertEqual(backend.transport_retries, 0)
+        self.assertEqual(run.call_count, 1)
 
         malformed = subprocess.CompletedProcess("model", 0, "not json", "")
         with mock.patch("subprocess.run", return_value=malformed) as run:

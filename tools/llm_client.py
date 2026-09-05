@@ -257,10 +257,11 @@ class CommandBackend(ModelBackend):
                 proc = subprocess.run(self.command, input=prompt, text=True, shell=True,
                                       capture_output=True, timeout=self.timeout)
             except subprocess.TimeoutExpired as exc:
-                if attempt == 0:
-                    self.transport_retries += 1
-                    self.retry_causes.append("timeout")
-                    continue
+                # A timed-out model request may have committed remotely even
+                # after its local child is reaped. Retrying the same prompt can
+                # duplicate an accepted action or concurrently resume a native
+                # thread. Recovery requires request reconciliation at the
+                # persistent backend, so stop here rather than guessing.
                 raise RuntimeError("model_timeout") from exc
             if proc.returncode:
                 if attempt == 0:
