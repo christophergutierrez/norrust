@@ -3157,18 +3157,7 @@ fn interactive_protocol_game(c: &Config) {
                 }
             }
         }
-        let finish_kind = did_end.then(|| {
-            match orders
-                .last()
-                .and_then(|order| order.get("action"))
-                .and_then(Value::as_str)
-            {
-                Some("DoneWithImportantMoves") => "explicit_done",
-                Some("FinishWithGreedy") => "selective",
-                Some("EndTurn") => "implicit_end_turn",
-                _ => unreachable!("a completed batch must have a final boundary"),
-            }
-        });
+        let finish_kind = completed_finish_kind(&orders, did_end);
         let mut status = json!({"type":"status","ok":true,"results":results,
             "state_revision":state.state_revision});
         if let Some(finish_kind) = finish_kind {
@@ -3265,6 +3254,18 @@ fn interactive_protocol_game(c: &Config) {
     }
 }
 
+fn completed_finish_kind(orders: &[Value], did_end: bool) -> Option<&'static str> {
+    if !did_end {
+        return None;
+    }
+    match orders.last().and_then(|order| order.get("action")).and_then(Value::as_str) {
+        Some("DoneWithImportantMoves") => Some("explicit_done"),
+        Some("FinishWithGreedy") => Some("selective"),
+        Some("EndTurn") => Some("implicit_end_turn"),
+        _ => None,
+    }
+}
+
 fn main() {
     let c = parse_args();
 
@@ -3278,6 +3279,14 @@ fn main() {
 #[cfg(test)]
 mod protocol_tests {
     use super::*;
+
+    #[test]
+    fn completed_partial_batch_has_no_finish_kind_and_never_panics() {
+        let orders = vec![json!({"action": "Move", "unit_id": 1, "col": 2, "row": 2})];
+        assert_eq!(completed_finish_kind(&orders, false), None);
+        assert_eq!(completed_finish_kind(&[json!({"action": "EndTurn"})], true),
+                   Some("implicit_end_turn"));
+    }
 
     #[test]
     fn greedy_planner_failure_rolls_back_real_recruitment_and_accounting() {
