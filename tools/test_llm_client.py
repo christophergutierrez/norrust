@@ -673,11 +673,12 @@ class ClientValidationTests(unittest.TestCase):
     def test_prompt_documents_greedy_handoff_and_recruitment_ownership(self):
         prompt = prompt_for({"units": []}, [])
         for text in (
-                "FinishWithGreedy may be the final action",
-                "list only units you release to greedy",
-                "list deliberate holds with short reasons",
-                "FinishWithGreedy never recruits",
-                "recruitment and saving gold remain your explicit decisions",
+                'emit {"action":"DoneWithImportantMoves"}',
+                "Bare EndTurn is accepted as a safety fallback",
+                "explicit unit groups",
+                "deliberate holds",
+                "automatic sweep protects recruiters",
+                "Recruitment remains your responsibility",
         ):
             with self.subTest(text=text):
                 self.assertIn(text, prompt)
@@ -695,6 +696,20 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual(orders[0]["action"], "FinishWithGreedy")
         self.assertEqual(orders[0]["groups"], [{"mode": "greedy", "unit_ids": [1, 3]}])
         self.assertEqual(orders[0]["holds"], [{"unit_id": 2, "reason": "guard the keep"}])
+
+    def test_timeout_finish_orders_can_delegate_no_units_when_all_are_protected(self):
+        orders = timeout_finish_orders(
+            {"units": [{"id": 1, "faction": 0, "can_recruit": True,
+                         "moved": False, "attacked": False,
+                         "hp": 3, "max_hp": 10}]}, 0, {})
+        self.assertEqual(orders, [{"action": "FinishWithGreedy", "groups": [],
+                                   "holds": [{"unit_id": 1, "reason": "protected recruiter"}]}])
+
+    def test_done_with_important_moves_is_a_final_boundary(self):
+        self.assertEqual(
+            validate_orders('[{"action":"Move","unit_id":1,"col":1,"row":1},'
+                            '{"action":"DoneWithImportantMoves"}]')[-1]["action"],
+            "DoneWithImportantMoves")
 
     def test_incremental_batch_can_omit_end_turn_but_end_turn_must_be_final(self):
         self.assertEqual(
@@ -819,7 +834,8 @@ class ClientValidationTests(unittest.TestCase):
                              "faction_id": "undead", "side_can_place": True,
                              "batch_macro_enabled": True})
         required = [
-            'non-empty JSON array', 'at most 256', 'exactly one final {"action":"EndTurn"}',
+            'non-empty JSON array', 'at most 256',
+            'exactly one final DoneWithImportantMoves, EndTurn, or FinishWithGreedy boundary',
             'Move', '"unit_id": integer', '"col": integer', '"row": integer',
             'Attack', '"attacker_id": integer', '"defender_id": integer',
             'Recruit', '"def_id": string', 'RecruitBatch', '"count": positive integer',
@@ -891,7 +907,7 @@ class ClientValidationTests(unittest.TestCase):
             "`Move` immediately followed by the matching `Attack`",
             "reserve a unique destination",
             "Avoid speculative, unreachable",
-            "Emit `EndTurn` after every useful unit",
+            "emit `DoneWithImportantMoves`",
         ):
             with self.subTest(guidance=guidance):
                 self.assertIn(guidance, canonical)

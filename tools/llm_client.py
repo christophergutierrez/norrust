@@ -22,7 +22,7 @@ except ImportError:  # pragma: no cover - direct script compatibility
     from luna_agenda import agenda_from_response, compact_agenda
 
 ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "Engage", "EndTurn", "Advance",
-           "FinishWithGreedy"}
+           "DoneWithImportantMoves", "FinishWithGreedy"}
 CHECKPOINT_REF_DIGEST_BYTES = 64
 
 
@@ -326,6 +326,7 @@ def validate_orders(text: str, strict: bool = False, require_end_turn: bool = Tr
             "RecruitBatch": {"action", "def_id", "count"},
             "Engage": {"action", "target_id", "steps"},
             "EndTurn": {"action"},
+            "DoneWithImportantMoves": {"action"},
             "Advance": {"action", "unit_id", "target_index", "def_id"},
             "FinishWithGreedy": {"action", "groups", "holds"},
         }[action]
@@ -338,6 +339,7 @@ def validate_orders(text: str, strict: bool = False, require_end_turn: bool = Tr
             "RecruitBatch": {"def_id", "count"},
             "Engage": {"target_id", "steps"},
             "EndTurn": set(),
+            "DoneWithImportantMoves": set(),
             "Advance": {"unit_id"},
             "FinishWithGreedy": {"groups", "holds"},
         }[action]
@@ -393,8 +395,8 @@ def validate_orders(text: str, strict: bool = False, require_end_turn: bool = Tr
         if action == "FinishWithGreedy":
             groups = order["groups"]
             holds = order["holds"]
-            if not isinstance(groups, list) or not 1 <= len(groups) <= 8:
-                raise ValueError(f"FinishWithGreedy groups must contain one to eight groups at index {i}")
+            if not isinstance(groups, list) or len(groups) > 8:
+                raise ValueError(f"FinishWithGreedy groups must contain zero to eight groups at index {i}")
             if not isinstance(holds, list) or len(holds) > 256:
                 raise ValueError(f"FinishWithGreedy holds must contain at most 256 entries at index {i}")
             delegated: set[int] = set()
@@ -434,12 +436,12 @@ def validate_orders(text: str, strict: bool = False, require_end_turn: bool = Tr
                 held.add(unit_id)
             if len(delegated) > 256:
                 raise ValueError(f"too many FinishWithGreedy unit ids at index {i}")
-        if action in {"EndTurn", "FinishWithGreedy"}:
+        if action in {"EndTurn", "DoneWithImportantMoves", "FinishWithGreedy"}:
             end_indices.append(i)
     if require_end_turn and (len(end_indices) != 1 or end_indices[0] != len(orders) - 1):
-        raise ValueError("exactly one final EndTurn or FinishWithGreedy is required")
+        raise ValueError("exactly one final turn boundary is required")
     if not require_end_turn and end_indices and end_indices[0] != len(orders) - 1:
-        raise ValueError("EndTurn or FinishWithGreedy, when present, must be final")
+        raise ValueError("a turn boundary, when present, must be final")
     return orders
 
 
@@ -473,16 +475,22 @@ def timeout_finish_orders(state: dict[str, Any], faction: int,
         unit_id = unit.get("id", unit.get("unit_id"))
         if not isinstance(unit_id, int) or unit_id in held:
             continue
+        if bool(unit.get("can_recruit")):
+            held[unit_id] = "protected recruiter"
+            continue
+        hp = unit.get("hp")
+        max_hp = unit.get("max_hp")
+        if isinstance(hp, int) and isinstance(max_hp, int) and hp * 3 <= max_hp:
+            held[unit_id] = "critically wounded"
+            continue
         if not bool(unit.get("moved")) or not bool(unit.get("attacked")):
             eligible.append(unit_id)
     orders: list[dict[str, Any]] = []
-    if eligible:
-        orders.append({"action": "FinishWithGreedy",
-                       "groups": [{"mode": "greedy", "unit_ids": sorted(set(eligible))}],
-                       "holds": [{"unit_id": unit_id, "reason": reason}
-                                  for unit_id, reason in sorted(held.items())]})
-    else:
-        orders.append({"action": "EndTurn"})
+    orders.append({"action": "FinishWithGreedy",
+                   "groups": ([{"mode": "greedy", "unit_ids": sorted(set(eligible))}]
+                               if eligible else []),
+                   "holds": [{"unit_id": unit_id, "reason": reason}
+                              for unit_id, reason in sorted(held.items())]})
     return orders
 
 
@@ -1104,6 +1112,20 @@ def planned_attackers(orders: list[dict[str, Any]]) -> set[int]:
     return planned
 
 
+def finish_kind_for_orders(orders: list[dict[str, Any]], timeout: bool = False) -> str | None:
+    """Classify a submitted final boundary before the driver executes it."""
+    if timeout:
+        return "timeout"
+    if not orders:
+        return None
+    action = orders[-1].get("action")
+    return {
+        "DoneWithImportantMoves": "explicit_done",
+        "EndTurn": "implicit_end_turn",
+        "FinishWithGreedy": "selective",
+    }.get(action)
+
+
 def replay_accepted_progress(records: list[dict[str, Any]], faction: int) -> tuple[set[int], set[int]]:
     """Rebuild current-side-turn progress from accepted engine event envelopes."""
     moved: set[int] = set()
@@ -1334,6 +1356,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         'Engage: {"action":"Engage","target_id": integer,"steps":[{"attacker_id": integer,"col": integer,"row": integer}]}; stops safely when the target dies',
         'Recruit: {"action":"Recruit","def_id": string,"col": integer,"row": integer}',
         'Advance: {"action":"Advance","unit_id": integer}; exactly one of integer target_index or string def_id',
+        'DoneWithImportantMoves: {"action":"DoneWithImportantMoves"}; final boundary after consequential work, then safe routine units are swept',
         'EndTurn: {"action":"EndTurn"}',
         'FinishWithGreedy: {"action":"FinishWithGreedy","groups":[{"mode":"greedy"|"toward_hex","unit_ids":[integer,...],"col":integer,"row":integer}],"holds":[{"unit_id":integer,"reason":string}]}; toward_hex is movement-only; final and replaces EndTurn',
     ]
@@ -1375,20 +1398,22 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
     )
     boundary_guidance = (
         " In incremental mode, a partial non-empty action array may omit EndTurn; use it for a coherent small step, "
-        "then reassess the fresh state. EndTurn or FinishWithGreedy remains required to finish the side turn."
+        "then reassess the fresh state. DoneWithImportantMoves, EndTurn, or FinishWithGreedy remains required to finish the side turn."
         if state.get("incremental_turns") is True else "")
     rules = (
         load_tactical_playbook() + "\n"
         "You play only the configured model-controlled side in Norrust. The driver automatically "
         "executes the opponent; never submit opponent actions. Return the non-empty JSON array only; "
         "actions execute sequentially in array order against the mutating state. "
-        "The array has at most 256 objects. In normal mode it has exactly one final {\"action\":\"EndTurn\"} or a final FinishWithGreedy boundary. "
-        "Before EndTurn you should strongly prefer exhausting legal recruitment. Otherwise move "
+        "The array has at most 256 objects. In normal mode it has exactly one final DoneWithImportantMoves, EndTurn, or FinishWithGreedy boundary. "
+        "Make the consequential decisions first: protect the recruiter, recruit or deliberately save gold, advance, arrange a likely kill or focus-fire sequence, capture a useful village, and make exact retreat/healing/formation moves. "
+        "Once those important moves are made, stop inspecting routine units and emit {\"action\":\"DoneWithImportantMoves\"}. The driver sweeps eligible healthy non-recruiters and ends the turn. "
+        "Recruitment remains your responsibility before that boundary. Before a boundary, strongly prefer exhausting legal recruitment. Otherwise move "
         "non-recruiters off castle hexes when that creates placement capacity, recruit "
         "into every useful legal placement, and repeat vacate-then-recruit until gold, "
         "definitions, or castle capacity prevents another recruit. You may deliberately "
         "save gold for a better recruit next turn when that is strategically justified; "
-        "otherwise do not EndTurn while recruit_options says a legal affordable recruit "
+        "otherwise do not use a boundary while recruit_options says a legal affordable recruit "
         "and placement exists. " + boundary_guidance + tactical_guidance + " "
         "Each object has exactly one of these schemas: " + "; ".join(schemas) + ". "
         "For legacy turn_options, Move onto your own hex is rejected as DestinationOccupied and rolls back your whole "
@@ -1403,7 +1428,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "model or greedy turn increments the side-turn counter once; --max-turns is an external "
         "side-turn safety cap, distinct from the engine round counter and any scenario turn limit. "
         "Return either the action array or {\"actions\":[...],\"intent\":\"short plan\",\"agenda\":{\"tasks\":[...],\"holds\":[...]}}. "
-        "When routine work remains, FinishWithGreedy may be the final action: list only units you release to greedy, and list deliberate holds with short reasons. Units omitted from groups remain under your control and are left unchanged. FinishWithGreedy never recruits; recruitment and saving gold remain your explicit decisions. "
+        "Use FinishWithGreedy when you need explicit unit groups, deliberate holds, or toward_hex movement. Bare EndTurn is accepted as a safety fallback and runs the same automatic sweep, but it is recorded as an implicit failure to signal completion. The automatic sweep protects recruiters and critically wounded units; it never recruits. "
         "The optional intent is client memory, must be under 512 UTF-8 bytes, and is not an engine action. "
         "The optional agenda is a full replacement of at most eight small objectives. Each task has only id, goal, units, and status; it is bookkeeping, not an executable order. "
         "Choose objectives, focus on the active one, observe results, revise or continue, then sweep the army. Keep independent jobs visible. "
@@ -1770,6 +1795,7 @@ def run(args: argparse.Namespace) -> int:
     pending_intent: Optional[str] = None
     agenda_memory: Optional[dict[str, Any]] = None
     pending_agenda: Optional[dict[str, Any]] = None
+    pending_finish_kind: Optional[str] = None
     agenda_enabled = not getattr(args, "disable_agenda_sweep", False)
     continuity_entries: list[str] = []
     turn_progress_moved: set[int] = set()
@@ -1815,6 +1841,12 @@ def run(args: argparse.Namespace) -> int:
                 "draft_review_repairs": 0,
                 "timeout_finishes": 0,
                 "timeout_fallback_only_turns": 0,
+                "explicit_done_turns": 0,
+                "implicit_end_turn_turns": 0,
+                "selective_finish_turns": 0,
+                "timeout_finish_turns": 0,
+                "finish_telemetry_available": True,
+                "handoff_policy": "important_moves_v1",
                 "decision_metrics": getattr(args, "decision_metrics", False),
                 "sampling": None, "llm_authored_extra": False,
                 "winner": None, "reason": None, "terminal_class": None,
@@ -1834,6 +1866,10 @@ def run(args: argparse.Namespace) -> int:
                     "attack_opportunity_unit_turns", "planned_attack_unit_turns"):
             if isinstance(previous_metadata.get(key), int):
                     metadata[key] = previous_metadata[key]
+        for key in ("explicit_done_turns", "implicit_end_turn_turns",
+                    "selective_finish_turns", "timeout_finish_turns"):
+            if isinstance(previous_metadata.get(key), int):
+                metadata[key] = previous_metadata[key]
         if isinstance(previous_metadata.get("conversation_id"), str):
             metadata["conversation_id"] = previous_metadata["conversation_id"]
         previous_tools = previous_metadata.get("tool_calls_by_name")
@@ -1977,6 +2013,36 @@ def run(args: argparse.Namespace) -> int:
                     metadata["agenda"] = agenda_memory
                     record({"type": "agenda_update", "agenda": agenda_memory})
                     pending_agenda = None
+                if failure is None and pending_action and pending_finish_kind is not None:
+                    driver_kind = line.get("finish_kind")
+                    expected_driver_kind = ("selective" if pending_finish_kind == "timeout"
+                                            else pending_finish_kind)
+                    if driver_kind is not None and driver_kind != expected_driver_kind:
+                        set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
+                                     reason="infrastructure_failure",
+                                     code="finish_kind_mismatch",
+                                     message="driver finish kind disagreed with client boundary",
+                                     authored_finish_kind=pending_finish_kind,
+                                     driver_finish_kind=driver_kind)
+                        durable({"type": "terminal", **metadata})
+                        return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
+                    counter = {
+                        "explicit_done": "explicit_done_turns",
+                        "implicit_end_turn": "implicit_end_turn_turns",
+                        "selective": "selective_finish_turns",
+                        "timeout": "timeout_finish_turns",
+                    }[pending_finish_kind]
+                    metadata[counter] += 1
+                    durable({"type": "turn_boundary",
+                             "authored_finish_kind": pending_finish_kind,
+                             "executed_finish_kind": driver_kind or expected_driver_kind,
+                             "state_revision": line.get("state_revision"),
+                             "delegated_unit_ids": line.get("delegated_unit_ids", []),
+                             "protected_unit_ids": line.get("protected_unit_ids", []),
+                             "generated_event_counts": line.get("generated_event_counts", {}),
+                             "model_aware": pending_finish_kind in {"explicit_done", "selective"},
+                             "accepted": True})
+                    pending_finish_kind = None
                 if failure is not None:
                     # A rejected batch cannot publish its client-only agenda.
                     pending_agenda = None
@@ -2063,9 +2129,11 @@ def run(args: argparse.Namespace) -> int:
                             durable({"type": "model_error", **metadata})
                             return TERMINAL_EXIT_CODES[terminal_class]
                         metadata["model_orders"] += len(orders)
+                        pending_finish_kind = finish_kind_for_orders(orders)
                         durable({"type": "forwarded_orders", "orders": orders,
                                 "prompt_hash": hashlib.sha256(repair_prompt.encode()).hexdigest(),
-                                "repair": True, "intent": turn_intent})
+                                "repair": True, "intent": turn_intent,
+                                "authored_finish_kind": pending_finish_kind})
                         try:
                             proc.stdin.write(json.dumps(orders, separators=(",", ":")) + "\n")
                             proc.stdin.flush()
@@ -2629,8 +2697,10 @@ def run(args: argparse.Namespace) -> int:
                 record({"type": "turn_attack_coverage", "available": sorted(coverage["available"]),
                         "planned": sorted(used_attackers),
                         "unused": sorted(coverage["available"] - used_attackers)})
+                pending_finish_kind = finish_kind_for_orders(orders, timeout_fallback)
                 durable({"type": "forwarded_orders", "orders": orders,
-                         "prompt_hash": prompt_hash, "intent": turn_intent})
+                         "prompt_hash": prompt_hash, "intent": turn_intent,
+                         "authored_finish_kind": pending_finish_kind})
                 try:
                     proc.stdin.write(json.dumps(orders, separators=(",", ":")) + "\n")
                     proc.stdin.flush()

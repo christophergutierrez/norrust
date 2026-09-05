@@ -4,7 +4,7 @@
 `greedy_driver` JSON-lines protocol. It asks the engine for authoritative options,
 gives those options to a continuing model, validates one action batch, and forwards
 the batch. The model controls only the configured `--llm-side`; after its final
-`EndTurn` or `FinishWithGreedy`, the driver automatically runs the opponent's transactional greedy turn
+`DoneWithImportantMoves`, `EndTurn`, or `FinishWithGreedy`, the driver completes the model boundary and automatically runs the opponent's transactional greedy turn
 (including driver-supplied recruitment) and returns a new model-side boundary.
 
 For a hybrid finish, the model may send `FinishWithGreedy` with explicit unit IDs,
@@ -251,7 +251,7 @@ and saving gold remains legal.
 
 A final action array is a non-empty JSON array of at most 256 objects. Every
 object has exactly the fields shown below. There is exactly one final
-`{"action":"EndTurn"}`; `EndTurn` is not optional and no action follows it.
+`DoneWithImportantMoves`, `EndTurn`, or `FinishWithGreedy` boundary; no action follows it.
 On turns where a submitted draft leaves the recruiter in projected lethal
 danger, the client sends one read-only draft result back to the model. The
 model may repeat the draft to confirm it or return a revised final array; the
@@ -269,7 +269,7 @@ recruit next turn when that is strategically justified.
 {"action":"RecruitBatch","def_id":"Skeleton","count":2}
 {"action":"Advance","unit_id":12,"target_index":0}
 {"action":"Advance","unit_id":12,"def_id":"Veteran Skeleton"}
-{"action":"EndTurn"}
+{"action":"DoneWithImportantMoves"}
 ```
 
 `Move` has integer `unit_id`, `col`, and `row`. `Attack` has integer
@@ -280,7 +280,9 @@ placements and reports the actual `recruited` count and `partial` flag.
 It is rejected when the driver is started with `--disable-recruit-batch`.
 `Advance` has integer `unit_id` and exactly one selector: integer `target_index`
 or string `def_id`; `target_index` indexes that unit's `advances_to` list in the
-order shown in the board data. `EndTurn` has only `action`.
+order shown in the board data. `DoneWithImportantMoves` and `EndTurn` have only
+`action`. `FinishWithGreedy` accepts explicit groups and holds; its groups may
+be empty when every remaining unit is protected.
 
 The client rejects malformed JSON, unknown fields, missing fields, non-integer
 numeric fields, non-positive batch counts, and invalid batch structure before
@@ -314,12 +316,12 @@ legality. Additional engine query failures are typed status failures.
 
 ## Turn ownership, outcomes, and failures
 
-Every submitted action, including `EndTurn`, is accepted only when the configured
+Every submitted action, including each turn boundary, is accepted only when the configured
 model side equals the active faction and every referenced unit belongs to that
 faction. An unauthorized action is rejected without state, event, or side-turn
 mutation. The model never submits the opponent's turn.
 
-After a successful model `EndTurn`, the driver automatically performs one greedy
+After a successful model turn boundary, the driver automatically performs one greedy
 opponent side-turn: recruitment, greedy movement/combat, and its successful turn
 boundary. The opponent transaction runs on private state. A preparation, planner,
 action, or boundary error produces a typed terminal `game_end` with an additive

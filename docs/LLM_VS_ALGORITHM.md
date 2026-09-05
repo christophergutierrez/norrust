@@ -59,7 +59,7 @@ python -m tools.llm_client \
 
 The client—not the model—issues singleton `{"action":"Query","what":"turn_options"}` and `{"action":"Query","what":"recruit_options"}` requests before each memoryless model call. `turn_options` maps current and reachable positions to target IDs. `recruit_options` supplies the active faction, legal definitions, costs, affordability, placement hexes, and macro availability. Engine responses are authoritative; the client and model must not reconstruct legality.
 
-The model returns only a non-empty JSON array of at most 256 objects, with exactly one final `{"action":"EndTurn"}`. Each object has exactly the fields in one schema:
+The model returns only a non-empty JSON array of at most 256 objects, with exactly one final `DoneWithImportantMoves`, `EndTurn`, or `FinishWithGreedy` boundary. Each object has exactly the fields in one schema:
 
 ```text
 Move         {action, unit_id: integer, col: integer, row: integer}
@@ -67,7 +67,9 @@ Attack       {action, attacker_id: integer, defender_id: integer}
 Recruit      {action, def_id: string, col: integer, row: integer}
 RecruitBatch {action, def_id: string, count: positive integer}  [optional]
 Advance      {action, unit_id: integer, exactly one of target_index: integer or def_id: string}
-EndTurn      {action}
+DoneWithImportantMoves {action}
+EndTurn      {action}  [implicit safety fallback]
+FinishWithGreedy {action, groups, holds}
 ```
 
 `RecruitBatch` is driver-assisted placement, attempts up to the requested positive
