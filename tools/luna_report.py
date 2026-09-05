@@ -27,14 +27,18 @@ def classify(records: list[dict[str, Any]]) -> dict[str, Any]:
     side_turns = set()
     attacks = Counter()
     deaths = Counter()
+    factions: dict[int, Any] = {}
     moved = set()
     for item in events:
-        if item.get("type") != "state":
+        if item.get("type") == "state":
+            for unit in item.get("units", []):
+                if isinstance(unit, dict) and isinstance(unit.get("id"), int):
+                    factions[unit["id"]] = unit.get("faction")
+            if isinstance(item.get("side_turns"), int):
+                side_turns.add(item["side_turns"])
+            elif isinstance(item.get("turn"), int):
+                side_turns.add(item["turn"])
             continue
-        if isinstance(item.get("side_turns"), int):
-            side_turns.add(item["side_turns"])
-        elif isinstance(item.get("turn"), int):
-            side_turns.add(item["turn"])
     for batch in accepted:
         for event in batch.get("events", []):
             if not isinstance(event, dict):
@@ -43,6 +47,11 @@ def classify(records: list[dict[str, Any]]) -> dict[str, Any]:
             source = event.get("source", "unknown")
             if kind == "attack":
                 attacks[source] += 1
+                for role in ("attacker", "defender"):
+                    participant = event.get(role)
+                    if isinstance(participant, dict) and participant.get("killed"):
+                        unit_id = participant.get("unit")
+                        deaths[str(factions.get(unit_id, "unknown"))] += 1
             if kind == "move":
                 unit = event.get("unit")
                 if isinstance(unit, int):
@@ -51,7 +60,10 @@ def classify(records: list[dict[str, Any]]) -> dict[str, Any]:
                 unit = event.get("unit") or event.get("dead") or {}
                 faction = unit.get("faction") if isinstance(unit, dict) else event.get("faction", "unknown")
                 deaths[str(faction)] += 1
-    terminal_class = terminal.get("terminal_class")
+    failure = next((item for item in reversed(records) if item.get("type") == "model_error"), {})
+    terminal_class = terminal.get("terminal_class") or failure.get("terminal_class")
+    if not terminal_class and failure:
+        terminal_class = "model_invalid"
     if not terminal_class:
         reason = terminal.get("reason")
         terminal_class = "gameplay" if reason in {"winner", "loss", "max_turns", "turn_limit"} else "unfinished_recoverable"
@@ -64,7 +76,7 @@ def classify(records: list[dict[str, Any]]) -> dict[str, Any]:
         "attacks_by_source": dict(attacks),
         "deaths_by_faction": dict(deaths),
         "unique_movers": len(moved),
-        "model_calls": terminal.get("model_calls"),
+        "model_calls": terminal.get("model_calls", failure.get("model_calls")),
         "tool_calls": terminal.get("queries"),
     }
 

@@ -1012,6 +1012,31 @@ def planned_attackers(orders: list[dict[str, Any]]) -> set[int]:
     return planned
 
 
+def replay_accepted_progress(records: list[dict[str, Any]], faction: int) -> tuple[set[int], set[int]]:
+    """Rebuild current-side-turn progress from accepted engine event envelopes."""
+    moved: set[int] = set()
+    attacked: set[int] = set()
+    for record in records:
+        if record.get("type") != "driver" or not isinstance(record.get("line"), dict):
+            continue
+        line = record["line"]
+        if line.get("type") != "events" or line.get("source") != "llm":
+            continue
+        for event in line.get("events", []):
+            if not isinstance(event, dict):
+                continue
+            if event.get("kind") == "end_turn":
+                moved.clear()
+                attacked.clear()
+            elif event.get("kind") == "move" and isinstance(event.get("unit"), int):
+                moved.add(event["unit"])
+            elif event.get("kind") == "attack":
+                attacker = event.get("attacker", {})
+                if isinstance(attacker, dict) and isinstance(attacker.get("unit"), int):
+                    attacked.add(attacker["unit"])
+    return moved, attacked
+
+
 def _positive_lethal(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
@@ -1735,6 +1760,8 @@ def run(args: argparse.Namespace) -> int:
         continuity_entries = continuity_entries[-4:]
         if events:
             event_window.extend(events)
+        turn_progress_moved, turn_progress_attacked = replay_accepted_progress(
+            parent_records, args.llm_side)
     log = open(log_path, "a", buffering=1) if log_path else None
     def record(obj: dict[str, Any]) -> None:
         if log:
