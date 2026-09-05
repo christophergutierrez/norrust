@@ -1,50 +1,133 @@
 #!/usr/bin/env python3
-"""Small, restricted Luna adapter for repeatable headless matches.
-
-The client supplies one complete game prompt on stdin.  The adapter runs one
-Codex decision with no project tools and returns the command-backend envelope.
-Conversation continuity is supplied by the client as bounded explicit context.
-"""
+"""Persistent, restricted Luna adapter for the headless client."""
 from __future__ import annotations
 
 import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+
+MODEL = "gpt-5.6-luna"
+EFFORT = "high"
+
+
+def session_path() -> Path:
+    value = os.environ.get("NORRUST_LUNA_SESSION_FILE")
+    if not value:
+        raise RuntimeError("NORRUST_LUNA_SESSION_FILE is required for persistent Luna play")
+    path = Path(value).resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def native_instruction(prompt: str) -> str:
+    return (
+        "You are the continuing Luna player in a Norrust match. Preserve explicit "
+        "objectives across turns, but treat the latest authoritative board and accepted "
+        "engine results as current. Return JSON only: a legal action array, an actions "
+        "envelope with optional intent and agenda, or one read-only game inspection "
+        "request allowed by the current prompt. Use only the game tools described by the "
+        "prompt. Do not use shell, web, files, skills, connectors, or unrelated tools.\n\n"
+        + prompt
+    )
+
+
+def extract(events: list[dict[str, object]]) -> tuple[str, str]:
+    thread_id = ""
+    answer = ""
+    for event in events:
+        if event.get("type") == "thread.started" and isinstance(event.get("thread_id"), str):
+            thread_id = event["thread_id"]
+        if event.get("type") == "item.completed":
+            item = event.get("item")
+            if isinstance(item, dict) and item.get("type") == "agent_message" and isinstance(item.get("text"), str):
+                answer = item["text"].strip()
+        if event.get("type") == "error":
+            raise RuntimeError(str(event))
+    if not answer:
+        raise RuntimeError("native Codex response did not contain an agent message")
+    return thread_id, answer
+
+
+def run_native(prompt: str, thread_id: str | None, timeout: float) -> tuple[str, str, list[dict[str, object]]]:
+    root = Path(__file__).resolve().parents[1]
+    if thread_id:
+        command = ["codex", "exec", "resume", thread_id, "--json", "--ignore-user-config",
+                   "--ignore-rules", "-m", MODEL, "-c", f"model_reasoning_effort={EFFORT}", prompt]
+    else:
+        command = ["codex", "exec", "--json", "--ignore-user-config", "--ignore-rules",
+                   "--skip-git-repo-check", "--sandbox", "read-only", "--model", MODEL,
+                   "--color", "never", "-c", f"model_reasoning_effort={EFFORT}",
+                   native_instruction(prompt)]
+    try:
+        result = subprocess.run(command, cwd=root, text=True, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("native_model_timeout") from exc
+    if result.returncode:
+        raise RuntimeError("native Codex failed: " + result.stderr[-2000:])
+    events: list[dict[str, object]] = []
+    for raw in result.stdout.splitlines():
+        try:
+            item = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            events.append(item)
+    new_thread, answer = extract(events)
+    return new_thread or thread_id or "", answer, events
+
+
+def write_state(path: Path, state: dict[str, object]) -> None:
+    fd, temporary = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            json.dump(state, handle, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def main() -> int:
-    root = Path(__file__).resolve().parents[1]
     prompt = sys.stdin.read()
-    effort = os.environ.get("NORRUST_REASONING_EFFORT", "high")
-    instruction = (
-        "You are the Luna player in a Norrust match. Return JSON only: either "
-        "the legal action array, an {actions,intent} envelope, or one read-only "
-        "tool request allowed by the game prompt. Treat the current game prompt "
-        "as authoritative. Use the existing tactical surface, protect the "
-        "recruiter, coordinate the whole army, and consider all useful remaining "
-        "units before EndTurn. In incremental mode, partial actions may omit "
-        "EndTurn. Do not use shell, web, files, skills, or unrelated tools.\n\n"
-        "GAME PROMPT:\n" + prompt
-    )
-    command = [
-        "codex", "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
-        "--skip-git-repo-check", "--sandbox", "read-only", "--model", "gpt-5.6-luna",
-        "--color", "never", "-c", f"model_reasoning_effort={effort}", instruction,
-    ]
-    result = subprocess.run(command, cwd=root, text=True, capture_output=True, timeout=840)
-    if result.returncode:
-        print(result.stderr[-2000:], file=sys.stderr)
-        return result.returncode
-    text = result.stdout.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        text = "\n".join(lines[1:-1]).strip()
-    json.loads(text)
-    sys.stdout.write(json.dumps({"text": text}, separators=(",", ":")))
+    path = session_path()
+    state: dict[str, object] = {}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text())
+            if isinstance(loaded, dict):
+                state = loaded
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError("invalid Luna session sidecar") from exc
+    thread_id = state.get("thread_id") if isinstance(state.get("thread_id"), str) else None
+    new_thread, answer, events = run_native(
+        prompt, thread_id, float(os.environ.get("NORRUST_LUNA_TIMEOUT", "840")))
+    if not new_thread:
+        raise RuntimeError("native Codex did not report a thread id")
+    write_state(path, {"thread_id": new_thread, "model": MODEL, "reasoning_effort": EFFORT,
+                       "transport": "codex-exec-resume", "turns": int(state.get("turns", 0)) + 1})
+    forbidden = {"command_execution", "web_search", "skill", "connector"}
+    observed = [event.get("item", {}).get("type") for event in events
+                if isinstance(event.get("item"), dict)]
+    if any(item in forbidden for item in observed):
+        raise RuntimeError("native tool restriction violated")
+    sys.stdout.write(json.dumps({"text": answer, "cache": {
+        "native_session_id": new_thread, "transport": "codex-exec-resume",
+        "runtime_model": MODEL, "runtime_reasoning_effort": EFFORT,
+        "tool_restriction": "read-only game prompt; unrelated tools rejected",
+    }}, separators=(",", ":")))
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(2)

@@ -2,7 +2,7 @@
 
 `tools/llm_client.py` is a provider-neutral client for the headless
 `greedy_driver` JSON-lines protocol. It asks the engine for authoritative options,
-gives those options to a memoryless model, validates one action batch, and forwards
+gives those options to a continuing model, validates one action batch, and forwards
 the batch. The model controls only the configured `--llm-side`; after its final
 `EndTurn`, the driver automatically runs the opponent's transactional greedy turn
 (including driver-supplied recruitment) and returns a new model-side boundary.
@@ -26,10 +26,19 @@ The canonical per-turn instructions are the
 [MEMORYLESS TACTICAL PLAYBOOK](LLM_TACTICAL_PLAYBOOK.md). The client reads that
 file and includes its complete text inline near the beginning of every model
 prompt. The model therefore does not need filesystem access. The client also
-carries a bounded transcript of recent model decisions across observations and
-records a `conversation_id` for each match. Engine state, revision, and fresh
-options remain authoritative after every accepted batch; the transcript only
-preserves the player's plan and is restored when a checkpoint is resumed.
+carries a bounded transcript for generic backends. The Luna adapter additionally
+stores a native Codex thread ID in the match-owned `NORRUST_LUNA_SESSION_FILE`
+sidecar and resumes that exact thread; it never uses `--last` or ephemeral
+sessions. Engine state, revision, and fresh options remain authoritative after
+every accepted batch.
+
+Responses may include an optional full `agenda` replacement with up to eight
+tasks (`id`, `goal`, `units`, `status`) and deliberate `holds`. Agenda data is
+bookkeeping and never creates engine actions. Malformed agenda data is logged and
+ignored while valid actions continue, and a proposed agenda is published only
+after its action batch is accepted. Each observation includes a compact
+whole-army sweep unless `--disable-agenda-sweep` is passed; this adds no review
+call and never prevents `EndTurn`.
 
 ## Build and run
 
@@ -117,15 +126,27 @@ Use a distinct log and checkpoint directory for every concurrent run. The
 client does not force a partial batch; the model may still finish a turn in one
 batch. `turn_format` in metadata records the requested mode.
 
-For the restricted Luna adapter, use `tools/luna_backend.py` as the model
-command. Set `NORRUST_REASONING_EFFORT=high`; the adapter passes that setting to
-Codex, disables user config/rules and project tools, and returns the normal
-`{"text": ...}` envelope.
+For Luna, use `tools/luna_backend.py` as the model command and provide a unique
+session sidecar for every match:
 
-When an engine rejects a submitted batch, the client allows one bounded action
-repair. If that repair asks for a tool instead of actions, it receives one final
-action-only follow-up within the turn budget. Repeated illegal proposals remain a
-model-invalid result and are recorded separately from infrastructure failures.
+```bash
+NORRUST_LUNA_SESSION_FILE=/path/to/match/luna-session.json \
+python -m tools.llm_client ... --reasoning-effort high \
+  --model-command 'python3 tools/luna_backend.py'
+```
+
+The adapter fixes the runtime model to `gpt-5.6-luna` and reasoning to `high`,
+uses read-only sandboxing when creating the thread, and records the native
+thread, runtime settings, and transport in client metadata. The prompt rejects
+unrelated shell, web, file, skill, and connector use; the adapter fails if a
+native response reports one of those tool classes.
+
+When an engine rejects a submitted batch, the client allows bounded action
+repairs. Inspection results requested during pre-submit repair remain in every
+subsequent repair prompt, including across multiple inspections and malformed
+responses. Tool requests have their own four-request cap; physical model calls
+remain separately recorded. Repeated illegal proposals remain a model-invalid
+result and are recorded separately from infrastructure failures.
 
 The default `--turn-timeout` is 930 seconds. The client keeps the model command
 timeout and driver query budget independently. It warns when the turn timeout
