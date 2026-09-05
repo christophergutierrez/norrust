@@ -1952,6 +1952,8 @@ def run(args: argparse.Namespace) -> int:
                     "attacked": sorted(turn_progress_attacked),
                     "remaining_attackers": sorted(coverage["available"] - turn_progress_attacked),
                 }
+                record({"type": "turn_progress", "turn": state.get("turn"),
+                        **state["turn_progress"]})
                 metadata["attack_opportunity_unit_turns"] += len(coverage["available"])
                 record({"type": "attack_coverage", "available": sorted(coverage["available"]),
                         "current": sorted(coverage["current"]),
