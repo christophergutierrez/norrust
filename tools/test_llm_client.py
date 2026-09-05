@@ -1147,6 +1147,22 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_GAMEPLAY])
         self.assertEqual(terminal["reason"], "max_turns")
 
+    def test_partial_limit_uses_selective_finish_instead_of_model_invalid(self):
+        partial = json.dumps([{"action": "Move", "unit_id": 1, "col": 2, "row": 3}])
+        limited = {"type": "status", "ok": False, "what": "validate_batch",
+                   "code": "partial_limit", "message": "next batch must end the turn"}
+        valid = {"type": "status", "ok": True, "what": "validate_batch",
+                 "body": {"valid": True, "failed_index": None, "results": [{"ok": True}]}}
+        code, terminal = self.run_with_orders(
+            [partial],
+            [{"type": "state", "active_faction": 0, "units": []},
+             {"type": "status", "ok": True, "what": "tactical_surface", "body": {"units": []}},
+             limited, valid, {"type": "game_end", "reason": "max_turns", "winner": None}],
+            validate_before_submit=True, incremental_turns=True)
+        self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_GAMEPLAY])
+        self.assertEqual(terminal["reason"], "max_turns")
+        self.assertEqual(terminal["partial_limit_finishes"], 1)
+
     def test_action_repair_can_inspect_before_returning_corrected_batch(self):
         end_turn = json.dumps([{"action": "EndTurn"}])
         inspect = json.dumps({"tool": "inspect_target", "unit_id": 9})
@@ -1466,7 +1482,8 @@ class ClientValidationTests(unittest.TestCase):
         return code, records[-1], fsync.call_count
 
     def run_with_orders(self, order_texts, driver_lines, validate_before_submit=False,
-                        max_model_calls_per_turn=4, max_tool_calls_per_turn=4):
+                        max_model_calls_per_turn=4, max_tool_calls_per_turn=4,
+                        incremental_turns=False):
         """Drive the client with N canned model replies and explicit driver output."""
         with tempfile.TemporaryDirectory() as directory:
             log_path = directory + "/client.jsonl"
@@ -1483,6 +1500,7 @@ class ClientValidationTests(unittest.TestCase):
                 max_prompt_bytes=16 * 1024 * 1024, token_input_limit=None,
                 token_output_limit=None, token_total_limit=None,
                 validate_before_submit=validate_before_submit,
+                incremental_turns=incremental_turns,
                 max_model_calls_per_turn=max_model_calls_per_turn,
                 max_tool_calls_per_turn=max_tool_calls_per_turn,
             )

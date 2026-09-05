@@ -1912,6 +1912,7 @@ def run(args: argparse.Namespace) -> int:
                 "draft_reviews": 0, "draft_revisions": 0, "draft_confirmations": 0,
                 "draft_review_repairs": 0,
                 "timeout_finishes": 0,
+                "partial_limit_finishes": 0,
                 "timeout_fallback_only_turns": 0,
                 "explicit_done_turns": 0,
                 "implicit_end_turn_turns": 0,
@@ -2698,6 +2699,24 @@ def run(args: argparse.Namespace) -> int:
                     # alone silently discarded it.
                     repair_base = None
                     while validation.get("valid") is not True:
+                        if validation.get("error_code") == "partial_limit":
+                            # The engine has committed the maximum number of
+                            # prefixes. A nonterminal repair cannot succeed at
+                            # this revision, so preserve the turn with the
+                            # existing selective greedy safety finish.
+                            orders = timeout_finish_orders(state, args.llm_side, agenda_memory)
+                            metadata["partial_limit_finishes"] += 1
+                            record({"type": "partial_limit_finish", "orders": orders,
+                                    "message": validation.get("error_message")})
+                            validation = query_validate_batch(
+                                exchange, orders, int(state.get("state_revision", 0)))
+                            record({"type": "batch_validation", "orders": orders,
+                                    "valid": validation.get("valid"),
+                                    "results": validation.get("results"),
+                                    "failed_index": validation.get("failed_index"),
+                                    "repair": True, "reason": "partial_limit_finish"})
+                            if validation.get("valid") is True:
+                                break
                         if model_calls_this_turn >= metadata["max_model_calls_per_turn"]:
                             set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
                                          reason=TERMINAL_MODEL_INVALID,
