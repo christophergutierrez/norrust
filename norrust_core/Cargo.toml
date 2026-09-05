@@ -14,12 +14,17 @@ path = "src/bin/self_play.rs"
 name = "greedy_driver"
 path = "src/bin/greedy_driver.rs"
 
+[[bin]]
+name = "history_eval"
+path = "src/bin/history_eval.rs"
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 thiserror = "2"
 sha2 = "0.10"
+rusqlite = { version = "0.31", features = ["bundled"] }
 
 [profile.release]
 panic = "abort"
