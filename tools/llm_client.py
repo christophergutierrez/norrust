@@ -267,7 +267,7 @@ class CommandBackend(ModelBackend):
             if proc.returncode:
                 uncertain = proc.stderr and any(marker in proc.stderr for marker in (
                     "native_model_timeout", "request_conflict", "request_unknown",
-                    "request_active"))
+                    "request_active", "request already active", "native Codex failed"))
                 if uncertain:
                     raise RuntimeError(f"model_request_uncertain: {proc.stderr[-400:]}")
                 if attempt == 0:

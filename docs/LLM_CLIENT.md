@@ -4,8 +4,15 @@
 `greedy_driver` JSON-lines protocol. It asks the engine for authoritative options,
 gives those options to a continuing model, validates one action batch, and forwards
 the batch. The model controls only the configured `--llm-side`; after its final
-`EndTurn`, the driver automatically runs the opponent's transactional greedy turn
+`EndTurn` or `FinishWithGreedy`, the driver automatically runs the opponent's transactional greedy turn
 (including driver-supplied recruitment) and returns a new model-side boundary.
+
+For a hybrid finish, the model may send `FinishWithGreedy` with explicit unit IDs,
+optional `greedy` or `toward_hex` groups, and deliberate holds. The driver validates
+the allowlist, performs only those delegated actions, records `delegated_greedy`
+provenance, and then ends the turn. Recruitment remains model-owned. If the model
+command times out, `--timeout-finish` applies the same bounded fallback to eligible
+units and records `timeout_fallback`; it never invents recruitment.
 
 The compact board briefing includes `MAP_TERRAIN` and `MAP_UNITS` layers. Terrain
 uses two-character cells (`F.` forest, `H.` hills, `C.` castle, `K.` keep, `..`
