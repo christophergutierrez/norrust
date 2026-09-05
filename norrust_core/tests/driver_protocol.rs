@@ -83,6 +83,30 @@ fn partial_preview_accepts_prefix_and_labels_unavailable_sweep() {
 }
 
 #[test]
+fn final_nonsampling_preview_is_pre_finish_and_does_not_claim_a_sweep() {
+    let lines = run_driver(
+        &[
+            "--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
+            "--gold", "300", "--max-turns", "1", "--incremental-turns",
+        ],
+        r#"{"action":"Query","what":"preview_batch","state_revision":0,"phase":"final","candidates":[[{"action":"EndTurn"}]]}
+"#,
+    );
+    let status = lines
+        .iter()
+        .find(|line| line["type"] == "status")
+        .expect("preview status");
+    assert_eq!(status["ok"], true);
+    let body = &status["body"];
+    assert_eq!(body["sampling"], false);
+    assert_eq!(body["coverage"]["forecast"], "conditional_pre_finish");
+    assert_eq!(body["coverage"]["delegated_sweep"], "unavailable");
+    assert_eq!(body["coverage"]["post_sweep"], "unavailable");
+    assert_eq!(body["candidates"][0]["observation_stage"], "post_prefix_pre_sweep");
+    assert_eq!(body["candidates"][0]["post_sweep"], Value::Null);
+}
+
+#[test]
 fn invalid_setup_is_reported_as_game_end() {
     let lines = run_driver(
         &[

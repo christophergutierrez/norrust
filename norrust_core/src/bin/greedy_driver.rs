@@ -1534,7 +1534,16 @@ fn execute_model_batch(
                     }
                 }
                 delegated_event_start = Some(events.len());
-                automatic_model_finish(&mut state, model_side)
+                if sample_attacks {
+                    automatic_model_finish(&mut state, model_side)
+                } else {
+                    // A nonsampling preview is an analytical observation of the
+                    // state immediately before the automatic finish.  Running
+                    // the finish here would mutate the clone (and could sample
+                    // combat) while the returned threat facts still describe
+                    // the pre-finish state.
+                    Ok(Vec::new())
+                }
             }
             Some("Advance") => {
                 let id = order.get("unit_id").and_then(Value::as_u64);
@@ -2503,12 +2512,14 @@ fn interactive_protocol_game(c: &Config) {
                                 "preview_error":execution.preview_error,
                                 "post_combat_conditional":execution.post_combat_conditional,
                                 "assumption":if execution.post_combat_conditional {"all forecast combatants survive in place"} else {"none"},
+                                "observation_stage":"post_prefix_pre_sweep",
+                                "post_sweep":Value::Null,
                                 "summary":{"gold_before":before_gold,"gold_after":execution.state.gold[c.llm_side as usize],
                                     "units_before":before_units,"units_after":execution.state.units.len(),"recruiters":recruiter_hp,
                                     "affordable_recruitment_remaining":execution.pre_end_recruitment_remaining}})
                         }).collect::<Vec<_>>();
                             json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,
-                            "body":{"sampling":false,"phase":phase,"coverage":{"forecast":"conditional","delegated_sweep":if phase == "final" {"modeled"} else {"unavailable"}},"candidates":previews}})
+                            "body":{"sampling":false,"phase":phase,"coverage":{"forecast":"conditional_pre_finish","delegated_sweep":"unavailable","threats":"pre_finish","post_sweep":"unavailable"},"candidates":previews}})
                         }
                     }
                 }
@@ -3601,6 +3612,8 @@ mod tests {
 
         assert_eq!(state.rng.state(), before_rng);
         assert_eq!(execution.state.rng.state(), before_rng);
+        assert!(execution.events.is_empty());
+        assert_eq!(execution.state.active_faction, state.active_faction);
         assert!(execution.pre_end_threats.is_some());
         assert!(execution.forecasts.is_empty());
     }
