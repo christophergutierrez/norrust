@@ -1748,7 +1748,7 @@ fn print_events(events: &[GameEvent], envelope_source: &str, event_source: &str)
     io::stdout().flush().unwrap();
 }
 
-fn print_boundary(state: &GameState, units: &Registry<UnitDef>, partial: bool) {
+fn print_boundary(state: &GameState, units: &Registry<UnitDef>, partial: bool, incremental: bool) {
     let mut value = game_state_to_json(state, units);
     if let Some(object) = value.as_object_mut() {
         object.insert("type".into(), json!("state"));
@@ -1757,6 +1757,7 @@ fn print_boundary(state: &GameState, units: &Registry<UnitDef>, partial: bool) {
             "turn_boundary".into(),
             json!(if partial { "partial" } else { "turn" }),
         );
+        object.insert("incremental_turns".into(), json!(incremental));
     }
     println!("{}", value);
     io::stdout().flush().unwrap();
@@ -1942,7 +1943,7 @@ fn interactive_protocol_game(c: &Config) {
         println!("{}", reference);
         io::stdout().flush().unwrap();
     }
-    print_boundary(&state, &units, false);
+    print_boundary(&state, &units, false, c.incremental_turns);
 
     let (line_tx, line_rx) = mpsc::sync_channel::<Result<String, String>>(8);
     std::thread::spawn(move || {
@@ -2905,7 +2906,7 @@ fn interactive_protocol_game(c: &Config) {
                 println!("{}", reference);
                 io::stdout().flush().unwrap();
             }
-            print_boundary(&state, &units, false);
+            print_boundary(&state, &units, false, c.incremental_turns);
             deadline = Instant::now() + Duration::from_secs(c.turn_timeout);
         } else if c.incremental_turns && batch_succeeded {
             partial_batches += 1;
@@ -2915,7 +2916,7 @@ fn interactive_protocol_game(c: &Config) {
                 println!("{}", reference);
                 io::stdout().flush().unwrap();
             }
-            print_boundary(&state, &units, true);
+            print_boundary(&state, &units, true, c.incremental_turns);
         }
     }
     if !terminal && state.check_winner().is_none() {

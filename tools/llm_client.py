@@ -1223,19 +1223,23 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "and never issue a Move to it. "
         "recruit_options supplies faction-legal definitions, costs, affordability, and placement hexes."
     )
+    boundary_guidance = (
+        " In incremental mode, a partial non-empty action array may omit EndTurn; use it for a coherent small step, "
+        "then reassess the fresh state. EndTurn remains required to finish the side turn."
+        if state.get("incremental_turns") is True else "")
     rules = (
         load_tactical_playbook() + "\n"
         "You play only the configured model-controlled side in Norrust. The driver automatically "
         "executes the opponent; never submit opponent actions. Return the non-empty JSON array only; "
         "actions execute sequentially in array order against the mutating state. "
-        "The array has at most 256 objects with exactly one final {\"action\":\"EndTurn\"}. "
+        "The array has at most 256 objects. In normal mode it has exactly one final {\"action\":\"EndTurn\"}. "
         "Before EndTurn you should strongly prefer exhausting legal recruitment. Otherwise move "
         "non-recruiters off castle hexes when that creates placement capacity, recruit "
         "into every useful legal placement, and repeat vacate-then-recruit until gold, "
         "definitions, or castle capacity prevents another recruit. You may deliberately "
         "save gold for a better recruit next turn when that is strategically justified; "
         "otherwise do not EndTurn while recruit_options says a legal affordable recruit "
-        "and placement exists. " + tactical_guidance + " "
+        "and placement exists. " + boundary_guidance + tactical_guidance + " "
         "Each object has exactly one of these schemas: " + "; ".join(schemas) + ". "
         "For legacy turn_options, Move onto your own hex is rejected as DestinationOccupied and rolls back your whole "
         "batch. Only entries with \"movable\":true are Move destinations. For Advance, target_index "
@@ -1323,7 +1327,9 @@ def compact_observation(state: dict[str, Any]) -> str:
     next_tod = tactical.get("next_time_of_day", "?") if isinstance(tactical, dict) else "?"
     lines = [f"turn={state.get('turn', '?')} active_faction={state.get('active_faction', '?')} "
              f"time_of_day={state.get('time_of_day', '?')} next_time_of_day={next_tod} "
-             f"visibility={visibility} map={state.get('cols', '?')}x{state.get('rows', '?')}",
+             f"visibility={visibility} map={state.get('cols', '?')}x{state.get('rows', '?')} "
+             f"boundary={state.get('turn_boundary', 'turn')} "
+             f"incremental={state.get('incremental_turns', False)}",
              f"gold={state.get('gold', '?')} terrain_types={','.join(sorted(terrain))}"]
     lines.extend(compact_spatial_map(state).splitlines())
     lines.append("units:")
