@@ -98,6 +98,10 @@ love norrust_love
 
 > Full build and workflow guide: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
 
+For recorded match history, model telemetry, offline evaluation, and reviewed training
+exports, see the [AI agent guide](docs/AGENT_GUIDE.md#recorded-games-and-training-data),
+[game history](docs/GAME_HISTORY.md), and [training data workflow](docs/TRAINING_DATA.md).
+
 ---
 
 ## For AI Developers

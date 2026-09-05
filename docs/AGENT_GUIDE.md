@@ -3,6 +3,45 @@
 A practical guide for building an agent that plays The Clash for Norrust. Assumes you've read
 [BRIDGE_API.md](BRIDGE_API.md) for the raw API contract.
 
+## Recorded games and training data
+
+When a task asks about previous games, model effort, turn history, infrastructure failures,
+or training examples, inspect the recorded-game catalog before reading individual logs. The
+usual artifact directory is `tmp/game_history_final_games/`; other cohorts may be under `tmp/`.
+The SQLite catalog is `history.sqlite`, and the original `match.ndjson`, checkpoints, native
+request artifacts, and reports remain beside it. These files are ignored by Git and may be
+absent in a fresh checkout.
+
+Useful commands from the repository root:
+
+```bash
+# Find available catalogs and archives.
+find tmp -name 'history.sqlite' -o -name 'match.ndjson'
+
+# Check the catalog and inspect a game or its side turns.
+python3 tools/game_history.py game --db tmp/game_history_final_games/history.sqlite GAME_ID
+python3 tools/game_history.py turns --db tmp/game_history_final_games/history.sqlite GAME_ID
+python3 - <<'PY'
+from tools.game_history import verify_history
+print(verify_history("tmp/game_history_final_games/history.sqlite"))
+PY
+
+# Summarize an original match archive.
+python3 tools/luna_report.py tmp/game_history_final_games/2031/match.ndjson
+
+# Run the offline evaluator and export only explicitly approved decisions.
+./norrust_core/target/release/history_eval mechanical \
+  --db tmp/game_history_final_games/history.sqlite --cohort COHORT_ID
+python3 tools/game_training_export.py --db DB --run-id RUN_ID --output OUTPUT_DIR
+```
+
+Use the database for indexed, ad hoc queries and the original archive for evidence that has
+not been imported. Treat absent prompt, response, usage, reasoning, or boundary data as
+unknown. A mechanical evaluation proves recorded execution evidence only; it does not prove
+that a move was strategically good. Training exports require an explicit review approval,
+and the exporter does not invent hidden reasoning. Keep generated greedy actions attributed
+to the algorithm and model-authored handoffs attributed to the model.
+
 ## Fog of War
 
 The game supports fog of war based on unit vision ranges. When FOW is enabled:
