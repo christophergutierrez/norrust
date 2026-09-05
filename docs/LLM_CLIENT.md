@@ -122,6 +122,11 @@ command. Set `NORRUST_REASONING_EFFORT=high`; the adapter passes that setting to
 Codex, disables user config/rules and project tools, and returns the normal
 `{"text": ...}` envelope.
 
+When an engine rejects a submitted batch, the client allows one bounded action
+repair. If that repair asks for a tool instead of actions, it receives one final
+action-only follow-up within the turn budget. Repeated illegal proposals remain a
+model-invalid result and are recorded separately from infrastructure failures.
+
 The default `--turn-timeout` is 930 seconds. The client keeps the model command
 timeout and driver query budget independently. It warns when the turn timeout
 is below `query_budget_seconds + 2 * model_timeout`, since an action repair can
