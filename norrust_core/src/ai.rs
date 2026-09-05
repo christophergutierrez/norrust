@@ -1343,6 +1343,145 @@ pub fn ai_take_turn_greedy_actions(
     Ok(events)
 }
 
+/// Execute the fast greedy planner for an explicit set of friendly units.
+///
+/// This is a finisher primitive: it never recruits or ends the turn, and it
+/// never considers units outside `unit_ids`. Units are processed in stable ID
+/// order. A unit that has already moved may still attack from its current hex;
+/// a unit that has already attacked may still move, but not attack.
+pub fn ai_take_selected_greedy_actions(
+    state: &mut GameState,
+    faction: u8,
+    unit_ids: &[u32],
+) -> Result<Vec<GameEvent>, crate::game_state::ActionError> {
+    let mut ids = unit_ids.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    let mut events = Vec::new();
+
+    for uid in ids {
+        let Some(unit) = state.units.get(&uid) else {
+            continue;
+        };
+        if unit.faction != faction || !state.positions.contains_key(&uid) {
+            continue;
+        }
+        let moved = unit.moved;
+        let attacked = unit.attacked;
+        if moved && attacked {
+            continue;
+        }
+
+        if moved {
+            if let Some(defender_id) = best_attack_from_current(state, uid, faction) {
+                events.extend(apply_action(
+                    state,
+                    Action::Attack {
+                        attacker_id: uid,
+                        defender_id,
+                    },
+                )?);
+            }
+            continue;
+        }
+
+        if attacked {
+            if let Some(destination) = plan_movement_only(state, uid, faction) {
+                if destination != state.positions[&uid] {
+                    events.extend(apply_action(
+                        state,
+                        Action::Move {
+                            unit_id: uid,
+                            destination,
+                        },
+                    )?);
+                }
+            }
+            continue;
+        }
+
+        if let Some((destination, defender_id)) = plan_unit_action(state, uid, faction, 1) {
+            if destination != state.positions[&uid] {
+                events.extend(apply_action(
+                    state,
+                    Action::Move {
+                        unit_id: uid,
+                        destination,
+                    },
+                )?);
+            }
+            if let Some(defender_id) = defender_id {
+                if state.units.contains_key(&uid) && state.units.contains_key(&defender_id) {
+                    events.extend(apply_action(
+                        state,
+                        Action::Attack {
+                            attacker_id: uid,
+                            defender_id,
+                        },
+                    )?);
+                }
+            }
+        }
+    }
+    Ok(events)
+}
+
+fn best_attack_from_current(state: &GameState, uid: u32, faction: u8) -> Option<u32> {
+    let unit = state.units.get(&uid)?;
+    let origin = *state.positions.get(&uid)?;
+    let tactics = unit_tactics(state, uid).ok()?;
+    let engagements = tactics.origins.iter().find(|origin_info| {
+        origin_info.col == origin.to_offset().0 && origin_info.row == origin.to_offset().1
+    })?;
+    engagements
+        .engagements
+        .iter()
+        .filter_map(|engagement| {
+            let defender = state.units.get(&engagement.defender_id)?;
+            (defender.faction != faction).then_some((
+                score_attack(unit, origin, defender, state.positions[&defender.id], state),
+                defender.id,
+            ))
+        })
+        .max_by(|(left_score, left_id), (right_score, right_id)| {
+            left_score
+                .partial_cmp(right_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| right_id.cmp(left_id))
+        })
+        .map(|(_, id)| id)
+}
+
+fn plan_movement_only(state: &GameState, uid: u32, faction: u8) -> Option<Hex> {
+    let start = *state.positions.get(&uid)?;
+    let unit = state.units.get(&uid)?;
+    let tactics = unit_tactics(state, uid).ok()?;
+    let nearest_enemy = |hex: Hex| {
+        state
+            .units
+            .iter()
+            .filter(|(_, other)| other.faction != faction)
+            .filter_map(|(id, _)| state.positions.get(id))
+            .map(|enemy| hex.distance(*enemy))
+            .min()
+            .unwrap_or(u32::MAX)
+    };
+    tactics
+        .origins
+        .iter()
+        .map(|origin| Hex::from_offset(origin.col, origin.row))
+        .filter(|&hex| hex == start || !state.hex_to_unit.contains_key(&hex))
+        .filter(|&hex| hex == start || unit.movement > 0)
+        .min_by_key(|&hex| {
+            (
+                nearest_enemy(hex),
+                std::cmp::Reverse(unit_defense_on(state, unit, hex)),
+                hex,
+            )
+        })
+        .filter(|&hex| hex != start)
+}
+
 /// AI turn with recruit simulation: placeholder recruits are simulated in the
 /// planning clone so the planner sees their value and keeps the leader on keep.
 pub fn ai_take_turn_with_recruits(
@@ -1634,6 +1773,48 @@ mod tests {
             )),
             "a spent recruit must not be selected: {records:?}"
         );
+    }
+
+    #[test]
+    fn selected_greedy_respects_allowlist_and_spent_action_combinations() {
+        let mut board = Board::new(8, 3);
+        for col in 0..8 {
+            for row in 0..3 {
+                board.set_terrain(Hex::from_offset(col, row), "flat");
+            }
+        }
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+
+        let mut available = make_fighter(1, 0, 30);
+        available.movement = 2;
+        let mut moved = make_fighter(2, 0, 30);
+        moved.moved = true;
+        let mut attacked = make_fighter(3, 0, 30);
+        attacked.attacked = true;
+        let omitted = make_fighter(4, 0, 30);
+        state.place_unit(available, Hex::from_offset(1, 1));
+        state.place_unit(moved, Hex::from_offset(3, 1));
+        state.place_unit(attacked, Hex::from_offset(1, 2));
+        state.place_unit(omitted, Hex::from_offset(2, 2));
+        state.place_unit(make_fighter(10, 1, 30), Hex::from_offset(4, 1));
+
+        let before_omitted = state.units[&4].clone();
+        let before_omitted_hex = state.positions[&4];
+        let events = ai_take_selected_greedy_actions(&mut state, 0, &[3, 2, 1])
+            .expect("selected finisher should succeed");
+
+        assert_eq!(state.units[&4].id, before_omitted.id);
+        assert_eq!(state.units[&4].hp, before_omitted.hp);
+        assert_eq!(state.units[&4].moved, before_omitted.moved);
+        assert_eq!(state.units[&4].attacked, before_omitted.attacked);
+        assert_eq!(state.positions[&4], before_omitted_hex);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            GameEvent::Attack { attacker, .. } if attacker.unit == 2
+        )));
+        assert!(state.units[&2].attacked);
+        assert!(state.units[&3].moved || state.positions[&3] == Hex::from_offset(1, 2));
     }
 
     #[test]

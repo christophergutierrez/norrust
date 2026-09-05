@@ -20,7 +20,10 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use norrust_core::ai::{ai_take_turn_greedy_actions, run_greedy_side_turn, GreedyTurnError};
+use norrust_core::ai::{
+    ai_take_selected_greedy_actions, ai_take_turn_greedy_actions, run_greedy_side_turn,
+    GreedyTurnError,
+};
 use norrust_core::board::Tile;
 use norrust_core::combat::{
     combat_parameters, exact_damage_sequence, exact_exchange, preview_combat, tod_label,
@@ -677,6 +680,37 @@ fn authorize_model_batch(
         ));
     }
     for order in orders {
+        if order.get("action").and_then(Value::as_str) == Some("FinishWithGreedy") {
+            let mut delegated = Vec::new();
+            if let Some(groups) = order.get("groups").and_then(Value::as_array) {
+                for group in groups {
+                    if let Some(ids) = group.get("unit_ids").and_then(Value::as_array) {
+                        delegated.extend(ids.iter().filter_map(Value::as_u64).map(|id| id as u32));
+                    }
+                }
+            }
+            if let Some(holds) = order.get("holds").and_then(Value::as_array) {
+                delegated.extend(
+                    holds
+                        .iter()
+                        .filter_map(|hold| hold.get("unit_id").and_then(Value::as_u64))
+                        .map(|id| id as u32),
+                );
+            }
+            for id in delegated {
+                if state
+                    .units
+                    .get(&id)
+                    .is_none_or(|unit| unit.faction != model_side)
+                {
+                    return Err((
+                        "unauthorized_unit",
+                        "FinishWithGreedy may reference only living model-side units",
+                    ));
+                }
+            }
+            continue;
+        }
         let actor_id = match order.get("action").and_then(Value::as_str) {
             Some("Move") | Some("Advance") => order.get("unit_id"),
             Some("Attack") => order.get("attacker_id"),
@@ -726,13 +760,18 @@ fn validate_model_boundary(
 ) -> Result<(), (&'static str, &'static str)> {
     let end_turn_count = orders
         .iter()
-        .filter(|order| order.get("action").and_then(Value::as_str) == Some("EndTurn"))
+        .filter(|order| {
+            matches!(
+                order.get("action").and_then(Value::as_str),
+                Some("EndTurn") | Some("FinishWithGreedy")
+            )
+        })
         .count();
     let ends = orders
         .last()
         .and_then(|order| order.get("action"))
         .and_then(Value::as_str)
-        == Some("EndTurn");
+        .is_some_and(|action| matches!(action, "EndTurn" | "FinishWithGreedy"));
     if incremental {
         if end_turn_count > 1 || (end_turn_count == 1 && !ends) {
             return Err(("parse", "EndTurn must be final and may appear at most once"));
@@ -816,6 +855,7 @@ fn valid_action_shape(order: &Value) -> bool {
         ),
         "RecruitBatch" => (&["action", "def_id", "count"], &["def_id", "count"]),
         "Engage" => (&["action", "target_id", "steps"], &["target_id", "steps"]),
+        "FinishWithGreedy" => (&["action", "groups", "holds"], &["groups"]),
         "EndTurn" => (&["action"], &[]),
         "Advance" => (
             &["action", "unit_id", "target_index", "def_id"],
@@ -823,6 +863,81 @@ fn valid_action_shape(order: &Value) -> bool {
         ),
         _ => return false,
     };
+    if action == "FinishWithGreedy" {
+        let Some(groups) = object.get("groups").and_then(Value::as_array) else {
+            return false;
+        };
+        if groups.is_empty() || groups.len() > 8 {
+            return false;
+        }
+        let holds: &[Value] = object
+            .get("holds")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        if holds.len() > 256 {
+            return false;
+        }
+        let mut ids = HashSet::new();
+        for group in groups {
+            let Some(group) = group.as_object() else {
+                return false;
+            };
+            if group
+                .keys()
+                .any(|key| !["mode", "unit_ids"].contains(&key.as_str()))
+                || group.get("mode").and_then(Value::as_str) != Some("greedy")
+            {
+                return false;
+            }
+            let Some(unit_ids) = group.get("unit_ids").and_then(Value::as_array) else {
+                return false;
+            };
+            if unit_ids.is_empty() {
+                return false;
+            }
+            for id in unit_ids {
+                let Some(id) = id.as_u64().filter(|id| *id <= u32::MAX as u64) else {
+                    return false;
+                };
+                if !ids.insert(id as u32) {
+                    return false;
+                }
+            }
+        }
+        if ids.len() > 256 {
+            return false;
+        }
+        for hold in holds {
+            let Some(hold) = hold.as_object() else {
+                return false;
+            };
+            if hold
+                .keys()
+                .any(|key| !["unit_id", "reason"].contains(&key.as_str()))
+            {
+                return false;
+            }
+            let Some(id) = hold
+                .get("unit_id")
+                .and_then(Value::as_u64)
+                .filter(|id| *id <= u32::MAX as u64)
+            else {
+                return false;
+            };
+            if !ids.insert(id as u32) {
+                return false;
+            }
+            if hold
+                .get("reason")
+                .and_then(Value::as_str)
+                .is_none_or(|reason| reason.chars().count() > 120)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
     let integer = |value: &Value| {
         !value.is_boolean() && (value.as_i64().is_some() || value.as_u64().is_some())
     };
@@ -932,15 +1047,18 @@ fn validate_model_batch_contract(
     }
     let end_turns = orders
         .iter()
-        .filter(|order| order.get("action").and_then(Value::as_str) == Some("EndTurn"))
+        .filter(|order| {
+            matches!(
+                order.get("action").and_then(Value::as_str),
+                Some("EndTurn") | Some("FinishWithGreedy")
+            )
+        })
         .count();
-    if end_turns != 1
-        || orders
-            .last()
-            .and_then(|order| order.get("action"))
-            .and_then(Value::as_str)
-            != Some("EndTurn")
-    {
+    let final_boundary = orders
+        .last()
+        .and_then(|order| order.get("action"))
+        .and_then(Value::as_str);
+    if end_turns != 1 || !matches!(final_boundary, Some("EndTurn") | Some("FinishWithGreedy")) {
         return Err(("parse", "invalid action batch structure"));
     }
     authorize_model_batch(orders, state, model_side)
@@ -951,6 +1069,7 @@ struct BatchExecution {
     next_id: u32,
     results: Vec<Value>,
     events: Vec<GameEvent>,
+    delegated_event_start: Option<usize>,
     did_end: bool,
     forecasts: Vec<Value>,
     sequence_attacks: BTreeMap<u32, (u32, Vec<(u32, CombatParameters)>)>,
@@ -978,6 +1097,7 @@ fn execute_model_batch(
 ) -> BatchExecution {
     let mut results = Vec::with_capacity(orders.len());
     let mut events = Vec::new();
+    let mut delegated_event_start = None;
     let mut did_end = false;
     let mut forecasts = Vec::new();
     let mut sequence_attacks = BTreeMap::<u32, (u32, Vec<(u32, CombatParameters)>)>::new();
@@ -1218,6 +1338,29 @@ fn execute_model_batch(
                 },
                 _ => Err(norrust_core::game_state::ActionError::UnitNotFound(0)),
             },
+            Some("FinishWithGreedy") => (|| {
+                let mut selected = Vec::new();
+                for group in order
+                    .get("groups")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(ids) = group.get("unit_ids").and_then(Value::as_array) {
+                        selected.extend(ids.iter().filter_map(Value::as_u64).map(|id| id as u32));
+                    }
+                }
+                selected.sort_unstable();
+                selected.dedup();
+                delegated_event_start = Some(events.len());
+                let mut generated =
+                    ai_take_selected_greedy_actions(&mut state, model_side, &selected)?;
+                if state.check_winner().is_none() {
+                    generated.extend(apply_action(&mut state, Action::EndTurn)?);
+                }
+                events.extend(generated);
+                Ok(Vec::new())
+            })(),
             Some("EndTurn") => {
                 if !sample_attacks {
                     pre_end_recruitment_remaining = Some(if disable_recruit_batch {
@@ -1323,7 +1466,7 @@ fn execute_model_batch(
                     result_value["conditional_steps"] = json!(conditional_steps);
                 }
                 results.push(result_value);
-                if action_name == Some("EndTurn") {
+                if matches!(action_name, Some("EndTurn") | Some("FinishWithGreedy")) {
                     did_end = true;
                 }
             }
@@ -1350,6 +1493,7 @@ fn execute_model_batch(
         next_id,
         results,
         events,
+        delegated_event_start,
         did_end,
         forecasts,
         sequence_attacks: sequence_attacks.clone(),
@@ -2798,6 +2942,7 @@ fn interactive_protocol_game(c: &Config) {
                             | "RecruitBatch"
                             | "Engage"
                             | "EndTurn"
+                            | "FinishWithGreedy"
                             | "Advance"
                     )
                 )
@@ -2838,6 +2983,7 @@ fn interactive_protocol_game(c: &Config) {
             next_id: batch_next_id,
             results,
             events,
+            delegated_event_start,
             did_end,
             forecasts: _,
             sequence_attacks: _,
@@ -2922,7 +3068,12 @@ fn interactive_protocol_game(c: &Config) {
             "state_revision":state.state_revision})
         );
         io::stdout().flush().unwrap();
-        print_events(&events, "llm", "llm");
+        if let Some(start) = delegated_event_start {
+            print_events(&events[..start], "llm", "llm");
+            print_events(&events[start..], "delegated_greedy", "delegated_greedy");
+        } else {
+            print_events(&events, "llm", "llm");
+        }
         if did_end && state.check_winner().is_none() {
             partial_batches = 0;
             side_turns += 1;

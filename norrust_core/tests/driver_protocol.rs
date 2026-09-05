@@ -120,6 +120,78 @@ fn model_end_turn_runs_greedy_recruit_and_action_then_returns_to_model_side() {
 }
 
 #[test]
+fn finish_with_greedy_is_terminal_allowlisted_and_provenanced() {
+    let lines = run_driver(
+        &[
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+            "--gold",
+            "100",
+            "--max-turns",
+            "4",
+        ],
+        r#"{"action":"FinishWithGreedy","groups":[{"mode":"greedy","unit_ids":[1]}],"holds":[]}
+"#,
+    );
+    let status = lines
+        .iter()
+        .find(|line| line["type"] == "status")
+        .expect("finish status");
+    assert_eq!(status["ok"], true);
+    assert_eq!(status["results"][0]["ok"], true);
+    assert!(lines.iter().any(|line| {
+        line["type"] == "events"
+            && line["source"] == "delegated_greedy"
+            && line["events"].as_array().is_some_and(|events| {
+                events
+                    .iter()
+                    .all(|event| event["source"] == "delegated_greedy")
+                    && events.iter().any(|event| event["kind"] == "end_turn")
+            })
+    }));
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line["type"] == "events" && line["source"] == "delegated_greedy")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn finish_with_greedy_rejects_duplicate_or_foreign_ids_before_mutation() {
+    let lines = run_driver(
+        &[
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+            "--max-turns",
+            "4",
+        ],
+        r#"{"action":"FinishWithGreedy","groups":[{"mode":"greedy","unit_ids":[1,1]}],"holds":[]}
+{"action":"FinishWithGreedy","groups":[{"mode":"greedy","unit_ids":[999]}],"holds":[]}
+"#,
+    );
+    let statuses: Vec<&Value> = lines
+        .iter()
+        .filter(|line| line["type"] == "status")
+        .collect();
+    assert_eq!(statuses[0]["code"], "parse");
+    assert_eq!(statuses[1]["code"], "unauthorized_unit");
+    assert_eq!(
+        lines.iter().filter(|line| line["type"] == "state").count(),
+        1
+    );
+}
+
+#[test]
 fn incremental_validation_and_submission_share_the_partial_batch_limit() {
     let partial = r#"[{"action":"RecruitBatch","def_id":"Skeleton","count":1}]"#;
     let input = format!("{partial}\n{partial}\n{partial}\n{partial}\n{{\"action\":\"EndTurn\"}}\n");

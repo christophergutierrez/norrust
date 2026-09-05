@@ -21,7 +21,8 @@ try:
 except ImportError:  # pragma: no cover - direct script compatibility
     from luna_agenda import agenda_from_response, compact_agenda
 
-ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "Engage", "EndTurn", "Advance"}
+ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "Engage", "EndTurn", "Advance",
+           "FinishWithGreedy"}
 CHECKPOINT_REF_DIGEST_BYTES = 64
 
 
@@ -321,6 +322,7 @@ def validate_orders(text: str, strict: bool = False, require_end_turn: bool = Tr
             "Engage": {"action", "target_id", "steps"},
             "EndTurn": {"action"},
             "Advance": {"action", "unit_id", "target_index", "def_id"},
+            "FinishWithGreedy": {"action", "groups", "holds"},
         }[action]
         if set(order) - allowed:
             raise ValueError(f"unknown key at index {i}")
@@ -332,6 +334,7 @@ def validate_orders(text: str, strict: bool = False, require_end_turn: bool = Tr
             "Engage": {"target_id", "steps"},
             "EndTurn": set(),
             "Advance": {"unit_id"},
+            "FinishWithGreedy": {"groups", "holds"},
         }[action]
         if not required.issubset(order):
             raise ValueError(f"missing field at index {i}")
@@ -382,11 +385,49 @@ def validate_orders(text: str, strict: bool = False, require_end_turn: bool = Tr
             raise ValueError(f"count must be positive at index {i}")
         if strict and action == "RecruitBatch":
             raise ValueError("RecruitBatch is disabled in strict mode")
-        end_indices += [i] if action == "EndTurn" else []
+        if action == "FinishWithGreedy":
+            groups = order["groups"]
+            holds = order["holds"]
+            if not isinstance(groups, list) or not 1 <= len(groups) <= 8:
+                raise ValueError(f"FinishWithGreedy groups must contain one to eight groups at index {i}")
+            if not isinstance(holds, list) or len(holds) > 256:
+                raise ValueError(f"FinishWithGreedy holds must contain at most 256 entries at index {i}")
+            delegated: set[int] = set()
+            held: set[int] = set()
+            for group in groups:
+                if not isinstance(group, dict) or set(group) != {"mode", "unit_ids"}:
+                    raise ValueError(f"invalid FinishWithGreedy group at index {i}")
+                if group["mode"] != "greedy":
+                    raise ValueError(f"unsupported FinishWithGreedy mode at index {i}")
+                ids = group["unit_ids"]
+                if not isinstance(ids, list) or not ids:
+                    raise ValueError(f"FinishWithGreedy unit_ids must be non-empty at index {i}")
+                for unit_id in ids:
+                    if (not isinstance(unit_id, int) or isinstance(unit_id, bool)
+                            or not 0 <= unit_id <= 2**32 - 1):
+                        raise ValueError(f"invalid FinishWithGreedy unit id at index {i}")
+                    if unit_id in delegated:
+                        raise ValueError(f"duplicate FinishWithGreedy unit id at index {i}")
+                    delegated.add(unit_id)
+            for hold in holds:
+                if not isinstance(hold, dict) or set(hold) != {"unit_id", "reason"}:
+                    raise ValueError(f"invalid FinishWithGreedy hold at index {i}")
+                unit_id, reason = hold["unit_id"], hold["reason"]
+                if (not isinstance(unit_id, int) or isinstance(unit_id, bool)
+                        or not 0 <= unit_id <= 2**32 - 1
+                        or not isinstance(reason, str) or len(reason) > 120):
+                    raise ValueError(f"invalid FinishWithGreedy hold at index {i}")
+                if unit_id in held or unit_id in delegated:
+                    raise ValueError(f"overlapping FinishWithGreedy hold at index {i}")
+                held.add(unit_id)
+            if len(delegated) > 256:
+                raise ValueError(f"too many FinishWithGreedy unit ids at index {i}")
+        if action in {"EndTurn", "FinishWithGreedy"}:
+            end_indices.append(i)
     if require_end_turn and (len(end_indices) != 1 or end_indices[0] != len(orders) - 1):
-        raise ValueError("exactly one final EndTurn is required")
+        raise ValueError("exactly one final EndTurn or FinishWithGreedy is required")
     if not require_end_turn and end_indices and end_indices[0] != len(orders) - 1:
-        raise ValueError("EndTurn, when present, must be final")
+        raise ValueError("EndTurn or FinishWithGreedy, when present, must be final")
     return orders
 
 
