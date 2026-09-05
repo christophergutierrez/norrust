@@ -25,6 +25,7 @@ from .llm_client import (
     load_resume_checkpoint,
     validate_inspect_unit_request, validate_inspect_target_request, validate_inspect_targets_request,
     validate_inspect_hex_request, validate_orders, validate_preview_request,
+    timeout_finish_orders,
 )
 
 
@@ -642,6 +643,58 @@ class ClientValidationTests(unittest.TestCase):
     def test_non_final_end_turn_rejected(self):
         with self.assertRaises(ValueError):
             validate_orders('[{"action":"EndTurn"},{"action":"Move"}]')
+
+    def test_finish_with_greedy_accepts_greedy_and_toward_hex_groups(self):
+        orders = validate_orders(json.dumps([
+            {"action": "Move", "unit_id": 1, "col": 2, "row": 3},
+            {"action": "FinishWithGreedy",
+             "groups": [
+                 {"mode": "greedy", "unit_ids": [2, 3]},
+                 {"mode": "toward_hex", "unit_ids": [4], "col": 7, "row": 8},
+             ],
+             "holds": [{"unit_id": 5, "reason": "protect the wounded screen"}]},
+        ]))
+        self.assertEqual(orders[-1]["action"], "FinishWithGreedy")
+        self.assertEqual(orders[-1]["groups"][1]["mode"], "toward_hex")
+
+    def test_finish_with_greedy_rejects_invalid_mode_and_overlap(self):
+        invalid_mode = [{"action": "FinishWithGreedy",
+                         "groups": [{"mode": "random", "unit_ids": [2]}],
+                         "holds": []}]
+        with self.assertRaises(ValueError):
+            validate_orders(json.dumps(invalid_mode))
+
+        overlap = [{"action": "FinishWithGreedy",
+                    "groups": [{"mode": "greedy", "unit_ids": [2]}],
+                    "holds": [{"unit_id": 2, "reason": "hold position"}]}]
+        with self.assertRaises(ValueError):
+            validate_orders(json.dumps(overlap))
+
+    def test_prompt_documents_greedy_handoff_and_recruitment_ownership(self):
+        prompt = prompt_for({"units": []}, [])
+        for text in (
+                "FinishWithGreedy may be the final action",
+                "list only units you release to greedy",
+                "list deliberate holds with short reasons",
+                "FinishWithGreedy never recruits",
+                "recruitment and saving gold remain your explicit decisions",
+        ):
+            with self.subTest(text=text):
+                self.assertIn(text, prompt)
+
+    def test_timeout_finish_orders_preserves_holds_and_excludes_spent_units(self):
+        state = {"units": [
+            {"id": 1, "faction": 0, "moved": False, "attacked": False},
+            {"id": 2, "faction": 0, "moved": True, "attacked": False},
+            {"id": 3, "faction": 0, "moved": False, "attacked": True},
+            {"id": 4, "faction": 0, "moved": True, "attacked": True},
+            {"id": 5, "faction": 1, "moved": False, "attacked": False},
+        ]}
+        orders = timeout_finish_orders(
+            state, 0, {"holds": [{"unit_id": 2, "reason": "guard the keep"}]})
+        self.assertEqual(orders[0]["action"], "FinishWithGreedy")
+        self.assertEqual(orders[0]["groups"], [{"mode": "greedy", "unit_ids": [1, 3]}])
+        self.assertEqual(orders[0]["holds"], [{"unit_id": 2, "reason": "guard the keep"}])
 
     def test_incremental_batch_can_omit_end_turn_but_end_turn_must_be_final(self):
         self.assertEqual(

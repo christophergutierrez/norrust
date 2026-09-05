@@ -457,6 +457,35 @@ def response_intent(text: str) -> Optional[str]:
     return intent if isinstance(intent, str) else None
 
 
+def timeout_finish_orders(state: dict[str, Any], faction: int,
+                          agenda: Optional[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build the deterministic no-recruit fallback after a proven timeout."""
+    held: dict[int, str] = {}
+    for value in (agenda or {}).get("holds", []):
+        if isinstance(value, int) and not isinstance(value, bool):
+            held[value] = "preserved agenda hold"
+        elif isinstance(value, dict) and isinstance(value.get("unit_id"), int):
+            held[value["unit_id"]] = str(value.get("reason", "preserved agenda hold"))[:120]
+    eligible = []
+    for unit in state.get("units", []):
+        if not isinstance(unit, dict) or unit.get("faction") != faction:
+            continue
+        unit_id = unit.get("id", unit.get("unit_id"))
+        if not isinstance(unit_id, int) or unit_id in held:
+            continue
+        if not bool(unit.get("moved")) or not bool(unit.get("attacked")):
+            eligible.append(unit_id)
+    orders: list[dict[str, Any]] = []
+    if eligible:
+        orders.append({"action": "FinishWithGreedy",
+                       "groups": [{"mode": "greedy", "unit_ids": sorted(set(eligible))}],
+                       "holds": [{"unit_id": unit_id, "reason": reason}
+                                  for unit_id, reason in sorted(held.items())]})
+    else:
+        orders.append({"action": "EndTurn"})
+    return orders
+
+
 def enforce_usage(reply: ModelReply, args: argparse.Namespace) -> None:
     if reply.usage is None:
         return
@@ -1784,6 +1813,8 @@ def run(args: argparse.Namespace) -> int:
                 "attack_opportunity_unit_turns": 0, "planned_attack_unit_turns": 0,
                 "draft_reviews": 0, "draft_revisions": 0, "draft_confirmations": 0,
                 "draft_review_repairs": 0,
+                "timeout_finishes": 0,
+                "timeout_fallback_only_turns": 0,
                 "decision_metrics": getattr(args, "decision_metrics", False),
                 "sampling": None, "llm_authored_extra": False,
                 "winner": None, "reason": None, "terminal_class": None,
@@ -2207,6 +2238,7 @@ def run(args: argparse.Namespace) -> int:
                     return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
                 metadata["model_calls"] += 1
                 model_calls_this_turn += 1
+                timeout_fallback = False
                 try:
                     reply = complete_model(prompt)
                     enforce_usage(reply, args)
@@ -2345,21 +2377,35 @@ def run(args: argparse.Namespace) -> int:
                 except (RuntimeError, ValueError) as first:
                     # Same split: a ValueError here means the model failed
                     # validation twice (initial plus repair).
-                    terminal_class = (TERMINAL_MODEL_INVALID
-                                      if isinstance(first, ValueError)
-                                      else TERMINAL_INFRASTRUCTURE)
-                    set_terminal(metadata, terminal_class,
-                                 winner=None,
-                                 reason=(TERMINAL_MODEL_INVALID
-                                         if terminal_class == TERMINAL_MODEL_INVALID
-                                         else "infrastructure_failure"),
-                                 code=("action_validation_invalid"
-                                       if terminal_class == TERMINAL_MODEL_INVALID
-                                       else "model_backend_failure"),
-                                 message=str(first))
-                    durable({"type": "model_error", **metadata})
-                    return TERMINAL_EXIT_CODES[terminal_class]
-                if draft_needs_preview(state, orders, danger_before):
+                    if (isinstance(first, RuntimeError)
+                            and getattr(args, "timeout_finish", False)
+                            and any(marker in str(first) for marker in
+                                    ("model_timeout", "model_request_uncertain", "native_model_timeout"))):
+                        orders = timeout_finish_orders(state, args.llm_side, agenda_memory)
+                        timeout_fallback = True
+                        metadata["timeout_finishes"] += 1
+                        if not state.get("turn_progress", {}).get("moved") and not state.get("turn_progress", {}).get("attacked"):
+                            metadata["timeout_fallback_only_turns"] += 1
+                        record({"type": "timeout_fallback", "orders": orders,
+                                "message": str(first),
+                                "holds": (agenda_memory or {}).get("holds", [])})
+                        turn_intent = None
+                    else:
+                        terminal_class = (TERMINAL_MODEL_INVALID
+                                          if isinstance(first, ValueError)
+                                          else TERMINAL_INFRASTRUCTURE)
+                        set_terminal(metadata, terminal_class,
+                                     winner=None,
+                                     reason=(TERMINAL_MODEL_INVALID
+                                             if terminal_class == TERMINAL_MODEL_INVALID
+                                             else "infrastructure_failure"),
+                                     code=("action_validation_invalid"
+                                           if terminal_class == TERMINAL_MODEL_INVALID
+                                           else "model_backend_failure"),
+                                     message=str(first))
+                        durable({"type": "model_error", **metadata})
+                        return TERMINAL_EXIT_CODES[terminal_class]
+                if not timeout_fallback and draft_needs_preview(state, orders, danger_before):
                     try:
                         preview_candidates = [[{"action": "EndTurn"}]]
                         draft_index = 0
@@ -2670,6 +2716,8 @@ def main() -> int:
                    help="maximum read-only model tool requests per turn")
     p.add_argument("--decision-metrics", action="store_true",
                    help="preview final batches for recruiter-danger and recruitment telemetry")
+    p.add_argument("--timeout-finish", action="store_true",
+                   help="after a proven model timeout, finish eligible units with greedy without recruiting")
     p.add_argument("--event-window-observations", type=int, default=1)
     p.add_argument("--log")
     resume = p.add_mutually_exclusive_group()
