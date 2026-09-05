@@ -444,7 +444,10 @@ pub fn apply_action(state: &mut GameState, action: Action) -> Result<Vec<GameEve
     result
 }
 
-fn apply_action_inner(state: &mut GameState, action: Action) -> Result<Vec<GameEvent>, ActionError> {
+fn apply_action_inner(
+    state: &mut GameState,
+    action: Action,
+) -> Result<Vec<GameEvent>, ActionError> {
     match action {
         Action::Move {
             unit_id,

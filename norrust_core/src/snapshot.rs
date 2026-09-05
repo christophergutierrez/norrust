@@ -302,33 +302,77 @@ impl StateSnapshot {
             if !terrain_index.contains_key(&tile.terrain_id) {
                 let index = terrain_types.len() as u16;
                 terrain_index.insert(tile.terrain_id.clone(), index);
-                terrain_types.push(CompactTerrainType { id: tile.terrain_id.clone(), color: tile.color.clone(),
-                    defense: tile.defense, movement_cost: tile.movement_cost, healing: tile.healing });
+                terrain_types.push(CompactTerrainType {
+                    id: tile.terrain_id.clone(),
+                    color: tile.color.clone(),
+                    defense: tile.defense,
+                    movement_cost: tile.movement_cost,
+                    healing: tile.healing,
+                });
             }
         }
-        let terrain = flat.terrain.into_iter().map(|tile| CompactTileSnapshot {
-            col: tile.col, row: tile.row, terrain_index: terrain_index[&tile.terrain_id], owner: tile.owner,
-        }).collect();
+        let terrain = flat
+            .terrain
+            .into_iter()
+            .map(|tile| CompactTileSnapshot {
+                col: tile.col,
+                row: tile.row,
+                terrain_index: terrain_index[&tile.terrain_id],
+                owner: tile.owner,
+            })
+            .collect();
         let mut unit_types = Vec::new();
         let mut type_index = std::collections::HashSet::new();
         let mut units = Vec::new();
         for unit in flat.units {
             if type_index.insert(unit.def_id.clone()) {
-                unit_types.push(CompactUnitType { id: unit.def_id.clone(), attacks: unit.attacks.clone(),
-                    abilities: unit.abilities.clone(), movement: unit.movement, level: unit.level, cost: unit.cost,
-                    advances_to: unit.advances_to.clone(), can_recruit: unit.can_recruit,
-                    resistances: unit.resistances.clone(), defense: unit.defense.clone(),
-                    default_defense: unit.default_defense, alignment: unit.alignment.clone() });
+                unit_types.push(CompactUnitType {
+                    id: unit.def_id.clone(),
+                    attacks: unit.attacks.clone(),
+                    abilities: unit.abilities.clone(),
+                    movement: unit.movement,
+                    level: unit.level,
+                    cost: unit.cost,
+                    advances_to: unit.advances_to.clone(),
+                    can_recruit: unit.can_recruit,
+                    resistances: unit.resistances.clone(),
+                    defense: unit.defense.clone(),
+                    default_defense: unit.default_defense,
+                    alignment: unit.alignment.clone(),
+                });
             }
-            units.push(CompactUnitSnapshot { id: unit.id, def_id: unit.def_id, col: unit.col, row: unit.row,
-                faction: unit.faction, hp: unit.hp, max_hp: unit.max_hp, moved: unit.moved, attacked: unit.attacked,
-                xp: unit.xp, xp_needed: unit.xp_needed, advancement_pending: unit.advancement_pending,
-                poisoned: unit.poisoned, slowed: unit.slowed });
+            units.push(CompactUnitSnapshot {
+                id: unit.id,
+                def_id: unit.def_id,
+                col: unit.col,
+                row: unit.row,
+                faction: unit.faction,
+                hp: unit.hp,
+                max_hp: unit.max_hp,
+                moved: unit.moved,
+                attacked: unit.attacked,
+                xp: unit.xp,
+                xp_needed: unit.xp_needed,
+                advancement_pending: unit.advancement_pending,
+                poisoned: unit.poisoned,
+                slowed: unit.slowed,
+            });
         }
-        CompactStateSnapshot { state_revision: flat.state_revision, turn: flat.turn,
-            active_faction: flat.active_faction, tod_phase: flat.tod_phase, time_of_day: flat.time_of_day,
-            cols: flat.cols, rows: flat.rows, terrain_types, terrain, unit_types, units,
-            gold: flat.gold, factions: flat.factions }
+        CompactStateSnapshot {
+            state_revision: flat.state_revision,
+            turn: flat.turn,
+            active_faction: flat.active_faction,
+            tod_phase: flat.tod_phase,
+            time_of_day: flat.time_of_day,
+            cols: flat.cols,
+            rows: flat.rows,
+            terrain_types,
+            terrain,
+            unit_types,
+            units,
+            gold: flat.gold,
+            factions: flat.factions,
+        }
     }
 
     /// Build a fog-of-war snapshot for `faction`: enemy units on non-visible hexes are hidden,
