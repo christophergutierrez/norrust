@@ -17,6 +17,7 @@ from .llm_client import (
     compact_target_inspection, compact_tactical_surface, compact_spatial_map, prompt_for, query_options,
     compact_unit_inspection, compact_draft_review, tool_followup_instruction, tool_budget_repair_prompt,
     compact_events, tactical_attack_coverage,
+    select_event_window,
     query_tactical_surface, query_validate_batch, query_preview_batch,
     query_inspect_unit, query_inspect_target, query_inspect_targets, query_inspect_hex, run,
     response_intent, compact_strategic_briefing,
@@ -43,6 +44,26 @@ class FakeDriverProcess:
 
 
 class ClientValidationTests(unittest.TestCase):
+
+    def test_event_window_observation_count_is_exact(self):
+        first = [{"kind": "recruit", "unit": 1}]
+        second = [{"kind": "move", "unit": 2}]
+        current = [{"kind": "attack", "unit": 3}]
+        self.assertEqual(select_event_window([first, second], current, 1), current)
+        self.assertEqual(select_event_window([first, second], current, 2), second + current)
+        self.assertEqual(select_event_window([first, second], current, 3), first + second + current)
+
+    def test_prompt_carries_bounded_continuity_and_turn_progress(self):
+        prompt = prompt_for(
+            {"turn": 4, "active_faction": 0, "incremental_turns": True,
+             "final_only": False, "remaining_partial_batches": 2,
+             "gold": [10, 10], "cols": 1, "rows": 1, "terrain": [], "units": [],
+             "turn_progress": {"moved": [3], "attacked": [4],
+                                "remaining_attackers": [5, 6]}}, [], compact=True,
+            continuity="assistant: hold U7 for the next frontline rotation")
+        self.assertIn("TURN_PROGRESS moved=U3 attacked=U4 remaining_attackers=U5,U6", prompt)
+        self.assertIn("conversation_continuity", prompt)
+        self.assertIn("hold U7", prompt)
     def test_checkpoint_reference_confines_path_and_verifies_digest(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "match.ckpt"

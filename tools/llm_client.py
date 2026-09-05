@@ -1176,6 +1176,15 @@ def compact_events(events: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def select_event_window(event_intervals: list[list[dict[str, Any]]],
+                        current: list[dict[str, Any]], observations: int) -> list[dict[str, Any]]:
+    """Return only the requested recent completed intervals plus current events."""
+    if observations < 1:
+        raise ValueError("observations must be positive")
+    prior = event_intervals[-(observations - 1):] if observations > 1 else []
+    return [event for interval in prior for event in interval] + list(current)
+
+
 def draft_needs_preview(state: dict[str, Any], orders: list[dict[str, Any]],
                         danger_before: bool) -> bool:
     if state.get("incremental_turns") is True:
@@ -1192,7 +1201,8 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
                recruit_options: Optional[dict[str, Any]] = None,
                recruit_batch_enabled: bool = True,
                compact: bool = False,
-               intent: Optional[str] = None) -> str:
+               intent: Optional[str] = None,
+               continuity: Optional[str] = None) -> str:
     schemas = [
         'Move: {"action":"Move","unit_id": integer,"col": integer,"row": integer}',
         'Attack: {"action":"Attack","attacker_id": integer,"defender_id": integer}',
@@ -1311,6 +1321,8 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         body["recruit_options"] = recruit_options
     if intent:
         body["previous_intent"] = intent
+    if continuity:
+        body["conversation_continuity"] = continuity
     option_payloads = {key: body.pop(key) for key in ("turn_options", "recruit_options", "tactical_surface") if key in body}
     event_payload = events if not compact else compact_events(events)
     return (
@@ -1347,6 +1359,13 @@ def compact_observation(state: dict[str, Any]) -> str:
              f"final_only={state.get('final_only', False)} "
              f"partials_left={state.get('remaining_partial_batches', '?')}",
              f"gold={state.get('gold', '?')} terrain_types={','.join(sorted(terrain))}"]
+    progress = state.get("turn_progress")
+    if isinstance(progress, dict):
+        moved = ",".join("U%s" % value for value in progress.get("moved", [])) or "-"
+        attacked = ",".join("U%s" % value for value in progress.get("attacked", [])) or "-"
+        remaining = ",".join("U%s" % value for value in progress.get("remaining_attackers", [])) or "-"
+        lines.append("TURN_PROGRESS moved=%s attacked=%s remaining_attackers=%s" %
+                     (moved, attacked, remaining))
     lines.extend(compact_spatial_map(state).splitlines())
     lines.append("units:")
     for unit in units:
@@ -1616,6 +1635,9 @@ def run(args: argparse.Namespace) -> int:
     tool_calls_this_turn = 0
     intent_memory = ""
     pending_intent: Optional[str] = None
+    continuity_entries: list[str] = []
+    turn_progress_moved: set[int] = set()
+    turn_progress_attacked: set[int] = set()
     metadata = {"scenario": args.scenario, "faction0": args.faction0, "faction1": args.faction1,
                 "gold": args.gold, "seed": args.seed, "llm_side": args.llm_side,
                 "first_player": 0 if args.llm_side == 0 else 1,
@@ -1624,6 +1646,8 @@ def run(args: argparse.Namespace) -> int:
                 "opponent": "greedy+driver-recruit", "opponent_recruit_policy": "standard_driver_macro",
                 "opponent_planner": "no_skirmisher_pathing",
                 "turn_format": "incremental" if getattr(args, "incremental_turns", False) else "single_batch",
+                "continuity_mode": "bounded_transcript",
+                "requested_reasoning_effort": getattr(args, "reasoning_effort", None),
                 "client_projection": "full_legacy" if getattr(args, "diagnostic", False) else "compact_tactical_v1",
                 "validate_before_submit": getattr(args, "validate_before_submit", False),
                 "win_rule": "recruiter_loss", "queries": 0, "model_orders": 0, "model_calls": 0,
@@ -1678,6 +1702,9 @@ def run(args: argparse.Namespace) -> int:
                 line = record.get("line")
                 if isinstance(line, dict) and line.get("type") == "events":
                     events = line.get("events", []) if isinstance(line.get("events"), list) else []
+            if record.get("type") == "model" and isinstance(record.get("raw_output"), str):
+                continuity_entries.append("assistant: " + record["raw_output"][:1200])
+        continuity_entries = continuity_entries[-4:]
         if events:
             event_window.extend(events)
     log = open(log_path, "a", buffering=1) if log_path else None
@@ -1880,6 +1907,8 @@ def run(args: argparse.Namespace) -> int:
                 if not is_partial_boundary:
                     model_calls_this_turn = 0
                     tool_calls_this_turn = 0
+                    turn_progress_moved.clear()
+                    turn_progress_attacked.clear()
                 turn_intent = None
                 # Ask the engine for the complete legal action surface before
                 # the model call; legality is never reconstructed in Python.
@@ -1914,6 +1943,11 @@ def run(args: argparse.Namespace) -> int:
                 state = dict(state)
                 state.update(option_bodies)
                 coverage = tactical_attack_coverage(state.get("tactical_surface", {}))
+                state["turn_progress"] = {
+                    "moved": sorted(turn_progress_moved),
+                    "attacked": sorted(turn_progress_attacked),
+                    "remaining_attackers": sorted(coverage["available"] - turn_progress_attacked),
+                }
                 metadata["attack_opportunity_unit_turns"] += len(coverage["available"])
                 record({"type": "attack_coverage", "available": sorted(coverage["available"]),
                         "current": sorted(coverage["current"]),
@@ -1923,12 +1957,13 @@ def run(args: argparse.Namespace) -> int:
                     json.dumps(state, sort_keys=True, separators=(",", ":")).encode()
                 ).hexdigest()})
                 interval_count = getattr(args, "event_window_observations", 1)
-                prompt_events = [event for interval in event_intervals[-max(0, interval_count - 1):]
-                                 for event in interval] + event_window
+                prompt_events = select_event_window(event_intervals, event_window, interval_count)
+                continuity = "\n".join(continuity_entries[-4:])
                 prompt = prompt_for(state, prompt_events,
                                     recruit_batch_enabled=not args.no_recruit_macro,
                                     compact=not getattr(args, "diagnostic", False),
-                                    intent=intent_memory)
+                                    intent=intent_memory,
+                                    continuity=continuity)
                 prompt_bytes = prompt.encode()
                 prompt_hash = hashlib.sha256(prompt_bytes).hexdigest()
                 regions = prompt_regions(prompt)
@@ -1963,6 +1998,8 @@ def run(args: argparse.Namespace) -> int:
                             **regions,
                             "raw_output": reply.text, "usage": reply.usage,
                             "cache": reply.cache})
+                    continuity_entries.append("assistant: " + reply.text[:1200])
+                    continuity_entries[:] = continuity_entries[-4:]
                     if isinstance(reply.cache, dict):
                         metadata["prompt_cache_requested"] = reply.cache.get("requested", "unreported")
                         metadata["prompt_cache_used"] = reply.cache.get("used", "unreported")
@@ -2345,6 +2382,15 @@ def run(args: argparse.Namespace) -> int:
                 new_events = line.get("events", [])
                 events.extend(new_events)
                 event_window.extend(new_events)
+                for event in new_events:
+                    if event.get("source") != "llm":
+                        continue
+                    if event.get("kind") == "move" and isinstance(event.get("unit"), int):
+                        turn_progress_moved.add(event["unit"])
+                    elif event.get("kind") == "attack":
+                        attacker = event.get("attacker", {})
+                        if isinstance(attacker.get("unit"), int):
+                            turn_progress_attacked.add(attacker["unit"])
             elif line.get("type") == "game_end":
                 metadata.update({"winner": line.get("winner"), "reason": line.get("reason")})
                 for key in ("code", "message"):
@@ -2375,6 +2421,8 @@ def main() -> int:
     p.add_argument("--model-command")
     p.add_argument("--interactive-model", action="store_true")
     p.add_argument("--model-timeout", type=float, default=300)
+    p.add_argument("--reasoning-effort", choices=("low", "medium", "high", "xhigh", "max", "ultra"),
+                   help="requested model reasoning setting, recorded for the backend")
     p.add_argument("--turn-timeout", type=int, default=930)
     p.add_argument("--query-budget-seconds", type=int, default=300)
     p.add_argument("--max-queries-per-turn", type=int, default=256)
