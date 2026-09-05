@@ -9,7 +9,7 @@ fn now() -> String {
 }
 
 fn mechanical(db: &str, cohort: Option<&str>) -> rusqlite::Result<String> {
-    let mut conn = Connection::open(db)?;
+    let conn = Connection::open(db)?;
     conn.execute_batch("PRAGMA foreign_keys=ON; BEGIN IMMEDIATE;")?;
     let run_id = format!("mechanical_v1:{}", now());
     conn.execute(
