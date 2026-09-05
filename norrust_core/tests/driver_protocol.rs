@@ -120,6 +120,105 @@ fn model_end_turn_runs_greedy_recruit_and_action_then_returns_to_model_side() {
 }
 
 #[test]
+fn done_with_important_moves_matches_implicit_end_turn_behavior() {
+    let args = [
+        "--scenario",
+        "big_battle_6",
+        "--faction0",
+        "undead",
+        "--faction1",
+        "undead",
+        "--gold",
+        "100",
+        "--max-turns",
+        "4",
+    ];
+    let explicit = run_driver(&args, "{\"action\":\"DoneWithImportantMoves\"}\n");
+    let implicit = run_driver(&args, "{\"action\":\"EndTurn\"}\n");
+
+    assert_eq!(explicit[0]["version"], 2);
+    let explicit_status = explicit
+        .iter()
+        .find(|line| line["type"] == "status")
+        .unwrap();
+    let implicit_status = implicit
+        .iter()
+        .find(|line| line["type"] == "status")
+        .unwrap();
+    assert_eq!(explicit_status["finish_kind"], "explicit_done");
+    assert_eq!(implicit_status["finish_kind"], "implicit_end_turn");
+
+    let explicit_state = explicit
+        .iter()
+        .filter(|line| line["type"] == "state")
+        .nth(1)
+        .unwrap();
+    let implicit_state = implicit
+        .iter()
+        .filter(|line| line["type"] == "state")
+        .nth(1)
+        .unwrap();
+    assert_eq!(explicit_state, implicit_state);
+
+    let explicit_events = explicit
+        .iter()
+        .find(|line| line["type"] == "events" && line["source"] == "delegated_greedy")
+        .unwrap();
+    let implicit_events = implicit
+        .iter()
+        .find(|line| line["type"] == "events" && line["source"] == "delegated_greedy")
+        .unwrap();
+    assert_eq!(explicit_events["finish_kind"], "explicit_done");
+    assert_eq!(implicit_events["finish_kind"], "implicit_end_turn");
+    let mut explicit_without_kind = explicit_events.clone();
+    let mut implicit_without_kind = implicit_events.clone();
+    explicit_without_kind
+        .as_object_mut()
+        .unwrap()
+        .remove("finish_kind");
+    implicit_without_kind
+        .as_object_mut()
+        .unwrap()
+        .remove("finish_kind");
+    assert_eq!(explicit_without_kind, implicit_without_kind);
+}
+
+#[test]
+fn done_after_recruit_sweeps_the_new_unit_without_delegated_recruitment() {
+    let lines = run_driver(
+        &[
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+            "--gold",
+            "100",
+            "--max-turns",
+            "4",
+        ],
+        "[{\"action\":\"Recruit\",\"def_id\":\"Skeleton\",\"col\":2,\"row\":6},{\"action\":\"DoneWithImportantMoves\"}]\n",
+    );
+    let status = lines.iter().find(|line| line["type"] == "status").unwrap();
+    assert_eq!(status["finish_kind"], "explicit_done");
+    assert!(lines.iter().any(|line| {
+        line["type"] == "events"
+            && line["source"] == "llm"
+            && line["events"]
+                .as_array()
+                .is_some_and(|events| events.iter().any(|event| event["kind"] == "recruit"))
+    }));
+    assert!(!lines.iter().any(|line| {
+        line["type"] == "events"
+            && line["source"] == "delegated_greedy"
+            && line["events"]
+                .as_array()
+                .is_some_and(|events| events.iter().any(|event| event["kind"] == "recruit"))
+    }));
+}
+
+#[test]
 fn finish_with_greedy_is_terminal_allowlisted_and_provenanced() {
     let lines = run_driver(
         &[
@@ -160,6 +259,35 @@ fn finish_with_greedy_is_terminal_allowlisted_and_provenanced() {
             .count(),
         1
     );
+}
+
+#[test]
+fn finish_with_greedy_accepts_empty_groups_and_keeps_selective_telemetry() {
+    let lines = run_driver(
+        &[
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+            "--max-turns",
+            "4",
+        ],
+        r#"{"action":"FinishWithGreedy","groups":[],"holds":[]}
+"#,
+    );
+    let status = lines.iter().find(|line| line["type"] == "status").unwrap();
+    assert_eq!(status["ok"], true);
+    assert_eq!(status["finish_kind"], "selective");
+    assert!(lines.iter().any(|line| {
+        line["type"] == "events"
+            && line["source"] == "delegated_greedy"
+            && line["finish_kind"] == "selective"
+            && line["events"]
+                .as_array()
+                .is_some_and(|events| events.iter().all(|event| event["kind"] == "end_turn"))
+    }));
 }
 
 #[test]

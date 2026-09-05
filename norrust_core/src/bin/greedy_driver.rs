@@ -221,6 +221,7 @@ Options:
   --turn-timeout N      Model stdin wall-clock budget in seconds (default: 300)
   --query-budget-seconds N  Query servicing budget per model turn (default: 300)
   --max-queries-per-turn N  Query cap (default: 256)
+  Model final actions: EndTurn (implicit safety sweep), DoneWithImportantMoves (explicit safety sweep), or FinishWithGreedy
   --disable-recruit-batch  Reject the model-only RecruitBatch macro
   --incremental-turns    Allow up to three partial model batches before EndTurn
   --checkpoint-dir DIR     Atomically write resumable checkpoints here
@@ -668,6 +669,36 @@ fn run_driver_greedy_turn_with_failure(
     Ok(events)
 }
 
+/// Finish a model turn by letting the selected safe regular units spend their
+/// remaining actions, then advance the core turn exactly once when play has
+/// not already ended.  The caller runs this on the batch clone, so any error
+/// keeps the whole model batch transactional.
+fn automatic_model_finish(
+    state: &mut GameState,
+    model_side: u8,
+) -> Result<Vec<GameEvent>, norrust_core::game_state::ActionError> {
+    let mut selected: Vec<u32> = state
+        .units
+        .iter()
+        .filter_map(|(&id, unit)| {
+            (unit.faction == model_side
+                && unit.hp > 0
+                && !unit.can_recruit
+                && unit.hp.saturating_mul(3) > unit.max_hp
+                && !(unit.moved && unit.attacked)
+                && state.positions.contains_key(&id))
+            .then_some(id)
+        })
+        .collect();
+    selected.sort_unstable();
+
+    let mut events = ai_take_selected_greedy_actions(state, model_side, &selected)?;
+    if state.check_winner().is_none() {
+        events.extend(apply_action(state, Action::EndTurn)?);
+    }
+    Ok(events)
+}
+
 fn authorize_model_batch(
     orders: &[Value],
     state: &GameState,
@@ -763,7 +794,7 @@ fn validate_model_boundary(
         .filter(|order| {
             matches!(
                 order.get("action").and_then(Value::as_str),
-                Some("EndTurn") | Some("FinishWithGreedy")
+                Some("EndTurn") | Some("DoneWithImportantMoves") | Some("FinishWithGreedy")
             )
         })
         .count();
@@ -771,7 +802,12 @@ fn validate_model_boundary(
         .last()
         .and_then(|order| order.get("action"))
         .and_then(Value::as_str)
-        .is_some_and(|action| matches!(action, "EndTurn" | "FinishWithGreedy"));
+        .is_some_and(|action| {
+            matches!(
+                action,
+                "EndTurn" | "DoneWithImportantMoves" | "FinishWithGreedy"
+            )
+        });
     if incremental {
         if end_turn_count > 1 || (end_turn_count == 1 && !ends) {
             return Err(("parse", "EndTurn must be final and may appear at most once"));
@@ -856,6 +892,7 @@ fn valid_action_shape(order: &Value) -> bool {
         "RecruitBatch" => (&["action", "def_id", "count"], &["def_id", "count"]),
         "Engage" => (&["action", "target_id", "steps"], &["target_id", "steps"]),
         "FinishWithGreedy" => (&["action", "groups", "holds"], &["groups"]),
+        "DoneWithImportantMoves" => (&["action"], &[]),
         "EndTurn" => (&["action"], &[]),
         "Advance" => (
             &["action", "unit_id", "target_index", "def_id"],
@@ -867,7 +904,7 @@ fn valid_action_shape(order: &Value) -> bool {
         let Some(groups) = object.get("groups").and_then(Value::as_array) else {
             return false;
         };
-        if groups.is_empty() || groups.len() > 8 {
+        if groups.len() > 8 {
             return false;
         }
         let holds: &[Value] = object
@@ -910,9 +947,6 @@ fn valid_action_shape(order: &Value) -> bool {
             let Some(unit_ids) = group.get("unit_ids").and_then(Value::as_array) else {
                 return false;
             };
-            if unit_ids.is_empty() {
-                return false;
-            }
             for id in unit_ids {
                 let Some(id) = id.as_u64().filter(|id| *id <= u32::MAX as u64) else {
                     return false;
@@ -1067,7 +1101,7 @@ fn validate_model_batch_contract(
         .filter(|order| {
             matches!(
                 order.get("action").and_then(Value::as_str),
-                Some("EndTurn") | Some("FinishWithGreedy")
+                Some("EndTurn") | Some("DoneWithImportantMoves") | Some("FinishWithGreedy")
             )
         })
         .count();
@@ -1075,7 +1109,12 @@ fn validate_model_batch_contract(
         .last()
         .and_then(|order| order.get("action"))
         .and_then(Value::as_str);
-    if end_turns != 1 || !matches!(final_boundary, Some("EndTurn") | Some("FinishWithGreedy")) {
+    if end_turns != 1
+        || !matches!(
+            final_boundary,
+            Some("EndTurn") | Some("DoneWithImportantMoves") | Some("FinishWithGreedy")
+        )
+    {
         return Err(("parse", "invalid action batch structure"));
     }
     authorize_model_batch(orders, state, model_side)
@@ -1406,7 +1445,7 @@ fn execute_model_batch(
                 events.extend(generated);
                 Ok(Vec::new())
             })(),
-            Some("EndTurn") => {
+            Some("DoneWithImportantMoves") | Some("EndTurn") => {
                 if !sample_attacks {
                     pre_end_recruitment_remaining = Some(if disable_recruit_batch {
                         let has_open_castle = state
@@ -1469,7 +1508,8 @@ fn execute_model_batch(
                         }
                     }
                 }
-                apply_action(&mut state, Action::EndTurn)
+                delegated_event_start = Some(events.len());
+                automatic_model_finish(&mut state, model_side)
             }
             Some("Advance") => {
                 let id = order.get("unit_id").and_then(Value::as_u64);
@@ -1511,7 +1551,10 @@ fn execute_model_batch(
                     result_value["conditional_steps"] = json!(conditional_steps);
                 }
                 results.push(result_value);
-                if matches!(action_name, Some("EndTurn") | Some("FinishWithGreedy")) {
+                if matches!(
+                    action_name,
+                    Some("EndTurn") | Some("DoneWithImportantMoves") | Some("FinishWithGreedy")
+                ) {
                     did_end = true;
                 }
             }
@@ -1655,7 +1698,7 @@ fn init_game(c: &Config) -> Result<(GameState, Faction, Faction, Registry<UnitDe
 }
 
 fn scripted_game(c: &Config) {
-    println!("{}", json!({"type":"protocol","version":1}));
+    println!("{}", json!({"type":"protocol","version":2}));
     io::stdout().flush().unwrap();
     let (mut state, f0, f1, units) = match init_game(c) {
         Ok(game) => game,
@@ -1706,7 +1749,7 @@ fn scripted_game(c: &Config) {
                 return;
             }
         };
-        print_events(&events, "greedy", "greedy");
+        print_events(&events, "greedy", "greedy", None);
 
         if let Some(winner) = state.check_winner() {
             eprintln!(
@@ -1956,7 +1999,12 @@ fn event_value(event: &GameEvent, source: &str) -> Value {
     value
 }
 
-fn print_events(events: &[GameEvent], envelope_source: &str, event_source: &str) {
+fn print_events(
+    events: &[GameEvent],
+    envelope_source: &str,
+    event_source: &str,
+    finish_kind: Option<&str>,
+) {
     if events.is_empty() {
         return;
     }
@@ -1964,10 +2012,11 @@ fn print_events(events: &[GameEvent], envelope_source: &str, event_source: &str)
         .iter()
         .map(|event| event_value(event, event_source))
         .collect();
-    println!(
-        "{}",
-        json!({"type":"events", "source": envelope_source, "events": body})
-    );
+    let mut envelope = json!({"type":"events", "source": envelope_source, "events": body});
+    if let Some(finish_kind) = finish_kind {
+        envelope["finish_kind"] = json!(finish_kind);
+    }
+    println!("{}", envelope);
     io::stdout().flush().unwrap();
 }
 
@@ -2007,7 +2056,7 @@ fn print_boundary(
 /// Protocol driver.  Queries are deliberately kept at the boundary: the
 /// engine remains the sole authority for mutation and legality.
 fn interactive_protocol_game(c: &Config) {
-    println!("{}", json!({"type":"protocol", "version":1}));
+    println!("{}", json!({"type":"protocol", "version":2}));
     io::stdout().flush().unwrap();
     if c.seed == 0
         || c.llm_side > 1
@@ -2135,7 +2184,7 @@ fn interactive_protocol_game(c: &Config) {
             ) {
                 Ok(events) => {
                     side_turns += 1;
-                    print_events(&events, "greedy", "greedy");
+                    print_events(&events, "greedy", "greedy", None);
                 }
                 Err(_) => {
                     println!("{}", greedy_infrastructure_failure(&state, side_turns));
@@ -2169,7 +2218,7 @@ fn interactive_protocol_game(c: &Config) {
                 }
             };
         side_turns += 1;
-        print_events(&events, "greedy", "greedy");
+        print_events(&events, "greedy", "greedy", None);
     }
     if state.check_winner().is_some() {
         println!(
@@ -2987,6 +3036,7 @@ fn interactive_protocol_game(c: &Config) {
                             | "RecruitBatch"
                             | "Engage"
                             | "EndTurn"
+                            | "DoneWithImportantMoves"
                             | "FinishWithGreedy"
                             | "Advance"
                     )
@@ -3107,17 +3157,35 @@ fn interactive_protocol_game(c: &Config) {
                 }
             }
         }
-        println!(
-            "{}",
-            json!({"type":"status","ok":true,"results":results,
-            "state_revision":state.state_revision})
-        );
+        let finish_kind = did_end.then(|| {
+            match orders
+                .last()
+                .and_then(|order| order.get("action"))
+                .and_then(Value::as_str)
+            {
+                Some("DoneWithImportantMoves") => "explicit_done",
+                Some("FinishWithGreedy") => "selective",
+                Some("EndTurn") => "implicit_end_turn",
+                _ => unreachable!("a completed batch must have a final boundary"),
+            }
+        });
+        let mut status = json!({"type":"status","ok":true,"results":results,
+            "state_revision":state.state_revision});
+        if let Some(finish_kind) = finish_kind {
+            status["finish_kind"] = json!(finish_kind);
+        }
+        println!("{}", status);
         io::stdout().flush().unwrap();
         if let Some(start) = delegated_event_start {
-            print_events(&events[..start], "llm", "llm");
-            print_events(&events[start..], "delegated_greedy", "delegated_greedy");
+            print_events(&events[..start], "llm", "llm", None);
+            print_events(
+                &events[start..],
+                "delegated_greedy",
+                "delegated_greedy",
+                finish_kind,
+            );
         } else {
-            print_events(&events, "llm", "llm");
+            print_events(&events, "llm", "llm", finish_kind);
         }
         if did_end && state.check_winner().is_none() {
             partial_batches = 0;
@@ -3146,7 +3214,7 @@ fn interactive_protocol_game(c: &Config) {
                 }
             };
             side_turns += 1;
-            print_events(&greedy_events, "greedy", "greedy");
+            print_events(&greedy_events, "greedy", "greedy", None);
         }
         if let Some(winner) = state.check_winner() {
             println!(
