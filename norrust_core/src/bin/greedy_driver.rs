@@ -62,6 +62,7 @@ struct Config {
     query_timeout: u64,
     max_queries: u32,
     disable_recruit_batch: bool,
+    incremental_turns: bool,
     checkpoint_dir: Option<PathBuf>,
     resume_checkpoint: Option<PathBuf>,
 }
@@ -88,6 +89,8 @@ struct DriverCheckpoint {
     seed: u64,
     max_turns: u32,
     disable_recruit_batch: bool,
+    #[serde(default)]
+    incremental_turns: bool,
     board_path: String,
     board_sha256: String,
 }
@@ -157,6 +160,7 @@ fn write_checkpoint(
         seed: c.seed,
         max_turns: c.max_turns,
         disable_recruit_batch: c.disable_recruit_batch,
+        incremental_turns: c.incremental_turns,
         board_path: board_path.to_string_lossy().into_owned(),
         board_sha256: checkpoint_digest(&board_bytes),
     };
@@ -211,6 +215,7 @@ Options:
   --query-budget-seconds N  Query servicing budget per model turn (default: 300)
   --max-queries-per-turn N  Query cap (default: 256)
   --disable-recruit-batch  Reject the model-only RecruitBatch macro
+  --incremental-turns    Allow up to three partial model batches before EndTurn
   --checkpoint-dir DIR     Atomically write resumable checkpoints here
   --resume-checkpoint PATH Restore a driver checkpoint instead of starting a game
   --scripted            Run full game unattended with greedy-vs-greedy (for testing)
@@ -233,6 +238,7 @@ fn parse_args() -> Config {
         query_timeout: 300,
         max_queries: 256,
         disable_recruit_batch: false,
+        incremental_turns: false,
         checkpoint_dir: None,
         resume_checkpoint: None,
     };
@@ -250,6 +256,11 @@ fn parse_args() -> Config {
         }
         if key == "--disable-recruit-batch" {
             c.disable_recruit_batch = true;
+            i += 1;
+            continue;
+        }
+        if key == "--incremental-turns" {
+            c.incremental_turns = true;
             i += 1;
             continue;
         }
@@ -1737,11 +1748,15 @@ fn print_events(events: &[GameEvent], envelope_source: &str, event_source: &str)
     io::stdout().flush().unwrap();
 }
 
-fn print_boundary(state: &GameState, units: &Registry<UnitDef>) {
+fn print_boundary(state: &GameState, units: &Registry<UnitDef>, partial: bool) {
     let mut value = game_state_to_json(state, units);
     if let Some(object) = value.as_object_mut() {
         object.insert("type".into(), json!("state"));
         object.insert("winner".into(), json!(state.check_winner()));
+        object.insert(
+            "turn_boundary".into(),
+            json!(if partial { "partial" } else { "turn" }),
+        );
     }
     println!("{}", value);
     io::stdout().flush().unwrap();
@@ -1799,6 +1814,7 @@ fn interactive_protocol_game(c: &Config) {
             || checkpoint.seed != c.seed
             || checkpoint.starting_gold != c.gold
             || checkpoint.disable_recruit_batch != c.disable_recruit_batch
+            || checkpoint.incremental_turns != c.incremental_turns
         {
             println!(
                 "{}",
@@ -1857,6 +1873,7 @@ fn interactive_protocol_game(c: &Config) {
         .as_ref()
         .map(|checkpoint| checkpoint.side_turns)
         .unwrap_or(0);
+    let mut partial_batches = 0u8;
     let mut terminal = false;
 
     if let Some(checkpoint) = checkpoint.as_ref() {
@@ -1925,7 +1942,7 @@ fn interactive_protocol_game(c: &Config) {
         println!("{}", reference);
         io::stdout().flush().unwrap();
     }
-    print_boundary(&state, &units);
+    print_boundary(&state, &units, false);
 
     let (line_tx, line_rx) = mpsc::sync_channel::<Result<String, String>>(8);
     std::thread::spawn(move || {
@@ -2052,12 +2069,21 @@ fn interactive_protocol_game(c: &Config) {
                             .iter()
                             .map(|order| order.get("action").and_then(Value::as_str))
                             .collect();
-                        names
-                            .iter()
-                            .filter(|name| **name == Some("EndTurn"))
-                            .count()
-                            != 1
-                            || !matches!(names.last(), Some(Some("EndTurn")))
+                        (!c.incremental_turns
+                            && (names
+                                .iter()
+                                .filter(|name| **name == Some("EndTurn"))
+                                .count()
+                                != 1
+                                || !matches!(names.last(), Some(Some("EndTurn")))))
+                            || (c.incremental_turns
+                                && (names
+                                    .iter()
+                                    .filter(|name| **name == Some("EndTurn"))
+                                    .count()
+                                    > 1
+                                    || (names.contains(&Some("EndTurn"))
+                                        && !matches!(names.last(), Some(Some("EndTurn"))))))
                     }) {
                         Some(json!({"code":"parse","message":"invalid action batch structure"}))
                     } else if let Some(items) = orders {
@@ -2746,7 +2772,14 @@ fn interactive_protocol_game(c: &Config) {
             .iter()
             .filter(|name| **name == Some("EndTurn"))
             .count();
-        if end_turn_count != 1 || !matches!(names.last(), Some(Some("EndTurn"))) {
+        let valid_boundary = if c.incremental_turns {
+            end_turn_count <= 1
+                && (end_turn_count == 0 || matches!(names.last(), Some(Some("EndTurn"))))
+                && (end_turn_count == 1 || partial_batches < 3)
+        } else {
+            end_turn_count == 1 && matches!(names.last(), Some(Some("EndTurn")))
+        };
+        if !valid_boundary {
             println!(
                 "{}",
                 json!({"type":"status","ok":false,"code":"parse","message":"invalid action batch structure"})
@@ -2818,6 +2851,7 @@ fn interactive_protocol_game(c: &Config) {
         io::stdout().flush().unwrap();
         print_events(&events, "llm", "llm");
         if did_end && state.check_winner().is_none() {
+            partial_batches = 0;
             side_turns += 1;
             if side_turns >= c.max_turns {
                 println!(
@@ -2871,8 +2905,17 @@ fn interactive_protocol_game(c: &Config) {
                 println!("{}", reference);
                 io::stdout().flush().unwrap();
             }
-            print_boundary(&state, &units);
+            print_boundary(&state, &units, false);
             deadline = Instant::now() + Duration::from_secs(c.turn_timeout);
+        } else if c.incremental_turns && batch_succeeded {
+            partial_batches += 1;
+            if let Ok(Some(reference)) =
+                write_checkpoint(c, &state, side_turns, next_id, "partial", false)
+            {
+                println!("{}", reference);
+                io::stdout().flush().unwrap();
+            }
+            print_boundary(&state, &units, true);
         }
     }
     if !terminal && state.check_winner().is_none() {
@@ -2912,6 +2955,7 @@ mod protocol_tests {
             query_timeout: 1,
             max_queries: 1,
             disable_recruit_batch: false,
+            incremental_turns: false,
             checkpoint_dir: None,
             resume_checkpoint: None,
         };
@@ -2953,6 +2997,7 @@ mod protocol_tests {
             query_timeout: 1,
             max_queries: 1,
             disable_recruit_batch: false,
+            incremental_turns: false,
             checkpoint_dir: None,
             resume_checkpoint: None,
         };
@@ -3012,6 +3057,7 @@ mod tests {
             query_timeout: 1,
             max_queries: 1,
             disable_recruit_batch: false,
+            incremental_turns: false,
             checkpoint_dir: Some(dir.clone()),
             resume_checkpoint: None,
         };
@@ -3083,6 +3129,7 @@ mod tests {
             query_timeout: 1,
             max_queries: 1,
             disable_recruit_batch: false,
+            incremental_turns: false,
             checkpoint_dir: None,
             resume_checkpoint: None,
         };
@@ -3155,6 +3202,7 @@ mod tests {
             query_timeout: 1,
             max_queries: 1,
             disable_recruit_batch: false,
+            incremental_turns: false,
             checkpoint_dir: None,
             resume_checkpoint: None,
         };

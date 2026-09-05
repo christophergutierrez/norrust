@@ -622,6 +622,14 @@ class ClientValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_orders('[{"action":"EndTurn"},{"action":"Move"}]')
 
+    def test_incremental_batch_can_omit_end_turn_but_end_turn_must_be_final(self):
+        self.assertEqual(
+            validate_orders('[{"action":"Move","unit_id":1,"col":1,"row":1}]',
+                            require_end_turn=False)[0]["action"], "Move")
+        with self.assertRaises(ValueError):
+            validate_orders('[{"action":"EndTurn"},{"action":"Move"}]',
+                            require_end_turn=False)
+
     def test_query_rejected(self):
         with self.assertRaises(ValueError):
             validate_orders('[{"action":"Query","what":"state"},{"action":"EndTurn"}]')

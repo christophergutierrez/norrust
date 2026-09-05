@@ -114,7 +114,8 @@ def validate_checkpoint_identity(envelope: dict[str, Any], args: argparse.Namesp
                 "gold": getattr(args, "gold", None),
                 "seed": getattr(args, "seed", None),
                 "llm_side": getattr(args, "llm_side", None),
-                "max_turns": getattr(args, "max_turns", None)}
+                "max_turns": getattr(args, "max_turns", None),
+                "incremental_turns": getattr(args, "incremental_turns", None)}
     for key, value in expected.items():
         if key in identity and identity[key] != value:
             raise ValueError(f"resume configuration mismatch: {key}")
@@ -279,7 +280,7 @@ def source_metadata() -> dict[str, Any]:
     }
 
 
-def validate_orders(text: str, strict: bool = False) -> list[dict[str, Any]]:
+def validate_orders(text: str, strict: bool = False, require_end_turn: bool = True) -> list[dict[str, Any]]:
     try:
         orders = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -366,8 +367,10 @@ def validate_orders(text: str, strict: bool = False) -> list[dict[str, Any]]:
         if strict and action == "RecruitBatch":
             raise ValueError("RecruitBatch is disabled in strict mode")
         end_indices += [i] if action == "EndTurn" else []
-    if len(end_indices) != 1 or end_indices[0] != len(orders) - 1:
+    if require_end_turn and (len(end_indices) != 1 or end_indices[0] != len(orders) - 1):
         raise ValueError("exactly one final EndTurn is required")
+    if not require_end_turn and end_indices and end_indices[0] != len(orders) - 1:
+        raise ValueError("EndTurn, when present, must be final")
     return orders
 
 
@@ -1546,6 +1549,8 @@ def run(args: argparse.Namespace) -> int:
     if selected_checkpoint is not None:
         validate_checkpoint_identity(selected_checkpoint["envelope"], args)
     checkpoint_dir = checkpoint_dir_for_log(log_path) if log_path else None
+    validate_model_orders = lambda text: validate_orders(
+        text, args.no_recruit_macro, require_end_turn=not getattr(args, "incremental_turns", False))
     if selected_checkpoint and resume_checkpoint and resume_log is None:
         # A branch gets a new sidecar directory. The source remains immutable.
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -1557,6 +1562,8 @@ def run(args: argparse.Namespace) -> int:
            "--turn-timeout", str(args.turn_timeout),
            "--query-budget-seconds", str(args.query_budget_seconds),
            "--max-queries-per-turn", str(args.max_queries_per_turn)]
+    if getattr(args, "incremental_turns", False):
+        cmd.append("--incremental-turns")
     if args.no_recruit_macro:
         cmd.append("--disable-recruit-batch")
     if checkpoint_dir is not None:
@@ -1759,7 +1766,7 @@ def run(args: argparse.Namespace) -> int:
                                     "engine_error": failure})
                             if repaired.usage is None:
                                 metadata["usage_measured"] = False
-                            orders = validate_orders(repaired.text, args.no_recruit_macro)
+                                orders = validate_model_orders(repaired.text)
                             repaired_intent = response_intent(repaired.text)
                             if repaired_intent is not None:
                                 turn_intent = repaired_intent
@@ -1943,11 +1950,11 @@ def run(args: argparse.Namespace) -> int:
                         while True:
                             decoded = json.loads(current_reply.text)
                             if not isinstance(decoded, dict):
-                                orders = validate_orders(current_reply.text, args.no_recruit_macro)
+                                orders = validate_model_orders(current_reply.text)
                                 turn_intent = response_intent(current_reply.text)
                                 break
                             if "actions" in decoded:
-                                orders = validate_orders(current_reply.text, args.no_recruit_macro)
+                                orders = validate_model_orders(current_reply.text)
                                 turn_intent = response_intent(current_reply.text)
                                 break
                             tool = decoded.get("tool")
@@ -2049,7 +2056,7 @@ def run(args: argparse.Namespace) -> int:
                                 "validation_error": str(first)})
                         if repaired.usage is None:
                             metadata["usage_measured"] = False
-                        orders = validate_orders(repaired.text, args.no_recruit_macro)
+                        orders = validate_model_orders(repaired.text)
                         turn_intent = response_intent(repaired.text)
                 except (RuntimeError, ValueError) as first:
                     # Same split: a ValueError here means the model failed
@@ -2100,7 +2107,7 @@ def run(args: argparse.Namespace) -> int:
                                             "prompt_bytes": len(review_prompt.encode()),
                                             "raw_output": reviewed.text, "body": draft_preview})
                                     try:
-                                        revised_orders = validate_orders(reviewed.text, args.no_recruit_macro)
+                                        revised_orders = validate_model_orders(reviewed.text)
                                         reviewed_intent = response_intent(reviewed.text)
                                     except ValueError as review_validation_error:
                                         if model_calls_this_turn >= metadata["max_model_calls_per_turn"]:
@@ -2121,16 +2128,17 @@ def run(args: argparse.Namespace) -> int:
                                                 "prompt_bytes": len(repair_prompt.encode()),
                                                 "raw_output": repaired_review.text,
                                                 "validation_error": str(review_validation_error)})
-                                        revised_orders = validate_orders(repaired_review.text, args.no_recruit_macro)
+                                        revised_orders = validate_model_orders(repaired_review.text)
                                         reviewed_intent = response_intent(repaired_review.text)
-                                    if revised_orders == orders:
+                                    draft_orders = orders
+                                    if revised_orders == draft_orders:
                                         metadata["draft_confirmations"] += 1
                                     else:
                                         metadata["draft_revisions"] += 1
                                     orders = revised_orders
                                     if reviewed_intent is not None:
                                         turn_intent = reviewed_intent
-                                    elif revised_orders != orders:
+                                    elif revised_orders != draft_orders:
                                         # The earlier intent described the abandoned
                                         # draft. Do not carry it into the next turn.
                                         turn_intent = None
@@ -2238,7 +2246,7 @@ def run(args: argparse.Namespace) -> int:
                                     "\nROLLBACK_NOTICE: the batch was rejected before submission; the state and revision is unchanged. Return one corrected JSON action array only."
                                 )
                                 continue
-                            orders = validate_orders(repaired.text, args.no_recruit_macro)
+                            orders = validate_model_orders(repaired.text)
                             repaired_intent = response_intent(repaired.text)
                             if repaired_intent is not None:
                                 turn_intent = repaired_intent
@@ -2349,6 +2357,8 @@ def main() -> int:
     p.add_argument("--token-output-limit", type=int)
     p.add_argument("--token-total-limit", type=int)
     p.add_argument("--no-recruit-macro", action="store_true")
+    p.add_argument("--incremental-turns", action="store_true",
+                   help="allow up to three bounded partial action batches before EndTurn")
     p.add_argument("--diagnostic", action="store_true",
                    help="send the full legacy snapshot instead of the compact briefing")
     validation = p.add_mutually_exclusive_group()
