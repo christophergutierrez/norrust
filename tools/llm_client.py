@@ -1601,6 +1601,7 @@ def run(args: argparse.Namespace) -> int:
     pending_action = False
     action_repair_attempted = False
     model_calls_this_turn = 0
+    tool_calls_this_turn = 0
     intent_memory = ""
     pending_intent: Optional[str] = None
     metadata = {"scenario": args.scenario, "faction0": args.faction0, "faction1": args.faction1,
@@ -1609,7 +1610,8 @@ def run(args: argparse.Namespace) -> int:
                 "model_backend": "interactive" if args.interactive_model else ("orders-file" if args.orders_file else "model-command"),
                 "llm_recruit_macro": not args.no_recruit_macro,
                 "opponent": "greedy+driver-recruit", "opponent_recruit_policy": "standard_driver_macro",
-                "opponent_planner": "no_skirmisher_pathing", "turn_format": "single_batch",
+                "opponent_planner": "no_skirmisher_pathing",
+                "turn_format": "incremental" if getattr(args, "incremental_turns", False) else "single_batch",
                 "client_projection": "full_legacy" if getattr(args, "diagnostic", False) else "compact_tactical_v1",
                 "validate_before_submit": getattr(args, "validate_before_submit", False),
                 "win_rule": "recruiter_loss", "queries": 0, "model_orders": 0, "model_calls": 0,
@@ -1860,9 +1862,12 @@ def run(args: argparse.Namespace) -> int:
                 continue
             if line.get("type") == "state":
                 state = line
+                is_partial_boundary = line.get("turn_boundary") == "partial"
                 pending_action = False
                 action_repair_attempted = False
-                model_calls_this_turn = 0
+                if not is_partial_boundary:
+                    model_calls_this_turn = 0
+                    tool_calls_this_turn = 0
                 turn_intent = None
                 # Ask the engine for the complete legal action surface before
                 # the model call; legality is never reconstructed in Python.
@@ -1955,7 +1960,6 @@ def run(args: argparse.Namespace) -> int:
                     try:
                         current_reply = reply
                         tool_context = ""
-                        tool_calls_this_turn = 0
                         preview_candidates = None
                         while True:
                             decoded = json.loads(current_reply.text)
@@ -2025,7 +2029,7 @@ def run(args: argparse.Namespace) -> int:
                                              rendered + "\nTOOL_RESULT_UNTRUSTED_DATA_END\n")
                             followup_prompt = prompt + tool_context + "\n" + tool_followup_instruction(
                                 metadata["max_tool_calls_per_turn"] - tool_calls_this_turn,
-                                metadata["max_model_calls_per_turn"] - model_calls_this_turn - 1,
+                                metadata["max_model_calls_per_turn"] - model_calls_this_turn,
                             )
                             followup_bytes = len(followup_prompt.encode())
                             if followup_bytes > args.max_prompt_bytes:
