@@ -10,6 +10,7 @@ import shlex
 import subprocess
 import sys
 import threading
+import uuid
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -1647,6 +1648,7 @@ def run(args: argparse.Namespace) -> int:
                 "opponent_planner": "no_skirmisher_pathing",
                 "turn_format": "incremental" if getattr(args, "incremental_turns", False) else "single_batch",
                 "continuity_mode": "bounded_transcript",
+                "conversation_id": uuid.uuid4().hex,
                 "requested_reasoning_effort": getattr(args, "reasoning_effort", None),
                 "client_projection": "full_legacy" if getattr(args, "diagnostic", False) else "compact_tactical_v1",
                 "validate_before_submit": getattr(args, "validate_before_submit", False),
@@ -1687,7 +1689,9 @@ def run(args: argparse.Namespace) -> int:
                     "draft_confirmations", "draft_review_repairs", "transport_retries",
                     "attack_opportunity_unit_turns", "planned_attack_unit_turns"):
             if isinstance(previous_metadata.get(key), int):
-                metadata[key] = previous_metadata[key]
+                    metadata[key] = previous_metadata[key]
+        if isinstance(previous_metadata.get("conversation_id"), str):
+            metadata["conversation_id"] = previous_metadata["conversation_id"]
         previous_tools = previous_metadata.get("tool_calls_by_name")
         if isinstance(previous_tools, dict):
             metadata["tool_calls_by_name"] = dict(previous_tools)

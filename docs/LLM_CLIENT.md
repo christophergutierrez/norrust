@@ -25,7 +25,11 @@ an accepted partial is acknowledged when `--log` is supplied.
 The canonical per-turn instructions are the
 [MEMORYLESS TACTICAL PLAYBOOK](LLM_TACTICAL_PLAYBOOK.md). The client reads that
 file and includes its complete text inline near the beginning of every model
-prompt. The model therefore does not need filesystem access.
+prompt. The model therefore does not need filesystem access. The client also
+carries a bounded transcript of recent model decisions across observations and
+records a `conversation_id` for each match. Engine state, revision, and fresh
+options remain authoritative after every accepted batch; the transcript only
+preserves the player's plan and is restored when a checkpoint is resumed.
 
 ## Build and run
 
@@ -112,6 +116,11 @@ python -m tools.llm_client \
 Use a distinct log and checkpoint directory for every concurrent run. The
 client does not force a partial batch; the model may still finish a turn in one
 batch. `turn_format` in metadata records the requested mode.
+
+For the restricted Luna adapter, use `tools/luna_backend.py` as the model
+command. Set `NORRUST_REASONING_EFFORT=high`; the adapter passes that setting to
+Codex, disables user config/rules and project tools, and returns the normal
+`{"text": ...}` envelope.
 
 The default `--turn-timeout` is 930 seconds. The client keeps the model command
 timeout and driver query budget independently. It warns when the turn timeout
