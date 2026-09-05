@@ -145,14 +145,16 @@ def import_game(conn: sqlite3.Connection, archive: str | os.PathLike[str],
     with conn:
         conn.execute("""INSERT INTO games
           (game_id,cohort_id,lineage_root_id,seed,scenario,faction0,faction1,starting_gold,
-           first_side,max_side_turns,status,winner_side,termination_reason,source_commit,
-           config_json,provenance_json,schema_version,artifact_path,coverage_json)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          first_side,max_side_turns,started_at,ended_at,wall_ms,status,winner_side,
+           termination_reason,source_commit,config_json,provenance_json,schema_version,
+           artifact_path,coverage_json)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
           ON CONFLICT(game_id) DO UPDATE SET status=excluded.status,
           winner_side=excluded.winner_side,termination_reason=excluded.termination_reason""",
           (game_id, cohort_id, game_id, metadata.get("seed"), metadata.get("scenario"),
            metadata.get("faction0"), metadata.get("faction1"), metadata.get("gold"),
-           metadata.get("first_player"), metadata.get("max_turns"), status, terminal.get("winner"),
+           metadata.get("first_player"), metadata.get("max_turns"), metadata.get("started_at"),
+           terminal.get("ended_at"), terminal.get("wall_ms"), status, terminal.get("winner"),
            terminal.get("reason"), metadata.get("source_commit"), json.dumps(config, sort_keys=True),
            json.dumps({"archive": str(log)}, sort_keys=True), SCHEMA_VERSION, str(root),
            json.dumps({"state_records": len(states)})))

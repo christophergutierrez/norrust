@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -1721,6 +1722,10 @@ def set_terminal(metadata: dict[str, Any], terminal_class: str,
     metadata["terminal_class"] = terminal_class
     metadata["infrastructure_invalid"] = terminal_class == TERMINAL_INFRASTRUCTURE
     metadata["gameplay_valid"] = terminal_class == TERMINAL_GAMEPLAY
+    started = metadata.pop("_wall_started", None)
+    if isinstance(started, (int, float)):
+        metadata["ended_at"] = datetime.now(timezone.utc).isoformat()
+        metadata["wall_ms"] = round((time.monotonic() - started) * 1000)
     return terminal_class
 
 
@@ -1854,7 +1859,9 @@ def run(args: argparse.Namespace) -> int:
                 "sampling": None, "llm_authored_extra": False,
                 "winner": None, "reason": None, "terminal_class": None,
                 "infrastructure_invalid": False, "gameplay_valid": False,
-                **source_metadata()}
+                **source_metadata(),
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "ended_at": None, "wall_ms": None}
     if parent_records:
         previous_metadata = next((record for record in reversed(parent_records)
                                   if record.get("type") in {"terminal", "metadata"}), {})
@@ -1971,6 +1978,7 @@ def run(args: argparse.Namespace) -> int:
     record({"type": "metadata", **metadata, "driver_command": cmd,
             "model_command_hash": hashlib.sha256(args.model_command.encode()).hexdigest()
             if args.model_command else None})
+    metadata["_wall_started"] = time.monotonic()
     if selected_checkpoint is not None:
         resume_record = {"type": "resume", "source": selected_checkpoint["absolute_path"],
                  "digest": selected_checkpoint["digest"],

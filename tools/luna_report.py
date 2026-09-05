@@ -90,14 +90,14 @@ def classify(records: list[dict[str, Any]]) -> dict[str, Any]:
                 continue
             kind = event.get("kind")
             source = event.get("source", "unknown")
+            if kind == "end_turn":
+                generated_end_turns += 1
+                if source == "delegated_greedy":
+                    generated_model_end_turns += 1
+                elif source == "greedy":
+                    generated_opponent_end_turns += 1
             if source == "delegated_greedy":
                 delegated_event_counts[kind] += 1
-                if kind == "end_turn":
-                    generated_end_turns += 1
-                    if source == "delegated_greedy":
-                        generated_model_end_turns += 1
-                    elif source == "greedy":
-                        generated_opponent_end_turns += 1
                 if kind in {"village", "capture_village", "village_capture"}:
                     delegated_villages += 1
                 for participant_key in ("attacker", "defender"):
@@ -204,7 +204,7 @@ def classify(records: list[dict[str, Any]]) -> dict[str, Any]:
             "attacks": delegated_event_counts["attack"],
             "kills": delegated_kills,
             "villages": delegated_villages,
-            "end_turns": generated_end_turns,
+            "end_turns": delegated_event_counts["end_turn"],
         },
         "model_end_turns": generated_model_end_turns,
         "opponent_end_turns": generated_opponent_end_turns,
