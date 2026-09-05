@@ -13,6 +13,15 @@ flat, and `V0`/`V1`/`V-` villages); unit cells use `faction:id`, and `....` is
 empty. Odd rows are indented to preserve the engine's odd-r hex geometry. The
 unit roster remains authoritative for exact type, HP, and status.
 
+For an opt-in incremental turn, add `--incremental-turns`. The driver permits
+up to three accepted partial action arrays without `EndTurn`, returns a fresh
+state after each one, and then requires a final array ending in `EndTurn`.
+The state includes `turn_boundary`, `accepted_partial_batches`,
+`remaining_partial_batches`, and `final_only`. A partial observation does not
+run the opponent or reset the model turn; a failed partial batch is rolled back
+without discarding earlier accepted batches. Checkpoints are published before
+an accepted partial is acknowledged when `--log` is supplied.
+
 The canonical per-turn instructions are the
 [MEMORYLESS TACTICAL PLAYBOOK](LLM_TACTICAL_PLAYBOOK.md). The client reads that
 file and includes its complete text inline near the beginning of every model
@@ -88,6 +97,21 @@ python -m tools.llm_client \
   --turn-timeout 930 --query-budget-seconds 900 \
   --log /path/to/match.ndjson
 ```
+
+An incremental evaluation uses the same command with `--incremental-turns`:
+
+```bash
+python -m tools.llm_client \
+  --driver norrust_core/target/debug/greedy_driver \
+  --model-command 'python3 /path/to/your_backend.py' \
+  --scenario big_battle_6 --faction0 undead --faction1 undead \
+  --gold 300 --seed 2001 --llm-side 0 --max-turns 25 \
+  --incremental-turns --log /path/to/isolated/match.ndjson
+```
+
+Use a distinct log and checkpoint directory for every concurrent run. The
+client does not force a partial batch; the model may still finish a turn in one
+batch. `turn_format` in metadata records the requested mode.
 
 The default `--turn-timeout` is 930 seconds. The client keeps the model command
 timeout and driver query budget independently. It warns when the turn timeout
