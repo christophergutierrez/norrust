@@ -61,7 +61,9 @@ def run_native(prompt: str, thread_id: str | None, timeout: float) -> tuple[str,
     root = Path(__file__).resolve().parents[1]
     if thread_id:
         command = ["codex", "exec", "resume", thread_id, "--json", "--ignore-user-config",
-                   "--ignore-rules", "-m", MODEL, "-c", f"model_reasoning_effort={EFFORT}", prompt]
+                   "--ignore-rules", "--sandbox", "read-only", "--color", "never",
+                   "-m", MODEL, "-c", f"model_reasoning_effort={EFFORT}",
+                   native_instruction(prompt)]
     else:
         command = ["codex", "exec", "--json", "--ignore-user-config", "--ignore-rules",
                    "--skip-git-repo-check", "--sandbox", "read-only", "--model", MODEL,
