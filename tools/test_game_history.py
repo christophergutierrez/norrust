@@ -4,7 +4,8 @@ import unittest
 from pathlib import Path
 
 from .game_history import (backup_history, decode_payload, encode_payload, import_game,
-                           list_side_turns, open_history, summarize_game, verify_history)
+                           delete_history, inventory_history, list_side_turns, open_history,
+                           summarize_game, verify_history)
 
 class GameHistoryTests(unittest.TestCase):
     def test_payload_round_trip(self):
@@ -35,6 +36,25 @@ class GameHistoryTests(unittest.TestCase):
             conn.close()
             backup_history(str(root / "history.sqlite"), str(backup))
             self.assertEqual(verify_history(backup)["integrity"], "ok")
+
+    def test_delete_exact_cohort_preserves_other_games_and_compacts(self):
+        with tempfile.TemporaryDirectory() as td:
+            conn = open_history(Path(td) / "history.sqlite")
+            with conn:
+                for game, cohort in (("bad1", "bad"), ("good1", "good")):
+                    conn.execute("""INSERT INTO games(game_id,cohort_id,status,config_json,
+                        provenance_json,schema_version,artifact_path) VALUES(?,?,?,?,?,?,?)""",
+                                 (game, cohort, "complete", "{}", "{}", 1, "."))
+                    conn.execute("""INSERT INTO model_requests(request_id,game_id,sequence,status,
+                        record_hash) VALUES(?,?,?,?,?)""", (game + ":r", game, 1, "failed", "h"))
+            result = delete_history(conn, cohort_id="bad", compact=True)
+            self.assertEqual(result["deleted_game_ids"], ["bad1"])
+            self.assertEqual(conn.execute("SELECT count(*) FROM games").fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT game_id FROM games").fetchone()[0], "good1")
+            self.assertEqual(verify_history(Path(td) / "history.sqlite")["foreign_key_errors"], 0)
+            with self.assertRaises(KeyError):
+                delete_history(conn, game_ids=["missing"])
+            self.assertEqual(inventory_history(conn)["counts"]["games"], 1)
 
 if __name__ == "__main__":
     unittest.main()

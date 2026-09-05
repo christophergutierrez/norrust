@@ -279,6 +279,68 @@ def verify_history(path: str | os.PathLike[str]) -> dict[str, Any]:
     conn.close()
     return {"integrity": integrity, "foreign_key_errors": len(foreign_keys), "counts": counts}
 
+TABLES = ("games", "game_players", "side_turns", "model_requests",
+          "action_batches", "actions", "evaluation_runs", "decision_evaluations")
+
+
+def inventory_history(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Return a compact inventory suitable for a deletion dry run."""
+    cohorts = [dict(zip(("cohort_id", "games"), row)) for row in conn.execute(
+        "SELECT cohort_id,count(*) FROM games GROUP BY cohort_id ORDER BY cohort_id")]
+    return {"counts": {table: conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                        for table in TABLES}, "cohorts": cohorts}
+
+
+def delete_history(conn: sqlite3.Connection, cohort_id: str | None = None,
+                   game_ids: Iterable[str] = (), reset: bool = False,
+                   compact: bool = False) -> dict[str, Any]:
+    """Delete an exact selection and optionally compact the SQLite file."""
+    ids = tuple(dict.fromkeys(game_ids))
+    if reset and (cohort_id or ids):
+        raise ValueError("choose exactly one of --reset, --cohort, or --game-id")
+    if not reset and not cohort_id and not ids:
+        raise ValueError("a deletion selector is required")
+    if reset:
+        selected = [row[0] for row in conn.execute("SELECT game_id FROM games")]
+    elif cohort_id:
+        selected = [row[0] for row in conn.execute(
+            "SELECT game_id FROM games WHERE cohort_id=?", (cohort_id,))]
+    else:
+        selected = list(ids)
+        existing = {row[0] for row in conn.execute(
+            "SELECT game_id FROM games WHERE game_id IN (%s)" % ",".join("?" * len(selected)), selected)} if selected else set()
+        missing = sorted(set(selected) - existing)
+        if missing:
+            raise KeyError(f"unknown game IDs: {missing}")
+    selected = tuple(selected)
+    placeholders = ",".join("?" * len(selected))
+    before = inventory_history(conn)
+    with conn:
+        request_ids = [row[0] for row in conn.execute(
+            f"SELECT request_id FROM model_requests WHERE game_id IN ({placeholders})", selected)] if selected else []
+        eval_ids = [row[0] for row in conn.execute(
+            "SELECT DISTINCT evaluation_run_id FROM decision_evaluations WHERE request_id IN (%s) OR preferred_request_id IN (%s)"
+            % (",".join("?" * len(request_ids)), ",".join("?" * len(request_ids))), request_ids + request_ids)] if request_ids else []
+        if request_ids:
+            conn.execute("DELETE FROM decision_evaluations WHERE request_id IN (%s) OR preferred_request_id IN (%s)" %
+                         (placeholders_for(request_ids), placeholders_for(request_ids)), request_ids + request_ids)
+        if selected:
+            for table in ("actions", "action_batches", "model_requests", "side_turns", "game_players", "games"):
+                conn.execute(f"DELETE FROM {table} WHERE game_id IN ({placeholders})", selected)
+        for run_id in eval_ids:
+            if conn.execute("SELECT 1 FROM decision_evaluations WHERE evaluation_run_id=? LIMIT 1", (run_id,)).fetchone() is None:
+                conn.execute("DELETE FROM evaluation_runs WHERE evaluation_run_id=?", (run_id,))
+    if compact:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("VACUUM")
+    after = inventory_history(conn)
+    return {"deleted_game_ids": list(selected), "evaluation_runs_considered": eval_ids,
+            "before": before, "after": after, "compacted": compact}
+
+
+def placeholders_for(values: Iterable[Any]) -> str:
+    return ",".join("?" * len(tuple(values)))
+
 def import_review(conn: sqlite3.Connection, path: str | os.PathLike[str],
                   evaluation_run_id: str, evaluator_version: str = "review_v1") -> int:
     """Import explicit review JSONL without changing immutable game records."""
@@ -309,10 +371,17 @@ def main(argv: list[str]) -> int:
     review = sub.add_parser("review"); review.add_argument("--db", required=True); review.add_argument("--run-id", required=True); review.add_argument("path")
     show = sub.add_parser("game"); show.add_argument("--db", required=True); show.add_argument("game_id")
     turns = sub.add_parser("turns"); turns.add_argument("--db", required=True); turns.add_argument("game_id")
+    inv = sub.add_parser("inventory"); inv.add_argument("--db", required=True)
+    delete = sub.add_parser("delete"); delete.add_argument("--db", required=True)
+    selector = delete.add_mutually_exclusive_group(required=True)
+    selector.add_argument("--cohort"); selector.add_argument("--game-id", action="append"); selector.add_argument("--reset", action="store_true")
+    delete.add_argument("--compact", action="store_true")
     args = parser.parse_args(argv)
     conn = open_history(args.db)
     if args.command == "import": value = import_game(conn, args.archive, args.cohort)
     elif args.command == "review": value = import_review(conn, args.path, args.run_id)
+    elif args.command == "inventory": value = inventory_history(conn)
+    elif args.command == "delete": value = delete_history(conn, args.cohort, args.game_id or [], args.reset, args.compact)
     elif args.command == "game": value = summarize_game(conn, args.game_id)
     else: value = list_side_turns(conn, args.game_id)
     print(json.dumps(value, sort_keys=True, default=lambda value: value.hex() if isinstance(value, bytes) else value))
