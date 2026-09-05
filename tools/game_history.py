@@ -216,7 +216,7 @@ def _import_requests(conn: sqlite3.Connection, game_id: str, records: list[dict[
           (req_id, game_id, record.get("sequence", index + 1), record.get("status", "completed"),
            record.get("error"), record.get("elapsed_ms"), usage.get("input_tokens"),
            usage.get("cached_input_tokens"), usage.get("output_tokens"),
-           usage.get("reasoning_output_tokens"), len(prompt.encode()) if prompt else None,
+           usage.get("reasoning_output_tokens"),
            record.get("prompt_bytes") or (len(prompt.encode()) if prompt else None),
            record.get("response_bytes") or (len(raw.encode()) if raw else None),
            zlib.compress(prompt.encode()) if prompt else None,
