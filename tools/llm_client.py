@@ -10,6 +10,7 @@ import shlex
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from collections import deque
 from dataclasses import dataclass
@@ -1904,7 +1905,13 @@ def run(args: argparse.Namespace) -> int:
         record(obj)
         if log:
             os.fsync(log.fileno())
+    request_sequence = 0
+    batch_sequence = 0
     def complete_model(model_prompt: str) -> ModelReply:
+        nonlocal request_sequence
+        request_sequence += 1
+        request_id = f"{metadata.get('conversation_id', 'match')}:request:{request_sequence}"
+        started = time.monotonic()
         before = getattr(backend, "transport_retries", 0)
         try:
             reply = backend.complete(model_prompt)
@@ -1921,7 +1928,25 @@ def run(args: argparse.Namespace) -> int:
                 requested_effort = getattr(args, "reasoning_effort", None)
                 if requested_effort and metadata.get("runtime_reasoning_effort") != requested_effort:
                     raise RuntimeError("runtime reasoning effort mismatch")
+            record({"type": "model_request",
+                    "request_id": request_id,
+                    "sequence": request_sequence,
+                    "status": "completed",
+                    "elapsed_ms": round((time.monotonic() - started) * 1000),
+                    "prompt_bytes": len(model_prompt.encode()),
+                    "response_bytes": len(reply.text.encode()),
+                    "usage": reply.usage,
+                    "cache": reply.cache})
             return reply
+        except Exception as exc:
+            record({"type": "model_request",
+                    "request_id": request_id,
+                    "sequence": request_sequence,
+                    "status": "failed",
+                    "elapsed_ms": round((time.monotonic() - started) * 1000),
+                    "prompt_bytes": len(model_prompt.encode()),
+                    "error": str(exc)})
+            raise
         finally:
             after = getattr(backend, "transport_retries", 0)
             if after > before:
@@ -2130,7 +2155,10 @@ def run(args: argparse.Namespace) -> int:
                             return TERMINAL_EXIT_CODES[terminal_class]
                         metadata["model_orders"] += len(orders)
                         pending_finish_kind = finish_kind_for_orders(orders)
+                        batch_sequence += 1
                         durable({"type": "forwarded_orders", "orders": orders,
+                                "batch_id": f"{metadata.get('conversation_id', 'match')}:batch:{batch_sequence}",
+                                "request_sequence": request_sequence,
                                 "prompt_hash": hashlib.sha256(repair_prompt.encode()).hexdigest(),
                                 "repair": True, "intent": turn_intent,
                                 "authored_finish_kind": pending_finish_kind})
@@ -2698,7 +2726,10 @@ def run(args: argparse.Namespace) -> int:
                         "planned": sorted(used_attackers),
                         "unused": sorted(coverage["available"] - used_attackers)})
                 pending_finish_kind = finish_kind_for_orders(orders, timeout_fallback)
+                batch_sequence += 1
                 durable({"type": "forwarded_orders", "orders": orders,
+                         "batch_id": f"{metadata.get('conversation_id', 'match')}:batch:{batch_sequence}",
+                         "request_sequence": request_sequence,
                          "prompt_hash": prompt_hash, "intent": turn_intent,
                          "authored_finish_kind": pending_finish_kind})
                 try:
