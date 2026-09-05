@@ -120,6 +120,37 @@ fn model_end_turn_runs_greedy_recruit_and_action_then_returns_to_model_side() {
 }
 
 #[test]
+fn incremental_validation_and_submission_share_the_partial_batch_limit() {
+    let partial = r#"[{"action":"RecruitBatch","def_id":"Skeleton","count":1}]"#;
+    let input = format!("{partial}\n{partial}\n{partial}\n{partial}\n{{\"action\":\"EndTurn\"}}\n");
+    let lines = run_driver(
+        &[
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+            "--gold",
+            "300",
+            "--max-turns",
+            "1",
+            "--incremental-turns",
+        ],
+        &input,
+    );
+    let statuses: Vec<&Value> = lines
+        .iter()
+        .filter(|line| line["type"] == "status")
+        .collect();
+    assert!(statuses.iter().any(|line| line["code"] == "partial_limit"));
+    assert!(lines
+        .iter()
+        .any(|line| line["type"] == "state" && line["turn_boundary"] == "partial"));
+    assert!(lines.iter().any(|line| line["type"] == "game_end"));
+}
+
+#[test]
 fn model_rejects_foreign_unit_reference_at_model_boundary() {
     let lines = run_driver(
         &[
