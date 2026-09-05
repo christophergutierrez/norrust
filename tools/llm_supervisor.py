@@ -30,8 +30,21 @@ def _has_checkpoint(log: Path) -> bool:
 
 
 def _last_terminal(log: Path) -> dict | None:
-    return next((record for record in reversed(_records(log))
-                 if record.get("type") == "terminal"), None)
+    records = _records(log)
+    terminal = next((record for record in reversed(records)
+                     if record.get("type") == "terminal"), None)
+    if terminal is not None:
+        return terminal
+    # Older client failure paths durably wrote model_error without a separate
+    # terminal record. Treat only the latest such record as terminal evidence;
+    # ordinary model/driver records must never trigger a resume.
+    failure = next((record for record in reversed(records)
+                    if record.get("type") in {"model_error", "checkpoint_error"}), None)
+    if failure is None:
+        return None
+    return {"terminal_class": failure.get("terminal_class") or
+            ("infrastructure" if failure.get("type") == "checkpoint_error" else None),
+            "type": "derived_terminal", "source_type": failure.get("type")}
 
 
 def _append(log: Path, value: dict) -> None:

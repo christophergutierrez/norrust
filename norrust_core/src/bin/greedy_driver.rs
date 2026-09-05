@@ -2970,11 +2970,20 @@ fn interactive_protocol_game(c: &Config) {
             query_count = 0;
             query_elapsed = Duration::ZERO;
             action_count = 0;
-            if let Ok(Some(reference)) =
-                write_checkpoint(c, &state, side_turns, next_id, 0, "model", false)
-            {
-                println!("{}", reference);
-                io::stdout().flush().unwrap();
+            match write_checkpoint(c, &state, side_turns, next_id, 0, "model", false) {
+                Ok(Some(reference)) => {
+                    println!("{}", reference);
+                    io::stdout().flush().unwrap();
+                }
+                Ok(None) => {}
+                Err(message) => {
+                    println!(
+                        "{}",
+                        json!({"type":"game_end","reason":"checkpoint_error","code":"checkpoint_publish_failed","message":message})
+                    );
+                    terminal = true;
+                    break;
+                }
             }
             print_boundary(&state, &units, false, c.incremental_turns, partial_batches);
             deadline = Instant::now() + Duration::from_secs(c.turn_timeout);

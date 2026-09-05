@@ -29,6 +29,17 @@ class SupervisorTests(unittest.TestCase):
                 self.assertEqual(run(["client", "--log", str(log)], log, 3), 2)
             self.assertEqual(process.call_count, 1)
 
+    def test_legacy_model_error_is_not_restarted_as_infrastructure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "match.ndjson"
+            log.write_text(json.dumps({
+                "type": "model_error",
+                "terminal_class": "model_invalid",
+            }) + "\n")
+            with mock.patch("subprocess.run", return_value=mock.Mock(returncode=2)) as process:
+                self.assertEqual(run(["client", "--log", str(log)], log, 3), 2)
+            self.assertEqual(process.call_count, 1)
+
     def test_restart_limit_is_bounded(self):
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "match.ndjson"
