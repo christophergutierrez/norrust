@@ -1512,6 +1512,29 @@ def select_event_window(event_intervals: list[list[dict[str, Any]]],
     return [event for interval in prior for event in interval] + list(current)
 
 
+def compact_trend(states: list[dict[str, Any]], limit: int = 3) -> str:
+    """Render a bounded sequence of completed post-opponent observations."""
+    rows = []
+    for state in states[-limit:]:
+        if not isinstance(state, dict) or state.get("turn_boundary") == "partial":
+            continue
+        sides = []
+        for side in (0, 1):
+            units = [u for u in state.get("units", [])
+                     if isinstance(u, dict) and u.get("faction") == side and u.get("hp", 0) > 0]
+            sides.append({
+                "units": len(units),
+                "hp": sum(u.get("hp", 0) for u in units if isinstance(u.get("hp", 0), int)),
+                "material_cost": sum(u.get("cost", 0) for u in units if isinstance(u.get("cost", 0), int)),
+                "villages": sum(1 for owner in state.get("village_owners", [])
+                                 if owner == side),
+                "gold": (state.get("gold") or [None, None])[side],
+            })
+        rows.append({"turn": state.get("turn"), "side_turns": state.get("side_turns"),
+                     "state_revision": state.get("state_revision"), "sides": sides})
+    return "TREND " + json.dumps(rows, sort_keys=True, separators=(",", ":")) if rows else "TREND unavailable"
+
+
 def draft_needs_preview(state: dict[str, Any], orders: list[dict[str, Any]],
                         danger_before: bool, audit: Optional[dict[str, Any]] = None) -> bool:
     if state.get("incremental_turns") is True and finish_kind_for_orders(orders) is None:
@@ -1533,7 +1556,8 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
                intent: Optional[str] = None,
                continuity: Optional[str] = None,
                agenda: Optional[dict[str, Any]] = None,
-               sweep: Optional[str] = None) -> str:
+               sweep: Optional[str] = None,
+               trend: Optional[str] = None) -> str:
     schemas = [
         'Move: {"action":"Move","unit_id": integer,"col": integer,"row": integer}',
         'Attack: {"action":"Attack","attacker_id": integer,"defender_id": integer}',
@@ -1667,6 +1691,8 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         body["agenda"] = agenda
     if sweep:
         body["whole_army_sweep"] = sweep
+    if trend:
+        body["recent_trend"] = trend
     option_payloads = {key: body.pop(key) for key in ("turn_options", "recruit_options", "tactical_surface") if key in body}
     event_payload = events if not compact else compact_events(events)
     return (
@@ -1994,6 +2020,7 @@ def run(args: argparse.Namespace) -> int:
     events: list[dict[str, Any]] = []
     event_window: list[dict[str, Any]] = []
     event_intervals: list[list[dict[str, Any]]] = []
+    trend_states: list[dict[str, Any]] = []
     state: Optional[dict[str, Any]] = None
     pending_action = False
     action_repair_attempted = False
@@ -2438,6 +2465,11 @@ def run(args: argparse.Namespace) -> int:
             if line.get("type") == "state":
                 state = line
                 is_partial_boundary = line.get("turn_boundary") == "partial"
+                if not is_partial_boundary:
+                    revision = line.get("state_revision")
+                    if not trend_states or trend_states[-1].get("state_revision") != revision:
+                        trend_states.append(dict(line))
+                        trend_states[:] = trend_states[-3:]
                 pending_action = False
                 action_repair_attempted = False
                 if not is_partial_boundary:
@@ -2529,7 +2561,8 @@ def run(args: argparse.Namespace) -> int:
                                     intent=intent_memory,
                                     continuity=continuity,
                                     agenda=agenda_memory if agenda_enabled else None,
-                                    sweep=sweep)
+                                    sweep=sweep,
+                                    trend=compact_trend(trend_states))
                 prompt_bytes = prompt.encode()
                 prompt_hash = hashlib.sha256(prompt_bytes).hexdigest()
                 regions = prompt_regions(prompt)

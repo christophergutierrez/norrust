@@ -16,7 +16,7 @@ from .llm_client import (
     compact_batch_preview, compact_hex_inspection, compact_observation,
     compact_target_inspection, compact_tactical_surface, compact_spatial_map, prompt_for, query_options,
     compact_unit_inspection, compact_draft_review, tool_followup_instruction, tool_budget_repair_prompt,
-    compact_events, tactical_attack_coverage,
+    compact_events, compact_trend, tactical_attack_coverage,
     select_event_window,
     query_tactical_surface, query_validate_batch, query_preview_batch, query_bounded_comparison,
     query_inspect_unit, query_inspect_target, query_inspect_targets, query_inspect_hex, run,
@@ -53,6 +53,17 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual(select_event_window([first, second], current, 1), current)
         self.assertEqual(select_event_window([first, second], current, 2), second + current)
         self.assertEqual(select_event_window([first, second], current, 3), first + second + current)
+
+    def test_compact_trend_is_bounded_and_excludes_partial_states(self):
+        states = [
+            {"turn": 1, "state_revision": 1, "turn_boundary": "turn", "units": [], "gold": [10, 8]},
+            {"turn": 1, "state_revision": 2, "turn_boundary": "partial", "units": [], "gold": [9, 8]},
+            {"turn": 2, "state_revision": 3, "turn_boundary": "turn", "units": [], "gold": [8, 7]},
+        ]
+        rendered = compact_trend(states)
+        self.assertIn('"turn":1', rendered)
+        self.assertIn('"turn":2', rendered)
+        self.assertNotIn('"state_revision":2', rendered)
 
     def test_prompt_carries_bounded_continuity_and_turn_progress(self):
         prompt = prompt_for(
