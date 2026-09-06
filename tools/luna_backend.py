@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 try:
@@ -57,7 +58,7 @@ def extract(events: list[dict[str, object]]) -> tuple[str, str]:
     return thread_id, answer
 
 
-def run_native(prompt: str, thread_id: str | None, timeout: float) -> tuple[str, str, list[dict[str, object]]]:
+def _run_native_once(prompt: str, thread_id: str | None, timeout: float) -> tuple[str, str, list[dict[str, object]]]:
     root = Path(__file__).resolve().parents[1]
     if thread_id:
         command = ["codex", "exec", "resume", thread_id, "--json", "--ignore-user-config",
@@ -102,6 +103,27 @@ def run_native(prompt: str, thread_id: str | None, timeout: float) -> tuple[str,
             events.append(item)
     new_thread, answer = extract(events)
     return new_thread or thread_id or "", answer, events
+
+
+def run_native(prompt: str, thread_id: str | None, timeout: float) -> tuple[str, str, list[dict[str, object]]]:
+    """Run one native request, retrying transient thread-store writer conflicts.
+
+    A timed-out Codex process can release its thread-store writer slightly after
+    the client process has exited. Resuming immediately then produces an
+    infrastructure error even though the logical Luna session is still valid.
+    Retry only that explicit transient error; all other failures retain their
+    original behavior.
+    """
+    delays = (2.0, 5.0, 10.0)
+    for attempt, delay in enumerate((0.0, *delays)):
+        if delay:
+            time.sleep(delay)
+        try:
+            return _run_native_once(prompt, thread_id, timeout)
+        except RuntimeError as exc:
+            if "already has an active writer" not in str(exc) or attempt == len(delays):
+                raise
+    raise AssertionError("unreachable")
 
 
 def completion_usage(events: list[dict[str, object]]) -> dict[str, int] | None:

@@ -6,6 +6,24 @@ from . import luna_backend
 
 
 class LunaBackendTests(unittest.TestCase):
+    def test_native_writer_conflict_is_retried(self):
+        calls = []
+        original = luna_backend._run_native_once
+
+        def flaky(prompt, thread_id, timeout):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("thread-store conflict: already has an active writer")
+            return "thread-2", "[{\"action\":\"EndTurn\"}]", [{"type": "turn.completed"}]
+
+        luna_backend._run_native_once = flaky
+        try:
+            thread, answer, events = luna_backend.run_native("prompt", "thread-1", 1)
+        finally:
+            luna_backend._run_native_once = original
+        self.assertEqual((thread, answer), ("thread-2", "[{\"action\":\"EndTurn\"}]"))
+        self.assertEqual(len(calls), 2)
+
     def test_resumed_thread_reapplies_read_only_policy(self):
         events = "\n".join([
             json.dumps({"type": "thread.started", "thread_id": "thread-2"}),
