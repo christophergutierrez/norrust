@@ -102,6 +102,10 @@ For recorded match history, model telemetry, offline evaluation, and reviewed tr
 exports, see the [AI agent guide](docs/AGENT_GUIDE.md#recorded-games-and-training-data),
 [game history](docs/GAME_HISTORY.md), and [training data workflow](docs/TRAINING_DATA.md).
 
+For headless model games, start with [docs/LLM_CLIENT.md](docs/LLM_CLIENT.md).
+The client supplies the complete per-turn prompt; a player should not browse
+development history or temporary files before playing.
+
 ---
 
 ## For AI Developers
@@ -121,7 +125,7 @@ authoritative data.
 ```
 
 The model returns a non-empty array of at most 256 objects with exactly one final
-`EndTurn`. Schemas are `Move` (integer `unit_id`, `col`, `row`), `Attack` (integer
+`DoneWithImportantMoves`, `EndTurn`, or `FinishWithGreedy` boundary. Schemas are `Move` (integer `unit_id`, `col`, `row`), `Attack` (integer
 `attacker_id`, `defender_id`), `Recruit` (string `def_id`, integer `col`, `row`),
 optional `RecruitBatch` (string `def_id`, positive integer `count`), `Advance`
 (integer `unit_id` and exactly one integer `target_index` or string `def_id`), and

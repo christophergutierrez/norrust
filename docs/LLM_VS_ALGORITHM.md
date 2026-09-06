@@ -45,6 +45,11 @@ The canonical per-turn instructions are the
 file and includes its complete text inline near the beginning of every model
 prompt, so the model does not need filesystem access.
 
+For a headless model game, use `docs/LLM_CLIENT.md` as the only setup guide. Do
+not read `.paul`, old temporary backends, or unrelated development documents
+unless a concrete setup failure requires diagnosis. The player receives the full
+canonical prompt from the client.
+
 Build the driver and run the committed deterministic orders fixture from the repository root:
 
 ```bash
@@ -184,7 +189,8 @@ Other factions (Loyalists, Rebels, Northerners) are in `data/units/` and `data/f
 
 Per-turn action choice is the [MEMORYLESS TACTICAL PLAYBOOK](LLM_TACTICAL_PLAYBOOK.md); the client inlines it. Do not keep a second move checklist here.
 
-Usual Undead spend order against the table above: Vampire Bat ×1–2, then Skeleton or Walking Corpse as the keep screen and front line, then Dark Adept or Skeleton Archer. Other factions: read `data/units/` and `data/factions/` and apply the same scout / melee / ranged mix from `recruit_options`. Built-in greedy and look-ahead keep their recruiter on the keep.
+Unit profiles and resistances are supplied by the client prompt. Choose a roster
+from those facts; this document does not prescribe a fixed composition.
 
 Suggested first match: Undead vs Undead on `big_battle_6`, you Blue, opponent look-ahead (GUI AI), 300 gold if you can set it, you first. Then use the headless client above for the same matchup against greedy.
 

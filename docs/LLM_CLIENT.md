@@ -1,5 +1,20 @@
 # Norrust LLM client
 
+## Start here for a model game
+
+The parent process should read this document, choose isolated artifact paths, and
+launch one client per game. The player receives the complete canonical prompt on
+each request and does not need to read repository files. A model-subagent request
+can be as short as:
+
+> Play the configured Norrust game from the complete client prompt. Return only
+> the JSON action or inspection request allowed by that prompt. Do not use shell,
+> web, files, skills, or unrelated tools.
+
+Do not read `.paul`, old temporary backends, or unrelated development documents
+unless diagnosing a specific setup failure. Preserve the prompt bytes and hash in
+the request archive. A transport receipt proves delivery, not comprehension.
+
 `tools/llm_client.py` is a provider-neutral client for the headless
 `greedy_driver` JSON-lines protocol. It asks the engine for authoritative options,
 gives those options to a continuing model, validates one action batch, and forwards
