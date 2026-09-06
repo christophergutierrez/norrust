@@ -71,22 +71,35 @@ assertions. No engine rules changed.
 
 ## Phase 2: frozen implementation, three parallel Luna games
 
-- [ ] Read client and analysis routing docs; build release greedy_driver from the
+- [x] Read client and analysis routing docs; build release greedy_driver from the
       reviewed clean commit, recording source and driver/guide hashes.
-- [ ] Launch exactly three Luna subagents supervising native Luna/high players,
+- [x] Launch exactly three Luna subagents supervising native Luna/high players,
       seeds 2001/2002/2003, big_battle_6, Undead vs Undead, 300 gold, side 0,
       single-batch, resignation enabled, max 50 completed side-turns (25 per side).
       Isolate NDJSON, checkpoints, native session, request journal, artifacts,
       stdout/stderr and launch/exit records. Preserve canonical prompts unchanged.
-- [ ] Account for all attempts to terminal completion or documented failure.
+- [x] Account for all attempts to terminal completion or documented failure.
       No silent replacement games or policy/code changes during the cohort.
-- [ ] Inspect imported SQLite before individual archives. Verify integrity,
+- [x] Inspect imported SQLite before individual archives. Verify integrity,
       idempotence, payload/annotation linkage and evidence coverage. Treat absent
       runtime settings, usage, reasoning and endpoint states as unknown.
-- [ ] Review agenda acceptance, first-turn recruitment/gold, damage interpretations,
+- [x] Review agenda acceptance, first-turn recruitment/gold, damage interpretations,
       stated versus encoded holds, actual movements/attacks, and review revisions.
       Compare these with the prior same-seed cohort without claiming causality.
-- [ ] Commit `docs/experiments/player-contract-recovery-evaluation.md` and mark
+- [x] Commit `docs/experiments/player-contract-recovery-evaluation.md` and mark
       this plan complete. Report a table of result, completed turns, model calls,
       wall time, annotations, and specific behavior per game. Winning is an
       observed result, not a condition for finishing this plan.
+
+## Completion record
+
+- Plan commit: `d4ddfee`; reviewed implementation/game source: `c6486e8`.
+- Post-game test-only coordinate replay correction: `24d4c11`; all three
+  player-contract integration tests and `git diff --check` pass.
+- Cohort: `tmp/player-contract-recovery-20260906T195814Z/`. All three native
+  Luna/high attempts completed normally: one recruiter-kill win, two resignations.
+- Final catalog: 93 exact native prompt/response pairs, 33/33 valid submitted
+  annotations, zero failed requests or rejected batches, passing integrity and
+  repeated-import checks. Missing endpoint states/runtime settings remain unknown.
+- Results: [player-contract-recovery-evaluation.md](../experiments/player-contract-recovery-evaluation.md).
+  No policy or gameplay code changed during the cohort.
