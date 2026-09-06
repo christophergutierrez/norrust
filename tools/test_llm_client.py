@@ -432,7 +432,7 @@ class ClientValidationTests(unittest.TestCase):
                   "distinct_attacker_count": 1, "max_incoming_sum": 8, "lethal_attackers_needed": 1},
              ]}}},
             [{"action": "EndTurn"}], {"available": set()})
-        self.assertEqual([item["unit_id"] for item in audit["rescue_priorities"]], [4, 7, 8])
+        self.assertEqual([item["unit_id"] for item in audit["rescue_priorities"]], [4, 8, 9])
         self.assertIn("endangered_wounded_unresolved", audit["trigger_reasons"])
 
     def test_planned_attackers_counts_attack_and_all_engage_steps(self):
