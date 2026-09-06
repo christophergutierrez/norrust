@@ -56,13 +56,20 @@ def select_examples(conn: sqlite3.Connection, run_id: str,
 
 def write_dataset_manifest(output: Path, examples: list[dict[str, Any]],
                            run_id: str, split_seed: int, selection: str) -> dict[str, Any]:
+    split_hashes = {}
+    split_bytes = []
+    for split in ("train", "validation", "test"):
+        payload = (output / f"{split}.jsonl").read_bytes()
+        split_hashes[split] = hashlib.sha256(payload).hexdigest()
+        split_bytes.append(payload)
     manifest = {
         "export_version": EXPORT_VERSION, "evaluation_run_id": run_id,
         "split_seed": split_seed, "selection": selection,
         "count": len(examples),
         "example_ids": [e["id"] for e in examples],
+        "split_sha256": split_hashes,
     }
-    payload = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+    payload = b"".join(split_bytes)
     manifest["output_sha256"] = hashlib.sha256(payload).hexdigest()
     output.mkdir(parents=True, exist_ok=True)
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")

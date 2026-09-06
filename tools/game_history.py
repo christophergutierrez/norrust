@@ -478,11 +478,40 @@ def import_review(conn: sqlite3.Connection, path: str | os.PathLike[str],
                row.get("preferred_request_id")))
     return len(rows)
 
+def evaluate_payload_coverage(conn: sqlite3.Connection, cohort_id: str | None = None) -> str:
+    """Record whether indexed model requests retain both prompt and response payloads.
+
+    This is an evidence inventory, not a quality or strategy evaluation.
+    """
+    run_id = f"payload_coverage_v1:{int(__import__('time').time())}"
+    with conn:
+        conn.execute("""INSERT INTO evaluation_runs
+          (evaluation_run_id,evaluator_name,evaluator_version,config_json,status)
+          VALUES(?, 'payload_coverage', '1', ?, 'running')""",
+          (run_id, json.dumps({"cohort": cohort_id}, sort_keys=True)))
+        query = "SELECT r.request_id,r.response_blob,r.prompt_blob FROM model_requests r"
+        params: tuple[Any, ...] = ()
+        if cohort_id is not None:
+            query += " JOIN games g ON g.game_id=r.game_id WHERE g.cohort_id=?"
+            params = (cohort_id,)
+        for request_id, response, prompt in conn.execute(query, params):
+            covered = prompt is not None and response is not None
+            conn.execute("""INSERT INTO decision_evaluations
+              (evaluation_run_id,request_id,verdict,reason_codes_json,metrics_json,evidence_json)
+              VALUES(?,?,?,?,?,?)""",
+              (run_id, request_id, "coverage" if covered else "unknown",
+               json.dumps(["payloads_present" if covered else "missing_payload"]),
+               "{}", json.dumps({"evaluator": "payload_coverage_v1"})))
+        conn.execute("""UPDATE evaluation_runs SET completed_at=datetime('now'),status='complete'
+                      WHERE evaluation_run_id=?""", (run_id,))
+    return run_id
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
     imp = sub.add_parser("import"); imp.add_argument("--db", required=True); imp.add_argument("archive"); imp.add_argument("--cohort")
     review = sub.add_parser("review"); review.add_argument("--db", required=True); review.add_argument("--run-id", required=True); review.add_argument("path")
+    coverage = sub.add_parser("payload-coverage"); coverage.add_argument("--db", required=True); coverage.add_argument("--cohort")
     show = sub.add_parser("game"); show.add_argument("--db", required=True); show.add_argument("game_id")
     turns = sub.add_parser("turns"); turns.add_argument("--db", required=True); turns.add_argument("game_id")
     inv = sub.add_parser("inventory"); inv.add_argument("--db", required=True)
@@ -494,6 +523,7 @@ def main(argv: list[str]) -> int:
     conn = open_history(args.db)
     if args.command == "import": value = import_game(conn, args.archive, args.cohort)
     elif args.command == "review": value = import_review(conn, args.path, args.run_id)
+    elif args.command == "payload-coverage": value = evaluate_payload_coverage(conn, args.cohort)
     elif args.command == "inventory": value = inventory_history(conn)
     elif args.command == "delete": value = delete_history(conn, args.cohort, args.game_id or [], args.reset, args.compact)
     elif args.command == "game": value = summarize_game(conn, args.game_id)

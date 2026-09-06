@@ -27,6 +27,11 @@ class TrainingExportTests(unittest.TestCase):
             manifest = export(conn, str(out), "review1", split_seed=7)
             self.assertEqual(manifest["count"], 1)
             self.assertEqual(json.loads((out / f"{assign_split('g1', 7)}.jsonl").read_text())["id"], "r1")
+            original_hash = manifest["output_sha256"]
+            (out / "train.jsonl").write_text((out / "train.jsonl").read_text() + "\n")
+            self.assertNotEqual(original_hash, __import__("hashlib").sha256(
+                b"".join((out / f"{split}.jsonl").read_bytes() for split in ("train", "validation", "test"))
+            ).hexdigest())
 
     def test_review_import_and_rationale_filter(self):
         with tempfile.TemporaryDirectory() as td:

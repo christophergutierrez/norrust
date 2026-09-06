@@ -36,8 +36,8 @@ python3 tools/luna_report.py tmp/game_history_final_games/2031/match.ndjson
 python3 tools/game_history.py inventory \
   --db tmp/llm_reasoning_evidence_final2/history.sqlite
 
-# Run the offline evaluator and export only explicitly approved decisions.
-./norrust_core/target/release/history_eval mechanical \
+# Inventory prompt/response payload coverage; this records evidence presence only.
+python3 tools/game_history.py payload-coverage \
   --db tmp/game_history_final_games/history.sqlite --cohort COHORT_ID
 python3 tools/game_training_export.py --db DB --run-id RUN_ID --output OUTPUT_DIR
 ```
