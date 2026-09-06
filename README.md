@@ -55,13 +55,13 @@ seven scenarios, fog of war, save/load, and campaign progression.
 ```
 ┌─────────────────────────────────────┐
 │   Presentation Layer (Love2D/Lua)   │  Renders. Forwards input. Knows no rules.
-│   norrust_love/ (29 Lua modules)    │
+│   norrust_love/ (Lua presentation modules) │
 └────────────────┬────────────────────┘
                  │  LuaJIT FFI → C ABI
                  │  StateSnapshot (JSON) ← norrust_get_state_json()
                  │  Actions             → norrust_apply_move() etc.
 ┌────────────────▼────────────────────┐
-│   C ABI Bridge (Rust)               │  78 extern "C" functions.
+│   C ABI Bridge (Rust)               │  C-compatible exported functions.
 │   norrust_core/src/ffi.rs           │  Converts offset ↔ cubic hex coordinates.
 └────────────────┬────────────────────┘
                  │  pure function calls
@@ -90,7 +90,7 @@ cargo build --manifest-path norrust_core/Cargo.toml
 
 # Run the unit test suite (no Love2D needed)
 cargo test --lib --manifest-path norrust_core/Cargo.toml
-# Expected: 130 tests pass
+# Expected: the current Rust library test suite passes
 
 # Run the game
 love norrust_love
@@ -169,11 +169,11 @@ Executable headless setup and provider-neutral examples are in
 ```
 norrust/
 ├── norrust_core/       # Rust library — simulation engine + C ABI bridge
-│   ├── src/            # 18 modules: game_state, combat, pathfinding, ai, ffi, visibility, ...
+│   ├── src/            # Simulation modules: game_state, combat, pathfinding, ai, ffi, ...
 │   └── tests/          # 6 test suites (simulation, FFI, campaign, dialogue, scenario, balance)
 ├── norrust_love/       # Love2D project — presentation layer only
 │   ├── main.lua        # Entry point and game loop
-│   ├── norrust.lua     # LuaJIT FFI bindings wrapping all 78 C ABI functions
+│   ├── norrust.lua     # LuaJIT FFI bindings for the C ABI
 │   └── (27 more)       # Modular Lua files: draw, input, camera, combat, save, roster, ...
 ├── data/
 │   ├── units/          # 112 unit TOML definitions across 31 advancement trees

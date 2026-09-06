@@ -83,7 +83,7 @@ graph TD
 norrust/
 ├── norrust_core/           # Rust simulation core (cdylib + rlib)
 │   ├── src/
-│   │   ├── lib.rs          # Module declarations (18 modules)
+│   │   ├── lib.rs          # Module declarations
 │   │   ├── board.rs        # Board, Tile structs
 │   │   ├── game_state.rs   # GameState, apply_action(), Action, ActionError
 │   │   ├── hex.rs          # Hex coordinate type (cubic + odd-r offset)
@@ -100,7 +100,7 @@ norrust/
 │   │   ├── loader.rs       # Registry<T>, load_from_dir()
 │   │   ├── snapshot.rs     # StateSnapshot, TileSnapshot, ActionRequest (JSON)
 │   │   ├── scenario.rs     # load_board(), load_units() file I/O
-│   │   └── ffi.rs          # C ABI bridge — 78 extern "C" functions
+│   │   └── ffi.rs          # C ABI bridge
 │   └── tests/
 │       ├── simulation.rs   # Headless game simulation tests
 │       ├── test_ffi.rs     # FFI integration test
@@ -113,8 +113,7 @@ norrust/
 │   ├── norrust.lua         # LuaJIT FFI bindings + JSON decoder
 │   ├── draw*.lua           # Rendering (board, HUD, sidebar, screens)
 │   ├── input*.lua          # Input handling (play, deploy, setup, saves)
-│   ├── save.lua            # Save/load with custom TOML serializer
-│   ├── roster.lua          # UUID generation + campaign roster CRUD
+│   ├── save.lua            # JSON save/load with legacy TOML reading
 │   ├── events.lua          # Event bus (decouples gameplay from UI)
 │   └── ...                 # camera, combat, animation, sound, hex, state, ...
 ├── data/
@@ -143,7 +142,7 @@ The frontend (`norrust_love/`) is entirely responsible for visuals and capturing
 
 ### 2. Integration Bridge (C ABI & LuaJIT FFI)
 The boundary between Love2D (Lua) and Rust. This layer translates Lua calls into type-safe Rust execution.
-- **C ABI:** `ffi.rs` exposes 78 `extern "C"` functions with an opaque `NorRustEngine` pointer. All functions use C-compatible types (i32, `*const c_char`, `*mut i32`).
+- **C ABI:** `ffi.rs` exposes the C-compatible functions used by Love2D and other foreign callers through an opaque `NorRustEngine` pointer.
 - **LuaJIT FFI Bindings:** `norrust.lua` uses `ffi.cdef` to declare all C function signatures and wraps them with Lua-friendly return types. Strings are converted via `ffi.string()` then freed with `norrust_free_string()`. Integer arrays are read into Lua tables then freed with `norrust_free_int_array()`.
 - **Memory Management:** Caller-frees pattern. Rust allocates strings/arrays with `CString::into_raw()` / `Box::into_raw()`. Lua is responsible for calling the corresponding free function. `ffi.gc` attaches `norrust_free` as a destructor on the engine pointer for automatic cleanup.
 - **JSON State Serialization:** The Rust core exports the full board and unit state as a JSON string (`StateSnapshot`). An inline pure-Lua JSON decoder in `norrust.lua` parses it into native Lua tables.

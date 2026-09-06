@@ -4,6 +4,12 @@ norrust_core/target/
 # Python artifacts
 __pycache__/
 *.py[cod]
+/.venv/
+/.pytest_cache/
+/.ruff_cache/
+/build/
+/dist/
+/*.egg-info/
 
 # IDE and Tool artifacts
 .claude/
@@ -18,6 +24,9 @@ Thumbs.db
 .paul/
 
 tmp/
+
+# Local history catalog and SQLite sidecars
+/.norrust_history/
 
 # Shared libraries
 *.so

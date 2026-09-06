@@ -264,6 +264,7 @@ fn run_balance(
 
 /// Play the full "Road to Norrust" campaign 10 times using the real campaign system.
 #[test]
+#[ignore = "long-running statistical experiment; run explicitly"]
 fn campaign_full_playthrough() {
     use norrust_core::campaign::{load_campaign, CampaignState};
 
@@ -529,24 +530,28 @@ fn campaign_full_playthrough() {
 }
 
 #[test]
+#[ignore = "long-running statistical experiment; run explicitly"]
 fn balance_crossing() {
     let r = run_balance("crossing", 1000, "loyalists", "northerners");
     println!("Crossing (Loyalists vs Northerners, 1000 games): {}", r);
 }
 
 #[test]
+#[ignore = "long-running statistical experiment; run explicitly"]
 fn balance_night_orcs() {
     let r = run_balance("night_orcs", 1000, "loyalists", "northerners");
     println!("Night Orcs (Loyalists vs Northerners, 1000 games): {}", r);
 }
 
 #[test]
+#[ignore = "long-running statistical experiment; run explicitly"]
 fn balance_final_battle() {
     let r = run_balance("final_battle", 1000, "loyalists", "northerners");
     println!("Final Battle (Loyalists vs Northerners, 1000 games): {}", r);
 }
 
 #[test]
+#[ignore = "long-running statistical experiment; run explicitly"]
 fn balance_contested() {
     let r = run_balance("contested", 1000, "loyalists", "northerners");
     println!("Contested (Loyalists vs Northerners, 1000 games): {}", r);

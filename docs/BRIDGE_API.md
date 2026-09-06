@@ -2,8 +2,10 @@
 
 ## Purpose
 
-Reference for the C ABI bridge (`ffi.rs`) exposed by `norrust_core`. These 78 `extern "C"`
-functions are called via LuaJIT FFI from Love2D, but any language with C FFI support can use them.
+Reference for the C ABI bridge (`ffi.rs`) exposed by `norrust_core`. The exported
+functions are called via LuaJIT FFI from Love2D, but any language with C FFI support
+can use them. Keep this table synchronized with the Rust declarations and Lua
+`ffi.cdef`; avoid embedding a count that becomes stale after an additive API change.
 
 ## Memory Management
 

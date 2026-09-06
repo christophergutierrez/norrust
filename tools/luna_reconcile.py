@@ -13,7 +13,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from .luna_request_journal import STATES, read_state
+try:
+    from .luna_request_journal import STATES, read_state
+except ImportError:  # Direct ``python tools/luna_reconcile.py`` compatibility.
+    from luna_request_journal import STATES, read_state
 
 
 COMPLETED_UNCONSUMED = "completed_unconsumed"

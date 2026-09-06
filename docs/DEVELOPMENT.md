@@ -10,7 +10,7 @@
 ```
 norrust/
 ├── norrust_core/    # Rust library — simulation core + C ABI bridge
-├── norrust_love/    # Love2D project — presentation layer (29 Lua modules)
+├── norrust_love/    # Love2D project — presentation layer
 ├── data/            # TOML data files loaded at runtime
 │   ├── units/       # 112 unit definitions across 31 advancement trees
 │   ├── terrain/     # 14 terrain definitions + PNG tiles
@@ -50,11 +50,11 @@ cargo test --test test_ffi --test scenario_validation --test simulation --test c
 ```
 
 The test suite runs entirely headlessly — no Love2D required. It covers:
-- Unit tests across 18 source modules (130 tests)
+- Unit tests across the Rust simulation modules
 - Integration tests: campaign (8), scenario validation (23), simulation (3), dialogue (3), FFI (1)
 
-Expected output: 133 lib tests pass (`cargo test --lib`). Integration tests may
-fail to link because of `cdylib`/`rlib`/`self-play` output collisions.
+Expected output: the current library tests pass (`cargo test --lib`). Run the
+named integration suites separately when changing the bridge or driver.
 
 ### Self-play simulations
 
@@ -125,7 +125,7 @@ cargo test --lib --manifest-path norrust_core/Cargo.toml
 
 | File | Role |
 |------|------|
-| `norrust_core/src/ffi.rs` | C ABI bridge — 78 `extern "C"` functions for LuaJIT FFI |
+| `norrust_core/src/ffi.rs` | C ABI bridge for LuaJIT FFI |
 | `norrust_core/src/game_state.rs` | `apply_action()`, `Action`, `ActionError` |
 | `norrust_core/src/board.rs` | `Board`, `Tile` structs |
 | `norrust_core/src/combat.rs` | Combat resolution, time of day, specials |
@@ -142,8 +142,7 @@ cargo test --lib --manifest-path norrust_core/Cargo.toml
 | `norrust_love/norrust.lua` | LuaJIT FFI bindings + inline JSON decoder |
 | `norrust_love/draw.lua` | Main draw dispatcher |
 | `norrust_love/input.lua` | Input state machine dispatcher |
-| `norrust_love/save.lua` | Save/load system (custom TOML serializer) |
-| `norrust_love/roster.lua` | UUID generation + roster CRUD for campaign tracking |
+| `norrust_love/save.lua` | JSON save/load system with legacy TOML reading |
 | `norrust_love/campaign_client.lua` | Campaign progression UI |
 | `norrust_love/events.lua` | Event bus (decouples gameplay from UI) |
 

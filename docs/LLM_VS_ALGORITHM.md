@@ -56,7 +56,7 @@ Build the driver and run the committed deterministic orders fixture from the rep
 cargo build --bin greedy_driver --manifest-path norrust_core/Cargo.toml
 python -m tools.llm_client \
   --driver norrust_core/target/debug/greedy_driver \
-  --orders-file tools/orders_fixture.jsonl \
+  --orders-file tools/fixtures/invalid_move_then_end_turn.jsonl \
   --scenario big_battle_6 --faction0 undead --faction1 undead \
   --gold 300 --seed 202 --llm-side 0 --max-turns 4 \
   --log /tmp/norrust-llm-vs-greedy.ndjson
