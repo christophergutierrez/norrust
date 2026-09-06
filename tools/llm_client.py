@@ -640,11 +640,16 @@ def query_inspect_unit(exchange, unit_id: int, state_revision: int) -> dict[str,
                          "state_revision": state_revision, "unit_id": unit_id})
     if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
         message = response.get("message", "inspection query failed") if isinstance(response, dict) else "invalid inspection response"
+        if isinstance(message, str) and "unavailable" in message.lower():
+            return {"available": False, "unit_id": unit_id, "reason": message}
         raise RuntimeError(f"query_error: inspect_unit: {message}")
     return response["body"]
 
 
 def compact_unit_inspection(unit: dict[str, Any]) -> str:
+    if unit.get("available") is False:
+        return "INSPECT_UNIT unavailable unit=%s reason=%s" % (
+            unit.get("unit_id", "?"), unit.get("reason", "unknown"))
     lines = ["COORDS=col,row"] + compact_detailed_units([unit])
     destinations = unit.get("destination_threats", unit.get("recruiter_destinations", []))
     if isinstance(destinations, list) and destinations:
@@ -687,6 +692,8 @@ def query_inspect_target(exchange, unit_id: int, state_revision: int) -> dict[st
                          "state_revision": state_revision, "unit_id": unit_id})
     if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
         message = response.get("message", "inspection query failed") if isinstance(response, dict) else "invalid inspection response"
+        if isinstance(message, str) and "unavailable" in message.lower():
+            return {"available": False, "target_id": unit_id, "reason": message}
         raise RuntimeError(f"query_error: inspect_target: {message}")
     return response["body"]
 
@@ -708,6 +715,9 @@ def query_inspect_targets(exchange, unit_ids: list[int], state_revision: int) ->
                          "state_revision": state_revision, "unit_ids": unit_ids})
     if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
         message = response.get("message", "inspection query failed") if isinstance(response, dict) else "invalid inspection response"
+        if isinstance(message, str) and "unavailable" in message.lower():
+            return [{"available": False, "target_id": unit_id, "reason": message}
+                    for unit_id in unit_ids]
         raise RuntimeError(f"query_error: inspect_targets: {message}")
     body = response["body"]
     if not isinstance(body, dict) or not isinstance(body.get("targets"), list):
@@ -720,6 +730,9 @@ def compact_targets_inspection(targets: list[dict[str, Any]]) -> str:
 
 
 def compact_target_inspection(target: dict[str, Any]) -> str:
+    if target.get("available") is False:
+        return "TARGET unavailable unit=%s reason=%s" % (
+            target.get("target_id", "?"), target.get("reason", "unknown"))
     attacks = []
     for attack in target.get("attacks", []):
         forecast = attack.get("forecast", {}) if isinstance(attack, dict) else {}

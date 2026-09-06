@@ -478,6 +478,13 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("danger_after=unknown", rendered)
         self.assertIn("DANGER_AFTER_UNAVAILABLE", rendered)
 
+    def test_unavailable_unit_inspection_is_a_factual_gap(self):
+        def exchange(_request):
+            return {"ok": False, "message": "unit is unavailable"}
+        body = llm_client.query_inspect_unit(exchange, 5, 42)
+        self.assertEqual(body["available"], False)
+        self.assertIn("unavailable", llm_client.compact_unit_inspection(body))
+
     def test_compact_batch_preview_uses_recruiter_aggregate_not_origins(self):
         rendered = compact_batch_preview({"sampling": False, "candidates": [{
             "valid": True,
