@@ -19,11 +19,11 @@ def main() -> int:
         "--test", "scenario_validation", "--test", "simulation", "--test", "test_ffi",
     ])
     run([sys.executable, "-m", "unittest", "discover", "-s", "tools", "-t", "."])
-    luajit = shutil.which("luajit")
-    if luajit:
-        run([luajit, "norrust_love/test_llm_bridge.lua"])
+    love = shutil.which("love")
+    if love:
+        run([love, "norrust_love/test_llm_bridge.lua"])
     else:
-        print("SKIP: luajit is not installed; Lua bridge smoke test unavailable", file=sys.stderr)
+        print("SKIP: Love2D is not installed; Lua bridge smoke test unavailable", file=sys.stderr)
     return 0
 
 
