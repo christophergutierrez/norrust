@@ -1,4 +1,4 @@
-"""Small, optional bookkeeping for Luna's model-authored turn objectives."""
+"""Small, optional bookkeeping for model-authored turn objectives."""
 from __future__ import annotations
 
 import json

@@ -1,4 +1,4 @@
-"""Small truthful report helper for Luna NDJSON attempts."""
+"""Small truthful report helper for model-game NDJSON attempts."""
 from __future__ import annotations
 
 import json

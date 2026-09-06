@@ -46,6 +46,37 @@ class FakeDriverProcess:
 
 class ClientValidationTests(unittest.TestCase):
 
+    def test_client_accepts_other_models_and_keeps_unreported_runtime_unknown(self):
+        for reported_model, reported_effort in ((None, None), ("test-model", "medium")):
+            with self.subTest(reported_model=reported_model):
+                cache = {"requested_model": "test-model", "requested_reasoning_effort": "medium",
+                         "runtime_model": reported_model, "runtime_reasoning_effort": reported_effort}
+                code, terminal = self.run_with_orders(
+                    ['[{"action":"EndTurn"}]'],
+                    [{"type": "state", "active_faction": 0},
+                     {"type": "status", "ok": True, "what": "turn_options", "body": {}},
+                     {"type": "status", "ok": True, "what": "recruit_options", "body": {}},
+                     {"type": "status", "ok": True, "results": [{"ok": True}]},
+                     {"type": "game_end", "reason": "max_turns"}],
+                    backend_cache=cache, reasoning_effort="medium")
+                self.assertEqual(code, 0, terminal)
+                self.assertEqual(terminal["runtime_model"], reported_model)
+                self.assertEqual(terminal["runtime_reasoning_effort"], reported_effort)
+                self.assertEqual(terminal["backend_requested_model"], "test-model")
+
+    def test_client_rejects_known_setting_mismatches(self):
+        for changes in ({"runtime_model": "other-model"}, {"runtime_reasoning_effort": "low"},
+                        {"requested_reasoning_effort": "low"}):
+            with self.subTest(changes=changes):
+                code, _ = self.run_with_orders(
+                    ['[{"action":"EndTurn"}]'],
+                    [{"type": "state", "active_faction": 0},
+                     {"type": "status", "ok": True, "what": "turn_options", "body": {}},
+                     {"type": "status", "ok": True, "what": "recruit_options", "body": {}}],
+                    backend_cache={"requested_model": "test-model", "requested_reasoning_effort": "medium",
+                                   **changes}, reasoning_effort="medium")
+                self.assertNotEqual(code, 0)
+
     def test_event_window_observation_count_is_exact(self):
         first = [{"kind": "recruit", "unit": 1}]
         second = [{"kind": "move", "unit": 2}]
@@ -891,7 +922,8 @@ class ClientValidationTests(unittest.TestCase):
         self.assertNotIn("pos=(7,3)", rendered)
 
     def test_real_driver_turn_options_mark_current_and_movable_hexes(self):
-        driver = Path(__file__).resolve().parents[1] / "norrust_core" / "target" / "debug" / "greedy_driver"
+        driver = Path(os.environ.get("NORRUST_TEST_DRIVER", str(
+            Path(__file__).resolve().parents[1] / "norrust_core" / "target" / "debug" / "greedy_driver")))
         if not driver.exists():
             self.skipTest("greedy_driver has not been built")
         process = subprocess.Popen(
@@ -1569,14 +1601,14 @@ class ClientValidationTests(unittest.TestCase):
 
     def run_with_orders(self, order_texts, driver_lines, validate_before_submit=False,
                         max_model_calls_per_turn=4, max_tool_calls_per_turn=4,
-                        incremental_turns=False):
+                        incremental_turns=False, backend_cache=None, reasoning_effort=None):
         """Drive the client with N canned model replies and explicit driver output."""
         with tempfile.TemporaryDirectory() as directory:
             log_path = directory + "/client.jsonl"
             orders_path = directory + "/orders.jsonl"
             with open(orders_path, "w") as orders:
                 for text in order_texts:
-                    orders.write(json.dumps({"text": text}) + "\n")
+                    orders.write(json.dumps({"text": text, "cache": backend_cache}) + "\n")
             args = argparse.Namespace(
                 driver="driver", scenario="scenario", faction0="a", faction1="b",
                 gold=1, seed=2, max_turns=3, llm_side=0, turn_timeout=4,
@@ -1589,6 +1621,7 @@ class ClientValidationTests(unittest.TestCase):
                 incremental_turns=incremental_turns,
                 max_model_calls_per_turn=max_model_calls_per_turn,
                 max_tool_calls_per_turn=max_tool_calls_per_turn,
+                reasoning_effort=reasoning_effort,
             )
             process = FakeDriverProcess(driver_lines)
             with mock.patch("tools.llm_client.subprocess.Popen", return_value=process), \

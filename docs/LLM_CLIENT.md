@@ -48,8 +48,8 @@ The canonical per-turn instructions are the
 [MEMORYLESS TACTICAL PLAYBOOK](LLM_TACTICAL_PLAYBOOK.md). The client reads that
 file and includes its complete text inline near the beginning of every model
 prompt. The model therefore does not need filesystem access. The client also
-carries a bounded transcript for generic backends. The Luna adapter additionally
-stores a native Codex thread ID in the match-owned `NORRUST_LUNA_SESSION_FILE`
+carries a bounded transcript for generic backends. The Codex adapter additionally
+stores a native Codex thread ID in the match-owned `NORRUST_CODEX_SESSION_FILE`
 sidecar and resumes that exact thread; it never uses `--last` or ephemeral
 sessions. Engine state, revision, and fresh options remain authoritative after
 every accepted batch.
@@ -77,7 +77,7 @@ bounded client transcript; a new log is required for `--resume-checkpoint` and
 records the parent checkpoint. `--resume-log PATH` is available when continuing
 the same incomplete log in place, but a new branch is safer for experiments.
 The client rejects a resume whose turn cap is below the checkpoint's completed
-side-turn count or whose match identity does not match. Luna also resumes its
+side-turn count or whose match identity does not match. The Codex adapter also resumes its
 match-owned native session when the session sidecar is available; generic model
 commands receive the restored state and bounded transcript through the new
 backend process.
@@ -178,20 +178,40 @@ Use a distinct log and checkpoint directory for every concurrent run. The
 client does not force a partial batch; the model may still finish a turn in one
 batch. `turn_format` in metadata records the requested mode.
 
-For Luna, use `tools/luna_backend.py` as the model command and provide a unique
-session sidecar for every match:
+Use `tools.codex_backend` for native Codex sessions and provide a unique session
+sidecar for every match. Select a model with `NORRUST_CODEX_MODEL` and set
+`NORRUST_CODEX_REASONING_EFFORT` (default `high`), or select the explicit
+`luna-high` preset:
 
 ```bash
-NORRUST_LUNA_SESSION_FILE=/path/to/match/luna-session.json \
+NORRUST_CODEX_PRESET=luna-high \
+NORRUST_CODEX_SESSION_FILE=/path/to/match/session.json \
 python -m tools.llm_client ... --reasoning-effort high \
-  --model-command 'python3 tools/luna_backend.py'
+  --model-command 'python3 -m tools.codex_backend'
 ```
 
-The adapter fixes the runtime model to `gpt-5.6-luna` and reasoning to `high`,
-uses read-only sandboxing when creating the thread, and records the native
-thread, runtime settings, and transport in client metadata. The prompt rejects
+The `luna-high` preset requests `gpt-5.6-luna` with high reasoning; explicit model
+and effort settings override the preset. The adapter uses read-only sandboxing
+when creating the thread and records the native thread, resolved requested
+settings, and transport. Runtime model/effort remain unknown because the consumed
+native events do not confirm them. Unknown settings do not fail the client's
+comparison; known contradictory requested/reported settings do. The prompt rejects
 unrelated shell, web, file, skill, and connector use; the adapter fails if a
 native response reports one of those tool classes.
+
+`NORRUST_CODEX_ARTIFACT_DIR` selects the prompt/result/journal directory (default
+`artifacts/` beside the session sidecar); `NORRUST_CODEX_MATCH_ID` selects its
+logical match identity (default the resolved sidecar path). `NORRUST_CODEX_TIMEOUT`
+sets the native request timeout in seconds (default 840). Give every concurrent
+match its own sidecar, artifacts, and identity. These commands require POSIX
+process groups and `fcntl` locking.
+
+Legacy `NORRUST_LUNA_*` environment settings remain compatibility aliases;
+canonical `NORRUST_CODEX_*` settings take precedence, with conflicts reported on
+stderr. The old `tools/luna_backend.py` command is a thin compatibility alias
+that supplies the `luna-high` preset. Both direct-script and module invocations
+work; use the canonical name in new commands. The client records its
+`--reasoning-effort` expectation separately; configure the backend's effort too.
 
 When an engine rejects a submitted batch, the client allows bounded action
 repairs. Inspection results requested during pre-submit repair remain in every

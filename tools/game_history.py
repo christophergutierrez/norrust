@@ -106,7 +106,7 @@ def open_history(path: str | os.PathLike[str], *, read_only: bool = False) -> sq
     if read_only:
         if not path.is_file():
             raise FileNotFoundError(f"history catalog does not exist: {path}")
-        conn = sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
     else:
         conn = sqlite3.connect(path)
     conn.execute("PRAGMA foreign_keys=ON")
@@ -391,10 +391,7 @@ def backup_history(source: str, destination: str) -> None:
     dst.close(); src.close()
 
 def verify_history(path: str | os.PathLike[str]) -> dict[str, Any]:
-    path = Path(path)
-    if not path.is_file():
-        raise FileNotFoundError(f"history catalog does not exist: {path}")
-    conn = sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
+    conn = open_history(path, read_only=True)
     integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
     foreign_keys = conn.execute("PRAGMA foreign_key_check").fetchall()
     counts = {}

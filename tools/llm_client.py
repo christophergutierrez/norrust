@@ -2160,13 +2160,22 @@ def run(args: argparse.Namespace) -> int:
                                             ("transport", "native_transport"),
                                             ("runtime_model", "runtime_model"),
                                             ("runtime_reasoning_effort", "runtime_reasoning_effort"),
+                                            ("requested_model", "backend_requested_model"),
+                                            ("requested_reasoning_effort", "backend_requested_reasoning_effort"),
+                                            ("runtime_settings_source", "runtime_settings_source"),
                                             ("tool_restriction", "tool_restriction")):
-                    if reply.cache.get(source) is not None:
-                        metadata[destination] = reply.cache[source]
-                if metadata.get("runtime_model") not in (None, "gpt-5.6-luna"):
+                    metadata[destination] = reply.cache.get(source)
+                requested_model = reply.cache.get("requested_model")
+                reported_model = reply.cache.get("runtime_model")
+                if requested_model is not None and reported_model is not None and reported_model != requested_model:
                     raise RuntimeError("runtime model mismatch")
                 requested_effort = getattr(args, "reasoning_effort", None)
-                if requested_effort and metadata.get("runtime_reasoning_effort") != requested_effort:
+                backend_effort = reply.cache.get("requested_reasoning_effort")
+                reported_effort = reply.cache.get("runtime_reasoning_effort")
+                if requested_effort and backend_effort is not None and backend_effort != requested_effort:
+                    raise RuntimeError("backend requested reasoning effort mismatch")
+                expected_effort = requested_effort or backend_effort
+                if expected_effort and reported_effort is not None and reported_effort != expected_effort:
                     raise RuntimeError("runtime reasoning effort mismatch")
             record({"type": "model_request",
                     "request_id": request_id,

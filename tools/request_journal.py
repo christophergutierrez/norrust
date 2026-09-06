@@ -1,4 +1,4 @@
-"""Small durable journal for one in-flight Luna request per session.
+"""Small durable journal for one in-flight model request per session.
 
 The journal deliberately knows nothing about the model transport.  Callers mark
 transport milestones and append native events as they receive them.  The open

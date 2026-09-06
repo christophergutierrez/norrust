@@ -30,7 +30,7 @@ print(verify_history("tmp/game_history_final_games/history.sqlite"))
 PY
 
 # Summarize an original match archive.
-python3 tools/luna_report.py tmp/game_history_final_games/2031/match.ndjson
+python3 -m tools.match_report /path/to/match.ndjson
 
 # Inspect the reasoning-evidence experiment when present.
 python3 tools/game_history.py inventory \
@@ -49,7 +49,7 @@ that a move was strategically good. Training exports require an explicit review 
 and the exporter does not invent hidden reasoning. Keep generated greedy actions attributed
 to the algorithm and model-authored handoffs attributed to the model.
 
-For Luna experiments, inspect resume health before judging play. A successful
+For model experiments, inspect resume health before judging play. A successful
 engine result can still be invalid for model comparison if native requests failed
 and greedy fallback completed the game. Check `terminal_class`, request statuses,
 native session IDs, token coverage, and fallback counts in the archive and catalog.

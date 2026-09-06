@@ -1,4 +1,6 @@
 import json
+import sqlite3
+from contextlib import closing
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +10,23 @@ from .game_history import (backup_history, decode_payload, encode_payload, impor
                            summarize_game, verify_history)
 
 class GameHistoryTests(unittest.TestCase):
+    def test_read_only_uri_preserves_filename_and_cannot_write(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            for name in ("catalog#copy.sqlite", "catalog?mode=rwc.sqlite",
+                         "catalog%23copy.sqlite", "catalog ü space.sqlite"):
+                with self.subTest(name=name):
+                    path = root / name
+                    open_history(path).close()
+                    before = {p.name: p.read_bytes() for p in root.iterdir()}
+                    with closing(open_history(path, read_only=True)) as conn:
+                        self.assertEqual(Path(conn.execute("PRAGMA database_list").fetchone()[2]), path)
+                        self.assertEqual(inventory_history(conn)["counts"]["games"], 0)
+                        with self.assertRaises(sqlite3.OperationalError):
+                            conn.execute("CREATE TABLE should_not_exist (id INTEGER)")
+                    self.assertEqual(verify_history(path)["integrity"], "ok")
+                    self.assertEqual({p.name: p.read_bytes() for p in root.iterdir()}, before)
+
     def test_read_only_catalog_access_never_creates_missing_database(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "missing.sqlite"

@@ -30,8 +30,8 @@ cargo build --manifest-path norrust_core/Cargo.toml
 ```
 
 This produces two artifacts from the same source:
-- `target/debug/libnorrust_core.so` — the `cdylib` loaded by Love2D via LuaJIT FFI
-- `target/debug/libnorrust_core.rlib` — the `rlib` used by `cargo test`
+- `norrust_core/target/debug/libnorrust_core.so` — the `cdylib` loaded by Love2D via LuaJIT FFI
+- `norrust_core/target/debug/libnorrust_core.rlib` — the `rlib` used by `cargo test`
 
 For a release build:
 
@@ -41,17 +41,32 @@ cargo build --release --manifest-path norrust_core/Cargo.toml
 
 ## Running Tests
 
+From the repository root, run the complete headless verification gate:
+
+```bash
+python3 -m tools.fast_check
+```
+
+It runs Rust library and both binary unit tests, the six named non-balance
+integration suites, Python tool tests, and the LuaJIT bridge smoke test. It builds
+the library and drivers explicitly and uses Cargo's reported artifact paths,
+including when `CARGO_TARGET_DIR` or Cargo configuration selects another target
+directory. The Python driver check uses the same build. LuaJIT is required; no
+display is needed. Interactive Love2D/editor acceptance remains a separate check.
+
+For focused Rust checks:
+
 ```bash
 # Unit tests only (fast, recommended for development)
 cargo test --lib --manifest-path norrust_core/Cargo.toml
 
 # Integration tests (without balance tests)
-cargo test --test test_ffi --test scenario_validation --test simulation --test campaign --test dialogue --manifest-path norrust_core/Cargo.toml
+cargo test --test driver_protocol --manifest-path norrust_core/Cargo.toml
 ```
 
-The test suite runs entirely headlessly — no Love2D required. It covers:
-- Unit tests across the Rust simulation modules
-- Integration tests: campaign (8), scenario validation (23), simulation (3), dialogue (3), FFI (1)
+The Rust test suite runs entirely headlessly — no Love2D required. Its integration
+suites are `campaign`, `dialogue`, `driver_protocol`, `scenario_validation`,
+`simulation`, and `test_ffi`; select each with `--test` as needed.
 
 Expected output: the current library tests pass (`cargo test --lib`). Run the
 named integration suites separately when changing the bridge or driver.

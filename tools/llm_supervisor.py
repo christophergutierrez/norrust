@@ -97,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--log", required=True, type=Path)
     parser.add_argument("--max-restarts", type=int, default=3)
     parser.add_argument("--request-state", type=Path,
-                        help="durable Luna request state used to authorize recovery")
+                        help="durable model request state used to authorize recovery")
     parser.add_argument("command", nargs=argparse.REMAINDER,
                         help="client command after --")
     args = parser.parse_args(argv)

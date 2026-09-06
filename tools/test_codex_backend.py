@@ -1,14 +1,92 @@
 import json
+import io
+import os
+import tempfile
+from contextlib import redirect_stdout
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-from . import codex_backend as luna_backend
+from . import codex_backend
 
 
-class LunaBackendTests(unittest.TestCase):
+class CodexBackendTests(unittest.TestCase):
+    def setUp(self):
+        environment = patch.dict(os.environ, {"NORRUST_CODEX_MODEL": "test-model"}, clear=True)
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def test_preset_and_legacy_aliases_are_explicit_and_canonical_settings_win(self):
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "MODEL or NORRUST_CODEX_PRESET"):
+                codex_backend.resolved_settings()
+            self.assertEqual(codex_backend.resolved_settings("luna-high"), ("gpt-5.6-luna", "high"))
+        legacy = {"NORRUST_LUNA_MODEL": "legacy-model", "NORRUST_LUNA_REASONING_EFFORT": "low"}
+        with patch.dict(os.environ, legacy, clear=True):
+            self.assertEqual(codex_backend.resolved_settings(), ("legacy-model", "low"))
+            with patch.dict(os.environ, {"NORRUST_CODEX_MODEL": "new-model",
+                                       "NORRUST_CODEX_REASONING_EFFORT": "medium"}), \
+                    patch.object(codex_backend.sys, "stderr", io.StringIO()) as stderr:
+                self.assertEqual(codex_backend.resolved_settings(), ("new-model", "medium"))
+                self.assertIn("ignored", stderr.getvalue())
+
+    def test_configured_model_is_recorded_without_inventing_runtime_confirmation(self):
+        events = '\n'.join(json.dumps(event) for event in [
+            {"type": "thread.started", "thread_id": "thread-configured"},
+            {"type": "item.completed", "item": {"type": "agent_message", "text": "[]"}},
+            {"type": "turn.completed"},
+        ])
+
+        class Process:
+            returncode = 0
+            def communicate(self, timeout):
+                self.timeout = timeout
+                return events, ""
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            process = Process()
+            settings = {"NORRUST_CODEX_MODEL": "test-alternate-model",
+                        "NORRUST_CODEX_REASONING_EFFORT": "medium",
+                        "NORRUST_CODEX_SESSION_FILE": str(root / "session.json"),
+                        "NORRUST_CODEX_ARTIFACT_DIR": str(root / "evidence"),
+                        "NORRUST_CODEX_MATCH_ID": "test-match", "NORRUST_CODEX_TIMEOUT": "31",
+                        "NORRUST_LUNA_SESSION_FILE": str(root / "wrong-session.json"),
+                        "NORRUST_LUNA_ARTIFACT_DIR": str(root / "wrong-evidence"),
+                        "NORRUST_LUNA_MATCH_ID": "wrong-match", "NORRUST_LUNA_TIMEOUT": "77"}
+            output = io.StringIO()
+            with patch.dict(os.environ, settings, clear=True), \
+                    patch.object(codex_backend.sys, "stdin", io.StringIO("canonical prompt\n")), \
+                    patch.object(codex_backend.subprocess, "Popen", return_value=process) as popen, \
+                    redirect_stdout(output):
+                self.assertEqual(codex_backend.main(), 0)
+            command = popen.call_args.args[0]
+            self.assertEqual(command[command.index("--model") + 1], "test-alternate-model")
+            self.assertEqual(command[command.index("-c") + 1], "model_reasoning_effort=medium")
+            session = json.loads((root / "session.json").read_text())
+            self.assertEqual(session["model"], "test-alternate-model")
+            self.assertEqual(session["reasoning_effort"], "medium")
+            cache = json.loads(output.getvalue())["cache"]
+            self.assertEqual(cache["requested_model"], "test-alternate-model")
+            self.assertEqual(cache["requested_reasoning_effort"], "medium")
+            self.assertIsNone(cache["runtime_model"])
+            self.assertIsNone(cache["runtime_reasoning_effort"])
+            self.assertEqual(process.timeout, 31)
+            self.assertEqual((root / "evidence" / "00001-request.txt").read_text(), "canonical prompt\n")
+            result = json.loads((root / "evidence" / "00001-result.json").read_text())
+            self.assertEqual(result["model"], "test-alternate-model")
+            self.assertNotIn("Luna", command[-1])
+            self.assertFalse((root / "wrong-session.json").exists())
+            self.assertFalse((root / "wrong-evidence").exists())
+            journals = list((root / "evidence" / "requests").glob("session-*/requests/*/state.json"))
+            self.assertEqual(len(journals), 1)
+            state = json.loads(journals[0].read_text())
+            self.assertEqual(state["metadata"]["requested_model"], "test-alternate-model")
+            self.assertEqual(state["metadata"]["deadline_seconds"], 31)
+
     def test_native_writer_conflict_is_retried(self):
         calls = []
-        original = luna_backend._run_native_once
+        original = codex_backend._run_native_once
 
         def flaky(prompt, thread_id, timeout):
             calls.append(1)
@@ -16,11 +94,11 @@ class LunaBackendTests(unittest.TestCase):
                 raise RuntimeError("thread-store conflict: already has an active writer")
             return "thread-2", "[{\"action\":\"EndTurn\"}]", [{"type": "turn.completed"}]
 
-        luna_backend._run_native_once = flaky
+        codex_backend._run_native_once = flaky
         try:
-            thread, answer, events = luna_backend.run_native("prompt", "thread-1", 1)
+            thread, answer, events = codex_backend.run_native("prompt", "thread-1", 1)
         finally:
-            luna_backend._run_native_once = original
+            codex_backend._run_native_once = original
         self.assertEqual((thread, answer), ("thread-2", "[{\"action\":\"EndTurn\"}]"))
         self.assertEqual(len(calls), 2)
 
@@ -39,8 +117,8 @@ class LunaBackendTests(unittest.TestCase):
             def communicate(self, timeout):
                 return events, ""
 
-        with patch.object(luna_backend.subprocess, "Popen", return_value=Process()) as popen:
-            thread, answer, _ = luna_backend.run_native("BOARD", "thread-1", 90)
+        with patch.object(codex_backend.subprocess, "Popen", return_value=Process()) as popen:
+            thread, answer, _ = codex_backend.run_native("BOARD", "thread-1", 90)
 
         command = popen.call_args.args[0]
         self.assertEqual(thread, "thread-2")
@@ -68,12 +146,12 @@ class LunaBackendTests(unittest.TestCase):
             def communicate(self, timeout):
                 return events, ""
 
-        with patch.object(luna_backend.subprocess, "Popen", return_value=Process()) as popen:
-            thread, _, received = luna_backend.run_native("BOARD", None, 90)
+        with patch.object(codex_backend.subprocess, "Popen", return_value=Process()) as popen:
+            thread, _, received = codex_backend.run_native("BOARD", None, 90)
         command = popen.call_args.args[0]
         self.assertIn("--sandbox", command)
         self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
-        self.assertEqual(luna_backend.completion_usage(received)["reasoning_output_tokens"], 2)
+        self.assertEqual(codex_backend.completion_usage(received)["reasoning_output_tokens"], 2)
 
 
 if __name__ == "__main__":

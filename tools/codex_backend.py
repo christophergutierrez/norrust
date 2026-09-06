@@ -2,6 +2,7 @@
 """Persistent, restricted Codex adapter for the headless client."""
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import signal
@@ -11,13 +12,12 @@ import tempfile
 import time
 from pathlib import Path
 
-try:
+if __package__:
     from .request_journal import RequestJournal
-except ImportError:  # pragma: no cover - direct script compatibility
+else:  # Direct script entry point.
     from request_journal import RequestJournal
 
-MODEL = "gpt-5.6-luna"
-EFFORT = "high"
+PRESETS = {"luna-high": ("gpt-5.6-luna", "high")}
 
 
 def _setting(name: str, legacy: str, default: str) -> str:
@@ -30,13 +30,22 @@ def _setting(name: str, legacy: str, default: str) -> str:
     return old if old is not None else default
 
 
-def resolved_settings() -> tuple[str, str]:
-    return (_setting("NORRUST_CODEX_MODEL", "NORRUST_LUNA_MODEL", MODEL),
-            _setting("NORRUST_CODEX_REASONING_EFFORT", "NORRUST_LUNA_REASONING_EFFORT", EFFORT))
+def resolved_settings(default_preset: str | None = None) -> tuple[str, str]:
+    preset = os.environ.get("NORRUST_CODEX_PRESET", default_preset)
+    if preset is not None and preset not in PRESETS:
+        raise RuntimeError(f"unknown Codex preset: {preset}")
+    default_model, default_effort = PRESETS[preset] if preset else ("", "high")
+    model = _setting("NORRUST_CODEX_MODEL", "NORRUST_LUNA_MODEL", default_model)
+    effort = _setting("NORRUST_CODEX_REASONING_EFFORT", "NORRUST_LUNA_REASONING_EFFORT", default_effort)
+    if not model:
+        raise RuntimeError("NORRUST_CODEX_MODEL or NORRUST_CODEX_PRESET is required")
+    if not effort:
+        raise RuntimeError("NORRUST_CODEX_REASONING_EFFORT must not be empty")
+    return model, effort
 
 
 def session_path() -> Path:
-    value = os.environ.get("NORRUST_CODEX_SESSION_FILE") or os.environ.get("NORRUST_LUNA_SESSION_FILE")
+    value = _setting("NORRUST_CODEX_SESSION_FILE", "NORRUST_LUNA_SESSION_FILE", "")
     if not value:
         raise RuntimeError("NORRUST_CODEX_SESSION_FILE is required for persistent Codex play")
     path = Path(value).resolve()
@@ -46,7 +55,7 @@ def session_path() -> Path:
 
 def native_instruction(prompt: str) -> str:
     return (
-        "You are the continuing Luna player in a Norrust match. Preserve explicit "
+        "You are the continuing model player in a Norrust match. Preserve explicit "
         "objectives across turns, but treat the latest authoritative board and accepted "
         "engine results as current. Return JSON only: a legal action array, an actions "
         "envelope with optional intent and agenda, or one read-only game inspection "
@@ -73,9 +82,10 @@ def extract(events: list[dict[str, object]]) -> tuple[str, str]:
     return thread_id, answer
 
 
-def _run_native_once(prompt: str, thread_id: str | None, timeout: float) -> tuple[str, str, list[dict[str, object]]]:
+def _run_native_once(prompt: str, thread_id: str | None, timeout: float, *,
+                     settings: tuple[str, str] | None = None) -> tuple[str, str, list[dict[str, object]]]:
     root = Path(__file__).resolve().parents[1]
-    model, effort = resolved_settings()
+    model, effort = settings if settings is not None else resolved_settings()
     if thread_id:
         command = ["codex", "exec", "resume", thread_id, "--json", "--ignore-user-config",
                    "--ignore-rules",
@@ -121,12 +131,13 @@ def _run_native_once(prompt: str, thread_id: str | None, timeout: float) -> tupl
     return new_thread or thread_id or "", answer, events
 
 
-def run_native(prompt: str, thread_id: str | None, timeout: float) -> tuple[str, str, list[dict[str, object]]]:
+def run_native(prompt: str, thread_id: str | None, timeout: float, *,
+               settings: tuple[str, str] | None = None) -> tuple[str, str, list[dict[str, object]]]:
     """Run one native request, retrying transient thread-store writer conflicts.
 
     A timed-out Codex process can release its thread-store writer slightly after
     the client process has exited. Resuming immediately then produces an
-    infrastructure error even though the logical Luna session is still valid.
+    infrastructure error even though the logical model session is still valid.
     Retry only that explicit transient error; all other failures retain their
     original behavior.
     """
@@ -135,7 +146,9 @@ def run_native(prompt: str, thread_id: str | None, timeout: float) -> tuple[str,
         if delay:
             time.sleep(delay)
         try:
-            return _run_native_once(prompt, thread_id, timeout)
+            if settings is None:
+                return _run_native_once(prompt, thread_id, timeout)
+            return _run_native_once(prompt, thread_id, timeout, settings=settings)
         except RuntimeError as exc:
             if "already has an active writer" not in str(exc) or attempt == len(delays):
                 raise
@@ -169,11 +182,7 @@ def write_state(path: Path, state: dict[str, object]) -> None:
             pass
 
 
-def write_artifact(kind: str, turn: int, value: str | dict[str, object]) -> None:
-    directory = os.environ.get("NORRUST_LUNA_ARTIFACT_DIR")
-    if not directory:
-        return
-    path = Path(directory)
+def write_artifact(path: Path, kind: str, turn: int, value: str | dict[str, object]) -> None:
     path.mkdir(parents=True, exist_ok=True)
     suffix = "txt" if isinstance(value, str) else "json"
     target = path / (f"{turn:05d}-{kind}.{suffix}")
@@ -183,9 +192,11 @@ def write_artifact(kind: str, turn: int, value: str | dict[str, object]) -> None
         target.write_text(json.dumps(value, sort_keys=True, indent=2))
 
 
-def main() -> int:
-    prompt = sys.stdin.read()
+def main(default_preset: str | None = None) -> int:
+    settings = resolved_settings(default_preset)
+    model, effort = settings
     path = session_path()
+    prompt = sys.stdin.read()
     state: dict[str, object] = {}
     if path.exists():
         try:
@@ -193,22 +204,24 @@ def main() -> int:
             if isinstance(loaded, dict):
                 state = loaded
         except (OSError, json.JSONDecodeError) as exc:
-            raise RuntimeError("invalid Luna session sidecar") from exc
+            raise RuntimeError("invalid Codex session sidecar") from exc
     thread_id = state.get("thread_id") if isinstance(state.get("thread_id"), str) else None
     turn = int(state.get("turns", 0)) + 1
-    artifact_root = Path(os.environ.get("NORRUST_LUNA_ARTIFACT_DIR", path.parent / "artifacts"))
-    session_id = os.environ.get("NORRUST_LUNA_MATCH_ID", str(path))
+    artifact_root = Path(_setting("NORRUST_CODEX_ARTIFACT_DIR", "NORRUST_LUNA_ARTIFACT_DIR", str(path.parent / "artifacts")))
+    session_id = _setting("NORRUST_CODEX_MATCH_ID", "NORRUST_LUNA_MATCH_ID", str(path))
+    timeout = float(_setting("NORRUST_CODEX_TIMEOUT", "NORRUST_LUNA_TIMEOUT", "840"))
     journal_root = artifact_root / "requests"
     metadata = {"turn": turn, "prompt_sha256": __import__("hashlib").sha256(prompt.encode()).hexdigest(),
                 "engine_revision": os.environ.get("NORRUST_ENGINE_REVISION"),
-                "deadline_seconds": os.environ.get("NORRUST_LUNA_TIMEOUT", "840")}
+                "deadline_seconds": timeout,
+                "requested_model": model, "requested_reasoning_effort": effort}
     with RequestJournal(journal_root, session_id) as journal:
         request = journal.prepare(metadata)
         request.mark_dispatched(native_thread_id=thread_id)
         try:
-            write_artifact("request", turn, prompt)
+            write_artifact(artifact_root, "request", turn, prompt)
             new_thread, answer, events = run_native(
-                prompt, thread_id, float(os.environ.get("NORRUST_LUNA_TIMEOUT", "840")))
+                prompt, thread_id, timeout, settings=settings)
             for event in events:
                 request.append_event(event)
             if not new_thread:
@@ -222,16 +235,19 @@ def main() -> int:
             if any(item in forbidden for item in observed):
                 request.fail(reason="native tool restriction violated")
                 raise RuntimeError("native tool restriction violated")
+            identity = {"requested_model": model, "requested_reasoning_effort": effort,
+                        "runtime_model": None, "runtime_reasoning_effort": None,
+                        "runtime_settings_source": "not_reported"}
             result = {"thread_id": new_thread, "answer": answer, "events": events,
-                      "model": MODEL, "reasoning_effort": EFFORT,
+                      "model": model, "reasoning_effort": effort, **identity,
                       "usage": completion_usage(events)}
             request.complete(result, reply_id=new_thread, native_thread_id=new_thread)
-            write_state(path, {"thread_id": new_thread, "model": MODEL, "reasoning_effort": EFFORT,
+            write_state(path, {"thread_id": new_thread, "model": model, "reasoning_effort": effort, **identity,
                                "transport": "codex-exec-resume", "turns": turn})
-            write_artifact("result", turn, result)
+            write_artifact(artifact_root, "result", turn, result)
             sys.stdout.write(json.dumps({"text": answer, "usage": completion_usage(events), "cache": {
                 "native_session_id": new_thread, "transport": "codex-exec-resume",
-                "runtime_model": MODEL, "runtime_reasoning_effort": EFFORT,
+                **identity,
                 "tool_restriction": "read-only game prompt; unrelated tools rejected",
                 "request_id": request.request_id,
             }}, separators=(",", ":")))
@@ -245,9 +261,18 @@ def main() -> int:
     return 0
 
 
-if __name__ == "__main__":
+def cli(default_preset: str | None = None) -> int:
+    argparse.ArgumentParser(description=(
+        "Persistent Codex model backend. Configure NORRUST_CODEX_MODEL (or "
+        "NORRUST_CODEX_PRESET), NORRUST_CODEX_REASONING_EFFORT, and "
+        "NORRUST_CODEX_SESSION_FILE; reads the canonical prompt from stdin."
+    )).parse_args()
     try:
-        raise SystemExit(main())
+        return main(default_preset)
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
-        raise SystemExit(2)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(cli())

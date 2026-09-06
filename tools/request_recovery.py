@@ -1,4 +1,4 @@
-"""Conservative reconciliation of a Luna request with client evidence.
+"""Conservative reconciliation of a model request with client evidence.
 
 This module is deliberately read-only.  It does not repair a journal, replay an
 answer, or submit a driver request.  It answers the narrower question needed by
