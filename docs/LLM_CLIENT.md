@@ -179,19 +179,18 @@ client does not force a partial batch; the model may still finish a turn in one
 batch. `turn_format` in metadata records the requested mode.
 
 Use `tools.codex_backend` for native Codex sessions and provide a unique session
-sidecar for every match. Select a model with `NORRUST_CODEX_MODEL` and set
-`NORRUST_CODEX_REASONING_EFFORT` (default `high`), or select the explicit
-`luna-high` preset:
+sidecar for every match. Set `NORRUST_CODEX_MODEL` to the model identifier and
+`NORRUST_CODEX_REASONING_EFFORT` to the desired effort (default `high`). For example:
 
 ```bash
-NORRUST_CODEX_PRESET=luna-high \
+NORRUST_CODEX_MODEL=gpt-5.6-luna \
+NORRUST_CODEX_REASONING_EFFORT=high \
 NORRUST_CODEX_SESSION_FILE=/path/to/match/session.json \
 python -m tools.llm_client ... --reasoning-effort high \
   --model-command 'python3 -m tools.codex_backend'
 ```
 
-The `luna-high` preset requests `gpt-5.6-luna` with high reasoning; explicit model
-and effort settings override the preset. The adapter uses read-only sandboxing
+The model and effort are configuration values. The adapter uses read-only sandboxing
 when creating the thread and records the native thread, resolved requested
 settings, and transport. Runtime model/effort remain unknown because the consumed
 native events do not confirm them. Unknown settings do not fail the client's
@@ -206,12 +205,9 @@ sets the native request timeout in seconds (default 840). Give every concurrent
 match its own sidecar, artifacts, and identity. These commands require POSIX
 process groups and `fcntl` locking.
 
-Legacy `NORRUST_LUNA_*` environment settings remain compatibility aliases;
-canonical `NORRUST_CODEX_*` settings take precedence, with conflicts reported on
-stderr. The old `tools/luna_backend.py` command is a thin compatibility alias
-that supplies the `luna-high` preset. Both direct-script and module invocations
-work; use the canonical name in new commands. The client records its
-`--reasoning-effort` expectation separately; configure the backend's effort too.
+The client records its `--reasoning-effort` expectation separately; configure the
+backend's effort too. The journal, result, and session sidecar record
+`requested_model` and `requested_reasoning_effort` separately from runtime fields.
 
 When an engine rejects a submitted batch, the client allows bounded action
 repairs. Inspection results requested during pre-submit repair remain in every

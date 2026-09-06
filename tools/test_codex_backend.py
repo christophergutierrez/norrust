@@ -16,19 +16,16 @@ class CodexBackendTests(unittest.TestCase):
         environment.start()
         self.addCleanup(environment.stop)
 
-    def test_preset_and_legacy_aliases_are_explicit_and_canonical_settings_win(self):
+    def test_model_is_required_and_effort_is_configurable(self):
         with patch.dict(os.environ, {}, clear=True):
-            with self.assertRaisesRegex(RuntimeError, "MODEL or NORRUST_CODEX_PRESET"):
+            with self.assertRaisesRegex(RuntimeError, "NORRUST_CODEX_MODEL is required"):
                 codex_backend.resolved_settings()
-            self.assertEqual(codex_backend.resolved_settings("luna-high"), ("gpt-5.6-luna", "high"))
-        legacy = {"NORRUST_LUNA_MODEL": "legacy-model", "NORRUST_LUNA_REASONING_EFFORT": "low"}
-        with patch.dict(os.environ, legacy, clear=True):
-            self.assertEqual(codex_backend.resolved_settings(), ("legacy-model", "low"))
-            with patch.dict(os.environ, {"NORRUST_CODEX_MODEL": "new-model",
-                                       "NORRUST_CODEX_REASONING_EFFORT": "medium"}), \
-                    patch.object(codex_backend.sys, "stderr", io.StringIO()) as stderr:
-                self.assertEqual(codex_backend.resolved_settings(), ("new-model", "medium"))
-                self.assertIn("ignored", stderr.getvalue())
+        self.assertEqual(codex_backend.resolved_settings(), ("test-model", "high"))
+        with patch.dict(os.environ, {"NORRUST_CODEX_REASONING_EFFORT": "medium"}):
+            self.assertEqual(codex_backend.resolved_settings(), ("test-model", "medium"))
+        with patch.dict(os.environ, {"NORRUST_CODEX_REASONING_EFFORT": ""}):
+            with self.assertRaisesRegex(RuntimeError, "must not be empty"):
+                codex_backend.resolved_settings()
 
     def test_configured_model_is_recorded_without_inventing_runtime_confirmation(self):
         events = '\n'.join(json.dumps(event) for event in [
@@ -50,10 +47,7 @@ class CodexBackendTests(unittest.TestCase):
                         "NORRUST_CODEX_REASONING_EFFORT": "medium",
                         "NORRUST_CODEX_SESSION_FILE": str(root / "session.json"),
                         "NORRUST_CODEX_ARTIFACT_DIR": str(root / "evidence"),
-                        "NORRUST_CODEX_MATCH_ID": "test-match", "NORRUST_CODEX_TIMEOUT": "31",
-                        "NORRUST_LUNA_SESSION_FILE": str(root / "wrong-session.json"),
-                        "NORRUST_LUNA_ARTIFACT_DIR": str(root / "wrong-evidence"),
-                        "NORRUST_LUNA_MATCH_ID": "wrong-match", "NORRUST_LUNA_TIMEOUT": "77"}
+                        "NORRUST_CODEX_MATCH_ID": "test-match", "NORRUST_CODEX_TIMEOUT": "31"}
             output = io.StringIO()
             with patch.dict(os.environ, settings, clear=True), \
                     patch.object(codex_backend.sys, "stdin", io.StringIO("canonical prompt\n")), \
@@ -64,8 +58,8 @@ class CodexBackendTests(unittest.TestCase):
             self.assertEqual(command[command.index("--model") + 1], "test-alternate-model")
             self.assertEqual(command[command.index("-c") + 1], "model_reasoning_effort=medium")
             session = json.loads((root / "session.json").read_text())
-            self.assertEqual(session["model"], "test-alternate-model")
-            self.assertEqual(session["reasoning_effort"], "medium")
+            self.assertEqual(session["requested_model"], "test-alternate-model")
+            self.assertEqual(session["requested_reasoning_effort"], "medium")
             cache = json.loads(output.getvalue())["cache"]
             self.assertEqual(cache["requested_model"], "test-alternate-model")
             self.assertEqual(cache["requested_reasoning_effort"], "medium")
@@ -74,10 +68,8 @@ class CodexBackendTests(unittest.TestCase):
             self.assertEqual(process.timeout, 31)
             self.assertEqual((root / "evidence" / "00001-request.txt").read_text(), "canonical prompt\n")
             result = json.loads((root / "evidence" / "00001-result.json").read_text())
-            self.assertEqual(result["model"], "test-alternate-model")
-            self.assertNotIn("Luna", command[-1])
-            self.assertFalse((root / "wrong-session.json").exists())
-            self.assertFalse((root / "wrong-evidence").exists())
+            self.assertEqual(result["requested_model"], "test-alternate-model")
+            self.assertEqual(result["requested_reasoning_effort"], "medium")
             journals = list((root / "evidence" / "requests").glob("session-*/requests/*/state.json"))
             self.assertEqual(len(journals), 1)
             state = json.loads(journals[0].read_text())

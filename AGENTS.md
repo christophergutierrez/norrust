@@ -16,3 +16,8 @@ task explicitly concerns that workflow.
 When asked to run several model games, isolate each game's log, checkpoint,
 request journal, and session sidecar. Preserve the canonical prompt unchanged
 through any file backend, and report the source commit and evidence coverage.
+
+The product is unreleased. When renaming or restructuring tools, update maintained
+callers, tests, and documentation together and remove the superseded entry points.
+Do not retain compatibility wrappers, environment aliases, or duplicate fields
+solely to support old development interfaces. Preserve historical game evidence.

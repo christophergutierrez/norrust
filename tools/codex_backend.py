@@ -17,35 +17,18 @@ if __package__:
 else:  # Direct script entry point.
     from request_journal import RequestJournal
 
-PRESETS = {"luna-high": ("gpt-5.6-luna", "high")}
-
-
-def _setting(name: str, legacy: str, default: str) -> str:
-    value = os.environ.get(name)
-    old = os.environ.get(legacy)
-    if value is not None:
-        if old is not None and old != value:
-            print(f"warning: {legacy} ignored because {name} is set", file=sys.stderr)
-        return value
-    return old if old is not None else default
-
-
-def resolved_settings(default_preset: str | None = None) -> tuple[str, str]:
-    preset = os.environ.get("NORRUST_CODEX_PRESET", default_preset)
-    if preset is not None and preset not in PRESETS:
-        raise RuntimeError(f"unknown Codex preset: {preset}")
-    default_model, default_effort = PRESETS[preset] if preset else ("", "high")
-    model = _setting("NORRUST_CODEX_MODEL", "NORRUST_LUNA_MODEL", default_model)
-    effort = _setting("NORRUST_CODEX_REASONING_EFFORT", "NORRUST_LUNA_REASONING_EFFORT", default_effort)
+def resolved_settings() -> tuple[str, str]:
+    model = os.environ.get("NORRUST_CODEX_MODEL", "")
+    effort = os.environ.get("NORRUST_CODEX_REASONING_EFFORT", "high")
     if not model:
-        raise RuntimeError("NORRUST_CODEX_MODEL or NORRUST_CODEX_PRESET is required")
+        raise RuntimeError("NORRUST_CODEX_MODEL is required")
     if not effort:
         raise RuntimeError("NORRUST_CODEX_REASONING_EFFORT must not be empty")
     return model, effort
 
 
 def session_path() -> Path:
-    value = _setting("NORRUST_CODEX_SESSION_FILE", "NORRUST_LUNA_SESSION_FILE", "")
+    value = os.environ.get("NORRUST_CODEX_SESSION_FILE", "")
     if not value:
         raise RuntimeError("NORRUST_CODEX_SESSION_FILE is required for persistent Codex play")
     path = Path(value).resolve()
@@ -192,8 +175,8 @@ def write_artifact(path: Path, kind: str, turn: int, value: str | dict[str, obje
         target.write_text(json.dumps(value, sort_keys=True, indent=2))
 
 
-def main(default_preset: str | None = None) -> int:
-    settings = resolved_settings(default_preset)
+def main() -> int:
+    settings = resolved_settings()
     model, effort = settings
     path = session_path()
     prompt = sys.stdin.read()
@@ -207,9 +190,9 @@ def main(default_preset: str | None = None) -> int:
             raise RuntimeError("invalid Codex session sidecar") from exc
     thread_id = state.get("thread_id") if isinstance(state.get("thread_id"), str) else None
     turn = int(state.get("turns", 0)) + 1
-    artifact_root = Path(_setting("NORRUST_CODEX_ARTIFACT_DIR", "NORRUST_LUNA_ARTIFACT_DIR", str(path.parent / "artifacts")))
-    session_id = _setting("NORRUST_CODEX_MATCH_ID", "NORRUST_LUNA_MATCH_ID", str(path))
-    timeout = float(_setting("NORRUST_CODEX_TIMEOUT", "NORRUST_LUNA_TIMEOUT", "840"))
+    artifact_root = Path(os.environ.get("NORRUST_CODEX_ARTIFACT_DIR", path.parent / "artifacts"))
+    session_id = os.environ.get("NORRUST_CODEX_MATCH_ID", str(path))
+    timeout = float(os.environ.get("NORRUST_CODEX_TIMEOUT", "840"))
     journal_root = artifact_root / "requests"
     metadata = {"turn": turn, "prompt_sha256": __import__("hashlib").sha256(prompt.encode()).hexdigest(),
                 "engine_revision": os.environ.get("NORRUST_ENGINE_REVISION"),
@@ -238,11 +221,10 @@ def main(default_preset: str | None = None) -> int:
             identity = {"requested_model": model, "requested_reasoning_effort": effort,
                         "runtime_model": None, "runtime_reasoning_effort": None,
                         "runtime_settings_source": "not_reported"}
-            result = {"thread_id": new_thread, "answer": answer, "events": events,
-                      "model": model, "reasoning_effort": effort, **identity,
+            result = {"thread_id": new_thread, "answer": answer, "events": events, **identity,
                       "usage": completion_usage(events)}
             request.complete(result, reply_id=new_thread, native_thread_id=new_thread)
-            write_state(path, {"thread_id": new_thread, "model": model, "reasoning_effort": effort, **identity,
+            write_state(path, {"thread_id": new_thread, **identity,
                                "transport": "codex-exec-resume", "turns": turn})
             write_artifact(artifact_root, "result", turn, result)
             sys.stdout.write(json.dumps({"text": answer, "usage": completion_usage(events), "cache": {
@@ -261,14 +243,14 @@ def main(default_preset: str | None = None) -> int:
     return 0
 
 
-def cli(default_preset: str | None = None) -> int:
+def cli() -> int:
     argparse.ArgumentParser(description=(
-        "Persistent Codex model backend. Configure NORRUST_CODEX_MODEL (or "
-        "NORRUST_CODEX_PRESET), NORRUST_CODEX_REASONING_EFFORT, and "
+        "Persistent Codex model backend. Configure NORRUST_CODEX_MODEL, "
+        "NORRUST_CODEX_REASONING_EFFORT, and "
         "NORRUST_CODEX_SESSION_FILE; reads the canonical prompt from stdin."
     )).parse_args()
     try:
-        return main(default_preset)
+        return main()
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 2
