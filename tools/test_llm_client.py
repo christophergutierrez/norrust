@@ -46,6 +46,104 @@ class FakeDriverProcess:
 
 class ClientValidationTests(unittest.TestCase):
 
+    @staticmethod
+    def annotated_orders(label, orders=None):
+        orders = orders or [{"action": "EndTurn"}]
+        return json.dumps({"actions": orders, "intent": label, "decisions": [
+            {"orders": list(range(len(orders))), "rules": ["S1"],
+             "expected": label, "risk": "Lose ground."}]})
+
+    def run_annotation_path(self, responses, *, review=False, validations=None,
+                            rejected=False, **kwargs):
+        lines = [{"type": "state", "active_faction": 0, "state_revision": 7, "units": []}]
+        if rejected:
+            lines.append({"type": "status", "ok": True, "results": [
+                {"ok": False, "code": "MoveError", "message": "blocked"}]})
+        lines += [{"type": "status", "ok": True, "results": [{"ok": True}]},
+                  {"type": "game_end", "reason": "max_turns"}]
+        with mock.patch.object(llm_client, "query_tactical_surface", return_value={}), \
+                mock.patch.object(llm_client, "draft_needs_preview", return_value=review), \
+                mock.patch.object(llm_client, "query_preview_batch", return_value={"candidates": [{"valid": True}]}), \
+                mock.patch.object(llm_client, "compact_draft_review", return_value=("review facts", False)), \
+                mock.patch.object(llm_client, "draft_review_needed", return_value=True), \
+                mock.patch.object(llm_client, "query_validate_batch", side_effect=validations), \
+                mock.patch.object(llm_client, "query_inspect_hex", return_value={}):
+            code, records = self.run_with_orders(responses, lines, return_records=True,
+                                                validate_before_submit=validations is not None, **kwargs)
+        self.assertEqual(code, 0, records[-1])
+        requests = {r["request_id"]: r for r in records if r["type"] == "model_request"}
+        batches = [r for r in records if r["type"] == "forwarded_orders"]
+        for batch in batches:
+            self.assertEqual(batch["state_revision"], 7)
+            if batch["request_id"] is None:
+                self.assertEqual(batch["decision_annotation"]["status"], "not_applicable")
+                self.assertEqual(batch["source"], "generated_greedy")
+                self.assertIsNone(batch["prompt_hash"])
+                continue
+            request = requests[batch["request_id"]]
+            self.assertEqual(request["state_revision"], 7)
+            self.assertEqual(batch["decision_annotation"], request["decision_annotation"])
+            self.assertEqual(batch["prompt_hash"], hashlib.sha256(request["prompt"].encode()).hexdigest())
+            self.assertEqual(batch["orders"], validate_orders(request["raw_output"], require_end_turn=False))
+        return records, list(requests.values()), batches
+
+    def test_annotations_follow_confirmed_revised_and_repaired_reviews(self):
+        draft = self.annotated_orders("draft")
+        for final in (self.annotated_orders("confirmed"),
+                      self.annotated_orders("revised", [{"action": "DoneWithImportantMoves"}]),
+                      '[{"action":"DoneWithImportantMoves"}]',
+                      self.annotated_orders("concede", [{"action": "Resign"}])):
+            for malformed in (False, True):
+                with self.subTest(final=final, malformed=malformed):
+                    replies = [draft] + (["not JSON"] if malformed else []) + [final]
+                    records, requests, batches = self.run_annotation_path(replies, review=True)
+                    self.assertEqual(len(requests), len(replies))
+                    self.assertEqual(len(batches), 1)
+                    self.assertEqual(batches[0]["request_id"], requests[-1]["request_id"])
+                    self.assertEqual(requests[-1]["raw_output"], final)
+                    if final.startswith('['):
+                        self.assertEqual(batches[0]["decision_annotation"]["status"], "missing")
+
+    def test_annotations_follow_tools_and_action_repairs(self):
+        inspect = json.dumps({"tool": "inspect_hex", "col": 0, "row": 0, "phase": "current"})
+        final = self.annotated_orders("final")
+        draft = self.annotated_orders("draft")
+        for kwargs, replies in (
+                ({}, [inspect, final]),
+                ({}, ["not JSON", final]),
+                ({"rejected": True}, [draft, final]),
+                ({"rejected": True}, [draft, inspect, final]),
+                ({"validations": [{"valid": False}, {"valid": True}]}, [draft, final]),
+                ({"validations": [{"valid": False}, {"valid": True}]}, [draft, inspect, final])):
+            with self.subTest(kwargs=kwargs, replies=replies):
+                records, requests, batches = self.run_annotation_path(replies, **kwargs)
+                self.assertEqual(len(requests), len(replies))
+                self.assertEqual(batches[-1]["request_id"], requests[-1]["request_id"])
+                self.assertEqual(batches[-1]["intent"], "final")
+                for request in requests:
+                    if request["raw_output"] == inspect:
+                        self.assertEqual(request["decision_annotation"]["status"], "not_applicable")
+
+    def test_generated_finishes_do_not_inherit_draft_annotations(self):
+        draft = self.annotated_orders("abandoned", [{"action": "Move", "unit_id": 1, "col": 1, "row": 1}])
+        _, requests, batches = self.run_annotation_path(
+            [draft], incremental_turns=True,
+            validations=[{"valid": False, "error_code": "partial_limit"}, {"valid": True}])
+        self.assertEqual(len(requests), 1)
+        self.assertIsNone(batches[0]["request_id"])
+        # A timeout after receiving a draft must not attach that draft to fallback.
+        with mock.patch.object(llm_client.OrdersBackend, "complete", side_effect=[
+                ModelReply("not JSON"), RuntimeError("model_timeout")]):
+            _, requests, batches = self.run_annotation_path([], timeout_finish=True)
+        self.assertEqual(len(requests), 2)
+        self.assertIsNone(batches[0]["request_id"])
+
+    def test_annotated_resignation_needs_only_one_request(self):
+        _, requests, batches = self.run_annotation_path(
+            [self.annotated_orders("concede", [{"action": "Resign"}])], review=True)
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(batches[0]["decision_annotation"]["status"], "valid")
+
     def test_draft_review_can_concede_without_another_review_or_validation(self):
         lines = [{"type": "state", "active_faction": 0},
                  {"type": "status", "ok": True, "what": "tactical_surface", "body": {}},
@@ -1632,7 +1730,8 @@ class ClientValidationTests(unittest.TestCase):
 
     def run_with_orders(self, order_texts, driver_lines, validate_before_submit=False,
                         max_model_calls_per_turn=4, max_tool_calls_per_turn=4,
-                        incremental_turns=False, backend_cache=None, reasoning_effort=None):
+                        incremental_turns=False, backend_cache=None, reasoning_effort=None,
+                        return_records=False, timeout_finish=False):
         """Drive the client with N canned model replies and explicit driver output."""
         with tempfile.TemporaryDirectory() as directory:
             log_path = directory + "/client.jsonl"
@@ -1653,6 +1752,7 @@ class ClientValidationTests(unittest.TestCase):
                 max_model_calls_per_turn=max_model_calls_per_turn,
                 max_tool_calls_per_turn=max_tool_calls_per_turn,
                 reasoning_effort=reasoning_effort,
+                timeout_finish=timeout_finish,
             )
             process = FakeDriverProcess(driver_lines)
             with mock.patch("tools.llm_client.subprocess.Popen", return_value=process), \
@@ -1661,7 +1761,7 @@ class ClientValidationTests(unittest.TestCase):
                 code = run(args)
             with open(log_path) as log:
                 records = [json.loads(raw) for raw in log]
-        return code, records[-1]
+        return code, records if return_records else records[-1]
 
     def run_after_forwarded_orders(self, action_status, tail=None):
         with tempfile.TemporaryDirectory() as directory:

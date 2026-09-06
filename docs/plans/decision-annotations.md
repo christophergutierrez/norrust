@@ -82,7 +82,7 @@ The existing actions/intent/agenda envelope additionally accepts `decisions`:
 
 ## Phase 0 — Reviewable plan
 
-- [ ] Commit this plan before starting implementation agents.
+- [x] Commit this plan before starting implementation agents.
 - Acceptance: plan states exact fields, ownership, test cases, commit gates, and
   final game conditions. No implementation changes in the planning commit.
 
@@ -112,26 +112,32 @@ must not commit independent unfinished layers or launch games.
 
 Measurable acceptance:
 
-- [ ] Parsing tests cover valid groups, omissions, invalid IDs/indices/UTF-8
+- [x] Parsing tests cover valid groups, omissions, invalid IDs/indices/UTF-8
   bounds, duplicate/missing coverage, malformed fields, and tool-only responses.
-- [ ] Valid orders execute unchanged even when annotation status is missing or
+- [x] Valid orders execute unchanged even when annotation status is missing or
   invalid. No annotation fields reach the Rust driver. No explanation-only retry.
-- [ ] Draft confirmation, changed draft, malformed-review repair, action repair,
+- [x] Draft confirmation, changed draft, malformed-review repair, action repair,
   tool follow-up, resignation, and generated fallback preserve the correct source
   annotation or explicitly record missing/not-applicable. Test these paths.
-- [ ] A real-driver annotated fixture records nonempty prompt/response payloads,
+- [x] A real-driver annotated fixture records nonempty prompt/response payloads,
   valid rule IDs and guide hash, correct revision and request ID, and unchanged
   orders all the way into SQLite. Reimport twice; row counts and payloads remain
   unchanged. Verify the foreign-key graph and approved rationale export.
-- [ ] A negative fixture with missing/invalid annotations still plays legally,
+- [x] A negative fixture with missing/invalid annotations still plays legally,
   reports less than 100% coverage, and never invents rationale in the catalog.
-- [ ] Coverage excludes tools, discarded drafts, and generated fallback, and
+- [x] Coverage excludes tools, discarded drafts, and generated fallback, and
   handles zero eligible batches without dividing by zero.
-- [ ] Run `python3 -m tools.fast_check` to completion. All Rust library/binary/
+- [x] Run `python3 -m tools.fast_check` to completion. All Rust library/binary/
   non-balance integration tests, Python tests, and LuaJIT bridge smoke pass.
   `git diff --check` passes. Record commands/results in an ignored validation log.
-- [ ] Parent reviews the final diff and fixes issues. Commit the whole stack;
+- [x] Parent reviews the final diff and fixes issues. Commit the whole stack;
   verify the working tree is clean before games. Update this plan's checklist.
+
+Validation completed: `python3 -m tools.fast_check` passed 234 Rust tests,
+174 Python tests, the LuaJIT bridge smoke, and `git diff --check`. Log:
+`tmp/decision-annotations-fast-check.log`. Parent review added response-linkage
+regressions and fixed fallback attribution, conflicting response instructions,
+parser edge cases, and historical hash preservation.
 
 ## Phase 2 — Three parallel Luna games and evidence review
 

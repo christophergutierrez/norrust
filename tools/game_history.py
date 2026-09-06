@@ -11,7 +11,7 @@ import zlib
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SCHEMA = """
 PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS games (
@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS model_requests (
  prompt_bytes INTEGER, response_bytes INTEGER, prompt_blob BLOB, response_blob BLOB,
  prompt_hash TEXT, response_hash TEXT, payload_codec TEXT, context_complete INTEGER,
  reasoning_blob BLOB, reasoning_kind TEXT, reasoning_source TEXT,
+ annotation_status TEXT, state_revision INTEGER,
  raw_usage_json TEXT, record_hash TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS action_batches (
@@ -119,6 +120,8 @@ def open_history(path: str | os.PathLike[str], *, read_only: bool = False) -> sq
         ("reasoning_blob", "BLOB"),
         ("reasoning_kind", "TEXT"),
         ("reasoning_source", "TEXT"),
+        ("annotation_status", "TEXT"),
+        ("state_revision", "INTEGER"),
     ):
         if name not in columns:
             conn.execute(f"ALTER TABLE model_requests ADD COLUMN {name} {definition}")
@@ -331,21 +334,40 @@ def _import_requests(conn: sqlite3.Connection, game_id: str, records: list[dict[
         prompt = record.get("prompt") if isinstance(record.get("prompt"), str) else None
         req_id = record.get("request_id") or f"{game_id}:request:{index + 1}"
         usage = record.get("usage") if isinstance(record.get("usage"), dict) else {}
+        annotation = record.get("decision_annotation")
+        if not isinstance(annotation, dict):
+            annotation = {}
+        annotation_status = annotation.get("status")
+        if annotation_status not in {"valid", "missing", "invalid", "not_applicable"}:
+            annotation_status = None
+        decisions = annotation.get("decisions") if annotation_status == "valid" else []
+        # Preserve the complete validated annotation object. Canonicalization
+        # makes the compressed representation stable while retaining every
+        # field supplied by the contract (including a null error).
+        rationale_blob = (zlib.compress(canonical(annotation))
+                          if annotation_status == "valid" and isinstance(decisions, list) else None)
+        response_hash = (hashlib.sha256(raw.encode("utf-8")).hexdigest() if raw is not None
+                         else record.get("response_hash"))
+        prompt_hash = (hashlib.sha256(prompt.encode("utf-8")).hexdigest() if prompt is not None
+                       else record.get("prompt_hash"))
         conn.execute("""INSERT INTO model_requests
           (request_id,game_id,side_turn_id,sequence,status,error_message,elapsed_ms,input_tokens,cached_input_tokens,output_tokens,
            reasoning_tokens,prompt_bytes,response_bytes,prompt_blob,response_blob,prompt_hash,
-           response_hash,payload_codec,raw_usage_json,record_hash)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(request_id) DO NOTHING""",
+           response_hash,payload_codec,reasoning_blob,reasoning_kind,reasoning_source,
+           annotation_status,state_revision,raw_usage_json,record_hash)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(request_id) DO NOTHING""",
           (req_id, game_id, _side_turn_for_record(record, links), record.get("sequence", index + 1), record.get("status", "completed"),
            record.get("error"), record.get("elapsed_ms"), usage.get("input_tokens"),
            usage.get("cached_input_tokens"), usage.get("output_tokens"),
            usage.get("reasoning_output_tokens"),
            record.get("prompt_bytes") or (len(prompt.encode()) if prompt else None),
            record.get("response_bytes") or (len(raw.encode()) if raw else None),
-           zlib.compress(prompt.encode()) if prompt else None,
-           zlib.compress(raw.encode()) if raw else None, record.get("prompt_hash"),
-           hashlib.sha256(raw.encode()).hexdigest() if raw else None,
-           "zlib" if prompt or raw else None, json.dumps(usage, sort_keys=True),
+           zlib.compress(prompt.encode("utf-8")) if prompt is not None else None,
+           zlib.compress(raw.encode("utf-8")) if raw is not None else None, prompt_hash,
+           response_hash, "zlib" if prompt is not None or raw is not None or rationale_blob is not None else None,
+           rationale_blob, "decision_annotation_v1" if rationale_blob is not None else None,
+           "model_response" if rationale_blob is not None else None, annotation_status,
+           _number(record.get("state_revision")), json.dumps(usage, sort_keys=True),
            digest({"request_id": req_id, "record": record})))
 
 def _import_actions(conn: sqlite3.Connection, game_id: str, records: list[dict[str, Any]],
@@ -356,20 +378,25 @@ def _import_actions(conn: sqlite3.Connection, game_id: str, records: list[dict[s
         if not isinstance(orders, list):
             continue
         batch_id = record.get("batch_id") or f"{game_id}:batch:{batch_index + 1}"
+        request_id = record.get("request_id") if isinstance(record.get("request_id"), str) else None
+        source = record.get("source") if isinstance(record.get("source"), str) else "model"
         conn.execute("""INSERT INTO action_batches
-          (batch_id,game_id,side_turn_id,sequence,source,submitted_orders_json,status,record_hash)
-          VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(batch_id) DO NOTHING""",
-          (batch_id, game_id, _side_turn_for_record(record, links), batch_index + 1, "model", json.dumps(orders, sort_keys=True),
-           "accepted_unknown", digest({"batch_id": batch_id, "orders": orders})))
+          (batch_id,game_id,side_turn_id,request_id,sequence,source,submitted_orders_json,status,
+           before_revision,record_hash)
+          VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(batch_id) DO NOTHING""",
+          (batch_id, game_id, _side_turn_for_record(record, links), request_id, batch_index + 1, source,
+           json.dumps(orders, sort_keys=True), "accepted_unknown",
+           _number(record.get("before_revision", record.get("state_revision"))),
+           digest({"batch_id": batch_id, "orders": orders, "request_id": request_id})))
         for index, order in enumerate(orders):
             sequence += 1
             action_id = f"{batch_id}:action:{index}"
             conn.execute("""INSERT INTO actions
               (action_id,game_id,batch_id,sequence,authored_order_index,source,action_type,
-               action_json,status,record_hash) VALUES(?,?,?,?,?,?,?,?,?,?)
+              action_json,status,request_id,record_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?)
               ON CONFLICT(action_id) DO NOTHING""",
-              (action_id, game_id, batch_id, sequence, index, "model", order.get("action"),
-               json.dumps(order, sort_keys=True), "accepted_unknown",
+              (action_id, game_id, batch_id, sequence, index, source, order.get("action"),
+               json.dumps(order, sort_keys=True), "accepted_unknown", request_id,
                digest({"action_id": action_id, "order": order})))
 
 def summarize_game(conn: sqlite3.Connection, game_id: str) -> dict[str, Any]:

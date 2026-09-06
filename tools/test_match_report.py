@@ -100,6 +100,32 @@ class ReportTests(unittest.TestCase):
         self.assertIsNone(report["awareness_rate"])
         self.assertIsNone(report["finish_counts"])
 
+    def test_decision_annotation_coverage_uses_final_submissions(self):
+        valid = {"status": "valid", "decisions": [{"orders": [0], "rules": ["S1", "T1"]}]}
+        report = classify([
+            {"type": "model_request", "request_id": "tool", "decision_annotation": {"status": "not_applicable"}},
+            {"type": "model_request", "request_id": "discarded", "decision_annotation": valid},
+            {"type": "forwarded_orders", "request_id": "r1", "orders": [{"action": "Move"}],
+             "decision_annotation": valid},
+            {"type": "forwarded_orders", "request_id": "r2", "orders": [{"action": "Done"}],
+             "decision_annotation": {"status": "missing", "decisions": []}},
+            {"type": "forwarded_orders", "request_id": "r3", "orders": [{"action": "Move"}],
+             "decision_annotation": {"status": "invalid", "decisions": [], "error": "bad"}},
+            {"type": "forwarded_orders", "source": "generated_greedy", "orders": [{"action": "Move"}]},
+            {"type": "forwarded_orders", "request_id": "inapplicable", "orders": [{"action": "EndTurn"}],
+             "decision_annotation": {"status": "not_applicable"}},
+        ])
+        self.assertEqual(report["decision_annotations"], {
+            "submitted_batches": 3, "valid_batches": 1, "missing_batches": 1,
+            "invalid_batches": 1, "coverage": 1 / 3, "rule_counts": {"S1": 1, "T1": 1}})
+
+    def test_decision_annotation_coverage_is_null_without_submissions(self):
+        report = classify([{"type": "metadata"},
+                           {"type": "forwarded_orders", "source": "generated_greedy",
+                            "orders": [{"action": "Move"}]}])
+        self.assertEqual(report["decision_annotations"]["coverage"], None)
+        self.assertEqual(report["decision_annotations"]["submitted_batches"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

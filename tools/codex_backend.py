@@ -40,8 +40,8 @@ def native_instruction(prompt: str) -> str:
     return (
         "You are the continuing model player in a Norrust match. Preserve explicit "
         "objectives across turns, but treat the latest authoritative board and accepted "
-        "engine results as current. Return JSON only: a legal action array, an actions "
-        "envelope with optional intent and agenda, or one read-only game inspection "
+        "engine results as current. Return JSON only: an actions envelope with decisions "
+        "and optional intent and agenda, or one read-only game inspection "
         "request allowed by the current prompt. Use only the game tools described by the "
         "prompt. Do not use shell, web, files, skills, connectors, or unrelated tools.\n\n"
         + prompt

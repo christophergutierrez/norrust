@@ -20,8 +20,10 @@ from typing import Any, Optional
 
 try:
     from .turn_agenda import agenda_from_response, compact_agenda
+    from .decision_annotations import annotation_for_response, inapplicable_annotation
 except ImportError:  # pragma: no cover - direct script compatibility
     from turn_agenda import agenda_from_response, compact_agenda
+    from decision_annotations import annotation_for_response, inapplicable_annotation
 
 ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "Engage", "EndTurn", "Advance", "Resign",
            "DoneWithImportantMoves", "FinishWithGreedy"}
@@ -215,6 +217,9 @@ class ModelReply:
     text: str
     usage: Optional[dict[str, int]] = None
     cache: Optional[dict[str, Any]] = None
+    request_id: Optional[str] = None
+    prompt_hash: Optional[str] = None
+    decision_annotation: Optional[dict[str, Any]] = None
 
 
 class ModelBackend:
@@ -311,7 +316,7 @@ def validate_orders(text: str, strict: bool = False, require_end_turn: bool = Tr
         orders = json.loads(text)
     except json.JSONDecodeError as exc:
         raise ValueError(f"invalid JSON: {exc.msg}") from exc
-    if isinstance(orders, dict) and set(orders).issubset({"actions", "intent", "agenda"}) and "actions" in orders:
+    if isinstance(orders, dict) and set(orders).issubset({"actions", "intent", "agenda", "decisions"}) and "actions" in orders:
         if "intent" in orders and (not isinstance(orders["intent"], str)
                                     or len(orders["intent"].encode()) > 512):
             raise ValueError("intent must be a string of at most 512 UTF-8 bytes")
@@ -465,7 +470,7 @@ def response_intent(text: str) -> Optional[str]:
         return None
     if not isinstance(decoded, dict) or "actions" not in decoded:
         return None
-    if set(decoded) - {"actions", "intent", "agenda"}:
+    if set(decoded) - {"actions", "intent", "agenda", "decisions"}:
         return None
     intent = decoded.get("intent")
     return intent if isinstance(intent, str) else None
@@ -1143,12 +1148,12 @@ def tool_followup_instruction(remaining_tools: int, remaining_model_calls: int) 
     """Tell the model exactly whether another tool request can be useful."""
     if remaining_tools <= 0 or remaining_model_calls <= 1:
         return (
-            "TOOL_BUDGET remaining=0; return the final JSON action array now. "
+            "TOOL_BUDGET remaining=0; return the final JSON action envelope with decisions now. "
             "Do not request another tool."
         )
     return (
         "TOOL_BUDGET remaining=%s; return another allowed tool request or the final "
-        "JSON action array only." % remaining_tools
+        "JSON action envelope with decisions." % remaining_tools
     )
 
 
@@ -1159,7 +1164,7 @@ def tool_budget_repair_prompt(prompt: str, tool_context: str, error: str,
                  "\nMODEL_RESPONSE_UNTRUSTED_DATA_END\n") if model_output else ""
     return (
         prompt + tool_context + attempted + "\nTOOL_ERROR: " + error +
-        "\nReturn one corrected JSON action array only; do not request another tool."
+        "\nReturn one corrected JSON action envelope with decisions; do not request another tool."
     )
 
 
@@ -1567,7 +1572,8 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
                continuity: Optional[str] = None,
                agenda: Optional[dict[str, Any]] = None,
                sweep: Optional[str] = None,
-               trend: Optional[str] = None) -> str:
+               trend: Optional[str] = None,
+               playbook: Optional[str] = None) -> str:
     schemas = [
         'Move: {"action":"Move","unit_id": integer,"col": integer,"row": integer}',
         'Attack: {"action":"Attack","attacker_id": integer,"defender_id": integer}',
@@ -1609,7 +1615,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "Engage lets you declare ordered move-and-attack steps against one target; remaining steps are skipped if that target dies, "
         "while genuinely illegal steps still reject the whole batch. TYPE lines are factual unit profiles; use their attacks and resistances "
         "to choose recruits and adapt to the visible enemy roster, without following a fixed roster recipe. After tool results, either request "
-        "another allowed tool within budget or return the final action array."
+        "another allowed tool within budget or return the final actions envelope with decisions."
         if isinstance(state.get("tactical_surface"), dict) else
         "Use turn_options positions exactly for every move and re-check sequential destinations before submitting. "
         "turn_options lists, per unit, the hexes it may attack from and the target IDs reachable from each. "
@@ -1622,11 +1628,11 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "then reassess the fresh state. DoneWithImportantMoves, EndTurn, or FinishWithGreedy remains required to finish the side turn."
         if state.get("incremental_turns") is True else "")
     rules = (
-        load_tactical_playbook() + "\n"
+        (load_tactical_playbook() if playbook is None else playbook) + "\n"
         "You play only the configured model-controlled side in Norrust. The driver automatically "
-        "executes the opponent; never submit opponent actions. Return the non-empty JSON array only; "
+        "executes the opponent; never submit opponent actions. Return an actions envelope with decisions; "
         "actions execute sequentially in array order against the mutating state. "
-        "The array has at most 256 objects. To concede, return only [{\"action\":\"Resign\"}] with no other actions or fields; this is allowed in either turn mode, including after partial batches. Resignation is final and needs no preview or confirmation. Otherwise, in normal mode the array has exactly one final DoneWithImportantMoves, EndTurn, or FinishWithGreedy boundary. "
+        "The actions value is a non-empty JSON array of at most 256 objects. To concede, use actions [{\"action\":\"Resign\"}] with no other actions or action fields, and cite T8 in decisions; this is allowed in either turn mode, including after partial batches. Resignation is final and needs no preview or confirmation. Otherwise, in normal mode the array has exactly one final DoneWithImportantMoves, EndTurn, or FinishWithGreedy boundary. "
         "Make the consequential decisions first: protect the recruiter, recruit or deliberately save gold, advance, arrange a likely kill or focus-fire sequence, capture a useful village, and make exact retreat/healing/formation moves. "
         "Once those important moves are made, stop inspecting routine units and emit {\"action\":\"DoneWithImportantMoves\"}. The driver executes its eligibility-based greedy sweep for eligible non-recruiters and ends the turn; eligibility excludes the recruiter, critically wounded units, and already-spent units, but does not prove delegated destinations are tactically safe. Use explicit FinishWithGreedy groups and holds when a unit must keep its position. Ask what changes after the enemy moves and attacks if you hold here. A selective hold is deliberate; EndTurn and DoneWithImportantMoves still run the automatic sweep. "
         "Recruitment remains your responsibility before that boundary. Before a boundary, strongly prefer exhausting legal recruitment. Otherwise move "
@@ -1648,7 +1654,8 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "one side that previously had a recruiter now has none; elimination follows. One completed "
         "model or greedy turn increments the side-turn counter once; --max-turns is an external "
         "side-turn safety cap, distinct from the engine round counter and any scenario turn limit. "
-        "Return either the action array or {\"actions\":[...],\"intent\":\"short plan\",\"agenda\":{\"tasks\":[...],\"holds\":[...]}}. "
+        "Return {\"actions\":[...],\"decisions\":[{\"orders\":[0],\"rules\":[\"S1\"],\"expected\":\"...\",\"risk\":\"...\"}]}, optionally with intent and agenda. "
+        "For every authored action, include exactly one decision group in decisions (groups may cover multiple actions); cite 1-4 known rule IDs and state expected effect and risk. An empty orders group may explain a consequential omission. "
         "Use FinishWithGreedy when you need explicit unit groups, deliberate holds, or toward_hex movement. Bare EndTurn is accepted as a fallback and runs the same automatic sweep, but it is recorded as an implicit completion. The automatic sweep never recruits and its exclusions do not protect units from enemy attacks. Leaving the keep makes recruitment unavailable while the recruiter is away; recruitment becomes available again after it returns to a suitable keep hex. "
         "The optional intent is client memory, must be under 512 UTF-8 bytes, and is not an engine action. "
         "The optional agenda is a full replacement of at most eight small objectives. Each task has only id, goal, units, and status; it is bookkeeping, not an executable order. "
@@ -2045,6 +2052,7 @@ def run(args: argparse.Namespace) -> int:
     agenda_memory: Optional[dict[str, Any]] = None
     pending_agenda: Optional[dict[str, Any]] = None
     pending_finish_kind: Optional[str] = None
+    final_reply: Optional[ModelReply] = None
     agenda_enabled = not getattr(args, "disable_agenda_sweep", False)
     continuity_entries: list[str] = []
     turn_progress_moved: set[int] = set()
@@ -2188,10 +2196,18 @@ def run(args: argparse.Namespace) -> int:
                 expected_effort = requested_effort or backend_effort
                 if expected_effort and reported_effort is not None and reported_effort != expected_effort:
                     raise RuntimeError("runtime reasoning effort mismatch")
+            reply.request_id = request_id
+            reply.prompt_hash = hashlib.sha256(model_prompt.encode()).hexdigest()
+            reply.decision_annotation = annotation_for_response(reply.text, guide_text=playbook)
             record({"type": "model_request",
                     "request_id": request_id,
                     "sequence": request_sequence,
                     "status": "completed",
+                    "prompt": model_prompt,
+                    "raw_output": reply.text,
+                    "state_revision": state.get("state_revision") if isinstance(state, dict) else None,
+                    "decision_annotation": reply.decision_annotation,
+                    "prompt_hash": reply.prompt_hash,
                     "elapsed_ms": round((time.monotonic() - started) * 1000),
                     "prompt_bytes": len(model_prompt.encode()),
                     "response_bytes": len(reply.text.encode()),
@@ -2347,12 +2363,13 @@ def run(args: argparse.Namespace) -> int:
                         "transactionally; no prefix action committed. Re-plan from the "
                         "unchanged observation, omit the invalid action, and use only "
                         "authoritative positions/targets from the prompt. Return one "
-                        "corrected JSON action array only."
+                        "corrected JSON action envelope with decisions."
                         action_repair_attempted = True
                         model_calls_this_turn += 1
                         metadata["model_calls"] += 1
                         try:
                             repaired = complete_model(repair_prompt)
+                            final_reply = repaired
                             enforce_usage(repaired, args)
                             record({"type": "action_repair", "call": metadata["model_calls"],
                                     "prompt_hash": hashlib.sha256(repair_prompt.encode()).hexdigest(),
@@ -2382,10 +2399,11 @@ def run(args: argparse.Namespace) -> int:
                                 forced_prompt = (repair_prompt +
                                                   "\nYour repair response requested a tool. "
                                                   "That lookup is unavailable in this repair step. "
-                                                  "Return a corrected JSON action array now, using "
+                                                  "Return a corrected JSON action envelope with decisions now, using "
                                                   "only the current authoritative observation and "
                                                   "the engine error above.")
                                 followup = complete_model(forced_prompt)
+                                final_reply = followup
                                 enforce_usage(followup, args)
                                 record({"type": "action_repair_followup",
                                         "call": metadata["model_calls"],
@@ -2396,7 +2414,9 @@ def run(args: argparse.Namespace) -> int:
                                     metadata["usage_measured"] = False
                                 orders = validate_model_orders(followup.text)
                                 capture_agenda(followup.text)
-                            repaired_intent = response_intent(repaired.text)
+                                repaired_intent = response_intent(followup.text)
+                            else:
+                                repaired_intent = response_intent(repaired.text)
                             if repaired_intent is not None:
                                 turn_intent = repaired_intent
                         except (RuntimeError, ValueError) as repair_error:
@@ -2424,7 +2444,10 @@ def run(args: argparse.Namespace) -> int:
                         durable({"type": "forwarded_orders", "orders": orders,
                                 "batch_id": f"{metadata.get('conversation_id', 'match')}:batch:{batch_sequence}",
                                 "request_sequence": request_sequence,
-                                "prompt_hash": hashlib.sha256(repair_prompt.encode()).hexdigest(),
+                                "request_id": final_reply.request_id if final_reply is not None else None,
+                                "state_revision": state.get("state_revision"),
+                                "decision_annotation": final_reply.decision_annotation,
+                                "prompt_hash": final_reply.prompt_hash,
                                 "repair": True, "intent": turn_intent,
                                 "authored_finish_kind": pending_finish_kind})
                         try:
@@ -2575,6 +2598,7 @@ def run(args: argparse.Namespace) -> int:
                 interval_count = getattr(args, "event_window_observations", 1)
                 prompt_events = select_event_window(event_intervals, event_window, interval_count)
                 continuity = "\n".join(continuity_entries[-4:])
+                playbook = load_tactical_playbook()
                 prompt = prompt_for(state, prompt_events,
                                     recruit_batch_enabled=not args.no_recruit_macro,
                                     compact=not getattr(args, "diagnostic", False),
@@ -2582,7 +2606,7 @@ def run(args: argparse.Namespace) -> int:
                                     continuity=continuity,
                                     agenda=agenda_memory if agenda_enabled else None,
                                     sweep=sweep,
-                                    trend=compact_trend(trend_states))
+                                    trend=compact_trend(trend_states), playbook=playbook)
                 prompt_bytes = prompt.encode()
                 prompt_hash = hashlib.sha256(prompt_bytes).hexdigest()
                 regions = prompt_regions(prompt)
@@ -2609,8 +2633,10 @@ def run(args: argparse.Namespace) -> int:
                 metadata["model_calls"] += 1
                 model_calls_this_turn += 1
                 timeout_fallback = False
+                final_reply = None
                 try:
                     reply = complete_model(prompt)
+                    final_reply = reply
                     enforce_usage(reply, args)
                     record({"type": "model", "call": metadata["model_calls"],
                             "prompt_hash": prompt_hash, "prompt_bytes": len(prompt_bytes),
@@ -2712,6 +2738,7 @@ def run(args: argparse.Namespace) -> int:
                             # without spending the turn's decision budget.
                             metadata["model_calls"] += 1
                             current_reply = complete_model(followup_prompt)
+                            final_reply = current_reply
                             enforce_usage(current_reply, args)
                             record({"type": "tool_followup", "tool": tool,
                                     "call": metadata["model_calls"],
@@ -2730,10 +2757,11 @@ def run(args: argparse.Namespace) -> int:
                             if tool_context else prompt + "\nVALIDATION_ERROR: " + str(first) + \
                             "\nMODEL_RESPONSE_UNTRUSTED_DATA_BEGIN:\n" + current_reply.text + \
                             "\nMODEL_RESPONSE_UNTRUSTED_DATA_END" + \
-                            "\nReturn one corrected JSON action array only."
+                            "\nReturn one corrected JSON action envelope with decisions."
                         model_calls_this_turn += 1
                         metadata["model_calls"] += 1
                         repaired = complete_model(repair_prompt)
+                        final_reply = repaired
                         enforce_usage(repaired, args)
                         record({"type": "repair", "call": metadata["model_calls"],
                                 "prompt_hash": hashlib.sha256(repair_prompt.encode()).hexdigest(),
@@ -2752,6 +2780,7 @@ def run(args: argparse.Namespace) -> int:
                             and any(marker in str(first) for marker in
                                     ("model_timeout", "native_model_timeout"))):
                         orders = timeout_finish_orders(state, args.llm_side, agenda_memory)
+                        final_reply = None
                         timeout_fallback = True
                         metadata["timeout_finishes"] += 1
                         if not state.get("turn_progress", {}).get("moved") and not state.get("turn_progress", {}).get("attacked"):
@@ -2805,11 +2834,12 @@ def run(args: argparse.Namespace) -> int:
                                         "\nDRAFT_ACTIONS_UNTRUSTED_DATA_BEGIN:\n" +
                                         json.dumps(orders, sort_keys=True, separators=(",", ":")) +
                                         "\nDRAFT_ACTIONS_UNTRUSTED_DATA_END\n" + review_text + (
-                                        "\nReturn the final JSON action array only. Repeat the draft unchanged "
+                                        "\nReturn the final JSON action envelope with decisions. Repeat the draft unchanged "
                                         "to confirm it, or revise it if the facts warrant a different choice."))
                                     model_calls_this_turn += 1
                                     metadata["model_calls"] += 1
                                     reviewed = complete_model(review_prompt)
+                                    final_reply = reviewed
                                     enforce_usage(reviewed, args)
                                     record({"type": "draft_review", "call": metadata["model_calls"],
                                             "review_id": active_review_id,
@@ -2829,12 +2859,13 @@ def run(args: argparse.Namespace) -> int:
                                             review_prompt +
                                             "\nREVIEW_RESPONSE_UNTRUSTED_DATA_BEGIN:\n" + reviewed.text +
                                             "\nREVIEW_RESPONSE_UNTRUSTED_DATA_END\nMODEL_RESPONSE_ERROR: " + str(review_validation_error) + (
-                                            "\nReturn one final JSON action array only. Do not request another tool.")
+                                            "\nReturn one final JSON action envelope with decisions. Do not request another tool.")
                                         )
                                         model_calls_this_turn += 1
                                         metadata["model_calls"] += 1
                                         metadata["draft_review_repairs"] += 1
                                         repaired_review = complete_model(repair_prompt)
+                                        final_reply = repaired_review
                                         enforce_usage(repaired_review, args)
                                         record({"type": "draft_review_repair", "call": metadata["model_calls"],
                                                 "prompt_hash": hashlib.sha256(repair_prompt.encode()).hexdigest(),
@@ -2917,6 +2948,7 @@ def run(args: argparse.Namespace) -> int:
                             # this revision, so preserve the turn with the
                             # existing selective greedy safety finish.
                             orders = timeout_finish_orders(state, args.llm_side, agenda_memory)
+                            final_reply = None
                             metadata["partial_limit_finishes"] += 1
                             forced_finish = True
                             record({"type": "partial_limit_finish", "orders": orders,
@@ -2945,7 +2977,7 @@ def run(args: argparse.Namespace) -> int:
                                  "failed_index": validation.get("failed_index"),
                                  "results": validation.get("results")},
                                 sort_keys=True, separators=(",", ":")) + \
-                                "\nROLLBACK_NOTICE: the batch was rejected before submission; the state and revision is unchanged. Return one corrected JSON action array only."
+                                "\nROLLBACK_NOTICE: the batch was rejected before submission; the state and revision is unchanged. Return one corrected JSON action envelope with decisions."
                             )
                         repair_prompt = repair_base + repair_tool_context
                         action_repair_attempted = True
@@ -2953,6 +2985,7 @@ def run(args: argparse.Namespace) -> int:
                         metadata["model_calls"] += 1
                         try:
                             repaired = complete_model(repair_prompt)
+                            final_reply = repaired
                             enforce_usage(repaired, args)
                             record({"type": "action_repair", "call": metadata["model_calls"],
                                     "attempt": model_calls_this_turn,
@@ -3055,7 +3088,13 @@ def run(args: argparse.Namespace) -> int:
                 durable({"type": "forwarded_orders", "orders": orders,
                          "batch_id": f"{metadata.get('conversation_id', 'match')}:batch:{batch_sequence}",
                          "request_sequence": request_sequence,
-                         "prompt_hash": prompt_hash, "intent": turn_intent,
+                         "request_id": final_reply.request_id if final_reply is not None else None,
+                         "source": "model" if final_reply is not None else "generated_greedy",
+                         "state_revision": state.get("state_revision"),
+                         "decision_annotation": final_reply.decision_annotation if final_reply is not None
+                             else inapplicable_annotation(playbook),
+                         "prompt_hash": final_reply.prompt_hash if final_reply is not None else None,
+                         "intent": turn_intent,
                          "authored_finish_kind": pending_finish_kind,
                          "review_id": active_review_id,
                          "forced_finish": forced_finish})

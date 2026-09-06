@@ -15,6 +15,23 @@ Do not read `.paul`, old temporary backends, or unrelated development documents
 unless diagnosing a specific setup failure. Preserve the prompt bytes and hash in
 the request archive. A transport receipt proves delivery, not comprehension.
 
+### Decision annotations
+
+The prompt requests `{"actions":[...],"decisions":[...]}` on every action response. The actions
+remain the ordinary action contract. Decision groups cite one to four stable
+playbook IDs and provide expected effect and risk text; their zero-based order
+indices cover each authored action exactly once. The client validates this
+metadata and never sends annotation fields to the Rust driver. Missing or
+malformed annotations can still execute legally, but count as missing or
+invalid evidence. Tool-only requests and generated greedy actions are
+`not_applicable`.
+
+The audit log preserves the exact prompt, raw response, request ID, state
+revision, and annotation status. Repaired or revised responses carry the
+annotation belonging to their own final orders. SQLite stores valid data as
+compressed `decision_annotation_v1` rationale; approved training export includes
+it only when the decision was explicitly approved.
+
 `tools/llm_client.py` is a provider-neutral client for the headless
 `greedy_driver` JSON-lines protocol. It asks the engine for authoritative options,
 gives those options to a continuing model, validates one action batch, and forwards
@@ -126,10 +143,11 @@ prompt on **stdin** and must write **one JSON object** to **stdout**:
 {"text": "[{\"action\":\"EndTurn\"}]"}
 ```
 
-`text` is the model's raw reply. On the first call for a turn, it may contain
-either the final bare JSON action array or one `preview_batch` request as described
-below. After preview results are returned, it must contain the final bare JSON
-action array. The command-backend envelope remains unchanged for both calls:
+`text` is the model's raw reply: an annotated action envelope or an allowed
+inspection request, as described below. The client also accepts bare action arrays
+and records their annotations as missing. After inspection, return final actions
+with decisions or request another permitted inspection within the tool budget.
+The command-backend envelope remains unchanged for these calls:
 `{"text":"..."}`. Optionally include `usage`
 (`{"input_tokens":N,"output_tokens":N}`); when absent, token budgets are recorded
 as estimated rather than measured. A minimal backend:
@@ -263,7 +281,9 @@ not a hang.
 
 ## Model response and action batch
 
-To concede, return `[{"action":"Resign"}]`. It must be the only action and has
+To concede, use `[{"action":"Resign"}]` as the envelope's `actions`, with a
+decision group citing T8. Bare resignation arrays are also accepted, with missing
+annotations. Resign must be the only action and has
 no additional fields. The driver immediately records `reason: "resignation"`,
 `resigned_side`, and the opponent as `winner`. It runs no greedy sweep or opponent
 turn and does not increment completed side-turns or the state revision.
@@ -279,7 +299,7 @@ A resignation needs no tactical preview, draft review, or confirmation; it can
 also replace a draft during review or repair. `preview_batch` rejects resignation
 candidates because concession is a match decision rather than a tactical forecast.
 
-On its first response for a turn, the model returns either its final action array
+On its first response for a turn, the model returns either its final action envelope
 or one read-only preview request containing one or two complete candidate arrays:
 
 ```json

@@ -85,6 +85,16 @@ python3 -m unittest tools.test_codex_backend tools.test_cli_commands
 python3 -m unittest discover -s tools -t .
 ```
 
+Decision-annotation integration tests invoke the built `greedy_driver` with a
+deterministic local model command, import the resulting NDJSON into temporary
+SQLite, and verify legal state change, exact request/revision/order linkage,
+idempotent reimport, approved rationale export, and honest handling of missing
+annotations:
+
+```bash
+python3 -m unittest tools.test_decision_annotations_integration
+```
+
 `tools.test_cli_commands` exercises the maintained backend and report commands as
 both modules and direct scripts, including native-session start/resume with an
 offline Codex substitute. `tools.fast_check` supplies `NORRUST_TEST_DRIVER` when

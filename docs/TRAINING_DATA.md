@@ -15,3 +15,11 @@ Generated greedy actions stay attributed to the algorithm. A model-authored
 handoff remains the target when the action-only dataset includes handoffs.
 Optional rationale data is exported only when it was actually recorded and
 approved. The exporter does not invent hidden chain of thought.
+
+Decision annotations are bounded self-reports attached to the exact model
+request and authored action indices. They record cited playbook rules, expected
+effect, and stated risk; they are evidence about what the model said, not proof
+that its citation was followed or that the move was good. Valid annotations are
+stored as `decision_annotation_v1` rationale records. Missing or invalid data
+remains unknown and lowers explanation coverage. Tool requests, discarded
+drafts, and generated greedy actions are excluded from the eligible denominator.

@@ -1,15 +1,37 @@
 import json
 import sqlite3
+import zlib
 from contextlib import closing
 import tempfile
 import unittest
 from pathlib import Path
 
-from .game_history import (backup_history, decode_payload, encode_payload, import_game,
+from .game_history import (SCHEMA, backup_history, decode_payload, encode_payload, import_game,
                            delete_history, inventory_history, list_side_turns, open_history,
                            summarize_game, verify_history)
 
 class GameHistoryTests(unittest.TestCase):
+    def test_existing_catalog_migrates_annotation_columns(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "legacy.sqlite"
+            legacy = sqlite3.connect(path)
+            legacy.executescript(SCHEMA.replace(" annotation_status TEXT, state_revision INTEGER,\n", ""))
+            legacy.commit(); legacy.close()
+            conn = open_history(path)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(model_requests)")}
+            self.assertTrue({"annotation_status", "state_revision", "reasoning_blob"} <= columns)
+            log = Path(td) / "match.ndjson"
+            log.write_text('\n'.join(json.dumps(row) for row in [
+                {"type": "metadata"},
+                {"type": "model_request", "request_id": "old-request", "prompt_hash": "known-hash"},
+                {"type": "terminal", "reason": "max_turns"},
+            ]) + '\n')
+            import_game(conn, log)
+            self.assertEqual(conn.execute(
+                "SELECT annotation_status,state_revision,reasoning_blob,prompt_blob,prompt_hash FROM model_requests"
+            ).fetchone(), (None, None, None, None, "known-hash"))
+            conn.close()
+
     def test_read_only_uri_preserves_filename_and_cannot_write(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -92,6 +114,54 @@ class GameHistoryTests(unittest.TestCase):
             self.assertEqual(coverage["unresolved_turn_endpoints"], 1)
             metrics = json.loads(conn.execute("SELECT metrics_json FROM side_turns WHERE game_id=?", (game_id,)).fetchone()[0])
             self.assertEqual(metrics["handoff_review"]["side_turn_id"], "turn-a")
+
+    def test_annotations_and_explicit_request_links_survive_reimport(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); log = root / "match.ndjson"
+            annotation = {"status": "valid", "guide_version": "tactics-v1",
+                          "guide_hash": "g" * 64, "decisions": [
+                              {"orders": [0], "rules": ["S1"], "expected": "Hold.", "risk": "Exposure."}],
+                          "error": None}
+            rows = [
+                {"type": "metadata", "seed": 4, "scenario": "test", "faction0": "a", "faction1": "b"},
+                {"type": "driver", "line": {"type": "state", "state_revision": 4, "turn": 1, "active_faction": 0}},
+                {"type": "model_request", "request_id": "req-1", "state_revision": 4,
+                 "prompt": "exact prompt", "raw_output": "exact response", "decision_annotation": annotation},
+                {"type": "forwarded_orders", "request_id": "req-1", "state_revision": 4,
+                 "batch_id": "batch-1", "orders": [{"action": "DoneWithImportantMoves"}],
+                 "decision_annotation": annotation},
+                {"type": "terminal", "reason": "winner", "winner": 0},
+            ]
+            log.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root)
+            row = conn.execute("""SELECT prompt_blob,response_blob,prompt_hash,response_hash,reasoning_blob,
+                                       reasoning_kind,reasoning_source,annotation_status,state_revision,payload_codec
+                                  FROM model_requests""").fetchone()
+            self.assertEqual(zlib.decompress(row[0]).decode("utf-8"), "exact prompt")
+            self.assertEqual(zlib.decompress(row[1]).decode("utf-8"), "exact response")
+            self.assertEqual(decode_payload(row[4]), annotation)
+            self.assertEqual(row[5:10], ("decision_annotation_v1", "model_response", "valid", 4, "zlib"))
+            self.assertEqual(conn.execute("SELECT request_id,before_revision FROM action_batches").fetchone(), ("req-1", 4))
+            self.assertEqual(conn.execute("SELECT request_id FROM actions").fetchone()[0], "req-1")
+            before = conn.execute("SELECT prompt_blob,response_blob,reasoning_blob FROM model_requests").fetchone()
+            import_game(conn, root, game_id=game_id)
+            self.assertEqual(conn.execute("SELECT count(*) FROM model_requests").fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT prompt_blob,response_blob,reasoning_blob FROM model_requests").fetchone(), before)
+            conn.close()
+
+    def test_nonvalid_annotations_do_not_create_rationale(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); log = root / "match.ndjson"
+            rows = [{"type": "metadata"},
+                    {"type": "model_request", "request_id": "r", "prompt": "p", "raw_output": "x",
+                     "decision_annotation": {"status": "invalid", "error": "bad", "decisions": []}},
+                    {"type": "forwarded_orders", "request_id": "r", "orders": [{"action": "Done"}]},
+                    {"type": "terminal", "reason": "max_turns"}]
+            log.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+            conn = open_history(root / "history.sqlite"); import_game(conn, root)
+            self.assertEqual(conn.execute("SELECT annotation_status,reasoning_blob FROM model_requests").fetchone(), ("invalid", None))
+            conn.close()
 
     def test_delete_exact_cohort_preserves_other_games_and_compacts(self):
         with tempfile.TemporaryDirectory() as td:

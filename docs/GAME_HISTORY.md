@@ -27,6 +27,21 @@ request records, submitted action batches, primitive authored actions, evaluatio
 runs, and decision evaluations. State and request payloads are compressed and
 hashed. Reimporting a game with the same ID is idempotent.
 
+For annotation-enabled logs, each model request stores the exact UTF-8 prompt and
+raw response (compressed and hashed), its explicit `state_revision`, and
+`annotation_status`. A valid `decision_annotation` is retained as canonical
+compressed JSON in `reasoning_blob`, with `reasoning_kind=decision_annotation_v1`
+and `reasoning_source=model_response`; missing or invalid annotations retain no
+rationale blob. Forwarded batches and authored actions carry the explicit
+`request_id`, and batches carry their `before_revision`. No positional or
+inferred explanation links are created.
+
+`tools.match_report.classify` includes `decision_annotations` coverage. It counts
+only authored forwarded batches with an explicit request ID, excluding tool-only
+responses and generated fallback orders. Coverage is valid annotations divided
+by applicable submitted batches, or `null` when there are none; rule counts are
+counts of cited rule IDs in valid final annotations.
+
 `inventory`, `game`, `turns`, and the Python `verify_history(path)` helper open
 an existing catalog read-only. A missing path fails instead of creating a new
 database. Quote shell paths containing spaces or characters such as `#`, `?`,

@@ -55,6 +55,33 @@ def classify(records: list[dict[str, Any]]) -> dict[str, Any]:
                   if item.get("type") == "turn_boundary" and item.get("accepted") is True]
     forced_boundary_indexes = _forced_partial_limit_boundaries(records, boundaries)
     handoff_reviews = [item for item in records if item.get("type") == "handoff_review"]
+    # Only forwarded batches are eligible. Tool requests and generated fallback
+    # orders have no submitted model response and therefore do not enter the
+    # denominator. A batch's annotation is authoritative on that exact record.
+    annotation_counts = Counter()
+    rule_counts = Counter()
+    for batch in records:
+        if (batch.get("type") != "forwarded_orders"
+                or not isinstance(batch.get("orders"), list)
+                or not isinstance(batch.get("request_id"), str)
+                or not batch["request_id"]):
+            continue
+        annotation = batch.get("decision_annotation")
+        status = annotation.get("status") if isinstance(annotation, dict) else None
+        if status == "not_applicable":
+            continue
+        if status not in {"valid", "missing", "invalid", "not_applicable"}:
+            status = "missing"
+        annotation_counts[status] += 1
+        if status == "valid" and isinstance(annotation, dict):
+            decisions = annotation.get("decisions")
+            if isinstance(decisions, list):
+                for decision in decisions:
+                    if isinstance(decision, dict) and isinstance(decision.get("rules"), list):
+                        for rule in decision["rules"]:
+                            if isinstance(rule, str):
+                                rule_counts[rule] += 1
+    applicable_submissions = sum(annotation_counts[name] for name in ("valid", "missing", "invalid"))
     telemetry_declared = metadata.get("finish_telemetry_available") is True
     telemetry_available = telemetry_declared or any(
         isinstance(item.get("authored_finish_kind"), str)
@@ -201,6 +228,15 @@ def classify(records: list[dict[str, Any]]) -> dict[str, Any]:
         "tool_calls": terminal.get("queries"),
         "handoff_reviews": len(handoff_reviews),
         "handoff_outcomes": dict(Counter(item.get("outcome", "unknown") for item in handoff_reviews)),
+        "decision_annotations": {
+            "submitted_batches": applicable_submissions,
+            "valid_batches": annotation_counts["valid"],
+            "missing_batches": annotation_counts["missing"],
+            "invalid_batches": annotation_counts["invalid"],
+            "coverage": (annotation_counts["valid"] / applicable_submissions
+                         if applicable_submissions else None),
+            "rule_counts": dict(rule_counts),
+        },
     }
     if not telemetry_available:
         report.update({
