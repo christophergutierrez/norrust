@@ -606,6 +606,23 @@ def query_preview_batch(exchange, candidates: list[list[dict[str, Any]]], state_
     return response["body"]
 
 
+def query_bounded_comparison(exchange, candidates: list[list[dict[str, Any]]],
+                             state_revision: int) -> dict[str, Any]:
+    """Compare at most two legal plans with one isolated greedy rollout."""
+    if not 1 <= len(candidates) <= 2:
+        raise ValueError("bounded comparison accepts one or two candidates")
+    response = exchange({"action": "Query", "what": "preview_batch",
+                         "state_revision": state_revision, "phase": "final",
+                         "mode": "bounded_rollout", "candidates": candidates})
+    if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
+        message = response.get("message", "query failed") if isinstance(response, dict) else "invalid query response"
+        raise RuntimeError(f"query_error: bounded_comparison: {message}")
+    body = response["body"]
+    if body.get("mode") != "bounded_rollout" or body.get("sampling") is not True:
+        raise RuntimeError("query_error: bounded_comparison: driver did not confirm bounded rollout")
+    return body
+
+
 def validate_inspect_unit_request(request: dict[str, Any]) -> int:
     if set(request) != {"tool", "unit_id"} or request.get("tool") != "inspect_unit":
         raise ValueError("inspect_unit request must contain only tool and unit_id")

@@ -2458,6 +2458,8 @@ fn interactive_protocol_game(c: &Config) {
                 "preview_batch" => {
                     let candidates = parsed.get("candidates").and_then(Value::as_array);
                     let phase = parsed.get("phase").and_then(Value::as_str).unwrap_or("final");
+                    let mode = parsed.get("mode").and_then(Value::as_str).unwrap_or("forecast");
+                    let bounded_rollout = mode == "bounded_rollout";
                     if parsed.get("state_revision").and_then(Value::as_u64)
                         != Some(state.state_revision)
                     {
@@ -2499,7 +2501,7 @@ fn interactive_protocol_game(c: &Config) {
                             let before_units = state.units.len();
                             let previews = candidates.iter().map(|candidate| {
                             let orders = candidate.as_array().expect("validated candidate");
-                            let execution = execute_model_batch(state.clone(), next_id, orders, c.llm_side, &factions, &units, c.disable_recruit_batch, false);
+                            let execution = execute_model_batch(state.clone(), next_id, orders, c.llm_side, &factions, &units, c.disable_recruit_batch, bounded_rollout);
                             let valid = execution.preview_error.is_none() && execution.results.len() == orders.len() && execution.results.iter().all(|result| result.get("ok") == Some(&Value::Bool(true)));
                             let mut recruiter_hp: Vec<Value> = execution.state.units.iter().filter_map(|(id, unit)| {
                                 (unit.faction == c.llm_side && unit.can_recruit).then(|| json!({"unit_id":id,"hp":unit.hp}))
@@ -2511,6 +2513,7 @@ fn interactive_protocol_game(c: &Config) {
                                 "exposure":if valid { execution.pre_end_exposure } else { None },
                                 "preview_error":execution.preview_error,
                                 "post_combat_conditional":execution.post_combat_conditional,
+                                "rollout_event_count":if bounded_rollout { execution.events.len() } else { 0 },
                                 "assumption":if execution.post_combat_conditional {"all forecast combatants survive in place"} else {"none"},
                                 "observation_stage":"post_prefix_pre_sweep",
                                 "post_sweep":Value::Null,
@@ -2519,7 +2522,7 @@ fn interactive_protocol_game(c: &Config) {
                                     "affordable_recruitment_remaining":execution.pre_end_recruitment_remaining}})
                         }).collect::<Vec<_>>();
                             json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,
-                            "body":{"sampling":false,"phase":phase,"coverage":{"forecast":"conditional_pre_finish","delegated_sweep":"unavailable","threats":"pre_finish","post_sweep":"unavailable"},"candidates":previews}})
+                            "body":{"sampling":bounded_rollout,"mode":mode,"phase":phase,"coverage":if bounded_rollout {json!({"forecast":"bounded_rollout","delegated_sweep":"modeled","post_sweep":"modeled"})} else {json!({"forecast":"conditional_pre_finish","delegated_sweep":"unavailable","threats":"pre_finish","post_sweep":"unavailable"})},"candidates":previews}})
                         }
                     }
                 }

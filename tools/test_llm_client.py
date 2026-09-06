@@ -18,7 +18,7 @@ from .llm_client import (
     compact_unit_inspection, compact_draft_review, tool_followup_instruction, tool_budget_repair_prompt,
     compact_events, tactical_attack_coverage,
     select_event_window,
-    query_tactical_surface, query_validate_batch, query_preview_batch,
+    query_tactical_surface, query_validate_batch, query_preview_batch, query_bounded_comparison,
     query_inspect_unit, query_inspect_target, query_inspect_targets, query_inspect_hex, run,
     response_intent, compact_strategic_briefing,
     checkpoint_dir_for_log, validate_checkpoint_reference, select_resume_checkpoint,
@@ -487,6 +487,15 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("C0 R1 hp=38 attackers=3 max_sum=42 lethal_n=3 conflicts=True", rendered)
         self.assertNotIn("origin_col", rendered)
         self.assertLess(len(rendered.encode()), 8192)
+
+    def test_bounded_comparison_requires_driver_rollout_confirmation(self):
+        sent = []
+        body = {"mode": "bounded_rollout", "sampling": True, "candidates": []}
+        result = query_bounded_comparison(
+            lambda request: sent.append(request) or {"ok": True, "body": body},
+            [[{"action": "EndTurn"}]], 4)
+        self.assertEqual(result, body)
+        self.assertEqual(sent[0]["mode"], "bounded_rollout")
 
     def test_compact_batch_preview_renders_ordered_attack_sequences(self):
         rendered = compact_batch_preview({"sampling": False, "candidates": [{
