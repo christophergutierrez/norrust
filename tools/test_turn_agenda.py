@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from .luna_agenda import compact_agenda, normalize_agenda, response_agenda
+from .turn_agenda import compact_agenda, normalize_agenda, response_agenda
 
 
 class AgendaTests(unittest.TestCase):

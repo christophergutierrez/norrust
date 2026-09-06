@@ -10,9 +10,9 @@ import sys
 from pathlib import Path
 
 try:
-    from .luna_reconcile import reconcile_request
+    from .request_recovery import reconcile_request
 except ImportError:  # Direct ``python tools/llm_supervisor.py`` invocation.
-    from luna_reconcile import reconcile_request
+    from request_recovery import reconcile_request
 
 
 def _records(path: Path) -> list[dict]:

@@ -4,7 +4,7 @@ import sys
 import tempfile
 import unittest
 
-from tools.luna_request_journal import RequestConflict, RequestJournal, RequestStateError, read_state
+from tools.request_journal import RequestConflict, RequestJournal, RequestStateError, read_state
 
 
 class RequestJournalTests(unittest.TestCase):
@@ -52,7 +52,7 @@ class RequestJournalTests(unittest.TestCase):
             journal.acquire()
             try:
                 script = (
-                    "from tools.luna_request_journal import RequestJournal, RequestConflict; "
+                    "from tools.request_journal import RequestJournal, RequestConflict; "
                     f"j=RequestJournal({directory!r}, 'same-match'); "
                     "\ntry: j.acquire()\nexcept RequestConflict: print('conflict')"
                 )

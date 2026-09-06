@@ -14,9 +14,9 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 try:
-    from .luna_request_journal import STATES, read_state
+    from .request_journal import STATES, read_state
 except ImportError:  # Direct ``python tools/luna_reconcile.py`` compatibility.
-    from luna_request_journal import STATES, read_state
+    from request_journal import STATES, read_state
 
 
 COMPLETED_UNCONSUMED = "completed_unconsumed"
@@ -243,7 +243,7 @@ def reconcile_journal(
     checkpoint_dir: str | Path | None = None,
 ) -> Reconciliation:
     """Reconcile the newest request for a session; no request means unknown."""
-    from .luna_request_journal import _safe_session_name
+    from .request_journal import _safe_session_name
 
     requests = Path(journal_root) / _safe_session_name(session_id) / "requests"
     if not requests.is_dir():

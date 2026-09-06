@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from .luna_reconcile import (
+from .request_recovery import (
     COMMITTED, COMPLETED_UNCONSUMED, CONSUMED_UNCOMMITTED, INTERRUPTED, UNKNOWN,
     reconcile_request, restart_decision,
 )

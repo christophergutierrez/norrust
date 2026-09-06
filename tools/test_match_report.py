@@ -1,6 +1,6 @@
 import unittest
 
-from .luna_report import classify
+from .match_report import classify
 from .llm_client import replay_accepted_progress
 
 

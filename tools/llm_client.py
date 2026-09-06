@@ -19,9 +19,9 @@ from pathlib import Path
 from typing import Any, Optional
 
 try:
-    from .luna_agenda import agenda_from_response, compact_agenda
+    from .turn_agenda import agenda_from_response, compact_agenda
 except ImportError:  # pragma: no cover - direct script compatibility
-    from luna_agenda import agenda_from_response, compact_agenda
+    from turn_agenda import agenda_from_response, compact_agenda
 
 ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "Engage", "EndTurn", "Advance",
            "DoneWithImportantMoves", "FinishWithGreedy"}

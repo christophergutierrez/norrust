@@ -12,9 +12,9 @@ import time
 from pathlib import Path
 
 try:
-    from .luna_request_journal import RequestJournal
+    from .request_journal import RequestJournal
 except ImportError:  # pragma: no cover - direct script compatibility
-    from luna_request_journal import RequestJournal
+    from request_journal import RequestJournal
 
 MODEL = "gpt-5.6-luna"
 EFFORT = "high"

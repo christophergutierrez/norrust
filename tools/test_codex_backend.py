@@ -2,7 +2,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from . import luna_backend
+from . import codex_backend as luna_backend
 
 
 class LunaBackendTests(unittest.TestCase):
