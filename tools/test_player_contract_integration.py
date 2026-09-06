@@ -108,7 +108,7 @@ class PlayerContractIntegrationTests(unittest.TestCase):
             # establish the held/omitted positions at the model finish.
             positions = {u["id"]: (u["col"], u["row"]) for u in friendly}
             for move in moves:
-                positions[move["unit"]] = tuple(move["to"])
+                positions[move["unit"]] = (move["to"]["col"], move["to"]["row"])
             self.assertEqual(positions[held["id"]], (held["col"], held["row"]))
             self.assertEqual(positions[omitted["id"]], (omitted["col"], omitted["row"]))
             self.assertNotEqual(positions[delegated["id"]], (delegated["col"], delegated["row"]))
