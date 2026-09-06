@@ -233,6 +233,14 @@ decision annotations are audit/bookkeeping data. A deliberate hold that affects
 execution must be represented in the `FinishWithGreedy` action's `holds` list,
 whose entries are `{unit_id, reason}` objects.
 
+Stack 2 guidance stays procedural and compact: (1) choose recruitment or record
+the gold opportunity cost; (2) protect the recruiter and make consequential
+orders; (3) give every deliberate hold a concrete current job plus the move or
+attack forgone; and (4) delegate only remaining routine units. Selective
+`FinishWithGreedy` delegates listed group IDs, holds listed hold IDs, and leaves
+omitted units unswept. Do not add attack quotas, forced holds, or a framework
+that scores tactical prose.
+
 Prompt-facing facts must keep live observations separate from read-only
 forecasts. Label candidate results `SIMULATION — NOT EXECUTED`, and place one
 final live-state reminder after appended tool/review/repair context. It must be

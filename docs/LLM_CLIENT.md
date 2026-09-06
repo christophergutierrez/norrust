@@ -46,6 +46,15 @@ provenance, and then ends the turn. Recruitment remains model-owned. If the mode
 command times out, `--timeout-finish` applies the same bounded fallback to eligible
 units and records `timeout_fallback`; it never invents recruitment.
 
+Use a hold for a concrete current job, such as blocking a named attack origin,
+protecting a wounded unit, or retaining a healing village, and state the useful
+move or attack forgone in its reason/decision annotation. A selective finish
+delegates only the IDs in its groups and keeps only the IDs in its explicit
+`holds`; omitted units are unswept. Earlier authored moves and recruitment,
+including auto-vacating, still execute, and the opponent may attack afterward.
+Healthy units may be delegated when their current job is complete; there is no
+attack quota or requirement to sweep the whole army.
+
 The compact board briefing includes `MAP_TERRAIN` and `MAP_UNITS` layers. Terrain
 uses two-character cells (`F.` forest, `H.` hills, `C.` castle, `K.` keep, `..`
 flat, and `V0`/`V1`/`V-` villages); unit cells use `faction:id`, and `....` is
