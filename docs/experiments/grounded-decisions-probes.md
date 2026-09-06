@@ -27,3 +27,30 @@ grounding errors, resistance-sign errors, hold jobs/opportunity costs, legal
 batches, attacks/retreats, recruiter survival, calls, and wall time. Unknown or
 unassessable evidence is recorded as such; it is not scored as success.
 
+## Results
+
+The 24 attempts completed successfully: 12 on A and 12 on B, with two attempts
+for each case and fresh native sessions. The imported temporary catalog contains
+24 games, 24 side turns, 51 model requests, 24 submitted batches, and 113
+authored actions; integrity checks reported no foreign-key errors. Reimporting
+the same archives is idempotent. Every attempt ended at the one-side-turn cap.
+
+| Measure | A | B | Interpretation |
+|---|---:|---:|---|
+| Completed attempts | 12 | 12 | Complete accounting |
+| Submitted legal batches | 12 | 12 | No execution regressions |
+| Completed model requests | 27 | 24 | B used fewer review/tool calls in this sample |
+| Agenda proposals | 1 | 5 | B expressed more explicit task handoffs |
+| FinishWithGreedy batches | 0 | 0 | No selective finish was exercised |
+| Preview-as-live errors | 0 assessable | 0 assessable | Grounding claims were not contradicted |
+| Resistance-sign errors | unassessable | unassessable | No recorded engagement boundary was restored |
+| Hold jobs/opportunity costs | unassessable | unassessable | Fresh opening turns did not author a hold |
+
+The exact archived mid-game boundaries were unavailable as resumable model
+starts, so the six named cases used deterministic fresh starts with the cited
+seed as a verifiable nearby case. This limits conclusions about resistance and
+hold behavior. B is not selected: its guide is 11,694 UTF-8 bytes versus A at
+11,019, violating the frozen compactness gate, and the probes did not exercise a
+selective finish or demonstrate a broad-hold improvement. A (`6a7d722`) remains
+the selected behavior for the final cohort; B (`44ede5e`) and all probe evidence
+are preserved.
