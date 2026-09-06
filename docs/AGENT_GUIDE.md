@@ -7,7 +7,8 @@ A practical guide for building an agent that plays The Clash for Norrust. Assume
 
 When a task asks about previous games, model effort, turn history, infrastructure failures,
 or training examples, inspect the recorded-game catalog before reading individual logs. The
-usual artifact directory is `tmp/game_history_final_games/`; other cohorts may be under `tmp/`.
+usual artifact directory is `tmp/game_history_final_games/`; the corrected delegation-evidence
+cohort is `tmp/llm_delegation_evidence_final2/`; other cohorts may be under `tmp/`.
 The SQLite catalog is `history.sqlite`, and the original `match.ndjson`, checkpoints, native
 request artifacts, and reports remain beside it. These files are ignored by Git and may be
 absent in a fresh checkout.
