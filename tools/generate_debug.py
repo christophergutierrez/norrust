@@ -9,6 +9,7 @@ Usage:
     python3 tools/generate_debug.py --clean  # remove debug/data/ first
 """
 
+import argparse
 import os
 import re
 import shutil
@@ -32,13 +33,25 @@ ATTACK_PATCHABLE = {"damage", "strikes"}
 FACTION_PATCHABLE = {"starting_gold"}
 
 
-def load_config():
+def load_config(config_path=CONFIG_PATH):
     """Load and return the debug config dict."""
-    if not CONFIG_PATH.exists():
-        print(f"Error: Config not found at {CONFIG_PATH}")
+    if not config_path.exists():
+        print(f"Error: Config not found at {config_path}")
         sys.exit(1)
-    with open(CONFIG_PATH, "rb") as f:
+    with open(config_path, "rb") as f:
         return tomllib.load(f)
+
+
+def validate_config(config):
+    """Reject typos before an invalid debug tree can replace a prior one."""
+    allowed_defaults = UNIT_PATCHABLE | {"attacks", "faction"}
+    unknown = set(config.get("defaults", {})) - allowed_defaults
+    unknown |= set(config.get("defaults", {}).get("attacks", {})) - ATTACK_PATCHABLE
+    unknown |= set(config.get("defaults", {}).get("faction", {})) - FACTION_PATCHABLE
+    for unit_id, values in config.get("overrides", {}).get("units", {}).items():
+        unknown |= set(values) - UNIT_PATCHABLE
+    if unknown:
+        raise ValueError("unknown debug override keys: " + ", ".join(sorted(unknown)))
 
 
 def patch_toml_lines(lines, patches, attack_patches=None):
@@ -202,17 +215,22 @@ def copy_dir(name):
     return 0
 
 
-def main():
-    if "--clean" in sys.argv:
-        if DATA_DST.exists():
-            shutil.rmtree(DATA_DST)
-            print(f"Cleaned {DATA_DST}")
+def main(argv=None):
+    global CONFIG_PATH, DATA_SRC, DATA_DST
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, default=CONFIG_PATH)
+    parser.add_argument("--data-src", type=Path, default=DATA_SRC)
+    parser.add_argument("--output", type=Path, default=DATA_DST)
+    parser.add_argument("--clean", action="store_true", help=argparse.SUPPRESS)
+    args = parser.parse_args(argv)
+    CONFIG_PATH, DATA_SRC, DATA_DST = args.config.resolve(), args.data_src.resolve(), args.output.resolve()
 
     if not DATA_SRC.exists():
         print(f"Error: Source data not found at {DATA_SRC}")
         sys.exit(1)
 
-    config = load_config()
+    config = load_config(CONFIG_PATH)
+    validate_config(config)
 
     # Clean output
     if DATA_DST.exists():

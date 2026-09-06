@@ -15,6 +15,7 @@ local state_mod = require("state")
 local camera_mod = require("camera_mod")
 local logger = require("logger")
 local combat_mod = require("combat_mod")
+local content_catalog = require("content_catalog")
 
 -- ── Constants ───────────────────────────────────────────────────────────────
 
@@ -35,15 +36,8 @@ local MODES = {
 
 -- Game data: scenarios, campaigns, faction state
 local game_data = {
-    SCENARIOS = {
-        {name = "Quick Play",   board = "contested/board.toml",     units = "contested/units.toml",     preset_units = false},
-        {name = "Night Battle", board = "night_orcs/board.toml",    units = "night_orcs/units.toml",    preset_units = false},
-        {name = "Big Battle 6", board = "big_battle_6/board.toml", units = "big_battle_6/units.toml", preset_units = false, starting_gold = 300},
-    },
-    CAMPAIGNS = {
-        {name = "A Tale of Two Brothers", file = "two_brothers.toml"},
-        {name = "The Road to Norrust", file = "tutorial.toml"},
-    },
+    SCENARIOS = content_catalog.scenarios,
+    CAMPAIGNS = content_catalog.campaigns,
     factions = {},
     faction_id = {"", ""},
     leader_placed = {false, false},
