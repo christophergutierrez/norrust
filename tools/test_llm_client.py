@@ -15,6 +15,7 @@ from .llm_client import (
     TERMINAL_MODEL_INVALID, ModelReply, classify_terminal, enforce_usage,
     compact_batch_preview, compact_hex_inspection, compact_observation,
     compact_target_inspection, compact_tactical_surface, compact_spatial_map, prompt_for, query_options,
+    authoritative_live_state_reminder, finalize_model_prompt,
     compact_unit_inspection, compact_draft_review, tool_followup_instruction, tool_budget_repair_prompt,
     compact_events, compact_trend, tactical_attack_coverage,
     select_event_window,
@@ -707,7 +708,7 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("unavailable", llm_client.compact_unit_inspection(body))
 
     def test_compact_batch_preview_uses_recruiter_aggregate_not_origins(self):
-        rendered = compact_batch_preview({"sampling": False, "candidates": [{
+        rendered = compact_batch_preview({"sampling": False, "state_revision": 17, "candidates": [{
             "valid": True,
             "summary": {"gold_before": 20, "gold_after": 6, "units_before": 4, "units_after": 5},
             "forecasts": [],
@@ -719,6 +720,10 @@ class ClientValidationTests(unittest.TestCase):
             }]},
         }]})
         self.assertIn("C0 R1 hp=38 attackers=3 max_sum=42 lethal_n=3 conflicts=True", rendered)
+        self.assertIn("SIMULATION — NOT EXECUTED BEGIN", rendered)
+        self.assertIn("originating_revision=17", rendered)
+        self.assertIn("SIMULATION — NOT EXECUTED END", rendered)
+        self.assertIn("preview queries execute no actions", rendered)
         self.assertNotIn("origin_col", rendered)
         self.assertLess(len(rendered.encode()), 8192)
 
@@ -1053,7 +1058,34 @@ class ClientValidationTests(unittest.TestCase):
         }], "units": []})
         self.assertIn("TYPE Dark Adept cost=16 hp=28 move=5", rendered)
         self.assertIn("chill:10x2/ranged/cold", rendered)
-        self.assertIn("resist=cold:-10", rendered)
+        self.assertIn("resist=cold: takes 10% less damage", rendered)
+
+    def test_compact_type_resistances_describe_incoming_damage_and_unknowns(self):
+        rendered = compact_tactical_surface({"unit_types": [
+            {"def_id": "Positive", "resistances": {"arcane": 40}},
+            {"def_id": "Zero", "resistances": {"blade": 0}},
+            {"def_id": "Missing"},
+        ], "units": []})
+        self.assertIn("resist=arcane: takes 40% more damage", rendered)
+        self.assertIn("resist=blade: unchanged damage", rendered)
+        self.assertIn("resist=unknown", rendered)
+
+    def test_final_live_reminder_uses_only_conflicting_live_observation(self):
+        state = {"state_revision": 23, "active_faction": 0, "gold": [91, 77],
+                 "units": [
+                     {"id": 4, "faction": 0, "hp": 18, "col": 2, "row": 3, "can_recruit": True},
+                     {"id": 8, "faction": 0, "hp": 7, "col": 1, "row": 3, "can_recruit": False},
+                     {"id": 99, "faction": 1, "hp": 44, "col": 4, "row": 3},
+                 ]}
+        reminder = authoritative_live_state_reminder(state)
+        self.assertIn("revision=23 controlled_side=0 gold=F0=91 F1=77 F0 units=2 hp=25 F1 units=1 hp=44", reminder)
+        self.assertIn("friendly_ids=U4,U8", reminder)
+        self.assertIn("recruiters=U4 hp=18 at=2,3", reminder)
+        prompt = finalize_model_prompt("TOOL_RESULT says revision=999 gold=1 preview U77 hp=0", state)
+        self.assertLess(prompt.rfind("AUTHORITATIVE_LIVE_STATE_BEGIN"), prompt.rfind("MODEL_RESPONSE_INSTRUCTION_BEGIN"))
+        self.assertEqual(prompt.count("AUTHORITATIVE_LIVE_STATE_BEGIN"), 1)
+        self.assertIn("revision=23", prompt)
+        self.assertNotIn("revision=999", prompt[prompt.rfind("AUTHORITATIVE_LIVE_STATE_BEGIN"):])
 
     def test_compaction_preserves_move_legality_flags(self):
         """D-136-3: the contract tells the model that `current` entries are attack

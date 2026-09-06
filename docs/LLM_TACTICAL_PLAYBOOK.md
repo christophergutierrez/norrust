@@ -33,6 +33,20 @@ Compact forecast `e` and `focus_e` values are expected damage in tenths of HP
 forecasts give exact supplied probabilities under their forecast assumptions;
 threat and focus summaries are bounds. None are guarantees.
 
+Preview and bounded-rollout results are always hypothetical: read their
+`SIMULATION — NOT EXECUTED` scope and do not treat simulated rosters, gold,
+casualties, villages, or winners as the current board. Queries execute no
+actions. Before final actions, use the final authoritative live-state reminder
+for revision, side, gold, unit/HP totals, and friendly recruiter IDs/HP/positions.
+If a draft is revised, re-plan from that live revision; a rolled-back draft
+leaves it unchanged.
+
+`TYPE` resistance values describe incoming damage with a signed modifier:
+positive means vulnerability (`+40` takes 40% more damage), negative means
+resistance (`-60` takes 60% less damage), and zero means unchanged damage.
+Missing values are unknown. Apply this base modifier together with the supplied
+combat context; do not reverse the signs.
+
 Use these priorities as guidance on every turn; they do not prescribe a single move. Eligibility-based greedy execution describes which units are delegated, not whether their destinations are tactically safe. Ask what changes after the enemy moves and attacks if you hold here:
 
 **T8 — Concede a clearly lost game.** At the start of each decision, assess whether you still have a credible route to recovery or victory. If the position is clearly lost—for example, the recruiter cannot escape a decisive threat, or your remaining force and economy cannot rebuild a competitive army—concede with `[{"action":"Resign"}]`. Do not spend further inspections or turns prolonging an unavoidable defeat. Resignation immediately awards the opponent the win; it is final and must be the only action. Do not resign merely because you are behind in units, suffered a bad combat roll, face a temporary threat, or have not yet reached the enemy. When recovery is plausible, keep playing.

@@ -803,12 +803,19 @@ def compact_hex_inspection(body: dict[str, Any]) -> str:
         body.get("visibility", "?"), inspection.get("occupant_id"), "|".join(attacks) or "none")
 
 
-def compact_batch_preview(preview: dict[str, Any]) -> str:
+def compact_batch_preview(preview: dict[str, Any], originating_revision: Any = None) -> str:
     """Render candidate consequences without repeating detailed threat origins."""
-    lines = ["PREVIEW phase=%s coverage=%s sweep=%s sampling=%s" % (
+    coverage = preview.get("coverage") or {}
+    originating_revision = (preview.get("state_revision",
+                                         preview.get("originating_state_revision", "unknown"))
+                            if originating_revision is None else originating_revision)
+    lines = ["SIMULATION — NOT EXECUTED BEGIN phase=%s originating_revision=%s "
+             "forecast=%s coverage=%s sweep=%s sampling=%s" % (
         preview.get("phase", "unknown"),
-        (preview.get("coverage") or {}).get("forecast", "unknown"),
-        (preview.get("coverage") or {}).get("delegated_sweep", "unknown"),
+        originating_revision,
+        coverage.get("forecast", "unknown"),
+        coverage.get("forecast", "unknown"),
+        coverage.get("delegated_sweep", "unknown"),
         preview.get("sampling", "?"))]
     for index, candidate in enumerate(preview.get("candidates", [])):
         if not isinstance(candidate, dict):
@@ -893,6 +900,8 @@ def compact_batch_preview(preview: dict[str, Any]) -> str:
                 unit.get("focus_kill_bps", []), unit.get("focus_expected_damage_tenths", []),
                 unit.get("open_distinct_attacker_count", 0), unit.get("open_max_incoming_sum", 0),
                 unit.get("open_lethal_attackers_needed")))
+    lines.append("SIMULATION — NOT EXECUTED END; preview queries execute no actions. "
+                 "Candidate rosters, gold, casualties, villages, and threats are hypothetical.")
     return "\n".join(lines)
 
 
@@ -976,8 +985,26 @@ def compact_tactical_surface(surface: dict[str, Any]) -> str:
                 attack.get("name", "?"), attack.get("damage", "?"),
                 attack.get("strikes", "?"), attack.get("range", "?"),
                 attack.get("type", "?"), suffix))
-        resistances = ",".join("%s:%s" % (key, value)
-                               for key, value in sorted((profile.get("resistances") or {}).items()))
+        raw_resistances = profile.get("resistances")
+        if isinstance(raw_resistances, dict):
+            if raw_resistances:
+                resistance_parts = []
+                for key, value in sorted(raw_resistances.items()):
+                    if isinstance(value, int) and not isinstance(value, bool):
+                        if value > 0:
+                            description = "takes %s%% more damage" % value
+                        elif value < 0:
+                            description = "takes %s%% less damage" % (-value)
+                        else:
+                            description = "unchanged damage"
+                    else:
+                        description = "unknown incoming damage modifier"
+                    resistance_parts.append("%s: %s" % (key, description))
+                resistances = ",".join(resistance_parts)
+            else:
+                resistances = "none"
+        else:
+            resistances = "unknown"
         lines.append("TYPE %s cost=%s hp=%s move=%s align=%s attacks=%s resist=%s" % (
             profile.get("def_id", "?"), profile.get("cost", "?"), profile.get("max_hp", "?"),
             profile.get("movement", "?"), profile.get("alignment", "?"),
@@ -1731,6 +1758,53 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
     )
 
 
+def authoritative_live_state_reminder(state: dict[str, Any]) -> str:
+    """Render compact live facts from the latest engine observation only."""
+    units = [unit for unit in state.get("units", []) if isinstance(unit, dict)]
+    totals = []
+    for side in (0, 1):
+        side_units = [unit for unit in units if unit.get("faction") == side]
+        hp = sum(unit.get("hp", 0) for unit in side_units
+                 if isinstance(unit.get("hp"), int) and not isinstance(unit.get("hp"), bool))
+        totals.append("F%s units=%s hp=%s" % (side, len(side_units), hp))
+    friendly_side = state.get("active_faction", "unknown")
+    friendly = [unit for unit in units if unit.get("faction") == friendly_side]
+    friendly_ids = ",".join("U%s" % unit.get("id") for unit in sorted(
+        friendly, key=lambda unit: unit.get("id", 0) if isinstance(unit.get("id"), int) else 0)) or "-"
+    recruiters = []
+    for unit in sorted(friendly, key=lambda item: item.get("id", 0)
+                       if isinstance(item.get("id"), int) else 0):
+        if unit.get("can_recruit") is True:
+            recruiters.append("U%s hp=%s at=%s,%s" % (
+                unit.get("id", "unknown"), unit.get("hp", "unknown"),
+                unit.get("col", "unknown"), unit.get("row", "unknown")))
+    gold = state.get("gold")
+    gold_text = ("F0=%s F1=%s" % (gold[0], gold[1])
+                 if isinstance(gold, list) and len(gold) >= 2
+                 else "F0=unknown F1=unknown")
+    return (
+        "AUTHORITATIVE_LIVE_STATE_BEGIN\n"
+        "revision=%s controlled_side=%s gold=%s %s friendly_ids=%s recruiters=%s\n"
+        "AUTHORITATIVE_LIVE_STATE_END\n"
+        "MODEL_RESPONSE_INSTRUCTION_BEGIN\n"
+        "Respond now with exactly one allowed JSON action envelope or one allowed "
+        "read-only inspection request. Queries execute no actions. A revised complete "
+        "batch replaces the draft and must start from this live revision. Preview-created "
+        "units and preview casualties are hypothetical. If resigning, distinguish live "
+        "facts from projected threats; one bad sampled continuation does not prove every "
+        "alternative fails.\n"
+        "MODEL_RESPONSE_INSTRUCTION_END" % (
+            state.get("state_revision", "unknown"), friendly_side, gold_text,
+            " ".join(totals), friendly_ids, ";".join(recruiters) or "none"))
+
+
+def finalize_model_prompt(prompt: str, state: dict[str, Any]) -> str:
+    """Place the live-state anchor after all context and before response guidance."""
+    if "AUTHORITATIVE_LIVE_STATE_BEGIN" in prompt:
+        return prompt.rstrip()
+    return prompt.rstrip() + "\n" + authoritative_live_state_reminder(state)
+
+
 def compact_observation(state: dict[str, Any]) -> str:
     """Render a deterministic briefing; legality remains in engine options."""
     terrain = {tile.get("terrain_id", "?") for tile in state.get("terrain", [])}
@@ -2170,12 +2244,14 @@ def run(args: argparse.Namespace) -> int:
     batch_sequence = 0
     def complete_model(model_prompt: str) -> ModelReply:
         nonlocal request_sequence
+        delivered_prompt = finalize_model_prompt(
+            model_prompt, state if isinstance(state, dict) else {})
         request_sequence += 1
         request_id = f"{metadata.get('conversation_id', 'match')}:request:{request_sequence}"
         started = time.monotonic()
         before = getattr(backend, "transport_retries", 0)
         try:
-            reply = backend.complete(model_prompt)
+            reply = backend.complete(delivered_prompt)
             if isinstance(reply.cache, dict):
                 for source, destination in (("native_session_id", "native_session_id"),
                                             ("transport", "native_transport"),
@@ -2199,19 +2275,19 @@ def run(args: argparse.Namespace) -> int:
                 if expected_effort and reported_effort is not None and reported_effort != expected_effort:
                     raise RuntimeError("runtime reasoning effort mismatch")
             reply.request_id = request_id
-            reply.prompt_hash = hashlib.sha256(model_prompt.encode()).hexdigest()
+            reply.prompt_hash = hashlib.sha256(delivered_prompt.encode()).hexdigest()
             reply.decision_annotation = annotation_for_response(reply.text, guide_text=playbook)
             record({"type": "model_request",
                     "request_id": request_id,
                     "sequence": request_sequence,
                     "status": "completed",
-                    "prompt": model_prompt,
+                    "prompt": delivered_prompt,
                     "raw_output": reply.text,
                     "state_revision": state.get("state_revision") if isinstance(state, dict) else None,
                     "decision_annotation": reply.decision_annotation,
                     "prompt_hash": reply.prompt_hash,
                     "elapsed_ms": round((time.monotonic() - started) * 1000),
-                    "prompt_bytes": len(model_prompt.encode()),
+                    "prompt_bytes": len(delivered_prompt.encode()),
                     "response_bytes": len(reply.text.encode()),
                     "usage": reply.usage,
                     "cache": reply.cache})
@@ -2222,7 +2298,7 @@ def run(args: argparse.Namespace) -> int:
                     "sequence": request_sequence,
                     "status": "failed",
                     "elapsed_ms": round((time.monotonic() - started) * 1000),
-                    "prompt_bytes": len(model_prompt.encode()),
+                    "prompt_bytes": len(delivered_prompt.encode()),
                     "error": str(exc)})
             raise
         finally:
@@ -2378,7 +2454,7 @@ def run(args: argparse.Namespace) -> int:
                             final_reply = repaired
                             enforce_usage(repaired, args)
                             record({"type": "action_repair", "call": metadata["model_calls"],
-                                    "prompt_hash": hashlib.sha256(repair_prompt.encode()).hexdigest(),
+                                    "prompt_hash": repaired.prompt_hash,
                                     "raw_output": repaired.text, "usage": repaired.usage,
                                     "engine_error": failure})
                             if repaired.usage is None:
@@ -2412,7 +2488,7 @@ def run(args: argparse.Namespace) -> int:
                                 enforce_usage(followup, args)
                                 record({"type": "action_repair_followup",
                                         "call": metadata["model_calls"],
-                                        "prompt_hash": hashlib.sha256(forced_prompt.encode()).hexdigest(),
+                                        "prompt_hash": followup.prompt_hash,
                                         "raw_output": followup.text, "usage": followup.usage,
                                         "rejected_tool": repaired.text})
                                 if followup.usage is None:
@@ -2612,7 +2688,8 @@ def run(args: argparse.Namespace) -> int:
                                     agenda=agenda_memory if agenda_enabled else None,
                                     sweep=sweep,
                                     trend=compact_trend(trend_states), playbook=playbook)
-                prompt_bytes = prompt.encode()
+                delivered_prompt = finalize_model_prompt(prompt, state)
+                prompt_bytes = delivered_prompt.encode()
                 prompt_hash = hashlib.sha256(prompt_bytes).hexdigest()
                 regions = prompt_regions(prompt)
                 metadata["max_observed_prompt_bytes"] = max(
@@ -2644,7 +2721,7 @@ def run(args: argparse.Namespace) -> int:
                     final_reply = reply
                     enforce_usage(reply, args)
                     record({"type": "model", "call": metadata["model_calls"],
-                            "prompt_hash": prompt_hash, "prompt_bytes": len(prompt_bytes),
+                            "prompt_hash": reply.prompt_hash, "prompt_bytes": len(prompt_bytes),
                             "legacy_prompt_bytes": len(prompt_bytes),
                             **regions,
                             "raw_output": reply.text, "usage": reply.usage,
@@ -2681,7 +2758,8 @@ def run(args: argparse.Namespace) -> int:
                                     current_reply.text, args.no_recruit_macro)
                                 result = query_preview_batch(
                                     exchange, preview_candidates, int(state.get("state_revision", 0)))
-                                rendered = compact_batch_preview(result)
+                                rendered = compact_batch_preview(
+                                    result, int(state.get("state_revision", 0)))
                                 record({"type": "batch_preview", "tool": tool,
                                         "candidate_count": len(preview_candidates),
                                         "result_bytes": len(rendered.encode()),
@@ -2731,7 +2809,8 @@ def run(args: argparse.Namespace) -> int:
                                 metadata["max_tool_calls_per_turn"] - tool_calls_this_turn,
                                 metadata["max_model_calls_per_turn"] - model_calls_this_turn,
                             )
-                            followup_bytes = len(followup_prompt.encode())
+                            delivered_followup = finalize_model_prompt(followup_prompt, state)
+                            followup_bytes = len(delivered_followup.encode())
                             if followup_bytes > args.max_prompt_bytes:
                                 raise RuntimeError("model_prompt_error: tool results exceed max_prompt_bytes")
                             metadata["max_observed_prompt_bytes"] = max(
@@ -2745,7 +2824,7 @@ def run(args: argparse.Namespace) -> int:
                             enforce_usage(current_reply, args)
                             record({"type": "tool_followup", "tool": tool,
                                     "call": metadata["model_calls"],
-                                    "prompt_hash": hashlib.sha256(followup_prompt.encode()).hexdigest(),
+                                    "prompt_hash": current_reply.prompt_hash,
                                     "prompt_bytes": followup_bytes,
                                     "raw_output": current_reply.text, "usage": current_reply.usage})
                             if current_reply.usage is None:
@@ -2767,7 +2846,7 @@ def run(args: argparse.Namespace) -> int:
                         final_reply = repaired
                         enforce_usage(repaired, args)
                         record({"type": "repair", "call": metadata["model_calls"],
-                                "prompt_hash": hashlib.sha256(repair_prompt.encode()).hexdigest(),
+                                "prompt_hash": repaired.prompt_hash,
                                 "raw_output": repaired.text, "usage": repaired.usage,
                                 "validation_error": str(first)})
                         if repaired.usage is None:
@@ -2846,8 +2925,8 @@ def run(args: argparse.Namespace) -> int:
                                     record({"type": "draft_review", "call": metadata["model_calls"],
                                             "review_id": active_review_id,
                                             "original_candidate_digest": original_digest,
-                                            "prompt_hash": hashlib.sha256(review_prompt.encode()).hexdigest(),
-                                            "prompt_bytes": len(review_prompt.encode()),
+                                            "prompt_hash": reviewed.prompt_hash,
+                                            "prompt_bytes": len(finalize_model_prompt(review_prompt, state).encode()),
                                             "raw_output": reviewed.text, "body": draft_preview,
                                             "handoff_audit": audit})
                                     try:
@@ -2869,8 +2948,8 @@ def run(args: argparse.Namespace) -> int:
                                         final_reply = repaired_review
                                         enforce_usage(repaired_review, args)
                                         record({"type": "draft_review_repair", "call": metadata["model_calls"],
-                                                "prompt_hash": hashlib.sha256(repair_prompt.encode()).hexdigest(),
-                                                "prompt_bytes": len(repair_prompt.encode()),
+                                                "prompt_hash": repaired_review.prompt_hash,
+                                                "prompt_bytes": len(finalize_model_prompt(repair_prompt, state).encode()),
                                                 "raw_output": repaired_review.text,
                                                 "validation_error": str(review_validation_error)})
                                         revised_orders = validate_model_orders(repaired_review.text)
@@ -2989,7 +3068,7 @@ def run(args: argparse.Namespace) -> int:
                             enforce_usage(repaired, args)
                             record({"type": "action_repair", "call": metadata["model_calls"],
                                     "attempt": model_calls_this_turn,
-                                    "prompt_hash": hashlib.sha256(repair_prompt.encode()).hexdigest(),
+                                    "prompt_hash": repaired.prompt_hash,
                                     "raw_output": repaired.text, "usage": repaired.usage,
                                     "engine_error": validation})
                             decoded_repair = json.loads(repaired.text)

@@ -233,6 +233,14 @@ decision annotations are audit/bookkeeping data. A deliberate hold that affects
 execution must be represented in the `FinishWithGreedy` action's `holds` list,
 whose entries are `{unit_id, reason}` objects.
 
+Prompt-facing facts must keep live observations separate from read-only
+forecasts. Label candidate results `SIMULATION — NOT EXECUTED`, and place one
+final live-state reminder after appended tool/review/repair context. It must be
+derived from the latest engine observation and include revision, controlled side,
+both gold totals, both unit/HP totals, friendly IDs, and recruiter IDs/HP/positions.
+Queries and previews do not mutate the board; a replacement batch starts from the
+live revision, while a rolled-back batch leaves it unchanged.
+
 `RecruitBatch` is driver-assisted and may recruit beyond the initially empty
 castle spaces by vacating eligible occupants and reusing the freed spaces. The
 actual result is bounded by legal capacity and gold, and the positional cost of
@@ -241,6 +249,12 @@ tenths of HP (`24` = 2.4 HP); compact probabilities are basis points (`6400` =
 64%); direct maximum-damage fields remain whole HP. Preserve these numeric
 payloads and the stable `tactics-v1` rule IDs when changing prompt wording or
 validation.
+
+Resistance modifiers are signed incoming-damage percentages: positive is
+vulnerability and increases damage, negative is resistance and reduces damage,
+and zero is unchanged. Render readable `TYPE` descriptions, retain raw fields
+for diagnostic/archive output, and report missing values as unknown. A positive
+`+40` therefore means 40% more incoming damage; `-60` means 60% less.
 
 Run the real-driver player-contract regressions with:
 

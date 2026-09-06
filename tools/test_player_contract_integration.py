@@ -48,6 +48,121 @@ def run_client(root, response, max_turns=1):
 
 @unittest.skipUnless(DRIVER.is_file(), "build greedy_driver before running real-driver tests")
 class PlayerContractIntegrationTests(unittest.TestCase):
+    def _driver(self, *extra):
+        return subprocess.Popen(
+            [str(DRIVER), "--scenario", "big_battle_6", "--faction0", "undead",
+             "--faction1", "undead", "--gold", "300", "--seed", "9211",
+             "--llm-side", "0", *extra],
+            cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True)
+
+    @staticmethod
+    def _send(process, value):
+        process.stdin.write(json.dumps(value) + "\n")
+        process.stdin.flush()
+
+    @staticmethod
+    def _until(process, kind):
+        records = []
+        while True:
+            line = process.stdout.readline()
+            if not line:
+                raise AssertionError("driver EOF while waiting for " + kind)
+            record = json.loads(line)
+            records.append(record)
+            if record.get("type") == kind:
+                return record, records
+
+    def test_real_preview_recruitment_is_read_only_and_replacement_is_submitted(self):
+        """A real driver preview may differ from the only batch that commits."""
+        process = self._driver("--max-turns", "1")
+        try:
+            initial, _ = self._until(process, "state")
+            revision = initial["state_revision"]
+            candidates = [
+                [{"action": "RecruitBatch", "def_id": "Skeleton", "count": 1},
+                 {"action": "EndTurn"}],
+                [{"action": "RecruitBatch", "def_id": "Skeleton", "count": 2},
+                 {"action": "EndTurn"}],
+            ]
+            query = {"action": "Query", "what": "preview_batch",
+                     "state_revision": revision, "phase": "final",
+                     "mode": "forecast", "candidates": candidates}
+            self._send(process, query)
+            first, _ = self._until(process, "status")
+            self.assertTrue(first["ok"], first)
+            body = first["body"]
+            self.assertFalse(body["sampling"])
+            self.assertEqual(body["coverage"]["forecast"], "conditional_pre_finish")
+            self.assertEqual([c["summary"]["gold_after"] for c in body["candidates"]], [285, 270])
+            self.assertEqual([c["summary"]["units_after"] for c in body["candidates"]], [3, 4])
+            self.assertEqual(first["state_revision"], revision)
+
+            # Repeat the read-only query: no preview branch may alter revision,
+            # gold, or the authoritative roster.
+            self._send(process, query)
+            repeated, _ = self._until(process, "status")
+            self.assertTrue(repeated["ok"], repeated)
+            self.assertEqual(repeated["state_revision"], revision)
+            self.assertEqual(repeated["body"], body)
+
+            replacement = [{"action": "RecruitBatch", "def_id": "Skeleton", "count": 2},
+                           {"action": "EndTurn"}]
+            self._send(process, replacement)
+            terminal, records = self._until(process, "game_end")
+            self.assertEqual(terminal["reason"], "max_turns")
+            events = [event for record in records for event in record.get("events", [])]
+            recruits = [event for event in events if event.get("kind") == "recruit"]
+            self.assertEqual(len(recruits), 2)
+            self.assertEqual({event["unit"] for event in recruits}, {3, 4})
+            self.assertFalse(any(event.get("unit") == 5 for event in recruits))
+            self.assertEqual(sum(event.get("kind") == "vacate" for event in events), 0)
+        finally:
+            if process.poll() is None:
+                process.terminate()
+            process.wait(timeout=5)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                stream.close()
+
+    def test_sampled_continuation_does_not_mutate_state_before_standalone_resignation(self):
+        """A sampled continuation is evidence only; Resign remains immediate."""
+        process = self._driver("--max-turns", "50", "--incremental-turns")
+        try:
+            initial, _ = self._until(process, "state")
+            revision = initial["state_revision"]
+            sampled = {"action": "Query", "what": "preview_batch",
+                       "state_revision": revision, "phase": "final",
+                       "mode": "bounded_rollout",
+                       "candidates": [[{"action": "EndTurn"}]]}
+            self._send(process, sampled)
+            preview, preview_records = self._until(process, "status")
+            self.assertTrue(preview["ok"], preview)
+            body = preview["body"]
+            self.assertTrue(body["sampling"])
+            self.assertEqual(body["coverage"]["forecast"], "bounded_rollout")
+            candidate = body["candidates"][0]
+            self.assertEqual(candidate["observation_stage"], "post_opponent_response")
+            self.assertTrue(candidate["post_sweep"]["sampling"])
+            # Query output contains hypothetical post-sweep facts, but no
+            # events/state record was committed and the revision is unchanged.
+            self.assertEqual(preview["state_revision"], revision)
+            self.assertFalse(any(record.get("type") == "events" for record in preview_records))
+
+            self._send(process, [{"action": "Resign"}])
+            terminal, records = self._until(process, "game_end")
+            self.assertEqual(terminal["reason"], "resignation")
+            self.assertEqual(terminal["winner"], 1)
+            self.assertEqual(terminal["resigned_side"], 0)
+            self.assertEqual(terminal["side_turns"], 0)
+            self.assertEqual(terminal["state_revision"], revision)
+            self.assertFalse(any(record.get("type") == "events" for record in records))
+        finally:
+            if process.poll() is None:
+                process.terminate()
+            process.wait(timeout=5)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                stream.close()
+
     def test_recruitment_validation_and_selective_finish_change_real_state(self):
         process = subprocess.Popen(
             [str(DRIVER), "--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
@@ -163,13 +278,18 @@ class PlayerContractIntegrationTests(unittest.TestCase):
                     self.assertEqual(zlib.decompress(stored["prompt_blob"]).decode(), r["prompt"])
                     self.assertEqual(zlib.decompress(stored["response_blob"]).decode(), r["raw_output"])
                     self.assertEqual(stored["prompt_hash"], hashlib.sha256(r["prompt"].encode()).hexdigest())
+                    self.assertEqual(stored["response_hash"], hashlib.sha256(r["raw_output"].encode()).hexdigest())
+                    self.assertEqual(stored["prompt_bytes"], len(r["prompt"].encode()))
+                    self.assertEqual(stored["response_bytes"], len(r["raw_output"].encode()))
+                    self.assertEqual(stored["annotation_status"], r["decision_annotation"]["status"])
                     self.assertEqual(json.loads(zlib.decompress(stored["reasoning_blob"])), r["decision_annotation"])
                 for r in (r for r in records if r["type"] == "forwarded_orders"):
                     batch = conn.execute("SELECT * FROM action_batches WHERE request_id=?", (r["request_id"],)).fetchone()
                     self.assertEqual(batch["before_revision"], r["state_revision"])
                     self.assertEqual(json.loads(batch["submitted_orders_json"]), r["orders"])
                     self.assertEqual([a[0] for a in conn.execute("SELECT request_id FROM actions WHERE batch_id=?", (batch["batch_id"],))], [r["request_id"]])
-                tables = ("model_requests", "action_batches", "actions")
+                tables = ("games", "game_players", "side_turns", "model_requests",
+                          "action_batches", "actions")
                 before = {t: conn.execute(f"SELECT * FROM {t} ORDER BY rowid").fetchall() for t in tables}
                 for _ in range(2):
                     import_game(conn, log, game_id=game_id)

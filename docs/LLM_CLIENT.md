@@ -330,8 +330,11 @@ draft review, the client may request `mode=bounded_rollout`: that isolated query
 uses a fixed evaluation seed, applies the candidate's exact finish, and runs at
 most one driver-greedy opponent response. It reports post-finish and
 post-opponent snapshots as an illustration, with policy, seed, sampling, and
-coverage labels. It never mutates live state or claims that one sampled branch is
-a probability or a best move. The model may also inspect one friendly unit at a time:
+coverage labels. Treat every such result as `SIMULATION — NOT EXECUTED`: its
+roster, gold, casualties, villages, and winner are hypothetical and do not
+replace the live observation. It never mutates live state or claims that one
+sampled branch is a probability or a best move. Queries themselves execute no
+actions. The model may also inspect one friendly unit at a time:
 
 ```json
 {"tool":"inspect_unit","unit_id":12}
@@ -394,6 +397,13 @@ On turns where a submitted draft leaves the recruiter in projected lethal
 danger, the client sends one read-only draft result back to the model. The
 model may repeat the draft to confirm it or return a revised final array; the
 client never refuses a confirmed dangerous batch.
+Immediately before requesting final actions, the prompt includes one
+authoritative `LIVE_STATE` reminder derived from the latest engine observation.
+Use its revision, controlled side, both sides' gold and unit/HP totals, and the
+friendly unit and recruiter IDs/HP/positions. A preview or model text cannot
+replace these facts. A revised batch starts from this live revision; a rolled-back
+batch leaves it unchanged. After an accepted partial batch, the reminder is
+refreshed from the new live observation.
 Before ending a turn, the model is strongly encouraged to exhaust legal
 recruitment: move non-recruiters off castle hexes when needed, recruit into the
 resulting legal placements, and repeat until gold, definitions, or castle
@@ -456,6 +466,13 @@ The current position and reachable positions therefore map directly to `Move` an
 `affordable`, plus `batch_macro_enabled`. These engine responses are authoritative:
 the client does not reconstruct movement, combat, recruitment, or placement
 legality. Additional engine query failures are typed status failures.
+
+`TYPE` resistance descriptions use signed incoming-damage modifiers. Positive
+values are vulnerabilities (`arcane: takes 40% more damage`); negative values
+are resistances (`cold: takes 60% less damage`); zero means unchanged damage.
+Missing resistance data is unknown. These descriptions are the base modifier
+before other combat effects, and engine forecasts remain authoritative. Raw
+signed fields remain available in diagnostic output and archives.
 
 ## Turn ownership, outcomes, and failures
 
