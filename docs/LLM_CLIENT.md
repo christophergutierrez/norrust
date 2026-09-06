@@ -42,6 +42,31 @@ every accepted batch.
 Checkpoint branches may choose a new `--max-turns` cap for a controlled probe as
 long as the cap is not below the checkpoint's completed side-turn count.
 
+To continue an interrupted match, use the latest checkpoint directly and write a
+new audit log. This preserves the original log and its checkpoint archive:
+
+```bash
+python -m tools.llm_client \
+  --driver norrust_core/target/release/greedy_driver \
+  --model-command 'YOUR_MODEL_COMMAND' \
+  --scenario big_battle_6 --faction0 undead --faction1 undead \
+  --gold 300 --seed 2038 --llm-side 0 --max-turns 50 \
+  --incremental-turns \
+  --resume-checkpoint /path/to/match.ckpt/LATEST_CHECKPOINT.json \
+  --log /path/to/resumed-match.ndjson
+```
+
+Keep the scenario, factions, gold, seed, side, and turn format identical to the
+interrupted run. The checkpoint restores authoritative engine state and the
+bounded client transcript; a new log is required for `--resume-checkpoint` and
+records the parent checkpoint. `--resume-log PATH` is available when continuing
+the same incomplete log in place, but a new branch is safer for experiments.
+The client rejects a resume whose turn cap is below the checkpoint's completed
+side-turn count or whose match identity does not match. Luna also resumes its
+match-owned native session when the session sidecar is available; generic model
+commands receive the restored state and bounded transcript through the new
+backend process.
+
 Responses may include an optional full `agenda` replacement with up to eight
 tasks (`id`, `goal`, `units`, `status`) and deliberate `holds`. Agenda data is
 bookkeeping and never creates engine actions. Malformed agenda data is logged and
