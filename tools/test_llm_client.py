@@ -472,6 +472,12 @@ class ClientValidationTests(unittest.TestCase):
         self.assertFalse(lethal)
         self.assertIn("danger_after=False", rendered)
 
+    def test_missing_recruiter_threats_are_unknown_not_safe(self):
+        rendered, lethal = compact_draft_review({"candidates": [{"valid": True}]}, False)
+        self.assertIsNone(lethal)
+        self.assertIn("danger_after=unknown", rendered)
+        self.assertIn("DANGER_AFTER_UNAVAILABLE", rendered)
+
     def test_compact_batch_preview_uses_recruiter_aggregate_not_origins(self):
         rendered = compact_batch_preview({"sampling": False, "candidates": [{
             "valid": True,

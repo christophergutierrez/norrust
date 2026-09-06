@@ -1332,20 +1332,21 @@ def compact_draft_review(preview: dict[str, Any], danger_before: bool,
                          coverage: Optional[dict[str, Any]] = None,
                          orders: Optional[list[dict[str, Any]]] = None,
                          draft_index: int = 0,
-                         audit: Optional[dict[str, Any]] = None) -> tuple[str, bool]:
+                         audit: Optional[dict[str, Any]] = None) -> tuple[str, Optional[bool]]:
     candidates = preview.get("candidates", [{}])
     candidate = candidates[draft_index] if draft_index < len(candidates) else {}
-    threats = candidate.get("recruiter_threats", {}) if isinstance(candidate, dict) else {}
-    recruiters = threats.get("recruiters", []) if isinstance(threats, dict) else []
-    lethal_after = any(
+    threats = candidate.get("recruiter_threats") if isinstance(candidate, dict) else None
+    threats_available = isinstance(threats, dict)
+    recruiters = threats.get("recruiters", []) if threats_available else []
+    lethal_after: Optional[bool] = None if not threats_available else any(
         isinstance(recruiter, dict) and (
-            isinstance(recruiter.get("lethal_attackers_needed"), int) and
-            recruiter.get("lethal_attackers_needed") > 0 or
-            isinstance(recruiter.get("open_lethal_attackers_needed"), int) and
-            recruiter.get("open_lethal_attackers_needed") > 0)
-        for recruiter in recruiters
-    )
-    lines = ["DRAFT_RESULT danger_before=%s danger_after=%s" % (danger_before, lethal_after)]
+            _positive_lethal(recruiter.get("lethal_attackers_needed")) or
+            _positive_lethal(recruiter.get("open_lethal_attackers_needed")))
+        for recruiter in recruiters)
+    danger_text = "unknown" if lethal_after is None else str(lethal_after)
+    lines = ["DRAFT_RESULT danger_before=%s danger_after=%s" % (danger_before, danger_text)]
+    if lethal_after is None:
+        lines.append("DANGER_AFTER_UNAVAILABLE reason=recruiter_threats_missing")
     if audit is not None:
         lines.append("HANDOFF idle=%s held=%s delegated=%s actionable=%s affordable=%s placements=%s gold=%s reasons=%s" % (
             ",".join("U%s" % value for value in audit.get("healthy_idle", [])) or "-",
@@ -2954,15 +2955,15 @@ def run(args: argparse.Namespace) -> int:
                             exchange, [orders], int(state.get("state_revision", 0)),
                             phase="final" if finish_kind_for_orders(orders) is not None else "partial")
                         candidate_metrics = final_preview.get("candidates", [{}])[0]
-                        final_threats = candidate_metrics.get("recruiter_threats") or {}
-                        lethal_after = any(
+                        final_threats = candidate_metrics.get("recruiter_threats")
+                        lethal_after = None if not isinstance(final_threats, dict) else any(
                             isinstance(recruiter, dict) and
                             (_positive_lethal(recruiter.get("lethal_attackers_needed")) or
                              _positive_lethal(recruiter.get("open_lethal_attackers_needed")))
                             for recruiter in final_threats.get("recruiters", []))
                         recruitment_left = candidate_metrics.get("summary", {}).get(
                             "affordable_recruitment_remaining") is True
-                        metadata["turns_with_lethal_danger_after"] += int(lethal_after)
+                        metadata["turns_with_lethal_danger_after"] += int(lethal_after is True)
                         metadata["turns_with_affordable_recruitment_left"] += int(recruitment_left)
                         record({"type": "final_batch_preview", "phase": final_preview.get("phase", "unknown"), "orders": orders,
                                 "lethal_danger_before": danger_before,

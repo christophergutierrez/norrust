@@ -2591,7 +2591,14 @@ fn interactive_protocol_game(c: &Config) {
                             let before_units = state.units.len();
                             let previews = candidates.iter().map(|candidate| {
                             let orders = candidate.as_array().expect("validated candidate");
-                            let execution = execute_model_batch(state.clone(), next_id, orders, c.llm_side, &factions, &units, c.disable_recruit_batch, bounded_rollout);
+                            // A bounded comparison is an isolated illustration. Reset the
+                            // RNG before executing the candidate itself, not only before the
+                            // opponent response, so live RNG state cannot influence the branch.
+                            let mut preview_source = state.clone();
+                            if bounded_rollout {
+                                preview_source.rng = Rng::new(0x5eed_5eed_5eed_5eed);
+                            }
+                            let execution = execute_model_batch(preview_source, next_id, orders, c.llm_side, &factions, &units, c.disable_recruit_batch, bounded_rollout);
                             let valid = execution.preview_error.is_none() && execution.results.len() == orders.len() && execution.results.iter().all(|result| result.get("ok") == Some(&Value::Bool(true)));
                             let mut recruiter_hp: Vec<Value> = execution.state.units.iter().filter_map(|(id, unit)| {
                                 (unit.faction == c.llm_side && unit.can_recruit).then(|| json!({"unit_id":id,"hp":unit.hp}))
