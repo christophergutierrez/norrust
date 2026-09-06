@@ -141,26 +141,26 @@ parser edge cases, and historical hash preservation.
 
 ## Phase 2 — Three parallel Luna games and evidence review
 
-- [ ] Read `docs/LLM_CLIENT.md`; build the release greedy_driver from the reviewed
+- [x] Read `docs/LLM_CLIENT.md`; build the release greedy_driver from the reviewed
   clean commit. Record the source commit and driver path in launch manifests.
-- [ ] Start exactly three parallel Luna subagents, each supervising one isolated
+- [x] Start exactly three parallel Luna subagents, each supervising one isolated
   native Luna/high game using `tools.codex_backend`. Seeds 2001, 2002, 2003;
   big_battle_6; Undead vs Undead; 300 gold; model side 0; single-batch turns;
   max 50 completed side-turns (25 turns per player); resignation enabled.
   Use the same settings as the earlier three-game cohort where possible.
-- [ ] Separate each log, checkpoint directory, session sidecar, request journal,
+- [x] Separate each log, checkpoint directory, session sidecar, request journal,
   prompt/result archive, stdout/stderr, and launch/exit record. Preserve the full
   canonical prompt. No replacement runs silently substituted for failed games.
-- [ ] Supervise all three to terminal completion or a documented concrete failure.
+- [x] Supervise all three to terminal completion or a documented concrete failure.
   Do not count cap results, resignations, or infrastructure failures as wins.
-- [ ] Import completed games into a cohort SQLite catalog, check integrity, and
+- [x] Import completed games into a cohort SQLite catalog, check integrity, and
   inspect the catalog before raw archives. Verify annotation and payload coverage
   against source logs. Requested model/effort are separate from runtime evidence.
-- [ ] Review specific decisions using their stated rule, expected effect and risk,
+- [x] Review specific decisions using their stated rule, expected effect and risk,
   and engine observations. Distinguish unsupported belief, questionable tradeoff,
   missing explanation, and unfavorable sampled outcome. Do not claim that a rule
   citation proves compliance or that these three seeds establish causal improvement.
-- [ ] Write and commit `docs/experiments/decision-annotations-evaluation.md` with
+- [x] Write and commit `docs/experiments/decision-annotations-evaluation.md` with
   a performance table: seed, outcome, completed model turns, model calls, wall
   time, annotation coverage, and an evidence-backed finding per game. Include
   source commit, evidence paths, missing data, and comparison limits. Raw archives
@@ -170,3 +170,15 @@ The plan is complete only when the reviewed implementation is committed, all
 three attempts are accounted for, and the evidence-based evaluation is committed
 and reported. A model's failure to supply annotations is a measured result, not
 permission to manufacture explanations or keep rerunning until coverage improves.
+
+## Completion record
+
+- Plan commit: `38c8c7c`. Reviewed implementation: `7eb6c4e`.
+- Cohort: `tmp/decision-annotations-20260906T190809Z/`; all three native
+  Luna/high attempts ended in gameplay-valid resignations, with no replacements.
+- 84 exact prompt/response pairs, 26/26 valid submitted annotations, zero failed
+  requests or rejected batches. Catalog integrity and repeated import checks pass.
+- Results and concrete decision evidence are in
+  [decision-annotations-evaluation.md](../experiments/decision-annotations-evaluation.md).
+  Findings include a pre-existing compact forecast-unit ambiguity; no tactical
+  changes were made during the experiment.
