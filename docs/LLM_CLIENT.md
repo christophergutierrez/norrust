@@ -196,7 +196,9 @@ or one read-only preview request containing one or two complete candidate arrays
 ```
 
 Each candidate follows the same action-batch rules as a final response. The
-preview does not submit actions or sample combat. The model may also inspect one
+preview does not submit actions or sample combat. Its ordinary forecast is
+explicitly `conditional_pre_finish`; delegated sweep and post-sweep effects are
+unavailable until a bounded rollout mode is requested. The model may also inspect one
 friendly unit at a time:
 
 ```json

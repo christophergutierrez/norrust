@@ -1165,17 +1165,56 @@ def handoff_audit(state: dict[str, Any], orders: list[dict[str, Any]],
     options = recruitment.get("options", []) if isinstance(recruitment, dict) else []
     affordable = sorted(item.get("def_id") for item in options
                         if isinstance(item, dict) and item.get("affordable") is True)
+    exposure = state.get("tactical_surface", {}).get("exposure", {})
+    endangered = rescue_priorities(exposure if isinstance(exposure, dict) else {})
+    planned = planned_attackers(orders)
+    planned_moves = {order.get("unit_id") for order in orders
+                     if isinstance(order, dict) and order.get("action") in {"Move", "Advance"}
+                     and isinstance(order.get("unit_id"), int)}
     placements = recruitment.get("placement_hexes", []) if isinstance(recruitment, dict) else []
     reasons = []
     if healthy_idle and healthy_idle <= held and not delegated and (actionable_idle or placements):
         reasons.append("all_healthy_idle_held")
     if finish_kind_for_orders(orders) is not None and affordable and placements:
         reasons.append("affordable_recruitment")
+    if endangered and not any(item["unit_id"] in planned or item["unit_id"] in planned_moves
+                              for item in endangered):
+        reasons.append("endangered_wounded_unresolved")
     return {"healthy_idle": sorted(healthy_idle), "held": sorted(held),
             "delegated": sorted(delegated), "actionable_idle": sorted(actionable_idle),
             "affordable_recruitment": affordable, "placement_count": len(placements),
             "gold": recruitment.get("gold") if isinstance(recruitment, dict) else None,
+            "rescue_priorities": endangered,
             "trigger_reasons": reasons}
+
+
+def rescue_priorities(exposure: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return a deterministic, bounded rescue briefing from engine facts."""
+    candidates = []
+    for unit in exposure.get("units", []):
+        if not isinstance(unit, dict) or not isinstance(unit.get("unit_id"), int):
+            continue
+        direct = unit.get("distinct_attacker_count") or 0
+        open_attackers = unit.get("open_distinct_attacker_count") or 0
+        hp, max_hp = unit.get("hp"), unit.get("max_hp")
+        wounded = isinstance(hp, int) and isinstance(max_hp, int) and hp * 3 <= max_hp * 2
+        if not (direct or open_attackers) or not wounded:
+            continue
+        candidates.append({
+            "unit_id": unit["unit_id"], "hp": hp, "max_hp": max_hp,
+            "can_recruit": bool(unit.get("can_recruit")),
+            "direct_attackers": direct, "direct_max_damage": unit.get("max_incoming_sum"),
+            "direct_lethal": unit.get("lethal_attackers_needed"),
+            "open_attackers": open_attackers, "open_max_damage": unit.get("open_max_incoming_sum"),
+            "open_lethal": unit.get("open_lethal_attackers_needed"),
+        })
+    candidates.sort(key=lambda item: (
+        not item["can_recruit"],
+        item["direct_lethal"] is None,
+        -(item["hp"] if isinstance(item["hp"], int) else 0) /
+        max(1, item["max_hp"] if isinstance(item["max_hp"], int) else 1),
+        item["unit_id"]))
+    return candidates[:3]
 
 
 def replay_accepted_progress(records: list[dict[str, Any]], faction: int) -> tuple[set[int], set[int]]:
@@ -1284,6 +1323,15 @@ def compact_draft_review(preview: dict[str, Any], danger_before: bool,
             ",".join(audit.get("affordable_recruitment", [])) or "-",
             audit.get("placement_count", "?"), audit.get("gold", "?"),
             ",".join(audit.get("trigger_reasons", [])) or "-"))
+        priorities = audit.get("rescue_priorities", [])
+        if priorities:
+            lines.append("RESCUE priorities=" + ";".join(
+                "U%s hp=%s/%s direct=%s max=%s lethal=%s open=%s open_max=%s open_lethal=%s" % (
+                    item.get("unit_id", "?"), item.get("hp", "?"), item.get("max_hp", "?"),
+                    item.get("direct_attackers", "?"), item.get("direct_max_damage", "?"),
+                    item.get("direct_lethal", "?"), item.get("open_attackers", "?"),
+                    item.get("open_max_damage", "?"), item.get("open_lethal", "?"))
+                for item in priorities if isinstance(item, dict)))
     for recruiter in recruiters:
         if not isinstance(recruiter, dict):
             continue
@@ -1444,6 +1492,8 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "focus_p=[p1,p2,p3] is the exact kill probability with the best compatible one-, two-, and three-attacker direct volleys; focus_e is their expected cumulative damage. "
         "OPEN_THREAT is a conservative bound that ignores unit blockers that may move or die before an attacker acts; it is not an executable opponent batch. "
         "EXPOSURE lines report the same facts for friendly units; direct is the occupied-board result and open is the blocker-removed bound. "
+        "When a DRAFT_RESULT includes RESCUE, treat it as a bounded priority list: recruiter first, then directly threatened wounded units. "
+        "Choose a legal retreat, healing move, intentional sacrifice, or explicit hold; threat counts are evidence, never a guarantee that a destination is safe. "
         "E income assumes current village ownership persists; E vacate lists legal off-castle destinations and is not a recommendation. "
         "Copy individual Recruit coordinates only from R `open`. You may instead request one read-only preview by returning "
         "{\"tool\":\"preview_batch\",\"candidates\":[[actions...]]}; provide at most two complete candidates, each ending EndTurn. "
@@ -1700,6 +1750,24 @@ def compact_strategic_briefing(state: dict[str, Any]) -> str:
     }
     lines = ["VILLAGES ours=%s enemy=%s neutral=%s" %
              (counts["ours"], counts["enemy"], counts["neutral"])]
+    surface = state.get("tactical_surface", {})
+    if isinstance(surface, dict):
+        forces = {item.get("side"): item for item in surface.get("force", [])
+                  if isinstance(item, dict)}
+        ours_force = forces.get(ours, {})
+        enemy_force = forces.get(1 - ours if isinstance(ours, int) else "enemy", {})
+        economy = surface.get("economy", {})
+        recruitment = surface.get("recruitment", {})
+        lines.append("ECONOMY own_units=%s/%s enemy_units=%s/%s own_hp=%s/%s enemy_hp=%s/%s gold=%s income=%s affordable=%s vacatable=%s" % (
+            ours_force.get("units", "?"), ours_force.get("recruiters", "?"),
+            enemy_force.get("units", "?"), enemy_force.get("recruiters", "?"),
+            ours_force.get("hp", "?"), ours_force.get("max_hp", "?"),
+            enemy_force.get("hp", "?"), enemy_force.get("max_hp", "?"),
+            recruitment.get("gold", economy.get("gold", "?")),
+            economy.get("next_village_income", "?"),
+            ",".join(item.get("def_id", "?") for item in recruitment.get("options", [])
+                     if isinstance(item, dict) and item.get("affordable")) or "-",
+            len(economy.get("vacatable_castles", []))))
     for tile in sorted(villages, key=lambda item: (item.get("row", 0), item.get("col", 0))):
         col, row = tile.get("col", "?"), tile.get("row", "?")
         occupant = by_hex.get((col, row), {}).get("id")
@@ -1863,6 +1931,8 @@ def run(args: argparse.Namespace) -> int:
     model_calls_this_turn = 0
     tool_calls_this_turn = 0
     handoff_review_used = False
+    active_review_id: Optional[str] = None
+    forced_finish = False
     intent_memory = ""
     pending_intent: Optional[str] = None
     agenda_memory: Optional[dict[str, Any]] = None
@@ -2141,8 +2211,12 @@ def run(args: argparse.Namespace) -> int:
                              "protected_unit_ids": line.get("protected_unit_ids", []),
                              "generated_event_counts": line.get("generated_event_counts", {}),
                              "model_aware": pending_finish_kind in {"explicit_done", "selective"},
+                             "forced_finish": forced_finish,
+                             "review_id": active_review_id,
                              "accepted": True})
                     pending_finish_kind = None
+                    active_review_id = None
+                    forced_finish = False
                 if failure is not None:
                     # A rejected batch cannot publish its client-only agenda.
                     pending_agenda = None
@@ -2301,6 +2375,8 @@ def run(args: argparse.Namespace) -> int:
                     model_calls_this_turn = 0
                     tool_calls_this_turn = 0
                     handoff_review_used = False
+                    active_review_id = None
+                    forced_finish = False
                     turn_progress_moved.clear()
                     turn_progress_attacked.clear()
                     if agenda_memory is not None:
@@ -2580,6 +2656,9 @@ def run(args: argparse.Namespace) -> int:
                 audit = handoff_audit(state, orders, coverage)
                 handoff_outcome = "not_triggered"
                 if not timeout_fallback and not handoff_review_used and draft_needs_preview(state, orders, danger_before, audit):
+                    active_review_id = uuid.uuid4().hex
+                    original_digest = hashlib.sha256(json.dumps(
+                        orders, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
                     handoff_outcome = "preview_only"
                     try:
                         preview_candidates = [[{"action": "EndTurn"}]]
@@ -2610,6 +2689,8 @@ def run(args: argparse.Namespace) -> int:
                                     reviewed = complete_model(review_prompt)
                                     enforce_usage(reviewed, args)
                                     record({"type": "draft_review", "call": metadata["model_calls"],
+                                            "review_id": active_review_id,
+                                            "original_candidate_digest": original_digest,
                                             "prompt_hash": hashlib.sha256(review_prompt.encode()).hexdigest(),
                                             "prompt_bytes": len(review_prompt.encode()),
                                             "raw_output": reviewed.text, "body": draft_preview,
@@ -2647,6 +2728,13 @@ def run(args: argparse.Namespace) -> int:
                                     else:
                                         metadata["draft_revisions"] += 1
                                         handoff_outcome = "revised"
+                                    revised_digest = hashlib.sha256(json.dumps(
+                                        revised_orders, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                                    record({"type": "draft_review_decision", "review_id": active_review_id,
+                                            "original_candidate_digest": original_digest,
+                                            "revised_candidate_digest": revised_digest,
+                                            "revision": int(revised_orders != draft_orders),
+                                            "outcome": handoff_outcome})
                                     orders = revised_orders
                                     if reviewed_intent is not None:
                                         turn_intent = reviewed_intent
@@ -2671,6 +2759,7 @@ def run(args: argparse.Namespace) -> int:
                         return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
                 if audit.get("trigger_reasons"):
                     record({"type": "handoff_review", "version": 1,
+                            "review_id": active_review_id,
                             "state_revision": state.get("state_revision"),
                             "side_turn": state.get("side_turns", state.get("turn")),
                             "candidate_digest": hashlib.sha256(json.dumps(
@@ -2706,6 +2795,7 @@ def run(args: argparse.Namespace) -> int:
                             # existing selective greedy safety finish.
                             orders = timeout_finish_orders(state, args.llm_side, agenda_memory)
                             metadata["partial_limit_finishes"] += 1
+                            forced_finish = True
                             record({"type": "partial_limit_finish", "orders": orders,
                                     "message": validation.get("error_message")})
                             validation = query_validate_batch(
@@ -2843,7 +2933,9 @@ def run(args: argparse.Namespace) -> int:
                          "batch_id": f"{metadata.get('conversation_id', 'match')}:batch:{batch_sequence}",
                          "request_sequence": request_sequence,
                          "prompt_hash": prompt_hash, "intent": turn_intent,
-                         "authored_finish_kind": pending_finish_kind})
+                         "authored_finish_kind": pending_finish_kind,
+                         "review_id": active_review_id,
+                         "forced_finish": forced_finish})
                 try:
                     proc.stdin.write(json.dumps(orders, separators=(",", ":")) + "\n")
                     proc.stdin.flush()

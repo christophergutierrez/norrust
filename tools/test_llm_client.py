@@ -418,6 +418,23 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual(audit["affordable_recruitment"], ["Skeleton"])
         self.assertEqual(audit["trigger_reasons"], ["all_healthy_idle_held", "affordable_recruitment"])
 
+    def test_rescue_priorities_bound_and_recruiter_first(self):
+        audit = llm_client.handoff_audit(
+            {"active_faction": 0, "units": [], "tactical_surface": {"recruitment": {},
+             "exposure": {"units": [
+                 {"unit_id": 9, "hp": 2, "max_hp": 10, "can_recruit": False,
+                  "distinct_attacker_count": 1, "max_incoming_sum": 8, "lethal_attackers_needed": 1},
+                 {"unit_id": 4, "hp": 3, "max_hp": 10, "can_recruit": True,
+                  "distinct_attacker_count": 1, "max_incoming_sum": 5, "lethal_attackers_needed": 2},
+                 {"unit_id": 8, "hp": 2, "max_hp": 10, "can_recruit": False,
+                  "distinct_attacker_count": 1, "max_incoming_sum": 8, "lethal_attackers_needed": 1},
+                 {"unit_id": 7, "hp": 1, "max_hp": 10, "can_recruit": False,
+                  "distinct_attacker_count": 1, "max_incoming_sum": 8, "lethal_attackers_needed": 1},
+             ]}}},
+            [{"action": "EndTurn"}], {"available": set()})
+        self.assertEqual([item["unit_id"] for item in audit["rescue_priorities"]], [4, 7, 8])
+        self.assertIn("endangered_wounded_unresolved", audit["trigger_reasons"])
+
     def test_planned_attackers_counts_attack_and_all_engage_steps(self):
         self.assertEqual(
             llm_client.planned_attackers([

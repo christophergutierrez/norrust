@@ -1,5 +1,13 @@
 # Game history
 
+Each imported side turn keeps its start/end revisions and compressed state blobs.
+Model requests and forwarded action batches carry `side_turn_id` when the log
+contains a provable state revision, side-turn, or stable review identity. Missing
+linkage remains NULL; imports never attach the nth review or snapshot by position.
+Review IDs, candidate digests, forced partial-limit finishes, and review outcomes
+remain in the archived log/metrics JSON for ad hoc analysis and training-data
+selection.
+
 Match logs are append-only evidence. Import them after a game into a SQLite
 catalog; gameplay does not depend on the catalog being available.
 
