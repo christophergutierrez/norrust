@@ -33,6 +33,7 @@ import urllib.request
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.join(SCRIPT_DIR, "..")
+PROMPTS_PATH = os.path.join(PROJECT_ROOT, "data", "asset_prompts.json")
 DATA_UNITS_DIR = os.path.join(PROJECT_ROOT, "data", "units")
 SPRITES_RAW_DIR = os.path.join(PROJECT_ROOT, "sprites_raw")
 
@@ -621,6 +622,22 @@ UNITS = {
         "plague staff raised creating a barrier of sickly green necromantic energy",
     ),
 }
+
+def load_prompt_overrides():
+    """Load contributor edits without modifying this generator's source."""
+    try:
+        with open(PROMPTS_PATH, encoding="utf-8") as handle:
+            overrides = json.load(handle)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return
+    for unit, values in overrides.items():
+        if unit not in UNITS or not isinstance(values, dict):
+            continue
+        current = UNITS[unit]
+        UNITS[unit] = (values.get("description", current[0]), current[1], current[2],
+                       values.get("defend", current[3]))
+
+load_prompt_overrides()
 
 
 def load_image_base64(path):

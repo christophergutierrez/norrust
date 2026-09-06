@@ -32,6 +32,7 @@ from PIL import Image, ImageTk
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.join(SCRIPT_DIR, "..")
 DATA_UNITS_DIR = os.path.join(PROJECT_ROOT, "data", "units")
+PROMPTS_PATH = os.path.join(PROJECT_ROOT, "data", "asset_prompts.json")
 
 # Import unit definitions and processing from generate_sprites
 sys.path.insert(0, SCRIPT_DIR)
@@ -233,11 +234,7 @@ def rebuild_prompt_from_edit(edited_text, unit_path, pose, has_reference=False):
 # ── Save prompt back to generate_sprites.py ─────────────────────────────
 
 def save_prompt_to_source(unit_path, new_desc=None, new_defend=None):
-    """Update the UNITS entry in generate_sprites.py for a unit.
-    Updates desc and/or defend_desc, both on disk and in memory.
-    Returns (success, message).
-    """
-    src_path = os.path.join(SCRIPT_DIR, "generate_sprites.py")
+    """Persist only the selected unit's prompt fields as structured data."""
     entry = SPRITE_UNITS.get(unit_path)
     if entry is None:
         return False, "unit not in UNITS dict"
@@ -245,31 +242,21 @@ def save_prompt_to_source(unit_path, new_desc=None, new_defend=None):
     old_desc, melee, ranged, old_defend = entry
     changed = False
 
-    with open(src_path, "r") as f:
-        content = f.read()
-
+    try:
+        with open(PROMPTS_PATH, encoding="utf-8") as handle:
+            overrides = json.load(handle)
+    except (FileNotFoundError, json.JSONDecodeError):
+        overrides = {}
+    values = dict(overrides.get(unit_path, {}))
     if new_desc and new_desc != old_desc:
-        # Use repr-style quoting to match Python source
-        old_quoted = json.dumps(old_desc)
-        new_quoted = json.dumps(new_desc)
-        if old_quoted in content:
-            content = content.replace(old_quoted, new_quoted, 1)
-            changed = True
-        else:
-            return False, f"could not find desc in source"
-
+        values["description"] = new_desc; changed = True
     if new_defend and new_defend != old_defend:
-        old_quoted = json.dumps(old_defend)
-        new_quoted = json.dumps(new_defend)
-        if old_quoted in content:
-            content = content.replace(old_quoted, new_quoted, 1)
-            changed = True
-        else:
-            return False, f"could not find defend_desc in source"
+        values["defend"] = new_defend; changed = True
 
     if changed:
-        with open(src_path, "w") as f:
-            f.write(content)
+        with open(PROMPTS_PATH, "w", encoding="utf-8") as handle:
+            json.dump({**overrides, unit_path: values}, handle, indent=2, sort_keys=True)
+            handle.write("\n")
         # Update in-memory dict
         cur = SPRITE_UNITS[unit_path]
         SPRITE_UNITS[unit_path] = (
