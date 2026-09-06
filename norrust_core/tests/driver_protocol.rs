@@ -37,6 +37,90 @@ fn run_driver_with_env(args: &[&str], input: &str, env: &[(&str, &str)]) -> Vec<
 }
 
 #[test]
+fn resignation_concedes_either_side_without_advancing_or_running_opponent() {
+    for side in ["0", "1"] {
+        let lines = run_driver(
+            &["--scenario", "big_battle_6", "--llm-side", side, "--max-turns", "50"],
+            "[{\"action\":\"Resign\"}]\n[{\"action\":\"EndTurn\"}]\n",
+        );
+        let boundary = lines.iter().rposition(|line| line["type"] == "state").unwrap();
+        let after = &lines[boundary + 1..];
+        assert_eq!(after.len(), 2, "only acknowledgement and terminal may follow resignation");
+        assert_eq!(after[0]["ok"], true);
+        let terminal = &after[1];
+        assert_eq!(terminal["type"], "game_end");
+        assert_eq!(terminal["reason"], "resignation");
+        let side: u8 = side.parse().unwrap();
+        assert_eq!(terminal["winner"], 1 - side);
+        assert_eq!(terminal["resigned_side"], side);
+        assert_eq!(terminal["side_turns"], side);
+        assert_eq!(terminal["state_revision"], lines[boundary]["state_revision"]);
+    }
+}
+
+#[test]
+fn malformed_resignation_never_commits_other_orders() {
+    let lines = run_driver(
+        &["--scenario", "big_battle_6", "--max-turns", "50"],
+        r#"[{"action":"Resign","side":1}]
+[{"action":"RecruitBatch","def_id":"Skeleton","count":1},{"action":"Resign"}]
+[{"action":"Resign"},{"action":"EndTurn"}]
+[{"action":"Resign"},{"action":"Resign"}]
+[{"action":"Resign"}]
+"#,
+    );
+    let statuses: Vec<_> = lines.iter().filter(|line| line["type"] == "status").collect();
+    assert_eq!(statuses.len(), 5);
+    assert!(statuses[..4].iter().all(|line| line["ok"] == false));
+    assert_eq!(statuses[4]["ok"], true);
+    assert!(!lines.iter().any(|line| line["type"] == "events"));
+    assert_eq!(lines.last().unwrap()["state_revision"], 0);
+    assert_eq!(lines.last().unwrap()["side_turns"], 0);
+}
+
+#[test]
+fn resignation_validation_is_read_only_and_tactical_previews_reject_it() {
+    let lines = run_driver(
+        &["--scenario", "big_battle_6", "--max-turns", "50", "--incremental-turns"],
+        r#"{"action":"Query","what":"validate_batch","state_revision":0,"orders":[{"action":"Resign"}]}
+{"action":"Query","what":"preview_batch","state_revision":0,"phase":"final","candidates":[[{"action":"Resign"}]]}
+{"action":"Query","what":"preview_batch","state_revision":0,"phase":"partial","candidates":[[{"action":"Resign"}]]}
+[{"action":"Resign"}]
+"#,
+    );
+    let statuses: Vec<_> = lines.iter().filter(|line| line["type"] == "status").collect();
+    assert_eq!(statuses.len(), 4);
+    assert_eq!(statuses[0]["body"]["valid"], true);
+    assert_eq!(statuses[1]["ok"], false);
+    assert_eq!(statuses[2]["ok"], false);
+    assert_eq!(lines.last().unwrap()["reason"], "resignation");
+    assert_eq!(lines.last().unwrap()["state_revision"], 0);
+    assert!(!lines.iter().any(|line| line["type"] == "events"));
+}
+
+#[test]
+fn resignation_is_allowed_after_the_partial_batch_limit() {
+    let lines = run_driver(
+        &["--scenario", "big_battle_6", "--faction0", "undead", "--gold", "300",
+          "--max-turns", "50", "--incremental-turns"],
+        r#"[{"action":"RecruitBatch","def_id":"Skeleton","count":1}]
+[{"action":"RecruitBatch","def_id":"Skeleton","count":1}]
+[{"action":"RecruitBatch","def_id":"Skeleton","count":1}]
+[{"action":"Resign"}]
+"#,
+    );
+    let states: Vec<_> = lines.iter().filter(|line| line["type"] == "state").collect();
+    assert_eq!(states.last().unwrap()["accepted_partial_batches"], 3);
+    let terminal = lines.last().unwrap();
+    assert_eq!(terminal["reason"], "resignation");
+    assert_eq!(terminal["side_turns"], 0);
+    assert_eq!(terminal["state_revision"], states.last().unwrap()["state_revision"]);
+    for batch in lines.iter().filter(|line| line["type"] == "events") {
+        assert!(batch["events"].as_array().unwrap().iter().all(|event| event["kind"] == "recruit"));
+    }
+}
+
+#[test]
 fn malformed_requests_get_one_typed_status_each() {
     let lines = run_driver(
         &[

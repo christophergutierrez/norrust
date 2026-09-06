@@ -223,6 +223,7 @@ Options:
   --max-queries-per-turn N  Query cap (default: 256)
   Model final actions: EndTurn (implicit eligibility-based sweep), DoneWithImportantMoves (explicit eligibility-based sweep), or FinishWithGreedy
   --disable-recruit-batch  Reject the model-only RecruitBatch macro
+  Resign as a standalone action to concede without advancing the turn
   --incremental-turns    Allow up to three partial model batches before EndTurn
   --checkpoint-dir DIR     Atomically write resumable checkpoints here
   --resume-checkpoint PATH Restore a driver checkpoint instead of starting a game
@@ -789,6 +790,13 @@ fn validate_model_boundary(
     incremental: bool,
     accepted_partial_batches: u8,
 ) -> Result<(), (&'static str, &'static str)> {
+    if orders.iter().any(|order| order.get("action").and_then(Value::as_str) == Some("Resign")) {
+        return if orders == [json!({"action":"Resign"})] {
+            Ok(())
+        } else {
+            Err(("parse", "Resign must be the only action and have no extra fields"))
+        };
+    }
     let end_turn_count = orders
         .iter()
         .filter(|order| {
@@ -1012,6 +1020,7 @@ fn valid_action_shape(order: &Value) -> bool {
         "FinishWithGreedy" => (&["action", "groups", "holds"], &["groups"]),
         "DoneWithImportantMoves" => (&["action"], &[]),
         "EndTurn" => (&["action"], &[]),
+        "Resign" => (&["action"], &[]),
         "Advance" => (
             &["action", "unit_id", "target_index", "def_id"],
             &["unit_id"],
@@ -1214,6 +1223,9 @@ fn validate_model_batch_contract(
     if orders.iter().any(|order| !valid_action_shape(order)) {
         return Err(("parse", "invalid action shape"));
     }
+    if orders.iter().any(|order| order.get("action").and_then(Value::as_str) == Some("Resign")) {
+        return Err(("parse", "resignation cannot be previewed; submit it as a standalone action"));
+    }
     let end_turns = orders
         .iter()
         .filter(|order| {
@@ -1255,7 +1267,7 @@ fn validate_partial_preview_contract(
     if orders.iter().any(|order| {
         matches!(
             order.get("action").and_then(Value::as_str),
-            Some("EndTurn") | Some("DoneWithImportantMoves") | Some("FinishWithGreedy")
+            Some("EndTurn") | Some("DoneWithImportantMoves") | Some("FinishWithGreedy") | Some("Resign")
         )
     }) {
         return Err(("parse", "partial preview cannot contain a turn boundary"));
@@ -1326,6 +1338,9 @@ fn execute_model_batch(
         let mut conditional_action = conditional_on_survival;
         let mut conditional_steps = Vec::new();
         let result = match action_name {
+            // Read-only validate_batch accepts resignation without advancing state.
+            // Live resignation is handled by the protocol before this executor.
+            Some("Resign") => Ok(Vec::new()),
             Some("Move") => match (
                 order.get("unit_id").and_then(Value::as_u64),
                 order.get("col").and_then(Value::as_i64),
@@ -3215,6 +3230,7 @@ fn interactive_protocol_game(c: &Config) {
                             | "DoneWithImportantMoves"
                             | "FinishWithGreedy"
                             | "Advance"
+                            | "Resign"
                     )
                 )
         }) {
@@ -3247,6 +3263,16 @@ fn interactive_protocol_game(c: &Config) {
                 json!({"type":"status","ok":false,"code":code,"message":message})
             );
             continue;
+        }
+        if orders == [json!({"action":"Resign"})] {
+            println!("{}", json!({"type":"status","ok":true,"results":[{"ok":true}],
+                "state_revision":state.state_revision}));
+            println!("{}", json!({"type":"game_end","reason":"resignation",
+                "winner":1 - c.llm_side,"resigned_side":c.llm_side,
+                "turns":state.turn,"side_turns":side_turns,"state_revision":state.state_revision}));
+            io::stdout().flush().unwrap();
+            terminal = true;
+            break;
         }
         let batch_len = orders.len() as u32;
         let BatchExecution {
@@ -3615,6 +3641,14 @@ mod tests {
                 "model actions are not authorized while the opponent is active"
             ))
         );
+    }
+
+    #[test]
+    fn resignation_requires_the_active_model_side() {
+        let state = GameState::new(norrust_core::board::Board::new(1, 1));
+        let orders = vec![json!({"action":"Resign"})];
+        assert!(authorize_model_batch(&orders, &state, 0).is_ok());
+        assert_eq!(authorize_model_batch(&orders, &state, 1).unwrap_err().0, "unauthorized_side");
     }
 
     #[test]

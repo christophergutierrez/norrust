@@ -46,6 +46,37 @@ class FakeDriverProcess:
 
 class ClientValidationTests(unittest.TestCase):
 
+    def test_draft_review_can_concede_without_another_review_or_validation(self):
+        lines = [{"type": "state", "active_faction": 0},
+                 {"type": "status", "ok": True, "what": "tactical_surface", "body": {}},
+                 {"type": "status", "ok": True, "results": [{"ok": True}]},
+                 {"type": "game_end", "reason": "resignation", "winner": 1, "resigned_side": 0}]
+        with mock.patch.object(llm_client, "draft_needs_preview", return_value=True), \
+                mock.patch.object(llm_client, "query_preview_batch", return_value={"candidates": [{"valid": True}]}), \
+                mock.patch.object(llm_client, "compact_draft_review", return_value=("review", False)), \
+                mock.patch.object(llm_client, "draft_review_needed", return_value=True):
+            code, terminal = self.run_with_orders(
+                ['[{"action":"EndTurn"}]', '[{"action":"Resign"}]'], lines, validate_before_submit=True)
+        self.assertEqual(code, 0, terminal)
+        self.assertEqual(terminal["reason"], "resignation")
+        self.assertEqual(terminal["model_calls"], 2)
+
+    def test_pre_submit_repair_can_resign(self):
+        lines = [{"type": "state", "active_faction": 0},
+                 {"type": "status", "ok": True, "what": "tactical_surface", "body": {}},
+                 {"type": "status", "ok": True, "what": "validate_batch", "body":
+                  {"valid": False, "failed_index": 0, "results": [{"ok": False, "code": "UnitNotFound"}]}},
+                 {"type": "status", "ok": True, "what": "validate_batch", "body":
+                  {"valid": True, "results": [{"ok": True}]}},
+                 {"type": "status", "ok": True, "results": [{"ok": True}]},
+                 {"type": "game_end", "reason": "resignation", "winner": 1, "resigned_side": 0}]
+        code, terminal = self.run_with_orders(
+            ['[{"action":"Attack","attacker_id":99,"defender_id":2},{"action":"EndTurn"}]',
+             '[{"action":"Resign"}]'], lines, validate_before_submit=True)
+        self.assertEqual(code, 0, terminal)
+        self.assertEqual(terminal["reason"], "resignation")
+        self.assertEqual(terminal["model_calls"], 2)
+
     def test_client_accepts_other_models_and_keeps_unreported_runtime_unknown(self):
         for reported_model, reported_effort in ((None, None), ("test-model", "medium")):
             with self.subTest(reported_model=reported_model):

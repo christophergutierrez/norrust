@@ -183,11 +183,12 @@ def classify(records: list[dict[str, Any]]) -> dict[str, Any]:
         terminal_class = "model_invalid"
     if not terminal_class:
         reason = terminal.get("reason")
-        terminal_class = "gameplay" if reason in {"winner", "loss", "max_turns", "turn_limit"} else "unfinished_recoverable"
+        terminal_class = "gameplay" if reason in {"winner", "loss", "max_turns", "turn_limit", "resignation"} else "unfinished_recoverable"
     report = {
         "terminal_class": terminal_class,
         "winner": terminal.get("winner"),
         "reason": terminal.get("reason"),
+        "resigned_side": terminal.get("resigned_side"),
         "completed_side_turns": completed_side_turns,
         "resolved_side_turns": resolved_side_turns,
         "model_turns": model_turns,

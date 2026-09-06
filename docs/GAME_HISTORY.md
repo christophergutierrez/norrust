@@ -11,6 +11,11 @@ selection.
 Match logs are append-only evidence. Import them after a game into a SQLite
 catalog; gameplay does not depend on the catalog being available.
 
+A model concession is stored with termination reason `resignation` and the
+opponent as winner. The `Resign` action remains attributed to the model; it does
+not create a completed side-turn. The raw terminal also records `resigned_side`
+and the unchanged completed-side-turn count and state revision.
+
 Example commands:
 
     python3 -m tools.game_history import --db .norrust_history/history.sqlite --cohort cohort-name path/to/game-directory

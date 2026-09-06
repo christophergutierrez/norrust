@@ -263,6 +263,22 @@ not a hang.
 
 ## Model response and action batch
 
+To concede, return `[{"action":"Resign"}]`. It must be the only action and has
+no additional fields. The driver immediately records `reason: "resignation"`,
+`resigned_side`, and the opponent as `winner`. It runs no greedy sweep or opponent
+turn and does not increment completed side-turns or the state revision.
+Resignation is accepted in both turn modes, including after committed partial
+batches; those earlier actions remain recorded. It is a gameplay-valid loss
+(client exit 0), and the completed log cannot be resumed in place.
+
+The model should concede when the current evidence shows no credible route to
+recovery or victory, rather than prolonging a clearly lost game. Being behind,
+a bad combat roll, or a temporary threat alone is insufficient. These instructions
+are included in every prompt through [LLM_TACTICAL_PLAYBOOK.md](LLM_TACTICAL_PLAYBOOK.md).
+A resignation needs no tactical preview, draft review, or confirmation; it can
+also replace a draft during review or repair. `preview_batch` rejects resignation
+candidates because concession is a match decision rather than a tactical forecast.
+
 On its first response for a turn, the model returns either its final action array
 or one read-only preview request containing one or two complete candidate arrays:
 
@@ -332,7 +348,8 @@ and mechanical `RECRUIT` lines are observations; they do not force recruitment
 and saving gold remains legal.
 
 A final action array is a non-empty JSON array of at most 256 objects. Every
-object has exactly the fields shown below. There is exactly one final
+object has exactly the fields shown below. Except for standalone resignation,
+there is exactly one final
 `DoneWithImportantMoves`, `EndTurn`, or `FinishWithGreedy` boundary; no action follows it.
 On turns where a submitted draft leaves the recruiter in projected lethal
 danger, the client sends one read-only draft result back to the model. The
@@ -435,7 +452,7 @@ typically around side-turn 10-14, so a low cap cuts the match off before any
 combat happens. Short caps are for protocol smoke tests, like the `--max-turns 4`
 fixture example above, not for measuring whether a model can win.
 
-Terminal reasons `winner` and `max_turns` are gameplay-valid. A rejected batch
+Terminal reasons `winner`, `max_turns`, and `resignation` are gameplay-valid. A rejected batch
 after its repair is `model_invalid` (exit 2), a completed evaluation that is
 neither gameplay nor harness failure. Its counters are `rejected_batches` (one
 per rolled-back batch) and `rejected_action_items` (failed result items).

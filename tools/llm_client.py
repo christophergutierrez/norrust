@@ -23,7 +23,7 @@ try:
 except ImportError:  # pragma: no cover - direct script compatibility
     from turn_agenda import agenda_from_response, compact_agenda
 
-ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "Engage", "EndTurn", "Advance",
+ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "Engage", "EndTurn", "Advance", "Resign",
            "DoneWithImportantMoves", "FinishWithGreedy"}
 CHECKPOINT_REF_DIGEST_BYTES = 64
 
@@ -318,6 +318,10 @@ def validate_orders(text: str, strict: bool = False, require_end_turn: bool = Tr
         orders = orders["actions"]
     if not isinstance(orders, list) or not orders or len(orders) > 256:
         raise ValueError("orders must be a non-empty array of at most 256 objects")
+    if any(isinstance(order, dict) and order.get("action") == "Resign" for order in orders):
+        if not is_resignation(orders):
+            raise ValueError('Resign must be the only action and have no extra fields')
+        return orders
     end_indices = []
     for i, order in enumerate(orders):
         if not isinstance(order, dict) or order.get("action") not in ACTIONS:
@@ -447,6 +451,10 @@ def validate_orders(text: str, strict: bool = False, require_end_turn: bool = Tr
     if not require_end_turn and end_indices and end_indices[0] != len(orders) - 1:
         raise ValueError("a turn boundary, when present, must be final")
     return orders
+
+
+def is_resignation(orders: list[dict[str, Any]]) -> bool:
+    return orders == [{"action": "Resign"}]
 
 
 def response_intent(text: str) -> Optional[str]:
@@ -589,6 +597,8 @@ def validate_preview_request(text: str, strict: bool = False) -> list[list[dict[
     for candidate in candidates:
         if not isinstance(candidate, list):
             raise ValueError("each preview candidate must be an action array")
+        if is_resignation(candidate):
+            raise ValueError("resignation cannot be previewed; submit it as a standalone action")
         result.append(validate_orders(json.dumps(candidate), strict))
     return result
 
@@ -1566,6 +1576,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         'Advance: {"action":"Advance","unit_id": integer}; exactly one of integer target_index or string def_id',
         'DoneWithImportantMoves: {"action":"DoneWithImportantMoves"}; final boundary after consequential work, then eligible routine units are swept greedily (eligibility is not tactical safety)',
         'EndTurn: {"action":"EndTurn"}',
+        'Resign: [{"action":"Resign"}]; standalone concession, immediately ends the match with an opponent win and no turn advancement',
         'FinishWithGreedy: {"action":"FinishWithGreedy","groups":[{"mode":"greedy"|"toward_hex","unit_ids":[integer,...],"col":integer,"row":integer}],"holds":[{"unit_id":integer,"reason":string}]}; toward_hex is movement-only; final and replaces EndTurn',
     ]
     if recruit_batch_enabled:
@@ -1615,7 +1626,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "You play only the configured model-controlled side in Norrust. The driver automatically "
         "executes the opponent; never submit opponent actions. Return the non-empty JSON array only; "
         "actions execute sequentially in array order against the mutating state. "
-        "The array has at most 256 objects. In normal mode it has exactly one final DoneWithImportantMoves, EndTurn, or FinishWithGreedy boundary. "
+        "The array has at most 256 objects. To concede, return only [{\"action\":\"Resign\"}] with no other actions or fields; this is allowed in either turn mode, including after partial batches. Resignation is final and needs no preview or confirmation. Otherwise, in normal mode the array has exactly one final DoneWithImportantMoves, EndTurn, or FinishWithGreedy boundary. "
         "Make the consequential decisions first: protect the recruiter, recruit or deliberately save gold, advance, arrange a likely kill or focus-fire sequence, capture a useful village, and make exact retreat/healing/formation moves. "
         "Once those important moves are made, stop inspecting routine units and emit {\"action\":\"DoneWithImportantMoves\"}. The driver executes its eligibility-based greedy sweep for eligible non-recruiters and ends the turn; eligibility excludes the recruiter, critically wounded units, and already-spent units, but does not prove delegated destinations are tactically safe. Use explicit FinishWithGreedy groups and holds when a unit must keep its position. Ask what changes after the enemy moves and attacks if you hold here. A selective hold is deliberate; EndTurn and DoneWithImportantMoves still run the automatic sweep. "
         "Recruitment remains your responsibility before that boundary. Before a boundary, strongly prefer exhausting legal recruitment. Otherwise move "
@@ -1912,11 +1923,11 @@ def status_failure(line: dict[str, Any]) -> Optional[dict[str, Any]]:
 # legal turn is a completed evaluation, not a broken harness. Collapsing it into
 # INFRASTRUCTURE voids a match the model actually lost, and that escalation can
 # only ever void the model's match and never greedy's.
-TERMINAL_GAMEPLAY = "gameplay"          # winner / max_turns: a real result
+TERMINAL_GAMEPLAY = "gameplay"          # winner / max_turns / resignation: a real result
 TERMINAL_MODEL_INVALID = "model_invalid"  # model could not emit a legal turn
 TERMINAL_INFRASTRUCTURE = "infrastructure"  # the harness or driver broke
 
-GAMEPLAY_REASONS = ("winner", "max_turns")
+GAMEPLAY_REASONS = ("winner", "max_turns", "resignation")
 
 # Exit codes are distinct so a caller can tell the three apart without parsing
 # the log. 0 = usable gameplay result, 1 = harness fault, 2 = model fault.
@@ -2764,9 +2775,9 @@ def run(args: argparse.Namespace) -> int:
                                      message=str(first))
                         durable({"type": "model_error", **metadata})
                         return TERMINAL_EXIT_CODES[terminal_class]
-                audit = handoff_audit(state, orders, coverage)
+                audit = {} if is_resignation(orders) else handoff_audit(state, orders, coverage)
                 handoff_outcome = "not_triggered"
-                if not timeout_fallback and not handoff_review_used and draft_needs_preview(state, orders, danger_before, audit):
+                if not is_resignation(orders) and not timeout_fallback and not handoff_review_used and draft_needs_preview(state, orders, danger_before, audit):
                     active_review_id = uuid.uuid4().hex
                     original_digest = hashlib.sha256(json.dumps(
                         orders, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -2879,7 +2890,7 @@ def run(args: argparse.Namespace) -> int:
                             "trigger_reasons": audit.get("trigger_reasons"),
                             "audit": audit, "outcome": handoff_outcome,
                             "review_used": handoff_review_used})
-                if getattr(args, "validate_before_submit", False):
+                if getattr(args, "validate_before_submit", False) and not is_resignation(orders):
                     try:
                         validation = query_validate_batch(
                             exchange, orders, int(state.get("state_revision", 0)))
@@ -3010,7 +3021,7 @@ def run(args: argparse.Namespace) -> int:
                                 "results": validation.get("results"),
                                 "failed_index": validation.get("failed_index"),
                                 "repair": True})
-                if getattr(args, "decision_metrics", False):
+                if getattr(args, "decision_metrics", False) and not is_resignation(orders):
                     try:
                         final_preview = query_preview_batch(
                             exchange, [orders], int(state.get("state_revision", 0)),
@@ -3076,7 +3087,7 @@ def run(args: argparse.Namespace) -> int:
                             turn_progress_attacked.add(attacker["unit"])
             elif line.get("type") == "game_end":
                 metadata.update({"winner": line.get("winner"), "reason": line.get("reason")})
-                for key in ("code", "message"):
+                for key in ("code", "message", "resigned_side", "side_turns", "state_revision"):
                     if key in line:
                         metadata[key] = line[key]
                 terminal_class = set_terminal(

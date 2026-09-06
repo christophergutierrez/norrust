@@ -125,7 +125,9 @@ authoritative data.
 [{"action":"Move","unit_id":1,"col":3,"row":2},{"action":"EndTurn"}]
 ```
 
-The model returns a non-empty array of at most 256 objects with exactly one final
+The model can concede immediately with `[{"action":"Resign"}]`, recording an
+opponent win with reason `resignation` and no additional turn. Otherwise, it
+returns a non-empty array of at most 256 objects with exactly one final
 `DoneWithImportantMoves`, `EndTurn`, or `FinishWithGreedy` boundary. Schemas are `Move` (integer `unit_id`, `col`, `row`), `Attack` (integer
 `attacker_id`, `defender_id`), `Recruit` (string `def_id`, integer `col`, `row`),
 optional `RecruitBatch` (string `def_id`, positive integer `count`), `Advance`
@@ -145,7 +147,7 @@ neither meet that predicate, evaluation falls through to elimination.
 engine round counter and scenario rules. A completed model side-turn and a
 completed greedy side-turn each count once; a failed greedy turn adds no opponent
 side-turn, while the preceding completed model side-turn remains counted.
-Terminal reasons `winner` and `max_turns` are gameplay-valid. `setup_error`,
+Terminal reasons `winner`, `max_turns`, and `resignation` are gameplay-valid. `setup_error`,
 `timeout`, `eof`, `infrastructure_failure`, and unknown or malformed terminal
 reasons are infrastructure-invalid; the client records
 `infrastructure_invalid: true` and exits nonzero. An LLM win is neither guaranteed
