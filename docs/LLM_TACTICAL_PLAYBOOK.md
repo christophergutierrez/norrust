@@ -47,19 +47,6 @@ resistance (`-60` takes 60% less damage), and zero means unchanged damage.
 Missing values are unknown. Apply this base modifier together with the supplied
 combat context; do not reverse the signs.
 
-Before a turn boundary, use this short handoff check:
-
-1. Choose recruitment or state why saving gold is worth the affordable recruit
-   forgone.
-2. Protect the recruiter and make consequential attacks, retreats, advances,
-   and formation moves first.
-3. For each deliberate hold, name its current job and the useful move or attack
-   it gives up. Examples include blocking a named attack origin, protecting a
-   wounded unit, or retaining a healing village; “keep formation” alone is not
-   a sufficient reason.
-4. Delegate only remaining healthy routine units. For `FinishWithGreedy`, list
-   delegated IDs in groups and held IDs in `holds`; omitted IDs are unswept.
-
 Use these priorities as guidance on every turn; they do not prescribe a single move. Eligibility-based greedy execution describes which units are delegated, not whether their destinations are tactically safe. Ask what changes after the enemy moves and attacks if you hold here:
 
 **T8 — Concede a clearly lost game.** At the start of each decision, assess whether you still have a credible route to recovery or victory. If the position is clearly lost—for example, the recruiter cannot escape a decisive threat, or your remaining force and economy cannot rebuild a competitive army—concede with `[{"action":"Resign"}]`. Do not spend further inspections or turns prolonging an unavoidable defeat. Resignation immediately awards the opponent the win; it is final and must be the only action. Do not resign merely because you are behind in units, suffered a bad combat roll, face a temporary threat, or have not yet reached the enemy. When recovery is plausible, keep playing.

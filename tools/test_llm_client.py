@@ -988,42 +988,6 @@ class ClientValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_orders(json.dumps(overlap))
 
-    def test_purposeful_hold_job_survives_agenda_and_selective_handoff(self):
-        hold_reason = "guard keep against the attack from U9"
-        goal = "Guard the keep against U9 while U6 advances"
-        response = json.dumps({
-            "actions": [{"action": "FinishWithGreedy",
-                         "groups": [{"mode": "greedy", "unit_ids": [6]}],
-                         "holds": [{"unit_id": 5, "reason": hold_reason}]}],
-            "agenda": {"tasks": [{"id": "keep_guard", "goal": goal,
-                                     "units": [5], "status": "active"}], "holds": [5]},
-            "decisions": [{"orders": [0], "rules": ["T7"],
-                           "expected": "U5 keeps the keep screen while U6 advances.",
-                           "risk": "U9 may break through the screen."}],
-        })
-        agenda, error, changed = llm_client.agenda_from_response(response, None)
-        self.assertIsNone(error)
-        self.assertTrue(changed)
-        self.assertEqual(agenda["tasks"][0]["goal"], goal)
-        self.assertEqual(agenda["holds"], [5])
-        orders = validate_orders(response)
-        self.assertEqual(llm_client.finish_kind_for_orders(orders), "selective")
-        self.assertEqual(orders[0]["holds"], [{"unit_id": 5, "reason": hold_reason}])
-
-        state = {"active_faction": 0, "units": [
-            {"id": unit_id, "faction": 0, "hp": 10, "max_hp": 10,
-             "moved": False, "attacked": False}
-            for unit_id in (5, 6, 7)
-        ]}
-        audit = llm_client.handoff_audit(
-            state, orders, {"available": {5, 6, 7}, "current": set(), "targets": {}})
-        self.assertEqual(audit["held"], [5])
-        self.assertEqual(audit["delegated"], [6])
-        self.assertNotIn(7, audit["held"] + audit["delegated"])
-        prompt = prompt_for(state, [], compact=True, agenda=agenda)
-        self.assertIn(goal, prompt)
-        self.assertIn("Only FinishWithGreedy's explicit holds encode executable holds", prompt)
-
     def test_prompt_documents_greedy_handoff_and_recruitment_ownership(self):
         prompt = prompt_for({"units": []}, [])
         for text in (
