@@ -11,7 +11,9 @@ usual artifact directory is `tmp/game_history_final_games/`; the corrected deleg
 cohort is `tmp/llm_delegation_evidence_final2/`; other cohorts may be under `tmp/`.
 The SQLite catalog is `history.sqlite`, and the original `match.ndjson`, checkpoints, native
 request artifacts, and reports remain beside it. These files are ignored by Git and may be
-absent in a fresh checkout.
+absent in a fresh checkout. The reasoning-evidence experiment is cataloged under
+`tmp/llm_reasoning_evidence_final2/history.sqlite` when present; its `REVIEW.md` records
+which games are valid for comparison and which are preserved only as failure evidence.
 
 Useful commands from the repository root:
 
@@ -29,6 +31,10 @@ PY
 
 # Summarize an original match archive.
 python3 tools/luna_report.py tmp/game_history_final_games/2031/match.ndjson
+
+# Inspect the reasoning-evidence experiment when present.
+python3 tools/game_history.py inventory \
+  --db tmp/llm_reasoning_evidence_final2/history.sqlite
 
 # Run the offline evaluator and export only explicitly approved decisions.
 ./norrust_core/target/release/history_eval mechanical \
