@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Persistent, restricted Luna adapter for the headless client."""
+"""Persistent, restricted Codex adapter for the headless client."""
 from __future__ import annotations
 
 import json
@@ -20,10 +20,25 @@ MODEL = "gpt-5.6-luna"
 EFFORT = "high"
 
 
+def _setting(name: str, legacy: str, default: str) -> str:
+    value = os.environ.get(name)
+    old = os.environ.get(legacy)
+    if value is not None:
+        if old is not None and old != value:
+            print(f"warning: {legacy} ignored because {name} is set", file=sys.stderr)
+        return value
+    return old if old is not None else default
+
+
+def resolved_settings() -> tuple[str, str]:
+    return (_setting("NORRUST_CODEX_MODEL", "NORRUST_LUNA_MODEL", MODEL),
+            _setting("NORRUST_CODEX_REASONING_EFFORT", "NORRUST_LUNA_REASONING_EFFORT", EFFORT))
+
+
 def session_path() -> Path:
-    value = os.environ.get("NORRUST_LUNA_SESSION_FILE")
+    value = os.environ.get("NORRUST_CODEX_SESSION_FILE") or os.environ.get("NORRUST_LUNA_SESSION_FILE")
     if not value:
-        raise RuntimeError("NORRUST_LUNA_SESSION_FILE is required for persistent Luna play")
+        raise RuntimeError("NORRUST_CODEX_SESSION_FILE is required for persistent Codex play")
     path = Path(value).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
@@ -60,15 +75,16 @@ def extract(events: list[dict[str, object]]) -> tuple[str, str]:
 
 def _run_native_once(prompt: str, thread_id: str | None, timeout: float) -> tuple[str, str, list[dict[str, object]]]:
     root = Path(__file__).resolve().parents[1]
+    model, effort = resolved_settings()
     if thread_id:
         command = ["codex", "exec", "resume", thread_id, "--json", "--ignore-user-config",
                    "--ignore-rules",
-                   "-m", MODEL, "-c", f"model_reasoning_effort={EFFORT}",
+                   "-m", model, "-c", f"model_reasoning_effort={effort}",
                    native_instruction(prompt)]
     else:
         command = ["codex", "exec", "--json", "--ignore-user-config", "--ignore-rules",
-                   "--skip-git-repo-check", "--sandbox", "read-only", "--model", MODEL,
-                   "--color", "never", "-c", f"model_reasoning_effort={EFFORT}",
+                   "--skip-git-repo-check", "--sandbox", "read-only", "--model", model,
+                   "--color", "never", "-c", f"model_reasoning_effort={effort}",
                    native_instruction(prompt)]
     process = subprocess.Popen(command, cwd=root, text=True, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, start_new_session=True)
