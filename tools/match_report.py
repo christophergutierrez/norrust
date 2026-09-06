@@ -277,7 +277,7 @@ def classify(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 def main(argv: list[str]) -> int:
     if not argv:
-        print("usage: luna_report.py LOG [LOG ...]", file=sys.stderr)
+        print("usage: match_report.py LOG [LOG ...]", file=sys.stderr)
         return 2
     for name in argv:
         print(json.dumps({"log": name, **classify(load_records(name))}, sort_keys=True))

@@ -15,7 +15,7 @@ from typing import Any, Iterable, Mapping
 
 try:
     from .request_journal import STATES, read_state
-except ImportError:  # Direct ``python tools/luna_reconcile.py`` compatibility.
+except ImportError:  # Direct script execution compatibility.
     from request_journal import STATES, read_state
 
 
