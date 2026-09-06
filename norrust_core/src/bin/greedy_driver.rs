@@ -938,10 +938,15 @@ fn unit_type_profile(def: &UnitDef) -> Value {
     json!({
         "def_id": def.id,
         "name": def.name,
+        "level": def.level,
         "cost": def.cost,
         "max_hp": def.max_hp,
         "movement": def.movement,
         "alignment": def.alignment,
+        "usage": def.usage,
+        "abilities": &def.abilities,
+        "advances_to": &def.advances_to,
+        "resistance_semantics": "signed_percent_damage_modifier",
         "attacks": def.attacks.iter().map(|attack| json!({
             "name": attack.name,
             "damage": attack.damage,

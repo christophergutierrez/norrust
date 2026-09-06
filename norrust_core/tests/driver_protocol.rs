@@ -587,6 +587,17 @@ fn recruit_options_query(args: &[&str]) -> Value {
         .expect("recruit_options response")
 }
 
+fn tactical_surface_query(args: &[&str]) -> Value {
+    let lines = run_driver(
+        args,
+        "{\"action\":\"Query\",\"what\":\"tactical_surface\"}\n",
+    );
+    lines
+        .into_iter()
+        .find(|line| line["what"] == "tactical_surface")
+        .expect("tactical_surface response")
+}
+
 #[test]
 fn recruit_options_reports_canonical_active_faction_placements_and_enabled_batch_macro() {
     let response = recruit_options_query(&[
@@ -626,6 +637,61 @@ fn recruit_options_reports_disabled_batch_macro() {
         "--disable-recruit-batch",
     ]);
     assert_eq!(response["body"]["batch_macro_enabled"], false);
+}
+
+#[test]
+fn unit_type_profiles_preserve_signed_resistance_values() {
+    let response = tactical_surface_query(&[
+        "--scenario",
+        "big_battle_6",
+        "--faction0",
+        "undead",
+        "--faction1",
+        "undead",
+    ]);
+    let profiles = response["body"]["unit_types"]
+        .as_array()
+        .expect("unit type profiles");
+    let skeleton = profiles
+        .iter()
+        .find(|profile| profile["def_id"] == "Skeleton")
+        .expect("Skeleton profile");
+
+    assert_eq!(
+        skeleton["resistance_semantics"],
+        "signed_percent_damage_modifier"
+    );
+    assert_eq!(skeleton["resistances"]["blade"], -40);
+    assert_eq!(skeleton["resistances"]["fire"], 20);
+    assert_eq!(skeleton["abilities"], serde_json::json!(["submerge"]));
+    assert_eq!(
+        skeleton["advances_to"],
+        serde_json::json!(["Revenant", "Deathblade"])
+    );
+}
+
+#[test]
+fn unit_type_profiles_preserve_attack_specials() {
+    let response = tactical_surface_query(&[
+        "--scenario",
+        "big_battle_6",
+        "--faction0",
+        "undead",
+        "--faction1",
+        "undead",
+    ]);
+    let profiles = response["body"]["unit_types"]
+        .as_array()
+        .expect("unit type profiles");
+    let corpse = profiles
+        .iter()
+        .find(|profile| profile["def_id"] == "Walking Corpse")
+        .expect("Walking Corpse profile");
+
+    assert_eq!(
+        corpse["attacks"][0]["specials"],
+        serde_json::json!(["plague"])
+    );
 }
 
 #[test]
