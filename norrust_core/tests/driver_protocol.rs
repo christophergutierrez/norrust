@@ -125,7 +125,11 @@ fn bounded_preview_reports_isolated_finish_and_opponent_coverage() {
     assert_eq!(candidate["observation_stage"], "post_opponent_response");
     assert_eq!(candidate["post_sweep"]["policy"], "driver_greedy_one_response_v1");
     assert_eq!(candidate["post_sweep"]["evaluation_seed"], 0x5eed5eed5eed5eedu64);
-    assert!(candidate["post_sweep"]["stages"]["post_finish"].is_object());
+    let post_finish = &candidate["post_sweep"]["stages"]["post_finish"];
+    assert!(post_finish.is_object());
+    assert!(post_finish["units_detail"].is_array());
+    assert!(post_finish["villages"].is_array());
+    assert!(post_finish["sides"][0]["material_cost"].is_number());
 }
 
 #[test]

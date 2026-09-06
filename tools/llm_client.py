@@ -1434,6 +1434,12 @@ def compact_draft_review(preview: dict[str, Any], danger_before: bool,
             if isinstance(stage, dict):
                 sides = stage.get("sides", [])
                 lines.append("%s %s" % (label, json.dumps(sides, sort_keys=True, separators=(",", ":"))))
+                detail = stage.get("units_detail")
+                if isinstance(detail, list):
+                    lines.append("%s_UNITS %s" % (label, json.dumps(detail, sort_keys=True, separators=(",", ":"))))
+                villages = stage.get("villages")
+                if isinstance(villages, list):
+                    lines.append("%s_VILLAGES %s" % (label, json.dumps(villages, sort_keys=True, separators=(",", ":"))))
         if post_sweep.get("opponent_error"):
             lines.append("DELEGATION_ERROR %s" % str(post_sweep["opponent_error"]).replace("\n", " ")[:240])
     if len(candidates) > 1 and isinstance(candidates[0], dict):

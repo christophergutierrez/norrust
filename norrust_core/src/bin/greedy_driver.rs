@@ -845,14 +845,17 @@ fn game_state_to_json(state: &GameState, units: &Registry<UnitDef>) -> Value {
 
 fn rollout_state_summary(state: &GameState) -> Value {
     let mut sides = Vec::new();
+    let mut unit_rows = Vec::new();
     for side in 0..2u8 {
-        let units: Vec<_> = state
+        let mut units: Vec<_> = state
             .units
             .iter()
             .filter(|(_, unit)| unit.faction == side && unit.hp > 0)
             .collect();
+        units.sort_by_key(|(id, _)| **id);
         let hp: u32 = units.iter().map(|(_, unit)| unit.hp).sum();
         let max_hp: u32 = units.iter().map(|(_, unit)| unit.max_hp).sum();
+        let material: u32 = units.iter().map(|(_, unit)| unit.cost).sum();
         let recruiters = units.iter().filter(|(_, unit)| unit.can_recruit).count();
         let villages = state
             .village_owners
@@ -864,16 +867,41 @@ fn rollout_state_summary(state: &GameState) -> Value {
             "units": units.len(),
             "hp": hp,
             "max_hp": max_hp,
+            "material_cost": material,
             "recruiters": recruiters,
             "villages": villages,
             "gold": state.gold[side as usize],
         }));
+        for (id, unit) in units {
+            let position = state.positions.get(id).map(|hex| {
+                let (col, row) = hex.to_offset();
+                json!({"col": col, "row": row})
+            });
+            unit_rows.push(json!({
+                "unit_id": id,
+                "side": unit.faction,
+                "def_id": unit.def_id,
+                "hp": unit.hp,
+                "max_hp": unit.max_hp,
+                "cost": unit.cost,
+                "position": position,
+                "recruiter": unit.can_recruit,
+                "advancement_pending": unit.advancement_pending,
+            }));
+        }
     }
+    let mut villages: Vec<_> = state.village_owners.iter().map(|(hex, owner)| {
+        let (col, row) = hex.to_offset();
+        json!({"col": col, "row": row, "owner": owner})
+    }).collect();
+    villages.sort_by_key(|v| (v["row"].as_i64().unwrap_or_default(), v["col"].as_i64().unwrap_or_default()));
     json!({
         "active_faction": state.active_faction,
         "turn": state.turn,
         "state_revision": state.state_revision,
         "sides": sides,
+        "units_detail": unit_rows,
+        "villages": villages,
         "winner": state.check_winner(),
     })
 }
