@@ -20,7 +20,7 @@ class GameHistoryTests(unittest.TestCase):
             rows = [
                 {"type": "metadata", "seed": 9, "scenario": "test", "faction0": "a", "faction1": "b", "gold": 10, "first_player": 0, "source_commit": "abc"},
                 {"type": "driver", "line": {"type": "state", "state_revision": 0, "turn": 1, "active_faction": 0, "units": []}},
-                {"type": "turn_boundary", "accepted": True, "authored_finish_kind": "explicit_done", "state_revision": 1},
+                {"type": "turn_boundary", "accepted": True, "authored_finish_kind": "explicit_done", "start_revision": 0, "state_revision": 1},
                 {"type": "handoff_review", "version": 1, "state_revision": 0,
                  "outcome": "confirmed", "trigger_reasons": ["affordable_recruitment"],
                  "audit": {"gold": 20}},
@@ -41,6 +41,29 @@ class GameHistoryTests(unittest.TestCase):
             conn.close()
             backup_history(str(root / "history.sqlite"), str(backup))
             self.assertEqual(verify_history(backup)["integrity"], "ok")
+
+    def test_partial_snapshots_are_not_paired_by_ordinal_position(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); log = root / "match.ndjson"
+            rows = [
+                {"type": "metadata", "seed": 3, "scenario": "test", "faction0": "a", "faction1": "b", "gold": 10, "first_player": 0},
+                {"type": "driver", "line": {"type": "state", "state_revision": 0, "turn": 1, "active_faction": 0}},
+                {"type": "driver", "line": {"type": "state", "state_revision": 5, "turn": 1, "active_faction": 0, "turn_boundary": "partial"}},
+                {"type": "turn_boundary", "accepted": True, "start_revision": 0, "state_revision": 10,
+                 "side_turn_id": "turn-a", "side": 0, "authored_finish_kind": "explicit_done"},
+                {"type": "handoff_review", "side_turn_id": "turn-a", "state_revision": 10, "outcome": "confirmed"},
+            ]
+            log.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root, "cohort")
+            turn = list_side_turns(conn, game_id)[0]
+            self.assertEqual(turn["start_revision"], 0)
+            self.assertIsNone(turn["end_revision"])
+            coverage = json.loads(conn.execute("SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+            self.assertEqual(coverage["linked_reviews"], 1)
+            self.assertEqual(coverage["unresolved_turn_endpoints"], 1)
+            metrics = json.loads(conn.execute("SELECT metrics_json FROM side_turns WHERE game_id=?", (game_id,)).fetchone()[0])
+            self.assertEqual(metrics["handoff_review"]["side_turn_id"], "turn-a")
 
     def test_delete_exact_cohort_preserves_other_games_and_compacts(self):
         with tempfile.TemporaryDirectory() as td:

@@ -156,8 +156,10 @@ def import_game(conn: sqlite3.Connection, archive: str | os.PathLike[str],
            metadata.get("first_player"), metadata.get("max_turns"), metadata.get("started_at"),
            terminal.get("ended_at"), terminal.get("wall_ms"), status, terminal.get("winner"),
            terminal.get("reason"), metadata.get("source_commit"), json.dumps(config, sort_keys=True),
-           json.dumps({"archive": str(log)}, sort_keys=True), SCHEMA_VERSION, str(root),
-           json.dumps({"state_records": len(states)})))
+           json.dumps({"archive": str(log)}, sort_keys=True), SCHEMA_VERSION, str(root), "{}"))
+        linkage = _import_turns(conn, game_id, records, lines, states, terminal)
+        conn.execute("UPDATE games SET coverage_json=? WHERE game_id=?",
+                     (json.dumps({"state_records": len(states), **linkage}, sort_keys=True), game_id))
         for side in (0, 1):
             is_model = metadata.get("llm_side") == side
             conn.execute("""INSERT INTO game_players
@@ -172,24 +174,99 @@ def import_game(conn: sqlite3.Connection, archive: str | os.PathLike[str],
                metadata.get("runtime_model") if is_model else None,
                metadata.get("requested_reasoning_effort") if is_model else None,
                metadata.get("runtime_reasoning_effort") if is_model else None))
-        _import_turns(conn, game_id, records, lines, states, terminal)
-        _import_requests(conn, game_id, records)
-        _import_actions(conn, game_id, records)
+        _import_requests(conn, game_id, records, linkage["record_links"])
+        _import_actions(conn, game_id, records, linkage["record_links"])
     return game_id
 
+def _number(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _record_revision(record: dict[str, Any]) -> int | None:
+    return _number(record.get("state_revision"))
+
+
+def _record_side_turn(record: dict[str, Any]) -> int | None:
+    for key in ("side_turn", "side_turns"):
+        value = _number(record.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _matches_review(review: dict[str, Any], boundary: dict[str, Any],
+                    start: dict[str, Any] | None, end: dict[str, Any] | None,
+                    side_turn_id: str) -> str | None:
+    """Return the proof used to attach a review, or None when it is ambiguous."""
+    if review.get("side_turn_id") == side_turn_id:
+        return "side_turn_id"
+    review_side = _record_side_turn(review)
+    boundary_side = _record_side_turn(boundary)
+    if review_side is not None and boundary_side is not None and review_side == boundary_side:
+        return "side_turn"
+    review_revision = _record_revision(review)
+    revisions = {_record_revision(boundary), _record_revision(start or {}),
+                 _record_revision(end or {})}
+    if review_revision is not None and review_revision in revisions:
+        return "state_revision"
+    return None
+
+
+def _state_for_revision(states: list[dict[str, Any]], revision: int | None) -> dict[str, Any] | None:
+    if revision is None:
+        return None
+    matches = [state for state in states if _record_revision(state) == revision]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _state_before_revision(states: list[dict[str, Any]], revision: int | None) -> dict[str, Any] | None:
+    """Use revision chronology only when it identifies one preceding state."""
+    if revision is None:
+        return None
+    candidates = [state for state in states
+                  if isinstance(state.get("state_revision"), int)
+                  and state["state_revision"] < revision]
+    if not candidates:
+        return None
+    highest = max(state["state_revision"] for state in candidates)
+    matches = [state for state in candidates if state["state_revision"] == highest]
+    return matches[0] if len(matches) == 1 else None
+
+
 def _import_turns(conn: sqlite3.Connection, game_id: str, records: list[dict[str, Any]],
-                  lines: list[dict[str, Any]], states: list[dict[str, Any]], terminal: dict[str, Any]) -> None:
+                  lines: list[dict[str, Any]], states: list[dict[str, Any]], terminal: dict[str, Any]) -> dict[str, Any]:
     boundaries = [r for r in records if r.get("type") == "turn_boundary" and r.get("accepted") is True]
     reviews = [r for r in records if r.get("type") == "handoff_review"]
+    record_links: dict[str, str] = {}
+    boundary_rows: list[tuple[dict[str, Any], str, dict[str, Any] | None, dict[str, Any] | None]] = []
+    review_links: dict[int, tuple[str, str]] = {}
+    linked_review_indexes: set[int] = set()
     for i, boundary in enumerate(boundaries, 1):
-        before = states[i - 1] if i - 1 < len(states) else None
-        after = states[i] if i < len(states) else before
+        side_turn_id = boundary.get("side_turn_id") or f"{game_id}:turn:{i}"
+        end_revision = _record_revision(boundary)
+        after = _state_for_revision(states, end_revision)
+        start_revision = _number(boundary.get("start_revision"))
+        before = _state_for_revision(states, start_revision)
+        if before is None:
+            before = _state_before_revision(states, end_revision)
+        # A boundary without explicit endpoints is intentionally incomplete.
+        # Never infer them from the ordinal position of a partial snapshot.
         sb, codec, sh = _state_payload(before); eb, _, eh = _state_payload(after)
         payload = {"sequence": i, "finish": boundary.get("authored_finish_kind"),
                    "start_revision": before.get("state_revision") if before else None,
                    "end_revision": after.get("state_revision") if after else None}
-        if i <= len(reviews):
-            payload["handoff_review"] = reviews[i - 1]
+        candidates = []
+        for review_index, review in enumerate(reviews):
+            proof = _matches_review(review, boundary, before, after, side_turn_id)
+            if proof is not None:
+                candidates.append((review_index, review, proof))
+        if len(candidates) == 1:
+            review_index, review, proof = candidates[0]
+            payload["handoff_review"] = review
+            payload["handoff_review_link"] = proof
+            review_links[review_index] = (side_turn_id, proof)
+            linked_review_indexes.add(review_index)
+        boundary_rows.append((boundary, side_turn_id, before, after))
         conn.execute("""INSERT INTO side_turns
           (side_turn_id,game_id,sequence,round_number,side,status,finish_kind,end_turn_emitted,
            start_revision,end_revision,start_state_blob,end_state_blob,start_state_hash,
@@ -198,8 +275,8 @@ def _import_turns(conn: sqlite3.Connection, game_id: str, records: list[dict[str
           finish_kind=excluded.finish_kind,end_state_blob=excluded.end_state_blob,
           end_state_hash=excluded.end_state_hash,status=excluded.status,
           metrics_json=excluded.metrics_json""",
-          (f"{game_id}:turn:{i}", game_id, i, after.get("turn") if after else None,
-           before.get("active_faction", 0) if before else None,
+          (side_turn_id, game_id, i, after.get("turn") if after else None,
+           before.get("active_faction", 0) if before else (boundary.get("side") or 0),
            "terminal" if terminal and i == len(boundaries) else "ended",
            boundary.get("authored_finish_kind"), int(bool(boundary.get("executed_finish_kind"))),
            before.get("state_revision") if before else None, after.get("state_revision") if after else None,
@@ -207,8 +284,37 @@ def _import_turns(conn: sqlite3.Connection, game_id: str, records: list[dict[str
            json.dumps({"handoff_review": payload["handoff_review"]}, sort_keys=True)
            if "handoff_review" in payload else "{}",
            digest(payload)))
+        for key in ("side_turn_id", "side_turn"):
+            value = boundary.get(key)
+            if value is not None:
+                record_links[f"{key}:{value}"] = side_turn_id
+        for revision in (before.get("state_revision") if before else None,
+                         after.get("state_revision") if after else None):
+            if revision is not None:
+                record_links[f"revision:{revision}"] = side_turn_id
+    for index, review in enumerate(reviews):
+        if index not in linked_review_indexes:
+            review_links[index] = ("", "unavailable")
+    return {"linked_reviews": len(linked_review_indexes),
+            "unattached_reviews": len(reviews) - len(linked_review_indexes),
+            "unresolved_turn_endpoints": sum(1 for _, _, before, after in boundary_rows
+                                              if before is None or after is None),
+            "record_links": record_links}
 
-def _import_requests(conn: sqlite3.Connection, game_id: str, records: list[dict[str, Any]]) -> None:
+def _side_turn_for_record(record: dict[str, Any], links: dict[str, str]) -> str | None:
+    explicit = record.get("side_turn_id")
+    if isinstance(explicit, str) and explicit in set(links.values()):
+        return explicit
+    for key in ("side_turn_id", "side_turn"):
+        value = record.get(key)
+        if value is not None and f"{key}:{value}" in links:
+            return links[f"{key}:{value}"]
+    revision = _record_revision(record)
+    return links.get(f"revision:{revision}") if revision is not None else None
+
+
+def _import_requests(conn: sqlite3.Connection, game_id: str, records: list[dict[str, Any]],
+                     links: dict[str, str]) -> None:
     request_records = [r for r in records if r.get("type") == "model_request"]
     if not request_records:
         request_records = [r for r in records if r.get("type") == "model"]
@@ -218,11 +324,11 @@ def _import_requests(conn: sqlite3.Connection, game_id: str, records: list[dict[
         req_id = record.get("request_id") or f"{game_id}:request:{index + 1}"
         usage = record.get("usage") if isinstance(record.get("usage"), dict) else {}
         conn.execute("""INSERT INTO model_requests
-          (request_id,game_id,sequence,status,error_message,elapsed_ms,input_tokens,cached_input_tokens,output_tokens,
+          (request_id,game_id,side_turn_id,sequence,status,error_message,elapsed_ms,input_tokens,cached_input_tokens,output_tokens,
            reasoning_tokens,prompt_bytes,response_bytes,prompt_blob,response_blob,prompt_hash,
            response_hash,payload_codec,raw_usage_json,record_hash)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(request_id) DO NOTHING""",
-          (req_id, game_id, record.get("sequence", index + 1), record.get("status", "completed"),
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(request_id) DO NOTHING""",
+          (req_id, game_id, _side_turn_for_record(record, links), record.get("sequence", index + 1), record.get("status", "completed"),
            record.get("error"), record.get("elapsed_ms"), usage.get("input_tokens"),
            usage.get("cached_input_tokens"), usage.get("output_tokens"),
            usage.get("reasoning_output_tokens"),
@@ -234,7 +340,8 @@ def _import_requests(conn: sqlite3.Connection, game_id: str, records: list[dict[
            "zlib" if prompt or raw else None, json.dumps(usage, sort_keys=True),
            digest({"request_id": req_id, "record": record})))
 
-def _import_actions(conn: sqlite3.Connection, game_id: str, records: list[dict[str, Any]]) -> None:
+def _import_actions(conn: sqlite3.Connection, game_id: str, records: list[dict[str, Any]],
+                    links: dict[str, str]) -> None:
     sequence = 0
     for batch_index, record in enumerate(r for r in records if r.get("type") == "forwarded_orders"):
         orders = record.get("orders")
@@ -242,9 +349,9 @@ def _import_actions(conn: sqlite3.Connection, game_id: str, records: list[dict[s
             continue
         batch_id = record.get("batch_id") or f"{game_id}:batch:{batch_index + 1}"
         conn.execute("""INSERT INTO action_batches
-          (batch_id,game_id,sequence,source,submitted_orders_json,status,record_hash)
-          VALUES(?,?,?,?,?,?,?) ON CONFLICT(batch_id) DO NOTHING""",
-          (batch_id, game_id, batch_index + 1, "model", json.dumps(orders, sort_keys=True),
+          (batch_id,game_id,side_turn_id,sequence,source,submitted_orders_json,status,record_hash)
+          VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(batch_id) DO NOTHING""",
+          (batch_id, game_id, _side_turn_for_record(record, links), batch_index + 1, "model", json.dumps(orders, sort_keys=True),
            "accepted_unknown", digest({"batch_id": batch_id, "orders": orders})))
         for index, order in enumerate(orders):
             sequence += 1

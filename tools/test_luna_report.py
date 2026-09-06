@@ -62,7 +62,8 @@ class ReportTests(unittest.TestCase):
         ])
         self.assertTrue(report["finish_telemetry_available"])
         self.assertEqual(report["finish_counts"], {
-            "explicit_done": 1, "implicit_end_turn": 1, "selective": 0, "timeout": 0})
+            "explicit_done": 1, "implicit_end_turn": 1, "selective": 0, "timeout": 0,
+            "forced_partial_limit": 0})
         self.assertEqual(report["awareness_numerator"], 1)
         self.assertEqual(report["awareness_denominator"], 2)
         self.assertEqual(report["awareness_rate"], 0.5)
@@ -73,6 +74,20 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(report["protected_units"], 1)
         self.assertIsNone(report["protected_recruiters"])
         self.assertTrue(report["accounting_mismatch"])
+
+    def test_partial_limit_finish_is_not_model_awareness(self):
+        report = classify([
+            {"type": "metadata", "finish_telemetry_available": True},
+            {"type": "partial_limit_finish", "state_revision": 8},
+            {"type": "turn_boundary", "accepted": True, "state_revision": 8,
+             "authored_finish_kind": "selective", "executed_finish_kind": "selective"},
+            {"type": "turn_boundary", "accepted": True, "state_revision": 9,
+             "authored_finish_kind": "explicit_done", "executed_finish_kind": "explicit_done"},
+        ])
+        self.assertEqual(report["forced_partial_limit_finishes"], 1)
+        self.assertEqual(report["awareness_numerator"], 1)
+        self.assertEqual(report["awareness_denominator"], 2)
+        self.assertEqual(report["awareness_rate"], 0.5)
 
     def test_historical_logs_mark_finish_awareness_unavailable(self):
         report = classify([

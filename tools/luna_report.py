@@ -20,6 +20,32 @@ def load_records(path: str | Path) -> list[dict[str, Any]]:
     return records
 
 
+def _forced_partial_limit_boundaries(records: list[dict[str, Any]], boundaries: list[dict[str, Any]]) -> set[int]:
+    """Find safety finishes by stable identity, or immediate legacy chronology."""
+    forced = [item for item in records if item.get("type") == "partial_limit_finish"]
+    positions = {id(item): index for index, item in enumerate(records)}
+    boundary_positions = [positions[id(item)] for item in boundaries]
+    result: set[int] = {index for index, boundary in enumerate(boundaries)
+                        if boundary.get("forced_finish") is True}
+    for item in forced:
+        explicit = [index for index, boundary in enumerate(boundaries)
+                    if (item.get("side_turn_id") is not None
+                        and item.get("side_turn_id") == boundary.get("side_turn_id"))
+                    or (item.get("state_revision") is not None
+                        and item.get("state_revision") == boundary.get("state_revision"))]
+        if len(explicit) == 1:
+            result.add(explicit[0])
+            continue
+        position = positions[id(item)]
+        next_forced = min((positions[id(other)] for other in forced
+                           if positions[id(other)] > position), default=len(records))
+        following = [index for index, boundary_position in enumerate(boundary_positions)
+                     if position < boundary_position < next_forced]
+        if len(following) == 1:
+            result.add(following[0])
+    return result
+
+
 def classify(records: list[dict[str, Any]]) -> dict[str, Any]:
     terminal = next((item for item in reversed(records) if item.get("type") == "terminal"), {})
     metadata = next((item for item in records if item.get("type") == "metadata"), {})
@@ -27,6 +53,7 @@ def classify(records: list[dict[str, Any]]) -> dict[str, Any]:
     accepted = [item for item in events if item.get("type") == "events"]
     boundaries = [item for item in records
                   if item.get("type") == "turn_boundary" and item.get("accepted") is True]
+    forced_boundary_indexes = _forced_partial_limit_boundaries(records, boundaries)
     handoff_reviews = [item for item in records if item.get("type") == "handoff_review"]
     telemetry_declared = metadata.get("finish_telemetry_available") is True
     telemetry_available = telemetry_declared or any(
@@ -35,6 +62,7 @@ def classify(records: list[dict[str, Any]]) -> dict[str, Any]:
         for item in boundaries
     )
     finish_counts = Counter()
+    forced_finish_count = len(forced_boundary_indexes)
     delegated_units = set()
     protected_units = set()
     protected_recruiters = set()
@@ -185,7 +213,16 @@ def classify(records: list[dict[str, Any]]) -> dict[str, Any]:
 
     explicit = finish_counts["explicit_done"] + finish_counts["selective"]
     implicit = finish_counts["implicit_end_turn"]
-    denominator = explicit + implicit
+    # A partial-limit safety finish preserves a playable game, but it is not
+    # evidence that the model recognized it had completed its important work.
+    forced_explicit = sum(1 for index, boundary in enumerate(boundaries)
+                          if index in forced_boundary_indexes
+                          and boundary.get("authored_finish_kind") in {"explicit_done", "selective"})
+    explicit -= forced_explicit
+    # Keep raw implicit counts in the finish breakdown. Every resolved ending
+    # remains in the awareness denominator; forced endings simply contribute no
+    # numerator because they were injected by the safety path.
+    denominator = len(boundaries)
     report.update({
         "finish_telemetry_available": True,
         "finish_counts": {
@@ -193,11 +230,13 @@ def classify(records: list[dict[str, Any]]) -> dict[str, Any]:
             "implicit_end_turn": implicit,
             "selective": finish_counts["selective"],
             "timeout": finish_counts["timeout"],
+            "forced_partial_limit": forced_finish_count,
         },
         "explicit_done_turns": finish_counts["explicit_done"],
         "implicit_end_turn_turns": implicit,
         "selective_finish_turns": finish_counts["selective"],
         "timeout_finish_turns": finish_counts["timeout"],
+        "forced_partial_limit_finishes": forced_finish_count,
         "awareness_numerator": explicit,
         "awareness_denominator": denominator,
         "awareness_rate": explicit / denominator if denominator else None,
