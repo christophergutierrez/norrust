@@ -2784,7 +2784,7 @@ fn interactive_protocol_game(c: &Config) {
                                 json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,"body":inspection})
                             }
                             Err(error) => {
-                                json!({"type":"status","ok":false,"what":what,"code":"inspect_target_error","message":error.to_string()})
+                                json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,"body":{"target_id":unit_id.unwrap(),"available":false,"reason":"unit_unavailable","detail":error.to_string()}})
                             }
                         }
                     }
@@ -2814,24 +2814,17 @@ fn interactive_protocol_game(c: &Config) {
                         json!({"type":"status","ok":false,"what":what,"code":"parse","message":"unit_ids must contain 1 to 8 unique uint32 ids"})
                     } else {
                         let mut targets = Vec::new();
-                        let mut error = None;
                         for id in parsed_ids.unwrap() {
                             match target_inspection(&state, c.llm_side, id as u32) {
-                                Ok(inspection) => targets.push(inspection),
+                                Ok(inspection) => targets.push(
+                                    serde_json::to_value(inspection).unwrap_or_else(|_| json!({})),
+                                ),
                                 Err(err) => {
-                                    error = Some(err);
-                                    break;
+                                    targets.push(json!({"target_id":id,"available":false,"reason":"unit_unavailable","detail":err.to_string()}));
                                 }
                             }
                         }
-                        match error {
-                            Some(error) => {
-                                json!({"type":"status","ok":false,"what":what,"code":"inspect_targets_error","message":error.to_string()})
-                            }
-                            None => {
-                                json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,"body":{"targets":targets}})
-                            }
-                        }
+                        json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,"body":{"targets":targets}})
                     }
                 }
                 "inspect_hex" => {

@@ -107,6 +107,44 @@ fn final_nonsampling_preview_is_pre_finish_and_does_not_claim_a_sweep() {
 }
 
 #[test]
+fn bounded_preview_reports_isolated_finish_and_opponent_coverage() {
+    let lines = run_driver(
+        &[
+            "--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
+            "--gold", "300", "--max-turns", "1",
+        ],
+        r#"{"action":"Query","what":"preview_batch","state_revision":0,"phase":"final","mode":"bounded_rollout","candidates":[[{"action":"EndTurn"}]]}
+"#,
+    );
+    let status = lines.iter().find(|line| line["type"] == "status").expect("preview status");
+    assert_eq!(status["ok"], true);
+    let body = &status["body"];
+    assert_eq!(body["sampling"], true);
+    assert_eq!(body["coverage"]["post_sweep"], "modeled");
+    let candidate = &body["candidates"][0];
+    assert_eq!(candidate["observation_stage"], "post_opponent_response");
+    assert_eq!(candidate["post_sweep"]["policy"], "driver_greedy_one_response_v1");
+    assert_eq!(candidate["post_sweep"]["evaluation_seed"], 0x5eed5eed5eed5eedu64);
+    assert!(candidate["post_sweep"]["stages"]["post_finish"].is_object());
+}
+
+#[test]
+fn unavailable_target_inspection_is_factual_and_nonfatal() {
+    let lines = run_driver(
+        &[
+            "--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
+            "--gold", "300", "--max-turns", "1",
+        ],
+        r#"{"action":"Query","what":"inspect_targets","state_revision":0,"unit_ids":[999999]}
+"#,
+    );
+    let status = lines.iter().find(|line| line["type"] == "status").expect("inspection status");
+    assert_eq!(status["ok"], true);
+    assert_eq!(status["body"]["targets"][0]["available"], false);
+    assert_eq!(status["body"]["targets"][0]["reason"], "unit_unavailable");
+}
+
+#[test]
 fn invalid_setup_is_reported_as_game_end() {
     let lines = run_driver(
         &[
