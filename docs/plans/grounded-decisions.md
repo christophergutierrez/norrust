@@ -80,30 +80,30 @@ Primary files: `tools/llm_client.py`, `tools/test_llm_client.py`,
 
 ### Measurable acceptance
 
-- [ ] Parse the generated live reminder and compare every field with a fixture
+- [x] Parse the generated live reminder and compare every field with a fixture
       observation containing deliberately conflicting simulated totals and IDs.
       Check initial, inspection, draft review, malformed-review repair, pre-submit
       action repair, post-submit action repair, and accepted-partial paths.
-- [ ] Each request contains exactly one final live reminder after its appended
+- [x] Each request contains exactly one final live reminder after its appended
       context; no stale revision, preview-only ID, simulated HP, or simulated gold
       enters that reminder. Retained tool results and budgets are still present.
-- [ ] Positive, negative, zero, and missing resistance cases render correctly;
+- [x] Positive, negative, zero, and missing resistance cases render correctly;
       generated canonical prompts include the actual rendered descriptions.
       Damage tenths and basis-point regressions continue to pass.
-- [ ] A deterministic real-driver fixture requests a preview that recruits units,
+- [x] A deterministic real-driver fixture requests a preview that recruits units,
       then returns a replacement batch with a different recruitment count.
       Assert actual gold, roster, and recruit events reflect only the submitted
       replacement. Repeated read-only previews leave the live revision unchanged.
-- [ ] A second fixture presents a sampled losing continuation, then submits a
+- [x] A second fixture presents a sampled losing continuation, then submits a
       legal alternative or resignation. Assert simulation casualties never mutate
       the board; standalone resignation executes without another review or turn.
       Check observed/event state, not a preview's hypothetical output.
-- [ ] Import the fixture logs into temporary SQLite. Decompress and compare the
+- [x] Import the fixture logs into temporary SQLite. Decompress and compare the
       exact delivered prompt, response, final annotations, submitted orders, request
       identity, and revision. Reimport twice with identical rows/payloads; verify
       integrity and foreign keys. Missing/invalid explanations still cannot cause
       metadata-only retries or invent rationale.
-- [ ] Run `python3 -m tools.fast_check` and `git diff --check`; all checks pass,
+- [x] Run `python3 -m tools.fast_check` and `git diff --check`; all checks pass,
       with real-driver tests executed rather than skipped. Review the full diff,
       fix defects, and commit this complete stack. Record the commit as variant A.
 
@@ -140,23 +140,23 @@ needed. Preserve all factual grounding and evidence behavior from variant A.
 
 ### Measurable acceptance
 
-- [ ] Extract the maintained example envelope from the generated prompt and
+- [x] Extract the maintained example envelope from the generated prompt and
       validate its actions, annotations, and agenda through the actual parsers.
       Existing final-response linkage and no-extra-call tests still pass.
-- [ ] Real-driver execution proves a concrete authored retreat, a distinct held
+- [x] Real-driver execution proves a concrete authored retreat, a distinct held
       eligible unit, and a distinct delegated healthy unit behave as ordered.
       Establish units through accepted setup/partial actions; obtain real IDs
       from the resulting state instead of predicting recruitment IDs.
-- [ ] Include a justified-hold counterexample: holding an eligible guard does not
+- [x] Include a justified-hold counterexample: holding an eligible guard does not
       become automatic delegation merely because routine units can act. Assert
       positions at the model finish using state or correctly decoded event
       coordinates; distinguish the opponent's subsequent effects.
-- [ ] Persist the fixture's concrete job and opportunity-cost explanation through
+- [x] Persist the fixture's concrete job and opportunity-cost explanation through
       the final response, NDJSON, and SQLite unchanged. Confirm that descriptions
       themselves do not create actions or holds.
-- [ ] Production model/query budgets and response schemas remain unchanged.
+- [x] Production model/query budgets and response schemas remain unchanged.
       Canonical guide text stays no longer in UTF-8 bytes than variant A's guide.
-- [ ] Parent review, `python3 -m tools.fast_check`, and `git diff --check` all pass.
+- [x] Parent review, `python3 -m tools.fast_check`, and `git diff --check` all pass.
       Commit the complete stack and record it as variant B. Both A and B are
       reproducible clean revisions, not runtime feature flags.
 
@@ -200,23 +200,23 @@ file backend, hidden model coaching, or retries until a preferred move appears.
 
 Acceptance and selection:
 
-- [ ] All 24 attempts are accounted for, including infrastructure failures,
+- [x] All 24 attempts are accounted for, including infrastructure failures,
       missing explanations, budget exhaustion, and unexercised decisions. Archive
       canonical prompt bytes/hashes, requests, responses, revisions, and events.
-- [ ] Score actual claims about live facts separately from explicitly hypothetical
+- [x] Score actual claims about live facts separately from explicitly hypothetical
       claims. Target zero preview-as-live claims and zero resistance-sign errors;
       silence is unassessed, not proof of understanding. Record both error counts
       and the number of assessable decisions.
-- [ ] Measure legal batches, statement/command agreement, jobs and opportunity
+- [x] Measure legal batches, statement/command agreement, jobs and opportunity
       costs supplied for held groups, actual attacks and retreats, damage/losses,
       recruiter survival, calls, and wall time. Label subjective tactical judgments
       and sampled outcomes; do not turn more attacks into an automatic pass.
-- [ ] Prefer B for the final cohort only if it introduces no observed increase in
+- [x] Prefer B for the final cohort only if it introduces no observed increase in
       grounding errors, no loss of the justified-protection behavior, and at least
       one concrete improvement in the broad-hold case's job/alternative reasoning
       or useful execution. Otherwise retain A and record the policy hypothesis as
       unsupported. An unassessable comparison does not establish improvement.
-- [ ] Review and commit the probe report with the selected revision and reasons.
+- [x] Review and commit the probe report with the selected revision and reasons.
       Do not alter thresholds or cases after seeing results. These small probes
       diagnose behavior, not statistical significance. Behavioral misses are
       recorded results; they do not authorize open-ended tuning or replacement runs.
@@ -233,29 +233,29 @@ all probe evidence. Never discard unrelated work to select a variant.
 This phase starts only after both stack gates and the committed probe review.
 No full games are run before it.
 
-- [ ] Freeze the selected clean revision. Build the release greedy_driver and
+- [x] Freeze the selected clean revision. Build the release greedy_driver and
       record the source commit, driver hash, guide hash, and requested settings.
-- [ ] Start exactly three parallel Luna subagents, each supervising one native
+- [x] Start exactly three parallel Luna subagents, each supervising one native
       Luna/high player using `tools.codex_backend`. Seeds 2001, 2002, and 2003;
       `big_battle_6`; Undead versus Undead; 300 gold; model side 0; single-batch;
       resignation enabled; **max 50 completed side-turns** (at most 25 per side).
-- [ ] Isolate every game's NDJSON, checkpoints, native session sidecar, request
+- [x] Isolate every game's NDJSON, checkpoints, native session sidecar, request
       journal, prompt/result artifacts, stdout/stderr, and launch/exit records.
       Preserve each complete canonical prompt. Do not change code or policy
       during the cohort or silently replace an unsuccessful attempt.
-- [ ] Supervise all three attempts to terminal completion or a documented concrete
+- [x] Supervise all three attempts to terminal completion or a documented concrete
       failure. Distinguish wins, losses, resignations, caps, model-invalid results,
       and infrastructure failures. Winning is not a completion requirement.
-- [ ] After completion, import a fresh final SQLite catalog and inspect it before
+- [x] After completion, import a fresh final SQLite catalog and inspect it before
       raw archives. Check exact prompt/response/annotation/request/revision links,
       full guide delivery, integrity/foreign keys, and two idempotent reimports.
       Keep requested model/effort separate from runtime evidence. Missing usage,
       private reasoning, and endpoint state data remain unknown.
-- [ ] Review live-versus-simulation claims, resistance interpretation, recruitment,
+- [x] Review live-versus-simulation claims, resistance interpretation, recruitment,
       held jobs, actual authored/delegated activity, recruiter survival, and
       resignation evidence. Compare with the previous same-seed cohort without
       claiming causal proof from three stochastic games.
-- [ ] Commit `docs/experiments/grounded-decisions-evaluation.md` and update this
+- [x] Commit `docs/experiments/grounded-decisions-final-evaluation.md` and update this
       plan. Include a table of outcome, model turns, calls, wall time, annotation
       coverage, authored/delegated/opponent attacks, and a specific finding per
       game; report evidence coverage and source/artifact paths.
