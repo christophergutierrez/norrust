@@ -106,9 +106,10 @@ norrust/
 │       ├── test_ffi.rs     # FFI integration test
 │       ├── campaign.rs     # Campaign progression tests
 │       ├── dialogue.rs     # Dialogue trigger tests
+│       ├── driver_protocol.rs  # Headless driver protocol and transaction tests
 │       ├── scenario_validation.rs  # Scenario integrity tests
 │       └── balance.rs      # Balance simulation tests (slow — do not run casually)
-├── norrust_love/           # Love2D project (Lua frontend, 29 modules)
+├── norrust_love/           # Love2D project (Lua presentation modules)
 │   ├── main.lua            # Entry point and game loop
 │   ├── norrust.lua         # LuaJIT FFI bindings + JSON decoder
 │   ├── draw*.lua           # Rendering (board, HUD, sidebar, screens)
@@ -124,12 +125,24 @@ norrust/
 ├── scenarios/              # 7 scenario directories
 ├── campaigns/              # Campaign definitions
 ├── debug/                  # Debug sandbox config
-└── tools/                  # Utility scripts (8 Python tools)
+└── tools/                  # Model clients, request recovery, history, verification, content utilities
 ```
 
 ---
 
 ## Component Details
+
+The headless model path is `llm_client` → a configured backend for model replies,
+and `llm_client` → `greedy_driver` for engine queries and action batches.
+`codex_backend` manages native Codex sessions; `file_backend` exchanges complete
+prompts and replies through files. Shared request durability and recovery live in
+`request_journal` and `request_recovery`; `turn_agenda` holds optional model
+objective bookkeeping. `match_report` summarizes logs, and `game_history`
+imports recorded evidence into SQLite after play. Module names identify their
+responsibilities; the model identifier is backend configuration.
+
+Command setup is documented in [LLM_CLIENT.md](LLM_CLIENT.md); the full tool map
+and verification workflow are in [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ### 1. Presentation Layer (Love2D / Lua)
 The frontend (`norrust_love/`) is entirely responsible for visuals and capturing player intent. It knows *nothing* about game rules, unit stats, or hex math beyond coordinate conversion.

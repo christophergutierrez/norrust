@@ -3,6 +3,8 @@
 ## Prerequisites
 
 - Rust toolchain (stable) — [rustup.rs](https://rustup.rs)
+- Python 3.10 or newer — for the headless model tools and their tests
+- LuaJIT — for the headless bridge smoke test in `tools.fast_check`
 - Love2D 11.5 — for running the game client (`sudo pacman -S love` on Arch)
 
 ## Repository Layout
@@ -29,9 +31,13 @@ norrust/
 cargo build --manifest-path norrust_core/Cargo.toml
 ```
 
-This produces two artifacts from the same source:
+With Cargo's default target directory, the library artifacts are:
 - `norrust_core/target/debug/libnorrust_core.so` — the `cdylib` loaded by Love2D via LuaJIT FFI
 - `norrust_core/target/debug/libnorrust_core.rlib` — the `rlib` used by `cargo test`
+
+The same build also produces the `greedy_driver` and `self-play` executables.
+If you customize Cargo's target directory, use the corresponding paths when
+launching a driver or setting `NORRUST_LIB` for Love2D.
 
 For a release build:
 
@@ -60,7 +66,7 @@ For focused Rust checks:
 # Unit tests only (fast, recommended for development)
 cargo test --lib --manifest-path norrust_core/Cargo.toml
 
-# Integration tests (without balance tests)
+# Driver protocol integration tests
 cargo test --test driver_protocol --manifest-path norrust_core/Cargo.toml
 ```
 
@@ -70,6 +76,19 @@ suites are `campaign`, `dialogue`, `driver_protocol`, `scenario_validation`,
 
 Expected output: the current library tests pass (`cargo test --lib`). Run the
 named integration suites separately when changing the bridge or driver.
+
+For focused Python checks:
+
+```bash
+python3 -m unittest tools.test_codex_backend tools.test_cli_commands
+# All Python tools; build greedy_driver first for the real-driver check.
+python3 -m unittest discover -s tools -t .
+```
+
+`tools.test_cli_commands` exercises the maintained backend and report commands as
+both modules and direct scripts, including native-session start/resume with an
+offline Codex substitute. `tools.fast_check` supplies `NORRUST_TEST_DRIVER` when
+the driver is built outside the default target directory.
 
 ### Self-play simulations
 
@@ -133,8 +152,14 @@ For logic-only changes (no bridge or presentation work):
 
 ```bash
 cargo test --lib --manifest-path norrust_core/Cargo.toml
-# No rebuild needed for Love2D — tests run against the rlib directly
+# These tests use the rlib. Rebuild before checking the change in Love2D.
 ```
+
+The product is unreleased. Refactors should update maintained callers, tests,
+and documentation together and remove superseded entry points, environment
+aliases, and duplicate fields. Keep model choice in configuration; name shared
+tools by responsibility and transport adapters by the runtime they invoke.
+Historical experiment reports and game archives retain their original identities.
 
 ## Project Structure: Key Files
 
@@ -173,3 +198,18 @@ cargo test --lib --manifest-path norrust_core/Cargo.toml
 | `tools/review_sprites.py` | Sprite validation and review |
 | `tools/agent_client.py` | Python client library for the agent TCP server |
 | `tools/ai_vs_ai.py` | Headless AI-vs-AI match runner |
+| `tools/fast_check.py` | Headless verification gate with freshly built Cargo artifacts |
+| `tools/llm_client.py` | Provider-neutral headless model match client |
+| `tools/codex_backend.py` | Native Codex session adapter with explicit model configuration |
+| `tools/file_backend.py` | File transport preserving the complete client prompt |
+| `tools/llm_supervisor.py` | Bounded client restart supervisor |
+| `tools/request_journal.py` | Durable model request records and writer locking |
+| `tools/request_recovery.py` | Read-only reconciliation of request, log, and checkpoint evidence |
+| `tools/turn_agenda.py` | Validation and formatting for model-authored objective bookkeeping |
+| `tools/match_report.py` | NDJSON match summaries |
+| `tools/game_history.py` | SQLite game catalog import, inspection, evaluation, and maintenance |
+| `tools/game_training_export.py` | Exports selected, reviewed training records |
+
+See [LLM_CLIENT.md](LLM_CLIENT.md) for backend setup,
+[GAME_HISTORY.md](GAME_HISTORY.md) for catalog commands, and
+[GLOSSARY.md](GLOSSARY.md) for shared terminology.

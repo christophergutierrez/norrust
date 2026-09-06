@@ -31,7 +31,8 @@ seven scenarios, fog of war, save/load, and campaign progression.
 
 - **Playable game:** four-faction match (Loyalists, Rebels, Northerners, Undead), full
   move/attack/recruit/end-turn loop, human vs. built-in AI
-- **168 passing tests:** 130 unit tests + 38 integration tests — all headless, no Love2D required
+- **Headless verification:** Rust library, binary, and integration tests; Python tool tests;
+  and a LuaJIT bridge smoke test, run together with `python3 -m tools.fast_check`
 - **112 data-driven units:** stats, attacks, resistances, alignment, and advancement chains
   loaded from TOML at startup across 4 factions
 - **14 terrain types:** each with movement cost, defense bonus, healing — all data-driven
@@ -170,11 +171,11 @@ Executable headless setup and provider-neutral examples are in
 norrust/
 ├── norrust_core/       # Rust library — simulation engine + C ABI bridge
 │   ├── src/            # Simulation modules: game_state, combat, pathfinding, ai, ffi, ...
-│   └── tests/          # 6 test suites (simulation, FFI, campaign, dialogue, scenario, balance)
+│   └── tests/          # 6 non-balance integration suites + slow balance simulations
 ├── norrust_love/       # Love2D project — presentation layer only
 │   ├── main.lua        # Entry point and game loop
 │   ├── norrust.lua     # LuaJIT FFI bindings for the C ABI
-│   └── (27 more)       # Modular Lua files: draw, input, camera, combat, save, roster, ...
+│   └── ...             # Lua modules: draw, input, camera, combat, save, roster, ...
 ├── data/
 │   ├── units/          # 112 unit TOML definitions across 31 advancement trees
 │   ├── terrain/        # 14 terrain TOML + PNG definitions
@@ -184,7 +185,7 @@ norrust/
 ├── campaigns/          # Campaign definitions (multi-scenario progression)
 ├── debug/              # Debug sandbox config
 ├── docs/               # Architecture, development, API, agent, asset, and contributor guides
-└── tools/              # Utility scripts (Wesnoth scraper, sprite generator, stat verifier, ...)
+└── tools/              # Model clients, request recovery, game history, verification, content utilities
 ```
 
 ---
@@ -195,6 +196,10 @@ norrust/
 |----------|---------------|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design, component diagram, sequence diagrams |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Build commands, test workflow, key file map |
+| [docs/GLOSSARY.md](docs/GLOSSARY.md) | Shared domain terminology |
+| [docs/LLM_CLIENT.md](docs/LLM_CLIENT.md) | Headless model games, backend configuration, prompt and action contracts |
+| [docs/GAME_HISTORY.md](docs/GAME_HISTORY.md) | Recorded-game catalogs, evidence, inspection, and maintenance |
+| [docs/TRAINING_DATA.md](docs/TRAINING_DATA.md) | Reviewed training exports and evidence requirements |
 | [docs/SELF_PLAY.md](docs/SELF_PLAY.md) | Reproducible headless simulations, fair comparisons, benchmark baselines |
 | [docs/LLM_VS_ALGORITHM.md](docs/LLM_VS_ALGORITHM.md) | LLM as the player vs greedy or look-ahead: rules, roster, strategy |
 | [docs/BRIDGE_API.md](docs/BRIDGE_API.md) | C ABI function signatures, error codes, JSON schemas |

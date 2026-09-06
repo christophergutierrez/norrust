@@ -180,14 +180,21 @@ batch. `turn_format` in metadata records the requested mode.
 
 Use `tools.codex_backend` for native Codex sessions and provide a unique session
 sidecar for every match. Set `NORRUST_CODEX_MODEL` to the model identifier and
-`NORRUST_CODEX_REASONING_EFFORT` to the desired effort (default `high`). For example:
+`NORRUST_CODEX_REASONING_EFFORT` to the desired effort (default `high`). The
+adapter name identifies the Codex runtime; it does not select a model. With the
+driver built as above, replace `MODEL_ID` and the match directory before running:
 
 ```bash
-NORRUST_CODEX_MODEL=gpt-5.6-luna \
+NORRUST_CODEX_MODEL=MODEL_ID \
 NORRUST_CODEX_REASONING_EFFORT=high \
 NORRUST_CODEX_SESSION_FILE=/path/to/match/session.json \
-python -m tools.llm_client ... --reasoning-effort high \
-  --model-command 'python3 -m tools.codex_backend'
+python3 -m tools.llm_client \
+  --driver norrust_core/target/debug/greedy_driver \
+  --model-command 'python3 -m tools.codex_backend' \
+  --scenario big_battle_6 --faction0 undead --faction1 undead \
+  --gold 300 --seed 2001 --llm-side 0 --max-turns 50 \
+  --reasoning-effort high --model-timeout 900 --turn-timeout 2100 \
+  --log /path/to/match/match.ndjson
 ```
 
 The model and effort are configuration values. The adapter uses read-only sandboxing
@@ -205,9 +212,19 @@ sets the native request timeout in seconds (default 840). Give every concurrent
 match its own sidecar, artifacts, and identity. These commands require POSIX
 process groups and `fcntl` locking.
 
+The example gives the backend's 840-second timeout room to finish before the
+client's 900-second command timeout. Its 2100-second turn budget covers the
+default 300-second query budget and two model calls for an action repair.
+
 The client records its `--reasoning-effort` expectation separately; configure the
 backend's effort too. The journal, result, and session sidecar record
 `requested_model` and `requested_reasoning_effort` separately from runtime fields.
+In client metadata, the backend values are named `backend_requested_model` and
+`backend_requested_reasoning_effort`; `requested_reasoning_effort` holds the
+client's expectation. The backend result, sidecar, and reply `cache` use
+`runtime_model: null`, `runtime_reasoning_effort: null`, and
+`runtime_settings_source: "not_reported"` until the native evidence confirms
+runtime settings. A requested value is not runtime confirmation.
 
 When an engine rejects a submitted batch, the client allows bounded action
 repairs. Inspection results requested during pre-submit repair remain in every

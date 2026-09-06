@@ -22,6 +22,12 @@ request records, submitted action batches, primitive authored actions, evaluatio
 runs, and decision evaluations. State and request payloads are compressed and
 hashed. Reimporting a game with the same ID is idempotent.
 
+`inventory`, `game`, `turns`, and the Python `verify_history(path)` helper open
+an existing catalog read-only. A missing path fails instead of creating a new
+database. Quote shell paths containing spaces or characters such as `#`, `?`,
+and `%`; the catalog opener handles their SQLite URI encoding. Import, review,
+payload-coverage evaluation, and deletion are write operations.
+
 The initial importer exposes the evidence present in existing NDJSON logs. Missing
 request IDs, opponent boundary states, and usage measurements remain unknown.
 It does not infer tactical quality from a winner or from a model action. Use the
@@ -34,6 +40,15 @@ terminal `terminal_class`, `infrastructure_invalid`, model request statuses, and
 fallback counts. A clean model run should show successful resumed requests and
 zero infrastructure failures. Native usage is copied from completed requests when
 the adapter provides it; missing usage remains NULL.
+
+Distinguish requested settings from runtime evidence. The Codex adapter records
+`requested_model` and `requested_reasoning_effort` in its request metadata,
+results, and session sidecar. The client copies those values to
+`backend_requested_model` and `backend_requested_reasoning_effort` in match
+metadata, while `requested_reasoning_effort` records the client's expectation.
+The current native events do not confirm runtime model or effort, so the adapter
+records null runtime fields and `runtime_settings_source: "not_reported"`.
+Do not fill missing runtime fields from a requested setting or an archive name.
 
 Inventory a catalog before deleting anything:
 
