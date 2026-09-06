@@ -31,6 +31,23 @@ class AgendaTests(unittest.TestCase):
         self.assertIsNone(agenda)
         self.assertIn("tasks", error)
 
+    def test_malformed_types_and_invalid_utf8_are_nonfatal(self):
+        malformed = [
+            {"tasks": [{"id": "x", "goal": "ok", "units": [], "status": []}], "holds": []},
+            {"tasks": [{"id": "x", "goal": "\ud800", "units": [], "status": "pending"}], "holds": []},
+            {"tasks": [{"id": "\ud800", "goal": "ok", "units": [], "status": "pending"}], "holds": []},
+            {"tasks": [{"id": "x", "goal": "ok", "units": [], "status": "pending"}], "holds": {1: 2}},
+            {"tasks": [], "holds": [], "extra": True},
+        ]
+        for value in malformed:
+            with self.subTest(value=value):
+                agenda, error = normalize_agenda(value)
+                self.assertIsNone(agenda)
+                self.assertIsInstance(error, str)
+        agenda, error = response_agenda(b'{"agenda":\xff}')
+        self.assertIsNone(agenda)
+        self.assertIsNone(error)
+
 
 if __name__ == "__main__":
     unittest.main()

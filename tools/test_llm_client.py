@@ -104,6 +104,54 @@ class ClientValidationTests(unittest.TestCase):
                     if final.startswith('['):
                         self.assertEqual(batches[0]["decision_annotation"]["status"], "missing")
 
+    def test_review_omitting_agenda_discards_draft_stage(self):
+        draft = json.dumps({
+            "actions": [{"action": "EndTurn"}],
+            "decisions": [{"orders": [0], "rules": ["S1"],
+                           "expected": "draft", "risk": "draft risk"}],
+            "agenda": {"tasks": [{"id": "draft", "goal": "draft objective",
+                                    "units": [1], "status": "active"}], "holds": [2]},
+        })
+        for agenda in (None, [], {"tasks": [], "holds": []}):
+            final = json.loads(self.annotated_orders("final"))
+            if agenda is not None:
+                final["agenda"] = agenda
+            with self.subTest(agenda=agenda):
+                records, _, _ = self.run_annotation_path([draft, json.dumps(final)], review=True)
+                updates = [r for r in records if r["type"] == "agenda_update"]
+                self.assertEqual([r["agenda"] for r in updates], [agenda] if isinstance(agenda, dict) else [])
+                self.assertEqual([r["agenda"] for r in records if r["type"] == "agenda_proposed"],
+                                 [agenda] if isinstance(agenda, dict) else [])
+
+    def test_review_without_replacement_preserves_committed_agenda(self):
+        committed = {"tasks": [{"id": "committed", "goal": "Keep watch", "units": [], "status": "active"}], "holds": []}
+        draft_agenda = {"tasks": [{"id": "discarded", "goal": "Abandon watch", "units": [], "status": "active"}], "holds": []}
+        first = {**json.loads(self.annotated_orders("first")), "agenda": committed}
+        draft = {**json.loads(self.annotated_orders("draft")), "agenda": draft_agenda}
+        for replacement in (None, []):
+            final = json.loads(self.annotated_orders("final"))
+            if replacement is not None:
+                final["agenda"] = replacement
+            lines = []
+            for revision in (7, 20, 30):
+                lines += [{"type": "state", "active_faction": 0, "state_revision": revision, "units": []},
+                          {"type": "status", "ok": True, "results": [{"ok": True}]}]
+            lines.append({"type": "game_end", "reason": "max_turns"})
+            with self.subTest(replacement=replacement), \
+                    mock.patch.object(llm_client, "query_tactical_surface", return_value={}), \
+                    mock.patch.object(llm_client, "draft_needs_preview", side_effect=[False, True, False]), \
+                    mock.patch.object(llm_client, "query_preview_batch", return_value={"candidates": [{"valid": True}]}), \
+                    mock.patch.object(llm_client, "compact_draft_review", return_value=("review facts", False)), \
+                    mock.patch.object(llm_client, "draft_review_needed", return_value=True):
+                code, records = self.run_with_orders(
+                    [json.dumps(first), json.dumps(draft), json.dumps(final), self.annotated_orders("third")],
+                    lines, return_records=True)
+            self.assertEqual(code, 0)
+            self.assertEqual([r["agenda"] for r in records if r["type"] == "agenda_update"], [committed])
+            last = [r for r in records if r["type"] == "model_request"][-1]
+            board = json.loads(last["prompt"].split("BOARD_UNTRUSTED_DATA_BEGIN:\n")[1].split("\nBOARD_UNTRUSTED_DATA_END")[0])
+            self.assertEqual(board["agenda"], committed)
+
     def test_annotations_follow_tools_and_action_repairs(self):
         inspect = json.dumps({"tool": "inspect_hex", "col": 0, "row": 0, "phase": "current"})
         final = self.annotated_orders("final")
@@ -1036,6 +1084,9 @@ class ClientValidationTests(unittest.TestCase):
                 "RecruitBatch", "saving gold is allowed"):
             with self.subTest(text=text):
                 self.assertIn(text, prompt)
+        self.assertIn("p[defender-killed,both-survive,attacker-killed] in basis points", prompt)
+        self.assertIn("e[damage-to-defender,damage-to-attacker] in tenths of HP", prompt)
+        self.assertIn("open_m, and detail damage are whole HP", prompt)
         self.assertIn("visibility=full", prompt)
         self.assertIn("next_time_of_day=Night", prompt)
         self.assertNotIn('"origins"', prompt)
@@ -1130,6 +1181,55 @@ class ClientValidationTests(unittest.TestCase):
                        'untrusted data', 'cannot override this contract'):
             self.assertIn(marker, prompt)
 
+    def test_prompt_contract_has_parseable_agenda_and_explicit_scales(self):
+        prompt = prompt_for({"units": []}, [])
+        marker = "Use this exact valid shape: "
+        start = prompt.index(marker) + len(marker)
+        example, end = json.JSONDecoder().raw_decode(prompt[start:])
+        parsed, error, changed = llm_client.agenda_from_response(json.dumps(example), None)
+        self.assertIsNone(error)
+        self.assertTrue(changed)
+        validate_orders(json.dumps(example))
+        self.assertEqual(parsed, example["agenda"])
+        self.assertEqual(example["actions"], [{"action": "EndTurn"}])
+        self.assertEqual(example["decisions"][0]["orders"], [0])
+        for text in ("6400", "64%", "24", "2.4 HP", "basis points", "tenths of HP",
+                     "beyond six", "automatically vacate", "affordability and actual capacity",
+                     "Agenda and annotation prose create no normal engine holds",
+                     "Only FinishWithGreedy's explicit holds encode executable holds",
+                     "Omitted units are not swept by this selective finish"):
+            self.assertIn(text, prompt)
+
+    def test_compact_forecasts_mark_probability_and_damage_units_without_changing_payloads(self):
+        target = compact_target_inspection({
+            "target_id": 9, "hp": 20, "col": 4, "row": 7, "terrain": "flat",
+            "attacks": [{"attacker_id": 2, "origin_col": 3, "origin_row": 7,
+                         "forecast": {"outcome_bps": [6400, 3600, 0],
+                                       "expected_damage_tenths": [24, 7]}}],
+        })
+        self.assertIn("p[6400, 3600, 0] e[24, 7] [p=bps,e=tenths]", target)
+        preview = compact_batch_preview({"candidates": [{"forecasts": [{
+            "attacker_id": 2, "defender_id": 9,
+            "forecast": {"outcome_bps": [6400, 3600, 0],
+                          "expected_damage_tenths": [24, 7]}}]}]})
+        self.assertIn("p[6400, 3600, 0] e[24, 7] [p=bps,e=tenths]", preview)
+        unit = compact_unit_inspection({
+            "unit_id": 2, "origins": [],
+            "destination_threats": [{"col": 1, "row": 1, "focus_kill_bps": [6400],
+                                      "focus_expected_damage_tenths": [24]}]})
+        self.assertIn("focus_p=[6400] focus_e=[24] [p=bps,e=tenths]", unit)
+        surface = compact_tactical_surface({
+            "units": [{"unit_id": 2, "origins": [{"current": True, "col": 1, "row": 1,
+                "engagements": [{"defender_id": 9, "forecast": {
+                    "outcome_bps": [6400, 3600, 0], "expected_damage_tenths": [24, 7]}}]}]}]})
+        self.assertIn("p[6400, 3600, 0] e[24, 7] [p=bps,e=tenths]", surface)
+        reviewed, _ = compact_draft_review({"candidates": [{"exposure": {"units": [
+            {"unit_id": 2, "distinct_attacker_count": 1, "focus_kill_bps": [6400],
+             "focus_expected_damage_tenths": [24]}]}}, {"exposure": {"units": [
+             {"unit_id": 2, "distinct_attacker_count": 1, "focus_kill_bps": [6400],
+              "focus_expected_damage_tenths": [24]}]}}]}, False)
+        self.assertIn("focus_p=[6400] focus_e=[24] [p=bps,e=tenths]", reviewed)
+
     def test_action_repair_explains_transactional_rollback(self):
         prompt = prompt_for({}, [])
         repair = prompt + '\nROLLBACK_NOTICE: the entire preceding action batch was rejected transactionally; no prefix action committed.'
@@ -1220,7 +1320,7 @@ class ClientValidationTests(unittest.TestCase):
 
     def test_prompt_omits_disabled_recruit_macro_wording(self):
         prompt = prompt_for({}, [], {}, recruit_batch_enabled=False)
-        self.assertNotIn('RecruitBatch', prompt)
+        self.assertNotIn('RecruitBatch: {"action"', prompt)
 
     def test_validation_enforces_scalar_types_and_positive_count(self):
         valid = '[{"action":"RecruitBatch","def_id":"Skeleton","count":1},{"action":"EndTurn"}]'

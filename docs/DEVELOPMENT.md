@@ -215,7 +215,7 @@ Historical experiment reports and game archives retain their original identities
 | `tools/llm_supervisor.py` | Bounded client restart supervisor |
 | `tools/request_journal.py` | Durable model request records and writer locking |
 | `tools/request_recovery.py` | Read-only reconciliation of request, log, and checkpoint evidence |
-| `tools/turn_agenda.py` | Validation and formatting for model-authored objective bookkeeping |
+| `tools/turn_agenda.py` | Strict validation/formatting for optional model-authored agenda bookkeeping; agenda tasks and integer IDs are never engine orders |
 | `tools/match_report.py` | NDJSON match summaries |
 | `tools/game_history.py` | SQLite game catalog import, inspection, evaluation, and maintenance |
 | `tools/game_training_export.py` | Exports selected, reviewed training records |
@@ -223,3 +223,30 @@ Historical experiment reports and game archives retain their original identities
 See [LLM_CLIENT.md](LLM_CLIENT.md) for backend setup,
 [GAME_HISTORY.md](GAME_HISTORY.md) for catalog commands, and
 [GLOSSARY.md](GLOSSARY.md) for shared terminology.
+
+### LLM player contract notes
+
+Keep the player contract aligned across the client, tactical playbook, and
+tests. An agenda is a full object replacement with exactly `tasks` and integer
+`holds` fields; it is committed only after its action batch is accepted. Agenda, intent, and
+decision annotations are audit/bookkeeping data. A deliberate hold that affects
+execution must be represented in the `FinishWithGreedy` action's `holds` list,
+whose entries are `{unit_id, reason}` objects.
+
+`RecruitBatch` is driver-assisted and may recruit beyond the initially empty
+castle spaces by vacating eligible occupants and reusing the freed spaces. The
+actual result is bounded by legal capacity and gold, and the positional cost of
+vacating must remain visible to the player. Compact forecast damage is in
+tenths of HP (`24` = 2.4 HP); compact probabilities are basis points (`6400` =
+64%); direct maximum-damage fields remain whole HP. Preserve these numeric
+payloads and the stable `tactics-v1` rule IDs when changing prompt wording or
+validation.
+
+Run the real-driver player-contract regressions with:
+
+```bash
+python3 -m unittest tools.test_player_contract_integration
+```
+
+They check recruitment beyond initial castle spaces, selective finish positions,
+agenda persistence, and exact request payloads in SQLite.

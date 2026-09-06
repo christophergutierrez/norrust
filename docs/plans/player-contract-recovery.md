@@ -14,7 +14,7 @@ and observed movement; it does not infer intent from arbitrary prose in producti
 ## Phase 0: plan
 
 - [x] Record scope, ownership, measurable gates, and evaluation conditions here.
-- [ ] Commit the plan before coding starts.
+- [x] Commit the plan before coding starts.
 
 ## Phase 1: one complete implementation stack
 
@@ -50,17 +50,24 @@ fixes integration defects, runs the complete gate, and commits the whole stack.
 
 Acceptance milestones:
 
-- [ ] Exact prompt agenda example parses successfully through the real parser;
+- [x] Exact prompt agenda example parses successfully through the real parser;
       malformed values are logged/ignored without preventing legal play.
-- [ ] Prompt/card regression demonstrates unambiguous 2.4 HP and 64% scales.
-- [ ] Real driver recruits at least 12 from six starting castle spaces, with
+- [x] Prompt/card regression demonstrates unambiguous 2.4 HP and 64% scales.
+- [x] Real driver recruits at least 12 from six starting castle spaces, with
       matching gold/unit/vacate effects; read-only validation preserves revision.
-- [ ] Real-driver hold/delegation test proves the model-finish positions, and
+- [x] Real-driver hold/delegation test proves the model-finish positions, and
       agenda persists only after the accepted response, through the next prompt.
-- [ ] Deterministic integration log imports into SQLite with intact prompt,
+- [x] Deterministic integration log imports into SQLite with intact prompt,
       response, annotation, request and revision links; repeated import is stable.
-- [ ] Parent reviews all diffs and fixes issues. `python3 -m tools.fast_check`
+- [x] Parent reviews all diffs and fixes issues. `python3 -m tools.fast_check`
       and `git diff --check` pass; record results and commit the complete stack.
+
+Validation: `python3 -m tools.fast_check` passed 234 Rust tests, 182 Python
+tests, LuaJIT bridge smoke, and `git diff --check`. Log:
+`tmp/player-contract-fast-check.log`. Parent review fixed incorrect selective
+finish wording, restored forecast vector meanings, staged agendas only from
+final submissions, and replaced weak tests with live-state and exact-payload
+assertions. No engine rules changed.
 
 ## Phase 2: frozen implementation, three parallel Luna games
 

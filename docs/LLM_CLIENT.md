@@ -99,15 +99,31 @@ match-owned native session when the session sidecar is available; generic model
 commands receive the restored state and bounded transcript through the new
 backend process.
 
-Responses may include an optional full `agenda` replacement with up to eight
-tasks (`id`, `goal`, `units`, `status`) and deliberate `holds`. Agenda data is
-bookkeeping and never creates engine actions. Malformed agenda data is logged and
-ignored while valid actions continue, and a proposed agenda is published only
-after its action batch is accepted. Each observation includes a compact
-whole-army sweep unless `--disable-agenda-sweep` is passed; this adds no review
-call and never prevents `EndTurn`. The sweep is eligibility-based greedy execution,
-not a safety guarantee: excluded units avoid delegated execution but remain exposed
-to the opponent, while delegated units may still move into a tactically bad hex.
+Responses may include an optional full `agenda` replacement. The accepted value
+is an object with exactly `tasks` and `holds`; `tasks`
+is a list of at most eight objects with exactly `id` (unique non-empty string),
+`goal` (at most 160 UTF-8 bytes), `units` (integer friendly IDs), and `status`
+(`pending`, `active`, `done`, or `deferred`). At most one task may be `active`.
+`holds` is a list of integer friendly IDs. For example:
+
+```json
+{"actions":[{"action":"FinishWithGreedy","groups":[{"mode":"greedy","unit_ids":[12]}],"holds":[{"unit_id":14,"reason":"guard keep"}]}],"agenda":{"tasks":[{"id":"front","goal":"Keep the screen on the keep","units":[12,14],"status":"active"}],"holds":[14]},"decisions":[{"orders":[0],"rules":["T7"],"expected":"Delegate U12 and keep U14 at its current hex.","risk":"U12 may choose an unsafe delegated destination."}]}
+```
+
+The agenda is a full replacement, limited to 4096 compact JSON bytes. Agenda
+data, `intent`, and decision annotation prose are bookkeeping and never create
+engine actions or normal holds. Agenda holds are reported in observations and
+can be preserved by timeout fallback within that turn; they reset at a new turn,
+while agenda tasks persist. They do not restrict the ordinary automatic
+sweep. Only a `FinishWithGreedy` hold is an explicit executable instruction in
+the submitted action batch. Malformed agenda data is logged and ignored while
+valid actions continue, and a proposed agenda is published only after its action
+batch is accepted. Each observation includes a compact whole-army sweep unless
+`--disable-agenda-sweep` is passed; this adds no review call and never prevents
+`EndTurn`. In a selective finish, only listed group IDs are swept and listed
+hold IDs are kept; other units remain unswept. Neither mechanism prevents
+earlier authored moves or recruitment, auto-vacating, or later opponent attacks.
+Delegated destinations remain a tactical choice and are not guaranteed safe.
 
 ## Build and run
 
@@ -361,7 +377,10 @@ recruitment before and after the decision.
 The tactical card also includes exact direct focus vectors: `focus_p` contains
 kill probabilities in basis points for the best compatible one-, two-, and
 three-attacker volleys, while `focus_e` contains expected cumulative damage in
-tenths. These are bounds, not recommendations. Automatic draft review compares
+tenths of HP. All compact forecast `e`/`focus_e` damage values use tenths of HP
+(`24` means `2.4` HP); all compact forecast `p`/`focus_p` probabilities use basis
+points (`6400` means `64%`). The direct `m`/`max_damage` values remain whole HP.
+These are bounds, not recommendations. Automatic draft review compares
 the draft with an unchanged `EndTurn` baseline and labels reply exposure with
 the assumption that forecast combatants survive in place. Whole-force `FORCE`
 and mechanical `RECRUIT` lines are observations; they do not force recruitment
@@ -397,6 +416,11 @@ recruit next turn when that is strategically justified.
 `def_id` and positive integer `count`; the driver attempts up to that many legal
 placements and reports the actual `recruited` count and `partial` flag.
 It is rejected when the driver is started with `--disable-recruit-batch`.
+It may exceed the initially empty castle spaces: the driver can vacate eligible
+occupants, recruit into freed placements, and repeat while gold and legal
+capacity permit. This trades the vacating units' movement and positional safety
+for additional recruitment; it does not invent capacity or promise the
+requested count.
 `Advance` has integer `unit_id` and exactly one selector: integer `target_index`
 or string `def_id`; `target_index` indexes that unit's `advances_to` list in the
 order shown in the board data. `DoneWithImportantMoves` and `EndTurn` have only
