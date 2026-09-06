@@ -20,11 +20,18 @@ def main() -> int:
         "--test", "scenario_validation", "--test", "simulation", "--test", "test_ffi",
     ])
     run([sys.executable, "-m", "unittest", "discover", "-s", "tools", "-t", "."])
+    luajit = shutil.which("luajit")
+    library = os.path.join("norrust_core", "target", "debug", "libnorrust_core.so")
+    if not luajit:
+        raise RuntimeError("LuaJIT is required for the headless bridge smoke test")
+    if not os.path.exists(library):
+        raise RuntimeError(f"built bridge library not found: {library}")
+    env = dict(os.environ, NORRUST_LIB=os.path.abspath(library))
+    print("$", luajit, "norrust_love/test_llm_bridge.lua", flush=True)
+    subprocess.run([luajit, "norrust_love/test_llm_bridge.lua"], check=True, env=env)
     love = shutil.which("love")
-    if love and (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
-        run([love, "norrust_love/test_llm_bridge.lua"])
-    else:
-        print("SKIP: Love2D is not installed; Lua bridge smoke test unavailable", file=sys.stderr)
+    if not love or not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        print("NOTE: GUI smoke is separate and requires Love2D plus a display", file=sys.stderr)
     return 0
 
 
