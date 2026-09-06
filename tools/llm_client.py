@@ -594,11 +594,14 @@ def validate_preview_request(text: str, strict: bool = False) -> list[list[dict[
 
 
 def query_preview_batch(exchange, candidates: list[list[dict[str, Any]]], state_revision: int,
-                        phase: str = "final") -> dict[str, Any]:
+                        phase: str = "final", mode: str = "forecast") -> dict[str, Any]:
     if phase not in {"final", "partial"}:
         raise ValueError("preview phase must be final or partial")
+    if mode not in {"forecast", "bounded_rollout"}:
+        raise ValueError("preview mode must be forecast or bounded_rollout")
     response = exchange({"action": "Query", "what": "preview_batch",
                          "state_revision": state_revision, "phase": phase,
+                         "mode": mode,
                          "candidates": candidates})
     if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
         message = response.get("message", "preview query failed") if isinstance(response, dict) else "invalid preview response"
@@ -808,6 +811,18 @@ def compact_batch_preview(preview: dict[str, Any]) -> str:
         assumption = candidate.get("assumption")
         if assumption not in (None, "none"):
             lines.append(" C%s ASSUMPTION %s" % (index, str(assumption).replace("\n", " ")))
+        post_sweep = candidate.get("post_sweep")
+        if isinstance(post_sweep, dict):
+            stages = post_sweep.get("stages", {})
+            lines.append(" C%s DELEGATION policy=%s seed=%s own_events=%s opponent_events=%s coverage=%s" % (
+                index, post_sweep.get("policy", "?"), post_sweep.get("evaluation_seed", "?"),
+                post_sweep.get("own_event_count", "?"), post_sweep.get("opponent_event_count", "?"),
+                post_sweep.get("coverage", {})))
+            for label in ("post_finish", "post_opponent"):
+                stage = stages.get(label) if isinstance(stages, dict) else None
+                if isinstance(stage, dict):
+                    lines.append(" C%s %s=%s" % (
+                        index, label.upper(), json.dumps(stage.get("sides", []), separators=(",", ":"))))
         for attack in candidate.get("forecasts", []):
             forecast = attack.get("forecast", {}) if isinstance(attack, dict) else {}
             lines.append(" C%s A%s>T%s p%s e%s" % (
@@ -1390,6 +1405,23 @@ def compact_draft_review(preview: dict[str, Any], danger_before: bool,
         detail = ",".join("U%s" % unit.get("unit_id", "?") for unit in exposed) or "-"
         lines.append("EXPOSURE_DRAFT threatened=%s lethal=%s detail=%s" % (
             len(exposed), len(lethal), detail))
+    post_sweep = candidate.get("post_sweep")
+    if isinstance(post_sweep, dict):
+        stages = post_sweep.get("stages", {})
+        post_finish = stages.get("post_finish") if isinstance(stages, dict) else None
+        post_opponent = stages.get("post_opponent") if isinstance(stages, dict) else None
+        lines.append("DELEGATION_RESULT policy=%s seed=%s own_events=%s opponent_events=%s" % (
+            post_sweep.get("policy", "?"), post_sweep.get("evaluation_seed", "?"),
+            post_sweep.get("own_event_count", "?"), post_sweep.get("opponent_event_count", "?")))
+        lines.append("DELEGATION_COVERAGE own_finish=%s opponent_response=%s" % (
+            (post_sweep.get("coverage") or {}).get("own_finish", "unknown"),
+            (post_sweep.get("coverage") or {}).get("opponent_response", "unknown")))
+        for label, stage in (("POST_FINISH", post_finish), ("POST_OPPONENT", post_opponent)):
+            if isinstance(stage, dict):
+                sides = stage.get("sides", [])
+                lines.append("%s %s" % (label, json.dumps(sides, sort_keys=True, separators=(",", ":"))))
+        if post_sweep.get("opponent_error"):
+            lines.append("DELEGATION_ERROR %s" % str(post_sweep["opponent_error"]).replace("\n", " ")[:240])
     if len(candidates) > 1 and isinstance(candidates[0], dict):
         baseline = candidates[0]
         base_summary = baseline.get("summary", {})
@@ -1488,7 +1520,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         'Engage: {"action":"Engage","target_id": integer,"steps":[{"attacker_id": integer,"col": integer,"row": integer}]}; stops safely when the target dies',
         'Recruit: {"action":"Recruit","def_id": string,"col": integer,"row": integer}',
         'Advance: {"action":"Advance","unit_id": integer}; exactly one of integer target_index or string def_id',
-        'DoneWithImportantMoves: {"action":"DoneWithImportantMoves"}; final boundary after consequential work, then safe routine units are swept',
+        'DoneWithImportantMoves: {"action":"DoneWithImportantMoves"}; final boundary after consequential work, then eligible routine units are swept greedily (eligibility is not tactical safety)',
         'EndTurn: {"action":"EndTurn"}',
         'FinishWithGreedy: {"action":"FinishWithGreedy","groups":[{"mode":"greedy"|"toward_hex","unit_ids":[integer,...],"col":integer,"row":integer}],"holds":[{"unit_id":integer,"reason":string}]}; toward_hex is movement-only; final and replaces EndTurn',
     ]
@@ -1541,7 +1573,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "actions execute sequentially in array order against the mutating state. "
         "The array has at most 256 objects. In normal mode it has exactly one final DoneWithImportantMoves, EndTurn, or FinishWithGreedy boundary. "
         "Make the consequential decisions first: protect the recruiter, recruit or deliberately save gold, advance, arrange a likely kill or focus-fire sequence, capture a useful village, and make exact retreat/healing/formation moves. "
-        "Once those important moves are made, stop inspecting routine units and emit {\"action\":\"DoneWithImportantMoves\"}. The driver sweeps eligible healthy non-recruiters and ends the turn. "
+        "Once those important moves are made, stop inspecting routine units and emit {\"action\":\"DoneWithImportantMoves\"}. The driver sweeps eligible non-recruiters and ends the turn; eligibility excludes the recruiter, critically wounded units, and already-spent units, but does not prove delegated destinations are safe. Use explicit FinishWithGreedy groups and holds when a unit must keep its position. "
         "Recruitment remains your responsibility before that boundary. Before a boundary, strongly prefer exhausting legal recruitment. Otherwise move "
         "non-recruiters off castle hexes when that creates placement capacity, recruit "
         "into every useful legal placement, and repeat vacate-then-recruit until gold, "
@@ -1562,7 +1594,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "model or greedy turn increments the side-turn counter once; --max-turns is an external "
         "side-turn safety cap, distinct from the engine round counter and any scenario turn limit. "
         "Return either the action array or {\"actions\":[...],\"intent\":\"short plan\",\"agenda\":{\"tasks\":[...],\"holds\":[...]}}. "
-        "Use FinishWithGreedy when you need explicit unit groups, deliberate holds, or toward_hex movement. Bare EndTurn is accepted as a safety fallback and runs the same automatic sweep, but it is recorded as an implicit failure to signal completion. The automatic sweep protects recruiters and critically wounded units; it never recruits. "
+        "Use FinishWithGreedy when you need explicit unit groups, deliberate holds, or toward_hex movement. Bare EndTurn is accepted as a fallback and runs the same automatic sweep, but it is recorded as an implicit failure to signal completion. The automatic sweep never recruits and its exclusions do not protect units from enemy attacks. Leaving the keep makes recruitment unavailable until a recruiter returns to a keep hex. "
         "The optional intent is client memory, must be under 512 UTF-8 bytes, and is not an engine action. "
         "The optional agenda is a full replacement of at most eight small objectives. Each task has only id, goal, units, and status; it is bookkeeping, not an executable order. "
         "Choose objectives, focus on the active one, observe results, revise or continue, then sweep the army. Keep independent jobs visible. "
@@ -2684,7 +2716,8 @@ def run(args: argparse.Namespace) -> int:
                             preview_candidates.append(orders)
                             draft_index = 1
                         draft_preview = query_preview_batch(
-                            exchange, preview_candidates, int(state.get("state_revision", 0)))
+                            exchange, preview_candidates, int(state.get("state_revision", 0)),
+                            mode="bounded_rollout")
                         candidate = draft_preview.get("candidates", [{}])[draft_index]
                         if isinstance(candidate, dict) and candidate.get("valid") is True:
                             review_text, danger_after = compact_draft_review(

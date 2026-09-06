@@ -73,7 +73,9 @@ bookkeeping and never creates engine actions. Malformed agenda data is logged an
 ignored while valid actions continue, and a proposed agenda is published only
 after its action batch is accepted. Each observation includes a compact
 whole-army sweep unless `--disable-agenda-sweep` is passed; this adds no review
-call and never prevents `EndTurn`.
+call and never prevents `EndTurn`. The sweep is eligibility-based greedy execution,
+not a safety guarantee: excluded units avoid delegated execution but remain exposed
+to the opponent, while delegated units may still move into a tactically bad hex.
 
 ## Build and run
 

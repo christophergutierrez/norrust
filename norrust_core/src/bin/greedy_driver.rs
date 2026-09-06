@@ -27,7 +27,7 @@ use norrust_core::ai::{
 use norrust_core::board::Tile;
 use norrust_core::combat::{
     combat_parameters, exact_damage_sequence, exact_exchange, preview_combat, tod_label,
-    validate_combat_preview, CombatParameters,
+    validate_combat_preview, CombatParameters, Rng,
 };
 use norrust_core::events::GameEvent;
 use norrust_core::game_state::{
@@ -841,6 +841,91 @@ fn game_state_to_json(state: &GameState, units: &Registry<UnitDef>) -> Value {
         state,
     ))
     .unwrap_or_else(|_| json!({}))
+}
+
+fn rollout_state_summary(state: &GameState) -> Value {
+    let mut sides = Vec::new();
+    for side in 0..2u8 {
+        let units: Vec<_> = state
+            .units
+            .iter()
+            .filter(|(_, unit)| unit.faction == side && unit.hp > 0)
+            .collect();
+        let hp: u32 = units.iter().map(|(_, unit)| unit.hp).sum();
+        let max_hp: u32 = units.iter().map(|(_, unit)| unit.max_hp).sum();
+        let recruiters = units.iter().filter(|(_, unit)| unit.can_recruit).count();
+        let villages = state
+            .village_owners
+            .values()
+            .filter(|owner| **owner == side as i8)
+            .count();
+        sides.push(json!({
+            "side": side,
+            "units": units.len(),
+            "hp": hp,
+            "max_hp": max_hp,
+            "recruiters": recruiters,
+            "villages": villages,
+            "gold": state.gold[side as usize],
+        }));
+    }
+    json!({
+        "active_faction": state.active_faction,
+        "turn": state.turn,
+        "state_revision": state.state_revision,
+        "sides": sides,
+        "winner": state.check_winner(),
+    })
+}
+
+/// Run an isolated, deterministic illustration of the selected finish and one
+/// opponent response. This never mutates the live state or its RNG.
+fn bounded_rollout_summary(
+    mut state: GameState,
+    next_id: u32,
+    model_side: u8,
+    factions: &[Faction; 2],
+    units: &Registry<UnitDef>,
+    own_event_count: usize,
+) -> Value {
+    const EVALUATION_SEED: u64 = 0x5eed_5eed_5eed_5eed;
+    state.rng = Rng::new(EVALUATION_SEED);
+    let post_finish = rollout_state_summary(&state);
+    let mut opponent_state = state.clone();
+    let mut opponent_next_id = next_id;
+    let mut opponent_event_count = 0usize;
+    let mut opponent_error = None;
+    if opponent_state.check_winner().is_none() && opponent_state.active_faction != model_side {
+        let opponent = opponent_state.active_faction;
+        match run_driver_greedy_turn(
+            &mut opponent_state,
+            opponent,
+            &factions[opponent as usize],
+            units,
+            &mut opponent_next_id,
+        ) {
+            Ok(events) => opponent_event_count = events.len(),
+            Err(error) => opponent_error = Some(error.to_string()),
+        }
+    }
+    json!({
+        "evaluation_seed": EVALUATION_SEED,
+        "policy": "driver_greedy_one_response_v1",
+        "sampling": true,
+        "stages": {
+            "post_finish": post_finish,
+            "post_opponent": if opponent_error.is_none() && opponent_event_count > 0 {
+                rollout_state_summary(&opponent_state)
+            } else { Value::Null },
+        },
+        "own_event_count": own_event_count,
+        "opponent_event_count": opponent_event_count,
+        "opponent_error": opponent_error,
+        "coverage": {
+            "own_finish": true,
+            "opponent_response": opponent_error.is_none() && opponent_event_count > 0,
+        },
+    })
 }
 
 fn unit_type_profile(def: &UnitDef) -> Value {
@@ -2507,6 +2592,18 @@ fn interactive_protocol_game(c: &Config) {
                                 (unit.faction == c.llm_side && unit.can_recruit).then(|| json!({"unit_id":id,"hp":unit.hp}))
                             }).collect();
                             recruiter_hp.sort_by_key(|item| item.get("unit_id").and_then(Value::as_u64));
+                            let rollout = if valid && bounded_rollout {
+                                Some(bounded_rollout_summary(
+                                    execution.state.clone(),
+                                    execution.next_id,
+                                    c.llm_side,
+                                    &factions,
+                                    &units,
+                                    execution.events.len(),
+                                ))
+                            } else {
+                                None
+                            };
                             json!({"valid":valid,"results":execution.results,"forecasts":execution.forecasts,
                                 "attack_sequences":execution.attack_sequences,
                                 "recruiter_threats":if valid { execution.pre_end_threats } else { None },
@@ -2514,9 +2611,9 @@ fn interactive_protocol_game(c: &Config) {
                                 "preview_error":execution.preview_error,
                                 "post_combat_conditional":execution.post_combat_conditional,
                                 "rollout_event_count":if bounded_rollout { execution.events.len() } else { 0 },
+                                "post_sweep":rollout,
                                 "assumption":if execution.post_combat_conditional {"all forecast combatants survive in place"} else {"none"},
-                                "observation_stage":"post_prefix_pre_sweep",
-                                "post_sweep":Value::Null,
+                                "observation_stage":if bounded_rollout {"post_opponent_response"} else {"post_prefix_pre_sweep"},
                                 "summary":{"gold_before":before_gold,"gold_after":execution.state.gold[c.llm_side as usize],
                                     "units_before":before_units,"units_after":execution.state.units.len(),"recruiters":recruiter_hp,
                                     "affordable_recruitment_remaining":execution.pre_end_recruitment_remaining}})

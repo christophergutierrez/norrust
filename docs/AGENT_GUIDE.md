@@ -47,6 +47,13 @@ engine result can still be invalid for model comparison if native requests faile
 and greedy fallback completed the game. Check `terminal_class`, request statuses,
 native session IDs, token coverage, and fallback counts in the archive and catalog.
 
+For LLM game analysis, use the canonical prompt recorded by `tools/llm_client.py`
+and its request artifacts. Historical file-backend summaries may omit draft-review,
+rescue, economy, or budget evidence; their absence is unknown, not proof that the
+model did not receive it. Greedy handoff eligibility also describes execution, not
+tactical safety. Preserve the original NDJSON/checkpoints when rebuilding a catalog
+or comparing prompt delivery.
+
 ## Fog of War
 
 The game supports fog of war based on unit vision ranges. When FOW is enabled:

@@ -734,10 +734,10 @@ class ClientValidationTests(unittest.TestCase):
         prompt = prompt_for({"units": []}, [])
         for text in (
                 'emit {"action":"DoneWithImportantMoves"}',
-                "Bare EndTurn is accepted as a safety fallback",
+                "Bare EndTurn is accepted as a fallback",
                 "explicit unit groups",
                 "deliberate holds",
-                "automatic sweep protects recruiters",
+                "does not prove delegated destinations are safe",
                 "Recruitment remains your responsibility",
         ):
             with self.subTest(text=text):
