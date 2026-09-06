@@ -529,6 +529,25 @@ class ClientValidationTests(unittest.TestCase):
         }]})
         self.assertIn("C0 CONDITIONAL action_indices=[1]", rendered)
 
+    def test_compact_batch_preview_reports_bounded_delegation_stages(self):
+        rendered = compact_batch_preview({"sampling": True, "candidates": [{
+            "valid": True, "summary": {},
+            "post_sweep": {
+                "policy": "driver_greedy_one_response_v1",
+                "evaluation_seed": 17,
+                "own_event_count": 4,
+                "opponent_event_count": 6,
+                "coverage": {"own_finish": True, "opponent_response": True},
+                "stages": {
+                    "post_finish": {"sides": [{"side": 0, "units": 3}]},
+                    "post_opponent": {"sides": [{"side": 0, "units": 2}]},
+                },
+            },
+        }]})
+        self.assertIn("DELEGATION policy=driver_greedy_one_response_v1", rendered)
+        self.assertIn("POST_FINISH", rendered)
+        self.assertIn("POST_OPPONENT", rendered)
+
     def test_compact_tactical_surface_renders_force_and_recruitment_facts(self):
         rendered = compact_tactical_surface({
             "units": [], "unit_types": [], "threats": {"recruiters": []},
