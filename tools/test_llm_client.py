@@ -65,6 +65,8 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("TURN_PROGRESS moved=U3 attacked=U4 remaining_attackers=U5,U6", prompt)
         self.assertIn("conversation_continuity", prompt)
         self.assertIn("hold U7", prompt)
+        self.assertIn("eligibility-based greedy sweep", prompt)
+        self.assertIn("what changes after the enemy moves and attacks if you hold here", prompt)
     def test_checkpoint_reference_confines_path_and_verifies_digest(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "match.ckpt"
@@ -769,7 +771,7 @@ class ClientValidationTests(unittest.TestCase):
                 "Bare EndTurn is accepted as a fallback",
                 "explicit unit groups",
                 "deliberate holds",
-                "does not prove delegated destinations are safe",
+                "does not prove delegated destinations are tactically safe",
                 "Recruitment remains your responsibility",
         ):
             with self.subTest(text=text):

@@ -111,7 +111,7 @@ village = 40
 | `max_hp` | integer | Maximum hit points |
 | `movement` | integer | Movement points per turn |
 | `attacks` | array | At least one attack (see below) |
-| `resistances` | table | Damage type modifiers (% reduction, negative = weakness) |
+| `resistances` | table | Damage modifiers: negative values resist (less damage), positive values are weaknesses (more damage) |
 | `movement_costs` | table | Movement cost per terrain type |
 | `defense` | table | Chance to be hit per terrain (lower = better defense) |
 

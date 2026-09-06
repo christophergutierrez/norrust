@@ -162,7 +162,7 @@ Global state: `turn`, `active_faction`, `gold[0]`, `gold[1]`.
 
 ### Attack
 - Attacker must be adjacent to defender (distance = 1) for melee
-- Ranged attacks work at distance 2+ if the unit has a ranged weapon
+- Ranged attacks work at distance 2 if the unit has a ranged weapon
 - Attacker must not have `attacked = true`
 - Can attack without moving first
 
@@ -251,7 +251,7 @@ The greedy N=0 scorer:
 **Known weaknesses to exploit:**
 - No positional awareness — doesn't value terrain defense for its own units
 - No healing behavior — won't retreat to villages
-- No focus fire — picks individually optimal attacks, not team-coordinated ones
+- No deliberate team-level focus-fire plan; sequential units can still attack the same target as the board changes
 - No recruitment strategy — recruits greedily by cost
 - Ignores ZOC for strategic positioning
 - Doesn't block objective hexes

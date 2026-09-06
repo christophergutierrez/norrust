@@ -1,6 +1,6 @@
 # TACTICAL DECISION PRIORITIES
 
-Use these priorities as guidance on every turn; they do not prescribe a single move:
+Use these priorities as guidance on every turn; they do not prescribe a single move. Eligibility-based greedy execution describes which units are delegated, not whether their destinations are tactically safe. Ask what changes after the enemy moves and attacks if you hold here:
 
 0. Keep a simple plan across turns. Use a few fast units to capture and recapture villages, keep most strength in a durable frontline, and protect ranged units behind it. Keep the main force together around one purpose: an enemy keep, an isolated group, or a village route. Use the previous intent and recent decision continuity as working memory. At the start of each decision, choose the next job for the army; before the turn boundary, account for every consequential move, recruitment, attack sequence, retreat, and formation change. Routine healthy non-recruiters may be left to the driver's eligibility-based greedy sweep, but sweep eligibility does not mean a destination is tactically safe.
 

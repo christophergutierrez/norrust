@@ -221,7 +221,7 @@ Options:
   --turn-timeout N      Model stdin wall-clock budget in seconds (default: 300)
   --query-budget-seconds N  Query servicing budget per model turn (default: 300)
   --max-queries-per-turn N  Query cap (default: 256)
-  Model final actions: EndTurn (implicit safety sweep), DoneWithImportantMoves (explicit safety sweep), or FinishWithGreedy
+  Model final actions: EndTurn (implicit eligibility-based sweep), DoneWithImportantMoves (explicit eligibility-based sweep), or FinishWithGreedy
   --disable-recruit-batch  Reject the model-only RecruitBatch macro
   --incremental-turns    Allow up to three partial model batches before EndTurn
   --checkpoint-dir DIR     Atomically write resumable checkpoints here
