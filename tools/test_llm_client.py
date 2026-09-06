@@ -435,6 +435,21 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual([item["unit_id"] for item in audit["rescue_priorities"]], [4, 8, 9])
         self.assertIn("endangered_wounded_unresolved", audit["trigger_reasons"])
 
+    def test_strategic_briefing_keeps_economy_and_deployment_facts_together(self):
+        rendered = compact_strategic_briefing({
+            "active_faction": 0,
+            "terrain": [{"col": 1, "row": 1, "terrain_id": "village", "owner": 0}],
+            "units": [],
+            "tactical_surface": {
+                "force": [{"side": 0, "units": 4, "recruiters": 1, "hp": 28, "max_hp": 40},
+                           {"side": 1, "units": 5, "recruiters": 1, "hp": 31, "max_hp": 45}],
+                "recruitment": {"gold": 22, "options": [{"def_id": "Skeleton", "affordable": True}]},
+                "economy": {"next_village_income": 2, "vacatable_castles": [{"unit_id": 3}]},
+            },
+        })
+        self.assertIn("ECONOMY own_units=4/1 enemy_units=5/1", rendered)
+        self.assertIn("gold=22 income=2 affordable=Skeleton vacatable=1", rendered)
+
     def test_planned_attackers_counts_attack_and_all_engage_steps(self):
         self.assertEqual(
             llm_client.planned_attackers([
