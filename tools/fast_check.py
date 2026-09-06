@@ -4,6 +4,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+import os
 
 
 def run(command: list[str]) -> None:
@@ -20,7 +21,7 @@ def main() -> int:
     ])
     run([sys.executable, "-m", "unittest", "discover", "-s", "tools", "-t", "."])
     love = shutil.which("love")
-    if love:
+    if love and (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
         run([love, "norrust_love/test_llm_bridge.lua"])
     else:
         print("SKIP: Love2D is not installed; Lua bridge smoke test unavailable", file=sys.stderr)
