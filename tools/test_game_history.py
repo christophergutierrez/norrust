@@ -8,6 +8,15 @@ from .game_history import (backup_history, decode_payload, encode_payload, impor
                            summarize_game, verify_history)
 
 class GameHistoryTests(unittest.TestCase):
+    def test_read_only_catalog_access_never_creates_missing_database(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "missing.sqlite"
+            with self.assertRaises(FileNotFoundError):
+                open_history(path, read_only=True)
+            with self.assertRaises(FileNotFoundError):
+                verify_history(path)
+            self.assertFalse(path.exists())
+
     def test_payload_round_trip(self):
         value = {"units": [{"id": 1, "hp": 20}], "active": 0}
         blob, codec, digest = encode_payload(value)

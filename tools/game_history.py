@@ -101,10 +101,18 @@ def encode_payload(value: Any) -> tuple[bytes, str, str]:
 def decode_payload(blob: bytes, codec: str = "zlib") -> Any:
     return json.loads(zlib.decompress(blob) if codec == "zlib" else blob)
 
-def open_history(path: str | os.PathLike[str]) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+def open_history(path: str | os.PathLike[str], *, read_only: bool = False) -> sqlite3.Connection:
+    path = Path(path)
+    if read_only:
+        if not path.is_file():
+            raise FileNotFoundError(f"history catalog does not exist: {path}")
+        conn = sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
+    else:
+        conn = sqlite3.connect(path)
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=5000")
+    if read_only:
+        return conn
     conn.executescript(SCHEMA)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(model_requests)")}
     for name, definition in (
@@ -383,7 +391,10 @@ def backup_history(source: str, destination: str) -> None:
     dst.close(); src.close()
 
 def verify_history(path: str | os.PathLike[str]) -> dict[str, Any]:
-    conn = sqlite3.connect(path)
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(f"history catalog does not exist: {path}")
+    conn = sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
     integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
     foreign_keys = conn.execute("PRAGMA foreign_key_check").fetchall()
     counts = {}
@@ -520,7 +531,8 @@ def main(argv: list[str]) -> int:
     selector.add_argument("--cohort"); selector.add_argument("--game-id", action="append"); selector.add_argument("--reset", action="store_true")
     delete.add_argument("--compact", action="store_true")
     args = parser.parse_args(argv)
-    conn = open_history(args.db)
+    read_commands = {"inventory", "game", "turns"}
+    conn = open_history(args.db, read_only=args.command in read_commands)
     if args.command == "import": value = import_game(conn, args.archive, args.cohort)
     elif args.command == "review": value = import_review(conn, args.path, args.run_id)
     elif args.command == "payload-coverage": value = evaluate_payload_coverage(conn, args.cohort)
