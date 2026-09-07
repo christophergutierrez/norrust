@@ -5,10 +5,11 @@ local frames = {}
 for i = 1, 7 do frames[i] = {state = {turn = math.ceil(i / 2)}} end
 local r = replay.new({game_id = "fixture", frames = frames})
 local labeled = replay.new({players = {
-    {display_name = "Claude"}, {display_name = "Greedy"}},
+    {player_kind = "model", display_name = "Claude", model_requested = "claude"},
+    {player_kind = "algorithm", display_name = "Greedy"}},
     metadata = {faction0 = "undead", faction1 = "undead"}, frames = frames})
 local p0, p1 = replay.player_labels(labeled)
-assert(p0 == "Side 0: Claude (undead)" and p1 == "Side 1: Greedy (undead)")
+assert(p0 == "Side 0: Claude [claude] (undead)" and p1 == "Side 1: Greedy (undead)")
 assert(replay.at_start(r) and not replay.at_end(r))
 replay.step(r, 2); assert(r.index == 3)
 replay.step(r, 2); assert(r.index == 5)
