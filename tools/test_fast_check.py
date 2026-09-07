@@ -36,8 +36,9 @@ class FastCheckTests(unittest.TestCase):
                     patch.dict(os.environ, {"CARGO_TARGET_DIR": str(library.parent)}):
                 self.assertEqual(fast_check.main(), 0)
             bridge = [(c, k) for c, k in calls if c[0] == "/test/luajit"]
-            self.assertEqual(len(bridge), 1)
-            self.assertEqual(bridge[0][1]["env"]["NORRUST_LIB"], str(library))
+            self.assertEqual(len(bridge), 2)
+            self.assertTrue(all(item[1]["env"]["NORRUST_LIB"] == str(library)
+                                for item in bridge))
             for binary in ("greedy_driver", "self-play"):
                 self.assertTrue(any(c[:2] == ["cargo", "test"] and "--bin" in c
                                     and c[c.index("--bin") + 1] == binary for c, _ in calls))
