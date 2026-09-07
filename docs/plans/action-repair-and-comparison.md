@@ -225,12 +225,12 @@ An accurate explanation or revised choice alone is not a tactical success.
 Keeping a guard or resigning can be justified; do not require a predetermined
 action to pass. Mark unassessable evidence unknown.
 
-- [ ] Eight attempts exist with verified starting boundaries and immutable
+- [x] Eight attempts exist with verified starting boundaries and immutable
   version/settings manifests. No rerolls, case substitutions, or omitted failures.
-- [ ] Import their original logs into a fresh SQLite catalog and inspect it
+- [x] Import their original logs into a fresh SQLite catalog and inspect it
   before archive-level analysis. Cross-check model errors against raw terminal
   evidence, payload hashes, request links, integrity, and foreign keys.
-- [ ] Report all eight cases with the frozen rubric. This small experiment is
+- [x] Report all eight cases with the frozen rubric. This small experiment is
   descriptive, not a win-rate estimate. Do not tune the guide after seeing it.
   Infrastructure/protocol defects must be resolved before full games; poor
   tactical choices alone do not block the requested final cohort.
@@ -256,17 +256,17 @@ Freeze identical settings for all three games:
   Do not enable timeout-to-Greedy fallback. Do not restart, resume, or replace a
   failed original attempt; preserve and report its failure.
 
-- [ ] All three original processes reach an observed exit and terminal outcome
+- [x] All three original processes reach an observed exit and terminal outcome
   or typed failure. A model-invalid run counts as a failed attempt, never a draw.
-- [ ] Import completed original logs into a fresh final catalog. Verify request
+- [x] Import completed original logs into a fresh final catalog. Verify request
   and submitted-annotation coverage, prompt/result hashes, source and driver
   hashes, request/revision links, retries, fallbacks, and database integrity.
   Report runtime model/effort as unknown when native evidence does not confirm
   them. Do not infer private reasoning from decision annotations.
-- [ ] Review decisions and executed consequences against the same issues as the
+- [x] Review decisions and executed consequences against the same issues as the
   probes. Report whether Luna used comparisons, interpreted replies correctly,
   released justified guards, and explained resignation with current facts.
-- [ ] Commit `docs/experiments/action-repair-and-comparison-evaluation.md` and
+- [x] Commit `docs/experiments/action-repair-and-comparison-evaluation.md` and
   complete this plan's checkboxes with actual evidence. Include all eight probe
   results and a three-game table with outcome/failure, completed side turns,
   model turns, calls, measured tokens, wall time, invalid responses/repairs,
