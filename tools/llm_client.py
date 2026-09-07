@@ -311,6 +311,122 @@ def source_metadata() -> dict[str, Any]:
     }
 
 
+_FINISH_VALIDATION_ERROR_LIMIT = 32
+
+
+def _finish_validation_error(path: str, message: str) -> str:
+    return f"{path}: {message}"
+
+
+def _validate_finish_with_greedy(order: dict[str, Any], action_index: int) -> None:
+    """Validate selective finish fields, reporting independent defects together."""
+    errors: list[str] = []
+    groups = order["groups"]
+    holds = order["holds"]
+
+    if not isinstance(groups, list):
+        errors.append(_finish_validation_error(
+            f"actions[{action_index}].groups", "must be an array"))
+        groups = None
+    elif len(groups) > 8:
+        errors.append(_finish_validation_error(
+            f"actions[{action_index}].groups", "must contain zero to eight groups"))
+
+    if not isinstance(holds, list):
+        errors.append(_finish_validation_error(
+            f"actions[{action_index}].holds", "must be an array"))
+        holds = None
+    elif len(holds) > 256:
+        errors.append(_finish_validation_error(
+            f"actions[{action_index}].holds", "must contain at most 256 entries"))
+
+    delegated: dict[int, str] = {}
+    held: dict[int, str] = {}
+    if groups is not None:
+        for group_index, group in enumerate(groups):
+            group_path = f"actions[{action_index}].groups[{group_index}]"
+            if not isinstance(group, dict):
+                errors.append(_finish_validation_error(group_path, "must be an object"))
+                continue
+            if not {"mode", "unit_ids"}.issubset(group):
+                errors.append(_finish_validation_error(
+                    group_path, "must contain mode and unit_ids"))
+                continue
+            mode = group["mode"]
+            expected = {"mode", "unit_ids"} if mode == "greedy" else {"mode", "unit_ids", "col", "row"}
+            if mode not in {"greedy", "toward_hex"} or set(group) != expected:
+                errors.append(_finish_validation_error(
+                    group_path, "has an unsupported mode or shape"))
+                continue
+            if mode == "toward_hex":
+                for field in ("col", "row"):
+                    value = group[field]
+                    if (not isinstance(value, int) or isinstance(value, bool)
+                            or not -(2**31) <= value <= 2**31 - 1):
+                        errors.append(_finish_validation_error(
+                            f"{group_path}.{field}", "must be a 32-bit integer"))
+            ids = group["unit_ids"]
+            if not isinstance(ids, list) or not ids:
+                errors.append(_finish_validation_error(
+                    f"{group_path}.unit_ids", "must be a non-empty array"))
+                continue
+            for id_index, unit_id in enumerate(ids):
+                id_path = f"{group_path}.unit_ids[{id_index}]"
+                if (not isinstance(unit_id, int) or isinstance(unit_id, bool)
+                        or not 0 <= unit_id <= 2**32 - 1):
+                    errors.append(_finish_validation_error(id_path, "must be a uint32"))
+                    continue
+                previous = delegated.get(unit_id)
+                if previous is not None:
+                    errors.append(_finish_validation_error(
+                        id_path, f"duplicate unit ID {unit_id}; conflicts with {previous}"))
+                else:
+                    delegated[unit_id] = id_path
+                hold_path = held.get(unit_id)
+                if hold_path is not None:
+                    errors.append(_finish_validation_error(
+                        id_path, f"unit ID {unit_id} overlaps hold at {hold_path}"))
+
+    if holds is not None:
+        for hold_index, hold in enumerate(holds):
+            hold_path = f"actions[{action_index}].holds[{hold_index}]"
+            if not isinstance(hold, dict) or set(hold) != {"unit_id", "reason"}:
+                errors.append(_finish_validation_error(hold_path, "must contain unit_id and reason"))
+                continue
+            unit_id, reason = hold["unit_id"], hold["reason"]
+            id_path = f"{hold_path}.unit_id"
+            if (not isinstance(unit_id, int) or isinstance(unit_id, bool)
+                    or not 0 <= unit_id <= 2**32 - 1):
+                errors.append(_finish_validation_error(id_path, "must be a uint32"))
+            else:
+                previous = held.get(unit_id)
+                if previous is not None:
+                    errors.append(_finish_validation_error(
+                        id_path, f"duplicate unit ID {unit_id}; conflicts with {previous}"))
+                else:
+                    held[unit_id] = id_path
+                delegated_path = delegated.get(unit_id)
+                if delegated_path is not None:
+                    errors.append(_finish_validation_error(
+                        id_path, f"unit ID {unit_id} overlaps delegated unit at {delegated_path}"))
+            reason_path = f"{hold_path}.reason"
+            if not isinstance(reason, str):
+                errors.append(_finish_validation_error(reason_path, "must be a string"))
+            elif len(reason) > 120:
+                errors.append(_finish_validation_error(
+                    reason_path, f"{len(reason)} characters; maximum 120"))
+
+    if len(delegated) > 256:
+        errors.append(_finish_validation_error(
+            f"actions[{action_index}].groups", "contain at most 256 delegated unit IDs"))
+    if errors:
+        omitted = max(0, len(errors) - _FINISH_VALIDATION_ERROR_LIMIT)
+        shown = errors[:_FINISH_VALIDATION_ERROR_LIMIT]
+        if omitted:
+            shown.append(f"{omitted} further FinishWithGreedy validation errors omitted")
+        raise ValueError("; ".join(shown))
+
+
 def validate_orders(text: str, strict: bool = False, require_end_turn: bool = True) -> list[dict[str, Any]]:
     try:
         orders = json.loads(text)
@@ -406,49 +522,7 @@ def validate_orders(text: str, strict: bool = False, require_end_turn: bool = Tr
         if strict and action == "RecruitBatch":
             raise ValueError("RecruitBatch is disabled in strict mode")
         if action == "FinishWithGreedy":
-            groups = order["groups"]
-            holds = order["holds"]
-            if not isinstance(groups, list) or len(groups) > 8:
-                raise ValueError(f"FinishWithGreedy groups must contain zero to eight groups at index {i}")
-            if not isinstance(holds, list) or len(holds) > 256:
-                raise ValueError(f"FinishWithGreedy holds must contain at most 256 entries at index {i}")
-            delegated: set[int] = set()
-            held: set[int] = set()
-            for group in groups:
-                if not isinstance(group, dict) or not {"mode", "unit_ids"}.issubset(group):
-                    raise ValueError(f"invalid FinishWithGreedy group at index {i}")
-                mode = group["mode"]
-                expected = {"mode", "unit_ids"} if mode == "greedy" else {"mode", "unit_ids", "col", "row"}
-                if mode not in {"greedy", "toward_hex"} or set(group) != expected:
-                    raise ValueError(f"unsupported FinishWithGreedy mode at index {i}")
-                if mode == "toward_hex":
-                    if any(not isinstance(group[field], int) or isinstance(group[field], bool)
-                           or not -(2**31) <= group[field] <= 2**31 - 1
-                           for field in ("col", "row")):
-                        raise ValueError(f"invalid FinishWithGreedy target at index {i}")
-                ids = group["unit_ids"]
-                if not isinstance(ids, list) or not ids:
-                    raise ValueError(f"FinishWithGreedy unit_ids must be non-empty at index {i}")
-                for unit_id in ids:
-                    if (not isinstance(unit_id, int) or isinstance(unit_id, bool)
-                            or not 0 <= unit_id <= 2**32 - 1):
-                        raise ValueError(f"invalid FinishWithGreedy unit id at index {i}")
-                    if unit_id in delegated:
-                        raise ValueError(f"duplicate FinishWithGreedy unit id at index {i}")
-                    delegated.add(unit_id)
-            for hold in holds:
-                if not isinstance(hold, dict) or set(hold) != {"unit_id", "reason"}:
-                    raise ValueError(f"invalid FinishWithGreedy hold at index {i}")
-                unit_id, reason = hold["unit_id"], hold["reason"]
-                if (not isinstance(unit_id, int) or isinstance(unit_id, bool)
-                        or not 0 <= unit_id <= 2**32 - 1
-                        or not isinstance(reason, str) or len(reason) > 120):
-                    raise ValueError(f"invalid FinishWithGreedy hold at index {i}")
-                if unit_id in held or unit_id in delegated:
-                    raise ValueError(f"overlapping FinishWithGreedy hold at index {i}")
-                held.add(unit_id)
-            if len(delegated) > 256:
-                raise ValueError(f"too many FinishWithGreedy unit ids at index {i}")
+            _validate_finish_with_greedy(order, i)
         if action in {"EndTurn", "DoneWithImportantMoves", "FinishWithGreedy"}:
             end_indices.append(i)
     if require_end_turn and (len(end_indices) != 1 or end_indices[0] != len(orders) - 1):
@@ -2796,7 +2870,7 @@ def run(args: argparse.Namespace) -> int:
                                     raise ValueError("preview_batch may be requested only once per turn")
                                 preview_candidates = validate_preview_request(
                                     current_reply.text, args.no_recruit_macro)
-                                result = query_preview_batch(
+                                result = query_bounded_comparison(
                                     exchange, preview_candidates, int(state.get("state_revision", 0)))
                                 rendered = compact_batch_preview(
                                     result, int(state.get("state_revision", 0)))
@@ -2955,8 +3029,9 @@ def run(args: argparse.Namespace) -> int:
                                         "\nDRAFT_ACTIONS_UNTRUSTED_DATA_BEGIN:\n" +
                                         json.dumps(orders, sort_keys=True, separators=(",", ":")) +
                                         "\nDRAFT_ACTIONS_UNTRUSTED_DATA_END\n" + review_text + (
-                                        "\nReturn the final JSON action envelope with decisions. Repeat the draft unchanged "
-                                        "to confirm it, or revise it if the facts warrant a different choice."))
+                                        "\nReturn the final JSON action envelope with decisions. State the relevant difference "
+                                        "between the shown branches; repeat the draft only if the live facts still support it, "
+                                        "or revise it if they warrant a different choice."))
                                     model_calls_this_turn += 1
                                     metadata["model_calls"] += 1
                                     reviewed = complete_model(review_prompt)

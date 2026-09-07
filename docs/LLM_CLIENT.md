@@ -348,10 +348,12 @@ or one read-only preview request containing one or two complete candidate arrays
 ```
 
 Each candidate follows the same action-batch rules as a final response. The
-preview does not submit actions or sample combat. Its ordinary forecast is
-explicitly `conditional_pre_finish`; delegated sweep and post-sweep effects are
-unavailable until a bounded rollout mode is requested. During the existing single
-draft review, the client may request `mode=bounded_rollout`: that isolated query
+preview does not submit actions or mutate the live state. A player-requested
+preview uses `mode=bounded_rollout`, giving a labeled sampled comparison of one
+or two candidates through the candidate finish and at most one Greedy opponent
+response. The engine's ordinary `mode=forecast` remains available to internal
+consumers. During the existing single draft review, the client may request
+`mode=bounded_rollout`: that isolated query
 uses a fixed evaluation seed, applies the candidate's exact finish, and runs at
 most one driver-greedy opponent response. It reports post-finish and
 post-opponent snapshots as an illustration, with policy, seed, sampling, and
@@ -460,7 +462,11 @@ requested count.
 or string `def_id`; `target_index` indexes that unit's `advances_to` list in the
 order shown in the board data. `DoneWithImportantMoves` and `EndTurn` have only
 `action`. `FinishWithGreedy` accepts explicit groups and holds; its groups may
-be empty when every remaining unit is protected.
+be empty when every remaining unit is protected. Each hold reason is a string
+of at most 120 characters (the client counts characters, not UTF-8 bytes), and
+held IDs must be disjoint from delegated group IDs and from other held IDs.
+Explain consequential holds with the existing reason, expected, and risk
+fields.
 
 The client rejects malformed JSON, unknown fields, missing fields, non-integer
 numeric fields, non-positive batch counts, and invalid batch structure before

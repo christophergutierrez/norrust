@@ -232,6 +232,9 @@ tests. An agenda is a full object replacement with exactly `tasks` and integer
 decision annotations are audit/bookkeeping data. A deliberate hold that affects
 execution must be represented in the `FinishWithGreedy` action's `holds` list,
 whose entries are `{unit_id, reason}` objects.
+The client enforces a 120-character maximum for each hold reason and requires
+held and delegated IDs to be disjoint; this count is in characters rather than
+UTF-8 bytes.
 
 Handoff summaries distinguish explicit selective instructions from automatic
 finish eligibility. Derive held/delegated IDs from actions, omitted IDs from

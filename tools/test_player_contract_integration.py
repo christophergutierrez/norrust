@@ -73,8 +73,8 @@ class PlayerContractIntegrationTests(unittest.TestCase):
             if record.get("type") == kind:
                 return record, records
 
-    def test_real_preview_recruitment_is_read_only_and_replacement_is_submitted(self):
-        """A real driver preview may differ from the only batch that commits."""
+    def test_real_bounded_comparison_is_read_only_and_replacement_is_submitted(self):
+        """A sampled comparison may differ from the only batch that commits."""
         process = self._driver("--max-turns", "1")
         try:
             initial, _ = self._until(process, "state")
@@ -87,13 +87,15 @@ class PlayerContractIntegrationTests(unittest.TestCase):
             ]
             query = {"action": "Query", "what": "preview_batch",
                      "state_revision": revision, "phase": "final",
-                     "mode": "forecast", "candidates": candidates}
+                     "mode": "bounded_rollout", "candidates": candidates}
             self._send(process, query)
             first, _ = self._until(process, "status")
             self.assertTrue(first["ok"], first)
             body = first["body"]
-            self.assertFalse(body["sampling"])
-            self.assertEqual(body["coverage"]["forecast"], "conditional_pre_finish")
+            self.assertTrue(body["sampling"])
+            self.assertEqual(body["coverage"]["forecast"], "bounded_rollout")
+            self.assertTrue(all(candidate["post_sweep"]["sampling"]
+                                for candidate in body["candidates"]))
             self.assertEqual([c["summary"]["gold_after"] for c in body["candidates"]], [285, 270])
             self.assertEqual([c["summary"]["units_after"] for c in body["candidates"]], [3, 4])
             self.assertEqual(first["state_revision"], revision)

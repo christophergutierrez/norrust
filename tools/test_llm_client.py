@@ -736,6 +736,20 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual(result, body)
         self.assertEqual(sent[0]["mode"], "bounded_rollout")
 
+    def test_bounded_comparison_keeps_driver_failure_typed(self):
+        with self.assertRaisesRegex(RuntimeError, r"query_error: bounded_comparison: unavailable"):
+            query_bounded_comparison(
+                lambda request: {"ok": False, "code": "rollout_unavailable",
+                                 "message": "unavailable"},
+                [[{"action": "EndTurn"}]], 4)
+
+    def test_preview_request_rejects_more_than_two_candidates(self):
+        request = json.dumps({"tool": "preview_batch", "candidates": [
+            [{"action": "EndTurn"}], [{"action": "EndTurn"}], [{"action": "EndTurn"}],
+        ]})
+        with self.assertRaisesRegex(ValueError, "one or two candidates"):
+            validate_preview_request(request)
+
     def test_compact_batch_preview_renders_ordered_attack_sequences(self):
         rendered = compact_batch_preview({"sampling": False, "candidates": [{
             "valid": True, "summary": {}, "forecasts": [],
@@ -987,6 +1001,38 @@ class ClientValidationTests(unittest.TestCase):
                     "holds": [{"unit_id": 2, "reason": "hold position"}]}]
         with self.assertRaises(ValueError):
             validate_orders(json.dumps(overlap))
+
+    def test_finish_with_greedy_reports_independent_overlap_and_reason_errors(self):
+        orders = [{"action": "FinishWithGreedy",
+                   "groups": [{"mode": "greedy", "unit_ids": [13]}],
+                   "holds": [{"unit_id": 13, "reason": "x"},
+                              {"unit_id": 45, "reason": "x" * 121}]}]
+        with self.assertRaisesRegex(ValueError,
+                                    r"actions\[0\]\.holds\[0\]\.unit_id.*actions\[0\]\.groups\[0\]\.unit_ids\[0\].*actions\[0\]\.holds\[1\]\.reason: 121 characters; maximum 120"):
+            validate_orders(json.dumps(orders))
+
+    def test_finish_with_greedy_reason_character_boundaries_and_non_string(self):
+        for reason in ("x" * 119, "x" * 120, "é" * 120):
+            orders = [{"action": "FinishWithGreedy", "groups": [],
+                       "holds": [{"unit_id": 1, "reason": reason}]}]
+            self.assertEqual(validate_orders(json.dumps(orders)), orders)
+        with self.assertRaisesRegex(ValueError, r"actions\[0\]\.holds\[0\]\.reason: must be a string"):
+            validate_orders(json.dumps([{"action": "FinishWithGreedy", "groups": [],
+                                         "holds": [{"unit_id": 1, "reason": None}]}]))
+
+    def test_finish_with_greedy_malformed_containers_report_shape_only(self):
+        with self.assertRaisesRegex(ValueError, r"actions\[0\]\.groups: must be an array"):
+            validate_orders(json.dumps([{"action": "FinishWithGreedy", "groups": {}, "holds": []}]))
+        with self.assertRaisesRegex(ValueError, r"actions\[0\]\.holds: must be an array"):
+            validate_orders(json.dumps([{"action": "FinishWithGreedy", "groups": [], "holds": {}}]))
+
+    def test_finish_with_greedy_reports_duplicate_paths(self):
+        orders = [{"action": "FinishWithGreedy",
+                   "groups": [{"mode": "greedy", "unit_ids": [2, 2]}],
+                   "holds": [{"unit_id": 3, "reason": "a"},
+                              {"unit_id": 3, "reason": "b"}]}]
+        with self.assertRaisesRegex(ValueError, r"duplicate unit ID 2.*unit_ids\[0\].*duplicate unit ID 3.*holds\[0\]"):
+            validate_orders(json.dumps(orders))
 
     def test_prompt_documents_greedy_handoff_and_recruitment_ownership(self):
         prompt = prompt_for({"units": []}, [])
@@ -1605,7 +1651,7 @@ class ClientValidationTests(unittest.TestCase):
                 {"type": "status", "ok": True, "what": "inspect_unit", "body": {
                     "unit_id": 1, "origins": []}},
                 {"type": "status", "ok": True, "what": "preview_batch", "body": {
-                    "sampling": False, "candidates": [
+                    "mode": "bounded_rollout", "sampling": True, "candidates": [
                         {"valid": True, "summary": {}, "forecasts": [], "recruiter_threats": {"recruiters": []}},
                         {"valid": True, "summary": {}, "forecasts": [], "recruiter_threats": {"recruiters": []}},
                     ]}},
@@ -1644,6 +1690,7 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual(sent[0]["what"], "tactical_surface")
         self.assertEqual(sent[1]["what"], "inspect_unit")
         self.assertEqual(sent[2]["what"], "preview_batch")
+        self.assertEqual(sent[2]["mode"], "bounded_rollout")
         self.assertEqual(sent[3]["what"], "validate_batch")
         self.assertEqual(sent[4]["what"], "preview_batch")
         self.assertEqual(sent[5], second)
