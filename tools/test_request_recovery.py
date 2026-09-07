@@ -52,7 +52,7 @@ class ReconcileTests(unittest.TestCase):
                     "path": "r1.json", "digest": digest}]
         result = reconcile_request(state, records, checkpoint_dir, request_dir=self.request)
         self.assertEqual(result.state, COMMITTED)
-        self.assertFalse(result.safe_to_restart)
+        self.assertTrue(result.safe_to_restart)
 
     def test_checkpoint_mismatch_stops_even_after_acceptance(self):
         checkpoint_dir = self.root / "checkpoints"

@@ -363,6 +363,13 @@ replace the live observation. It never mutates live state or claims that one
 sampled branch is a probability or a best move. Queries themselves execute no
 actions. The model may also inspect one friendly unit at a time:
 
+If the driver rejects a preview candidate with one of the supported candidate
+codes (`parse`, `batch_too_large`, `action_limit`, `partial_limit`,
+`unauthorized_unit`, or `UnitNotFound`), the client records the code, message,
+candidate index, and rejected draft, then gives the model one bounded repair
+from the unchanged live revision. Transport, protocol, checkpoint, and unknown
+codes remain infrastructure errors; they are never treated as a valid preview.
+
 ```json
 {"tool":"inspect_unit","unit_id":12}
 ```

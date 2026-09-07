@@ -17,6 +17,7 @@ from .game_history import import_game, open_history
 ROOT = Path(__file__).resolve().parents[1]
 DRIVER = Path(os.environ.get("NORRUST_TEST_DRIVER", ROOT / "norrust_core/target/debug/greedy_driver"))
 FIXTURE = ROOT / "tools/fixtures/decision_positions/revision-338"
+SEED_2001_FIXTURE = ROOT / "tools/fixtures/decision_positions/revision-286"
 
 
 def _checkpoint(temp: Path) -> Path:
@@ -134,3 +135,72 @@ class RepairExecutionIntegrationTests(unittest.TestCase):
                 self.assertEqual(conn.execute("PRAGMA foreign_key_check").fetchall(), [])
             finally:
                 conn.close()
+
+    def test_revision_286_invalid_preview_draft_is_repaired_and_executes(self):
+        """The archived dead-U21 preview is model-invalid feedback, not infra."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            checkpoint = root / "checkpoint.json"
+            body = json.loads((SEED_2001_FIXTURE / "checkpoint.json").read_text())
+            board = ROOT / "scenarios" / body["scenario"] / "board.toml"
+            self.assertEqual(hashlib.sha256(board.read_bytes()).hexdigest(), body["board_sha256"])
+            body["board_path"] = str(board)
+            body["save_state"]["board_path"] = str(board)
+            checkpoint_payload = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
+            checkpoint = root / (
+                f"{body['side_turns']}-{body['save_state']['state_revision']}-"
+                f"{body['boundary']}-{hashlib.sha256(checkpoint_payload).hexdigest()}.json")
+            checkpoint.write_bytes(checkpoint_payload)
+            failed = json.loads((SEED_2001_FIXTURE / "failed-response.json").read_text())
+            preview = json.dumps({"tool": "preview_batch", "candidates": [
+                [{"action": "EndTurn"}], failed["actions"]
+            ]}, separators=(",", ":"))
+            corrected = json.dumps({
+                "actions": [{"action": "Move", "unit_id": 22, "col": 10, "row": 5},
+                            {"action": "EndTurn"}],
+                "decisions": [{"orders": [0, 1], "rules": ["T3.2", "T7"],
+                               "expected": "Move the wounded unit to the supplied rear hex, then finish.",
+                               "risk": "The retreat gives up one attack opportunity."}],
+            }, separators=(",", ":"))
+            captures = root / "requests.ndjson"
+            backend = root / "backend.py"
+            backend.write_text(
+                "import json,sys\n"
+                "prompt=sys.stdin.read()\n"
+                f"capture={str(captures)!r}\n"
+                "try: count=sum(1 for _ in open(capture, encoding='utf-8'))\n"
+                "except FileNotFoundError: count=0\n"
+                "with open(capture, 'a', encoding='utf-8') as out: out.write(json.dumps({'prompt':prompt})+'\\n')\n"
+                f"reply={preview!r} if count == 0 else {corrected!r}\n"
+                "print(json.dumps({'text':reply}))\n",
+                encoding="utf-8")
+            log = root / "match.ndjson"
+            command = [sys.executable, "-m", "tools.llm_client", "--driver", str(DRIVER),
+                       "--model-command", shlex.join([sys.executable, str(backend)]),
+                       "--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
+                       "--gold", "300", "--seed", "2001", "--llm-side", "0", "--max-turns", "11",
+                       "--log", str(log), "--resume-checkpoint", str(checkpoint),
+                       "--query-budget-seconds", "10", "--model-timeout", "10", "--turn-timeout", "30"]
+            result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr[-3000:] + log.read_text()[-3000:])
+            records = [json.loads(line) for line in log.read_text().splitlines()]
+            requests = [r for r in records if r.get("type") == "model_request"]
+            self.assertEqual(len(requests), 3)
+            self.assertEqual(requests[0]["raw_output"], preview)
+            self.assertIn("unauthorized_unit", requests[1]["prompt"])
+            self.assertIn("revision=286", requests[1]["prompt"])
+            self.assertIn('"unit_ids":[4,5,6,12,13,14,21,44]', requests[1]["prompt"])
+            self.assertEqual(requests[2]["raw_output"], corrected)
+            error = next(r for r in records if r.get("type") == "repair")
+            self.assertEqual(error["validation_error"].split(":", 2)[0], "candidate_error")
+            forwarded = [r for r in records if r.get("type") == "forwarded_orders"]
+            corrected_orders = json.loads(corrected)["actions"]
+            self.assertTrue(any(r["orders"] == corrected_orders for r in forwarded))
+            events = [e for r in records if r.get("type") == "driver"
+                      for e in r.get("line", {}).get("events", [])]
+            self.assertTrue(any(e.get("kind") == "move" and e.get("unit") == 22
+                                and e.get("source") == "llm" for e in events))
+            self.assertFalse(any(e.get("unit") == 21 for e in events))
+            terminal = next(r for r in records if r.get("type") == "terminal")
+            self.assertEqual(terminal["reason"], "max_turns")
+            self.assertEqual(terminal["side_turns"], 11)

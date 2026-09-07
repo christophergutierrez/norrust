@@ -197,7 +197,9 @@ def main() -> int:
     metadata = {"turn": turn, "prompt_sha256": __import__("hashlib").sha256(prompt.encode()).hexdigest(),
                 "engine_revision": os.environ.get("NORRUST_ENGINE_REVISION"),
                 "deadline_seconds": timeout,
-                "requested_model": model, "requested_reasoning_effort": effort}
+                "requested_model": model, "requested_reasoning_effort": effort,
+                "match_id": session_id,
+                "attempt_id": os.environ.get("NORRUST_CODEX_ATTEMPT_ID")}
     with RequestJournal(journal_root, session_id) as journal:
         request = journal.prepare(metadata)
         request.mark_dispatched(native_thread_id=thread_id)
@@ -232,6 +234,10 @@ def main() -> int:
                 **identity,
                 "tool_restriction": "read-only game prompt; unrelated tools rejected",
                 "request_id": request.request_id,
+                "request_state_path": str(request.state_path),
+                "journal_root": str(journal_root),
+                "session_id": session_id,
+                "attempt_id": os.environ.get("NORRUST_CODEX_ATTEMPT_ID"),
             }}, separators=(",", ":")))
         except RuntimeError as exc:
             if request.state == "dispatched":

@@ -21,9 +21,13 @@ from typing import Any, Optional
 try:
     from .turn_agenda import agenda_from_response, compact_agenda
     from .decision_annotations import annotation_for_response, inapplicable_annotation
+    from .request_journal import append_request_milestone
+    from .request_recovery import recoverable_answer
 except ImportError:  # pragma: no cover - direct script compatibility
     from turn_agenda import agenda_from_response, compact_agenda
     from decision_annotations import annotation_for_response, inapplicable_annotation
+    from request_journal import append_request_milestone
+    from request_recovery import recoverable_answer
 
 ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "Engage", "EndTurn", "Advance", "Resign",
            "DoneWithImportantMoves", "FinishWithGreedy"}
@@ -642,6 +646,63 @@ def query_tactical_surface(exchange, state_revision: int) -> dict[str, Any]:
     return response["body"]
 
 
+# These are the driver-side contract failures that identify a model-authored
+# candidate.  Keep this list deliberately small: transport, protocol, stale
+# revision, and unknown errors remain infrastructure failures.
+CANDIDATE_QUERY_ERROR_CLASSES = {
+    "parse": "model_invalid",
+    "batch_too_large": "model_invalid",
+    "action_limit": "model_invalid",
+    "partial_limit": "model_invalid",
+    "unauthorized_unit": "model_invalid",
+    "UnitNotFound": "model_invalid",
+}
+
+
+class CandidateQueryError(ValueError):
+    """A preview/comparison candidate was rejected by the driver contract."""
+
+    def __init__(self, query: str, code: str, message: str,
+                 candidate_index: Any = None,
+                 response: Optional[dict[str, Any]] = None):
+        self.query = query
+        self.code = code
+        self.error_message = message
+        self.candidate_index = candidate_index
+        self.response = response
+        super().__init__(self.__str__())
+
+    def as_dict(self) -> dict[str, Any]:
+        result = {"query": self.query, "code": self.code,
+                  "message": self.error_message}
+        if self.candidate_index is not None:
+            result["candidate_index"] = self.candidate_index
+        return result
+
+    def __str__(self) -> str:
+        suffix = (f" candidate_index={self.candidate_index}"
+                  if self.candidate_index is not None else "")
+        return (f"candidate_error: {self.query}: code={self.code}{suffix}: "
+                f"{self.error_message}")
+
+
+def _raise_preview_query_error(response: Any, query: str) -> None:
+    """Raise a typed model error for known candidate failures.
+
+    Unknown driver codes deliberately retain the existing infrastructure path;
+    the raw response is still recorded by the exchange query audit.
+    """
+    code = response.get("code") if isinstance(response, dict) else None
+    message = (response.get("message", "preview query failed")
+               if isinstance(response, dict) else "invalid preview response")
+    if code in CANDIDATE_QUERY_ERROR_CLASSES:
+        raise CandidateQueryError(query, code, message,
+                                  candidate_index=response.get("candidate_index")
+                                  if isinstance(response, dict) else None,
+                                  response=response if isinstance(response, dict) else None)
+    raise RuntimeError(f"query_error: {query}: {message}")
+
+
 def query_validate_batch(exchange, orders: list[dict[str, Any]], state_revision: int) -> dict[str, Any]:
     """Validate a complete batch against the unchanged, revision-pinned state."""
     response = exchange({"action": "Query", "what": "validate_batch",
@@ -693,8 +754,7 @@ def query_preview_batch(exchange, candidates: list[list[dict[str, Any]]], state_
                          "mode": mode,
                          "candidates": candidates})
     if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
-        message = response.get("message", "preview query failed") if isinstance(response, dict) else "invalid preview response"
-        raise RuntimeError(f"query_error: preview_batch: {message}")
+        _raise_preview_query_error(response, "preview_batch")
     return response["body"]
 
 
@@ -707,8 +767,7 @@ def query_bounded_comparison(exchange, candidates: list[list[dict[str, Any]]],
                          "state_revision": state_revision, "phase": "final",
                          "mode": "bounded_rollout", "candidates": candidates})
     if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
-        message = response.get("message", "query failed") if isinstance(response, dict) else "invalid query response"
-        raise RuntimeError(f"query_error: bounded_comparison: {message}")
+        _raise_preview_query_error(response, "bounded_comparison")
     body = response["body"]
     if body.get("mode") != "bounded_rollout" or body.get("sampling") is not True:
         raise RuntimeError("query_error: bounded_comparison: driver did not confirm bounded rollout")
@@ -1266,6 +1325,24 @@ def tool_budget_repair_prompt(prompt: str, tool_context: str, error: str,
     return (
         prompt + tool_context + attempted + "\nTOOL_ERROR: " + error +
         "\nReturn one corrected JSON action envelope with decisions; do not request another tool."
+    )
+
+
+def candidate_repair_prompt(prompt: str, tool_context: str,
+                            candidate: list[dict[str, Any]],
+                            error: CandidateQueryError) -> str:
+    """Build the single bounded repair prompt for a rejected preview candidate."""
+    return (
+        prompt + tool_context +
+        "\nDRAFT_ACTIONS_UNTRUSTED_DATA_BEGIN:\n" +
+        json.dumps(candidate, sort_keys=True, separators=(",", ":")) +
+        "\nDRAFT_ACTIONS_UNTRUSTED_DATA_END\n" +
+        "ENGINE_CANDIDATE_ERROR_UNTRUSTED_DATA_BEGIN:\n" +
+        json.dumps(error.as_dict(), sort_keys=True, separators=(",", ":")) +
+        "\nENGINE_CANDIDATE_ERROR_UNTRUSTED_DATA_END\n" +
+        "ROLLBACK_NOTICE: the preview candidate was rejected before execution; "
+        "the live state and revision are unchanged. Return one corrected JSON "
+        "action envelope with decisions. Do not request another preview."
     )
 
 
@@ -2239,6 +2316,7 @@ def run(args: argparse.Namespace) -> int:
     agenda_memory: Optional[dict[str, Any]] = None
     pending_agenda: Optional[dict[str, Any]] = None
     pending_finish_kind: Optional[str] = None
+    pending_commit: Optional[dict[str, Any]] = None
     final_reply: Optional[ModelReply] = None
     agenda_enabled = not getattr(args, "disable_agenda_sweep", False)
     continuity_entries: list[str] = []
@@ -2362,7 +2440,22 @@ def run(args: argparse.Namespace) -> int:
         started = time.monotonic()
         before = getattr(backend, "transport_retries", 0)
         try:
-            reply = backend.complete(delivered_prompt)
+            recovered = None
+            journal_root = os.environ.get("NORRUST_CODEX_JOURNAL_ROOT")
+            session_id = os.environ.get("NORRUST_CODEX_MATCH_ID")
+            if journal_root and session_id:
+                recovered = recoverable_answer(
+                    journal_root, session_id,
+                    hashlib.sha256(delivered_prompt.encode()).hexdigest(),
+                    parent_records)
+            if recovered is not None:
+                answer, request_state_path = recovered
+                cache = answer.get("cache") if isinstance(answer.get("cache"), dict) else {}
+                cache = dict(cache)
+                cache["request_state_path"] = str(request_state_path)
+                reply = ModelReply(answer["text"], answer.get("usage"), cache)
+            else:
+                reply = backend.complete(delivered_prompt)
             if isinstance(reply.cache, dict):
                 for source, destination in (("native_session_id", "native_session_id"),
                                             ("transport", "native_transport"),
@@ -2387,6 +2480,19 @@ def run(args: argparse.Namespace) -> int:
                     raise RuntimeError("runtime reasoning effort mismatch")
             reply.request_id = request_id
             reply.prompt_hash = hashlib.sha256(delivered_prompt.encode()).hexdigest()
+            backend_cache = reply.cache if isinstance(reply.cache, dict) else {}
+            request_state_path = backend_cache.get("request_state_path")
+            if isinstance(request_state_path, str) and request_state_path:
+                # Once received, the answer is consumed by this client. A
+                # later restart must not submit it a second time unless the
+                # journal also proves that the original batch was committed.
+                append_request_milestone(
+                    request_state_path, "consumed",
+                    client_request_id=request_id,
+                    prompt_sha256=reply.prompt_hash,
+                    state_revision=(state.get("state_revision")
+                                    if isinstance(state, dict) else None),
+                    phase="model_response")
             reply.decision_annotation = annotation_for_response(reply.text, guide_text=playbook)
             record({"type": "model_request",
                     "request_id": request_id,
@@ -2491,11 +2597,38 @@ def run(args: argparse.Namespace) -> int:
                 # The reference is the only checkpoint record consumed by resume.
                 # Keep the body out of the audit log and retain the driver's
                 # compact boundary metadata for inspection.
-                durable({"type": "checkpoint_ref",
+                checkpoint_record = {"type": "checkpoint_ref",
                          **{key: line[key] for key in
                             ("path", "digest", "state_revision", "side_turns",
                              "boundary", "pending_opponent_turn") if key in line},
-                         "intent": pending_intent or intent_memory})
+                         "intent": pending_intent or intent_memory}
+                # The driver publishes this checkpoint before acknowledging
+                # the action batch. Link and fsync the evidence before reading
+                # the status response, closing the lost-acknowledgement gap.
+                if pending_commit is not None:
+                    checkpoint_record.update(pending_commit)
+                    commit_details = {key: checkpoint_record[key] for key in
+                                      ("batch_id", "request_id", "backend_request_id",
+                                       "source_revision", "state_revision", "side_turns",
+                                       "boundary", "pending_opponent_turn", "path", "digest")
+                                      if key in checkpoint_record}
+                    durable(checkpoint_record)
+                    durable({"type": "batch_committed", **commit_details})
+                    request_state_path = pending_commit.get("request_state_path")
+                    if isinstance(request_state_path, str) and request_state_path:
+                        try:
+                            append_request_milestone(request_state_path, "committed",
+                                                     **commit_details)
+                        except (OSError, ValueError) as exc:
+                            set_terminal(metadata, TERMINAL_INFRASTRUCTURE,
+                                         winner=None, reason="infrastructure_failure",
+                                         code="request_commit_evidence_failed",
+                                         message=str(exc))
+                            durable({"type": "terminal", **metadata})
+                            return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
+                    pending_commit = None
+                else:
+                    durable(checkpoint_record)
                 continue
             if line.get("type") == "status":
                 failure = status_failure(line)
@@ -2870,8 +3003,20 @@ def run(args: argparse.Namespace) -> int:
                                     raise ValueError("preview_batch may be requested only once per turn")
                                 preview_candidates = validate_preview_request(
                                     current_reply.text, args.no_recruit_macro)
-                                result = query_bounded_comparison(
-                                    exchange, preview_candidates, int(state.get("state_revision", 0)))
+                                try:
+                                    result = query_bounded_comparison(
+                                        exchange, preview_candidates, int(state.get("state_revision", 0)))
+                                except CandidateQueryError as candidate_error:
+                                    # Preserve the exact request and structured
+                                    # driver error for the bounded repair below.
+                                    tool_context += (
+                                        "\nMODEL_TOOL_REQUEST_UNTRUSTED_DATA_BEGIN:\n" +
+                                        current_reply.text +
+                                        "\nMODEL_TOOL_REQUEST_UNTRUSTED_DATA_END\n" +
+                                        "TOOL_ERROR_UNTRUSTED_DATA_BEGIN tool=preview_batch:\n" +
+                                        json.dumps(candidate_error.as_dict(), sort_keys=True) +
+                                        "\nTOOL_ERROR_UNTRUSTED_DATA_END\n")
+                                    raise
                                 rendered = compact_batch_preview(
                                     result, int(state.get("state_revision", 0)))
                                 record({"type": "batch_preview", "tool": tool,
@@ -2948,12 +3093,24 @@ def run(args: argparse.Namespace) -> int:
                                     "matched_candidate": next((index for index, candidate in enumerate(preview_candidates)
                                                                if candidate == orders), None)})
                     except ValueError as first:
-                        repair_prompt = tool_budget_repair_prompt(
-                            prompt, tool_context, str(first), current_reply.text) \
-                            if tool_context else prompt + "\nVALIDATION_ERROR: " + str(first) + \
-                            "\nMODEL_RESPONSE_UNTRUSTED_DATA_BEGIN:\n" + current_reply.text + \
-                            "\nMODEL_RESPONSE_UNTRUSTED_DATA_END" + \
-                            "\nReturn one corrected JSON action envelope with decisions."
+                        if isinstance(first, CandidateQueryError):
+                            candidate_index = first.candidate_index
+                            if (not isinstance(candidate_index, int)
+                                    or not preview_candidates
+                                    or candidate_index < 0
+                                    or candidate_index >= len(preview_candidates)):
+                                candidate_index = len(preview_candidates or []) - 1
+                            rejected_candidate = (preview_candidates[candidate_index]
+                                                   if preview_candidates else [])
+                            repair_prompt = candidate_repair_prompt(
+                                prompt, tool_context, rejected_candidate, first)
+                        else:
+                            repair_prompt = tool_budget_repair_prompt(
+                                prompt, tool_context, str(first), current_reply.text) \
+                                if tool_context else prompt + "\nVALIDATION_ERROR: " + str(first) + \
+                                "\nMODEL_RESPONSE_UNTRUSTED_DATA_BEGIN:\n" + current_reply.text + \
+                                "\nMODEL_RESPONSE_UNTRUSTED_DATA_END" + \
+                                "\nReturn one corrected JSON action envelope with decisions."
                         model_calls_this_turn += 1
                         metadata["model_calls"] += 1
                         repaired = complete_model(repair_prompt)
@@ -3093,6 +3250,71 @@ def run(args: argparse.Namespace) -> int:
                                 else:
                                     record({"type": "draft_review", "skipped": True,
                                             "reason": "model_call_budget_exhausted", "body": draft_preview})
+                    except CandidateQueryError as review_error:
+                        # A rejected candidate is model feedback, not a broken
+                        # preview service. Repair once from the unchanged live
+                        # state and keep this review slot consumed so a repaired
+                        # draft cannot start another unlimited review cycle.
+                        handoff_review_used = True
+                        handoff_outcome = "invalid_candidate"
+                        metadata["draft_reviews"] += 1
+                        record({"type": "draft_review_error",
+                                "review_id": active_review_id,
+                                "original_candidate_digest": original_digest,
+                                "candidate_error": review_error.as_dict(),
+                                "rejected_draft": orders,
+                                "state_revision": state.get("state_revision")})
+                        if model_calls_this_turn >= metadata["max_model_calls_per_turn"]:
+                            set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
+                                         reason=TERMINAL_MODEL_INVALID,
+                                         code="draft_candidate_invalid",
+                                         message=str(review_error))
+                            durable({"type": "model_error", **metadata})
+                            return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
+                        repair_prompt = candidate_repair_prompt(
+                            prompt, tool_context, orders, review_error)
+                        model_calls_this_turn += 1
+                        metadata["model_calls"] += 1
+                        try:
+                            repaired_review = complete_model(repair_prompt)
+                            final_reply = repaired_review
+                            enforce_usage(repaired_review, args)
+                            metadata["draft_review_repairs"] += 1
+                            record({"type": "draft_review_repair",
+                                    "call": metadata["model_calls"],
+                                    "review_id": active_review_id,
+                                    "original_candidate_digest": original_digest,
+                                    "prompt_hash": repaired_review.prompt_hash,
+                                    "prompt_bytes": len(finalize_model_prompt(repair_prompt, state).encode()),
+                                    "raw_output": repaired_review.text,
+                                    "candidate_error": review_error.as_dict()})
+                            revised_orders = validate_model_orders(repaired_review.text)
+                            reviewed_intent = response_intent(repaired_review.text)
+                        except ValueError as repair_error:
+                            set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
+                                         reason=TERMINAL_MODEL_INVALID,
+                                         code="draft_candidate_invalid",
+                                         message=str(repair_error))
+                            durable({"type": "model_error", **metadata})
+                            return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
+                        except RuntimeError as repair_error:
+                            set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
+                                         reason="infrastructure_failure",
+                                         code="model_backend_failure",
+                                         message=str(repair_error))
+                            durable({"type": "model_error", **metadata})
+                            return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
+                        draft_orders = orders
+                        orders = revised_orders
+                        if reviewed_intent is not None:
+                            turn_intent = reviewed_intent
+                        revised_digest = hashlib.sha256(json.dumps(
+                            revised_orders, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                        record({"type": "draft_review_decision", "review_id": active_review_id,
+                                "original_candidate_digest": original_digest,
+                                "revised_candidate_digest": revised_digest,
+                                "revision": int(revised_orders != draft_orders),
+                                "outcome": "repaired"})
                     except RuntimeError as review_error:
                         set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
                                      reason="infrastructure_failure", code="draft_review_error",
@@ -3267,6 +3489,9 @@ def run(args: argparse.Namespace) -> int:
                                 "lethal_danger_after": lethal_after,
                                 "affordable_recruitment_remaining": recruitment_left,
                                 "body": final_preview})
+                    except CandidateQueryError as metrics_error:
+                        record({"type": "metrics_error", "message": str(metrics_error),
+                                "candidate_error": metrics_error.as_dict()})
                     except RuntimeError as metrics_error:
                         record({"type": "metrics_error", "message": str(metrics_error)})
                 metadata["model_orders"] += len(orders)
@@ -3278,10 +3503,40 @@ def run(args: argparse.Namespace) -> int:
                 pending_finish_kind = finish_kind_for_orders(orders, timeout_fallback)
                 capture_agenda(final_reply.text if final_reply is not None else "null")
                 batch_sequence += 1
+                batch_id = f"{metadata.get('conversation_id', 'match')}:batch:{batch_sequence}"
+                backend_cache = (final_reply.cache if final_reply is not None and
+                                 isinstance(final_reply.cache, dict) else {})
+                pending_commit = {
+                    "batch_id": batch_id,
+                    "request_id": final_reply.request_id if final_reply is not None else None,
+                    "backend_request_id": backend_cache.get("request_id"),
+                    "request_state_path": backend_cache.get("request_state_path"),
+                    "source_revision": state.get("state_revision"),
+                }
+                request_state_path = pending_commit.get("request_state_path")
+                if isinstance(request_state_path, str) and request_state_path:
+                    try:
+                        append_request_milestone(
+                            request_state_path, "submitted", batch_id=batch_id,
+                            client_request_id=pending_commit.get("request_id"),
+                            backend_request_id=pending_commit.get("backend_request_id"),
+                            source_revision=state.get("state_revision"),
+                            phase="action_batch")
+                    except (OSError, ValueError) as exc:
+                        set_terminal(metadata, TERMINAL_INFRASTRUCTURE,
+                                     winner=None, reason="infrastructure_failure",
+                                     code="request_submit_evidence_failed",
+                                     message=str(exc))
+                        durable({"type": "terminal", **metadata})
+                        return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
+                durable({"type": "request_submitted", "batch_id": batch_id,
+                         "request_id": pending_commit.get("request_id"),
+                         "backend_request_id": pending_commit.get("backend_request_id"),
+                         "source_revision": state.get("state_revision")})
                 final_audit = ({} if is_resignation(orders)
                                else handoff_audit(state, orders, coverage))
                 durable({"type": "forwarded_orders", "orders": orders,
-                         "batch_id": f"{metadata.get('conversation_id', 'match')}:batch:{batch_sequence}",
+                         "batch_id": batch_id,
                          "request_sequence": request_sequence,
                          "request_id": final_reply.request_id if final_reply is not None else None,
                          "source": "model" if final_reply is not None else "generated_greedy",

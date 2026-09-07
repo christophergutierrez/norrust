@@ -7,12 +7,17 @@ import json
 import os
 import subprocess
 import sys
+import time
+import uuid
+import fcntl
 from pathlib import Path
 
 try:
-    from .request_recovery import reconcile_request
+    from .request_recovery import reconcile_request, reconcile_journal
+    from .request_journal import _safe_session_name
 except ImportError:  # Direct ``python tools/llm_supervisor.py`` invocation.
-    from request_recovery import reconcile_request
+    from request_recovery import reconcile_request, reconcile_journal
+    from request_journal import _safe_session_name
 
 
 def _records(path: Path) -> list[dict]:
@@ -59,37 +64,151 @@ def _append(log: Path, value: dict) -> None:
         os.fsync(stream.fileno())
 
 
+def _journal_state_from_environment() -> Path | None:
+    root = os.environ.get("NORRUST_CODEX_JOURNAL_ROOT")
+    session = os.environ.get("NORRUST_CODEX_MATCH_ID")
+    if not root or not session:
+        artifact = os.environ.get("NORRUST_CODEX_ARTIFACT_DIR")
+        if artifact:
+            root, session = str(Path(artifact) / "requests"), os.environ.get("NORRUST_CODEX_MATCH_ID")
+    if not root or not session:
+        return None
+    requests = Path(root) / _safe_session_name(session) / "requests"
+    candidates = [p / "state.json" for p in requests.iterdir()
+                  if p.is_dir() and (p / "state.json").is_file()] if requests.is_dir() else []
+    if not candidates:
+        return None
+    def order(path: Path) -> tuple[int, float, str]:
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+            return int(state.get("sequence", 0)), float(state.get("created_at", 0)), path.parent.name
+        except (OSError, ValueError, TypeError):
+            return -1, -1, path.parent.name
+    return max(candidates, key=order)
+
+
+def _supervisor_state_path(log: Path) -> Path:
+    return log.with_suffix(".supervisor.json")
+
+
+def _write_state(path: Path, value: dict) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
+    with temporary.open("rb") as stream:
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+
+
+def _attempt_records(log: Path, start: int) -> list[dict]:
+    return _records(log)[start:]
+
+
 def run(command: list[str], log: Path, max_restarts: int,
         request_state: Path | None = None) -> int:
-    restarts = 0
-    while True:
-        invocation = command if restarts == 0 else command + ["--resume-log", str(log)]
-        completed = subprocess.run(invocation)
-        terminal = _last_terminal(log)
-        terminal_class = terminal.get("terminal_class") if terminal else None
-        recoverable = completed.returncode < 0 or terminal_class == "infrastructure"
-        if recoverable and request_state is not None:
-            try:
-                reconciliation = reconcile_request(
-                    request_state, log, checkpoint_dir=log.with_suffix(".ckpt"))
-            except (OSError, ValueError) as exc:
-                _append(log, {"type": "supervisor_reconciliation", "state": "unknown",
-                              "safe_to_restart": False,
-                              "reason": f"reconciliation error: {exc}", "request_id": None})
-                recoverable = False
+    log.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = log.with_suffix(".supervisor.lock")
+    lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        os.close(lock_fd)
+        _append(log, {"type": "supervisor_error", "code": "active_supervisor",
+                      "message": str(exc)})
+        return 1
+    state_path = _supervisor_state_path(log)
+    try:
+        try:
+            supervisor_state = json.loads(state_path.read_text(encoding="utf-8"))
+            if not isinstance(supervisor_state, dict):
+                raise ValueError("supervisor state is not an object")
+        except FileNotFoundError:
+            supervisor_state = {"version": 1, "restarts": 0, "failure_counts": {}}
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            _append(log, {"type": "supervisor_error", "code": "state_unavailable",
+                          "message": str(exc)})
+            return 1
+        discovered_state = request_state or _journal_state_from_environment()
+        journal_root = os.environ.get("NORRUST_CODEX_JOURNAL_ROOT")
+        if not journal_root and os.environ.get("NORRUST_CODEX_ARTIFACT_DIR"):
+            os.environ["NORRUST_CODEX_JOURNAL_ROOT"] = str(
+                Path(os.environ["NORRUST_CODEX_ARTIFACT_DIR"]) / "requests")
+        while True:
+            attempt = int(supervisor_state.get("attempts", 0)) + 1
+            attempt_id = f"attempt-{attempt}-{uuid.uuid4().hex[:12]}"
+            start = len(_records(log))
+            _append(log, {"type": "supervisor_attempt_start", "attempt": attempt,
+                          "attempt_id": attempt_id, "log_offset": start})
+            os.environ["NORRUST_CODEX_ATTEMPT_ID"] = attempt_id
+            invocation = command if attempt == 1 else command + ["--resume-log", str(log)]
+            completed = subprocess.run(invocation)
+            new_records = _attempt_records(log, start + 1)
+            terminal = next((record for record in reversed(new_records)
+                             if record.get("type") == "terminal"), None)
+            terminal_class = terminal.get("terminal_class") if terminal else None
+            recoverable_exit = (completed.returncode < 0 or
+                                terminal_class == "infrastructure" or terminal is None)
+            discovered_state = discovered_state or _journal_state_from_environment()
+            reconciliation = None
+            if recoverable_exit:
+                if discovered_state is None:
+                    reason = "no match-owned request journal was discoverable"
+                else:
+                    try:
+                        reconciliation = reconcile_request(
+                            discovered_state, log,
+                            checkpoint_dir=log.with_suffix(".ckpt"))
+                        reason = reconciliation.reason
+                    except (OSError, ValueError) as exc:
+                        reason = f"reconciliation error: {exc}"
+                if reconciliation is None:
+                    safe = False
+                    rec_state = "unknown"
+                    request_id = None
+                else:
+                    safe = reconciliation.safe_to_restart
+                    rec_state = reconciliation.state
+                    request_id = reconciliation.request_id
+                _append(log, {"type": "supervisor_reconciliation", "attempt": attempt,
+                              "attempt_id": attempt_id, "state": rec_state,
+                              "safe_to_restart": safe, "reason": reason,
+                              "request_id": request_id})
             else:
-                _append(log, {"type": "supervisor_reconciliation",
-                              "state": reconciliation.state,
-                              "safe_to_restart": reconciliation.safe_to_restart,
-                              "reason": reconciliation.reason,
-                              "request_id": reconciliation.request_id})
-                recoverable = reconciliation.safe_to_restart
-        if not recoverable or restarts >= max_restarts or not _has_checkpoint(log):
-            return completed.returncode
-        restarts += 1
-        _append(log, {"type": "supervisor_attempt", "attempt": restarts,
-                      "previous_returncode": completed.returncode,
-                      "reason": "signal" if completed.returncode < 0 else "infrastructure"})
+                safe, rec_state, reason = False, "terminal", "terminal outcome"
+            outcome = {"type": "supervisor_attempt_outcome", "attempt": attempt,
+                       "attempt_id": attempt_id, "returncode": completed.returncode,
+                       "terminal_class": terminal_class, "terminal": terminal,
+                       "recovery_state": rec_state, "recovery_decision": "restart" if safe else "stop",
+                       "reason": reason}
+            _append(log, outcome)
+            supervisor_state["attempts"] = attempt
+            supervisor_state["last_attempt_id"] = attempt_id
+            supervisor_state["last_outcome"] = outcome
+            _write_state(state_path, supervisor_state)
+            if not recoverable_exit or not safe:
+                return completed.returncode
+            if not _has_checkpoint(log):
+                _append(log, {"type": "supervisor_error", "code": "checkpoint_unavailable",
+                              "attempt": attempt, "message": "safe recovery has no checkpoint"})
+                return completed.returncode
+            key = f"{terminal.get('code') if terminal else ('signal' if completed.returncode < 0 else 'no_terminal')}:{rec_state}:{getattr(reconciliation, 'source_revision', None)}"
+            failures = supervisor_state.setdefault("failure_counts", {})
+            failures[key] = int(failures.get(key, 0)) + 1
+            if (int(supervisor_state.get("restarts", 0)) >= min(max_restarts, 3)
+                    or failures[key] > 2):
+                _append(log, {"type": "supervisor_error", "code": "restart_limit",
+                              "attempt": attempt, "failure_key": key,
+                              "count": failures[key]})
+                _write_state(state_path, supervisor_state)
+                return completed.returncode
+            supervisor_state["restarts"] = int(supervisor_state.get("restarts", 0)) + 1
+            _write_state(state_path, supervisor_state)
+            _append(log, {"type": "supervisor_restart", "attempt": attempt,
+                          "attempt_id": attempt_id, "restart": supervisor_state["restarts"],
+                          "reason": reason, "failure_key": key})
+            time.sleep(min(0.25, 0.05 * supervisor_state["restarts"]))
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
 
 
 def main(argv: list[str] | None = None) -> int:

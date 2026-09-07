@@ -20,6 +20,7 @@ from .llm_client import (
     compact_events, compact_trend, tactical_attack_coverage,
     select_event_window,
     query_tactical_surface, query_validate_batch, query_preview_batch, query_bounded_comparison,
+    CandidateQueryError, CANDIDATE_QUERY_ERROR_CLASSES,
     query_inspect_unit, query_inspect_target, query_inspect_targets, query_inspect_hex, run,
     response_intent, compact_strategic_briefing,
     checkpoint_dir_for_log, validate_checkpoint_reference, select_resume_checkpoint,
@@ -742,6 +743,119 @@ class ClientValidationTests(unittest.TestCase):
                 lambda request: {"ok": False, "code": "rollout_unavailable",
                                  "message": "unavailable"},
                 [[{"action": "EndTurn"}]], 4)
+
+    def test_preview_candidate_errors_are_classified_by_structured_code(self):
+        candidate = [[{"action": "FinishWithGreedy", "groups": [], "holds": []}]]
+        for query in (query_preview_batch, query_bounded_comparison):
+            with self.subTest(query=query.__name__):
+                with self.assertRaises(CandidateQueryError) as raised:
+                    query(lambda request: {"ok": False, "code": "unauthorized_unit",
+                                           "message": "candidate references a dead unit",
+                                           "candidate_index": 1}, candidate, 286)
+                error = raised.exception
+                self.assertEqual(error.code, "unauthorized_unit")
+                self.assertEqual(error.candidate_index, 1)
+                self.assertIn("unauthorized_unit", str(error))
+                self.assertEqual(error.as_dict()["query"],
+                                 "preview_batch" if query is query_preview_batch else "bounded_comparison")
+        self.assertEqual(CANDIDATE_QUERY_ERROR_CLASSES["unauthorized_unit"], "model_invalid")
+        with self.assertRaisesRegex(RuntimeError, "query_error: bounded_comparison: unavailable"):
+            query_bounded_comparison(
+                lambda request: {"ok": False, "code": "new_driver_code", "message": "unavailable"},
+                candidate, 286)
+
+    def test_player_preview_candidate_gets_one_bounded_repair(self):
+        preview = json.dumps({"tool": "preview_batch", "candidates": [
+            [{"action": "EndTurn"}],
+            [{"action": "FinishWithGreedy", "groups": [], "holds": []}],
+        ]})
+        corrected = self.annotated_orders("corrected")
+        code, records = self.run_with_orders(
+            [preview, corrected],
+            [{"type": "state", "active_faction": 0, "state_revision": 286, "units": []},
+             {"type": "status", "ok": True, "what": "tactical_surface", "body": {"units": []}},
+             {"type": "status", "ok": False, "what": "preview_batch",
+              "code": "unauthorized_unit", "candidate_index": 1,
+              "message": "FinishWithGreedy may reference only living model-side units"},
+             {"type": "game_end", "reason": "max_turns", "winner": None}],
+            max_model_calls_per_turn=4, return_records=True)
+        self.assertEqual(code, 0)
+        repair = next(record for record in records if record["type"] == "repair")
+        self.assertIn("unauthorized_unit", repair["validation_error"] if "validation_error" in repair else
+                      repair["raw_output"])
+        repair_prompt = next(record for record in records
+                             if record["type"] == "model_request" and record["sequence"] == 2)["prompt"]
+        self.assertIn("DRAFT_ACTIONS_UNTRUSTED_DATA_BEGIN", repair_prompt)
+        self.assertIn("ENGINE_CANDIDATE_ERROR_UNTRUSTED_DATA_BEGIN", repair_prompt)
+        self.assertIn("unauthorized_unit", repair_prompt)
+        self.assertIn("revision=286", repair_prompt)
+        forwarded = next(record for record in records if record["type"] == "forwarded_orders")
+        self.assertEqual(forwarded["orders"], json.loads(corrected)["actions"])
+        self.assertFalse(any(record.get("type") == "events" for record in records))
+
+    def test_invalid_automatic_review_candidate_gets_one_repair_without_second_review(self):
+        draft = self.annotated_orders("draft", [{"action": "FinishWithGreedy",
+                                                  "groups": [], "holds": []}])
+        corrected = self.annotated_orders("corrected")
+        candidate_error = CandidateQueryError(
+            "preview_batch", "unauthorized_unit",
+            "FinishWithGreedy may reference only living model-side units", 1)
+        with mock.patch.object(llm_client, "draft_needs_preview", return_value=True), \
+                mock.patch.object(llm_client, "query_preview_batch", side_effect=candidate_error) as preview:
+            code, records = self.run_with_orders(
+                [draft, corrected],
+                [{"type": "state", "active_faction": 0, "state_revision": 286, "units": []},
+                 {"type": "status", "ok": True, "what": "tactical_surface", "body": {"units": []}},
+                 {"type": "game_end", "reason": "max_turns", "winner": None}],
+                max_model_calls_per_turn=4, return_records=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(preview.call_count, 1)
+        error = next(record for record in records if record["type"] == "draft_review_error")
+        self.assertEqual(error["candidate_error"]["code"], "unauthorized_unit")
+        repair = next(record for record in records if record["type"] == "draft_review_repair")
+        self.assertIn("ENGINE_CANDIDATE_ERROR_UNTRUSTED_DATA_BEGIN", repair["raw_output"]
+                      if "ENGINE_CANDIDATE_ERROR_UNTRUSTED_DATA_BEGIN" in repair["raw_output"] else
+                      next(record for record in records if record["type"] == "model_request"
+                           and record["sequence"] == 2)["prompt"])
+        self.assertEqual(len([record for record in records if record["type"] == "draft_review"]), 0)
+        forwarded = next(record for record in records if record["type"] == "forwarded_orders")
+        self.assertEqual(forwarded["orders"], json.loads(corrected)["actions"])
+
+    def test_repeated_invalid_review_candidate_is_model_invalid_with_one_attempt(self):
+        draft = self.annotated_orders("draft", [{"action": "FinishWithGreedy",
+                                                  "groups": [], "holds": []}])
+        candidate_error = CandidateQueryError(
+            "preview_batch", "unauthorized_unit", "dead unit", 1)
+        with mock.patch.object(llm_client, "draft_needs_preview", return_value=True), \
+                mock.patch.object(llm_client, "query_preview_batch", side_effect=candidate_error):
+            code, records = self.run_with_orders(
+                [draft, "not an action envelope"],
+                [{"type": "state", "active_faction": 0, "state_revision": 286, "units": []},
+                 {"type": "status", "ok": True, "what": "tactical_surface", "body": {"units": []}}],
+                max_model_calls_per_turn=4, return_records=True)
+        self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID])
+        terminal = records[-1]
+        self.assertEqual(terminal["type"], "model_error")
+        self.assertEqual(terminal["reason"], TERMINAL_MODEL_INVALID)
+        self.assertEqual(terminal["code"], "draft_candidate_invalid")
+        self.assertEqual(terminal["model_calls"], 2)
+        self.assertFalse(any(record["type"] == "forwarded_orders" for record in records))
+
+    def test_invalid_review_candidate_respects_exhausted_model_budget(self):
+        draft = self.annotated_orders("draft", [{"action": "FinishWithGreedy",
+                                                  "groups": [], "holds": []}])
+        candidate_error = CandidateQueryError(
+            "preview_batch", "unauthorized_unit", "dead unit", 1)
+        with mock.patch.object(llm_client, "draft_needs_preview", return_value=True), \
+                mock.patch.object(llm_client, "query_preview_batch", side_effect=candidate_error):
+            code, records = self.run_with_orders(
+                [draft],
+                [{"type": "state", "active_faction": 0, "state_revision": 286, "units": []},
+                 {"type": "status", "ok": True, "what": "tactical_surface", "body": {"units": []}}],
+                max_model_calls_per_turn=1, return_records=True)
+        self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID])
+        self.assertEqual(records[-1]["code"], "draft_candidate_invalid")
+        self.assertEqual(records[-1]["model_calls"], 1)
 
     def test_preview_request_rejects_more_than_two_candidates(self):
         request = json.dumps({"tool": "preview_batch", "candidates": [

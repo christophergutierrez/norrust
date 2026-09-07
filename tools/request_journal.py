@@ -184,6 +184,36 @@ class RequestHandle:
         self._ensure_open()
         self._append({"kind": "native_event", "event": dict(event)})
 
+    def milestone(self, name: str, **details: Any) -> None:
+        """Persist a client-visible request milestone.
+
+        Milestones are append-only evidence, while the duplicated fields in
+        ``state.json`` make reconciliation cheap after a process disappears.
+        The event is written first so a crash cannot leave state claiming a
+        milestone for which no durable evidence exists.
+        """
+        self._ensure_open()
+        if not name or any(char.isspace() for char in name):
+            raise RequestStateError("milestone name must be non-empty and contain no whitespace")
+        event = {"kind": "milestone", "milestone": name, "details": dict(details)}
+        self._append(event)
+        milestones = self.record.setdefault("milestones", {})
+        if not isinstance(milestones, dict):
+            raise RequestStateError("request milestones are malformed")
+        milestones[name] = dict(details)
+        self.record[name] = True
+        self.record.update(details)
+        self._write_state()
+
+    def mark_consumed(self, **details: Any) -> None:
+        self.milestone("consumed", **details)
+
+    def mark_submitted(self, **details: Any) -> None:
+        self.milestone("submitted", **details)
+
+    def mark_committed(self, **details: Any) -> None:
+        self.milestone("committed", **details)
+
     def transition(self, state: str, **details: Any) -> None:
         self._ensure_open()
         if state not in STATES:
@@ -238,3 +268,46 @@ def read_state(request_dir: str | os.PathLike[str]) -> dict[str, Any]:
     if not isinstance(value, dict) or value.get("state") not in STATES:
         raise RequestStateError(f"invalid request state: {path}")
     return value
+
+
+def append_request_milestone(request_dir: str | os.PathLike[str], name: str,
+                             **details: Any) -> dict[str, Any]:
+    """Append a milestone from a process that does not own the backend handle.
+
+    The backend closes its journal lock before returning a reply.  The client
+    then records consumption/submission/commit evidence using this same
+    match-owned lock, preventing two supervisors from mutating one request.
+    """
+    directory = Path(request_dir).resolve()
+    if directory.name == "state.json":
+        directory = directory.parent
+    session_dir = directory.parent.parent
+    if directory.parent.name != "requests" or session_dir == directory:
+        raise RequestStateError("invalid request directory")
+    if not name or any(char.isspace() for char in name):
+        raise RequestStateError("milestone name must be non-empty and contain no whitespace")
+    lock_path = session_dir / "session.lock"
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        state = read_state(directory)
+        events_path = directory / "events.ndjson"
+        sequence = int(state.get("sequence", 0))
+        event = {"request_id": state["request_id"], "sequence": sequence,
+                 "at": _now(), "kind": "milestone", "milestone": name,
+                 "details": dict(details)}
+        with events_path.open("ab") as stream:
+            stream.write(_json_bytes(event))
+            stream.flush()
+            os.fsync(stream.fileno())
+        milestones = state.setdefault("milestones", {})
+        if not isinstance(milestones, dict):
+            raise RequestStateError("request milestones are malformed")
+        milestones[name] = dict(details)
+        state[name] = True
+        state.update(details)
+        _atomic_json(directory / "state.json", state)
+        return state
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)

@@ -40,6 +40,10 @@ class Reconciliation:
     answer_path: str | None = None
     checkpoint_path: str | None = None
     checkpoint_digest: str | None = None
+    batch_id: str | None = None
+    source_revision: int | None = None
+    side_turns: int | None = None
+    pending_opponent_turn: bool | None = None
 
     @property
     def stop(self) -> bool:
@@ -121,10 +125,21 @@ def _checkpoint_evidence(
     expected_path = next(
         (metadata.get(key) for key in ("checkpoint_path", "commit_checkpoint_path")
          if isinstance(metadata.get(key), str)), None)
+    request_id = str(state["request_id"])
+    batch_id = metadata.get("batch_id")
+    source_revision = metadata.get("source_revision")
     candidates = [record for record in records if record.get("type") == "checkpoint_ref"
-                  and (_related(record, str(state["request_id"]))
+                  and (_related(record, request_id)
+                       or (batch_id and record.get("batch_id") == batch_id)
                        or (expected_digest and record.get("digest") == expected_digest)
-                       or (expected_path and record.get("path") == expected_path))]
+                       or (expected_path and record.get("path") == expected_path)
+                       # A checkpoint notification may be lost after the
+                       # driver publishes it.  The pre-submit revision and
+                       # batch identity are then the only client evidence.
+                       or (isinstance(source_revision, int)
+                           and isinstance(record.get("state_revision"), int)
+                           and record.get("state_revision") > source_revision
+                           and record.get("pending_opponent_turn") is True))]
     if expected_digest is None and expected_path is None and not candidates:
         return False, None, None, "no checkpoint linked to request"
     if not candidates:
@@ -146,6 +161,12 @@ def _checkpoint_evidence(
         return False, path_name, digest, "checkpoint digest mismatch"
     if expected_digest and actual.lower() != expected_digest.lower():
         return False, path_name, digest, "request checkpoint digest mismatch"
+    # A linked checkpoint must expose the state needed to resume safely.  Old
+    # checkpoints are still accepted when no linkage metadata was requested.
+    for key in ("state_revision", "side_turns", "boundary", "pending_opponent_turn"):
+        if key in record and key not in {"boundary", "pending_opponent_turn"}:
+            if not isinstance(record[key], int):
+                return False, path_name, actual, f"checkpoint {key} is invalid"
     return True, path_name, actual, "checkpoint verified"
 
 
@@ -166,6 +187,15 @@ def _has_commit(records: list[dict[str, Any]], request_id: str) -> bool:
         if not _related(record, request_id):
             continue
         if record.get("type") in commit_types or record.get("committed") is True:
+            return True
+    return False
+
+
+def _has_submitted(records: list[dict[str, Any]], request_id: str) -> bool:
+    for record in records:
+        if _related(record, request_id) and (
+                record.get("type") in {"request_submitted", "batch_submitted"}
+                or record.get("submitted") is True):
             return True
     return False
 
@@ -215,17 +245,28 @@ def reconcile_request(
         return Reconciliation(UNKNOWN, request_id, "completed request directory is unknown", False)
     if not _answer_exists(Path(request_dir), journal):
         return Reconciliation(UNKNOWN, request_id, "completed answer is missing", False)
-    consumed = _has_consumed(records, request_id)
-    committed = _has_commit(records, request_id)
+    consumed = _has_consumed(records, request_id) or journal.get("consumed") is True
+    submitted = _has_submitted(records, request_id) or journal.get("submitted") is True
+    committed = _has_commit(records, request_id) or journal.get("committed") is True
     checkpoint_ok, checkpoint_path, checkpoint_digest, checkpoint_reason = _checkpoint_evidence(
         records, journal, checkpoint_dir)
     if committed:
         if not checkpoint_ok:
             return Reconciliation(UNKNOWN, request_id, checkpoint_reason, False,
                                   journal.get("answer_path"), checkpoint_path, checkpoint_digest)
-        return Reconciliation(COMMITTED, request_id, "accepted batch and checkpoint verified", False,
-                              journal.get("answer_path"), checkpoint_path, checkpoint_digest)
+        # A committed batch is safe to continue from its checkpoint; the
+        # supervisor must resume the following boundary without replaying it.
+        return Reconciliation(COMMITTED, request_id, "accepted batch and checkpoint verified", True,
+                              journal.get("answer_path"), checkpoint_path, checkpoint_digest,
+                              metadata.get("batch_id"), metadata.get("source_revision"),
+                              metadata.get("side_turns"), metadata.get("pending_opponent_turn"))
     if consumed:
+        if submitted:
+            return Reconciliation(UNKNOWN, request_id,
+                                  "answer was consumed and submitted without a verified commit", False,
+                                  journal.get("answer_path"), checkpoint_path, checkpoint_digest,
+                                  metadata.get("batch_id"), metadata.get("source_revision"),
+                                  metadata.get("side_turns"), metadata.get("pending_opponent_turn"))
         return Reconciliation(CONSUMED_UNCOMMITTED, request_id,
                               "answer consumed without a committed batch", False,
                               journal.get("answer_path"), checkpoint_path, checkpoint_digest)
@@ -254,8 +295,66 @@ def reconcile_journal(
             candidates.append(directory)
     if not candidates:
         return Reconciliation(UNKNOWN, None, "no request exists", False)
-    latest = max(candidates, key=lambda path: path.stat().st_mtime_ns)
-    return reconcile_request(latest / "state.json", client_records, checkpoint_dir)
+    # Creation sequence is stable across copied filesystems; mtime is not.
+    def order(path: Path) -> tuple[int, float, str]:
+        try:
+            state = read_state(path)
+            sequence = int(state.get("sequence", 0))
+            created = float(state.get("created_at", 0))
+        except (OSError, ValueError, TypeError):
+            sequence, created = -1, -1
+        return sequence, created, path.name
+    candidates.sort(key=order)
+    active = [path for path in candidates
+              if read_state(path).get("state") in ACTIVE_STATES]
+    if len(active) > 1:
+        return Reconciliation(UNKNOWN, None, "multiple active requests exist", False)
+    latest = candidates[-1]
+    return reconcile_request(latest / "state.json", client_records, checkpoint_dir,
+                             request_dir=latest)
+
+
+def recoverable_answer(journal_root: str | Path, session_id: str,
+                       prompt_hash: str, client_records: Iterable[Mapping[str, Any]] = ()) -> tuple[dict[str, Any], Path] | None:
+    """Return a matching completed answer that the client has not consumed.
+
+    Prompt identity is checked before reuse.  The journal state and answer file
+    are both required; an active, consumed, committed, or mismatched request is
+    never replayed.
+    """
+    from .request_journal import _safe_session_name, read_state
+    requests = Path(journal_root) / _safe_session_name(session_id) / "requests"
+    if not requests.is_dir():
+        return None
+    candidates: list[tuple[float, Path, dict[str, Any]]] = []
+    for directory in requests.iterdir():
+        if not directory.is_dir() or not (directory / "state.json").is_file():
+            continue
+        try:
+            state = read_state(directory)
+            metadata = state.get("metadata", {})
+            if state.get("state") != "completed" or not isinstance(metadata, dict):
+                continue
+            if metadata.get("prompt_sha256") != prompt_hash:
+                continue
+            answer_path = directory / str(state.get("answer_path", ""))
+            if not answer_path.is_file():
+                continue
+            related = _read_records(client_records)
+            if (_has_consumed(related, str(state.get("request_id")))
+                    or state.get("consumed") is True
+                    or state.get("committed") is True):
+                continue
+            candidates.append((float(state.get("created_at", 0)), directory, state))
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+    if not candidates:
+        return None
+    _, directory, state = max(candidates, key=lambda item: (item[0], item[1].name))
+    answer = json.loads((directory / str(state["answer_path"])).read_text(encoding="utf-8"))
+    if not isinstance(answer, dict) or not isinstance(answer.get("text"), str):
+        return None
+    return answer, directory / "state.json"
 
 
 def restart_decision(result: Reconciliation) -> tuple[bool, str]:
