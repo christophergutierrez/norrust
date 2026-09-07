@@ -1,3 +1,4 @@
+package.path = "norrust_love/?.lua;" .. package.path
 local replay = require("replay")
 
 local frames = {}
