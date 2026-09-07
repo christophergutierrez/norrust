@@ -1,6 +1,7 @@
 # Recorded game playback
 
-Status: planned; implementation and game runs have not started.
+Status: implementation started and paused for this plan revision; no final
+replay smoke tests have run.
 
 ## Outcome
 
@@ -12,8 +13,9 @@ actions, runs Greedy, calls a model, or rerolls combat.
 
 Build two end-to-end stacks. Each must work from a catalog game ID through the
 actual Love2D viewer, pass its focused tests and the full gate, receive review,
-and be committed before the next stack starts. The final phase runs three games
-through parallel Luna subagents and verifies their recordings in the viewer.
+and be committed before the next stack starts. The final phase launches Love2D
+to replay three existing recordings: one incomplete, one short, and one long.
+All three run at Fast speed. No new model games are required.
 
 ## Agreed interaction contract
 
@@ -51,7 +53,7 @@ through parallel Luna subagents and verifies their recordings in the viewer.
 ## Repository findings and constraints
 
 Read before implementing: `AGENTS.md`, `docs/DEVELOPMENT.md`,
-`docs/GAME_HISTORY.md`, and `docs/LLM_CLIENT.md` for the final game phase.
+`docs/GAME_HISTORY.md`, and `docs/AGENT_GUIDE.md` for selecting recorded games.
 
 - `tools/game_history.py` resolves a catalog `game_id` to `artifact_path` and
   player metadata. Use `open_history(..., read_only=True)`. A conversation ID
@@ -222,52 +224,66 @@ Required tests and measurable acceptance:
 
 Suggested commit: `Add replay play-pause and three playback speeds`.
 
-## Final phase — Three parallel Luna games and replay acceptance
+## Final phase — Three existing recordings in real Love2D
 
-Only start after both stacks are reviewed, tested, and committed. This is an
-execution phase of the plan, not authorization to run games while writing it.
+Only start after both stacks are reviewed, tested, and committed. This is a
+smoke test of the real client playing recordings, not a model-performance test.
+Run sequentially for simple window/input handling; parallel subagents and native
+model calls are unnecessary.
 
-1. Read `docs/LLM_CLIENT.md`. Launch exactly three Luna player subagents in
-   parallel, one game each against Greedy with normal driver recruitment. Use
-   requested model `gpt-5.6-luna`, high effort, `big_battle_6`, undead versus
-   undead, gold 300, model side 0, single-batch turns, and seeds 2051/2052/2053.
-   Set `--max-turns 50` (side turns) on every game. Do not replace failed games.
-2. Isolate each log, checkpoints, request journal, native session sidecar,
-   prompt/result artifacts, stdout, and stderr under a fresh cohort directory.
-   Preserve the canonical prompts unchanged. Use the documented native backend;
-   do not use a file backend while assuming it provides native request recovery.
-   If a file transport is necessary, publish replies by atomic same-directory
-   rename and report its actual evidence/recovery limitations. No recovery-system
-   changes or tactical tuning belong in this playback plan.
-3. Wait for each gameplay terminal or explicit failure. Preserve source commit,
-   requested/reported model settings, actual duration, and errors. The purpose is
-   three real recordings, not a required win rate or artificially prolonged play.
-4. Import the three archives into a fresh cohort catalog and inspect that catalog
-   before individual logs. Record all three `game_id` values, conversation IDs,
-   artifact paths, and source hashes. Reimport and verify stable row counts,
-   integrity, and foreign keys.
-5. Launch **each game by its catalog ID**. Verify initial players/board, alternating
-   side positions, progress versus the actual recording length, both step buttons,
-   pause/resume, restart, speeds, and the final board/outcome. Complete one
-   start-to-end playback for each recording. Hash-check that viewing changes no
-   original game evidence. A model-invalid/error recording must display its
-   recorded prefix and failure honestly; it is not a draw.
-6. Fix any replay defects found, rerun the checks appropriate to those fixes and
-   the full gate, then repeat viewer acceptance on the same recordings. Do not
-   regenerate gameplay just to obtain a passing replay.
+1. Read the recorded-game guidance and inspect existing SQLite catalogs before
+   individual archives. Select three distinct recorded games:
+   - Incomplete: an interrupted/error recording with a usable contiguous prefix
+     containing at least one transition; playback must visibly end as incomplete.
+   - Short: a completed recording, preferably 1–10 completed side turns.
+   - Long: a completed recording, preferably at least 30 completed side turns.
+   Use actual available lengths and record them. If a preferred range is absent,
+   choose the shortest/longest suitable existing recording and explain the choice.
+   Do not start new games or simulate missing historical positions. A missing
+   playable category remains an explicit unmet milestone.
+2. Resolve each game by its catalog ID and preserve the source catalog/archive.
+   Use a temporary catalog only when an existing recording requires import;
+   record that resulting ID. Keep each smoke test's stdout/stderr and completion
+   evidence in its own directory, separate from original game evidence.
+3. Launch the actual Love2D app through `tools.replay_game GAME_ID --db PATH` for
+   each selection. Use the real renderer and update loop with a display or virtual
+   display. Select Fast (0.25 seconds per side) and press Play, then let it reach
+   the last available recorded position. Do not substitute exporter-only checks,
+   mocked Love2D calls, or headless Lua controller tests for these three launches.
+4. Automate only what is necessary to make the smoke result reliable: a small
+   test harness may select Fast/Play, observe the rendered final frame and stopped
+   playback, capture a screenshot/result, and close the window. Keep this out of
+   the normal product controls. Give each launch a finite deadline based on its
+   frame count (nominal Fast duration plus a documented startup/rendering margin).
+5. Fail the smoke test on a launch failure, Lua traceback/Love error screen,
+   nonzero exit, timeout, premature close, or failure to reach/render the expected
+   endpoint. A zero exit alone is not success. Require evidence of intermediate
+   progress and a final rendered frame/revision matching the selected archive.
+   For the incomplete game, its expected incomplete-ending notice is success;
+   a software exception or refusal to display a usable prefix is failure.
+6. Verify the final UI shows the right game/players and ending. Hash-check that
+   viewing changes no source catalog/log/checkpoints. Detailed stepping, timing,
+   pause/resume, and resizing tests remain in the preceding stacks; this phase
+   simply proves three representative recordings play through the real client.
+7. Fix replay bugs found, rerun the relevant checks and full gate after code
+   changes, and rerun failed smoke cases on the same recordings. Preserve failure
+   output. Do not replace a failing recording to obtain a passing result.
 
 Final acceptance and report:
 
-- [ ] Exactly three concurrent Luna game runs have explicit outcomes and saved
-  evidence, with at most 50 completed side turns apiece.
-- [ ] All three imported IDs open the matching recording; available snapshots
-  and displayed endpoint match their authoritative evidence. Any missing coverage
-  is stated and causes the documented incomplete behavior.
+- [ ] One incomplete, one short, and one long existing recording each launch by
+  game ID in real Love2D and play at Fast speed to the expected endpoint.
+- [ ] All three smoke cases have intermediate and final render evidence, explicit
+  pass/fail results, and captured error output. The incomplete case displays its
+  expected notice; both complete cases display their recorded endings.
+- [ ] No new games or model requests were started for smoke testing, and all
+  original catalogs and game evidence remain unchanged.
 - [ ] Commit `docs/experiments/recorded-game-playback-evaluation.md` with a table:
-  seed, game ID, outcome, completed side turns, replay turns, verified frame count,
-  first/final revision, playback acceptance, and artifact path. Include model calls,
-  repairs/failures, measured usage or unknown, requested/runtime model evidence,
-  source commit, and both stack commits in the supporting notes.
+  category, game ID/catalog, recorded outcome, available side turns/frames,
+  expected/observed final revision, smoke duration, pass/fail, and evidence path.
+  Include exact launch commands, source archive hashes, playback source commit,
+  both stack commits, and any unavailable recording coverage. Token/usage and
+  model-performance analysis are not required for this playback smoke test.
 - [ ] Update this plan with actual commands, test counts, GUI evidence, commit
   hashes, and remaining limitations. Check off only milestones with observed
   evidence. All required milestones must pass before claiming completion.
@@ -276,6 +292,6 @@ Final acceptance and report:
 
 - Plan: written and reviewed against the current catalog, driver capture paths,
   and Love2D renderer; committed separately before implementation.
-- Stack 1 implementation/review/tests/commit: pending.
+- Stack 1 implementation: started; review/tests/commit pending.
 - Stack 2 implementation/review/tests/commit: pending.
-- Three Luna games/catalog import/viewer acceptance/report commit: pending.
+- Three recorded-game Love2D smoke tests/report commit: pending.
