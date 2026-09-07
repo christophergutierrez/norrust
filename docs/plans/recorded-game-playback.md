@@ -292,6 +292,9 @@ Final acceptance and report:
 
 - Plan: written and reviewed against the current catalog, driver capture paths,
   and Love2D renderer; committed separately before implementation.
-- Stack 1 implementation: started; review/tests/commit pending.
-- Stack 2 implementation/review/tests/commit: pending.
-- Three recorded-game Love2D smoke tests/report commit: pending.
+- Stack 1 implementation/review/tests/commit: completed in `81a3bb1`.
+- Stack 2 implementation/review/tests/commit: completed in `48b3aed`, with fixes
+  in `8e5e0e6` and `77657bb`.
+- Three recorded-game exports completed; real Love2D launches attempted for
+  incomplete/short/long recordings. GUI smoke is pending because this host has
+  no SDL/OpenGL display. See `docs/experiments/recorded-game-playback-evaluation.md`.
