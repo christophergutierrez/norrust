@@ -37,9 +37,9 @@ Known gaps that must be addressed, not assumed solved:
 ## Execution rules
 
 - [x] Write and commit this plan before implementation.
-- [ ] When execution is authorized, use Luna/medium for bounded coding tasks;
+- [x] When execution is authorized, use Luna/medium for bounded coding tasks;
   the parent reviews and fixes the results. Assign one owner per shared file.
-- [ ] Complete Stack 1 and commit it before changing Stack 2 behavior. Do not
+- [x] Complete Stack 1 and commit it before changing Stack 2 behavior. Do not
   merge stacks merely because agents produced their changes concurrently.
 
 Every code stack must pass `python3 -m tools.fast_check` and `git diff --check`.
@@ -77,20 +77,20 @@ relocatable seed-2001 fixture, and relevant client/development documentation.
 
 Acceptance:
 
-- [ ] Both query entry paths return the real `unauthorized_unit` error to the
+- [x] Both query entry paths return the real `unauthorized_unit` error to the
   player within the same live revision. Genuine backend/query failures retain
   a typed infrastructure error. Unit tests cover unknown/malformed responses.
-- [ ] A deterministic backend replays the archived draft, receives repair
+- [x] A deterministic backend replays the archived draft, receives repair
   facts, and submits a legal correction through the real client and driver.
   Verify no invalid prefix executes, no opponent turn runs during repair,
   and the correction changes actual state as its authored actions specify.
-- [ ] A second invalid response produces a single terminal model-invalid
+- [x] A second invalid response produces a single terminal model-invalid
   outcome; the supervisor does not restart it. Tests at exhausted budgets
   prove repair does not exceed the existing call limits.
-- [ ] Exact prompts, responses, final annotations, request IDs, and revisions
+- [x] Exact prompts, responses, final annotations, request IDs, and revisions
   remain linked in NDJSON and a fresh SQLite import. Inspect the final engine
   checkpoint and events, not just submitted JSON.
-- [ ] Parent review, focused regressions, full gate, and diff check pass.
+- [x] Parent review, focused regressions, full gate, and diff check pass.
   Commit the code, fixture, tests, and docs together; record the hash.
 
 ## Stack 2 — Unexpected exits resume one logical match safely
@@ -184,24 +184,24 @@ dependence, and compare it with uninterrupted execution of the same responses.
 
 Acceptance:
 
-- [ ] Real interruption tests reach the intended boundaries, resume to a
+- [x] Real interruption tests reach the intended boundaries, resume to a
   gameplay result, and match the uninterrupted canonical engine state,
   including roster/HP/XP, positions, gold, villages, RNG, and side turns.
   Assert each committed recruitment, movement, attack, and opponent boundary
   occurs once. Distinguish provisional pre-commit events from committed ones.
-- [ ] Tests prove no restart refreshes model/tool/turn/token allowances or
+- [x] Tests prove no restart refreshes model/tool/turn/token allowances or
   reuses an answer from a different prompt/revision/phase. Unknown remote
   completion stops safely rather than being treated as a fresh request.
-- [ ] Recovery counters survive restarting the supervisor itself; two
+- [x] Recovery counters survive restarting the supervisor itself; two
   simultaneous supervisors cannot control the same match. Cancellation and
   terminal recognition tests include stale prior-attempt records.
-- [ ] A fresh catalog import preserves one logical match, its final outcome,
+- [x] A fresh catalog import preserves one logical match, its final outcome,
   total request/usage counts, and attempt evidence without double-counting
   replayed responses or batches. Reimport is idempotent; integrity and foreign
   keys pass. Label any unavailable boundary/event details as unknown.
-- [ ] The documented supervisor command runs a deterministic smoke game from
+- [x] The documented supervisor command runs a deterministic smoke game from
   a clean checkout with a verified interrupted-and-recovered attempt.
-- [ ] Parent reviews implementation and fault-test evidence, fixes defects,
+- [x] Parent reviews implementation and fault-test evidence, fixes defects,
   and runs the full gate and diff check. Commit this complete stack with docs
   and record the hash before native evaluation. No incomplete milestone is
   waived merely because ordinary tests pass.
@@ -241,31 +241,31 @@ the original source version and the reviewed recovery version. Give the resumed
 attempt its own checkpoints, request journal, sidecar, stdout/stderr, and recovery
 records. Do not inject faults or tune prompts during this continuation.
 
-- [ ] Preflight proves the exact restored revision, side turns, roster, HP,
+- [x] Preflight proves the exact restored revision, side turns, roster, HP,
   positions, gold, RNG, match identity, board hash, and original checkpoint hash.
   Record the original failure and the new attempt's source/settings manifest.
-- [ ] The first corrected decision gets past the original dead-U21 failure
+- [x] The first corrected decision gets past the original dead-U21 failure
   without duplicate actions or budget resets. If it cannot, retain the bounded
   failure and explain why; do not mark successful recovery as observed.
-- [ ] The logical match reaches gameplay completion or an explicitly
+- [x] The logical match reaches gameplay completion or an explicitly
   unrecoverable failure within the original 50-side-turn cap. Preserve every
   automatic recovery attempt; do not replace the game or count failure as a draw.
-- [ ] Import original and continuation evidence into a fresh catalog and
+- [x] Import original and continuation evidence into a fresh catalog and
   inspect it before individual archives. Preserve their lineage as one logical
   match with visible attempts. Cross-check outcome, hashes, request/batch links,
   checkpoint continuity, cumulative usage, and database integrity/foreign keys.
-- [ ] Review the original failure and each subsequent recovery: identify the
+- [x] Review the original failure and each subsequent recovery: identify the
   cause, restored state, reused work, and whether the next decision progressed.
   Distinguish this deliberate historical continuation from any automatic crash
   recovery exercised later; deterministic fault tests supply coverage for
   failure windows that do not occur during play.
-- [ ] Commit `docs/experiments/bounded-match-recovery-evaluation.md` and update
+- [x] Commit `docs/experiments/bounded-match-recovery-evaluation.md` and update
   this plan with actual evidence. Include original-attempt, continuation, and
   cumulative totals for outcome, completed side/model turns, process restarts,
   local retries, invalid-candidate repairs, native calls versus answer reuses,
   measured tokens, active wall time, and valid submitted annotations. Report
   historical downtime separately and keep unknown measurements unknown.
-- [ ] Report both implementation commits, test/fault coverage, seed 2001's
+- [x] Report both implementation commits, test/fault coverage, seed 2001's
   continuation result, and remaining limitations. This resumed game is not an
   uninterrupted evaluation or proof of universal recovery or improved win rate.
 
