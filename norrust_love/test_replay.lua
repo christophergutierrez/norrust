@@ -10,6 +10,10 @@ local labeled = replay.new({players = {
     metadata = {faction0 = "undead", faction1 = "undead"}, frames = frames})
 local p0, p1 = replay.player_labels(labeled)
 assert(p0 == "Side 0: Claude [claude] (undead)" and p1 == "Side 1: Greedy (undead)")
+local unknown = replay.new({players = {{player_kind = "model", backend = "model-command"}, {}},
+    metadata = {faction0 = "undead", faction1 = "undead"}, frames = frames})
+local unknown0 = replay.player_labels(unknown)
+assert(unknown0 == "Side 0: LLM (model unavailable) (undead)")
 assert(replay.at_start(r) and not replay.at_end(r))
 replay.step(r, 2); assert(r.index == 3)
 replay.step(r, 2); assert(r.index == 5)
