@@ -9,9 +9,9 @@ resignation, cap, user cancellation, exhausted budget, or ambiguous commit
 state stops the match with an explicit reason.
 
 Use two complete code stacks, each reviewed, fully tested, and committed before
-the next starts. The last phase plays three games through the supervisor using
-parallel Luna subagents. This document plans the work; writing it does not start
-implementation or games.
+the next starts. The last phase uses one Luna subagent to resume the interrupted
+seed 2001 game through the supervisor. This document plans the work; writing it
+does not start implementation or resume the game.
 
 Reuse `tools/llm_client.py`, `tools/llm_supervisor.py`,
 `tools/request_recovery.py`, `tools/request_journal.py`, `tools/codex_backend.py`,
@@ -206,44 +206,68 @@ Acceptance:
   and record the hash before native evaluation. No incomplete milestone is
   waived merely because ordinary tests pass.
 
-## Final phase — Three supervised games via parallel Luna subagents
+## Final phase — Resume seed 2001 through the supervisor
 
-After both stacks pass and are committed, read `docs/LLM_CLIENT.md`. Start
-exactly three Luna subagents in parallel, one match supervisor per game.
-Use fresh matches, seeds 2001/2002/2003, `big_battle_6`, Undead versus Undead,
-300 gold, model side 0, single-batch turns, and Greedy with normal driver
-recruitment. Set `--max-turns 50`: fifty completed side turns, approximately
-twenty-five model turns. Do not restart the match from the opening to replace
-a failure; automatic verified recovery remains part of its original match.
+After both stacks pass and are committed, read `docs/LLM_CLIENT.md`. Use one
+Luna subagent to supervise continuation of the interrupted game. The source is
+`tmp/luna-final-20260907/seed-2001/match.ndjson`; restore exactly
+`tmp/luna-final-20260907/seed-2001/match.ckpt/10-286-model-85e1e79beca194a4db8c663604536ea34d1c128fe7f549990acabda084ec83fe.json`.
+Verify revision 286, ten completed side turns, controlled side 0, and the absence
+of dead U21 before requesting any native response. Do not substitute an opening
+or start new games for seeds 2002/2003.
 
-Freeze identical explicit settings: native `gpt-5.6-luna` at high effort,
-eight model calls and four tool calls per model turn, query budget 300 seconds,
-model timeout 900 seconds, native timeout 840 seconds, turn timeout 2,100
-seconds, and supervisor limits above. Retain the canonical client prompt
-unchanged. Give each match its own log, checkpoints, request journal, sidecar,
-stdout/stderr, and recovery records. Record source, driver, guide, and settings
-hashes before launch. Do not inject faults or tune prompts during these games.
+Preserve `big_battle_6`, Undead versus Undead, starting gold 300, seed 2001,
+model side 0, single-batch turns, and Greedy with normal driver recruitment.
+Keep `--max-turns 50` as the total match cap, leaving at most forty further
+completed side turns. Restore current gold, units, RNG, and pending boundary
+from the checkpoint; starting gold is match identity, not a reset of resources.
 
-- [ ] All three logical matches reach gameplay completion or a bounded,
-  explicitly unrecoverable failure. Preserve every attempt; do not manually
-  reset limits, replace failed games, or count failures as draws.
-- [ ] Import the original logs into a fresh catalog and inspect it before
-  individual archives. Cross-check all outcomes against raw attempt/terminal
-  records, exact prompt/result hashes, request/batch links, and checkpoints.
-  Catalog integrity and foreign-key checks pass.
-- [ ] Review each recovery or error: identify what caused it, whether state
-  was preserved, which work was reused, and whether the next decision made
-  progress. Zero live recovery events is a valid result, but is not evidence
-  that fault recovery was exercised outside the deterministic tests.
+Preserve the original log, checkpoints, request journal, and session sidecar.
+Create a separate continuation artifact directory and log linked explicitly to
+the original match and checkpoint. Use a copied match-owned sidecar to resume
+the recorded native thread while preserving the original evidence. If that
+thread cannot be resumed, report the concrete failure rather than silently
+starting a replacement session. Reconcile the final rejected draft and request
+state, then use the repaired client flow to obtain a legal response. Do not
+submit the stale U21 draft unchanged or replay any previously committed batch.
+
+Request native `gpt-5.6-luna` at high effort. Recover original configured limits
+and consumed call/tool/token counts from the archive rather than assuming fresh
+allowances. Apply the supervisor limits above. Explicitly record the historical
+pause and any renewed wall-clock deadline for this user-requested continuation;
+do not silently reset cumulative usage or the unfinished turn's call budgets.
+Preserve each new client-generated canonical prompt unchanged, recording both
+the original source version and the reviewed recovery version. Give the resumed
+attempt its own checkpoints, request journal, sidecar, stdout/stderr, and recovery
+records. Do not inject faults or tune prompts during this continuation.
+
+- [ ] Preflight proves the exact restored revision, side turns, roster, HP,
+  positions, gold, RNG, match identity, board hash, and original checkpoint hash.
+  Record the original failure and the new attempt's source/settings manifest.
+- [ ] The first corrected decision gets past the original dead-U21 failure
+  without duplicate actions or budget resets. If it cannot, retain the bounded
+  failure and explain why; do not mark successful recovery as observed.
+- [ ] The logical match reaches gameplay completion or an explicitly
+  unrecoverable failure within the original 50-side-turn cap. Preserve every
+  automatic recovery attempt; do not replace the game or count failure as a draw.
+- [ ] Import original and continuation evidence into a fresh catalog and
+  inspect it before individual archives. Preserve their lineage as one logical
+  match with visible attempts. Cross-check outcome, hashes, request/batch links,
+  checkpoint continuity, cumulative usage, and database integrity/foreign keys.
+- [ ] Review the original failure and each subsequent recovery: identify the
+  cause, restored state, reused work, and whether the next decision progressed.
+  Distinguish this deliberate historical continuation from any automatic crash
+  recovery exercised later; deterministic fault tests supply coverage for
+  failure windows that do not occur during play.
 - [ ] Commit `docs/experiments/bounded-match-recovery-evaluation.md` and update
-  this plan with actual evidence. Include a three-game table of outcome,
-  completed side/model turns, process restarts, local retries, invalid-candidate
-  repairs, native calls versus answer reuses, measured tokens, wall time, and
-  valid submitted annotations. Distinguish resumed matches from uninterrupted
-  ones and requested model settings from unreported runtime settings.
-- [ ] Report both implementation commits, test/fault coverage, all three game
-  results, and remaining limitations. Three games measure the observed cohort;
-  they do not establish a reliable win rate or prove universal recovery.
+  this plan with actual evidence. Include original-attempt, continuation, and
+  cumulative totals for outcome, completed side/model turns, process restarts,
+  local retries, invalid-candidate repairs, native calls versus answer reuses,
+  measured tokens, active wall time, and valid submitted annotations. Report
+  historical downtime separately and keep unknown measurements unknown.
+- [ ] Report both implementation commits, test/fault coverage, seed 2001's
+  continuation result, and remaining limitations. This resumed game is not an
+  uninterrupted evaluation or proof of universal recovery or improved win rate.
 
-Completion requires both tested stacks and the three-game evidence report.
+Completion requires both tested stacks and the seed-2001 continuation report.
 Do not mark recovery complete merely because processes exited or SQLite opened.
