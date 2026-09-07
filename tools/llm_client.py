@@ -1242,6 +1242,19 @@ def handoff_audit(state: dict[str, Any], orders: list[dict[str, Any]],
         for item in order.get("holds", []):
             if isinstance(item, dict) and isinstance(item.get("unit_id"), int):
                 held.add(item["unit_id"])
+    boundary_kind = "resign" if is_resignation(orders) else (finish_kind_for_orders(orders) or "partial")
+    observed_friendly = {unit["id"] for unit in units if isinstance(unit.get("id"), int)}
+    if boundary_kind == "selective":
+        omitted = sorted(observed_friendly - held - delegated)
+        delegated_recruiters = sorted(
+            unit["id"] for unit in units
+            if isinstance(unit.get("id"), int) and unit["id"] in delegated
+            and unit.get("can_recruit") is True)
+        omitted_scope = "observed_friendly"
+    else:
+        omitted = None
+        delegated_recruiters = None
+        omitted_scope = "not_applicable"
     healthy_idle = {unit["id"] for unit in units
                     if isinstance(unit.get("id"), int) and not unit.get("can_recruit")
                     and unit.get("hp", 0) * 3 > unit.get("max_hp", 1)
@@ -1267,8 +1280,11 @@ def handoff_audit(state: dict[str, Any], orders: list[dict[str, Any]],
     if endangered and not any(item["unit_id"] in planned or item["unit_id"] in planned_moves
                               for item in endangered):
         reasons.append("endangered_wounded_unresolved")
-    return {"healthy_idle": sorted(healthy_idle), "held": sorted(held),
+    return {"boundary_kind": boundary_kind, "held": sorted(held),
             "delegated": sorted(delegated), "actionable_idle": sorted(actionable_idle),
+            "omitted": omitted, "omitted_scope": omitted_scope,
+            "delegated_recruiters": delegated_recruiters,
+            "healthy_idle": sorted(healthy_idle),
             "affordable_recruitment": affordable, "placement_count": len(placements),
             "gold": recruitment.get("gold") if isinstance(recruitment, dict) else None,
             "rescue_priorities": endangered,
@@ -1403,14 +1419,21 @@ def compact_draft_review(preview: dict[str, Any], danger_before: bool,
     if lethal_after is None:
         lines.append("DANGER_AFTER_UNAVAILABLE reason=recruiter_threats_missing")
     if audit is not None:
-        lines.append("HANDOFF idle=%s held=%s delegated=%s actionable=%s affordable=%s placements=%s gold=%s reasons=%s" % (
-            ",".join("U%s" % value for value in audit.get("healthy_idle", [])) or "-",
+        lines.append("HANDOFF boundary=%s held=%s delegated=%s omitted=%s scope=%s delegated_recruiters=%s idle=%s actionable=%s affordable=%s placements=%s gold=%s reasons=%s" % (
+            audit.get("boundary_kind", "unknown"),
             ",".join("U%s" % value for value in audit.get("held", [])) or "-",
             ",".join("U%s" % value for value in audit.get("delegated", [])) or "-",
+            ((",".join("U%s" % value for value in audit.get("omitted", [])) or "-")
+             if isinstance(audit.get("omitted"), list) else "not_applicable"),
+            audit.get("omitted_scope", "not_applicable"),
+            ((",".join("U%s" % value for value in audit.get("delegated_recruiters", [])) or "-")
+             if isinstance(audit.get("delegated_recruiters"), list) else "not_applicable"),
+            ",".join("U%s" % value for value in audit.get("healthy_idle", [])) or "-",
             ",".join("U%s" % value for value in audit.get("actionable_idle", [])) or "-",
             ",".join(audit.get("affordable_recruitment", [])) or "-",
             audit.get("placement_count", "?"), audit.get("gold", "?"),
             ",".join(audit.get("trigger_reasons", [])) or "-"))
+        lines.append("HANDOFF_FACTS_SCOPE boundary instructions for the current boundary; not predictions of final positions and not a safety certificate. Automatic eligibility is not explicit delegation; earlier actions, recruitment vacates, and opponent effects may change the result.")
         priorities = audit.get("rescue_priorities", [])
         if priorities:
             lines.append("RESCUE priorities=" + ";".join(
@@ -2536,6 +2559,8 @@ def run(args: argparse.Namespace) -> int:
                         pending_finish_kind = finish_kind_for_orders(orders)
                         capture_agenda(final_reply.text)
                         batch_sequence += 1
+                        final_audit = ({} if is_resignation(orders)
+                                       else handoff_audit(state, orders, coverage))
                         durable({"type": "forwarded_orders", "orders": orders,
                                 "batch_id": f"{metadata.get('conversation_id', 'match')}:batch:{batch_sequence}",
                                 "request_sequence": request_sequence,
@@ -2544,7 +2569,8 @@ def run(args: argparse.Namespace) -> int:
                                 "decision_annotation": final_reply.decision_annotation,
                                 "prompt_hash": final_reply.prompt_hash,
                                 "repair": True, "intent": turn_intent,
-                                "authored_finish_kind": pending_finish_kind})
+                                "authored_finish_kind": pending_finish_kind,
+                                "handoff_audit": final_audit})
                         try:
                             proc.stdin.write(json.dumps(orders, separators=(",", ":")) + "\n")
                             proc.stdin.flush()
@@ -2900,11 +2926,11 @@ def run(args: argparse.Namespace) -> int:
                         durable({"type": "model_error", **metadata})
                         return TERMINAL_EXIT_CODES[terminal_class]
                 audit = {} if is_resignation(orders) else handoff_audit(state, orders, coverage)
+                original_digest = (None if is_resignation(orders) else hashlib.sha256(
+                    json.dumps(orders, sort_keys=True, separators=(",", ":")).encode()).hexdigest())
                 handoff_outcome = "not_triggered"
                 if not is_resignation(orders) and not timeout_fallback and not handoff_review_used and draft_needs_preview(state, orders, danger_before, audit):
                     active_review_id = uuid.uuid4().hex
-                    original_digest = hashlib.sha256(json.dumps(
-                        orders, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
                     handoff_outcome = "preview_only"
                     try:
                         preview_candidates = [[{"action": "EndTurn"}]]
@@ -3009,8 +3035,7 @@ def run(args: argparse.Namespace) -> int:
                             "review_id": active_review_id,
                             "state_revision": state.get("state_revision"),
                             "side_turn": state.get("side_turns", state.get("turn")),
-                            "candidate_digest": hashlib.sha256(json.dumps(
-                                orders, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+                            "candidate_digest": original_digest,
                             "trigger_reasons": audit.get("trigger_reasons"),
                             "audit": audit, "outcome": handoff_outcome,
                             "review_used": handoff_review_used})
@@ -3178,6 +3203,8 @@ def run(args: argparse.Namespace) -> int:
                 pending_finish_kind = finish_kind_for_orders(orders, timeout_fallback)
                 capture_agenda(final_reply.text if final_reply is not None else "null")
                 batch_sequence += 1
+                final_audit = ({} if is_resignation(orders)
+                               else handoff_audit(state, orders, coverage))
                 durable({"type": "forwarded_orders", "orders": orders,
                          "batch_id": f"{metadata.get('conversation_id', 'match')}:batch:{batch_sequence}",
                          "request_sequence": request_sequence,
@@ -3190,6 +3217,7 @@ def run(args: argparse.Namespace) -> int:
                          "intent": turn_intent,
                          "authored_finish_kind": pending_finish_kind,
                          "review_id": active_review_id,
+                         "handoff_audit": final_audit,
                          "forced_finish": forced_finish})
                 try:
                     proc.stdin.write(json.dumps(orders, separators=(",", ":")) + "\n")

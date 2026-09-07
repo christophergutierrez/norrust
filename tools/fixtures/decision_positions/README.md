@@ -14,3 +14,11 @@ board digest, then writes a digest-named temporary checkpoint for the real
 absolute paths while retaining the archived engine state. At the boundary,
 U13 is a pending level 1 Skeleton Archer whose ordered promotion choice is
 `Bone Shooter`.
+
+## Handoff boundary
+
+`handoff.json` is seed 2001, game `698d935e4b61288644a5599ca6f94c68`, at
+revision 270 (side turn 14), from the same source commit above. Its archived
+checkpoint body hash is `37985edd919915b7acc6390f723e464ecd0e602f8faa687e2d9c0a9fd855b814`.
+It uses the same relocatable board placeholder and is restored independently
+for each handoff branch in the integration test.

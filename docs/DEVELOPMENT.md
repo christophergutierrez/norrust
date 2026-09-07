@@ -233,6 +233,15 @@ decision annotations are audit/bookkeeping data. A deliberate hold that affects
 execution must be represented in the `FinishWithGreedy` action's `holds` list,
 whose entries are `{unit_id, reason}` objects.
 
+Handoff summaries distinguish explicit selective instructions from automatic
+finish eligibility. Derive held/delegated IDs from actions, omitted IDs from
+the current friendly roster, and delegated recruiters from observed recruiter
+flags. Do not infer holds from intent or agenda prose, or describe omitted units
+as guaranteed stationary after earlier orders. Draft audit evidence belongs to
+the reviewed draft; recompute the submission audit after all review and repair
+responses. Preserve request IDs, annotations, and prompt bytes without adding
+model calls, engine queries, or tactical prose validation.
+
 Prompt-facing facts must keep live observations separate from read-only
 forecasts. Label candidate results `SIMULATION — NOT EXECUTED`, and place one
 final live-state reminder after appended tool/review/repair context. It must be

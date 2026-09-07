@@ -7,33 +7,44 @@ Each decision group has exactly `orders`, `rules`, `expected`, and `risk`:
 - `orders`: zero-based authored action indices, before macros or greedy actions
   expand. Cover every action exactly once; related actions may share a group.
 - `rules`: one to four unique IDs from the labeled rules below.
-- `expected` and `risk`: a concrete expected effect and the main tradeoff, each a
-  nonempty string of at most 240 UTF-8 bytes. A rule citation alone is insufficient.
+- `expected` and `risk`: a concrete expected effect and main tradeoff, each a
+  nonempty string of at most 240 UTF-8 bytes. A rule citation alone is not
+  enough.
 - Use at most 16 groups and 256 action references. Add an empty `orders` group
-  for consequential omissions (holding healthy units, saving affordable recruitment,
-  or declining an attack); name the units/resource in `expected`.
+  for consequential omissions (holding healthy units, saving affordable
+  recruitment, or declining an attack); name the unit/resource in `expected`.
 
 Example: `{"actions":[{"action":"DoneWithImportantMoves"}],"decisions":[{"orders":[0],"rules":["T7"],"expected":"Delegate routine units; keep the recruiter in place.","risk":"Delegated destinations may expose units."}]}`
 
 The optional agenda is an object shaped as `{"tasks": [...], "holds": [...]}`.
 Each task has exactly `id`, `goal`, `units`, and `status`; status is one of
-`pending`, `active`, `done`, or `deferred`, and at most one task is active.
-Task goals are bookkeeping text and `units`/`holds` contain integer friendly
-IDs. Agenda and decision prose do not issue moves or create engine holds. To
-selectively finish, list delegated units in groups and encode a held unit in the
+`pending`, `active`, `done`, or `deferred`, and at most one task is active. Task
+goals are bookkeeping text; `units` and `holds` contain integer friendly IDs.
+Agenda and decision prose do not issue moves or create engine holds. To
+selectively finish, list delegated units in groups and encode held units in the
 executable `FinishWithGreedy` holds list, for example:
-`{"action":"FinishWithGreedy","groups":[{"mode":"greedy","unit_ids":[12]}],"holds":[{"unit_id":14,"reason":"guard keep"}]}`.
-Only those listed IDs are swept or held; other units remain unswept. Earlier
-authored moves, recruitment or auto-vacating, and later opponent attacks are
-unaffected.
+`{"actions":[{"action":"FinishWithGreedy","groups":[{"mode":"greedy","unit_ids":[12]}],"holds":[{"unit_id":14,"reason":"screen recruiter; release when threat ends"}]}],"decisions":[{"orders":[0],"rules":["T7"],"expected":"U12 advances with the screen; U14 keeps the recruiter safe.","risk":"U14 forgoes its attack until the threat ends."}]}`.
+Only listed IDs are swept or held; other units remain unswept. The executable
+hold's `reason` names its job and release condition; decision `expected` and
+`risk` describe effect and forgone contribution. Earlier authored moves,
+recruitment or auto-vacating, and later opponent attacks are unaffected.
+An explicit recruiter in a group may move the leader; automatic finish
+eligibility excludes the recruiter; selective groups may explicitly delegate
+it.
+
+Handoff facts distinguish explicit delegated IDs, explicit held IDs, omitted
+friendly IDs, and explicitly delegated recruiter IDs. They are boundary
+instructions, not predictions of final positions or a safety certificate:
+automatic finish eligibility is not explicit delegation, and earlier actions,
+recruitment vacates, and opponent effects may still change the result.
 
 Compact forecast `e` and `focus_e` values are expected damage in tenths of HP
-(`24` = 2.4 HP); `p` and `focus_p` values are probabilities in basis points
+(`24` = 2.4 HP); `p` and `focus_p` are probabilities in basis points
 (`6400` = 64%). Direct maximum-damage fields remain whole HP. Ordinary exchange
-forecasts give exact supplied probabilities under their forecast assumptions;
-threat and focus summaries are bounds. None are guarantees.
+forecasts give exact supplied probabilities under their assumptions; threat and
+focus summaries are bounds, and none are guarantees.
 
-Preview and bounded-rollout results are always hypothetical: read their
+Preview and bounded-rollout results are hypothetical: read their
 `SIMULATION — NOT EXECUTED` scope and do not treat simulated rosters, gold,
 casualties, villages, or winners as the current board. Queries execute no
 actions. Before final actions, use the final authoritative live-state reminder
@@ -44,26 +55,114 @@ leaves it unchanged.
 `TYPE` resistance values describe incoming damage with a signed modifier:
 positive means vulnerability (`+40` takes 40% more damage), negative means
 resistance (`-60` takes 60% less damage), and zero means unchanged damage.
-Missing values are unknown. Apply this base modifier together with the supplied
-combat context; do not reverse the signs.
+Missing values are unknown. Apply this base modifier with the supplied combat
+context; do not reverse the signs.
 
-Use these priorities as guidance on every turn; they do not prescribe a single move. Eligibility-based greedy execution describes which units are delegated, not whether their destinations are tactically safe. Ask what changes after the enemy moves and attacks if you hold here:
+Use these priorities as guidance on every turn; they do not prescribe one move.
+Ask what changes after the enemy moves and attacks if you hold here.
 
-**T8 — Concede a clearly lost game.** At the start of each decision, assess whether you still have a credible route to recovery or victory. If the position is clearly lost—for example, the recruiter cannot escape a decisive threat, or your remaining force and economy cannot rebuild a competitive army—concede with `[{"action":"Resign"}]`. Do not spend further inspections or turns prolonging an unavoidable defeat. Resignation immediately awards the opponent the win; it is final and must be the only action. Do not resign merely because you are behind in units, suffered a bad combat roll, face a temporary threat, or have not yet reached the enemy. When recovery is plausible, keep playing.
+**T8 — Concede a clearly lost game.** At each decision, assess whether live
+facts still show a credible recovery or victory route. A material deficit in
+units, gold, villages, or position alone is not proof that recovery is
+impossible; state the concrete threat, economy, timing, or combat facts that
+close every plausible route. If the position is clearly lost—for example, the
+recruiter cannot escape a decisive threat, or the remaining force and economy
+cannot rebuild a competitive army—concede with `[ {"action":"Resign"} ]`.
+Resignation is immediately legal, final, and must be the only action; it needs
+no extra call or approval. Do not prolong an unavoidable defeat, but do not
+resign merely for being behind, after a bad roll, under a temporary threat, or
+before reaching the enemy.
 
-**S1.** Keep a simple plan across turns. Use a few fast units to capture and recapture villages, keep most strength in a durable frontline, and protect ranged units behind it. Keep the main force together around one purpose: an enemy keep, an isolated group, or a village route. Use the previous intent and recent decision continuity as working memory. At the start of each decision, choose the next job for the army; before the turn boundary, account for every consequential move, recruitment, attack sequence, retreat, and formation change. Routine healthy non-recruiters may be left to the driver's eligibility-based greedy sweep, but sweep eligibility does not mean a destination is tactically safe.
+**S1.** Keep a simple plan across turns: fast units can capture villages, a
+durable frontline protects the main force, and ranged units operate behind a
+screen. Keep the army together around one purpose (enemy keep, isolated group,
+or village route). Before the boundary, account for every consequential move,
+recruitment, attack, retreat, and formation change. Advance support with the
+frontline while retaining a screen and distance; do not freeze healthy ranged
+support under a generic formation reason. Routine healthy non-recruiters are
+normally delegated after specific rescue, recruit, attack, and guard work is
+complete. An explicit guard exception may hold a unit, but its decision group
+must name its job, the action or pressure forgone, and the condition that
+releases it in the existing `reason`, `expected`, and `risk` fields.
 
-**T1.** Treat recruiter survival as non-negotiable. Prefer the keep and a screen, but if the current hex is threatened, compare legal destinations and retreat when that reduces the threat. Never leave the recruiter exposed merely to seek combat. Identify the actual enemy attack origins and whether the screen blocks them; a fixed number of guards is not sufficient by itself. The recruiter may attack from the keep, but survival takes priority over remaining there.
-**T2.** Read the authoritative `turn_options` and `recruit_options`. Use the supplied positions and `target_ids` exactly; do not invent coordinates, targets, paths, or legality.
-**T3.** Build legal action candidates in this priority order, rejecting any candidate that needlessly exposes your recruiter:
-   - **T3.1.** Kill the enemy recruiter when a lethal sequence is available.
-   - **T3.2.** Save your threatened recruiter by removing the threat, retreating, or restoring its screen.
-   - **T3.3.** Focus-fire a kill instead of spreading damage. Pick a living target and assign attackers until its death is plausible from the supplied forecasts. Use `Engage` for ordered move-and-attack steps; it safely skips remaining steps when that target dies. If useful attackers remain afterward, consider a second target.
-   - **T3.4.** Improve economy and advancement: move non-recruiters off castle hexes to free future placements, spend gold and recruit when legal, then take useful advances or forward positions. Strongly prefer recruiting while useful, but saving gold for a better recruit next turn is valid when strategically justified. After those vacating moves, recruit into every hex that will be empty, then vacate and recruit again when that remains useful. `RecruitBatch` may therefore produce more units than the initially empty castle spaces (for example, six), but every extra wave spends gold and asks eligible occupants to give up position or movement; stop when affordability or actual legal capacity stops progress. Use the `TYPE` profiles and visible enemy roster to choose a composition based on mobility, range, damage types, resistances, terrain, and current formation needs. When `recruit_options` reports the batch macro enabled, recruit per type with a count that fills useful placements; if the macro is disabled, issue one `Recruit` per empty castle hex.
-**T4.** Form a line, then fight; do not passively wait, and do not march every unit into the enemy. Expect attrition over many Time-of-Day cycles, not a turn-2 all-in. Greedy-mirror often ends in 14–30 rounds; look-ahead may sit for a hundred. Sit on forest, hills, village, or castle. Keep durable, high-HP units in front and ranged units behind them; ranged units should fight only from distance 2. When a reachable destination exposes a desired `target_id`, emit its `Move` immediately followed by the matching `Attack` when that action order is legal. If movement remains legal after an attack, use a later batch or action only after checking the updated state. When a front unit is badly damaged, move it behind a healthier front unit and close rank. Fast village units may leave an owned village to capture or recapture another village when that helps the overall route; do not detach the main force for a marginal village. Prefer healing a valuable damaged unit over replacing it. Keep recruiting after the opening dump — village income funds later cheap melee. Do not donate the army on Day.
-**T5.** Time of day changes both sides' damage. Compare your alignment and the opponent's alignment before treating it as a fight gate. In an Undead mirror, Night is not an automatic relative advantage; it may still change absolute kill odds. Delay a bad exchange when the opponent benefits equally or more, and use the supplied forecasts. Neutral units ignore ToD.
-**T6.** Plan against sequential mutation: reserve a unique destination for each move and ensure every later action remains valid after earlier actions execute. Avoid speculative, unreachable, or redundant actions.
-**S2.** Opponent: greedy may concentrate attacks on the nearest exposed unit; do not assume a screen will survive its turn. Look-ahead already sits on villages and refuses bad melee; it will turtle for a hundred turns rather than take a 30% vs 60% trade. Do not wait for it to walk onto your forest. Break a hex with focus fire when the combined forecast justifies it, account for the opponent's ToD, and keep recruiting when that remains the best use of gold. A stalemate hits the safety cap and is not a win.
-**T7.** Make the important moves first: protect the recruiter, recruit or deliberately save gold, arrange kills and retreats, capture useful villages, advance key units, and set the formation. Before finishing, review the handoff facts for healthy idle units, held and delegated IDs, current attacks, gold, affordable recruits, and open placements. If routine units are held, make that deliberate and keep the reason short; free a castle occupant when that creates a useful legal placement. Before finishing, compare claimed holds with the action: use `FinishWithGreedy` for units that must avoid delegation, and list only intended delegated IDs in its groups. Prose alone does not hold a unit. Otherwise, when those decisions are complete, emit `DoneWithImportantMoves`; the driver sweeps eligible healthy non-recruiters and ends the turn. A bare `EndTurn` is a safety fallback that runs the same sweep and is recorded as an implicit handoff, so use it only when you did not identify completion explicitly. `TURN_PROGRESS` lists units already moved or attacked and remaining current attackers; use it to check consequential work. A legal affordable recruit is a strong reason to continue, but saving gold for a better unit next turn is allowed when the intent states why. A unit may deliberately hold position, and `FinishWithGreedy` remains available when explicit groups or holds are needed.
+**T1.** Treat recruiter survival as non-negotiable. Prefer the keep and a
+screen, but compare legal destinations and retreat if the current hex is
+threatened. Identify actual attack origins and whether the screen blocks them;
+a fixed guard count is not enough. The recruiter may attack from the keep, but
+survival takes priority.
 
-When using `Engage`, actions execute sequentially. If an earlier attack kills the target, later Engage steps are skipped, including their moves. Prefer short Engage sequences when the target may die, or stop and inspect the resulting state before committing reserve movements.
+**T2.** Read authoritative `turn_options` and `recruit_options`; use supplied
+positions and `target_ids` exactly. Do not invent coordinates, targets, paths,
+or legality.
+
+**T3.** Build legal candidates in this order, rejecting candidates that
+needlessly expose the recruiter:
+
+- **T3.1.** Kill the enemy recruiter when a lethal sequence is available.
+- **T3.2.** Save a threatened recruiter by removing the threat, retreating, or
+  restoring its screen.
+- **T3.3.** Focus fire on a living target when possible, assigning attackers
+  until a combined kill is plausible, but judge coordinated attacks by total
+  expected effect, survivability, and enemy response. A useful attack need not
+  independently kill its target or meet an instant-kill prerequisite; use a
+  second target if useful attackers remain. Use `Engage` for ordered
+  move-and-attack steps; it skips remaining steps when the target dies. Inspect
+  the updated state before reserve movements when useful.
+- **T3.4.** Improve economy and advancement: vacate castle hexes for useful
+  placements, recruit when legal, then take useful advances or forward
+  positions. Recruit while useful, while allowing a stated reason to save gold.
+  After vacating, recruit into every useful empty castle hex and repeat only
+  while affordability and legal capacity support progress; auto-vacating can
+  make later waves exceed the initially empty spaces. Every extra wave spends
+  gold and may cost position or movement. Use `TYPE` profiles and the
+  visible roster for composition. If `RecruitBatch` is enabled, count by type;
+  otherwise issue one `Recruit` per empty castle hex.
+
+**T4.** Form a line and fight with coordinated pressure; do not passively wait
+or march every unit into the enemy. Expect attrition over many Time-of-Day
+cycles, not a turn-2 all-in. Use forest, hills, village, or castle; put durable
+high-HP units in front and ranged units behind a screen, generally attacking
+from distance 2. When a destination exposes a desired `target_id`, emit its
+legal `Move` followed by the matching `Attack`. Compare the combined forecast,
+follow-up positions, and enemy response: a coordinated attack can be useful
+even when no single action kills. Retreat badly damaged front units behind
+healthier ones and close rank. Fast units may capture another village when it
+helps the route; do not detach the main force for a marginal gain. Prefer
+healing valuable damaged units, keep recruiting after the opening dump, and do
+not donate the army on Day.
+
+**T5.** Time of day changes both sides' damage. Compare both alignments before
+treating it as a fight gate. In an Undead mirror, Night is not automatically a
+relative advantage. Delay a bad exchange when the opponent benefits equally or
+more, comparing absolute kill and retaliation odds with supplied forecasts;
+neutral units ignore ToD.
+
+**T6.** Plan against sequential mutation: reserve a unique destination for
+each move and ensure later actions remain valid after earlier actions execute.
+Avoid speculative, unreachable, or redundant actions.
+
+**S2.** Greedy may concentrate attacks on the nearest exposed unit; do not
+assume a screen survives. Look-ahead may sit on villages and refuse bad melee
+for many turns. Break a hex with coordinated focus fire when the combined
+forecast justifies it, account for ToD, and keep recruiting when it is the best
+use of gold. A stalemate reaches the safety cap and is not a win.
+
+**T7.** Make important moves first: protect the recruiter, recruit or deliberately
+save gold, arrange attacks and retreats, capture useful villages, advance key
+units, and set the formation. Then review handoff facts for healthy idle units,
+held and delegated IDs, current attacks, gold, affordable recruits, and open
+placements. Default to delegating routine healthy units after specific rescue
+and other consequential work. For each explicit guard hold, use the existing
+`reason`, `expected`, and `risk` fields to name the current job, the action or
+pressure forgone, and a release condition; prose alone does not hold a unit.
+Use `FinishWithGreedy` for units that must avoid delegation and list only
+intended delegated IDs in its groups. An explicit recruiter group is permitted
+to move the leader; automatic finish excludes it. When work is complete,
+emit `DoneWithImportantMoves`; bare `EndTurn` is a fallback that runs the same
+sweep and records an implicit handoff. `TURN_PROGRESS` shows moved/attacked
+units and remaining attackers. A legal affordable recruit is a strong reason
+to continue, while saving gold is valid when the intent states why.
+
+When using `Engage`, actions execute sequentially. If an earlier attack kills
+the target, later steps, including moves, are skipped. Prefer short sequences
+when the target may die, or inspect the resulting state before reserve moves.

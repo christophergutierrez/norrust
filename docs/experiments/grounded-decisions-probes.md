@@ -29,6 +29,16 @@ unassessable evidence is recorded as such; it is not scored as success.
 
 ## Results
 
+**Review correction:** these attempts are opening-only runs, not the six planned
+midgame cases. All 51 cataloged requests have state revision 0, and the launcher
+does not restore a checkpoint. The archives contain midgame model checkpoints;
+the earlier assertion below that these boundaries were unavailable was not
+established by a restore attempt. These runs cannot establish hold, promotion,
+resignation, or resistance behavior, or justify a tactical comparison of A/B.
+Their configured budgets were also the default eight model calls/four tool
+calls, rather than the planned four/two. Keep the raw attempts as execution
+evidence; the original midgame behavioral milestone remains unmet.
+
 The 24 attempts completed successfully: 12 on A and 12 on B, with two attempts
 for each case and fresh native sessions. The imported temporary catalog contains
 24 games, 24 side turns, 51 model requests, 24 submitted batches, and 113

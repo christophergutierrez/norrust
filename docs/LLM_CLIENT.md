@@ -46,6 +46,23 @@ provenance, and then ends the turn. Recruitment remains model-owned. If the mode
 command times out, `--timeout-finish` applies the same bounded fallback to eligible
 units and records `timeout_fallback`; it never invents recruitment.
 
+The existing draft review distinguishes explicit delegation, explicit holds,
+and omitted observed friendly units for a selective finish. A recruiter in an
+explicit group is delegated too and may leave the keep; automatic completion
+excludes the recruiter. These categories describe the candidate's boundary
+instructions, not guaranteed positions or safety. They do not cancel earlier
+authored moves, recruitment vacates, or subsequent enemy actions. The submitted
+batch log carries a fresh handoff audit of its final orders after review/repair;
+the draft review retains the original candidate's audit.
+
+Advance ranged support with its screen, and use specific rescues and guards
+while letting routine healthy units contribute. Explain consequential holds
+with a current job, the action or pressure forgone, and a release condition in
+the existing hold reason and decision fields. Such explanations are evidence;
+they do not create executable holds or add model calls. Material disadvantage
+alone is insufficient justification for hopelessness, but resignation remains
+an immediate standalone action.
+
 The compact board briefing includes `MAP_TERRAIN` and `MAP_UNITS` layers. Terrain
 uses two-character cells (`F.` forest, `H.` hills, `C.` castle, `K.` keep, `..`
 flat, and `V0`/`V1`/`V-` villages); unit cells use `faction:id`, and `....` is

@@ -29,7 +29,9 @@ class ResignationTests(unittest.TestCase):
                     validate_orders(json.dumps(orders), require_end_turn=not incremental)
         prompt = prompt_for({"units": []}, [])
         self.assertIn('[{"action":"Resign"}]', prompt)
-        self.assertIn("When recovery is plausible, keep playing", prompt)
+        normalized = " ".join(prompt.split())
+        self.assertIn("A material deficit in units, gold, villages, or position alone is not proof", normalized)
+        self.assertIn("do not resign merely for being behind", normalized)
         with self.assertRaisesRegex(ValueError, "cannot be previewed"):
             validate_preview_request('{"tool":"preview_batch","candidates":[[{"action":"Resign"}]]}')
 

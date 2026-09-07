@@ -22,7 +22,8 @@ comparison.
 ## Phase 0 — Plan
 
 - [x] Write this plan before implementation.
-- [ ] Commit the plan; assign bounded work to Luna at medium reasoning effort.
+- [x] Commit the plan; assign bounded work to Luna at medium reasoning effort.
+      Plan commit: `4bbdecc`.
 
 ## Stack 1 — Promotion facts reach executable actions
 
@@ -41,17 +42,24 @@ test/fixture, and `docs/LLM_CLIENT.md` / `docs/DEVELOPMENT.md`.
 
 Acceptance:
 
-- [ ] Generated compact prompts retain exact ordered choices, pending state,
+- [x] Generated compact prompts retain exact ordered choices, pending state,
       and both valid action forms. Missing/empty/multiple choices and the
       non-pending case have meaningful coverage; diagnostic state is retained.
-- [ ] A real client/driver test restores the fixture, reads the promotion choice
+- [x] A real client/driver test restores the fixture, reads the promotion choice
       from the canonical prompt, submits Advance, and verifies the resulting
       unit type/level, pending state, and revision using actual engine state.
-- [ ] The fixture's exact delivered prompt, response, submitted action, request
+- [x] The fixture's exact delivered prompt, response, submitted action, request
       link, and revision survive NDJSON and a temporary SQLite import.
-- [ ] Parent reviews the diff and fixes defects; `python3 -m tools.fast_check`
+- [x] Parent reviews the diff and fixes defects; `python3 -m tools.fast_check`
       executes the new real-driver test without skips and passes; `git diff
       --check` passes. Commit this complete stack and record its hash below.
+
+Stack 1: `271f857`. Full gate passed (191 Python tests, Rust suites, LuaJIT).
+The restored single-batch fixture advances U13 from revision 383 to a promoted
+Bone Shooter at revision 385 after Advance and selective finish. Source archive
+dependencies are replaced by a relocatable committed checkpoint, with provenance
+and board hash retained. Parent review corrected the selector instructions,
+added side-1/diagnostic coverage, and verified final-response linkage.
 
 ## Stack 2 — Explicit handoff facts and coordinated support
 
@@ -79,26 +87,39 @@ Build on stack 1. Files: existing handoff audit/review rendering in
 
 Acceptance:
 
-- [ ] A selective example with a recruiter in groups, a separate held unit, and
+- [x] A selective example with a recruiter in groups, a separate held unit, and
       an omitted unit renders all categories correctly despite contradictory
       intent/agenda text. Automatic and partial boundaries are labeled honestly.
-- [ ] A restored real midgame fixture verifies that explicit recruiter
+- [x] A restored real midgame fixture verifies that explicit recruiter
       delegation can move it, whereas holding it retains its finish position;
       a distinct delegated healthy unit and a distinct omitted/held guard obey
       the submitted boundary. Check model-side events before opponent effects.
-- [ ] Existing review flow delivers the summary; response revisions update it
+- [x] Existing review flow delivers the summary; response revisions update it
       where applicable, and final annotations/order links survive NDJSON/SQLite.
       No new explanation-only call or automatic order alteration is introduced.
-- [ ] Maintained JSON examples validate through actual action/annotation/agenda
+- [x] Maintained JSON examples validate through actual action/annotation/agenda
       parsers. Guide UTF-8 size is at most the pre-change 11,019 bytes; stable
       tactic IDs and all budgets remain unchanged.
-- [ ] Parent reviews the complete diff and fixes defects; full fast check and
+- [x] Parent reviews the complete diff and fixes defects; full fast check and
       diff check pass. Commit this stack with docs and tests together.
+
+Stack 2 verification: full gate passed (202 Python tests, Rust suites, LuaJIT),
+including both real-driver fixture tests without skips. The guide is 10,908
+UTF-8 bytes. The seed 2001 fixture receives exactly two model requests in each
+branch (draft and existing review); delegating U1 moves it from (2,7) to (2,5),
+while holding it retains (2,7). U5 attacks in both branches; held U6 and omitted
+U4 remain in place through the boundary, before any opponent actions.
+
+Parent review added final-order audits to both submission paths, corrected the
+original-candidate digest, strengthened execution and SQLite assertions, parsed
+the maintained documentation examples, and updated old guide wording checks.
+All three Luna coding assignments were reviewed. These deterministic backends
+verify delivery and execution, not whether Luna follows the guide or wins more.
 
 ## Completion
 
-- [ ] Report commits, verification counts, and any behavioral limitations.
-- [ ] Correct prior evaluation call counts (36/29/33) and describe seed 2003's
+- [x] Report commits, verification counts, and any behavioral limitations.
+- [x] Correct prior evaluation call counts (36/29/33) and describe seed 2003's
       recruiter-kill win accurately. Do not claim model improvements were tested.
 
 Future behavioral evaluation, if requested, must restore and verify actual
