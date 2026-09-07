@@ -23,6 +23,6 @@ Validation completed:
 - `python3 -m tools.fast_check`: 218 tests passed, Rust suites passed, both Lua
   smoke tests passed, and `git diff --check` passed.
 
-Implementation commits are `81a3bb1` and `48b3aed`, with follow-up fixes in
-`8e5e0e6` and `77657bb`. The three exported bundles and launch logs are retained
+Implementation commits are `81a3bb1`, `48b3aed`, `8e5e0e6`, `77657bb`, and
+`1466089` (the manual-launch nil-module fix). The three exported bundles and launch logs are retained
 under `tmp/replay-smoke/` for rerunning on a graphical host.

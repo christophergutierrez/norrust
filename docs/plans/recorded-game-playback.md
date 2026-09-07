@@ -294,7 +294,7 @@ Final acceptance and report:
   and Love2D renderer; committed separately before implementation.
 - Stack 1 implementation/review/tests/commit: completed in `81a3bb1`.
 - Stack 2 implementation/review/tests/commit: completed in `48b3aed`, with fixes
-  in `8e5e0e6` and `77657bb`.
+  in `8e5e0e6`, `77657bb`, and `1466089`.
 - Three recorded-game exports completed; real Love2D launches were attempted
   for incomplete/short/long recordings. Each reached the environment's SDL
   video-device failure, so GUI smoke remains pending until a display or virtual
