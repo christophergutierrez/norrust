@@ -34,9 +34,9 @@ or increase call budgets. Keep the tactical guide at or below its current
 
 - [x] Write this plan before implementation.
 - [x] Commit the plan before beginning Stack 1 (this document's initial commit).
-- [ ] Implement stacks in order. Each stack includes behavior, documentation,
+- [x] Implement stacks in order. Each stack includes behavior, documentation,
   focused tests, a real client/driver test, and a commit before the next stack.
-- [ ] When execution is authorized, use Luna at medium effort for bounded coding
+- [x] When execution is authorized, use Luna at medium effort for bounded coding
   assignments. The parent owns review and fixes. Parallelize independent tests
   or documentation; give the shared client file one owner at a time.
 
@@ -80,27 +80,32 @@ Implementation:
 
 Acceptance:
 
-- [ ] The exact archived initial response reports the U13 overlap and U45
+- [x] The exact archived initial response reports the U13 overlap and U45
   length violation together. The recorded repaired response reports only its
   remaining length violation. No error confuses action and hold indices.
-- [ ] Focused cases cover reason lengths 119/120/121, non-ASCII characters,
+- [x] Focused cases cover reason lengths 119/120/121, non-ASCII characters,
   non-string reasons, malformed containers, duplicate IDs, and overlap. The
   valid 120-character boundary remains accepted and actions remain unchanged.
-- [ ] A deterministic backend receives both actionable errors in one repair,
+- [x] A deterministic backend receives both actionable errors in one repair,
   returns a corrected annotated envelope, and the real client/driver accepts
   and executes it from revision 338. Verify the resulting unit positions,
   attack/finish events, and changed revision against the submitted actions.
   The invalid proposal must cause no engine mutation.
-- [ ] There is exactly one syntax-repair call; any existing draft-review call
+- [x] There is exactly one syntax-repair call; any existing draft-review call
   is counted separately and justified by the actual flow. A second invalid
   response still ends as model-invalid within existing budgets.
-- [ ] Exact prompt/response hashes, final annotations, request ID, submitted
+- [x] Exact prompt/response hashes, final annotations, request ID, submitted
   orders, and before/after revisions survive NDJSON and a fresh SQLite import.
   Cross-check terminal failure classification against the raw log: the current
   importer can call a `model_error`-ended run incomplete. Do not turn that into
   an unrequested catalog migration or count it as a gameplay draw.
-- [ ] Parent review, full gate, and diff check pass. Commit code, fixture,
+- [x] Parent review, full gate, and diff check pass. Commit code, fixture,
   tests, and documentation together. Record this hash as the probe baseline.
+
+Stack 1 commit: `0f63382`. Full gate passed with 209 Python tests, Rust
+suites, LuaJIT smoke, and `git diff --check`. The revision-338 integration
+test exercised both archived validation defects, one repair response, actual
+engine execution from revision 338 to 340, and SQLite payload/link integrity.
 
 ## Stack 2 — A concrete alternative reaches execution and recorded evidence
 
@@ -152,30 +157,37 @@ reuse Stack 1's fixture rather than copying it:
 
 Acceptance:
 
-- [ ] Every fixture's initial revision, side-turn count, roster, positions,
+- [x] Every fixture's initial revision, side-turn count, roster, positions,
   HP, gold, and board hash match its manifest. Refuse an opening/revision-0
   substitution. Tests run without the original ignored archives.
-- [ ] A real client/driver test requests two distinct legal candidates from
+- [x] A real client/driver test requests two distinct legal candidates from
   a restored guard or bat boundary, receives their sampled opponent responses,
   chooses a final annotated action, and executes it. Verify both preview inputs,
   their observed consequences, unchanged live state/RNG after preview, and
   the final action's actual engine consequences. Do not require live combat
   to equal the preview's separately seeded sample.
-- [ ] Checks cover one/two candidates, invalid candidate reporting, rejection
+- [x] Checks cover one/two candidates, invalid candidate reporting, rejection
   of three candidates and repeated preview requests, and absent coverage.
   A forced backend failure is a typed error, not fabricated safe results.
-- [ ] Instrumented tests prove the comparison is charged to existing tool and
+- [x] Instrumented tests prove the comparison is charged to existing tool and
   query budgets, does not add a separate explanation call, and preserves the
   existing model-call ceiling. Resignation still needs just its own response.
-- [ ] The exact delivered prompt contains one final live-state reminder after
+- [x] The exact delivered prompt contains one final live-state reminder after
   tool/review/repair context. Selected and revised final orders keep their own
   annotations and request links through execution and SQLite import. Verify
   candidate/revision association directly in raw records where the catalog
   does not have a structured field.
-- [ ] Maintained action/preview examples pass the real parsers, stable tactic
+- [x] Maintained action/preview examples pass the real parsers, stable tactic
   IDs remain intact, and the guide is at most 10,908 UTF-8 bytes.
-- [ ] Parent review, full gate, and diff check pass. Commit the complete stack
-  before paid probes. Record its hash as the comparison version.
+- [x] Parent review, full gate, and diff check pass. Commit the complete stack
+before paid probes. Record its hash as the comparison version.
+
+Stack 2 commit: `0f63382`. Full gate passed with 209 Python tests, Rust
+suites, LuaJIT smoke, and `git diff --check`. The player-requested preview now
+uses the existing bounded rollout query and the real-driver integration test
+verified two candidates, unchanged live revision during preview, and final
+execution. Four relocatable probe fixtures were added under
+`tools/fixtures/decision_positions/probes/`.
 
 ## Final phase — Frozen-position probes, then three parallel Luna games
 
