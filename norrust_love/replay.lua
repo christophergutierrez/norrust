@@ -44,16 +44,28 @@ function M.progress(replay)
     return done, total, frame
 end
 
+function M.player_labels(replay)
+    local players = replay.bundle.players or {}
+    local metadata = replay.bundle.metadata or {}
+    local function label(side, faction_key)
+        local player = players[side + 1] or {}
+        local name = player.display_name or player.model_requested or player.backend or "Unknown"
+        local faction = metadata[faction_key] or "unknown faction"
+        return string.format("Side %d: %s (%s)", side, name, faction)
+    end
+    return label(0, "faction0"), label(1, "faction1")
+end
+
 function M.draw_toolbar(replay, ctx)
     local vp_w = ctx.vp_w
     love.graphics.setColor(0.04, 0.04, 0.06, 0.92)
     love.graphics.rectangle("fill", 0, 0, vp_w, 48)
     love.graphics.setFont(ctx.fonts[14])
     love.graphics.setColor(1, 0.85, 0.3, 1)
-    local players = replay.bundle.metadata and replay.bundle.metadata.players or replay.bundle.players or {}
-    local p0 = players[1] and players[1].display_name or "Player 0"
-    local p1 = players[2] and players[2].display_name or "Player 1"
-    love.graphics.print("REPLAY  " .. tostring(replay.bundle.game_id) .. "  " .. p0 .. " vs " .. p1, 10, 6)
+    local p0, p1 = M.player_labels(replay)
+    love.graphics.print("REPLAY  " .. tostring(replay.bundle.game_id), 10, 4)
+    love.graphics.setFont(ctx.fonts[11])
+    love.graphics.print(p0 .. "   |   " .. p1, 10, 17)
     local done, total, frame = M.progress(replay)
     love.graphics.setFont(ctx.fonts[11])
     love.graphics.setColor(1, 1, 1, 1)
