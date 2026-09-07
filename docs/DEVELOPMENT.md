@@ -241,6 +241,14 @@ both gold totals, both unit/HP totals, friendly IDs, and recruiter IDs/HP/positi
 Queries and previews do not mutate the board; a replacement batch starts from the
 live revision, while a rolled-back batch leaves it unchanged.
 
+Compact observations must retain pending friendly promotion choices from the
+engine's `advances_to` list in its original order. Never infer a promotion target
+from a type name or replace missing choices with a neutral default. Both Advance
+selectors (definition name or zero-based index, exclusively) must be executable
+using the canonical prompt alone. The recorded-position fixture tests under
+`tools/fixtures/decision_positions/` exercise real client/driver execution and
+catalog linkage without depending on ignored game archives or a native model.
+
 `RecruitBatch` is driver-assisted and may recruit beyond the initially empty
 castle spaces by vacating eligible occupants and reusing the freed spaces. The
 actual result is bounded by legal capacity and gold, and the positional cost of

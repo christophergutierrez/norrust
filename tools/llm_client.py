@@ -1606,7 +1606,8 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         'Attack: {"action":"Attack","attacker_id": integer,"defender_id": integer}',
         'Engage: {"action":"Engage","target_id": integer,"steps":[{"attacker_id": integer,"col": integer,"row": integer}]}; stops safely when the target dies',
         'Recruit: {"action":"Recruit","def_id": string,"col": integer,"row": integer}',
-        'Advance: {"action":"Advance","unit_id": integer}; exactly one of integer target_index or string def_id',
+        'Advance by index: {"action":"Advance","unit_id": integer,"target_index": integer}',
+        'Advance by definition: {"action":"Advance","unit_id": integer,"def_id": string}; provide exactly one of integer target_index or string def_id',
         'DoneWithImportantMoves: {"action":"DoneWithImportantMoves"}; final boundary after consequential work, then eligible routine units are swept greedily (eligibility is not tactical safety)',
         'EndTurn: {"action":"EndTurn"}',
         'Resign: [{"action":"Resign"}]; standalone concession, immediately ends the match with an opponent win and no turn advancement',
@@ -1672,7 +1673,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "otherwise do not use a boundary while recruit_options says a legal affordable recruit "
         "and placement exists. " + boundary_guidance + tactical_guidance + " "
         "Each object has exactly one of these schemas: " + "; ".join(schemas) + ". "
-        "For legacy turn_options, Move onto your own hex is rejected as DestinationOccupied and rolls back your whole "
+        "Advance requires advancement_pending=true (pending=True in the compact board). Use the pending friendly unit's advances_to choices in their supplied zero-based order. advances_to=missing means unknown; advances_to=[] supplies no choice. Do not invent a target or advance a non-pending unit. For turn_options, Move onto your own hex is rejected as DestinationOccupied and rolls back your whole "
         "batch. Only entries with \"movable\":true are Move destinations. For Advance, target_index "
         "indexes the unit's advances_to list in the order shown in the board data. recruit_options supplies "
         "faction-legal definitions, costs, affordability, and placement hexes." + recruitment_guidance +
@@ -1835,10 +1836,23 @@ def compact_observation(state: dict[str, Any]) -> str:
     for unit in units:
         flags = ''.join(flag for flag, present in (("m", unit.get("moved")), ("a", unit.get("attacked"))) if present) or "-"
         terrain_name = terrain_at.get((unit.get("col"), unit.get("row")), "?")
-        lines.append(f"  id={unit.get('id','?')} faction={unit.get('faction','?')} def={unit.get('def_id','?')} "
-                     f"pos=({unit.get('col','?')},{unit.get('row','?')}) terrain={terrain_name} "
-                     f"hp={unit.get('hp','?')}/{unit.get('max_hp','?')} "
-                     f"flags={flags} xp={unit.get('xp','?')}/{unit.get('xp_needed','?')} pending={unit.get('advancement_pending', False)}")
+        line = (f"  id={unit.get('id','?')} faction={unit.get('faction','?')} def={unit.get('def_id','?')} "
+                f"pos=({unit.get('col','?')},{unit.get('row','?')}) terrain={terrain_name} "
+                f"hp={unit.get('hp','?')}/{unit.get('max_hp','?')} "
+                f"flags={flags} xp={unit.get('xp','?')}/{unit.get('xp_needed','?')} pending={unit.get('advancement_pending', False)}")
+        # Promotion choices are actionable only for a pending unit on the
+        # controlled side. Keep the distinction between an absent engine field
+        # and an explicitly empty choice list; the engine's order is the
+        # target_index contract and definition spelling is user-visible.
+        if (unit.get("faction") == state.get("active_faction")
+                and unit.get("advancement_pending") is True):
+            if "advances_to" not in unit:
+                choices = "missing"
+            else:
+                choices = json.dumps(unit["advances_to"], ensure_ascii=False,
+                                     separators=(",", ":"))
+            line += f" advances_to={choices}"
+        lines.append(line)
     return "\n".join(lines)
 
 

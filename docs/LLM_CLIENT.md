@@ -52,6 +52,14 @@ flat, and `V0`/`V1`/`V-` villages); unit cells use `faction:id`, and `....` is
 empty. Odd rows are indented to preserve the engine's odd-r hex geometry. The
 unit roster remains authoritative for exact type, HP, and status.
 
+For pending friendly promotions, the compact roster includes the engine's
+ordered `advances_to` choices. Use their exact definition names or zero-based
+indices: `{"action":"Advance","unit_id":13,"def_id":"Bone Shooter"}` or
+`{"action":"Advance","unit_id":13,"target_index":0}`. Supply exactly one
+selector. A missing list is unknown, an empty list supplies no choice, and a
+unit without a pending promotion cannot advance merely because its type has
+an upgrade. The driver validates the action against the current state.
+
 For an opt-in incremental turn, add `--incremental-turns`. The driver permits
 up to three accepted partial action arrays without `EndTurn`, returns a fresh
 state after each one, and then requires a final array ending in `EndTurn`.
