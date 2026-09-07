@@ -62,6 +62,10 @@ function draw.draw_frame(ctx, state)
     love.graphics.pop() -- back to screen space
     love.graphics.setScissor() -- clear scissor for UI drawing
 
+    if ctx.replay then
+        ctx.replay_mod.draw_toolbar(ctx.replay, ctx)
+    end
+
     -- ── Screen-space UI ─────────────────────────────────────────────────
 
     if ctx.game_mode ~= ctx.PLAYING then
@@ -73,7 +77,7 @@ function draw.draw_frame(ctx, state)
         end
 
         -- HUD
-        if not ctx.game_over then
+        if not ctx.game_over and not ctx.replay then
             draw_hud.draw_hud_bar(ctx, state)
         end
 

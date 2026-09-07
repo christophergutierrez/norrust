@@ -16,6 +16,7 @@ local camera_mod = require("camera_mod")
 local logger = require("logger")
 local combat_mod = require("combat_mod")
 local content_catalog = require("content_catalog")
+local replay_mod = require("replay")
 
 -- ── Constants ───────────────────────────────────────────────────────────────
 
@@ -104,6 +105,20 @@ end
 
 --- Truncate a number to integer (floor).
 local function int(v) return math.floor(v) end
+
+local function replay_bundle_arg()
+    local args = arg or {}
+    for i, value in ipairs(args) do
+        if value == "--replay-bundle" then return args[i + 1] end
+    end
+end
+
+local function read_json_file(path)
+    local file, err = io.open(path, "rb")
+    if not file then error("Cannot open replay bundle: " .. tostring(err)) end
+    local raw = file:read("*a"); file:close()
+    return norrust.json_decode(raw)
+end
 
 --- Build tile color cache from current engine state.
 local function build_tile_color_cache()
@@ -494,8 +509,27 @@ function love.load()
     logger.log("state: mode -> PICK_SCENARIO")
     vars.game_mode = MODES.PICK_SCENARIO
 
+    local replay_path = replay_bundle_arg()
+    if replay_path then
+        shared.replay = replay_mod.new(read_json_file(replay_path))
+        local replay_state = replay_mod.state(shared.replay)
+        scn.COLS = int(replay_state.cols or 8)
+        scn.ROWS = int(replay_state.rows or 5)
+        game_data.faction_id[1] = shared.replay.bundle.metadata.faction0 or ""
+        game_data.faction_id[2] = shared.replay.bundle.metadata.faction1 or ""
+        game_data.controllers = {"recorded", "recorded"}
+        vars.game_mode = MODES.PLAYING
+        vars.game_over = false
+        vars.winner_faction = -1
+        tile_color_cache = {}
+        for _, tile in ipairs(replay_state.terrain or {}) do
+            tile_color_cache[int(tile.col) .. "," .. int(tile.row)] = parse_html_color(tile.color) or COLOR_FLAT
+        end
+    end
+
     -- Initialize camera module
     camera_mod.init({camera = camera, hex = hex, scn = scn, get_viewport = get_viewport, clamp = clamp})
+    if shared.replay then center_camera(true) end
 
     -- Initialize combat module
     combat_mod.init({
@@ -537,6 +571,11 @@ end
 
 --- Per-frame update: animate units, handle camera panning and lerp.
 function love.update(dt)
+    if shared.replay then
+        replay_mod.update(shared.replay, dt)
+        camera_mod.update(dt)
+        return
+    end
     -- Agent server: process TCP commands
     if shared.agent then
         agent_server.update(shared.agent, norrust, vars.engine)
@@ -696,7 +735,9 @@ end
 --- Dispatch to draw module with full context.
 function love.draw()
     local state
-    if vars.engine and fog.enabled and vars.game_mode == MODES.PLAYING then
+    if shared.replay then
+        state = replay_mod.state(shared.replay)
+    elseif vars.engine and fog.enabled and vars.game_mode == MODES.PLAYING then
         state = norrust.get_state_fow(vars.engine, 0)
         -- Rebuild visible set and accumulate seen
         fog.visible = {}
@@ -732,6 +773,8 @@ function love.draw()
     ctx.show_help = shared.show_help
     ctx.exit_confirm = shared.exit_confirm
     ctx.fog = fog
+    ctx.replay = shared.replay
+    ctx.replay_mod = replay_mod
     -- Camera
     ctx.board_origin_x = camera.origin_x; ctx.board_origin_y = camera.origin_y
     ctx.camera_offset_x = camera.offset_x; ctx.camera_offset_y = camera.offset_y
@@ -742,6 +785,7 @@ function love.draw()
     ctx.tile_color_cache = tile_color_cache
     draw_mod.draw_frame(ctx, state)
     shared.buttons = ctx.buttons or {}
+    shared.buttons.replay_buttons = ctx.replay_buttons
 
     -- AI planning indicator
     if shared.ai_planning then

@@ -26,6 +26,7 @@ local call_load_scenario, call_load_campaign_scenario
 local faction_index_for_mode
 local apply_camera_offset
 local campaign_client
+local replay_mod
 
 --- Restore game state after loading a save file.
 -- @param data  The table returned by save.load_save
@@ -184,6 +185,7 @@ function M.init(ctx)
     faction_index_for_mode = ctx.faction_index_for_mode
     apply_camera_offset = ctx.apply_camera_offset
     campaign_client = ctx.campaign_client
+    replay_mod = ctx.replay_mod
 
     -- Initialize sub-modules with the same context
     input_play.init(ctx)
@@ -318,6 +320,14 @@ end
 local mode_handlers
 
 function M.keypressed(key)
+    if shared.replay then
+        if key == "left" or key == "a" then replay_mod.step(shared.replay, -2)
+        elseif key == "right" or key == "d" then replay_mod.step(shared.replay, 2)
+        elseif key == "space" then replay_mod.toggle(shared.replay)
+        elseif key == "home" or key == "r" then replay_mod.restart(shared.replay)
+        end
+        return
+    end
     -- Block input during animation or AI turn
     if pending_anims.move or pending_anims.combat_slide or shared.ai_queue then return end
 
@@ -379,6 +389,33 @@ end
 -- ── Mouse input ───────────────────────────────────────────────────────────
 
 function M.mousepressed(sx, sy, button)
+    if shared.replay then
+        local x, y = screen_to_game(sx, sy)
+        local replay_buttons = shared.buttons.replay_buttons or shared.replay_buttons
+        if button == 1 and replay_buttons then
+            local function hit(b) return b and x >= b.x and x <= b.x + b.w and y >= b.y and y <= b.y + b.h end
+            if hit(replay_buttons.back) then replay_mod.step(shared.replay, -2); return end
+            if hit(replay_buttons.forward) then replay_mod.step(shared.replay, 2); return end
+            if hit(replay_buttons.play) then replay_mod.toggle(shared.replay); return end
+            if hit(replay_buttons.restart) then replay_mod.restart(shared.replay); return end
+            for _, speed in ipairs({"Slow", "Medium", "Fast"}) do
+                if hit(replay_buttons["speed_" .. speed]) then replay_mod.set_speed(shared.replay, speed); return end
+            end
+        end
+        -- A replay click only selects a unit for inspection; it cannot mutate state.
+        if button == 1 and y > 48 and x < select(1, get_viewport()) - 200 then
+            local local_x = (x - camera.origin_x) / camera.zoom - camera.offset_x
+            local local_y = (y - camera.origin_y) / camera.zoom - camera.offset_y
+            local col, row = mods.hex.from_pixel(local_x, local_y)
+            local state = replay_mod.state(shared.replay)
+            sel.inspect_id = -1
+            for _, unit in ipairs(state.units or {}) do
+                if int(unit.col) == col and int(unit.row) == row then sel.inspect_id = int(unit.id); break end
+            end
+            sel.unit_id = sel.inspect_id
+        end
+        return
+    end
     -- Block input during animation or AI turn
     if pending_anims.move or pending_anims.combat_slide or shared.ai_queue then return end
 

@@ -488,6 +488,9 @@ end
 
 --- Draw clickable buttons at the bottom of the sidebar.
 function M.draw_sidebar_buttons(ctx)
+    if ctx.replay then
+        return
+    end
     local vp_w, vp_h = ctx.vp_w, ctx.vp_h
     local sb_x = vp_w - SIDEBAR_W
     local btn_w = 180
