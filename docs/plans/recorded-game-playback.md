@@ -295,6 +295,7 @@ Final acceptance and report:
 - Stack 1 implementation/review/tests/commit: completed in `81a3bb1`.
 - Stack 2 implementation/review/tests/commit: completed in `48b3aed`, with fixes
   in `8e5e0e6` and `77657bb`.
-- Three recorded-game exports completed; real Love2D launches attempted for
-  incomplete/short/long recordings. GUI smoke is pending because this host has
-  no SDL/OpenGL display. See `docs/experiments/recorded-game-playback-evaluation.md`.
+- Three recorded-game exports completed; real Love2D launches were attempted
+  for incomplete/short/long recordings. Each reached the environment's SDL
+  video-device failure, so GUI smoke remains pending until a display or virtual
+  OpenGL display is available. See `docs/experiments/recorded-game-playback-evaluation.md`.
