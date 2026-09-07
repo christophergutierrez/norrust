@@ -39,3 +39,8 @@ subprocess supervisor signal/restart test are included. Fault windows involving
 native crashes during later boundaries were not injected into this live match;
 the continuation therefore demonstrates the historical repair and clean
 completion, rather than universal crash-recovery coverage.
+
+A fresh catalog import of the original and continuation logs is retained at
+`tmp/luna-final-20260907/seed-2001/continuation/recovery-history.sqlite`; it
+contains two imported archives and passed SQLite integrity and foreign-key
+checks.
