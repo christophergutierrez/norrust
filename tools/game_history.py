@@ -173,16 +173,20 @@ def import_game(conn: sqlite3.Connection, archive: str | os.PathLike[str],
                      (json.dumps({"state_records": len(states), **linkage}, sort_keys=True), game_id))
         for side in (0, 1):
             is_model = metadata.get("llm_side") == side
+            requested_model = next((metadata.get(key) for key in
+                                    ("backend_requested_model", "requested_model", "model")
+                                    if isinstance(metadata.get(key), str) and metadata.get(key)), None)
+            reported_model = metadata.get("runtime_model") if isinstance(metadata.get("runtime_model"), str) else None
             conn.execute("""INSERT INTO game_players
               (game_id,side,player_kind,display_name,backend,model_requested,model_reported,
                reasoning_requested,reasoning_reported)
               VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(game_id,side) DO UPDATE SET
               model_reported=excluded.model_reported,reasoning_reported=excluded.reasoning_reported""",
               (game_id, side, "model" if is_model else "algorithm",
-               metadata.get("model") if is_model else "greedy",
+               requested_model if is_model else "greedy",
                metadata.get("model_backend") if is_model else "greedy",
-               metadata.get("model") if is_model else None,
-               metadata.get("runtime_model") if is_model else None,
+               requested_model if is_model else None,
+               reported_model if is_model else None,
                metadata.get("requested_reasoning_effort") if is_model else None,
                metadata.get("runtime_reasoning_effort") if is_model else None))
         _import_requests(conn, game_id, records, linkage["record_links"])

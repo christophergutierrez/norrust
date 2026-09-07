@@ -50,7 +50,7 @@ function M.player_labels(replay)
     local function label(side, faction_key)
         local player = players[side + 1] or {}
         local name = player.display_name or player.model_requested or player.backend or "Unknown"
-        local model = player.model_requested
+        local model = player.model_reported or player.model_requested
         if player.player_kind == "model" and model and model ~= name then
             name = string.format("%s [%s]", name, model)
         end
