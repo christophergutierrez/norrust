@@ -564,6 +564,7 @@ function love.load()
         campaign_client = campaign_client,
         faction_index_for_mode = faction_index_for_mode,
         apply_camera_offset = apply_camera_offset,
+        replay_mod = replay_mod,
     })
 end
 
