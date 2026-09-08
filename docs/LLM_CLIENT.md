@@ -423,11 +423,13 @@ retains the raw event objects.
 `--decision-metrics` adds one read-only preview of the final model-authored
 batch to the log so evaluations can compare recruiter danger and remaining
 recruitment before and after the decision.
-The tactical card's `focus_p` and `focus_e` evaluate compatible direct sequences
-of one, two, and three attackers using **one selected origin per attacker**.
-The probabilities are exact within that restricted calculation, but alternative
-origins are omitted. A zero can mean no compatible selected sequence; it does
-not establish safety. These vectors are not global bounds on enemy kill odds.
+The tactical card's `focus_p` and `focus_e` report kill probabilities and
+expected cumulative damage for the best origin-compatible volleys of one, two,
+and three distinct attackers across all supplied legal attack origins. Equal
+kill probabilities are ranked by expected damage. Each attacker is assumed to
+deliver its full volley: retaliation and subsequent board changes are ignored.
+A zero can mean no compatible sequence of that size; it does not establish
+safety against additional attackers or routes opened by earlier actions.
 `max_sum` separately adds maximum volleys without enforcing origin compatibility.
 All compact forecast `e`/`focus_e` values use tenths of HP (`24` means `2.4` HP);
 `p`/`focus_p` use basis points (`6400` means `64%`). Direct `m`/`max_damage` values

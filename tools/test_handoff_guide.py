@@ -48,12 +48,12 @@ class HandoffGuideTests(unittest.TestCase):
         self.assertNotIn('"actions":', self.guide)
         self.assertNotIn("focus_p", self.guide)
 
-    def test_focus_contract_explains_restricted_origins_and_zero(self):
+    def test_focus_contract_explains_origin_coverage_and_volley_assumptions(self):
         prompt = prompt_for({"tactical_surface": {}}, [])
-        self.assertIn("only one selected origin per attacker", prompt)
-        self.assertIn("zero can mean no compatible selected sequence", prompt)
-        self.assertIn("does not establish safety", prompt)
-        self.assertNotIn("exact kill probability with the best compatible", prompt)
+        self.assertIn("one to three distinct attackers across all supplied legal origins", prompt)
+        self.assertIn("retaliation and subsequent board changes are ignored", prompt)
+        self.assertIn("Zero can mean no compatible sequence of that size", prompt)
+        self.assertNotIn("only one selected origin per attacker", prompt)
 
     def test_maintained_examples_use_real_parsers(self):
         snippets = re.findall(r"`([^`]+)`", prompt_for({}, []))

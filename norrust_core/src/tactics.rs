@@ -276,75 +276,121 @@ struct ThreatCandidate {
     parameters: CombatParameters,
 }
 
+/// Origins with the same attacker damage distribution are interchangeable for
+/// forecasting, but all remain available to the compatibility check.
+struct FocusVolley<'a> {
+    attacker_id: u32,
+    parameters: &'a CombatParameters,
+    signature: (u32, u32, u32),
+    origins: Vec<Option<(i32, i32)>>,
+}
+
+fn compatible_focus_origins(volleys: &[&FocusVolley<'_>], used: &mut Vec<(i32, i32)>) -> bool {
+    let Some((first, rest)) = volleys.split_first() else {
+        return true;
+    };
+    for origin in &first.origins {
+        if let Some(hex) = origin {
+            if used.contains(hex) {
+                continue;
+            }
+            used.push(*hex);
+            let compatible = compatible_focus_origins(rest, used);
+            used.pop();
+            if compatible {
+                return true;
+            }
+        } else if compatible_focus_origins(rest, used) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Return exact kill odds and expected damage for the best compatible
-/// one-, two-, and three-attacker volleys. A moved origin can only be used by
-/// one attacker; current origins do not conflict. This is a bounded factual
-/// calculation, not a recommendation or opponent simulation.
+/// one-, two-, and three-attacker volleys across all supplied origins. A moved
+/// origin can only be used by one attacker; current origins do not conflict.
+/// Each attacker is assumed to deliver its full volley, ignoring retaliation
+/// and subsequent board changes. This is not an executable opponent simulation.
 fn focus_fire_bounds(hp: u32, candidates: &[ThreatCandidate]) -> (Vec<u32>, Vec<u32>) {
+    let mut volleys: Vec<FocusVolley<'_>> = Vec::new();
+    let mut groups = HashMap::new();
+    for candidate in candidates {
+        let p = &candidate.parameters;
+        // These are exactly the inputs used by exact_damage_sequence; defender
+        // retaliation and attacker terrain do not affect that calculation.
+        let signature = (
+            p.attacker_hit_pct,
+            p.attacker_damage_per_hit,
+            p.attacker_strikes,
+        );
+        let index = *groups
+            .entry((candidate.threat.attacker_id, signature))
+            .or_insert_with(|| {
+                volleys.push(FocusVolley {
+                    attacker_id: candidate.threat.attacker_id,
+                    parameters: p,
+                    signature,
+                    origins: Vec::new(),
+                });
+                volleys.len() - 1
+            });
+        let origin = candidate
+            .threat
+            .moved
+            .then_some((candidate.threat.origin_col, candidate.threat.origin_row));
+        if !volleys[index].origins.contains(&origin) {
+            volleys[index].origins.push(origin);
+        }
+    }
     let mut best = vec![None; 3];
-    fn visit(
+    fn visit<'a>(
         hp: u32,
-        candidates: &[ThreatCandidate],
+        volleys: &'a [FocusVolley<'a>],
         start: usize,
-        selected: &mut Vec<usize>,
-        used_attackers: &mut HashSet<u32>,
-        used_moved_origins: &mut HashSet<(i32, i32)>,
+        selected: &mut Vec<&'a FocusVolley<'a>>,
+        cache: &mut HashMap<Vec<(u32, u32, u32)>, crate::combat::DamageSequenceForecast>,
         best: &mut [Option<crate::combat::DamageSequenceForecast>],
     ) {
         if !selected.is_empty() {
-            let attacks = selected
-                .iter()
-                .map(|&index| candidates[index].parameters.clone())
-                .collect::<Vec<_>>();
-            let forecast = exact_damage_sequence(hp, &attacks);
+            if !compatible_focus_origins(selected, &mut Vec::new()) {
+                return;
+            }
+            let key = selected.iter().map(|v| v.signature).collect::<Vec<_>>();
+            let forecast = cache.entry(key).or_insert_with(|| {
+                let attacks = selected
+                    .iter()
+                    .map(|v| v.parameters.clone())
+                    .collect::<Vec<_>>();
+                exact_damage_sequence(hp, &attacks)
+            });
             let slot = selected.len() - 1;
             if best[slot].as_ref().map_or(true, |current| {
                 (forecast.kill_bps, forecast.expected_damage_tenths)
                     > (current.kill_bps, current.expected_damage_tenths)
             }) {
-                best[slot] = Some(forecast);
+                best[slot] = Some(forecast.clone());
             }
         }
         if selected.len() == 3 {
             return;
         }
-        for index in start..candidates.len() {
-            let candidate = &candidates[index];
-            if used_attackers.contains(&candidate.threat.attacker_id) {
+        for index in start..volleys.len() {
+            let volley = &volleys[index];
+            if selected.iter().any(|v| v.attacker_id == volley.attacker_id) {
                 continue;
             }
-            let origin = (candidate.threat.origin_col, candidate.threat.origin_row);
-            if candidate.threat.moved && used_moved_origins.contains(&origin) {
-                continue;
-            }
-            used_attackers.insert(candidate.threat.attacker_id);
-            if candidate.threat.moved {
-                used_moved_origins.insert(origin);
-            }
-            selected.push(index);
-            visit(
-                hp,
-                candidates,
-                index + 1,
-                selected,
-                used_attackers,
-                used_moved_origins,
-                best,
-            );
+            selected.push(volley);
+            visit(hp, volleys, index + 1, selected, cache, best);
             selected.pop();
-            if candidate.threat.moved {
-                used_moved_origins.remove(&origin);
-            }
-            used_attackers.remove(&candidate.threat.attacker_id);
         }
     }
     visit(
         hp,
-        candidates,
+        &volleys,
         0,
         &mut Vec::new(),
-        &mut HashSet::new(),
-        &mut HashSet::new(),
+        &mut HashMap::new(),
         &mut best,
     );
     (
@@ -807,23 +853,7 @@ fn target_threats_in_projected(
     threats.sort_by_key(|threat| (threat.attacker_id, threat.origin_row, threat.origin_col));
     let (attacker_max_damage, max_incoming_sum, lethal_attackers_needed, origins_conflict) =
         summarize_threats(target.hp, &threats);
-    // One representative origin per attacker keeps the bounded join cheap
-    // on large boards. Current origins win ties, then maximum volley damage;
-    // moved-origin conflicts remain visible in the selected representatives.
-    let mut focus_candidates = candidates.clone();
-    focus_candidates.sort_by_key(|candidate| {
-        (
-            candidate.threat.attacker_id,
-            candidate.threat.moved,
-            std::cmp::Reverse(candidate.threat.max_damage),
-            std::cmp::Reverse(candidate.threat.forecast.outcome_bps[0]),
-            candidate.threat.origin_row,
-            candidate.threat.origin_col,
-        )
-    });
-    focus_candidates.dedup_by_key(|candidate| candidate.threat.attacker_id);
-    let (focus_kill_bps, focus_expected_damage_tenths) =
-        focus_fire_bounds(target.hp, &focus_candidates);
+    let (focus_kill_bps, focus_expected_damage_tenths) = focus_fire_bounds(target.hp, &candidates);
     Ok(Some(RecruiterThreats {
         recruiter_id: target_id,
         hp: target.hp,
@@ -1325,46 +1355,234 @@ mod tests {
             .all(|destination| destination.col != 1 || destination.row != 1));
     }
 
+    fn recruiter_focus_position() -> GameState {
+        let mut board = Board::new(9, 9);
+        for col in 0..9 {
+            for row in 0..9 {
+                board.set_tile(Hex::from_offset(col, row), crate::board::Tile::new("flat"));
+            }
+        }
+        let mut state = GameState::new_seeded(board, 2001);
+        let mut recruiter = Unit::new(1, "leader", 50, 0);
+        recruiter.can_recruit = true;
+        recruiter.defense.insert("flat".into(), 0);
+        state.place_unit(recruiter, Hex::from_offset(4, 5));
+        for (id, col) in [(2, 1), (3, 3), (4, 5)] {
+            let mut archer = Unit::new(id, "adept", 20, 1);
+            archer.movement = 8;
+            archer.movement_costs.insert("flat".into(), 1);
+            archer.attacks.push(AttackDef {
+                id: "bolt".into(),
+                name: "bolt".into(),
+                damage: 10,
+                strikes: 2,
+                attack_type: "arcane".into(),
+                range: "ranged".into(),
+                specials: Vec::new(),
+            });
+            state.place_unit(archer, Hex::from_offset(col, 0));
+        }
+        state
+    }
+
+    #[test]
+    fn recruiter_focus_uses_alternative_origins_for_three_attackers() {
+        let state = recruiter_focus_position();
+        let result = recruiter_threats_after_end_turn(&state, 0).unwrap();
+        let threat = &result.recruiters[0];
+        assert_eq!(threat.distinct_attacker_count, 3);
+        assert!(threat.origins_conflict);
+        for id in 2..=4 {
+            assert!(
+                threat
+                    .threats
+                    .iter()
+                    .filter(|t| t.attacker_id == id)
+                    .count()
+                    > 1
+            );
+        }
+        assert_eq!(threat.focus_kill_bps, vec![0, 0, 10_000]);
+        assert_eq!(threat.focus_expected_damage_tenths, vec![200, 400, 600]);
+    }
+
+    #[test]
+    fn crowded_board_recruiter_forecast_stays_within_budget() {
+        let mut state = recruiter_focus_position();
+        let archer = state.units[&2].clone();
+        let mut id = 5;
+        for row in [2, 4, 6] {
+            for col in [0, 2, 6, 8] {
+                let mut unit = archer.clone();
+                unit.id = id;
+                id += 1;
+                state.place_unit(unit, Hex::from_offset(col, row));
+            }
+        }
+        let started = std::time::Instant::now();
+        let result = recruiter_threats_after_end_turn(&state, 0).unwrap();
+        let elapsed = started.elapsed();
+        assert!(result.recruiters[0].distinct_attacker_count >= 10);
+        assert_eq!(result.recruiters[0].focus_kill_bps[2], 10_000);
+        eprintln!("16-unit board, direct and open recruiter forecasts: {elapsed:?}");
+        assert!(elapsed < std::time::Duration::from_secs(2));
+    }
+
+    fn focus_candidate(
+        id: u32,
+        origin: Option<(i32, i32)>,
+        damage: u32,
+        hit: u32,
+    ) -> ThreatCandidate {
+        ThreatCandidate {
+            threat: RecruiterThreat {
+                attacker_id: id,
+                origin_col: origin.unwrap_or_default().0,
+                origin_row: origin.unwrap_or_default().1,
+                moved: origin.is_some(),
+                max_damage: damage,
+                forecast: ExchangeForecast {
+                    outcome_bps: [0, 10_000, 0],
+                    expected_damage_tenths: [0, 0],
+                },
+            },
+            parameters: CombatParameters {
+                attacker_attack_id: "bolt".into(),
+                defender_attack_id: None,
+                attacker_hit_pct: hit,
+                defender_hit_pct: 0,
+                attacker_damage_per_hit: damage,
+                attacker_strikes: 1,
+                defender_damage_per_hit: 0,
+                defender_strikes: 0,
+                attacker_hp: 10,
+                defender_hp: 20,
+                attacker_terrain_defense: 0,
+                defender_terrain_defense: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn focus_fire_preserves_real_conflicts_and_distinct_attackers() {
+        let candidates = vec![
+            focus_candidate(1, Some((2, 1)), 20, 100),
+            focus_candidate(1, Some((3, 1)), 10, 100),
+            focus_candidate(2, Some((2, 1)), 20, 100),
+        ];
+        // The weaker alternative enables the lethal pair. One attacker must
+        // never supply both its strong and weak volleys to a three-way join.
+        assert_eq!(
+            focus_fire_bounds(30, &candidates),
+            (vec![0, 10_000, 0], vec![200, 300, 0])
+        );
+        // A greedy first-origin assignment fails: U1 must take its alternate
+        // so U2 can use the only origin available to it.
+        let alternatives = vec![
+            focus_candidate(1, Some((2, 1)), 10, 100),
+            focus_candidate(1, Some((3, 1)), 10, 100),
+            focus_candidate(2, Some((2, 1)), 10, 100),
+            focus_candidate(3, None, 10, 100),
+        ];
+        assert_eq!(focus_fire_bounds(30, &alternatives).0, vec![0, 0, 10_000]);
+        let crowded = (1..=3)
+            .flat_map(|id| {
+                [
+                    focus_candidate(id, Some((2, 1)), 10, 100),
+                    focus_candidate(id, Some((3, 1)), 10, 100),
+                ]
+            })
+            .collect::<Vec<_>>();
+        // Three attackers and only two origins: there is no compatible triple.
+        assert_eq!(
+            focus_fire_bounds(30, &crowded),
+            (vec![0, 0, 0], vec![100, 200, 0])
+        );
+        assert_eq!(focus_fire_bounds(1, &[]), (vec![0; 3], vec![0; 3]));
+    }
+
+    #[test]
+    fn grouped_focus_matches_exhaustive_origin_subsets() {
+        // Independent oracle: enumerate raw origin subsets, without grouping,
+        // caching, or the production compatibility matcher.
+        for seed in 0..40u32 {
+            let candidates = (0..9u32)
+                .map(|i| {
+                    let value = (seed + 7) * (i + 3) * 17;
+                    let origin = if value % 7 == 0 {
+                        None
+                    } else {
+                        Some(((value % 4) as i32, 1))
+                    };
+                    let mut candidate =
+                        focus_candidate(i / 3, origin, 4 + (value % 3) * 4, 50 + (value % 2) * 50);
+                    candidate.parameters.attacker_strikes = 1 + value % 2;
+                    candidate
+                })
+                .collect::<Vec<_>>();
+            let hp = 10 + seed;
+            let mut expected = [(0, 0); 3];
+            for mask in 1..(1u32 << candidates.len()) {
+                let size = mask.count_ones() as usize;
+                if size > 3 {
+                    continue;
+                }
+                let selected = candidates
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, c)| (mask & (1 << i) != 0).then_some(c))
+                    .collect::<Vec<_>>();
+                let mut ids = HashSet::new();
+                let mut origins = HashSet::new();
+                if selected.iter().any(|c| {
+                    !ids.insert(c.threat.attacker_id)
+                        || (c.threat.moved
+                            && !origins.insert((c.threat.origin_col, c.threat.origin_row)))
+                }) {
+                    continue;
+                }
+                let attacks = selected
+                    .iter()
+                    .map(|c| c.parameters.clone())
+                    .collect::<Vec<_>>();
+                let f = exact_damage_sequence(hp, &attacks);
+                expected[size - 1] = expected[size - 1].max((f.kill_bps, f.expected_damage_tenths));
+            }
+            let result = focus_fire_bounds(hp, &candidates);
+            assert_eq!(result.0, expected.map(|v| v.0), "seed {seed}");
+            assert_eq!(result.1, expected.map(|v| v.1), "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn crowded_focus_forecast_keeps_all_origins_within_budget() {
+        let candidates = (1..=36)
+            .flat_map(|id| {
+                (0..18).map(move |col| {
+                    let mut candidate = focus_candidate(id, Some((col, 1)), 8, 60);
+                    candidate.parameters.attacker_strikes = 3;
+                    candidate
+                })
+            })
+            .collect::<Vec<_>>();
+        let started = std::time::Instant::now();
+        let result = focus_fire_bounds(40, &candidates);
+        let elapsed = started.elapsed();
+        let triple = exact_damage_sequence(40, &vec![candidates[0].parameters.clone(); 3]);
+        assert_eq!(result.0[2], triple.kill_bps);
+        assert_eq!(result.1[2], triple.expected_damage_tenths);
+        eprintln!("36 attackers / 648 origins: {elapsed:?}");
+        // A generous debug-build guard against enumerating every origin triple
+        // and recomputing its probability distribution.
+        assert!(elapsed < std::time::Duration::from_secs(2));
+    }
+
     #[test]
     fn focus_fire_bounds_are_exact_and_respect_moved_origin_conflicts() {
-        let parameters = |damage| CombatParameters {
-            attacker_attack_id: "bolt".into(),
-            defender_attack_id: None,
-            attacker_hit_pct: 100,
-            defender_hit_pct: 0,
-            attacker_damage_per_hit: damage,
-            attacker_strikes: 1,
-            defender_damage_per_hit: 0,
-            defender_strikes: 0,
-            attacker_hp: 10,
-            defender_hp: 20,
-            attacker_terrain_defense: 0,
-            defender_terrain_defense: 0,
-        };
-        let threat = |id, moved, col| RecruiterThreat {
-            attacker_id: id,
-            origin_col: col,
-            origin_row: 1,
-            moved,
-            forecast: ExchangeForecast {
-                outcome_bps: [0, 10_000, 0],
-                expected_damage_tenths: [0, 0],
-            },
-            max_damage: 10,
-        };
         let candidates = vec![
-            ThreatCandidate {
-                threat: threat(1, true, 2),
-                parameters: parameters(10),
-            },
-            ThreatCandidate {
-                threat: threat(2, true, 2),
-                parameters: parameters(10),
-            },
-            ThreatCandidate {
-                threat: threat(2, true, 3),
-                parameters: parameters(10),
-            },
+            focus_candidate(1, Some((2, 1)), 10, 100),
+            focus_candidate(2, Some((2, 1)), 10, 100),
+            focus_candidate(2, Some((3, 1)), 10, 100),
         ];
         let (kill, expected) = focus_fire_bounds(20, &candidates);
         assert_eq!(kill, vec![0, 10_000, 0]);
