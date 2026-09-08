@@ -69,7 +69,8 @@ The client supplies the response contract, tool syntax, and current board separa
   the existing decision/hold fields; compare it with a useful action elsewhere.
 - **T8 — Concede a clearly lost game.** Resign when live facts leave no
   credible recovery or victory route; state the decisive reason. A bad roll,
-  temporary threat, or material deficit alone is insufficient.
+  temporary threat, or material deficit alone is insufficient. A material deficit
+  in units, gold, villages, or position alone is not proof.
 
 For an uncertain consequential choice, compare the complete batch with one
 legal alternative. Record the concrete expected effect and main tradeoff in
