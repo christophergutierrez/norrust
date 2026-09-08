@@ -15,6 +15,18 @@ Do not read `.paul`, old temporary backends, or unrelated development documents
 unless diagnosing a specific setup failure. Preserve the prompt bytes and hash in
 the request archive. A transport receipt proves delivery, not comprehension.
 
+### Prompt maintenance
+
+The canonical prompt starts with the numbered
+[MEMORYLESS TACTICAL PLAYBOOK](LLM_TACTICAL_PLAYBOOK.md). Keep strategic choices
+there; `prompt_for` in `tools/llm_client.py` supplies match rules, response
+schemas, tool semantics, and forecast definitions. Structured live data follows,
+and request-specific follow-ups supply the current call budget and live revision.
+Players need only the assembled prompt. Keep each instruction in one place
+within it; use concise conditional tactics and avoid repeated checklists.
+Preserve rule IDs when editing wording so recorded citations remain comparable;
+the archived guide hash identifies the exact text used by a game.
+
 ### Decision annotations
 
 The prompt requests `{"actions":[...],"decisions":[...]}` on every action response. The actions
@@ -411,13 +423,17 @@ retains the raw event objects.
 `--decision-metrics` adds one read-only preview of the final model-authored
 batch to the log so evaluations can compare recruiter danger and remaining
 recruitment before and after the decision.
-The tactical card also includes exact direct focus vectors: `focus_p` contains
-kill probabilities in basis points for the best compatible one-, two-, and
-three-attacker volleys, while `focus_e` contains expected cumulative damage in
-tenths of HP. All compact forecast `e`/`focus_e` damage values use tenths of HP
-(`24` means `2.4` HP); all compact forecast `p`/`focus_p` probabilities use basis
-points (`6400` means `64%`). The direct `m`/`max_damage` values remain whole HP.
-These are bounds, not recommendations. Automatic draft review compares
+The tactical card's `focus_p` and `focus_e` evaluate compatible direct sequences
+of one, two, and three attackers using **one selected origin per attacker**.
+The probabilities are exact within that restricted calculation, but alternative
+origins are omitted. A zero can mean no compatible selected sequence; it does
+not establish safety. These vectors are not global bounds on enemy kill odds.
+`max_sum` separately adds maximum volleys without enforcing origin compatibility.
+All compact forecast `e`/`focus_e` values use tenths of HP (`24` means `2.4` HP);
+`p`/`focus_p` use basis points (`6400` means `64%`). Direct `m`/`max_damage` values
+remain whole HP. Preview outcomes are hypothetical, and sampled combat results
+do not establish certain outcomes.
+Automatic draft review compares
 the draft with an unchanged `EndTurn` baseline and labels reply exposure with
 the assumption that forecast combatants survive in place. Whole-force `FORCE`
 and mechanical `RECRUIT` lines are observations; they do not force recruitment
@@ -438,11 +454,8 @@ friendly unit and recruiter IDs/HP/positions. A preview or model text cannot
 replace these facts. A revised batch starts from this live revision; a rolled-back
 batch leaves it unchanged. After an accepted partial batch, the reminder is
 refreshed from the new live observation.
-Before ending a turn, the model is strongly encouraged to exhaust legal
-recruitment: move non-recruiters off castle hexes when needed, recruit into the
-resulting legal placements, and repeat until gold, definitions, or castle
-capacity prevents another recruit. It may deliberately save gold for a better
-recruit next turn when that is strategically justified.
+Recruitment and deployment priorities live in [T3.4](LLM_TACTICAL_PLAYBOOK.md).
+The client supplies legal capacity and macro semantics; saving gold is legal.
 
 ```json
 {"action":"Move","unit_id":12,"col":4,"row":7}

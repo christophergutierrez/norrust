@@ -286,8 +286,8 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("TURN_PROGRESS moved=U3 attacked=U4 remaining_attackers=U5,U6", prompt)
         self.assertIn("conversation_continuity", prompt)
         self.assertIn("hold U7", prompt)
-        self.assertIn("eligibility-based greedy sweep", prompt)
-        self.assertIn("what changes after the enemy moves and attacks if you hold here", prompt)
+        self.assertIn("Automatic eligibility excludes recruiters, critically wounded units, and spent units", prompt)
+        self.assertIn("contribution forgone, and release condition", prompt)
     def test_checkpoint_reference_confines_path_and_verifies_digest(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "match.ckpt"
@@ -482,7 +482,7 @@ class ClientValidationTests(unittest.TestCase):
         prompt = prompt_for({}, [], compact=True, intent="main force advances together")
         self.assertIn("previous_intent", prompt)
         self.assertIn("main force advances together", prompt)
-        self.assertIn("optional intent", prompt)
+        self.assertIn("Optional intent is memory under 512 UTF-8 bytes", prompt)
 
     def test_target_and_hex_renderers_keep_facts_and_empty_hex_uncertainty(self):
         target = compact_target_inspection({
@@ -1151,12 +1151,12 @@ class ClientValidationTests(unittest.TestCase):
     def test_prompt_documents_greedy_handoff_and_recruitment_ownership(self):
         prompt = prompt_for({"units": []}, [])
         for text in (
-                'emit {"action":"DoneWithImportantMoves"}',
-                "Bare EndTurn is accepted as a fallback",
-                "explicit unit groups",
-                "deliberate holds",
-                "does not prove delegated destinations are tactically safe",
-                "Recruitment remains your responsibility",
+                "DoneWithImportantMoves runs the automatic greedy sweep then ends the turn",
+                "EndTurn runs the same sweep",
+                "FinishWithGreedy delegates only listed group IDs",
+                "Unit IDs must be unique across groups and holds",
+                "it does not establish tactical safety",
+                "The sweep never recruits",
         ):
             with self.subTest(text=text):
                 self.assertIn(text, prompt)
@@ -1272,13 +1272,13 @@ class ClientValidationTests(unittest.TestCase):
         prompt = prompt_for({"tactical_surface": {"units": [], "visibility": "full",
                                                     "next_time_of_day": "Night"}}, [], compact=True)
         for text in (
-                "COORDS=col,row", "inspect a unit", "Move destination", "individual Recruit coordinates",
-                "RecruitBatch", "saving gold is allowed"):
+                "COORDS=col,row", '"tool":"inspect_unit"', "Move destination", "compact R `open`",
+                "RecruitBatch", "explain deliberate saving"):
             with self.subTest(text=text):
                 self.assertIn(text, prompt)
-        self.assertIn("p[defender-killed,both-survive,attacker-killed] in basis points", prompt)
-        self.assertIn("e[damage-to-defender,damage-to-attacker] in tenths of HP", prompt)
-        self.assertIn("open_m, and detail damage are whole HP", prompt)
+        self.assertIn("p[defender-killed,both-survive,attacker-killed] and focus_p use basis points", prompt)
+        self.assertIn("e[damage-to-defender,damage-to-attacker] and focus_e use tenths of HP", prompt)
+        self.assertIn("open_m, and detail damage use whole HP", prompt)
         self.assertIn("visibility=full", prompt)
         self.assertIn("next_time_of_day=Night", prompt)
         self.assertNotIn('"origins"', prompt)
@@ -1360,8 +1360,6 @@ class ClientValidationTests(unittest.TestCase):
             'engine responses remain authoritative', 'automatically executes the opponent',
             'recruiter loss', 'side-turn safety cap', 'engine round',
             'headless driver disables scenario objective and scenario turn-limit conditions',
-            'strongly prefer exhausting legal recruitment', 'vacate-then-recruit',
-            'save gold for a better recruit next turn',
         ]
         for text in required:
             self.assertIn(text, prompt)
@@ -1383,7 +1381,7 @@ class ClientValidationTests(unittest.TestCase):
         self.assertTrue(changed)
         validate_orders(json.dumps(example))
         self.assertEqual(parsed, example["agenda"])
-        self.assertEqual(example["actions"], [{"action": "EndTurn"}])
+        self.assertEqual(example["actions"], [{"action": "DoneWithImportantMoves"}])
         self.assertEqual(example["decisions"][0]["orders"], [0])
         for text in ("6400", "64%", "24", "2.4 HP", "basis points", "tenths of HP",
                      "beyond six", "automatically vacate", "affordability and actual capacity",
@@ -1433,39 +1431,17 @@ class ClientValidationTests(unittest.TestCase):
         self.assertTrue(prompt.startswith(canonical + "\n"))
         self.assertEqual(prompt.count(canonical), 1)
 
-    def test_canonical_tactical_playbook_has_key_imperatives(self):
+    def test_canonical_tactical_playbook_retains_core_tradeoffs(self):
         canonical = " ".join(llm_client.PLAYBOOK_PATH.read_text(encoding="utf-8").split())
         for guidance in (
-            "TACTICAL DECISION PRIORITIES",
-            "they do not prescribe one move",
-            "recruiter survival as non-negotiable",
-            "Prefer the keep and a screen",
-            "compare legal destinations and retreat",
-            "survival takes priority",
-            "recruit when legal",
-            "saving gold is valid when the intent states why",
-            "auto-vacating can make later waves exceed the initially empty spaces",
-            "`TYPE` profiles",
-            "visible roster",
-            "vacate castle hexes",
-            "do not passively wait",
-            "Form a line and fight",
-            "Expect attrition",
-            "keep recruiting after the opening dump",
-            "generally attacking from distance 2",
-            "fight gate",
-            "Use `Engage`",
-            "do not assume a screen survives",
-            "refuse bad melee for many turns",
-            "Break a hex with coordinated focus fire",
-            "Kill the enemy recruiter",
-            "Save a threatened recruiter",
-            "Focus fire on a living target",
-            "positions and `target_ids` exactly",
-            "`Move` followed by the matching `Attack`",
-            "reserve a unique destination",
-            "Avoid speculative, unreachable",
-            "emit `DoneWithImportantMoves`",
+            "Village ownership persists after leaving",
+            "one recruit at a time",
+            "Recruit a stationary group first when it must screen the recruiter",
+            "replacing casualties costs gold, travel time, and accumulated XP",
+            "restores its new maximum HP",
+            "the unit must survive combat",
+            "judge the combined attack",
+            "credible recovery or victory route",
         ):
             with self.subTest(guidance=guidance):
                 self.assertIn(guidance, canonical)

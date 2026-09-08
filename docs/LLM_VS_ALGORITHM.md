@@ -6,7 +6,7 @@ Headless AI-vs-AI recipes, board fairness, and algorithm baselines live in [SELF
 
 ## What this measures
 
-The LLM must **choose actions**. Legal actions are Move, Attack, Recruit, optional RecruitBatch, Advance, and EndTurn.
+The LLM must **choose actions** using the client-supplied action contract.
 
 **Does not count** as an LLM playing:
 
@@ -64,28 +64,12 @@ python -m tools.llm_client \
 
 The client—not the model—issues singleton `{"action":"Query","what":"turn_options"}` and `{"action":"Query","what":"recruit_options"}` requests before each memoryless model call. `turn_options` maps current and reachable positions to target IDs. `recruit_options` supplies the active faction, legal definitions, costs, affordability, placement hexes, and macro availability. Engine responses are authoritative; the client and model must not reconstruct legality.
 
-The model returns only a non-empty JSON array of at most 256 objects, with exactly one final `DoneWithImportantMoves`, `EndTurn`, or `FinishWithGreedy` boundary. Each object has exactly the fields in one schema:
-
-```text
-Move         {action, unit_id: integer, col: integer, row: integer}
-Attack       {action, attacker_id: integer, defender_id: integer}
-Recruit      {action, def_id: string, col: integer, row: integer}
-RecruitBatch {action, def_id: string, count: positive integer}  [optional]
-Advance      {action, unit_id: integer, exactly one of target_index: integer or def_id: string}
-DoneWithImportantMoves {action}
-EndTurn      {action}  [implicit safety fallback]
-FinishWithGreedy {action, groups, holds}
-```
-
-`RecruitBatch` is driver-assisted placement, attempts up to the requested positive
-count, and reports actual progress; it is unavailable with
-`--disable-recruit-batch`. The configured model-side restriction applies to every
-action, including `EndTurn`; actor IDs must belong to that side. The model never
-submits `Query` or opponent actions.
-
-For `Advance`, `target_index` selects the corresponding entry in that unit's
-`advances_to` list, in the order shown in the board data; `def_id` can be used
-instead when the target name is known.
+The model returns an `actions` envelope with numbered-rule `decisions`.
+The [client action contract](LLM_CLIENT.md) documents schemas, annotations,
+read-only tools, optional recruitment assistance, and incremental batches.
+A final batch ends with `DoneWithImportantMoves`, `EndTurn`, or
+`FinishWithGreedy`, except for standalone `Resign`. Actor IDs must belong to the
+configured model side; the model never submits driver `Query` or opponent actions.
 
 Greedy recruitment, planning, actions, and its successful turn boundary form one transaction. A failure emits a typed `game_end` with `reason: "infrastructure_failure"`, a stable `code`, and a `message`, without committing state, events, allocated IDs, or side-turn accounting. The client records `infrastructure_invalid: true` and exits nonzero; the result is not a draw, win, or continuation.
 

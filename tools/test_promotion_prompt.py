@@ -36,17 +36,17 @@ class PromotionPromptTests(unittest.TestCase):
         prompt = prompt_for({"active_faction": 0, "units": []}, [])
 
         self.assertIn(
-            'Advance by index: {"action":"Advance","unit_id": integer,"target_index": integer}',
+            'Advance: {"action":"Advance","unit_id": integer,"target_index": integer}',
             prompt,
         )
         self.assertIn(
-            'Advance by definition: {"action":"Advance","unit_id": integer,"def_id": string}',
+            '{"action":"Advance","unit_id": integer,"def_id": string}',
             prompt,
         )
         self.assertIn("advancement_pending=true", prompt)
         self.assertIn("advances_to=missing", prompt)
         self.assertIn("advances_to=[]", prompt)
-        self.assertIn("Do not invent a target or advance a non-pending unit", prompt)
+        self.assertIn("Advance requires advancement_pending=true", prompt)
 
     def test_both_advance_selectors_are_valid_action_forms(self):
         for selector in ({"target_index": 0}, {"def_id": "Elvish Archer"}):
