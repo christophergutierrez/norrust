@@ -56,8 +56,11 @@ def discover_catalogs(root: Path) -> tuple[list[Path], list[str]]:
         if not path.is_file():
             continue
         try:
-            with open_history(path, read_only=True) as conn:
+            conn = open_history(path, read_only=True)
+            try:
                 conn.execute("SELECT 1 FROM games LIMIT 1").fetchone()
+            finally:
+                conn.close()
             catalogs.append(path)
         except Exception as exc:
             diagnostics.append(f"{path}: {exc}")
