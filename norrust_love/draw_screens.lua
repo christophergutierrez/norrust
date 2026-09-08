@@ -16,12 +16,50 @@ local draw_sidebar_bg = common.draw_sidebar_bg
 
 local M = {}
 
+function M.draw_recorded_games(ctx)
+    local browser = ctx.recorded_browser
+    local vp_w, vp_h = ctx.vp_w, ctx.vp_h
+    love.graphics.setFont(ctx.fonts[18]); love.graphics.setColor(C_GOLD[1], C_GOLD[2], C_GOLD[3], 1)
+    love.graphics.printf("Recorded Games", 0, 24, vp_w, "center")
+    love.graphics.setFont(ctx.fonts[11]); love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3], 1)
+    love.graphics.print("Up/Down select   Enter or Watch opens replay   F5 refresh   Esc back", 30, 52)
+    if browser.error then
+        love.graphics.setColor(1, 0.45, 0.35, 1); love.graphics.printf(browser.error, 30, 76, vp_w - 60, "left")
+    elseif #browser.rows == 0 then
+        love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3], 1); love.graphics.printf("No cataloged games found", 30, 100, vp_w - 60, "left")
+    end
+    local y = 86
+    for i, row in ipairs(browser.rows) do
+        local selected = i == browser.selected
+        if selected then love.graphics.setColor(0.25, 0.25, 0.16, 1); love.graphics.rectangle("fill", 20, y - 3, vp_w - 40, 23) end
+        love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
+        local p0 = row.players[1] and row.players[1].name or "Unknown"
+        local p1 = row.players[2] and row.players[2].name or "Unknown"
+        local result = row.status or "unknown"
+        if row.winner_side ~= nil then result = "Side " .. tostring(row.winner_side) .. " won" end
+        love.graphics.print(string.format("%s  |  %-22s vs %-22s  | %-12s | %s side-turns", tostring(row.started_at or "unknown"), p0, p1, result, tostring(row.side_turns or "?")), 28, y)
+        y = y + 24
+    end
+    local d = browser.detail
+    if d then
+        local dy = math.min(vp_h - 110, y + 12)
+        love.graphics.setColor(C_GOLD[1], C_GOLD[2], C_GOLD[3], 1); love.graphics.print("Selected game", 28, dy)
+        love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
+        love.graphics.print(string.format("%s  %s  seed=%s  gold=%s  cap=%s  reason=%s", d.game_id, d.scenario or "unknown", tostring(d.seed or "?"), tostring(d.starting_gold or "?"), tostring(d.max_side_turns or "?"), tostring(d.termination_reason or "unknown")), 28, dy + 18)
+        love.graphics.print("[ Watch ]        [ Refresh ]", 28, vp_h - 55)
+    end
+end
+
 --- Draw the setup HUD (scenario selection, faction picking, leader placement).
 function M.draw_setup_hud(ctx)
     local fonts = ctx.fonts
     local vp_w, vp_h = ctx.vp_w, ctx.vp_h
 
     -- Scenario selection screen
+    if ctx.game_mode == ctx.RECORDED_GAMES then
+        M.draw_recorded_games(ctx)
+        return
+    end
     if ctx.game_mode == ctx.PICK_SCENARIO then
         love.graphics.setFont(fonts[18])
         love.graphics.setColor(C_GOLD[1], C_GOLD[2], C_GOLD[3], 1)
@@ -55,7 +93,7 @@ function M.draw_setup_hud(ctx)
         local ly = cy + #ctx.CAMPAIGNS * 28 + 16
         love.graphics.setFont(fonts[14])
         love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3], 1)
-        love.graphics.printf("[L] Load Game", 0, ly, vp_w, "center")
+        love.graphics.printf("[L] Load Game     [V] Recorded Games", 0, ly, vp_w, "center")
 
         -- Quit hint
         love.graphics.printf("[Q] Quit", 0, ly + 24, vp_w, "center")

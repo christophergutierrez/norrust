@@ -21,3 +21,9 @@ The launcher accepts `--export PATH` to inspect the generated relocatable JSON
 bundle without opening Love2D. Missing or incomplete snapshots are reported;
 the exporter never reconstructs a state by running the game or rerolling
 combat.
+
+From the normal Love2D scenario screen, press `V` for **Recorded Games**. The
+browser lists the newest cataloged games, shows selected participants and
+metadata, and exports the recording internally when **Watch** is selected. Use
+Up/Down and Enter, or the on-screen controls; Escape returns from playback to
+the browser. The manual launcher remains useful for diagnostics.

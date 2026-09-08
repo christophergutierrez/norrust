@@ -27,6 +27,8 @@ local faction_index_for_mode
 local apply_camera_offset
 local campaign_client
 local replay_mod
+local recorded_games_mod
+local open_replay_bundle
 
 --- Restore game state after loading a save file.
 -- @param data  The table returned by save.load_save
@@ -186,6 +188,8 @@ function M.init(ctx)
     apply_camera_offset = ctx.apply_camera_offset
     campaign_client = ctx.campaign_client
     replay_mod = ctx.replay_mod
+    recorded_games_mod = ctx.recorded_games_mod
+    open_replay_bundle = ctx.open_replay_bundle
 
     -- Initialize sub-modules with the same context
     input_play.init(ctx)
@@ -320,8 +324,24 @@ end
 local mode_handlers
 
 function M.keypressed(key)
+    if vars.game_mode == MODES.RECORDED_GAMES then
+        local browser = shared.recorded_browser
+        if not browser then return end
+        if key == "up" then browser:move(-1)
+        elseif key == "down" then browser:move(1)
+        elseif key == "pageup" then browser.offset = math.max(0, browser.offset - 25); browser:refresh()
+        elseif key == "pagedown" then browser.offset = browser.offset + 25; browser:refresh()
+        elseif key == "f5" then browser:refresh()
+        elseif key == "return" or key == "kpenter" then browser:watch()
+        elseif key == "escape" then shared.recorded_browser = nil; vars.game_mode = MODES.PICK_SCENARIO; sound.play_music("data/sounds/menu_music.ogg") end
+        return
+    end
     if shared.replay then
-        if key == "left" or key == "a" then replay_mod.step(shared.replay, -2)
+        if key == "escape" then
+            shared.replay = nil
+            vars.game_mode = MODES.RECORDED_GAMES
+            if shared.recorded_browser then shared.recorded_browser:refresh() end
+        elseif key == "left" or key == "a" then replay_mod.step(shared.replay, -2)
         elseif key == "right" or key == "d" then replay_mod.step(shared.replay, 2)
         elseif key == "space" then replay_mod.toggle(shared.replay)
         elseif key == "home" or key == "r" then replay_mod.restart(shared.replay)
@@ -398,6 +418,7 @@ function M.mousepressed(sx, sy, button)
             if hit(replay_buttons.forward) then replay_mod.step(shared.replay, 2); return end
             if hit(replay_buttons.play) then replay_mod.toggle(shared.replay); return end
             if hit(replay_buttons.restart) then replay_mod.restart(shared.replay); return end
+            if hit(replay_buttons.back_to_games) then shared.replay = nil; vars.game_mode = MODES.RECORDED_GAMES; return end
             for _, speed in ipairs({"Slow", "Medium", "Fast"}) do
                 if hit(replay_buttons["speed_" .. speed]) then replay_mod.set_speed(shared.replay, speed); return end
             end
@@ -413,6 +434,20 @@ function M.mousepressed(sx, sy, button)
                 if int(unit.col) == col and int(unit.row) == row then sel.inspect_id = int(unit.id); break end
             end
             sel.unit_id = sel.inspect_id
+        end
+        return
+    end
+    if vars.game_mode == MODES.RECORDED_GAMES then
+        local browser = shared.recorded_browser
+        if button ~= 1 or not browser then return end
+        local x, y = screen_to_game(sx, sy)
+        if y >= 70 and y < 70 + #browser.rows * 24 then
+            browser.selected = math.max(1, math.min(#browser.rows, math.floor((y - 70) / 24) + 1))
+            browser.detail = browser.rows[browser.selected]
+        elseif y >= 430 and y < 470 and x < 260 then
+            browser:watch()
+        elseif y >= 430 and y < 470 and x >= 270 then
+            browser:refresh()
         end
         return
     end

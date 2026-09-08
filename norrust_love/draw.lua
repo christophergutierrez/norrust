@@ -20,7 +20,7 @@ function draw.draw_frame(ctx, state)
     love.graphics.scale(ctx.UI_SCALE, ctx.UI_SCALE)
 
     -- Scenario selection or save list: no board loaded yet
-    if ctx.game_mode == ctx.PICK_SCENARIO or ctx.game_mode == ctx.LOAD_SAVE or ctx.game_mode == ctx.DEPLOY_VETERANS then
+    if ctx.game_mode == ctx.PICK_SCENARIO or ctx.game_mode == ctx.LOAD_SAVE or ctx.game_mode == ctx.DEPLOY_VETERANS or ctx.game_mode == ctx.RECORDED_GAMES then
         draw_screens.draw_setup_hud(ctx)
         love.graphics.pop()
         return

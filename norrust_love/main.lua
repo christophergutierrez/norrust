@@ -17,6 +17,7 @@ local logger = require("logger")
 local combat_mod = require("combat_mod")
 local content_catalog = require("content_catalog")
 local replay_mod = require("replay")
+local recorded_games_mod = require("recorded_games")
 
 -- ── Constants ───────────────────────────────────────────────────────────────
 
@@ -33,6 +34,7 @@ local MODES = {
     PLAYING = 4,
     LOAD_SAVE = 5,
     DEPLOY_VETERANS = 6,
+    RECORDED_GAMES = 7,
 }
 
 -- Game data: scenarios, campaigns, faction state
@@ -118,6 +120,26 @@ local function read_json_file(path)
     if not file then error("Cannot open replay bundle: " .. tostring(err)) end
     local raw = file:read("*a"); file:close()
     return norrust.json_decode(raw)
+end
+
+local function open_replay_bundle(path, browser)
+    local bundle = read_json_file(path)
+    shared.replay = replay_mod.new(bundle)
+    shared.recorded_browser = browser
+    local replay_state = replay_mod.state(shared.replay)
+    scn.COLS = int(replay_state.cols or 8)
+    scn.ROWS = int(replay_state.rows or 5)
+    game_data.faction_id[1] = shared.replay.bundle.metadata.faction0 or ""
+    game_data.faction_id[2] = shared.replay.bundle.metadata.faction1 or ""
+    game_data.controllers = {"recorded", "recorded"}
+    vars.game_mode = MODES.PLAYING
+    vars.game_over = false
+    vars.winner_faction = -1
+    for k in pairs(tile_color_cache) do tile_color_cache[k] = nil end
+    for _, tile in ipairs(replay_state.terrain or {}) do
+        tile_color_cache[int(tile.col) .. "," .. int(tile.row)] = parse_html_color(tile.color) or COLOR_FLAT
+    end
+    camera_mod.center(true)
 end
 
 --- Build tile color cache from current engine state.
@@ -511,20 +533,7 @@ function love.load()
 
     local replay_path = replay_bundle_arg()
     if replay_path then
-        shared.replay = replay_mod.new(read_json_file(replay_path))
-        local replay_state = replay_mod.state(shared.replay)
-        scn.COLS = int(replay_state.cols or 8)
-        scn.ROWS = int(replay_state.rows or 5)
-        game_data.faction_id[1] = shared.replay.bundle.metadata.faction0 or ""
-        game_data.faction_id[2] = shared.replay.bundle.metadata.faction1 or ""
-        game_data.controllers = {"recorded", "recorded"}
-        vars.game_mode = MODES.PLAYING
-        vars.game_over = false
-        vars.winner_faction = -1
-        tile_color_cache = {}
-        for _, tile in ipairs(replay_state.terrain or {}) do
-            tile_color_cache[int(tile.col) .. "," .. int(tile.row)] = parse_html_color(tile.color) or COLOR_FLAT
-        end
+        open_replay_bundle(replay_path)
     end
 
     -- Initialize camera module
@@ -565,6 +574,8 @@ function love.load()
         faction_index_for_mode = faction_index_for_mode,
         apply_camera_offset = apply_camera_offset,
         replay_mod = replay_mod,
+        recorded_games_mod = recorded_games_mod,
+        open_replay_bundle = open_replay_bundle,
     })
 end
 
@@ -764,8 +775,10 @@ function love.draw()
     ctx.PICK_SCENARIO = MODES.PICK_SCENARIO; ctx.PICK_FACTION_BLUE = MODES.PICK_FACTION_BLUE
     ctx.PICK_FACTION_RED = MODES.PICK_FACTION_RED; ctx.SETUP_BLUE = MODES.SETUP_BLUE
     ctx.SETUP_RED = MODES.SETUP_RED; ctx.PLAYING = MODES.PLAYING; ctx.LOAD_SAVE = MODES.LOAD_SAVE
+    ctx.RECORDED_GAMES = MODES.RECORDED_GAMES
     ctx.save_list = game_data.save_list; ctx.save_idx = game_data.save_idx
     ctx.save_renaming = game_data.save_renaming; ctx.save_rename_text = game_data.save_rename_text
+    ctx.recorded_browser = shared.recorded_browser
     ctx.DEPLOY_VETERANS = MODES.DEPLOY_VETERANS; ctx.deploy = campaign.deploy
     -- Fonts, sprites
     ctx.fonts = fonts; ctx.terrain_tiles = terrain_tiles; ctx.unit_sprites = unit_sprites

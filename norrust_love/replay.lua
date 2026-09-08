@@ -83,6 +83,7 @@ function M.draw_toolbar(replay, ctx)
         {key="play", label=replay.playing and "Pause" or "Play", x=vp_w-312, w=56},
         {key="forward", label="Forward 1 ▶", x=vp_w-250, w=88},
         {key="restart", label="Restart", x=vp_w-156, w=62},
+        {key="back_to_games", label="Games", x=vp_w-88, w=54},
     }
     ctx.replay_buttons = {}
     love.graphics.setFont(ctx.fonts[11])

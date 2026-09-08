@@ -16,6 +16,7 @@ local build_unit_pos_map
 local call_load_scenario, call_load_campaign_scenario
 local faction_index_for_mode
 local campaign_client
+local recorded_games_mod, open_replay_bundle
 
 function M.init(ctx)
     vars = ctx.vars
@@ -36,6 +37,8 @@ function M.init(ctx)
     call_load_campaign_scenario = ctx.call_load_campaign_scenario
     faction_index_for_mode = ctx.faction_index_for_mode
     campaign_client = ctx.campaign_client
+    recorded_games_mod = ctx.recorded_games_mod
+    open_replay_bundle = ctx.open_replay_bundle
 end
 
 --- Keep hexes sorted west → east (Blue uses the first, Red the last).
@@ -107,6 +110,11 @@ local function finalize_setup()
 end
 
 function M.handle_pick_scenario(key)
+    if key == "v" then
+        shared.recorded_browser = recorded_games_mod.new(scn.path:gsub("/scenarios$", ""), mods.norrust.json_decode, open_replay_bundle)
+        vars.game_mode = MODES.RECORDED_GAMES
+        return
+    end
     local num = tonumber(key)
     if num and num >= 1 and num <= #game_data.SCENARIOS then
         sound.stop_music()
