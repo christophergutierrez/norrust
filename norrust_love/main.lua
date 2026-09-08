@@ -139,7 +139,6 @@ local function open_replay_bundle(path, browser)
     for _, tile in ipairs(replay_state.terrain or {}) do
         tile_color_cache[int(tile.col) .. "," .. int(tile.row)] = parse_html_color(tile.color) or COLOR_FLAT
     end
-    camera_mod.center(true)
 end
 
 --- Build tile color cache from current engine state.
@@ -524,6 +523,9 @@ function love.load()
             end
         elseif a == "--ai-delay" and args[i + 1] then
             ai.delay = tonumber(args[i + 1]) or 0.5
+        elseif a == "--smoke-replay" then
+            shared.replay_smoke = true
+            shared.replay_smoke_elapsed = 0
         end
     end
 
@@ -585,6 +587,10 @@ end
 function love.update(dt)
     if shared.replay then
         replay_mod.update(shared.replay, dt)
+        if shared.replay_smoke then
+            shared.replay_smoke_elapsed = (shared.replay_smoke_elapsed or 0) + dt
+            if shared.replay_smoke_elapsed >= 0.2 then love.event.quit() end
+        end
         camera_mod.update(dt)
         return
     end

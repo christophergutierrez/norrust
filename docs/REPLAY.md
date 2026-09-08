@@ -27,3 +27,7 @@ browser lists the newest cataloged games, shows selected participants and
 metadata, and exports the recording internally when **Watch** is selected. Use
 Up/Down and Enter, or the on-screen controls; Escape returns from playback to
 the browser. The manual launcher remains useful for diagnostics.
+
+For a headless startup check of an exported bundle, append `--smoke-replay` to
+the Love2D arguments. The client initializes the normal viewer and exits after
+its first update; this is used by the recorded-game browser smoke evaluation.
