@@ -126,6 +126,12 @@ cargo build --manifest-path norrust_core/Cargo.toml
 love norrust_love
 ```
 
+From the scenario screen, press `V` to browse recent cataloged recordings in
+Love2D. Select a row and choose Watch (or press Enter); Escape returns to the
+browser. The browser reads `.norrust_history/history.sqlite` and valid catalogs
+under `tmp/` without modifying them. Missing identity and outcome evidence is
+shown as unknown.
+
 Love2D automatically finds the `.so` relative to its source directory
 (`norrust_love/../norrust_core/target/debug/libnorrust_core.so`).
 

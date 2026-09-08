@@ -11,6 +11,13 @@ selection.
 Match logs are append-only evidence. Import them after a game into a SQLite
 catalog; gameplay does not depend on the catalog being available.
 
+The Love2D **Recorded Games** browser reads the default catalog and valid
+`tmp/**/history.sqlite` catalogs read-only. It deduplicates exact game IDs and
+uses an adjacent `identity.json` only to fill missing requested model identity;
+that sidecar is not runtime confirmation. Corrupt or unrelated SQLite files are
+skipped with a diagnostic. The browser exports the selected game through the
+same `tools.replay_game` path as the command line launcher.
+
 A model concession is stored with termination reason `resignation` and the
 opponent as winner. The `Resign` action remains attributed to the model; it does
 not create a completed side-turn. The raw terminal also records `resigned_side`

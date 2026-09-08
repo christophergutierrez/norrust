@@ -29,7 +29,7 @@ function M.new(root, json_decode, open_replay)
                      offset = 0, total = 0, error = nil, detail = nil, open_replay = open_replay,
                      loading = false}
     function browser:refresh()
-        local result, err = request(self.root, "list --db " .. quote(self.db) .. " --limit 25 --offset " .. tostring(self.offset))
+        local result, err = request(self.root, "list --root " .. quote(self.root) .. " --limit 25 --offset " .. tostring(self.offset))
         self.error = err
         if result then self.rows, self.total = result.games or {}, result.total or 0 end
         self.loading = false
@@ -40,7 +40,7 @@ function M.new(root, json_decode, open_replay)
         local row = self.rows[self.selected]
         if not row then return end
         local output = os.tmpname() .. ".json"
-        local result, err = request(self.root, "export --db " .. quote(self.db) .. " --game-id " .. quote(row.game_id) .. " --output " .. quote(output))
+        local result, err = request(self.root, "export --db " .. quote(row.catalog or self.db) .. " --game-id " .. quote(row.game_id) .. " --output " .. quote(output))
         if result and result.bundle then self.open_replay(result.bundle, self) else self.error = err end
     end
     function browser:move(delta)

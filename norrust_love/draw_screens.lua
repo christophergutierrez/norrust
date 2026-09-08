@@ -33,8 +33,8 @@ function M.draw_recorded_games(ctx)
         local selected = i == browser.selected
         if selected then love.graphics.setColor(0.25, 0.25, 0.16, 1); love.graphics.rectangle("fill", 20, y - 3, vp_w - 40, 23) end
         love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
-        local p0 = row.players[1] and row.players[1].name or "Unknown"
-        local p1 = row.players[2] and row.players[2].name or "Unknown"
+        local p0 = row.players[1] and (row.players[1].name .. " / " .. tostring(row.players[1].faction or "?")) or "Unknown"
+        local p1 = row.players[2] and (row.players[2].name .. " / " .. tostring(row.players[2].faction or "?")) or "Unknown"
         local result = row.status or "unknown"
         if row.winner_side ~= nil then result = "Side " .. tostring(row.winner_side) .. " won" end
         love.graphics.print(string.format("%s  |  %-22s vs %-22s  | %-12s | %s side-turns", tostring(row.started_at or "unknown"), p0, p1, result, tostring(row.side_turns or "?")), 28, y)
