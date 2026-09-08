@@ -29,5 +29,7 @@ the first update so a Lua startup error cannot be mistaken for a timeout.
 
 The three recordings exported and loaded without modifying their catalogs or
 archives. The smoke flag verifies client startup and bundle loading; interactive
-selection, pause, stepping, and return navigation remain visual acceptance checks
-because Love2D has no built-in input automation in the repository test gate.
+selection and return navigation were also exercised on the desktop with xdotool:
+the client launched, `V` opened the browser, Enter opened the selected replay,
+Escape returned to the browser and then the menu, and the process log contained
+no Love2D error or traceback. Pause and stepping remain manual visual checks.
