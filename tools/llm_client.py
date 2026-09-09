@@ -2444,7 +2444,9 @@ def run(args: argparse.Namespace) -> int:
                 "ended_at": None, "wall_ms": None}
     if parent_records:
         previous_metadata = next((record for record in reversed(parent_records)
-                                  if record.get("type") in {"terminal", "metadata"}), {})
+                                  if record.get("type") in {
+                                      "terminal", "metadata", "model_error", "checkpoint_error",
+                                      "query_error"}), {})
         identity_keys = ("scenario", "faction0", "faction1", "gold", "seed", "llm_side",
                          "max_turns", "llm_recruit_macro")
         for key in identity_keys:
@@ -2501,8 +2503,16 @@ def run(args: argparse.Namespace) -> int:
         record(obj)
         if log:
             os.fsync(log.fileno())
-    request_sequence = 0
-    batch_sequence = 0
+    # An in-place resume retains its conversation ID, so its IDs must continue
+    # past every archived attempt, including failed requests/uncommitted batches.
+    def previous_sequence(kind: str) -> int:
+        prefix = f"{metadata.get('conversation_id', 'match')}:{kind}:"
+        values = [record.get(f"{kind}_id") for record in parent_records]
+        return max((int(value[len(prefix):]) for value in values
+                    if isinstance(value, str) and value.startswith(prefix)
+                    and value[len(prefix):].isdigit()), default=0)
+    request_sequence = previous_sequence("request")
+    batch_sequence = previous_sequence("batch")
     def complete_model(model_prompt: str) -> ModelReply:
         nonlocal request_sequence, pending_annotation_notice
         notice, pending_annotation_notice = pending_annotation_notice, None

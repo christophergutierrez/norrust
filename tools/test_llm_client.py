@@ -2217,7 +2217,7 @@ class ClientValidationTests(unittest.TestCase):
     def run_with_orders(self, order_texts, driver_lines, validate_before_submit=False,
                         max_model_calls_per_turn=4, max_tool_calls_per_turn=4,
                         incremental_turns=False, backend_cache=None, reasoning_effort=None,
-                        return_records=False, timeout_finish=False):
+                        return_records=False, timeout_finish=False, resume_records=None):
         """Drive the client with N canned model replies and explicit driver output."""
         with tempfile.TemporaryDirectory() as directory:
             log_path = directory + "/client.jsonl"
@@ -2241,6 +2241,13 @@ class ClientValidationTests(unittest.TestCase):
                 timeout_finish=timeout_finish,
             )
             process = FakeDriverProcess(driver_lines)
+            if resume_records is not None:
+                Path(log_path).write_text("".join(json.dumps(r) + "\n" for r in resume_records))
+                checkpoint_dir = checkpoint_dir_for_log(log_path)
+                checkpoint_dir.mkdir()
+                (checkpoint_dir / "resume.json").write_text(
+                    '{"state_revision":6,"side_turns":0}')
+                args.resume_log = log_path
             with mock.patch("tools.llm_client.subprocess.Popen", return_value=process), \
                     mock.patch("tools.llm_client.source_metadata", return_value={}), \
                     mock.patch("tools.llm_client.os.fsync"):
@@ -2248,6 +2255,38 @@ class ClientValidationTests(unittest.TestCase):
             with open(log_path) as log:
                 records = [json.loads(raw) for raw in log]
         return code, records if return_records else records[-1]
+
+    def test_resume_preserves_counters_and_unique_request_and_batch_ids(self):
+        parent = [
+            {"type": "metadata", "conversation_id": "same-game", "model_calls": 0},
+            {"type": "model_request", "request_id": "same-game:request:4", "sequence": 4},
+            {"type": "model_request", "request_id": "same-game:request:5",
+             "sequence": 5, "status": "failed"},
+            {"type": "forwarded_orders", "batch_id": "same-game:batch:1"},
+            {"type": "model_error", "conversation_id": "same-game", "model_calls": 5,
+             "model_orders": 1, "queries": 3, "draft_reviews": 1},
+        ]
+        lines = [
+            {"type": "state", "active_faction": 0, "state_revision": 6, "units": []},
+            {"type": "status", "ok": True, "results": [{"ok": True}]},
+            {"type": "game_end", "reason": "max_turns"},
+        ]
+        with mock.patch.object(llm_client, "query_tactical_surface", return_value={}), \
+                mock.patch.object(llm_client, "draft_needs_preview", return_value=False):
+            code, records = self.run_with_orders(
+                ['[{"action":"EndTurn"}]'], lines,
+                resume_records=parent, return_records=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(records[:len(parent)], parent)
+        new = records[len(parent):]
+        request = next(r for r in new if r["type"] == "model_request")
+        batch = next(r for r in new if r["type"] == "forwarded_orders")
+        self.assertEqual(request["request_id"], "same-game:request:6")
+        self.assertEqual(batch["batch_id"], "same-game:batch:2")
+        self.assertEqual(batch["request_id"], request["request_id"])
+        self.assertEqual(new[-1]["model_calls"], 6)
+        self.assertEqual(new[-1]["model_orders"], 2)
+        self.assertEqual(new[-1]["draft_reviews"], 1)
 
     def run_after_forwarded_orders(self, action_status, tail=None):
         with tempfile.TemporaryDirectory() as directory:

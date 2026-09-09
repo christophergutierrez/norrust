@@ -146,6 +146,10 @@ match-owned native session when the session sidecar is available; generic model
 commands receive the restored state and bounded transcript through the new
 backend process.
 
+An in-place resume appends to the same archive and retains the conversation ID.
+Request and batch IDs continue after archived attempts, including failures, and
+the latest client failure metadata supplies cumulative counters.
+
 Responses may include an optional full `agenda` replacement. The accepted value
 is an object with exactly `tasks` and `holds`; `tasks`
 is a list of at most eight objects with exactly `id` (unique non-empty string),
