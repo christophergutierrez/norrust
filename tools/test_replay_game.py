@@ -111,6 +111,39 @@ class RequestedIdentityTests(unittest.TestCase):
             self.assertIsNone(player["model_reported"])
             self.assertEqual(player.get("identity_evidence"), "requested sidecar")
 
+    def test_requested_model_in_the_archive_needs_no_sidecar(self):
+        """--player-model records identity into the archive itself.
+
+        This is the path that does not depend on a side file surviving next to
+        the log, and it is what the importer already reads into
+        game_players.model_requested.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); archive = root / "archive"; archive.mkdir()
+            log = archive / "match.ndjson"
+            state0 = {"type": "state", "turn": 1, "active_faction": 0, "cols": 2, "rows": 2,
+                      "terrain": [], "units": [], "state_revision": 0}
+            state1 = dict(state0, active_faction=1, state_revision=1)
+            _write_log(log, [
+                {"type": "metadata", "faction0": "undead", "faction1": "undead", "seed": 7,
+                 "llm_side": 0, "requested_model": "claude-haiku-4-5-20251001"},
+                {"type": "driver", "line": state0},
+                {"type": "turn_boundary", "accepted": True, "start_revision": 0,
+                 "state_revision": 1, "authored_finish_kind": "explicit_done"},
+                {"type": "driver", "line": state1},
+                {"type": "terminal", "reason": "winner", "winner": 0},
+            ])
+            db = root / "history.sqlite"
+            conn = open_history(db)
+            game_id = import_game(conn, log)
+            conn.close()
+            self.assertFalse((archive / "identity.json").exists(), "no sidecar in this case")
+            player = self._side0(db, game_id, root)
+            self.assertEqual(player["model_requested"], "claude-haiku-4-5-20251001")
+            # Recorded identity is requested, not host-attested.
+            self.assertIsNone(player["model_reported"])
+            self.assertNotIn("identity_evidence", player)
+
     def test_a_sidecar_that_contradicts_the_catalog_is_ignored(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

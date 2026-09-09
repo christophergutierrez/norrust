@@ -2269,6 +2269,20 @@ def set_terminal(metadata: dict[str, Any], terminal_class: str,
     if isinstance(started, (int, float)):
         metadata["ended_at"] = datetime.now(timezone.utc).isoformat()
         metadata["wall_ms"] = round((time.monotonic() - started) * 1000)
+    # A model side whose identity nothing recorded imports with an empty
+    # model_requested, and every viewer then shows an unknown LLM for a game
+    # somebody did play. Say so once, at the end, while the operator is still
+    # looking: the recording is complete and valid, only its player is unnamed.
+    if metadata.get("llm_side") in (0, 1) and not any(
+            isinstance(metadata.get(key), str) and metadata.get(key).strip()
+            for key in ("backend_requested_model", "requested_model", "runtime_model")):
+        metadata["player_identity_recorded"] = False
+        print("warning: no model identity recorded for the LLM side; this game will "
+              "import as an unnamed player. Pass --player-model <id> when the backend "
+              "cannot report the host's model (for example tools/file_backend.py).",
+              file=sys.stderr, flush=True)
+    else:
+        metadata["player_identity_recorded"] = True
     return terminal_class
 
 
@@ -2383,6 +2397,12 @@ def run(args: argparse.Namespace) -> int:
                 "runtime_reasoning_effort": None,
                 "tool_restriction": None,
                 "requested_reasoning_effort": getattr(args, "reasoning_effort", None),
+                # Requested identity: who this run dispatched the LLM side to. A
+                # backend that reports the host's model overwrites it below;
+                # tools/file_backend.py cannot, so without this the catalog has
+                # no record of who played and every viewer shows an unknown LLM.
+                # Never treated as reported identity.
+                "requested_model": getattr(args, "player_model", None),
                 "client_projection": "full_legacy" if getattr(args, "diagnostic", False) else "compact_tactical_v1",
                 "validate_before_submit": getattr(args, "validate_before_submit", False),
                 "win_rule": "recruiter_loss", "queries": 0, "model_orders": 0, "model_calls": 0,
@@ -3697,6 +3717,10 @@ def main() -> int:
     p.add_argument("--model-timeout", type=float, default=300)
     p.add_argument("--reasoning-effort", choices=("low", "medium", "high", "xhigh", "max", "ultra"),
                    help="requested model reasoning setting, recorded for the backend")
+    p.add_argument("--player-model",
+                   help="model this run dispatches the LLM side to, recorded as requested identity. "
+                        "Needed for transports that cannot report the host's model, such as the file "
+                        "backend; a backend that does report one overrides it.")
     p.add_argument("--turn-timeout", type=int, default=930)
     p.add_argument("--query-budget-seconds", type=int, default=300)
     p.add_argument("--max-queries-per-turn", type=int, default=256)

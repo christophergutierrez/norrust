@@ -236,6 +236,31 @@ log path work. It does not play a real match — see the cap guidance below.
 Replace `--orders-file` with exactly one of `--interactive-model` or
 `--model-command 'COMMAND'`.
 
+**Record who played.** Pass `--player-model <id>` whenever the LLM side is a real
+model. The client stores it as requested identity in the archive, the importer
+copies it to `game_players.model_requested`, and the recorded-game browser and
+replay both label the player from there. A backend that reports the host's model
+overrides it; `model_reported` is only ever filled by such a backend, never from
+this flag.
+
+Transports differ in what they can report. The Codex adapter reports its own
+runtime model. `tools/file_backend.py` cannot: it is a file adapter with no model
+behind it, so a subagent or human player driving that transport is invisible to
+the catalog unless the launcher names it. Without the flag the client prints a
+warning at the end of the run and the game imports as an unnamed player, showing
+as `LLM (model unavailable)` everywhere.
+
+Do not have the player state its own model instead. A model's self-claim is
+neither requested nor reported identity: it is unverified, models misidentify
+their own version and variant, and putting a player's identity in its own context
+contaminates any matched comparison it takes part in.
+
+An `identity.json` sidecar beside the archive remains supported for recordings
+already made without the flag. It supplies requested identity only, and is
+ignored unless the seed, scenario, gold, cap and factions it repeats all match
+the catalog, so a stale or copied sidecar cannot relabel a different game. Prefer
+`--player-model`: it travels inside the archive and cannot be separated from it.
+
 **`--model-command`** runs an automated backend. The command receives the full
 prompt on **stdin** and must write **one JSON object** to **stdout**:
 

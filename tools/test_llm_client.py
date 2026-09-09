@@ -1227,6 +1227,39 @@ class ClientValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r"duplicate unit ID 2.*unit_ids\[0\].*duplicate unit ID 3.*holds\[0\]"):
             validate_orders(json.dumps(orders))
 
+    def test_missing_player_identity_is_warned_about_once_at_the_end(self):
+        """A model side nobody named imports as an unknown player.
+
+        The file transport cannot report the host's model, so without
+        --player-model the catalog records no player and every viewer shows an
+        unknown LLM for a game somebody did play. Warn while the operator is
+        still watching rather than leaving it to be noticed in the browser.
+        """
+        from .llm_client import set_terminal, TERMINAL_GAMEPLAY
+        import io, contextlib
+
+        unnamed = {"llm_side": 0}
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            set_terminal(unnamed, TERMINAL_GAMEPLAY)
+        self.assertFalse(unnamed["player_identity_recorded"])
+        self.assertIn("--player-model", stderr.getvalue())
+
+        for key in ("requested_model", "backend_requested_model", "runtime_model"):
+            named = {"llm_side": 0, key: "claude-haiku-4-5-20251001"}
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                set_terminal(named, TERMINAL_GAMEPLAY)
+            self.assertTrue(named["player_identity_recorded"], key)
+            self.assertEqual(stderr.getvalue(), "", f"{key} should satisfy the check")
+
+        # An algorithm-only run has no model side to name.
+        both_algorithms = {"llm_side": None}
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            set_terminal(both_algorithms, TERMINAL_GAMEPLAY)
+        self.assertEqual(stderr.getvalue(), "")
+
     def test_prompt_states_engine_rules_locked_by_rust_fixtures(self):
         """The facts below are proven by test_documented_rule_* in game_state.rs.
 
