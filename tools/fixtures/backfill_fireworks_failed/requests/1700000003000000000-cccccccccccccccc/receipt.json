@@ -1,0 +1,23 @@
+{
+  "elapsed_seconds": 5.67,
+  "prompt_sha256": "cccccccccccccccc000000000000000000000000000000000000000000000000",
+  "finish_reason": "length",
+  "response_id": "chatcmpl-fixture-failed-1",
+  "runtime_model": "fixture-model",
+  "usage": {
+    "prompt_tokens": 5881,
+    "total_tokens": 22265,
+    "completion_tokens": 16384,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 16384
+    },
+    "output_tokens_details": {
+      "reasoning_tokens": 16384
+    }
+  },
+  "answer_chars": 0,
+  "canonical_prompt_preserved": true
+}

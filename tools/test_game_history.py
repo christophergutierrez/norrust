@@ -12,8 +12,8 @@ from unittest import mock
 
 from .game_history import (IMPORTER_VERSION, SCHEMA, backup_history, decode_payload, encode_payload,
                            import_game, delete_history, import_usage_sidecar, inventory_history,
-                           list_side_turns, open_history, query_usage, summarize_game,
-                           usage_sidecar_path, verify_history)
+                           list_side_turns, main as game_history_main, open_history, query_usage,
+                           summarize_game, usage_sidecar_path, verify_history)
 from .model_usage import ModelCall
 
 FIXTURE = Path(__file__).parent / "fixtures" / "s1_sample_game"
@@ -984,6 +984,94 @@ class OpenSideTurnTests(unittest.TestCase):
             conn.close()
             bundle = json.loads(Path(build_bundle(str(db), game_id, Path(td) / "b.json")).read_text())
             self.assertEqual(len(bundle["frames"]), frames_expected)
+
+
+FIREWORKS_FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "backfill_fireworks_ok" / "requests"
+
+
+class BackfillUsageAndCompareUsageCliTests(unittest.TestCase):
+    """CLI wiring for Stack 3's `backfill-usage` and `compare-usage` commands.
+
+    tools/usage_backfill.py owns the actual logic and its own thorough test
+    suite (tools/test_usage_backfill.py); this only proves the two
+    subcommands are wired into game_history's argparse dispatch correctly,
+    including the read/write mode and exit-code contract shared with
+    backfill-events.
+    """
+
+    def _catalog_with_game(self, root: Path, game_id: str) -> Path:
+        log = root / "match.ndjson"
+        log.write_text("\n".join(json.dumps(r) for r in [
+            {"type": "metadata", "seed": 1, "scenario": "cli-fixture",
+             "faction0": "undead", "faction1": "undead", "gold": 0, "first_player": 0},
+            {"type": "terminal", "reason": "max_turns"},
+        ]) + "\n", encoding="utf-8")
+        db = root / "history.sqlite"
+        conn = open_history(db)
+        import_game(conn, root, game_id=game_id)
+        conn.close()
+        return db
+
+    def test_backfill_usage_cli_dry_run_then_execute(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            db = self._catalog_with_game(root, "cli-g1")
+            manifest = root / "manifest.json"
+            manifest.write_text(json.dumps({"games": {"cli-g1": {
+                "kind": "fireworks_requests", "requests_dir": str(FIREWORKS_FIXTURE_ROOT)}}}),
+                encoding="utf-8")
+
+            code = game_history_main(["backfill-usage", "--db", str(db), "--manifest", str(manifest),
+                                      "--game-id", "cli-g1"])
+            self.assertEqual(code, 0)
+            conn = open_history(db, read_only=True)
+            self.assertEqual(conn.execute(
+                "SELECT count(*) FROM model_calls WHERE game_id='cli-g1'").fetchone()[0], 0)
+            conn.close()
+
+            code = game_history_main(["backfill-usage", "--db", str(db), "--manifest", str(manifest),
+                                      "--game-id", "cli-g1", "--execute"])
+            self.assertEqual(code, 0)
+            conn = open_history(db, read_only=True)
+            self.assertEqual(conn.execute(
+                "SELECT count(*) FROM model_calls WHERE game_id='cli-g1'").fetchone()[0], 2)
+            conn.close()
+
+    def test_backfill_usage_cli_nonzero_exit_on_unavailable_game(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            db = self._catalog_with_game(root, "cli-g2")
+            manifest = root / "manifest.json"
+            manifest.write_text(json.dumps({"games": {"cli-g2": {
+                "kind": "fireworks_requests", "requests_dir": str(FIREWORKS_FIXTURE_ROOT)}}}),
+                encoding="utf-8")
+            code = game_history_main(["backfill-usage", "--db", str(db), "--manifest", str(manifest),
+                                      "--game-id", "cli-g2", "--game-id", "never-catalogued", "--execute"])
+            self.assertEqual(code, 1)
+
+    def test_compare_usage_cli_json_and_text(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            db = self._catalog_with_game(root, "cli-g3")
+            manifest = root / "manifest.json"
+            manifest.write_text(json.dumps({"games": {"cli-g3": {
+                "kind": "fireworks_requests", "requests_dir": str(FIREWORKS_FIXTURE_ROOT)}}}),
+                encoding="utf-8")
+            self.assertEqual(game_history_main(["backfill-usage", "--db", str(db), "--manifest", str(manifest),
+                                                "--game-id", "cli-g3", "--execute"]), 0)
+
+            # compare-usage never writes: the same read-only path other read
+            # commands use, so it must succeed against a read-only handle.
+            with mock.patch("sys.stdout", new=__import__("io").StringIO()) as out:
+                code = game_history_main(["compare-usage", "--db", str(db), "--game-id", "cli-g3", "--json"])
+                self.assertEqual(code, 0)
+                payload = json.loads(out.getvalue())
+                self.assertEqual(payload["games"][0]["game_id"], "cli-g3")
+
+            with mock.patch("sys.stdout", new=__import__("io").StringIO()) as out:
+                code = game_history_main(["compare-usage", "--db", str(db), "--game-id", "cli-g3"])
+                self.assertEqual(code, 0)
+                self.assertIn("cli-g3", out.getvalue())
 
 
 if __name__ == "__main__":

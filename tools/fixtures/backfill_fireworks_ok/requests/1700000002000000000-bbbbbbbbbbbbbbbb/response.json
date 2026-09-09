@@ -1,0 +1,30 @@
+{
+  "id": "chatcmpl-fixture-ok-2",
+  "object": "chat.completion",
+  "created": 1700000000,
+  "model": "fixture-model",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "fixture answer"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 200,
+    "total_tokens": 255,
+    "completion_tokens": 55,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 15
+    },
+    "output_tokens_details": {
+      "reasoning_tokens": 15
+    }
+  }
+}

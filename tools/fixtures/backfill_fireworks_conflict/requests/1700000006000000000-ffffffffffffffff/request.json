@@ -1,0 +1,16 @@
+{
+  "model": "accounts/fireworks/models/fixture-model",
+  "messages": [
+    {
+      "role": "system",
+      "content": "FIXTURE SYSTEM PROMPT -- not real"
+    },
+    {
+      "role": "user",
+      "content": "FIXTURE USER PROMPT -- not real"
+    }
+  ],
+  "stream": false,
+  "max_completion_tokens": 16384,
+  "context_length_exceeded_behavior": "error"
+}

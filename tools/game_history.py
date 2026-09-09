@@ -1482,8 +1482,20 @@ def main(argv: list[str]) -> int:
     selector = delete.add_mutually_exclusive_group(required=True)
     selector.add_argument("--cohort"); selector.add_argument("--game-id", action="append"); selector.add_argument("--reset", action="store_true")
     delete.add_argument("--compact", action="store_true")
+    backfill_usage_parser = sub.add_parser("backfill-usage")
+    backfill_usage_parser.add_argument("--db", required=True)
+    backfill_usage_parser.add_argument("--manifest", required=True)
+    usage_selector = backfill_usage_parser.add_mutually_exclusive_group(required=True)
+    usage_selector.add_argument("--game-id", action="append")
+    usage_selector.add_argument("--all", action="store_true")
+    backfill_usage_parser.add_argument("--execute", action="store_true",
+        help="actually write model_calls rows; without this flag, report what would be imported")
+    compare_usage_parser = sub.add_parser("compare-usage")
+    compare_usage_parser.add_argument("--db", required=True)
+    compare_usage_parser.add_argument("--game-id", action="append", required=True)
+    compare_usage_parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
-    read_commands = {"inventory", "game", "turns", "usage"}
+    read_commands = {"inventory", "game", "turns", "usage", "compare-usage"}
     conn = open_history(args.db, read_only=args.command in read_commands)
     exit_code = 0
     if args.command == "import": value = import_game(conn, args.archive, args.cohort)
@@ -1501,6 +1513,17 @@ def main(argv: list[str]) -> int:
         value = backfill_events(conn, args.game_id or [], args.all)
         if value["unavailable"] or value["failed"]:
             exit_code = 1
+    elif args.command == "backfill-usage":
+        from .usage_backfill import backfill_usage
+        value = backfill_usage(conn, args.game_id or [], args.manifest, args.all, args.execute)
+        if value["unavailable"] or value["failed"]:
+            exit_code = 1
+    elif args.command == "compare-usage":
+        from .usage_backfill import compare_usage, _format_compare_report
+        value = compare_usage(conn, args.game_id)
+        if not args.json:
+            print(_format_compare_report(value))
+            conn.close(); return exit_code
     else: value = list_side_turns(conn, args.game_id)
     print(json.dumps(value, sort_keys=True, default=lambda value: value.hex() if isinstance(value, bytes) else value))
     conn.close(); return exit_code

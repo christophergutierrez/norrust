@@ -340,6 +340,86 @@ touching any other game's usage; verification reports dangling
 call-to-request links and any call attributed across a game boundary
 (`dangling_call_request_links`, `cross_game_call_links`; both expected zero).
 
+### Backfilling historical usage
+
+`tools/usage_backfill.py` recovers usage for games catalogued before live
+usage collection existed, from preserved evidence: Fireworks
+`requests/*/request.json` + `response.json` + `receipt.json` (plus
+`reply.json` on success or `error.json` on an old rejected/empty answer), and
+explicitly bound Codex host sessions collected the same way Stack 2's
+`tools/collect_model_usage.py` does. It never imports a new game -- a
+selected game must already be in the catalog, and is resolved only by its
+stored `games.artifact_path` identity, so a relocated copy of the same
+archive can never become a second game.
+
+An explicit JSON manifest names exactly which games are eligible and how to
+recover each one's evidence:
+
+```json
+{
+  "games": {
+    "quick-play-deepseek-v4-flash-yooojyos": {
+      "kind": "fireworks_requests",
+      "requests_dir": "tmp/quick-play-deepseek-v4-flash-yooojyos/requests"
+    },
+    "quick-play-jai2s3hp": {
+      "kind": "host_session",
+      "host_thread_id": "01a082a9-c696-7e21-9e6e-9bc749985b49",
+      "host_evidence_path": "/home/USER/.codex/sessions/2026/09/08/rollout-....jsonl",
+      "game_log_path": "tmp/quick-play-jai2s3hp/match.ndjson",
+      "request_handshake_dir": "tmp/quick-play-jai2s3hp/requests"
+    }
+  }
+}
+```
+
+Only the games a manifest maps are ever eligible, including for `--all` --
+it never scans every catalogued game, only the manifest's own list:
+
+    python3 -m tools.game_history backfill-usage --db PATH/history.sqlite --manifest MANIFEST.json --game-id GAME_ID [--game-id GAME_ID ...]
+    python3 -m tools.game_history backfill-usage --db PATH/history.sqlite --manifest MANIFEST.json --all
+
+Without `--execute` the command only reports what it would import (inventory
+mode, the default); nothing is written until `--execute` is given. Backfill is
+additive: newly discovered calls are merged into whatever `model_calls` rows
+a game already has (through the same `import_usage_sidecar` UPSERT-by-identity
+path Stack 1/2 already use), never a blanket replace -- usage already imported
+from live collection survives a later backfill run untouched. Two preserved
+copies of the same evidence collapse to one call by shared identity (the
+provider response ID, or the source-derived attempt directory name when no
+response ID exists) rather than becoming a second paid retry; a genuine
+disagreement between two records for the same identity is reported as a
+conflict, never silently resolved by last-writer-wins.
+
+Each selected game is independent and transactional: a missing evidence path
+is reported `unavailable`; a source that produced no usable calls at all
+despite being reachable (e.g. corrupt JSON throughout) is reported `failed`
+and leaves that game's previously imported usage completely untouched;
+`unavailable`/`failed` games never block or roll back an independent game
+that succeeded in the same batch. The command exits nonzero if any selected
+game could not be backfilled. Rerunning against unchanged evidence is
+idempotent -- the same call IDs, the same rows.
+
+    python3 -m tools.game_history compare-usage --db PATH/history.sqlite --game-id GAME_ID [--game-id GAME_ID ...] --json
+
+`compare-usage` requires an explicit game selection -- there is no "compare
+everything in the catalog" mode. It reports, per game and using the same
+`query_usage` aggregation the `usage` command uses: measured/aggregate-only
+totals and attribution coverage; per-request and per-completed-side-turn
+output/reasoning median and max, computed only over fully measured groups,
+with `included_count`/`excluded_count` alongside every percentile so a
+partial-coverage comparison is never mistaken for a complete one; open-turn
+usage and failed-call usage reported as their own sections, never folded into
+completed-turn averages; requested/reported model and reasoning effort,
+output limits, transport, source commit, and resume continuity
+(`parent_game_id`/`lineage_root_id`). It computes no model ranking and no
+"fair comparison" score -- raw token counts are measurements from different
+tokenizers, not equal units of compute, and a lower count alone says nothing
+about strength. System-instruction identity is not separately tracked;
+`distinct_prompt_hashes` is reported as a proxy only, never proof that two
+games ran under identical or differing instructions. Without `--json` it
+prints a compact per-game summary built from the same structure.
+
 ## Runtime health and maintenance
 
 An engine winner does not by itself make a model evaluation valid. Inspect the

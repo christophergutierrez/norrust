@@ -1,0 +1,15 @@
+{
+  "text": "fixture conflict b",
+  "usage": {
+    "input_tokens": 999,
+    "output_tokens": 999
+  },
+  "cache": {
+    "requested_model": "fixture-model",
+    "runtime_model": "fixture-model",
+    "requested_reasoning_effort": null,
+    "runtime_reasoning_effort": null,
+    "runtime_settings_source": "provider_response",
+    "transport": "fireworks_chat_completions"
+  }
+}

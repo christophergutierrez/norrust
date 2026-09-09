@@ -1,0 +1,15 @@
+{
+  "text": "fixture answer",
+  "usage": {
+    "input_tokens": 100,
+    "output_tokens": 40
+  },
+  "cache": {
+    "requested_model": "fixture-model",
+    "runtime_model": "fixture-model",
+    "requested_reasoning_effort": null,
+    "runtime_reasoning_effort": null,
+    "runtime_settings_source": "provider_response",
+    "transport": "fireworks_chat_completions"
+  }
+}
