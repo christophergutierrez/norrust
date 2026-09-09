@@ -1,0 +1,32 @@
+# TEST-ONLY unit fixture: one-shots anything it can reach. max_hp is high
+# enough that the paired "Fragile" unit's own attack (damage 1) can never
+# kill it back, so which side gets to act first is what decides the winner,
+# never a combat-RNG outcome.
+id = "Lethal"
+name = "Lethal"
+race = "test"
+level = 1
+experience = 999
+max_hp = 20
+movement = 1
+alignment = "neutral"
+cost = 1
+usage = "fighter"
+abilities = ["leader"]
+advances_to = []
+
+[[attacks]]
+id = "instakill"
+name = "instakill"
+damage = 100
+strikes = 1
+attack_type = "impact"
+range = "melee"
+specials = []
+
+[resistances]
+
+[movement_costs]
+keep = 1
+
+[defense]

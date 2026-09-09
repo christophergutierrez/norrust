@@ -15,6 +15,7 @@ class FastCheckTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             library = Path(directory) / "custom-target" / "libnorrust_core.so"
             driver = Path(directory) / "custom-target" / "greedy_driver"
+            dumper = Path(directory) / "custom-target" / "dump_checkpoint"
             calls = []
 
             def execute(command, **kwargs):
@@ -24,11 +25,13 @@ class FastCheckTests(unittest.TestCase):
                     library.parent.mkdir()
                     library.touch()
                     driver.touch()
+                    dumper.touch()
                     output = "\n".join(json.dumps({"reason": "compiler-artifact",
                         "target": {"name": name, "kind": kind}, "filenames": [str(path)],
                         "executable": executable}) for name, kind, path, executable in (
                             ("norrust_core", ["cdylib", "rlib"], library, None),
-                            ("greedy_driver", ["bin"], driver, str(driver))))
+                            ("greedy_driver", ["bin"], driver, str(driver)),
+                            ("dump_checkpoint", ["bin"], dumper, str(dumper))))
                 return subprocess.CompletedProcess(command, 0, stdout=output)
 
             with patch.object(fast_check.subprocess, "run", side_effect=execute), \
@@ -38,6 +41,10 @@ class FastCheckTests(unittest.TestCase):
             bridge = [(c, k) for c, k in calls if c[0] == "/test/luajit"]
             self.assertEqual(len(bridge), 2)
             self.assertTrue(all(item[1]["env"]["NORRUST_LIB"] == str(library)
+                                for item in bridge))
+            # Catalog tests render checkpoint-only snapshots through this tool;
+            # without the path they would only exercise the unavailable-tool gap.
+            self.assertTrue(all(item[1]["env"]["NORRUST_DUMP_CHECKPOINT_BIN"] == str(dumper)
                                 for item in bridge))
             for binary in ("greedy_driver", "self-play"):
                 self.assertTrue(any(c[:2] == ["cargo", "test"] and "--bin" in c

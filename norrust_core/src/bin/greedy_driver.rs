@@ -298,6 +298,18 @@ fn parse_args() -> Config {
 }
 
 fn root() -> PathBuf {
+    // Test-only escape hatch (debug builds only, mirrors the existing
+    // NORRUST_TEST_GREEDY_FAILURE pattern below): lets integration tests
+    // point --scenario/data loading at a small fixture tree instead of the
+    // real data/scenarios directories, e.g. for a deterministic combat
+    // outcome no shipped terrain/unit data can produce (see
+    // tests/fixtures/s2_deterministic_duel). Release builds always use the
+    // real repository root.
+    if cfg!(debug_assertions) {
+        if let Ok(test_root) = env::var("NORRUST_TEST_ROOT_DIR") {
+            return PathBuf::from(test_root);
+        }
+    }
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
 }
 
@@ -840,6 +852,7 @@ fn greedy_infrastructure_failure(state: &GameState, side_turns: u32) -> Value {
         "message": "greedy opponent turn failed",
         "turns": state.turn,
         "side_turns": side_turns,
+        "state_revision": state.state_revision,
     })
 }
 
@@ -2187,13 +2200,23 @@ fn print_events(
     io::stdout().flush().unwrap();
 }
 
-fn print_boundary(
+/// Build the same enriched state-snapshot value the driver's `type:"state"`
+/// boundary lines carry, without printing it as a standalone protocol line.
+///
+/// This lets a terminal `game_end` embed a proven, exact-revision snapshot of
+/// the moment the game actually ended (a winning partial batch, or a win that
+/// lands before the driver would otherwise print another boundary) for the
+/// recording path to pick up, with zero effect on the live wire protocol: the
+/// interactive client only reads a bare top-level `type:"state"` line as "it
+/// is your turn, keep playing," so a second one printed right before the
+/// process exits would make it query and write to an already-closing pipe.
+fn boundary_value(
     state: &GameState,
     units: &Registry<UnitDef>,
     partial: bool,
     incremental: bool,
     accepted_partial_batches: u8,
-) {
+) -> Value {
     let mut value = game_state_to_json(state, units);
     if let Some(object) = value.as_object_mut() {
         object.insert("type".into(), json!("state"));
@@ -2216,7 +2239,20 @@ fn print_boundary(
             json!(incremental && accepted_partial_batches >= 3),
         );
     }
-    println!("{}", value);
+    value
+}
+
+fn print_boundary(
+    state: &GameState,
+    units: &Registry<UnitDef>,
+    partial: bool,
+    incremental: bool,
+    accepted_partial_batches: u8,
+) {
+    println!(
+        "{}",
+        boundary_value(state, units, partial, incremental, accepted_partial_batches)
+    );
     io::stdout().flush().unwrap();
 }
 
@@ -2339,6 +2375,21 @@ fn interactive_protocol_game(c: &Config) {
         .unwrap_or(0);
     let mut terminal = false;
 
+    // The opening, recorded before either side acts. Embedded under a
+    // "game_start" record rather than printed as a bare top-level "state"
+    // line: the live client reads any such line as "it is your move" and
+    // would query a driver that is not waiting for one. tools/llm_client.py
+    // re-records the embedded value as an ordinary driver state so the
+    // importer binds a provable opening snapshot even when the model never
+    // receives a turn (Greedy moving first, or winning immediately).
+    println!(
+        "{}",
+        json!({"type":"game_start",
+               "side_turns": side_turns,
+               "state": boundary_value(&state, &units, false, c.incremental_turns, partial_batches)})
+    );
+    io::stdout().flush().unwrap();
+
     if let Some(checkpoint) = checkpoint.as_ref() {
         if checkpoint.pending_opponent_turn {
             let greedy_side = 1 - c.llm_side;
@@ -2360,17 +2411,21 @@ fn interactive_protocol_game(c: &Config) {
             }
         }
     }
-    if state.check_winner().is_some() {
+    if let Some(winner) = state.check_winner() {
         println!(
             "{}",
-            json!({"type":"game_end","reason":"winner","winner":state.check_winner(),"turns":state.turn})
+            json!({"type":"game_end","reason":"winner","winner":winner,"turns":state.turn,
+                "side_turns":side_turns,"state_revision":state.state_revision,
+                "state":boundary_value(&state, &units, false, c.incremental_turns, partial_batches)})
         );
         return;
     }
     if side_turns >= c.max_turns {
         println!(
             "{}",
-            json!({"type":"game_end","reason":"max_turns","turns":state.turn,"side_turns":side_turns})
+            json!({"type":"game_end","reason":"max_turns","turns":state.turn,"side_turns":side_turns,
+                "state_revision":state.state_revision,
+                "state":boundary_value(&state, &units, false, c.incremental_turns, partial_batches)})
         );
         return;
     }
@@ -2387,17 +2442,21 @@ fn interactive_protocol_game(c: &Config) {
         side_turns += 1;
         print_events(&events, "greedy", "greedy", None);
     }
-    if state.check_winner().is_some() {
+    if let Some(winner) = state.check_winner() {
         println!(
             "{}",
-            json!({"type":"game_end","reason":"winner","winner":state.check_winner(),"turns":state.turn})
+            json!({"type":"game_end","reason":"winner","winner":winner,"turns":state.turn,
+                "side_turns":side_turns,"state_revision":state.state_revision,
+                "state":boundary_value(&state, &units, false, c.incremental_turns, partial_batches)})
         );
         return;
     }
     if c.llm_side == 1 && side_turns >= c.max_turns {
         println!(
             "{}",
-            json!({"type":"game_end","reason":"max_turns","turns":state.turn,"side_turns":side_turns})
+            json!({"type":"game_end","reason":"max_turns","turns":state.turn,"side_turns":side_turns,
+                "state_revision":state.state_revision,
+                "state":boundary_value(&state, &units, false, c.incremental_turns, partial_batches)})
         );
         return;
     }
@@ -2465,7 +2524,8 @@ fn interactive_protocol_game(c: &Config) {
             Err(RecvTimeoutError::Timeout) => {
                 println!(
                     "{}",
-                    json!({"type":"game_end","reason":"timeout","turns":state.turn})
+                    json!({"type":"game_end","reason":"timeout","turns":state.turn,
+                        "side_turns":side_turns,"state_revision":state.state_revision})
                 );
                 terminal = true;
                 break;
@@ -3384,7 +3444,9 @@ fn interactive_protocol_game(c: &Config) {
             if side_turns >= c.max_turns {
                 println!(
                     "{}",
-                    json!({"type":"game_end","reason":"max_turns","turns":state.turn,"side_turns":side_turns})
+                    json!({"type":"game_end","reason":"max_turns","turns":state.turn,"side_turns":side_turns,
+                        "state_revision":state.state_revision,
+                        "state":boundary_value(&state, &units, false, c.incremental_turns, partial_batches)})
                 );
                 terminal = true;
                 break;
@@ -3408,9 +3470,17 @@ fn interactive_protocol_game(c: &Config) {
             print_events(&greedy_events, "greedy", "greedy", None);
         }
         if let Some(winner) = state.check_winner() {
+            // A partial batch that wins is a terminal boundary the model never
+            // asked to close with EndTurn; embed the exact ending state under
+            // `state` (never printed as its own protocol line -- the live
+            // client would mistake a bare `type:"state"` line here for "keep
+            // playing" and query the exiting process) so recording can bind
+            // the terminal to a provable snapshot either way.
             println!(
                 "{}",
-                json!({"type":"game_end","reason":"winner","winner":winner,"turns":state.turn})
+                json!({"type":"game_end","reason":"winner","winner":winner,"turns":state.turn,
+                    "side_turns":side_turns,"state_revision":state.state_revision,
+                    "state":boundary_value(&state, &units, !did_end, c.incremental_turns, partial_batches)})
             );
             terminal = true;
             break;
@@ -3418,7 +3488,9 @@ fn interactive_protocol_game(c: &Config) {
         if side_turns >= c.max_turns {
             println!(
                 "{}",
-                json!({"type":"game_end","reason":"max_turns","turns":state.turn,"side_turns":side_turns})
+                json!({"type":"game_end","reason":"max_turns","turns":state.turn,"side_turns":side_turns,
+                    "state_revision":state.state_revision,
+                    "state":boundary_value(&state, &units, !did_end, c.incremental_turns, partial_batches)})
             );
             terminal = true;
             break;
@@ -3449,9 +3521,14 @@ fn interactive_protocol_game(c: &Config) {
         }
     }
     if !terminal && state.check_winner().is_none() {
+        // The controller closed the pipe (or was killed) without an EndTurn,
+        // Resign, or query pending. The last durable checkpoint/boundary
+        // already on disk is all that can be recovered; say so honestly
+        // rather than implying a clean finish.
         println!(
             "{}",
-            json!({"type":"game_end","reason":"eof","turns":state.turn})
+            json!({"type":"game_end","reason":"eof","turns":state.turn,
+                "side_turns":side_turns,"state_revision":state.state_revision})
         );
     }
 }

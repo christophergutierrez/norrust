@@ -22,7 +22,13 @@ bundle without opening Love2D. Missing or incomplete snapshots are reported;
 the exporter never reconstructs a state by running the game or rerolling
 combat. It never resumes a checkpoint through a driver either — resuming can
 immediately execute a Greedy turn, which would replay history rather than
-show it.
+show it. A checkpoint-only moment in the timeline can still become a
+renderable frame when the read-only `dump_checkpoint` binary is available
+(see [GAME_HISTORY.md](GAME_HISTORY.md)): that tool loads the checkpoint and
+the current unit/terrain registries and prints the state, without resuming
+gameplay or touching Greedy at all. When the tool or a historical resource is
+missing, the gap is reported the same as before, not filled in from today's
+data.
 
 Frames come from the game's authoritative `snapshots` timeline (see
 [GAME_HISTORY.md](GAME_HISTORY.md)), one per renderable snapshot in archive

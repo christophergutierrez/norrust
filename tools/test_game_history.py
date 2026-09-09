@@ -1,11 +1,14 @@
 import hashlib
 import json
+import os
 import sqlite3
+import sys
 import zlib
 from contextlib import closing
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from .game_history import (IMPORTER_VERSION, SCHEMA, backup_history, decode_payload, encode_payload,
                            import_game, delete_history, inventory_history, list_side_turns, open_history,
@@ -198,6 +201,14 @@ def _write_checkpoint(archive: Path, filename: str, save_state: dict) -> dict:
             "side_turns": save_state.get("_side_turns"), "boundary": save_state.get("_boundary", "turn_end")}
 
 
+def _write_fake_dump_checkpoint(directory: Path, script: str) -> Path:
+    """Write an executable standing in for the real `dump_checkpoint` binary."""
+    path = directory / "fake_dump_checkpoint.py"
+    path.write_text(f"#!{sys.executable}\n{script}\n")
+    path.chmod(0o755)
+    return path
+
+
 class S1SnapshotTimelineTests(unittest.TestCase):
     """Covers the S1 data contract: an authoritative per-game snapshot
     timeline, evidence-only endpoint linking, and honest coverage gaps."""
@@ -318,6 +329,90 @@ class S1SnapshotTimelineTests(unittest.TestCase):
             self.assertTrue(any("checkpoint_unavailable" in g for g in coverage["gaps"]))
             conn.close()
 
+    def test_valid_checkpoint_without_dump_tool_stays_a_reported_gap(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); log = root / "match.ndjson"
+            save_state = {"state_revision": 9, "turn": 5, "active_faction": 0, "_side_turns": 2}
+            ref = _write_checkpoint(root, "ck1.json", save_state)
+            log.write_text("\n".join(json.dumps(r) for r in [
+                {"type": "metadata"},
+                {"type": "driver", "line": {"type": "state", "state_revision": 0, "turn": 1, "active_faction": 0}},
+                {"type": "driver", "line": {"type": "checkpoint", **ref}},
+                {"type": "terminal", "reason": "max_turns"},
+            ]) + "\n")
+            from . import game_history
+            with mock.patch.object(game_history, "_dump_checkpoint_bin", return_value=None):
+                conn = open_history(root / "history.sqlite")
+                game_id = import_game(conn, root)
+            coverage = json.loads(conn.execute(
+                "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+            self.assertTrue(any(g.startswith("checkpoint_not_renderable:ck1.json:dump_checkpoint_unavailable")
+                                for g in coverage["gaps"]))
+            row = conn.execute(
+                "SELECT renderable,state_blob FROM snapshots WHERE game_id=? AND revision=9",
+                (game_id,)).fetchone()
+            self.assertEqual(row, (0, None))
+            conn.close()
+
+    def test_checkpoint_rendered_by_the_dump_tool_becomes_a_playable_snapshot(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); log = root / "match.ndjson"
+            save_state = {"state_revision": 9, "turn": 5, "active_faction": 1, "_side_turns": 2}
+            ref = _write_checkpoint(root, "ck1.json", save_state)
+            log.write_text("\n".join(json.dumps(r) for r in [
+                {"type": "metadata"},
+                {"type": "driver", "line": {"type": "state", "state_revision": 0, "turn": 1, "active_faction": 0}},
+                {"type": "driver", "line": {"type": "checkpoint", **ref}},
+                {"type": "terminal", "reason": "max_turns", "state_revision": 9},
+            ]) + "\n")
+            fake_state = {"state_revision": 9, "turn": 5, "active_faction": 1, "units": [], "gold": [10, 12]}
+            fake = _write_fake_dump_checkpoint(root, f"""
+import json, sys
+print(json.dumps({fake_state!r}))
+""")
+            with mock.patch.dict(os.environ, {"NORRUST_DUMP_CHECKPOINT_BIN": str(fake)}):
+                conn = open_history(root / "history.sqlite")
+                game_id = import_game(conn, root)
+            coverage = json.loads(conn.execute(
+                "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+            self.assertFalse(any(g.startswith("checkpoint_not_renderable") for g in coverage["gaps"]))
+            self.assertTrue(coverage["terminal_present"])
+            row = conn.execute(
+                "SELECT renderable,round_number,active_side,state_blob,state_codec FROM snapshots "
+                "WHERE game_id=? AND revision=9", (game_id,)).fetchone()
+            self.assertEqual((row[0], row[1], row[2]), (1, 5, 1))
+            self.assertEqual(decode_payload(row[3], row[4]), fake_state)
+            conn.close()
+
+    def test_dump_tool_failure_on_a_valid_checkpoint_is_a_reported_gap(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); log = root / "match.ndjson"
+            save_state = {"state_revision": 9, "turn": 5, "active_faction": 0, "_side_turns": 2}
+            ref = _write_checkpoint(root, "ck1.json", save_state)
+            log.write_text("\n".join(json.dumps(r) for r in [
+                {"type": "metadata"},
+                {"type": "driver", "line": {"type": "state", "state_revision": 0, "turn": 1, "active_faction": 0}},
+                {"type": "driver", "line": {"type": "checkpoint", **ref}},
+                {"type": "terminal", "reason": "max_turns"},
+            ]) + "\n")
+            fake = _write_fake_dump_checkpoint(root, """
+import sys
+sys.stderr.write("restore checkpoint state: unit definition not found: Ghost Knight")
+sys.exit(1)
+""")
+            with mock.patch.dict(os.environ, {"NORRUST_DUMP_CHECKPOINT_BIN": str(fake)}):
+                conn = open_history(root / "history.sqlite")
+                game_id = import_game(conn, root)
+            coverage = json.loads(conn.execute(
+                "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+            gap = next(g for g in coverage["gaps"] if g.startswith("checkpoint_not_renderable:ck1.json"))
+            self.assertIn("unit definition not found", gap)
+            row = conn.execute(
+                "SELECT renderable FROM snapshots WHERE game_id=? AND revision=9",
+                (game_id,)).fetchone()
+            self.assertEqual(row, (0,))
+            conn.close()
+
     def test_resume_conflict_between_checkpoint_and_log_is_reported(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td); log = root / "match.ndjson"
@@ -358,6 +453,35 @@ class S1SnapshotTimelineTests(unittest.TestCase):
             self.assertFalse(coverage["terminal_present"])
             self.assertEqual(conn.execute(
                 "SELECT status FROM games WHERE game_id=?", (game_id,)).fetchone()[0], "incomplete")
+            conn.close()
+
+    def test_winning_partial_batch_terminal_state_becomes_a_provable_snapshot(self):
+        # A partial batch that wins never gets a normal `type:"state"` line
+        # from the driver (the live protocol would misread it as "keep
+        # playing"); the client instead records the embedded terminal state
+        # as its own synthetic "state" driver record ahead of "terminal".
+        # This must resolve to a fully covered, terminal_present game with no
+        # unresolved boundary, exactly like a normal EndTurn finish.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); log = root / "match.ndjson"
+            log.write_text("\n".join(json.dumps(r) for r in [
+                {"type": "metadata"},
+                {"type": "driver", "line": {"type": "state", "state_revision": 0, "turn": 1, "active_faction": 0}},
+                {"type": "driver", "line": {"type": "state", "state_revision": 4, "turn": 1,
+                 "active_faction": 0, "turn_boundary": "partial", "winner": 0}},
+                {"type": "terminal", "reason": "winner", "winner": 0, "state_revision": 4},
+            ]) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root)
+            coverage = json.loads(conn.execute(
+                "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+            self.assertTrue(coverage["opening_present"])
+            self.assertTrue(coverage["terminal_present"])
+            self.assertEqual(coverage["gaps"], [])
+            row = conn.execute(
+                "SELECT boundary_kind,renderable FROM snapshots WHERE game_id=? AND revision=4",
+                (game_id,)).fetchone()
+            self.assertEqual(row, ("terminal", 1))
             conn.close()
 
     def test_resignation_terminal_state_may_equal_the_preceding_state(self):

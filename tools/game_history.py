@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import zlib
 from pathlib import Path
@@ -175,6 +176,51 @@ _CHECKPOINT_BOUNDARY_KIND = {
     "start": "opening", "initial": "opening",
 }
 
+def _dump_checkpoint_bin() -> str | None:
+    """Locate the read-only `dump_checkpoint` binary, or None if unavailable.
+
+    `NORRUST_DUMP_CHECKPOINT_BIN` takes precedence (set by the test/build
+    harness, which knows Cargo's actual target directory); otherwise the
+    conventional debug and release build paths are tried. A missing tool is
+    not an error here -- callers report the resulting coverage gap honestly
+    rather than fabricating a renderable state.
+    """
+    override = os.environ.get("NORRUST_DUMP_CHECKPOINT_BIN")
+    if override:
+        return override if Path(override).is_file() else None
+    root = Path(__file__).resolve().parents[1]
+    for candidate in ("target/debug/dump_checkpoint", "target/release/dump_checkpoint"):
+        path = root / "norrust_core" / candidate
+        if path.is_file():
+            return str(path)
+    return None
+
+def _render_checkpoint_state(checkpoint_path: str) -> tuple[dict[str, Any] | None, str | None]:
+    """Run the read-only checkpoint dumper and return (state, error).
+
+    Never falls back to today's unit/terrain definitions on its own -- a
+    missing historical resource surfaces as the tool's own error message, and
+    a missing tool surfaces as `dump_checkpoint_unavailable`.
+    """
+    binary = _dump_checkpoint_bin()
+    if binary is None:
+        return None, "dump_checkpoint_unavailable"
+    try:
+        completed = subprocess.run([binary, checkpoint_path], capture_output=True,
+                                   text=True, timeout=30, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return None, f"dump_checkpoint_failed:{exc}"
+    if completed.returncode != 0:
+        message = completed.stderr.strip() or completed.stdout.strip() or "unknown error"
+        return None, f"dump_checkpoint_failed:{message}"
+    try:
+        state = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        return None, "dump_checkpoint_failed:invalid JSON output"
+    if not isinstance(state, dict):
+        return None, "dump_checkpoint_failed:non-object output"
+    return state, None
+
 def _load_checkpoint_envelope(log: Path, reference: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
     """Validate and load a driver checkpoint, reusing the client's own checker.
 
@@ -222,6 +268,37 @@ def _build_snapshots(log: Path, lines: list[dict[str, Any]]) -> tuple[list[dict[
                 if existing["renderable"] and existing["state_hash"] == fingerprint:
                     existing["sources"].append({"kind": "log_state", "ref": None, "hash": fingerprint})
                     continue  # exact duplicate representation of the same moment
+                if all(source["kind"] in ("checkpoint", "checkpoint_rendered")
+                       for source in existing["sources"]):
+                    # A checkpoint published for this exact revision arrived
+                    # first (the driver writes its "model"/"partial" boundary
+                    # checkpoint before printing the matching "state" line),
+                    # so this is the first log evidence of its content either
+                    # way. Whether or not dump_checkpoint could render it, a
+                    # checkpoint-only entry's state was never proven against
+                    # a real logged state -- its dump_checkpoint rendering
+                    # (when available) omits the boundary-print-only fields
+                    # (`type`, `winner`, `turn_boundary`, ...) a "state" log
+                    # line carries, so their content hashes never match even
+                    # when they are the same moment. This proven log state is
+                    # that same moment, not a distinct one, as long as it
+                    # doesn't contradict the checkpoint's own completed-side-
+                    # turn count -- upgrade the existing (correctly sequenced)
+                    # entry in place instead of appending an orphaned
+                    # duplicate that would wrongly displace it from the
+                    # timeline's first position.
+                    completed = _record_side_turn(line)
+                    if (existing["completed_side_turns"] is None or completed is None
+                            or existing["completed_side_turns"] == completed):
+                        existing.update({
+                            "round": existing["round"] if existing["round"] is not None else _number(line.get("turn")),
+                            "side": existing["side"] if existing["side"] is not None else _number(line.get("active_faction")),
+                            "completed_side_turns": existing["completed_side_turns"] if existing["completed_side_turns"] is not None else completed,
+                            "boundary_kind": "partial" if line.get("turn_boundary") == "partial" else "unknown",
+                            "renderable": True, "state": line, "state_hash": fingerprint,
+                        })
+                        existing["sources"].append({"kind": "log_state", "ref": None, "hash": fingerprint})
+                        continue
                 # Same revision number, different content: a resume/replay
                 # branch reused it. Proven distinct by content; keep both.
             built.append({
@@ -258,13 +335,37 @@ def _build_snapshots(log: Path, lines: list[dict[str, Any]]) -> tuple[list[dict[
                                                 "hash": line.get("digest")})
                 continue
             save_state = envelope.get("envelope", {}).get("save_state") if isinstance(envelope, dict) else None
+            # This importer has no engine-independent way to rebuild full
+            # unit/terrain data from a checkpoint on its own; when the
+            # read-only dump_checkpoint tool is available, use it to render
+            # the checkpoint into the same state shape a logged "state" line
+            # carries, rather than leaving a provably-reached moment
+            # unplayable. A missing tool, or a checkpoint whose historical
+            # unit/terrain resources are gone, stays a reported gap -- never
+            # silently replaced with today's data definitions.
+            rendered_state, render_error = (
+                _render_checkpoint_state(envelope["absolute_path"])
+                if isinstance(envelope, dict) and isinstance(envelope.get("absolute_path"), str)
+                else (None, "dump_checkpoint_unavailable")
+            )
+            renderable = rendered_state is not None
+            state_hash = _state_fingerprint(rendered_state) if renderable else None
+            sources = [{"kind": "checkpoint", "ref": line.get("path"), "hash": line.get("digest")}]
+            if renderable:
+                sources.append({"kind": "checkpoint_rendered", "ref": line.get("path"), "hash": state_hash})
+            else:
+                gaps.append(f"checkpoint_not_renderable:{line.get('path')}:{render_error}")
             built.append({
                 "revision": revision,
-                "round": _number(save_state.get("turn")) if isinstance(save_state, dict) else None,
-                "side": _number(save_state.get("active_faction")) if isinstance(save_state, dict) else None,
+                "round": (_number(rendered_state.get("turn")) if renderable
+                          else (_number(save_state.get("turn")) if isinstance(save_state, dict) else None)),
+                "side": (_number(rendered_state.get("active_faction")) if renderable
+                         else (_number(save_state.get("active_faction")) if isinstance(save_state, dict) else None)),
                 "completed_side_turns": completed, "boundary_kind": boundary_kind,
-                "renderable": False, "state": None, "state_hash": None,
-                "sources": [{"kind": "checkpoint", "ref": line.get("path"), "hash": line.get("digest")}],
+                "renderable": renderable,
+                "state": rendered_state if renderable else None,
+                "state_hash": state_hash,
+                "sources": sources,
                 "conflicts": [],
             })
             if revision is not None and revision not in by_revision:
@@ -275,6 +376,14 @@ def _build_snapshots(log: Path, lines: list[dict[str, Any]]) -> tuple[list[dict[
         # The very first recorded observation is the game's opening,
         # whatever its boundary_kind would otherwise default to.
         built[0]["boundary_kind"] = "opening"
+    if built:
+        # Capture the opening ROLE separately, before _mark_terminal can
+        # relabel this same snapshot. A game that ends before any state
+        # change - a turn-one resignation, or a win on the opening
+        # position - coalesces its opening and its terminal into one proven
+        # state, and that snapshot is legitimately both. boundary_kind can
+        # only carry one label, so the opening cannot be inferred from it.
+        built[0]["is_opening"] = built[0]["boundary_kind"] == "opening"
     return built, gaps
 
 def _mark_terminal(snapshots: list[dict[str, Any]], terminal: dict[str, Any]) -> None:
@@ -332,14 +441,14 @@ def _coverage_summary(snapshots: list[dict[str, Any]], terminal: dict[str, Any],
         gaps.append(f"terminal_snapshot_not_renderable:revision:{terminal_snapshot['revision']}")
     if not snapshots:
         gaps.append("no_recorded_snapshots")
-    elif not (snapshots[0]["boundary_kind"] == "opening" and snapshots[0]["renderable"]):
+    elif not (snapshots[0].get("is_opening") and snapshots[0]["renderable"]):
         gaps.append("opening_state_not_renderable")
     if linkage["unresolved_turn_endpoints"]:
         gaps.append(f"unresolved_turn_endpoints:{linkage['unresolved_turn_endpoints']}")
     if linkage["unattached_reviews"]:
         gaps.append(f"unattached_reviews:{linkage['unattached_reviews']}")
     return {
-        "opening_present": bool(snapshots) and snapshots[0]["boundary_kind"] == "opening" and snapshots[0]["renderable"],
+        "opening_present": bool(snapshots) and bool(snapshots[0].get("is_opening")) and snapshots[0]["renderable"],
         "terminal_present": bool(terminal_snapshot is not None and terminal_snapshot["renderable"]),
         "snapshot_count": len(snapshots),
         "renderable_snapshot_count": sum(1 for s in snapshots if s["renderable"]),

@@ -1371,6 +1371,13 @@ class ClientValidationTests(unittest.TestCase):
         )
         try:
             self.assertEqual(json.loads(process.stdout.readline())["type"], "protocol")
+            # The opening precedes the first playable state. It is a distinct
+            # record type rather than a second "state" line precisely so a
+            # live client does not read it as "it is your move".
+            opening = json.loads(process.stdout.readline())
+            self.assertEqual(opening["type"], "game_start")
+            self.assertEqual(opening["state"]["type"], "state")
+            self.assertEqual(opening["side_turns"], 0)
             self.assertEqual(json.loads(process.stdout.readline())["type"], "state")
             process.stdin.write(json.dumps({"action": "Query", "what": "turn_options"}) + "\n")
             process.stdin.flush()
@@ -1644,6 +1651,78 @@ class ClientValidationTests(unittest.TestCase):
                 self.assertEqual(terminal["terminal_class"], TERMINAL_GAMEPLAY)
                 self.assertEqual(terminal["reason"], line["reason"])
                 self.assertGreaterEqual(fsync_calls, 1)
+
+    def test_embedded_terminal_state_is_recorded_as_its_own_driver_state_line(self):
+        # A winning partial batch (or a win the driver detects before it
+        # would otherwise print another boundary) never gets a normal
+        # `type:"state"` line -- printing one there would make the live
+        # protocol think the game continues and query the exiting driver.
+        # The driver instead embeds the exact ending snapshot inside
+        # `game_end` under `state`; the client must record that as its own
+        # driver "state" line so the importer can bind the terminal to a
+        # provable, exact-revision snapshot exactly like any other logged
+        # state.
+        embedded_state = {"type": "state", "state_revision": 12, "turn": 4,
+                          "active_faction": 0, "turn_boundary": "partial", "units": []}
+        line = {"type": "game_end", "reason": "winner", "winner": 0,
+                "state_revision": 12, "side_turns": 6, "state": embedded_state}
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = directory + "/client.jsonl"
+            args = argparse.Namespace(
+                driver="driver", scenario="scenario", faction0="a", faction1="b",
+                gold=1, seed=2, max_turns=3, llm_side=0, turn_timeout=4,
+                query_budget_seconds=5, max_queries_per_turn=6,
+                no_recruit_macro=False, interactive_model=True, orders_file=None,
+                model_command=None, model_timeout=7, log=log_path,
+                max_prompt_bytes=16 * 1024 * 1024, token_input_limit=None,
+                token_output_limit=None, token_total_limit=None,
+            )
+            process = FakeDriverProcess([line])
+            with mock.patch("tools.llm_client.subprocess.Popen", return_value=process), \
+                    mock.patch("tools.llm_client.source_metadata", return_value={}), \
+                    mock.patch("tools.llm_client.os.fsync"):
+                code = run(args)
+            with open(log_path) as log:
+                records = [json.loads(raw) for raw in log]
+        self.assertEqual(code, 0)
+        synthetic = [r for r in records if r.get("type") == "driver"
+                     and r.get("line", {}).get("type") == "state"]
+        self.assertEqual(len(synthetic), 1)
+        self.assertEqual(synthetic[0]["line"], embedded_state)
+        # The synthetic state line must precede the terminal record so the
+        # importer's "terminal is always last" assumption still holds.
+        terminal_index = next(i for i, r in enumerate(records) if r.get("type") == "terminal")
+        state_index = next(i for i, r in enumerate(records) if r is synthetic[0])
+        self.assertLess(state_index, terminal_index)
+
+    def test_terminal_without_an_embedded_state_records_no_synthetic_state_line(self):
+        line = {"type": "game_end", "reason": "max_turns", "winner": None,
+                "state_revision": 3, "side_turns": 2}
+        code, records = self.run_terminal_all(line)
+        self.assertEqual(code, 0)
+        self.assertFalse(any(r.get("type") == "driver" and r.get("line", {}).get("type") == "state"
+                             for r in records))
+
+    def run_terminal_all(self, line):
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = directory + "/client.jsonl"
+            args = argparse.Namespace(
+                driver="driver", scenario="scenario", faction0="a", faction1="b",
+                gold=1, seed=2, max_turns=3, llm_side=0, turn_timeout=4,
+                query_budget_seconds=5, max_queries_per_turn=6,
+                no_recruit_macro=False, interactive_model=True, orders_file=None,
+                model_command=None, model_timeout=7, log=log_path,
+                max_prompt_bytes=16 * 1024 * 1024, token_input_limit=None,
+                token_output_limit=None, token_total_limit=None,
+            )
+            process = FakeDriverProcess([line])
+            with mock.patch("tools.llm_client.subprocess.Popen", return_value=process), \
+                    mock.patch("tools.llm_client.source_metadata", return_value={}), \
+                    mock.patch("tools.llm_client.os.fsync"):
+                code = run(args)
+            with open(log_path) as log:
+                records = [json.loads(raw) for raw in log]
+        return code, records
 
     def test_status_ok_false_is_durable_failure_without_waiting_for_more_input(self):
         line = {"type": "status", "ok": False, "code": "unauthorized_side",

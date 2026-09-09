@@ -1,3 +1,5 @@
+use std::env;
+use std::fs;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -880,5 +882,109 @@ fn max_turns_caps_successful_side_turns() {
         .find(|line| line["reason"] == "max_turns")
         .unwrap();
     assert_eq!(terminal["side_turns"], 1);
+    // The cap is hit right after the model's own EndTurn, before Greedy ever
+    // gets a turn, so no further `type:"state"` boundary line is printed
+    // (the live client would read one as "keep playing" and query the
+    // exiting process). The terminal instead embeds the exact ending state
+    // under `state`, matching this same terminal's own `state_revision`.
+    assert!(!lines.iter().any(|line| line["type"] == "state"
+        && line["state_revision"].as_u64() == terminal["state_revision"].as_u64()));
+    assert_eq!(terminal["state"]["state_revision"], terminal["state_revision"]);
+    assert_eq!(terminal["state"]["type"], "state");
     assert!(!lines.iter().any(|line| line["source"] == "greedy"));
+}
+
+/// Every early return in the interactive protocol -- winner, cap, timeout,
+/// eof, and infrastructure failure -- must carry an explicit `state_revision`
+/// so the importer can bind the terminal record to an exact snapshot instead
+/// of guessing from ordinal position. This is a broad regression guard for
+/// that contract rather than an exhaustive per-branch test.
+#[test]
+fn every_terminal_reason_carries_a_state_revision() {
+    let lines = run_driver(
+        &["--scenario", "big_battle_6", "--max-turns", "1"],
+        "{\"action\":\"EndTurn\"}\n",
+    );
+    let terminal = lines.iter().find(|line| line["type"] == "game_end").unwrap();
+    assert!(terminal.get("state_revision").is_some(), "{terminal:?}");
+}
+
+/// A terminal ending must never leak into the live wire protocol as an extra
+/// `type:"state"` boundary line -- the interactive client treats any bare one
+/// as "it is your turn," and would query (and write to) an already-exiting
+/// driver process. The proven ending snapshot travels embedded inside
+/// `game_end` itself instead.
+#[test]
+fn a_terminal_ending_never_prints_a_trailing_state_boundary_line() {
+    let lines = run_driver(
+        &["--scenario", "big_battle_6", "--max-turns", "1"],
+        "{\"action\":\"EndTurn\"}\n",
+    );
+    let terminal_index = lines.iter().position(|line| line["type"] == "game_end").unwrap();
+    assert!(!lines[terminal_index + 1..].iter().any(|line| line["type"] == "state"));
+}
+
+#[test]
+fn resume_from_a_postbatch_checkpoint_runs_the_pending_opponent_turn_exactly_once() {
+    let checkpoint_dir = env::temp_dir().join(format!(
+        "norrust-driver-protocol-resume-test-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&checkpoint_dir);
+    let base_args = [
+        "--scenario",
+        "big_battle_6",
+        "--faction0",
+        "undead",
+        "--faction1",
+        "undead",
+        "--max-turns",
+        "50",
+    ];
+    let checkpoint_dir_str = checkpoint_dir.to_string_lossy().into_owned();
+    let mut first_args: Vec<&str> = base_args.to_vec();
+    first_args.push("--checkpoint-dir");
+    first_args.push(&checkpoint_dir_str);
+    let first_lines = run_driver(&first_args, "{\"action\":\"EndTurn\"}\n");
+
+    // The "postbatch" checkpoint is written right after the model's own
+    // EndTurn commits and before Greedy's response runs -- resuming from it
+    // must replay exactly that one pending opponent turn, never zero and
+    // never two.
+    let postbatch = first_lines
+        .iter()
+        .find(|line| line["type"] == "checkpoint" && line["boundary"] == "postbatch")
+        .expect("driver must publish a postbatch checkpoint before running greedy");
+    assert_eq!(postbatch["pending_opponent_turn"], true);
+    let checkpoint_path = checkpoint_dir.join(postbatch["path"].as_str().unwrap());
+    assert!(checkpoint_path.is_file(), "checkpoint file must exist on disk");
+
+    let mut resume_args: Vec<&str> = base_args.to_vec();
+    resume_args.push("--resume-checkpoint");
+    let checkpoint_path_str = checkpoint_path.to_string_lossy().into_owned();
+    resume_args.push(&checkpoint_path_str);
+    let resumed_lines = run_driver(&resume_args, "");
+
+    let greedy_event_blocks = resumed_lines
+        .iter()
+        .filter(|line| line["type"] == "events" && line["source"] == "greedy")
+        .count();
+    assert_eq!(
+        greedy_event_blocks, 1,
+        "resume must run the one pending opponent turn, not zero or two: {resumed_lines:?}"
+    );
+    let opening = resumed_lines
+        .iter()
+        .find(|line| line["type"] == "state")
+        .expect("resume must print a boundary once the pending turn resolves");
+    // side_turns for a resumed "postbatch" checkpoint is the model's own just
+    // completed turn (1); the pending greedy turn resuming here adds exactly
+    // one more, never a second re-application of the model's own turn.
+    assert_eq!(postbatch["side_turns"], 1);
+    assert!(
+        opening.get("state_revision").is_some(),
+        "the post-resume boundary must carry an exact revision"
+    );
+
+    let _ = fs::remove_dir_all(&checkpoint_dir);
 }

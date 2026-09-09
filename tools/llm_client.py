@@ -2334,6 +2334,12 @@ def run(args: argparse.Namespace) -> int:
     event_intervals: list[list[dict[str, Any]]] = []
     trend_states: list[dict[str, Any]] = []
     state: Optional[dict[str, Any]] = None
+    # The state_revision at which the side currently on move began acting,
+    # captured from the most recent non-partial "state" boundary. Recorded
+    # alongside each turn_boundary's end revision so the importer can bind
+    # both endpoints of a completed side-turn to an exact snapshot instead of
+    # guessing from ordinal position.
+    turn_start_revision: Optional[int] = None
     pending_action = False
     action_repair_attempted = False
     model_calls_this_turn = 0
@@ -2447,6 +2453,13 @@ def run(args: argparse.Namespace) -> int:
                 line = record.get("line")
                 if isinstance(line, dict) and line.get("type") == "events":
                     events = line.get("events", []) if isinstance(line.get("events"), list) else []
+                if (isinstance(line, dict) and line.get("type") == "state"
+                        and line.get("turn_boundary") != "partial"
+                        and isinstance(line.get("state_revision"), int)):
+                    # The parent log's last full boundary is this resumed
+                    # side's turn start, whether or not it later closed with
+                    # an EndTurn before the process stopped.
+                    turn_start_revision = line["state_revision"]
             if record.get("type") == "model" and isinstance(record.get("raw_output"), str):
                 continuity_entries.append("assistant: " + record["raw_output"][:1200])
         continuity_entries = continuity_entries[-4:]
@@ -2713,6 +2726,9 @@ def run(args: argparse.Namespace) -> int:
                     durable({"type": "turn_boundary",
                              "authored_finish_kind": pending_finish_kind,
                              "executed_finish_kind": driver_kind or expected_driver_kind,
+                             "side": args.llm_side,
+                             "round": state.get("turn") if isinstance(state, dict) else None,
+                             "start_revision": turn_start_revision,
                              "state_revision": line.get("state_revision"),
                              "delegated_unit_ids": line.get("delegated_unit_ids", []),
                              "protected_unit_ids": line.get("protected_unit_ids", []),
@@ -2893,6 +2909,8 @@ def run(args: argparse.Namespace) -> int:
                 pending_action = False
                 action_repair_attempted = False
                 if not is_partial_boundary:
+                    if isinstance(line.get("state_revision"), int):
+                        turn_start_revision = line["state_revision"]
                     model_calls_this_turn = 0
                     tool_calls_this_turn = 0
                     handoff_review_used = False
@@ -3624,11 +3642,29 @@ def run(args: argparse.Namespace) -> int:
                         attacker = event.get("attacker", {})
                         if isinstance(attacker.get("unit"), int):
                             turn_progress_attacked.add(attacker["unit"])
+            elif line.get("type") == "game_start":
+                # The opening, before either side acts. Recorded as an
+                # ordinary driver state record for the same reason as the
+                # embedded terminal below: it gives the importer a provable
+                # opening even when the model is never asked to move.
+                opening_state = line.get("state")
+                if isinstance(opening_state, dict) and opening_state.get("type") == "state":
+                    durable({"type": "driver", "line": opening_state})
             elif line.get("type") == "game_end":
                 metadata.update({"winner": line.get("winner"), "reason": line.get("reason")})
                 for key in ("code", "message", "resigned_side", "side_turns", "state_revision"):
                     if key in line:
                         metadata[key] = line[key]
+                embedded_state = line.get("state")
+                if isinstance(embedded_state, dict) and embedded_state.get("type") == "state":
+                    # The driver embeds the exact ending snapshot here instead
+                    # of printing a second top-level "state" line, which the
+                    # live protocol would misread as "keep playing." Recorded
+                    # as its own driver "state" record so the importer binds
+                    # this terminal to a provable snapshot exactly like any
+                    # other logged state, whether or not a normal boundary
+                    # already covered the same revision.
+                    durable({"type": "driver", "line": embedded_state})
                 terminal_class = set_terminal(
                     metadata, classify_terminal(line.get("reason")))
                 durable({"type": "terminal", **metadata})

@@ -1,0 +1,7 @@
+# TEST-ONLY board fixture: two adjacent "keep" hexes (defense 0, see
+# ../../data/terrain/keep.toml), one per side's leader. Both leaders start
+# adjacent, so a single Attack action is always legal turn one, with no
+# movement needed.
+width = 2
+height = 1
+tiles = ["keep", "keep"]

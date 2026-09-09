@@ -1,0 +1,36 @@
+# TEST-ONLY unit fixture: dies to a single hit from "Lethal" (max_hp=1 vs 100
+# damage), and cannot kill anything itself -- its attack deals 0 damage, so it
+# is harmless against a "Lethal" (max_hp=20) AND against another "Fragile"
+# (max_hp=1). The second half matters: with damage=1 a Fragile one-shots
+# another Fragile, so the Fragile-vs-Fragile resignation and cap-draw cases
+# ended as a Greedy win before the intended ending was ever reached.
+# Pairing Lethal vs Fragile makes the duel's winner depend only on which side
+# acts first, not on any attack roll.
+id = "Fragile"
+name = "Fragile"
+race = "test"
+level = 1
+experience = 999
+max_hp = 1
+movement = 1
+alignment = "neutral"
+cost = 1
+usage = "fighter"
+abilities = ["leader"]
+advances_to = []
+
+[[attacks]]
+id = "harmless"
+name = "harmless"
+damage = 0
+strikes = 1
+attack_type = "impact"
+range = "melee"
+specials = []
+
+[resistances]
+
+[movement_costs]
+keep = 1
+
+[defense]

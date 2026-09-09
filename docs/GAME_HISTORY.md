@@ -7,10 +7,18 @@ their evidence first appears in the archive, not by revision number, since a
 resumed game can restart the revision counter. A checkpoint is folded onto an
 existing snapshot only when it proves the same execution state (matching
 revision and, when both are known, matching completed side-turn count);
-otherwise it becomes its own snapshot that carries identity, round, side, and
-completed-turn-count evidence but no renderable state (this importer has no
-engine-independent way to rebuild full unit/terrain data from a checkpoint
-alone). A `boundary_kind` of `opening`, `partial`, `side_turn_end`, `terminal`,
+otherwise the importer tries to make it a renderable snapshot in its own right
+by running the read-only `dump_checkpoint` binary (built alongside
+`greedy_driver`; located via `NORRUST_DUMP_CHECKPOINT_BIN` or the conventional
+Cargo target directory), which restores the checkpoint's `SaveState` against
+the current unit/terrain registries and prints the same state shape a logged
+`state` line carries. When that tool is unavailable, or a checkpoint names a
+unit/terrain definition that registry no longer has, the checkpoint still
+becomes its own snapshot -- carrying identity, round, side, and
+completed-turn-count evidence -- but without a renderable state, and the
+reason (`checkpoint_not_renderable:<path>:<reason>`) is recorded as a coverage
+gap rather than silently rendered from today's data or silently dropped. A
+`boundary_kind` of `opening`, `partial`, `side_turn_end`, `terminal`,
 or `resume_checkpoint` labels what each snapshot represents. `side_turns` rows
 reference `start_snapshot_id`/`end_snapshot_id` rather than holding a second
 authoritative copy of the states; `endpoint_link_kind` is `evidence` when both
@@ -33,6 +41,39 @@ linkage remains NULL; imports never attach the nth review or snapshot by positio
 Review IDs, candidate digests, forced partial-limit finishes, and review outcomes
 remain in the archived log/metrics JSON for ad hoc analysis and training-data
 selection.
+
+Each accepted `turn_boundary` record carries the side, round, and both an
+explicit `start_revision` (the state revision at which that side's turn
+began, from the most recent full boundary) and `state_revision` (the revision
+right after that side's own batch, before any opponent response). Recording
+both lets a completed turn bind to an exact snapshot on both ends instead of
+leaving `start_revision` unresolved on every turn. A game's terminal record
+(`type:"terminal"` in the log) always carries an explicit `state_revision` and
+`side_turns`, whatever ended the match — a model or Greedy win, the turn cap,
+a timeout, an infrastructure failure, or a clean EOF — so a boundary count is
+never confused with a round count or misread as a gameplay win. When the
+match ended without the driver having already printed a matching `state`
+line (a winning partial batch that never called `EndTurn`, or a win that
+lands before the next boundary would otherwise print), the driver embeds the
+exact ending snapshot inside its `game_end` line under `state` instead of
+printing a second top-level `type:"state"` line — a live client reads any
+bare one as "keep playing" and would query the now-exiting process. The
+importer treats an embedded terminal `state` exactly like a logged `state`
+line for snapshot purposes.
+
+The opening is recorded the same way, for the same reason. Before either side
+acts, the driver prints a `game_start` line carrying the pre-action snapshot
+under `state`. Without it a game whose model side never receives a turn — the
+opponent moving first, or winning outright on the opening position — would have
+no provable opening at all. Consumers that read the stream positionally must
+expect this record between `protocol` and the first playable `state`.
+
+A single snapshot can hold both roles. When a match ends before any state
+change — a turn-one resignation, or a win on the opening position — the opening
+and the terminal coalesce into one proven state. `boundary_kind` carries only
+one label, so the opening role is tracked separately rather than inferred from
+it; `coverage.opening_present` and `terminal_present` are then both true for
+that one snapshot.
 
 Match logs are append-only evidence. Import them after a game into a SQLite
 catalog; gameplay does not depend on the catalog being available. Importing a

@@ -1,0 +1,8 @@
+# TEST-ONLY faction fixture pairing with Lethal.toml for the S2
+# deterministic-duel scenario. No recruiting is used by these tests, so
+# recruits stays empty.
+id = "fragile"
+name = "Fragile Faction"
+leader_def = "Fragile"
+recruits = []
+starting_gold = 0

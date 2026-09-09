@@ -1,0 +1,15 @@
+# TEST-ONLY terrain fixture for the S2 deterministic-duel scenario.
+#
+# default_defense = 0 makes every hit against a unit standing here land with
+# probability 100% (Rng::roll_hit treats hit_pct >= 100 as an unconditional
+# hit, bypassing the RNG entirely -- see norrust_core::combat::Rng::roll_hit).
+# No shipped terrain grants 0% defense, so this fixture-local override is what
+# makes the duel's outcome deterministic by construction rather than by a
+# lucky seed: whichever side attacks first with a lethal weapon always kills.
+id = "keep"
+name = "Keep"
+symbol = "k"
+default_defense = 0
+default_movement_cost = 1
+healing = 0
+color = "#c8a030"
