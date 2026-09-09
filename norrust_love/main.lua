@@ -124,21 +124,42 @@ end
 
 local function open_replay_bundle(path, browser)
     local bundle = read_json_file(path)
-    shared.replay = replay_mod.new(bundle)
+    assert(type(bundle) == "table" and type(bundle.metadata) == "table", "Replay metadata is missing")
+    local recording = replay_mod.new(bundle)
+    for _, frame in ipairs(bundle.frames) do
+        assert(type(frame.state) == "table", "Replay frame state is missing")
+    end
+    local replay_state = replay_mod.state(recording)
+    local cols, rows = int(replay_state.cols or 8), int(replay_state.rows or 5)
+    assert(cols > 0 and rows > 0, "Replay board dimensions must be positive")
+    local colors = {}
+    for _, tile in ipairs(replay_state.terrain or {}) do
+        colors[int(tile.col) .. "," .. int(tile.row)] = parse_html_color(tile.color) or COLOR_FLAT
+    end
+    shared.replay = recording
     shared.recorded_browser = browser
-    local replay_state = replay_mod.state(shared.replay)
-    scn.COLS = int(replay_state.cols or 8)
-    scn.ROWS = int(replay_state.rows or 5)
+    scn.COLS, scn.ROWS = cols, rows
     game_data.faction_id[1] = shared.replay.bundle.metadata.faction0 or ""
     game_data.faction_id[2] = shared.replay.bundle.metadata.faction1 or ""
     game_data.controllers = {"recorded", "recorded"}
     vars.game_mode = MODES.PLAYING
     vars.game_over = false
     vars.winner_faction = -1
+    sel.unit_id, sel.inspect_id = -1, -1
+    sel.inspect_terrain, sel.advance_choice = nil, nil
+    sel.recruit_mode = false
+    sel.reachable_cells, sel.reachable_set = {}, {}
+    ghost.col, ghost.row, ghost.unit_id = nil, nil, nil
+    ghost.attackable, ghost.path = {}, {}
+    combat_state.preview = nil
+    dlg.active, dlg.history, dlg.show_history = {}, {}, false
+    shared.show_help, shared.exit_confirm = false, false
+    shared.ai_queue, shared.ai_planning = nil, nil
+    campaign.active = false
+    for k in pairs(pending_anims) do pending_anims[k] = nil end
     for k in pairs(tile_color_cache) do tile_color_cache[k] = nil end
-    for _, tile in ipairs(replay_state.terrain or {}) do
-        tile_color_cache[int(tile.col) .. "," .. int(tile.row)] = parse_html_color(tile.color) or COLOR_FLAT
-    end
+    for key, color in pairs(colors) do tile_color_cache[key] = color end
+    if browser then camera_mod.center(true) end -- browser loads after camera initialization
 end
 
 --- Build tile color cache from current engine state.
@@ -793,6 +814,7 @@ function love.draw()
     ctx.show_help = shared.show_help
     ctx.exit_confirm = shared.exit_confirm
     ctx.fog = fog
+    if shared.replay then ctx.fog = nil end -- recordings carry their own visible state
     ctx.replay = shared.replay
     ctx.replay_mod = replay_mod
     -- Camera

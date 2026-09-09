@@ -15,38 +15,72 @@ local C_YELLOW      = common.C_YELLOW
 local draw_sidebar_bg = common.draw_sidebar_bg
 
 local M = {}
+local recorded_games = require("recorded_games")
 
 function M.draw_recorded_games(ctx)
     local browser = ctx.recorded_browser
     local vp_w, vp_h = ctx.vp_w, ctx.vp_h
+    if not browser then return end
+    local layout = recorded_games.layout(browser, vp_w, vp_h)
     love.graphics.setFont(ctx.fonts[18]); love.graphics.setColor(C_GOLD[1], C_GOLD[2], C_GOLD[3], 1)
     love.graphics.printf("Recorded Games", 0, 24, vp_w, "center")
     love.graphics.setFont(ctx.fonts[11]); love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3], 1)
-    love.graphics.print("Up/Down select   Enter or Watch opens replay   F5 refresh   Esc back", 30, 52)
+    love.graphics.print("Up/Down select   Enter watch   PgUp/PgDn pages   F5 refresh   Esc back", 20, 52)
     if browser.error then
         love.graphics.setColor(1, 0.45, 0.35, 1); love.graphics.printf(browser.error, 30, 76, vp_w - 60, "left")
     elseif #browser.rows == 0 then
         love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3], 1); love.graphics.printf("No cataloged games found", 30, 100, vp_w - 60, "left")
     end
-    local y = 86
-    for i, row in ipairs(browser.rows) do
+    local content_width = vp_w - 40
+    local time_width = ctx.fonts[11] and ctx.fonts[11]:getWidth("2026-09-08 23:59:59") + 12 or 132
+    local gold_width = ctx.fonts[11] and ctx.fonts[11]:getWidth("Gold/Turns") + 12 or 76
+    local side_width = (content_width - time_width - gold_width) / 2
+    local side0_x = 20 + time_width + gold_width
+    for _, column in ipairs({{"Played", 20}, {"Gold/Turns", 20 + time_width}, {"Side 0", side0_x}, {"Side 1", side0_x + side_width}}) do
+        love.graphics.print(column[1], column[2], 68)
+    end
+    local function cell(text, x, y, width)
+        local scale = ctx.UI_SCALE or 1
+        love.graphics.setScissor(x * scale, y * scale, math.max(1, width) * scale, 22 * scale)
+        love.graphics.print(text, x, y)
+        love.graphics.setScissor()
+    end
+    for _, rect in ipairs(layout.rows) do
+        local i, y = rect.index, rect.y + 3
+        local row = browser.rows[i]
         local selected = i == browser.selected
         if selected then love.graphics.setColor(0.25, 0.25, 0.16, 1); love.graphics.rectangle("fill", 20, y - 3, vp_w - 40, 23) end
         love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
         local p0 = row.players[1] and (row.players[1].name .. " / " .. tostring(row.players[1].faction or "?")) or "Unknown"
         local p1 = row.players[2] and (row.players[2].name .. " / " .. tostring(row.players[2].faction or "?")) or "Unknown"
-        local result = row.status or "unknown"
-        if row.winner_side ~= nil then result = "Side " .. tostring(row.winner_side) .. " won" end
-        love.graphics.print(string.format("%s  |  %-22s vs %-22s  | %-12s | %s side-turns", tostring(row.started_at or "unknown"), p0, p1, result, tostring(row.side_turns or "?")), 28, y)
-        y = y + 24
+        cell(recorded_games.played_time(row.started_at), 20, y, time_width - 4)
+        cell(recorded_games.gold_turns(row), 20 + time_width, y, gold_width - 4)
+        love.graphics.setColor(recorded_games.side_color(row, 0))
+        cell(p0, side0_x, y, side_width - 4)
+        love.graphics.setColor(recorded_games.side_color(row, 1))
+        cell(p1, side0_x + side_width, y, side_width - 4)
     end
     local d = browser.detail
     if d then
-        local dy = math.min(vp_h - 110, y + 12)
+        local dy = layout.detail_y
         love.graphics.setColor(C_GOLD[1], C_GOLD[2], C_GOLD[3], 1); love.graphics.print("Selected game", 28, dy)
         love.graphics.setColor(C_WHITE[1], C_WHITE[2], C_WHITE[3], 1)
-        love.graphics.print(string.format("%s  %s  seed=%s  gold=%s  cap=%s  reason=%s", d.game_id, d.scenario or "unknown", tostring(d.seed or "?"), tostring(d.starting_gold or "?"), tostring(d.max_side_turns or "?"), tostring(d.termination_reason or "unknown")), 28, dy + 18)
-        love.graphics.print("[ Watch ]        [ Refresh ]", 28, vp_h - 55)
+        love.graphics.setFont(ctx.fonts[9])
+        local p0, p1 = d.players[1], d.players[2]
+        love.graphics.printf(string.format("Side 0: %s (%s)\nSide 1: %s (%s)\n%s  |  %s  seed=%s  gold=%s  cap=%s side turns\nIndexed model boundaries: %s (not duration)  |  Ending: %s",
+            p0.name, p0.faction or "?", p1.name, p1.faction or "?", d.game_id, d.scenario or "unknown",
+            tostring(d.seed or "?"), tostring(d.starting_gold or "?"), tostring(d.max_side_turns or "?"),
+            tostring(d.indexed_boundaries or "?"), recorded_games.result_label(d)), 28, dy + 16, vp_w - 56)
+    end
+    love.graphics.setFont(ctx.fonts[11])
+    for _, item in ipairs({{"watch", "Watch"}, {"refresh", "Refresh"}, {"previous", "Previous"}, {"next", "Next"}, {"menu", "Menu"}}) do
+        local rect = layout[item[1]]
+        love.graphics.setColor(.18, .2, .25, 1); love.graphics.rectangle("fill", rect.x, rect.y, rect.w, rect.h)
+        love.graphics.setColor(1, 1, 1, 1); love.graphics.print(item[2], rect.x + 6, rect.y + 4)
+    end
+    if browser.error or (browser.diagnostics and #browser.diagnostics > 0) then
+        love.graphics.setFont(ctx.fonts[9]); love.graphics.setColor(1, .65, .4, 1)
+        cell(browser.error or table.concat(browser.diagnostics, "; "), 20, vp_h - 50, vp_w - 40)
     end
 end
 
@@ -94,6 +128,8 @@ function M.draw_setup_hud(ctx)
         love.graphics.setFont(fonts[14])
         love.graphics.setColor(C_GRAY[1], C_GRAY[2], C_GRAY[3], 1)
         love.graphics.printf("[L] Load Game     [V] Recorded Games", 0, ly, vp_w, "center")
+        ctx.buttons = ctx.buttons or {}
+        ctx.buttons.recorded_games = {x = vp_w / 2, y = ly, w = 150, h = 22}
 
         -- Quit hint
         love.graphics.printf("[Q] Quit", 0, ly + 24, vp_w, "center")

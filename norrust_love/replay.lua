@@ -29,7 +29,7 @@ end
 function M.update(replay, dt)
     if not replay.playing then return false end
     replay.elapsed = replay.elapsed + math.max(0, dt)
-    if replay.elapsed < M.SPEEDS[replay.speed] / 2 then return false end
+    if replay.elapsed < M.SPEEDS[replay.speed] then return false end
     replay.elapsed = 0
     if M.at_end(replay) then replay.playing = false; return false end
     replay.index = replay.index + 1
@@ -75,8 +75,8 @@ function M.draw_toolbar(replay, ctx)
     local done, total, frame = M.progress(replay)
     love.graphics.setFont(ctx.fonts[11])
     love.graphics.setColor(1, 1, 1, 1)
-    local remaining = math.max(0, (total - done) / 2)
-    love.graphics.print(string.format("Frame %d/%d  ·  Turn %s  ·  %.1f turns remaining  ·  %s", done, total,
+    local remaining = total - done
+    love.graphics.print(string.format("Frame %d/%d  ·  Turn %s  ·  %d frames remaining  ·  %s", done, total,
         tostring(frame.state.turn or "?"), remaining, replay.playing and "Playing" or "Paused"), 10, 26)
     local buttons = {
         {key="back", label="◀ Back 1", x=vp_w-390, w=72},

@@ -733,6 +733,47 @@ class ClientValidationTests(unittest.TestCase):
         self.assertFalse(lethal)
         self.assertIn("danger_after=False", rendered)
 
+    def test_automatic_review_separates_simulated_recruiter_death_from_live_state(self):
+        live = {"type": "state", "active_faction": 0, "state_revision": 130,
+                "gold": [195, 11], "units": [
+                    {"id": 1, "faction": 0, "hp": 48, "max_hp": 48,
+                     "col": 2, "row": 7, "can_recruit": True}]}
+        preview = {"state_revision": 130, "sampling": True, "candidates": [{
+            "valid": True, "post_sweep": {
+                "policy": "driver_greedy_one_response_v1", "evaluation_seed": 17,
+                "coverage": {"own_finish": True, "opponent_response": True},
+                "stages": {
+                    "post_finish": {"sides": [{"side": 0, "recruiters": 1}],
+                                    "units_detail": [{"unit_id": 1, "hp": 48}]},
+                    "post_opponent": {"sides": [{"side": 0, "recruiters": 0}],
+                                      "units_detail": []},
+                },
+            },
+        }]}
+        lines = [live, {"type": "status", "ok": True, "results": [{"ok": True}]},
+                 {"type": "game_end", "reason": "max_turns"}]
+        with mock.patch.object(llm_client, "query_tactical_surface", return_value={}), \
+                mock.patch.object(llm_client, "draft_needs_preview", return_value=True), \
+                mock.patch.object(llm_client, "draft_review_needed", return_value=True), \
+                mock.patch.object(llm_client, "query_preview_batch", return_value=preview):
+            code, records = self.run_with_orders(
+                [self.annotated_orders("draft"), self.annotated_orders("confirm")],
+                lines, return_records=True)
+        self.assertEqual(code, 0)
+        requests = [r for r in records if r["type"] == "model_request"]
+        self.assertEqual(len(requests), 2)
+        prompt = requests[-1]["prompt"]
+        simulation = prompt.split("SIMULATION — NOT EXECUTED BEGIN", 1)[1]
+        simulation, after = simulation.split("SIMULATION — NOT EXECUTED END", 1)
+        self.assertIn("originating_revision=130 sampling=True", simulation)
+        self.assertIn('POST_OPPONENT [{"recruiters":0,"side":0}]', simulation)
+        self.assertIn("POST_OPPONENT_UNITS []", simulation)
+        self.assertNotIn("AUTHORITATIVE_LIVE_STATE_BEGIN", simulation)
+        self.assertIn("Candidate rosters, gold, casualties, villages, and threats are hypothetical", after)
+        live_reminder = after.split("AUTHORITATIVE_LIVE_STATE_BEGIN", 1)[1]
+        self.assertIn("revision=130 controlled_side=0", live_reminder)
+        self.assertIn("recruiters=U1 hp=48 at=2,7", live_reminder)
+
     def test_missing_recruiter_threats_are_unknown_not_safe(self):
         rendered, lethal = compact_draft_review({"candidates": [{"valid": True}]}, False)
         self.assertIsNone(lethal)

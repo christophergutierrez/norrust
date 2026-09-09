@@ -416,8 +416,10 @@ consumers. During the existing single draft review, the client may request
 uses a fixed evaluation seed, applies the candidate's exact finish, and runs at
 most one driver-greedy opponent response. It reports post-finish and
 post-opponent snapshots as an illustration, with policy, seed, sampling, and
-coverage labels. Treat every such result as `SIMULATION — NOT EXECUTED`: its
-roster, gold, casualties, villages, and winner are hypothetical and do not
+coverage labels. Both player-requested previews and automatic draft reviews enclose
+simulated outcomes in `SIMULATION — NOT EXECUTED BEGIN`/`END` markers, followed
+by the authoritative live-state reminder. Simulated rosters, gold, casualties,
+villages, and winners are hypothetical and do not
 replace the live observation. It never mutates live state or claims that one
 sampled branch is a probability or a best move. Queries themselves execute no
 actions. The model may also inspect one friendly unit at a time:

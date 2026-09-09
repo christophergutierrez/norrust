@@ -94,11 +94,18 @@ before this importer (or from an interrupted import) has no matching
 [REPLAY.md](REPLAY.md).
 
 The Love2D **Recorded Games** browser reads the default catalog and valid
-`tmp/**/history.sqlite` catalogs read-only. It deduplicates exact game IDs and
+`tmp/**/*.sqlite` catalogs read-only. It deduplicates exact game IDs and
 uses an adjacent `identity.json` only to fill missing requested model identity;
 that sidecar is not runtime confirmation. Corrupt or unrelated SQLite files are
 skipped with a diagnostic. The browser exports the selected game through the
 same `tools.replay_game` path as the command line launcher.
+
+Browser boundary counts currently count imported model boundaries, not total
+completed side turns. They must not be interpreted as game duration. The browser's
+Gold/Turns column reads the engine ending from the selected page's archives;
+missing ending evidence remains unknown (see [counting conventions](REPLAY.md)). Outcome
+classification and complete recording coverage remain pending browser work;
+see [the browser review](experiments/recorded-game-browser-review.md).
 
 A model concession is stored with termination reason `resignation` and the
 opponent as winner. The `Resign` action remains attributed to the model; it does

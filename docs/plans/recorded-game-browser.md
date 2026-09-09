@@ -1,6 +1,8 @@
 # Recorded games browser in Love2D
 
-Status: planned; implementation has not started.
+Status: partially implemented; the September 8 code review found unmet milestones.
+See `docs/experiments/recorded-game-browser-review.md`. The earlier completion
+report did not establish this plan's acceptance criteria.
 
 ## Outcome and scope
 

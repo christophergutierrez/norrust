@@ -323,14 +323,21 @@ end
 
 local mode_handlers
 
+local function leave_replay()
+    shared.replay = nil
+    sel.inspect_id, sel.unit_id = -1, -1
+    sel.inspect_terrain = nil
+    vars.game_mode = shared.recorded_browser and MODES.RECORDED_GAMES or MODES.PICK_SCENARIO
+end
+
 function M.keypressed(key)
     if vars.game_mode == MODES.RECORDED_GAMES then
         local browser = shared.recorded_browser
         if not browser then return end
         if key == "up" then browser:move(-1)
         elseif key == "down" then browser:move(1)
-        elseif key == "pageup" then browser.offset = math.max(0, browser.offset - 25); browser:refresh()
-        elseif key == "pagedown" then browser.offset = browser.offset + 25; browser:refresh()
+        elseif key == "pageup" then browser:page(-1)
+        elseif key == "pagedown" then browser:page(1)
         elseif key == "f5" then browser:refresh()
         elseif key == "return" or key == "kpenter" then browser:watch()
         elseif key == "escape" then shared.recorded_browser = nil; vars.game_mode = MODES.PICK_SCENARIO; sound.play_music("data/sounds/menu_music.ogg") end
@@ -338,11 +345,9 @@ function M.keypressed(key)
     end
     if shared.replay then
         if key == "escape" then
-            shared.replay = nil
-            vars.game_mode = MODES.RECORDED_GAMES
-            if shared.recorded_browser then shared.recorded_browser:refresh() end
-        elseif key == "left" or key == "a" then replay_mod.step(shared.replay, -2)
-        elseif key == "right" or key == "d" then replay_mod.step(shared.replay, 2)
+            leave_replay()
+        elseif key == "left" or key == "a" then replay_mod.step(shared.replay, -1)
+        elseif key == "right" or key == "d" then replay_mod.step(shared.replay, 1)
         elseif key == "space" then replay_mod.toggle(shared.replay)
         elseif key == "home" or key == "r" then replay_mod.restart(shared.replay)
         end
@@ -414,11 +419,11 @@ function M.mousepressed(sx, sy, button)
         local replay_buttons = shared.buttons.replay_buttons or shared.replay_buttons
         if button == 1 and replay_buttons then
             local function hit(b) return b and x >= b.x and x <= b.x + b.w and y >= b.y and y <= b.y + b.h end
-            if hit(replay_buttons.back) then replay_mod.step(shared.replay, -2); return end
-            if hit(replay_buttons.forward) then replay_mod.step(shared.replay, 2); return end
+            if hit(replay_buttons.back) then replay_mod.step(shared.replay, -1); return end
+            if hit(replay_buttons.forward) then replay_mod.step(shared.replay, 1); return end
             if hit(replay_buttons.play) then replay_mod.toggle(shared.replay); return end
             if hit(replay_buttons.restart) then replay_mod.restart(shared.replay); return end
-            if hit(replay_buttons.back_to_games) then shared.replay = nil; vars.game_mode = MODES.RECORDED_GAMES; return end
+            if hit(replay_buttons.back_to_games) then leave_replay(); return end
             for _, speed in ipairs({"Slow", "Medium", "Fast"}) do
                 if hit(replay_buttons["speed_" .. speed]) then replay_mod.set_speed(shared.replay, speed); return end
             end
@@ -441,13 +446,8 @@ function M.mousepressed(sx, sy, button)
         local browser = shared.recorded_browser
         if button ~= 1 or not browser then return end
         local x, y = screen_to_game(sx, sy)
-        if y >= 70 and y < 70 + #browser.rows * 24 then
-            browser.selected = math.max(1, math.min(#browser.rows, math.floor((y - 70) / 24) + 1))
-            browser.detail = browser.rows[browser.selected]
-        elseif y >= 430 and y < 470 and x < 260 then
-            browser:watch()
-        elseif y >= 430 and y < 470 and x >= 270 then
-            browser:refresh()
+        if recorded_games_mod.click(browser, x, y, get_viewport()) == "menu" then
+            M.keypressed("escape")
         end
         return
     end
@@ -455,6 +455,12 @@ function M.mousepressed(sx, sy, button)
     if pending_anims.move or pending_anims.combat_slide or shared.ai_queue then return end
 
     local x, y = screen_to_game(sx, sy)
+
+    if vars.game_mode == MODES.PICK_SCENARIO and button == 1
+        and recorded_games_mod.hit(shared.buttons.recorded_games, x, y) then
+        input_setup.handle_pick_scenario("v")
+        return
+    end
 
     -- Sidebar: check button clicks, otherwise ignore panel area
     local vp_w = select(1, get_viewport())
@@ -559,6 +565,10 @@ function M.mousemoved(sx, sy, dx, dy)
 end
 
 function M.wheelmoved(x, y)
+    if vars.game_mode == MODES.RECORDED_GAMES then
+        if shared.recorded_browser then shared.recorded_browser:move(-y) end
+        return
+    end
     if dlg.show_history then
         -- Scroll history panel (y > 0 = scroll up = show earlier entries)
         dlg.scroll = math.max(0, dlg.scroll - y * 20)

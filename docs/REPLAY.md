@@ -13,9 +13,12 @@ record the model, it says `LLM (model unavailable)` rather than treating the
 backend transport name as a model. It uses the normal board renderer and
 inspection panel, while
 all gameplay actions and saves are disabled. `Back 1` and `Forward 1` move one
-complete turn (two recorded side boundaries), `Play`/`Pause` follows the
-recording, and `Restart` returns to the first frame. Playback speeds are Slow
-(2 seconds per complete turn), Medium (1 second), and Fast (0.5 seconds).
+recorded frame, as do Left/A and Right/D. A frame is a saved board snapshot;
+snapshots are not necessarily spaced one side-turn or round apart. The toolbar
+shows the recorded turn number and the number of frames remaining, so missing
+snapshots can still produce gaps in turn numbers. `Play`/`Pause` follows the
+recording, and `Restart` returns to frame 0. Playback speeds are Slow
+(2 seconds per frame), Medium (1 second), and Fast (0.5 seconds).
 
 The launcher accepts `--export PATH` to inspect the generated relocatable JSON
 bundle without opening Love2D. Missing or incomplete snapshots are reported;
@@ -50,8 +53,25 @@ From the normal Love2D scenario screen, press `V` for **Recorded Games**. The
 browser lists the newest cataloged games, shows selected participants and
 metadata, and exports the recording internally when **Watch** is selected. Use
 Up/Down and Enter, or the on-screen controls; Escape returns from playback to
-the browser. The manual launcher remains useful for diagnostics.
+the browser (or the menu when launched directly from a bundle). Page Up/Down and
+Previous/Next switch pages; the mouse wheel moves selection. The manual launcher
+remains useful for diagnostics. Browser and replay duration/model labeling still
+have known gaps documented in [the browser review](experiments/recorded-game-browser-review.md).
 
-For a headless startup check of an exported bundle, append `--smoke-replay` to
-the Love2D arguments. The client initializes the normal viewer and exits after
-its first update; this is used by the recorded-game browser smoke evaluation.
+The browser shows timestamps through whole seconds and a compact **Gold/Turns**
+column: `50/15` means 50 starting gold and 15 turns played. Turn counts come from
+the archived engine ending, including the final round for a win; turn-limit
+endings use completed side turns divided by two (so `24.5` means one side
+finished the last turn). Missing ending evidence, including incomplete games,
+shows `?`; imported model-boundary counts are not used as duration.
+
+Side labels are green for the winner, red for the loser, and both yellow for a
+draw. Unknown outcomes stay neutral. Selected-game details retain the written
+result, including resignation and turn-limit endings. A finished record without a
+known outcome says `Outcome unknown`, not `complete`. These labels use catalog
+ending evidence; an unimported error can still appear as `Incomplete` until the
+catalog metadata path is corrected.
+
+For a startup check of an exported bundle, append `--smoke-replay` to the Love2D
+arguments. This still requires an SDL display. The client initializes the paused
+viewer and exits after 0.2 seconds; this does not test playback through the end.

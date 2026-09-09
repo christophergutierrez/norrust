@@ -1662,6 +1662,9 @@ def compact_draft_review(preview: dict[str, Any], danger_before: bool,
         stages = post_sweep.get("stages", {})
         post_finish = stages.get("post_finish") if isinstance(stages, dict) else None
         post_opponent = stages.get("post_opponent") if isinstance(stages, dict) else None
+        lines.append("SIMULATION — NOT EXECUTED BEGIN originating_revision=%s sampling=%s" % (
+            preview.get("state_revision", preview.get("originating_state_revision", "unknown")),
+            preview.get("sampling", "unknown")))
         lines.append("DELEGATION_RESULT policy=%s seed=%s own_events=%s opponent_events=%s" % (
             post_sweep.get("policy", "?"), post_sweep.get("evaluation_seed", "?"),
             post_sweep.get("own_event_count", "?"), post_sweep.get("opponent_event_count", "?")))
@@ -1680,6 +1683,8 @@ def compact_draft_review(preview: dict[str, Any], danger_before: bool,
                     lines.append("%s_VILLAGES %s" % (label, json.dumps(villages, sort_keys=True, separators=(",", ":"))))
         if post_sweep.get("opponent_error"):
             lines.append("DELEGATION_ERROR %s" % str(post_sweep["opponent_error"]).replace("\n", " ")[:240])
+        lines.append("SIMULATION — NOT EXECUTED END; preview queries execute no actions. "
+                     "Candidate rosters, gold, casualties, villages, and threats are hypothetical.")
     if len(candidates) > 1 and isinstance(candidates[0], dict):
         baseline = candidates[0]
         base_summary = baseline.get("summary", {})

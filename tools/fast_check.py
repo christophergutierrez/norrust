@@ -58,6 +58,7 @@ def main() -> int:
     run([sys.executable, "-m", "unittest", "discover", "-s", "tools", "-t", "."], env=env)
     run([luajit, "norrust_love/test_llm_bridge.lua"], env=env)
     run([luajit, "norrust_love/test_replay.lua"], env=env)
+    run([luajit, "norrust_love/test_recorded_games.lua"], env=env)
     run(["git", "diff", "--check"])
     print("NOTE: interactive GUI acceptance is separate from this headless gate", file=sys.stderr)
     return 0

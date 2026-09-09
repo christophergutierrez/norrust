@@ -39,7 +39,9 @@ class FastCheckTests(unittest.TestCase):
                     patch.dict(os.environ, {"CARGO_TARGET_DIR": str(library.parent)}):
                 self.assertEqual(fast_check.main(), 0)
             bridge = [(c, k) for c, k in calls if c[0] == "/test/luajit"]
-            self.assertEqual(len(bridge), 2)
+            self.assertEqual({c[1] for c, _ in bridge}, {
+                "norrust_love/test_llm_bridge.lua", "norrust_love/test_replay.lua",
+                "norrust_love/test_recorded_games.lua"})
             self.assertTrue(all(item[1]["env"]["NORRUST_LIB"] == str(library)
                                 for item in bridge))
             # Catalog tests render checkpoint-only snapshots through this tool;
