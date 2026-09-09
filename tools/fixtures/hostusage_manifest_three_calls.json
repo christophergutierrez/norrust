@@ -1,0 +1,7 @@
+{
+  "game_id": "game-three-calls",
+  "host_thread_id": "thread-solo",
+  "host_evidence_path": "tools/fixtures/hostusage_rollout_three_calls.jsonl",
+  "game_log_path": "tools/fixtures/hostusage_game_log.ndjson",
+  "request_handshake_dir": "tools/fixtures/hostusage_handshake"
+}

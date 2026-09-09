@@ -2503,6 +2503,10 @@ def run(args: argparse.Namespace) -> int:
                     # side's turn start, whether or not it later closed with
                     # an EndTurn before the process stopped.
                     turn_start_revision = line["state_revision"]
+            if record.get("type") == "side_turn_started":
+                # The resumed side continues the turn the parent log left open,
+                # rather than opening a second identity for the same turn.
+                metadata["current_side_turn_id"] = record.get("side_turn_id")
             if record.get("type") == "model" and isinstance(record.get("raw_output"), str):
                 continuity_entries.append("assistant: " + record["raw_output"][:1200])
         continuity_entries = continuity_entries[-4:]
@@ -2540,6 +2544,21 @@ def run(args: argparse.Namespace) -> int:
 
     request_sequence = previous_sequence("request")
     batch_sequence = previous_sequence("batch")
+    # A side turn gets a stable identity the moment it OPENS, before its first
+    # model request, so usage spent on a turn that never reaches an EndTurn is
+    # still attributable to it. Opening a turn is not completing one: this
+    # counter never feeds completed-turn totals or replay frames.
+    side_turn_sequence = previous_sequence("side_turn")
+
+    def open_side_turn(start_revision: Optional[int], round_number: Any) -> None:
+        nonlocal side_turn_sequence
+        side_turn_sequence += 1
+        side_turn_id = f"{metadata.get('conversation_id', 'match')}:side_turn:{side_turn_sequence}"
+        metadata["current_side_turn_id"] = side_turn_id
+        durable({"type": "side_turn_started", "side_turn_id": side_turn_id,
+                 "side": args.llm_side, "round": round_number,
+                 "start_revision": start_revision,
+                 "started_at": datetime.now(timezone.utc).isoformat()})
     def complete_model(model_prompt: str) -> ModelReply:
         nonlocal request_sequence, pending_annotation_notice
         notice, pending_annotation_notice = pending_annotation_notice, None
@@ -2814,6 +2833,7 @@ def run(args: argparse.Namespace) -> int:
                     }[pending_finish_kind]
                     metadata[counter] += 1
                     durable({"type": "turn_boundary",
+                             "side_turn_id": metadata.get("current_side_turn_id"),
                              "authored_finish_kind": pending_finish_kind,
                              "executed_finish_kind": driver_kind or expected_driver_kind,
                              "side": args.llm_side,
@@ -3001,6 +3021,8 @@ def run(args: argparse.Namespace) -> int:
                 if not is_partial_boundary:
                     if isinstance(line.get("state_revision"), int):
                         turn_start_revision = line["state_revision"]
+                    open_side_turn(turn_start_revision,
+                                   state.get("turn") if isinstance(state, dict) else None)
                     model_calls_this_turn = 0
                     tool_calls_this_turn = 0
                     handoff_review_used = False

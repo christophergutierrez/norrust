@@ -844,5 +844,147 @@ class UsageSidecarBindingTests(unittest.TestCase):
             self.assertTrue(any("wrong_game" in g for g in coverage.get("gaps", [])), coverage)
 
 
+
+class HostUsageIntegrationTests(unittest.TestCase):
+    """Stack 2 headline: several host inference calls for ONE harness request.
+
+    Collection writes the same sidecar shape a live adapter writes, so
+    host-collected usage travels through the ordinary importer rather than a
+    second import path that could drift from it.
+    """
+
+    def test_three_host_calls_for_one_request_aggregate_from_the_calls(self):
+        from .collect_model_usage import load_manifest, write_usage_sidecar
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as td:
+            archive = Path(td) / "archive"; archive.mkdir()
+            # Own handshake directory: the shared fixture dir is deliberately
+            # empty, because another test asserts that absent handshake evidence
+            # leaves every call unlinked.
+            handshake = Path(td) / "handshake"; handshake.mkdir()
+            (handshake / "handshake_log.ndjson").write_text(json.dumps({
+                "harness_request_id": "game-three-calls:request:1",
+                "request_id": "000001-aa", "conversation_id": "game-three-calls",
+                "side": 0, "side_turn_id": "game-three-calls:turn:1", "state_revision": 0,
+                "published_at": "2026-01-01T00:00:00Z",
+                "answered_at": "2026-01-01T00:00:04Z"}) + "\n", encoding="utf-8")
+            manifest = load_manifest({
+                "game_id": "game-three-calls", "host_thread_id": "thread-solo",
+                "host_evidence_path": str(root / "tools/fixtures/hostusage_rollout_three_calls.jsonl"),
+                "game_log_path": str(root / "tools/fixtures/hostusage_game_log.ndjson"),
+                "request_handshake_dir": str(handshake)})
+            state0 = {"type": "state", "turn": 1, "active_faction": 0, "cols": 2, "rows": 2,
+                      "terrain": [], "units": [], "state_revision": 0}
+            state1 = dict(state0, active_faction=1, state_revision=1)
+            rows = [
+                {"type": "metadata", "faction0": "undead", "faction1": "undead", "seed": 7,
+                 "llm_side": 0, "conversation_id": "game-three-calls"},
+                {"type": "driver", "line": state0},
+                {"type": "model_request", "request_id": "game-three-calls:request:1",
+                 "status": "completed", "state_revision": 0, "sequence": 1},
+                {"type": "turn_boundary", "accepted": True, "start_revision": 0,
+                 "state_revision": 1, "authored_finish_kind": "explicit_done"},
+                {"type": "driver", "line": state1},
+                {"type": "terminal", "reason": "winner", "winner": 0},
+            ]
+            log = archive / "match.ndjson"
+            log.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+            summary = write_usage_sidecar(manifest, archive / "usage.ndjson")
+            self.assertEqual(summary["calls"], 3)
+            self.assertEqual(summary["linked"], 3, "handshake windows must prove all three")
+            self.assertTrue(summary["finalized"], "fixture thread has task_complete")
+
+            conn = open_history(Path(td) / "history.sqlite")
+            game_id = import_game(conn, log)
+            calls = conn.execute(
+                "SELECT call_id,request_id,input_tokens,output_tokens,reasoning_tokens,total_tokens "
+                "FROM model_calls WHERE game_id=? ORDER BY call_id", (game_id,)).fetchall()
+            conn.close()
+
+        self.assertEqual(len(calls), 3)
+        self.assertEqual({c[1] for c in calls}, {"game-three-calls:request:1"})
+        # The request total is computed FROM the calls. The rollout's per-turn and
+        # per-thread cumulative blocks describe the same spending and must not be
+        # added on top of them.
+        self.assertEqual(sum(c[2] for c in calls), 580)
+        self.assertEqual(sum(c[3] for c in calls), 115)
+        self.assertEqual(sum(c[4] for c in calls), 27)
+        self.assertEqual(sum(c[5] for c in calls), 722)
+
+
+
+class OpenSideTurnTests(unittest.TestCase):
+    """A turn that opened but never closed still owns what was spent inside it.
+
+    Opening a turn must not look like completing one: no end revision, no replay
+    frame, no completed-turn count.
+    """
+
+    def _failed_opening(self, td):
+        archive = Path(td) / "archive"; archive.mkdir()
+        state0 = {"type": "state", "turn": 1, "active_faction": 0, "cols": 2, "rows": 2,
+                  "terrain": [], "units": [], "state_revision": 0}
+        rows = [
+            {"type": "metadata", "faction0": "undead", "faction1": "undead", "seed": 7,
+             "llm_side": 0, "conversation_id": "conv-open"},
+            {"type": "driver", "line": state0},
+            {"type": "side_turn_started", "side_turn_id": "conv-open:side_turn:1",
+             "side": 0, "round": 1, "start_revision": 0},
+            {"type": "model_request", "request_id": "conv-open:request:1",
+             "status": "failed", "state_revision": 0, "sequence": 1},
+            # No accepted turn_boundary: the game died inside its first turn.
+            {"type": "model_error", "code": "action_batch_rejected",
+             "terminal_class": "model_invalid"},
+        ]
+        log = archive / "match.ndjson"
+        log.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+        (archive / "usage.ndjson").write_text(json.dumps({
+            "game_id": "conv-open", "call_id": "c1", "provider": "offline",
+            "transport": "model-command", "status": "failed",
+            "request_id": "conv-open:request:1",
+            "input_tokens": 5881, "output_tokens": 16384, "reasoning_tokens": 16384,
+            "total_tokens": 22265, "finish_reason": "length",
+            "record_kind": "final"}) + "\n", encoding="utf-8")
+        return log
+
+    def test_failed_opening_owns_its_usage_on_an_open_turn(self):
+        with tempfile.TemporaryDirectory() as td:
+            log = self._failed_opening(td)
+            conn = open_history(Path(td) / "history.sqlite")
+            game_id = import_game(conn, log)
+            turns = conn.execute(
+                "SELECT side_turn_id,status,start_revision,end_revision,end_snapshot_id "
+                "FROM side_turns WHERE game_id=?", (game_id,)).fetchall()
+            calls = conn.execute(
+                "SELECT input_tokens,output_tokens,reasoning_tokens,total_tokens "
+                "FROM model_calls WHERE game_id=?", (game_id,)).fetchall()
+            conn.close()
+
+            self.assertEqual(len(turns), 1)
+            side_turn_id, status, start, end, end_snapshot = turns[0]
+            self.assertEqual(side_turn_id, "conv-open:side_turn:1")
+            self.assertEqual(status, "open")
+            self.assertEqual(start, 0)
+            # Open is not completed: nothing that could be read as an ending.
+            self.assertIsNone(end)
+            self.assertIsNone(end_snapshot)
+            # The failed call's usage survives in full, exactly as measured.
+            self.assertEqual(calls, [(5881, 16384, 16384, 22265)])
+
+    def test_an_open_turn_adds_no_replay_frame(self):
+        from .replay_game import build_bundle
+        with tempfile.TemporaryDirectory() as td:
+            log = self._failed_opening(td)
+            db = Path(td) / "history.sqlite"
+            conn = open_history(db)
+            game_id = import_game(conn, log)
+            frames_expected = conn.execute(
+                "SELECT COUNT(*) FROM snapshots WHERE game_id=? AND renderable=1",
+                (game_id,)).fetchone()[0]
+            conn.close()
+            bundle = json.loads(Path(build_bundle(str(db), game_id, Path(td) / "b.json")).read_text())
+            self.assertEqual(len(bundle["frames"]), frames_expected)
+
+
 if __name__ == "__main__":
     unittest.main()

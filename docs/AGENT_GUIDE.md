@@ -49,6 +49,20 @@ that a move was strategically good. Training exports require an explicit review 
 and the exporter does not invent hidden reasoning. Keep generated greedy actions attributed
 to the algorithm and model-authored handoffs attributed to the model.
 
+An absent usage count in the catalog is not automatically lost evidence -- distinguish a
+game whose player had no accountable inference from one whose evidence simply has not been
+collected yet. A maintained API adapter (`tools/fireworks_backend.py`) records its own usage
+automatically on every dispatch, including failures, and needs no separate recovery step: if
+its `usage.ndjson` sidecar is missing, the calls it would have recorded genuinely were not
+made through that adapter. A parent-bound host session (currently Codex-native) is different:
+its own token evidence can sit uncollected on the host after a completed or interrupted game,
+and `python3 -m tools.collect_model_usage` turns that evidence into the same importable
+sidecar shape usage-sidecar import already reads -- see the usage-accounting procedure in
+[LLM_CLIENT.md](LLM_CLIENT.md). Before reporting a game's usage as permanently unknown, check
+whether its launch used a host with a maintained collector and whether that collection step
+actually ran; only then is a NULL usage total genuinely unrecoverable rather than simply not
+yet imported.
+
 For model experiments, inspect resume health before judging play. A successful
 engine result can still be invalid for model comparison if native requests failed
 and greedy fallback completed the game. Check `terminal_class`, request statuses,

@@ -1,0 +1,1 @@
+{"type": "token_usage_record", "ordinal": 1, "timestamp": "2026-06-01T00:00:00Z", "payload": {"response_id": "resp-future-1", "session_id": "sess-future", "thread_id": "thread-future", "turn_id": "turn-1", "root_turn_id": "turn-1", "weird_new_field": 12345}}

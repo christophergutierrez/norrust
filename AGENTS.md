@@ -4,6 +4,10 @@ For a request to play headless Norrust games, read `docs/LLM_CLIENT.md` first.
 Use its client-generated prompt and supported backend examples. The player does
 not need to explore the repository or read `.paul`, bridge documentation, or
 temporary backend scripts unless a concrete setup failure requires it.
+`docs/LLM_CLIENT.md`'s "Usage accounting" section is the authoritative launch,
+handoff, collection, and final-report procedure for every player shape --
+follow it whether or not a subagent is involved; do not skip it because a run
+looks informal.
 
 For recorded-game analysis, read `docs/AGENT_GUIDE.md` and `docs/GAME_HISTORY.md`,
 then inspect the SQLite catalog before individual archives. Treat missing usage,

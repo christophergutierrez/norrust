@@ -80,7 +80,18 @@ class ResignationTests(unittest.TestCase):
                             "SELECT status,winner_side,termination_reason FROM games WHERE game_id=?",
                             (game_id,)).fetchone(), ("complete", 1 - side, "resignation"))
                         self.assertEqual(conn.execute("SELECT action_type FROM actions").fetchall(), [("Resign",)])
-                        self.assertEqual(conn.execute("SELECT count(*) FROM side_turns").fetchone()[0], 0)
+                        # A resigned turn OPENED and never reached an accepted
+                        # boundary. It used to import as no row at all, which left
+                        # anything spent inside it with nowhere to hang. It now
+                        # imports as one OPEN row - and opening a turn must still
+                        # not look like completing one, which is what the
+                        # completed-turn assertions above and the NULL ending here
+                        # pin down.
+                        self.assertEqual(conn.execute(
+                            "SELECT status,end_revision,end_snapshot_id,finish_kind FROM side_turns"
+                        ).fetchall(), [("open", None, None, None)])
+                        self.assertEqual(conn.execute(
+                            "SELECT count(*) FROM side_turns WHERE status != 'open'").fetchone()[0], 0)
                     finally:
                         conn.close()
                     before_resume = log.read_bytes()

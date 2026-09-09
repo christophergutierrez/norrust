@@ -703,6 +703,7 @@ def _import_turns(conn: sqlite3.Connection, game_id: str, records: list[dict[str
     unresolved_starts = 0
     unresolved_ends = 0
     linked_review_indexes: set[int] = set()
+    closed_side_turn_ids: set[str] = set()
     for i, boundary in enumerate(boundaries, 1):
         side_turn_id = boundary.get("side_turn_id") or f"{game_id}:turn:{i}"
         end_revision = _record_revision(boundary)
@@ -758,6 +759,38 @@ def _import_turns(conn: sqlite3.Connection, game_id: str, records: list[dict[str
         for revision in (payload["start_revision"], payload["end_revision"]):
             if revision is not None:
                 record_links[f"revision:{revision}"] = side_turn_id
+        closed_side_turn_ids.add(side_turn_id)
+    # A turn that opened but never reached an accepted boundary - a game that
+    # failed, timed out or was interrupted mid-turn - still owns the work spent
+    # inside it. Import it as an OPEN row so that usage has somewhere honest to
+    # hang. An open turn is deliberately NOT a completed one: it contributes no
+    # end revision, no end snapshot, and nothing that could become a replay
+    # frame or inflate a completed-turn count.
+    open_sequence = len(boundaries)
+    for started in records:
+        if started.get("type") != "side_turn_started":
+            continue
+        side_turn_id = started.get("side_turn_id")
+        if not isinstance(side_turn_id, str) or side_turn_id in closed_side_turn_ids:
+            continue
+        open_sequence += 1
+        start_revision = _number(started.get("start_revision"))
+        before = _snapshot_for_revision(snapshots, start_revision)
+        conn.execute("""INSERT INTO side_turns
+          (side_turn_id,game_id,sequence,round_number,side,status,finish_kind,end_turn_emitted,
+           start_revision,end_revision,start_snapshot_id,end_snapshot_id,endpoint_link_kind,
+           metrics_json,record_hash)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+          (side_turn_id, game_id, open_sequence, started.get("round"),
+           started.get("side") if isinstance(started.get("side"), int) else 0,
+           "open", None, 0,
+           before["revision"] if before else start_revision, None,
+           before["snapshot_id"] if before else None, None,
+           _endpoint_link_kind(before, None),
+           "{}", digest({"open_side_turn": side_turn_id})))
+        record_links[f"side_turn_id:{side_turn_id}"] = side_turn_id
+        closed_side_turn_ids.add(side_turn_id)
+
     return {"linked_reviews": len(linked_review_indexes),
             "unattached_reviews": len(reviews) - len(linked_review_indexes),
             "unresolved_turn_endpoints": unresolved,
@@ -1133,6 +1166,50 @@ def _load_calls(conn: sqlite3.Connection, game_id: str) -> list[ModelCall]:
     return calls
 
 
+def _usage_by_turn(conn: sqlite3.Connection, game_id: str,
+                   calls: list[Any]) -> dict[str, Any]:
+    """Group measured usage by side turn, keeping open turns visible.
+
+    A call reaches a turn only through its request's proven side-turn link;
+    there is no second, independently maintained turn link per call. A call
+    with no proven request, or a request with no proven turn, is reported as
+    unassigned rather than being attached to a nearby turn - it still counts in
+    the game total, and it lowers attribution coverage, which is the honest
+    signal that some spending could not be placed.
+
+    Completed and open turns are reported separately. Averaging an interrupted
+    turn's usage into completed-turn figures would quietly distort both.
+    """
+    turn_of_request = {row[0]: row[1] for row in conn.execute(
+        "SELECT request_id, side_turn_id FROM model_requests "
+        "WHERE game_id=? AND side_turn_id IS NOT NULL", (game_id,))}
+    turn_status = {row[0]: row[1] for row in conn.execute(
+        "SELECT side_turn_id, status FROM side_turns WHERE game_id=?", (game_id,))}
+    grouped: dict[str, list[Any]] = {}
+    unassigned: list[Any] = []
+    for call in calls:
+        side_turn_id = turn_of_request.get(call.request_id) if call.request_id else None
+        (grouped.setdefault(side_turn_id, []) if side_turn_id else unassigned).append(call)
+    turns = []
+    for side_turn_id, members in sorted(grouped.items()):
+        turns.append({"side_turn_id": side_turn_id,
+                      "status": turn_status.get(side_turn_id, "unknown"),
+                      "call_ids": sorted(c.call_id for c in members),
+                      "detail": aggregate_calls(members)})
+    linked = sum(len(m) for m in grouped.values())
+    return {"game_id": game_id, "group_by": "turn",
+            "completed_turns": [t for t in turns if t["status"] not in ("open", "unknown")],
+            "open_turns": [t for t in turns if t["status"] == "open"],
+            "unassigned": {"call_ids": sorted(c.call_id for c in unassigned),
+                           "detail": aggregate_calls(unassigned)},
+            "attribution_coverage": {
+                "linked_calls": linked, "unassigned_calls": len(unassigned),
+                "total_calls": len(calls),
+                # Deliberately None rather than 1.0 for a game with no calls:
+                # no evidence is not full coverage.
+                "linked_fraction": (linked / len(calls)) if calls else None}}
+
+
 def query_usage(conn: sqlite3.Connection, game_id: str, group_by: str = "game") -> dict[str, Any]:
     """Query measured model-call usage for one game, grouped as the contract requires.
 
@@ -1146,11 +1223,13 @@ def query_usage(conn: sqlite3.Connection, game_id: str, group_by: str = "game") 
     combined total when detail and aggregate both exist for a request; that
     would double count or hide a genuine disagreement.
     """
-    if group_by not in ("call", "request", "game"):
+    if group_by not in ("call", "request", "game", "turn"):
         raise ValueError(f"unknown group_by: {group_by!r}")
     if conn.execute("SELECT 1 FROM games WHERE game_id=?", (game_id,)).fetchone() is None:
         raise KeyError(game_id)
     calls = _load_calls(conn, game_id)
+    if group_by == "turn":
+        return _usage_by_turn(conn, game_id, calls)
     request_legacy: dict[str, dict[str, Any]] = {}
     for request_id, input_tokens, cached, output, reasoning in conn.execute(
         """SELECT request_id,input_tokens,cached_input_tokens,output_tokens,reasoning_tokens
@@ -1392,7 +1471,7 @@ def main(argv: list[str]) -> int:
     show = sub.add_parser("game"); show.add_argument("--db", required=True); show.add_argument("game_id")
     turns = sub.add_parser("turns"); turns.add_argument("--db", required=True); turns.add_argument("game_id")
     usage = sub.add_parser("usage"); usage.add_argument("--db", required=True); usage.add_argument("game_id")
-    usage.add_argument("--group-by", choices=("call", "request", "game"), default="game")
+    usage.add_argument("--group-by", choices=("call", "request", "game", "turn"), default="game")
     usage.add_argument("--json", action="store_true")
     inv = sub.add_parser("inventory"); inv.add_argument("--db", required=True)
     backfill = sub.add_parser("backfill-events"); backfill.add_argument("--db", required=True)

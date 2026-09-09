@@ -1,0 +1,7 @@
+{
+  "game_id": "game-trunc",
+  "host_thread_id": "thread-trunc",
+  "host_evidence_path": "tools/fixtures/hostusage_rollout_incomplete_trailing.jsonl",
+  "game_log_path": "tools/fixtures/hostusage_game_log.ndjson",
+  "request_handshake_dir": "tools/fixtures/hostusage_handshake"
+}

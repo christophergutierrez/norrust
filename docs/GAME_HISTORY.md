@@ -312,6 +312,27 @@ separate stored summary; both read live from `model_calls` and
 call in its group has that field unmeasured, so a partial total can never be
 mistaken for a complete one.
 
+    python3 -m tools.game_history usage --db PATH/history.sqlite GAME_ID --group-by turn --json
+
+`--group-by turn` groups measured calls by their request's own proven
+side-turn link rather than maintaining a second, independent turn link on
+the call itself: a call reaches a turn only when its request carries a
+`model_requests.side_turn_id`, which is itself set only when that request's
+recorded `state_revision` matches a proven turn-boundary endpoint. It reports
+`completed_turns` and `open_turns` as separate lists -- averaging an
+interrupted, still-open turn's usage into completed-turn figures would
+distort both -- plus one `unassigned` group holding every call whose request
+has no proven turn link, including a call with no `request_id` at all; an
+unassigned call still counts toward the game total, it just cannot be placed
+on a turn. Each turn or the `unassigned` group carries its member `call_ids`
+and an `aggregate_calls` `detail` block (the same per-field sum/coverage
+shape as the other groupings). `attribution_coverage` reports `linked_calls`,
+`unassigned_calls`, `total_calls`, and `linked_fraction` -- `None`, not `1.0`,
+for a game with zero calls, since no evidence is not full coverage. As with
+`--group-by request`, a turn's calls are its measured detail only; a
+request's own historical `request_aggregate` is never summed into that
+detail.
+
 `inventory`, `verify_history`, and `delete` all cover `model_calls`:
 inventory and verification are read-only and never mutate a catalog merely by
 being browsed; deleting a game or cohort removes its call rows without

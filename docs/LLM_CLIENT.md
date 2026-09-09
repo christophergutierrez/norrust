@@ -213,6 +213,121 @@ to `reply_<ID>.txt` by some other backend or script) still gets diagnosed by the
 same `annotation_for_response` validator inside the client itself, so reading an
 annotation error never requires having used this helper.
 
+## Usage accounting: launch, handoff, collection, and final report
+
+Every model game must produce measured or explicitly UNKNOWN token usage --
+never a silently omitted or fabricated number. This is the authoritative
+procedure; whatever launches a game (a script, an agent, or a human) follows
+it regardless of which player shape it drives. `docs/GAME_HISTORY.md`
+documents the query/coverage semantics this procedure feeds;
+`docs/AGENT_GUIDE.md` distinguishes catalog absence from recoverable host
+evidence; `AGENTS.md` only routes launchers to this section, it does not
+duplicate it.
+
+### What the client and a maintained adapter record automatically
+
+`tools/llm_client.py` allocates a stable harness request ID before every
+dispatch and publishes it -- with the current side-turn identity, live
+revision, controlled side, and requested settings -- to
+`NORRUST_REQUEST_CONTEXT_FILE` (`write_request_context`) before the model
+command runs, so a call that never returns is still attributable. It also
+durably records `side_turn_started` the moment a side turn opens, with a
+stable `side_turn_id`, before that turn's first model request, so usage
+spent on a turn that is interrupted before `EndTurn` still belongs to an
+open turn rather than being lost.
+
+A maintained API adapter records its own usage automatically, including on
+failure. `tools/fireworks_backend.py` appends a `"dispatch"` line to a
+match-owned `usage.ndjson` sidecar immediately before its network call and a
+`"final"` line immediately after a response or error is known -- covering
+empty content, `finish_reason: length`, HTTP errors, and malformed bodies.
+`tools.game_history.import_game` reads that sidecar automatically as part of
+a normal import; no separate collection step exists or is needed for this
+shape. This is the **direct API player**: launch `tools/llm_client.py` with
+`--model-command 'python3 -m tools.fireworks_backend ...'`, run the game to
+completion or interruption, then import -- usage is already durable on disk
+however the game ended.
+
+### Binding a host thread: the launching parent's job
+
+A **parent agent driving a player** whose own inference calls the harness
+cannot see directly (a Codex-native session today; any future host with its
+own evidence tomorrow) is not exempt from accounting just because it isn't a
+subagent -- "no subagent" never exempts a run from usage collection; a direct
+agent player follows the same binding and collection procedure. Before or at
+launch, the parent captures an explicit, match-owned binding: the game's
+`game_id`, the actual host thread ID, the exact path to that host's evidence
+file, the game's own log path, and the request-handshake directory (the
+file-transport `requests/` directory that accumulates
+`handshake_log.ndjson`, written by `tools/file_backend.py`). Never infer this
+binding from "the most recently active session" or from a model name --
+`tools/collect_model_usage.py`'s `load_manifest` refuses to guess it, and a
+launcher must not either.
+
+After the game completes OR is interrupted, and BEFORE import and the final
+report, the parent collects and reconciles host usage:
+
+```bash
+python3 -m tools.collect_model_usage --manifest /absolute/path/manifest.json \
+  --write-sidecar /absolute/run/usage.ndjson
+```
+
+`--manifest` names a JSON file with exactly `game_id`, `host_thread_id`,
+`host_evidence_path`, `game_log_path`, and `request_handshake_dir`. This is
+currently implemented for Codex host sessions: it reads `token_usage_record`
+entries from the host's own rollout evidence and normalizes them through the
+Stack 1 contract (`tools.model_usage.CODEX_USAGE_MAP`); cumulative
+`token_count`/turn/thread totals are reconciliation evidence only and are
+never summed into call rows. It links a call to its owning harness request
+only through a proven handshake window -- the file-transport's own
+`published_at`/`answered_at` timestamps in `handshake_log.ndjson`, never
+timestamp proximity or nth-call pairing (`link_calls_via_handshake`). An
+unproven call is written unlinked and still counts toward the game total.
+
+Check `is_thread_finalized`, or the command's own `finalized` field, before
+treating collection as complete: an unfinalized thread (no `task_complete`
+observed) means collection is provisional and should be repeated once the
+host thread actually finishes. Restarting the collector against the same
+manifest and evidence file is idempotent -- it produces the same call IDs and
+rows every time, so repeating it after an interruption is always safe.
+
+For a host with no maintained collector (there is currently only the
+Codex-native one), host usage for that player's own inference is UNKNOWN --
+say so explicitly in the final report rather than reporting an empty or
+invented total.
+
+### The persistent player subagent
+
+A player subagent (see `tmp/quick-play.md` for a worked recipe) uses the
+maintained file transport: `tools/file_backend.py` writes the harness's
+request context alongside its own transport handshake
+(`handshake_log.ndjson`), and the subagent publishes its reply only through
+`tools.publish_reply`, never by writing `reply_<ID>.txt` directly. This
+preserves the request IDs and timing windows that later usage collection
+depends on.
+
+The subagent must never estimate, self-report, or invent its own token
+counts, and must never place usage fields in its action JSON -- a model's
+self-claimed usage is exactly as unreliable as its self-claimed identity (see
+"Record who played" below), and inventing counts to fill a gap is worse than
+reporting the gap honestly. If a tool/context interruption stops the
+subagent mid-game, it reports its last processed request ID so the SAME
+subagent can be resumed with that context; the parent does not start a
+replacement subagent or treat the interruption as closing out the game's
+usage accounting.
+
+### Final report
+
+Whatever launched the game -- direct API player, parent-bound host session,
+or persistent subagent -- the final report always includes usage totals and
+coverage: run `python3 -m tools.game_history usage --db DB GAME_ID
+--group-by game` (or `--json` for the structured form) after import and
+quote its `measured` totals, `aggregate_only_request_ids`, and
+`unassigned_calls`. An unsupported host, a not-yet-collected host thread, or
+any other missing accounting is reported as explicitly UNKNOWN in the report
+text -- never printed as zero, and never left out because "no number was
+available."
+
 ## Build and run
 
 Build the driver from the repository root:
