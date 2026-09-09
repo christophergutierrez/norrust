@@ -129,6 +129,49 @@ def encode_payload(value: Any) -> tuple[bytes, str, str]:
 def decode_payload(blob: bytes, codec: str = "zlib") -> Any:
     return json.loads(zlib.decompress(blob) if codec == "zlib" else blob)
 
+def requested_identity(artifact_path: str | os.PathLike[str], expected: dict[str, Any],
+                       factions: tuple[Any, Any]) -> tuple[str, int] | None:
+    """Resolve a REQUESTED model identity from an archive's identity.json sidecar.
+
+    A transport such as tools/file_backend.py cannot attach the host's model
+    identity to the catalog, so an operator's sidecar is the only evidence of who
+    played. It is requested identity, never reported: callers must label it as
+    such and must not overwrite an identity the catalog actually recorded.
+
+    Returns (model, llm_side) only when the sidecar names a model AND every field
+    it repeats matches the catalog, so a stale or copied sidecar cannot relabel a
+    different game. Shared by the browser and the replay export so the two views
+    can never disagree about who played.
+    """
+    archive = Path(artifact_path)
+    path = archive / "identity.json" if archive.is_dir() else archive.parent / "identity.json"
+    if not path.is_file():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        requested = value.get("requested", value) if isinstance(value, dict) else {}
+        if not isinstance(requested, dict):
+            return None
+        model = requested.get("llm_player_model") or requested.get("model_requested")
+        side = requested.get("llm_side")
+        if not isinstance(model, str) or not model.strip() or model.strip().lower().startswith("unknown"):
+            return None
+        for key, field in (("game_id", "game_id"), ("seed", "seed"), ("scenario", "scenario"),
+                           ("gold", "starting_gold"), ("starting_gold", "starting_gold"),
+                           ("max_turns", "max_side_turns")):
+            if key in requested and requested[key] != expected.get(field):
+                return None
+        for side_index in (0, 1):
+            key = f"faction{side_index}"
+            if key in requested and requested[key] != factions[side_index]:
+                return None
+        if type(side) is int and side in (0, 1):
+            return model, side
+    except (OSError, ValueError, TypeError):
+        return None
+    return None
+
+
 def open_history(path: str | os.PathLike[str], *, read_only: bool = False) -> sqlite3.Connection:
     path = Path(path)
     if read_only:

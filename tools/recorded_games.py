@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .game_history import open_history
+from .game_history import requested_identity
 from .replay_game import build_bundle
 
 
@@ -80,37 +81,19 @@ def discover_catalogs(root: Path) -> tuple[list[Path], list[str]]:
     return catalogs, diagnostics
 
 
+
 def _sidecar(row: dict[str, Any]) -> None:
-    archive = Path(row["artifact_path"])
-    path = archive / "identity.json" if archive.is_dir() else archive.parent / "identity.json"
-    if not path.is_file():
+    resolved = requested_identity(
+        row["artifact_path"], row,
+        (row["players"][0].get("faction"), row["players"][1].get("faction")))
+    if resolved is None:
         return
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-        requested = value.get("requested", value) if isinstance(value, dict) else {}
-        if not isinstance(requested, dict):
-            return
-        model = requested.get("llm_player_model") or requested.get("model_requested")
-        side = requested.get("llm_side")
-        if not isinstance(model, str) or not model.strip() or model.strip().lower().startswith("unknown"):
-            return
-        for key, field in (("game_id", "game_id"), ("seed", "seed"), ("scenario", "scenario"),
-                           ("gold", "starting_gold"), ("starting_gold", "starting_gold"),
-                           ("max_turns", "max_side_turns")):
-            if key in requested and requested[key] != row.get(field):
-                return
-        for side_index in (0, 1):
-            key = f"faction{side_index}"
-            if key in requested and requested[key] != row["players"][side_index].get("faction"):
-                return
-        if type(side) is int and side in (0, 1):
-            player = row["players"][side]
-            if player.get("kind") == "model" and not player.get("model"):
-                player["name"] = model
-                player["model"] = model
-                player["identity_evidence"] = "requested sidecar"
-    except (OSError, ValueError, TypeError):
-        return
+    model, side = resolved
+    player = row["players"][side]
+    if player.get("kind") == "model" and not player.get("model"):
+        player["name"] = model
+        player["model"] = model
+        player["identity_evidence"] = "requested sidecar"
 
 
 def _played_turns(row: dict[str, Any]) -> int | float | None:

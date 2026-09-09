@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .game_history import IMPORTER_VERSION, decode_payload, open_history
+from .game_history import IMPORTER_VERSION, decode_payload, open_history, requested_identity
 
 BUNDLE_VERSION = 2
 
@@ -52,6 +52,23 @@ def build_bundle(db: str | os.PathLike[str], game_id: str,
                for row in conn.execute(
                    "SELECT side,player_kind,display_name,backend,model_requested,model_reported "
                    "FROM game_players WHERE game_id=? ORDER BY side", (game_id,))]
+    # A transport that cannot report the host's model leaves the catalog's
+    # identity columns NULL, and the viewer would show "LLM (model unavailable)"
+    # for a game whose player is actually recorded in an identity.json sidecar.
+    # The browser already reads that sidecar; resolve it here through the same
+    # helper so the two views cannot disagree about who played. Requested
+    # identity never overwrites an identity the catalog itself recorded, and it
+    # is labelled as requested rather than confirmed.
+    resolved = requested_identity(
+        metadata["artifact_path"], metadata,
+        (metadata.get("faction0"), metadata.get("faction1")))
+    if resolved is not None:
+        model, side = resolved
+        for player in players:
+            if (player["side"] == side and player["player_kind"] == "model"
+                    and not player["model_reported"] and not player["model_requested"]):
+                player["model_requested"] = model
+                player["identity_evidence"] = "requested sidecar"
     rows = conn.execute(
         "SELECT sequence,revision,round_number,active_side,completed_side_turns,boundary_kind,"
         "renderable,state_blob,state_codec FROM snapshots WHERE game_id=? ORDER BY sequence",
