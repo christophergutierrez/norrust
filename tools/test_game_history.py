@@ -11,8 +11,10 @@ from pathlib import Path
 from unittest import mock
 
 from .game_history import (IMPORTER_VERSION, SCHEMA, backup_history, decode_payload, encode_payload,
-                           import_game, delete_history, inventory_history, list_side_turns, open_history,
-                           summarize_game, verify_history)
+                           import_game, delete_history, import_usage_sidecar, inventory_history,
+                           list_side_turns, open_history, query_usage, summarize_game,
+                           usage_sidecar_path, verify_history)
+from .model_usage import ModelCall
 
 FIXTURE = Path(__file__).parent / "fixtures" / "s1_sample_game"
 
@@ -516,6 +518,330 @@ sys.exit(1)
                 "SELECT importer_version FROM games WHERE game_id=?", (game_id,)).fetchone()[0],
                 IMPORTER_VERSION)
             conn.close()
+
+
+def _write_minimal_game(root: Path, *, request_records=(), terminal=None) -> Path:
+    log = root / "match.ndjson"
+    records = [{"type": "metadata"}, *request_records,
+               terminal or {"type": "terminal", "reason": "max_turns"}]
+    log.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+    return log
+
+
+def _sidecar_row(**overrides) -> dict:
+    row = ModelCall(game_id="g", call_id="c").to_row()
+    row.pop("normalization_gaps")
+    row["normalization_gaps"] = []
+    row.update(overrides)
+    return row
+
+
+class ModelCallUsageTests(unittest.TestCase):
+    """Stack 1 acceptance: usage-sidecar import into `model_calls` and the
+    `usage` query/CLI, covering the plan's frozen accounting contract."""
+
+    def test_failed_inference_retains_exact_counts_no_actions_no_winner(self):
+        """input=5881, output=16384, reasoning=16384, total=22265, empty
+        content, finish_reason=length: client stops normally for an
+        inference failure, but SQLite/CLI retain the exact counts."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _write_minimal_game(root, terminal={"type": "terminal", "reason": "model_backend_failure"})
+            (root / "usage.ndjson").write_text("\n".join(json.dumps(row) for row in [
+                _sidecar_row(game_id="g1", call_id="c1", status="dispatched",
+                            provider="fireworks", record_kind="dispatch"),
+                _sidecar_row(game_id="g1", call_id="c1", status="failed", finish_reason="length",
+                            provider="fireworks", input_tokens=5881, output_tokens=16384,
+                            reasoning_tokens=16384, total_tokens=22265, record_kind="final"),
+            ]) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root, game_id="g1")
+            row = conn.execute("""SELECT status,finish_reason,input_tokens,output_tokens,
+                reasoning_tokens,total_tokens FROM model_calls WHERE game_id=? AND call_id='c1'""",
+                (game_id,)).fetchone()
+            self.assertEqual(row, ("failed", "length", 5881, 16384, 16384, 22265))
+            report = query_usage(conn, game_id, "game")
+            self.assertEqual(report["measured"]["input_tokens"]["sum"], 5881)
+            self.assertEqual(report["measured"]["output_tokens"]["sum"], 16384)
+            self.assertEqual(report["measured"]["total_tokens"]["sum"], 22265)
+            self.assertEqual(conn.execute("SELECT count(*) FROM actions WHERE game_id=?",
+                                          (game_id,)).fetchone()[0], 0)
+            self.assertIsNone(conn.execute("SELECT winner_side FROM games WHERE game_id=?",
+                                           (game_id,)).fetchone()[0])
+            conn.close()
+
+    def test_successful_reply_retains_cache_and_unfamiliar_field_no_double_counting(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _write_minimal_game(root)
+            raw_usage = {"input_tokens": 100, "cached_input_tokens": 30, "output_tokens": 50,
+                        "provider_extension": {"speculative_tokens": 7}}
+            (root / "usage.ndjson").write_text(json.dumps(_sidecar_row(
+                game_id="g2", call_id="c1", status="completed", provider="codex",
+                input_tokens=100, cached_input_tokens=30, output_tokens=50,
+                raw_usage_json=raw_usage)) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root, game_id="g2")
+            for _ in range(2):  # reimport must not double count
+                import_game(conn, root, game_id="g2")
+            self.assertEqual(conn.execute("SELECT count(*) FROM model_calls WHERE game_id=?",
+                                          (game_id,)).fetchone()[0], 1)
+            report = query_usage(conn, game_id, "call")
+            call = report["calls"][0]
+            self.assertEqual(call["cached_input_tokens"], 30)
+            self.assertEqual(call["raw_usage_json"]["provider_extension"], {"speculative_tokens": 7})
+            conn.close()
+
+    def test_explicit_retry_creates_second_call_duplicates_do_not(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _write_minimal_game(root)
+            (root / "usage.ndjson").write_text("\n".join(json.dumps(row) for row in [
+                _sidecar_row(game_id="g3", call_id="c1", status="dispatched"),
+                _sidecar_row(game_id="g3", call_id="c1", status="dispatched"),  # duplicate notification
+                _sidecar_row(game_id="g3", call_id="c1", status="failed", error_code="timeout"),
+                _sidecar_row(game_id="g3", call_id="c2", retry_of_call_id="c1", status="completed",
+                            input_tokens=10, output_tokens=5),
+            ]) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root, game_id="g3")
+            rows = conn.execute("SELECT call_id,status FROM model_calls WHERE game_id=? ORDER BY call_id",
+                                (game_id,)).fetchall()
+            self.assertEqual(rows, [("c1", "failed"), ("c2", "completed")])
+            import_game(conn, root, game_id="g3")  # reimport: still exactly two calls
+            self.assertEqual(conn.execute("SELECT count(*) FROM model_calls WHERE game_id=?",
+                                          (game_id,)).fetchone()[0], 2)
+            conn.close()
+
+    def test_refused_before_dispatch_is_zero_calls_lost_dispatch_is_one_unknown_call(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _write_minimal_game(root)
+            # A locally blocked request never reaches a provider: no sidecar
+            # line is written for it at all, so it owns zero calls.
+            (root / "usage.ndjson").write_text(json.dumps(_sidecar_row(
+                game_id="g4", call_id="lost-1", status="dispatched")) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root, game_id="g4")
+            rows = conn.execute("SELECT call_id,status,input_tokens FROM model_calls WHERE game_id=?",
+                                (game_id,)).fetchall()
+            self.assertEqual(rows, [("lost-1", "dispatched", None)])
+            conn.close()
+
+    def test_conflict_fixture_exposes_disagreement_without_last_writer_wins(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _write_minimal_game(root)
+            (root / "usage.ndjson").write_text("\n".join(json.dumps(row) for row in [
+                _sidecar_row(game_id="g5", call_id="c1", status="completed", input_tokens=10),
+                _sidecar_row(game_id="g5", call_id="c1", status="completed", input_tokens=99),
+            ]) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root, game_id="g5")
+            input_tokens, gaps_json = conn.execute(
+                "SELECT input_tokens,normalization_gaps_json FROM model_calls WHERE game_id=?",
+                (game_id,)).fetchone()
+            self.assertEqual(input_tokens, 10)  # retained, not overwritten by the later value
+            self.assertTrue(any("conflict" in g for g in json.loads(gaps_json)))
+            conn.close()
+
+    def test_pre_feature_catalog_retains_request_aggregate_without_inventing_calls(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _write_minimal_game(root, request_records=[
+                {"type": "model_request", "request_id": "req-1",
+                 "usage": {"input_tokens": 500, "output_tokens": 120}},
+            ])
+            # No usage.ndjson sidecar at all -- a pre-feature archive.
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root, game_id="g6")
+            self.assertEqual(conn.execute("SELECT count(*) FROM model_calls WHERE game_id=?",
+                                          (game_id,)).fetchone()[0], 0)
+            report = query_usage(conn, game_id, "request")
+            entry = next(e for e in report["requests"] if e["request_id"] == "req-1")
+            self.assertEqual(entry["detail"], None)
+            self.assertEqual(entry["request_aggregate"]["kind"], "request_aggregate")
+            self.assertEqual(entry["request_aggregate"]["tokens"]["input_tokens"], 500)
+            # The preserved request row itself is untouched.
+            self.assertEqual(conn.execute(
+                "SELECT input_tokens FROM model_requests WHERE request_id='req-1'").fetchone()[0], 500)
+            conn.close()
+
+    def test_usage_sidecar_path_convention_is_sibling_to_archive(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self.assertEqual(usage_sidecar_path(root), root.resolve() / "usage.ndjson")
+            log = root / "match.ndjson"
+            log.write_text("{}\n")
+            self.assertEqual(usage_sidecar_path(log), root.resolve() / "usage.ndjson")
+
+    def test_malformed_sidecar_line_reported_not_dropped_silently(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _write_minimal_game(root)
+            (root / "usage.ndjson").write_text(
+                "not json\n" + json.dumps(_sidecar_row(game_id="g7", call_id="c1")) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root, game_id="g7")
+            coverage = json.loads(conn.execute(
+                "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+            self.assertEqual(coverage["usage_status"], "incomplete")
+            self.assertTrue(any(g.startswith("usage_malformed:") for g in coverage["gaps"]))
+            self.assertEqual(conn.execute("SELECT count(*) FROM model_calls WHERE game_id=?",
+                                          (game_id,)).fetchone()[0], 1)
+            conn.close()
+
+    def test_verify_inventory_delete_cover_model_calls(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _write_minimal_game(root)
+            (root / "usage.ndjson").write_text(json.dumps(_sidecar_row(
+                game_id="g8", call_id="c1", status="completed", input_tokens=1)) + "\n")
+            db = root / "history.sqlite"
+            conn = open_history(db)
+            game_id = import_game(conn, root, game_id="g8")
+            conn.close()
+            self.assertEqual(verify_history(db)["counts"]["model_calls"], 1)
+            self.assertEqual(verify_history(db)["dangling_call_request_links"], 0)
+            conn = open_history(db)
+            self.assertEqual(inventory_history(conn)["counts"]["model_calls"], 1)
+            delete_history(conn, game_ids=[game_id])
+            self.assertEqual(conn.execute("SELECT count(*) FROM model_calls").fetchone()[0], 0)
+            conn.close()
+
+    def test_import_usage_sidecar_standalone_entry_point(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _write_minimal_game(root)
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root, game_id="g9")
+            sidecar = root / "external_usage.ndjson"
+            sidecar.write_text(json.dumps(_sidecar_row(
+                game_id="g9", call_id="c1", status="completed", output_tokens=42)) + "\n")
+            result = import_usage_sidecar(conn, "g9", sidecar)
+            self.assertEqual(result["imported"], 1)
+            self.assertEqual(conn.execute(
+                "SELECT output_tokens FROM model_calls WHERE game_id=?", (game_id,)).fetchone()[0], 42)
+            conn.close()
+
+
+DRIVER = Path(os.environ.get("NORRUST_TEST_DRIVER", Path(__file__).resolve().parents[1]
+                             / "norrust_core/target/debug/greedy_driver"))
+FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "norrust_core/tests/fixtures/s2_deterministic_duel"
+OFFLINE_RESPONDER = Path(__file__).resolve().parent / "fixtures" / "usage_offline_responder.py"
+
+
+@unittest.skipUnless(DRIVER.is_file(), "build greedy_driver before running real-driver tests")
+@unittest.skipUnless(FIXTURE_ROOT.is_dir(), "s2_deterministic_duel fixture is missing")
+class RealDriverUsageIntegrationTests(unittest.TestCase):
+    """A real-driver game played by a synthetic offline `--model-command`
+    responder, with usage collected through the maintained sidecar
+    convention -- no network, no credentials. Reuses the fixture/pattern
+    from tools/test_s2_deterministic_endings.py."""
+
+    def test_short_offline_game_imports_reimports_and_queries_usage(self):
+        import subprocess
+        import sys
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            log = root / "match.ndjson"
+            sidecar = root / "usage.ndjson"
+            command = (f"{sys.executable} {OFFLINE_RESPONDER}")
+            args = [sys.executable, "-m", "tools.llm_client", "--driver", str(DRIVER),
+                   "--model-command", command, "--scenario", "duel",
+                   "--faction0", "fragile", "--faction1", "fragile", "--gold", "0",
+                   "--seed", "42", "--llm-side", "0", "--max-turns", "1",
+                   "--log", str(log), "--query-budget-seconds", "10", "--model-timeout", "10",
+                   "--turn-timeout", "30"]
+            env = dict(os.environ, NORRUST_TEST_ROOT_DIR=str(FIXTURE_ROOT),
+                      NORRUST_USAGE_SIDECAR=str(sidecar), NORRUST_FIXTURE_GAME_ID="offline-usage-1")
+            root_dir = Path(__file__).resolve().parents[1]
+            result = subprocess.run(args, cwd=root_dir, env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr[-3000:])
+            self.assertTrue(sidecar.is_file(), "offline responder must have written a usage sidecar")
+
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root, game_id="offline-usage-1")
+            calls_first = conn.execute(
+                "SELECT call_id,status,input_tokens,output_tokens FROM model_calls WHERE game_id=? ORDER BY call_id",
+                (game_id,)).fetchall()
+            self.assertTrue(calls_first, "expected at least one imported model call")
+            for call_id, status, *_ in calls_first:
+                self.assertEqual(status, "completed")
+
+            # Reimport with identical results (idempotent).
+            import_game(conn, root, game_id="offline-usage-1")
+            calls_second = conn.execute(
+                "SELECT call_id,status,input_tokens,output_tokens FROM model_calls WHERE game_id=? ORDER BY call_id",
+                (game_id,)).fetchall()
+            self.assertEqual(calls_first, calls_second)
+
+            report = query_usage(conn, game_id, "game")
+            self.assertEqual(report["call_count"], len(calls_first))
+            verification = verify_history(root / "history.sqlite")
+            self.assertEqual(verification["integrity"], "ok")
+            self.assertEqual(verification["foreign_key_errors"], 0)
+            self.assertEqual(verification["dangling_call_request_links"], 0)
+            self.assertEqual(verification["cross_game_call_links"], 0)
+            conn.close()
+
+
+
+class UsageSidecarBindingTests(unittest.TestCase):
+    """An adapter cannot know the catalog game_id: it is derived at import.
+
+    It does know the match's conversation_id, which the client publishes in the
+    request context. Binding on that keeps the cross-game protection while making
+    a sidecar written during play actually importable.
+    """
+
+    def _archive(self, root, conversation_id, sidecar_game_ids):
+        archive = root / "archive"; archive.mkdir()
+        log = archive / "match.ndjson"
+        state0 = {"type": "state", "turn": 1, "active_faction": 0, "cols": 2, "rows": 2,
+                  "terrain": [], "units": [], "state_revision": 0}
+        state1 = dict(state0, active_faction=1, state_revision=1)
+        rows = [
+            {"type": "metadata", "faction0": "undead", "faction1": "undead", "seed": 7,
+             "llm_side": 0, "conversation_id": conversation_id},
+            {"type": "driver", "line": state0},
+            {"type": "turn_boundary", "accepted": True, "start_revision": 0,
+             "state_revision": 1, "authored_finish_kind": "explicit_done"},
+            {"type": "driver", "line": state1},
+            {"type": "terminal", "reason": "winner", "winner": 0},
+        ]
+        log.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+        lines = []
+        for index, gid in enumerate(sidecar_game_ids):
+            lines.append(json.dumps({
+                "game_id": gid, "call_id": f"c{index}", "provider": "offline",
+                "transport": "model-command", "status": "completed",
+                "input_tokens": 10, "output_tokens": 2, "record_kind": "final"}))
+        (archive / "usage.ndjson").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return log
+
+    def _import(self, root, conversation_id, sidecar_game_ids):
+        log = self._archive(root, conversation_id, sidecar_game_ids)
+        conn = open_history(root / "history.sqlite")
+        game_id = import_game(conn, log)
+        calls = conn.execute("SELECT call_id FROM model_calls WHERE game_id=?", (game_id,)).fetchall()
+        coverage = json.loads(conn.execute(
+            "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+        conn.close()
+        return game_id, [c[0] for c in calls], coverage
+
+    def test_a_sidecar_written_under_the_conversation_id_is_imported(self):
+        with tempfile.TemporaryDirectory() as td:
+            _, calls, coverage = self._import(Path(td), "conv-abc", ["conv-abc"])
+            self.assertEqual(calls, ["c0"])
+            self.assertEqual(coverage.get("usage_status"), "complete")
+
+    def test_a_sidecar_from_a_different_match_is_still_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            _, calls, coverage = self._import(Path(td), "conv-abc", ["conv-somebody-else"])
+            self.assertEqual(calls, [], "another match's usage must never be attributed here")
+            self.assertTrue(any("wrong_game" in g for g in coverage.get("gaps", [])), coverage)
 
 
 if __name__ == "__main__":

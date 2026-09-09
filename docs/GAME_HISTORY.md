@@ -232,6 +232,93 @@ request IDs, opponent boundary states, and usage measurements remain unknown.
 It does not infer tactical quality from a winner or from a model action. Use the
 original log, request journal, and checkpoint directory as the source archive.
 
+## Model calls vs. harness requests
+
+`model_requests` is the harness-request ledger: one row per prompt the client
+sent and (when the request completed) the reply it got back, with whatever
+usage the backend happened to report inline. A harness request can involve
+several underlying provider/host inference calls -- a publication attempt,
+an inspection/tool call, a retried call after a transport error -- so
+`model_requests` is too coarse to be the detailed usage ledger.
+
+`model_calls` is that detailed ledger. Each row is one actual provider/host
+inference response, or one observable dispatched attempt whose outcome is
+unknown; a locally blocked request that never reached a provider owns zero
+call rows, never a synthetic one. Calls are never deduplicated by prompt
+hash: two paid retries of the same prompt are two distinct `call_id`s.
+Repeated lifecycle records for the same call (a "dispatch" line, then a
+"final" line once the provider replies) UPSERT that one row; two "final"
+records that disagree on a token count are recorded as an explicit
+`normalization_gaps` conflict entry rather than the later value silently
+overwriting the earlier one. Token counts are normalized strictly: booleans,
+negative numbers, and numeric strings are rejected as measured counts and
+kept as reported gaps, never coerced to zero, and `total_tokens` is only ever
+what the provider itself reported -- it is never computed by summing input,
+cached, output, and reasoning tokens.
+
+A `model_calls` row links to its owning request through a nullable
+`request_id` (unlinked calls -- e.g. one whose association couldn't be
+proven -- still count toward the game total) and derives its side-turn only
+through that request's own proven side-turn link; there is no second,
+independently-maintained turn link on the call itself.
+
+Historical archives recorded before this table existed have no per-call
+detail at all -- only the request's own aggregate usage columns. Querying
+those surfaces that total as an explicitly labeled `request_aggregate`,
+used only for reconciliation. It is never invented into a synthetic call and
+never added to a request's measured child-call total, even when both exist
+for the same request; a genuine conflict between the two is reported, not
+silently favored one way.
+
+### Usage sidecar
+
+A maintained backend (`tools/fireworks_backend.py`) writes its own durable
+usage evidence to a match-owned NDJSON sidecar as calls are dispatched and
+resolved -- before returning a reply or raising on failure, so an emptied or
+malformed provider response still leaves exact counts on disk. The
+conventional path is `usage.ndjson` next to the archive's own `match.ndjson`
+(`tools.game_history.usage_sidecar_path`); a relocated archive copy keeps its
+usage evidence alongside it since the path is derived from the archive
+location, never from cwd or a launcher-specific setting.
+
+Each sidecar line is one lifecycle record for one call: a `"dispatch"` line
+written immediately before the network call, and a `"final"` line -- sharing
+the same `call_id` -- written immediately after a response or error is known.
+A process killed between the two still leaves the dispatch line as evidence:
+importing it produces one call row with unknown final usage, not zero calls
+and not a fabricated normal outcome. `tools.game_history.import_game` reads
+this sidecar automatically as part of a normal import (no separate step);
+`tools.game_history.import_usage_sidecar(conn, game_id, path)` is the
+standalone entry point for importing usage evidence recorded elsewhere.
+Reimporting an unchanged sidecar, or one containing duplicate dispatch/final
+notifications, produces identical `model_calls` rows -- never extra ones.
+
+### Querying usage
+
+    python3 -m tools.game_history usage --db PATH/history.sqlite GAME_ID --group-by call
+    python3 -m tools.game_history usage --db PATH/history.sqlite GAME_ID --group-by request
+    python3 -m tools.game_history usage --db PATH/history.sqlite GAME_ID --group-by game --json
+
+`--group-by call` lists every detailed row (raw usage JSON, lifecycle,
+settings) plus per-field coverage across the game. `--group-by request`
+groups detailed calls under their harness request and attaches any
+historical `request_aggregate` for that request as reconciliation-only
+context. `--group-by game` (the default) reports one measured aggregate
+across every call, which requests have only an aggregate-only historical
+total, and how many calls carry no request link. `--json` prints the same
+structure the human-readable text output is built from -- there is no
+separate stored summary; both read live from `model_calls` and
+`model_requests`. A field's aggregate `sum` is labeled `PARTIAL` whenever any
+call in its group has that field unmeasured, so a partial total can never be
+mistaken for a complete one.
+
+`inventory`, `verify_history`, and `delete` all cover `model_calls`:
+inventory and verification are read-only and never mutate a catalog merely by
+being browsed; deleting a game or cohort removes its call rows without
+touching any other game's usage; verification reports dangling
+call-to-request links and any call attributed across a game boundary
+(`dangling_call_request_links`, `cross_game_call_links`; both expected zero).
+
 ## Runtime health and maintenance
 
 An engine winner does not by itself make a model evaluation valid. Inspect the

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+from dataclasses import replace
 import os
 import sqlite3
 import subprocess
@@ -12,7 +13,12 @@ import zlib
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 4
+try:
+    from .model_usage import ModelCall, TOKEN_FIELDS, aggregate_calls, dedupe_calls, request_aggregate_from_legacy
+except ImportError:  # pragma: no cover - direct script compatibility
+    from model_usage import ModelCall, TOKEN_FIELDS, aggregate_calls, dedupe_calls, request_aggregate_from_legacy  # type: ignore
+
+SCHEMA_VERSION = 5
 # IMPORTER_VERSION guards the SNAPSHOT TIMELINE contract that tools/replay_game.py
 # refuses to export against. Storing executed events did not change how a frame is
 # built, so it deliberately does NOT bump: bumping it would make all previously
@@ -101,6 +107,25 @@ CREATE TABLE IF NOT EXISTS decision_evaluations (
  reason_codes_json TEXT NOT NULL, metrics_json TEXT NOT NULL, evidence_json TEXT NOT NULL,
  preferred_request_id TEXT, PRIMARY KEY(evaluation_run_id, request_id)
 );
+CREATE TABLE IF NOT EXISTS model_calls (
+ game_id TEXT NOT NULL REFERENCES games(game_id), call_id TEXT NOT NULL,
+ request_id TEXT, retry_of_call_id TEXT,
+ provider TEXT, transport TEXT, native_thread_id TEXT, provider_response_id TEXT,
+ requested_model TEXT, reported_model TEXT, requested_reasoning_effort TEXT,
+ reported_reasoning_effort TEXT, output_limit INTEGER,
+ status TEXT NOT NULL, finish_reason TEXT, error_code TEXT,
+ started_at TEXT, ended_at TEXT, elapsed_ms INTEGER,
+ input_tokens INTEGER, cached_input_tokens INTEGER, cache_write_input_tokens INTEGER,
+ output_tokens INTEGER, reasoning_tokens INTEGER, total_tokens INTEGER,
+ usage_source TEXT, usage_schema_version TEXT, raw_usage_json TEXT,
+ source_ref TEXT, source_hash TEXT, linkage_evidence TEXT,
+ normalization_gaps_json TEXT NOT NULL DEFAULT '[]',
+ record_hash TEXT NOT NULL,
+ PRIMARY KEY(game_id, call_id)
+);
+CREATE INDEX IF NOT EXISTS idx_calls_game_request ON model_calls(game_id, request_id);
+CREATE INDEX IF NOT EXISTS idx_calls_source_identity
+ ON model_calls(provider, native_thread_id, provider_response_id);
 CREATE INDEX IF NOT EXISTS idx_games_cohort ON games(cohort_id);
 CREATE INDEX IF NOT EXISTS idx_games_commit ON games(source_commit);
 CREATE INDEX IF NOT EXISTS idx_players_model ON game_players(model_reported, game_id);
@@ -599,6 +624,19 @@ def import_game(conn: sqlite3.Connection, archive: str | os.PathLike[str],
             coverage["events_status"] = "no_event_evidence"
         else:
             coverage["events_status"] = "complete"
+        usage_result = _apply_usage_calls(conn, game_id, usage_sidecar_path(root),
+                                          conversation_id=metadata.get("conversation_id"))
+        if usage_result["malformed"]:
+            coverage["usage_status"] = "incomplete"
+            coverage["gaps"] = sorted(set(coverage["gaps"]) |
+                                      {f"usage_malformed:{m}" for m in usage_result["malformed"]})
+        elif usage_result["imported"] == 0:
+            coverage["usage_status"] = "no_usage_evidence"
+        else:
+            coverage["usage_status"] = "complete"
+        if usage_result["conflicts"]:
+            coverage["conflicts"] = sorted(set(coverage.get("conflicts", [])) |
+                                           {f"usage_conflict:{k}:{v}" for k, vs in usage_result["conflicts"].items() for v in vs})
         conn.execute("UPDATE games SET coverage_json=? WHERE game_id=?",
                      (json.dumps(coverage, sort_keys=True), game_id))
     return game_id
@@ -894,6 +932,114 @@ def _import_events(conn: sqlite3.Connection, game_id: str, records: list[dict[st
     return {"imported": sequence, "malformed": malformed}
 
 
+_MODEL_CALL_COLUMNS = (
+    "game_id", "call_id", "request_id", "retry_of_call_id", "provider", "transport",
+    "native_thread_id", "provider_response_id", "requested_model", "reported_model",
+    "requested_reasoning_effort", "reported_reasoning_effort", "output_limit",
+    "status", "finish_reason", "error_code", "started_at", "ended_at", "elapsed_ms",
+    "input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens",
+    "reasoning_tokens", "total_tokens", "usage_source", "usage_schema_version",
+)
+
+
+def usage_sidecar_path(archive: str | os.PathLike[str]) -> Path:
+    """The conventional match-owned usage sidecar path for an archive.
+
+    `tools/fireworks_backend.py` (and any other maintained adapter) appends
+    durable per-call lifecycle records here; the importer reads it read-only.
+    Sibling to the archive's own directory -- never inferred from cwd or a
+    launcher-specific location, so a relocated archive copy keeps its usage
+    evidence alongside it.
+    """
+    root = Path(archive).resolve()
+    directory = root if root.is_dir() else root.parent
+    return directory / "usage.ndjson"
+
+
+def _read_usage_sidecar(path: Path) -> tuple[list[ModelCall], list[str]]:
+    """Read raw usage-sidecar lines into ModelCall records, reporting malformed lines.
+
+    A malformed line (invalid JSON, missing game_id/call_id, or a field the
+    dataclass rejects) is never silently dropped: it is reported by exact
+    source position, and well-formed lines around it still import.
+    """
+    records: list[ModelCall] = []
+    malformed: list[str] = []
+    if not path.is_file():
+        return records, malformed
+    call_fields = set(ModelCall.__dataclass_fields__)
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            malformed.append(f"line:{line_number}:invalid_json")
+            continue
+        if not isinstance(row, dict) or not row.get("game_id") or not row.get("call_id"):
+            malformed.append(f"line:{line_number}:missing_identity")
+            continue
+        fields = {key: value for key, value in row.items() if key in call_fields and key != "normalization_gaps"}
+        gaps = row.get("normalization_gaps") or []
+        try:
+            call = ModelCall(**fields)
+        except TypeError as exc:
+            malformed.append(f"line:{line_number}:{exc}")
+            continue
+        call.normalization_gaps = list(gaps) if isinstance(gaps, list) else []
+        records.append(call)
+    return records, malformed
+
+
+def _apply_usage_calls(conn: sqlite3.Connection, game_id: str,
+                       sidecar_path: str | os.PathLike[str],
+                       conversation_id: str | None = None) -> dict[str, Any]:
+    """Rebuild this game's model_calls rows from its usage sidecar, without its own transaction.
+
+    Called both standalone (wrapped in `with conn:` by `import_usage_sidecar`)
+    and from within `import_game`'s single transaction. Deterministically
+    replaces the game's prior model_calls rows -- repeated lifecycle records
+    for one call_id UPSERT via `tools.model_usage.dedupe_calls`, so
+    reimporting an unchanged sidecar, or one with duplicate dispatch/final
+    notifications, produces identical rows rather than extra ones.
+    """
+    raw_records, malformed = _read_usage_sidecar(Path(sidecar_path))
+    # An adapter cannot know the catalog game_id: it is derived here, at import,
+    # long after the call was paid for. What the adapter does know is the match's
+    # conversation_id, which the client publishes in the request context. Accept
+    # either identity and rebind to the catalog id, so a sidecar written during
+    # play is usable while a sidecar belonging to a DIFFERENT match is still
+    # refused - the cross-game protection is the point, the binding key was not.
+    accepted = {game_id} | ({conversation_id} if conversation_id else set())
+    for record in raw_records:
+        if record.game_id not in accepted:
+            malformed.append(f"call:{record.call_id}:wrong_game:{record.game_id}")
+    raw_records = [replace(r, game_id=game_id) for r in raw_records if r.game_id in accepted]
+    deduped, conflicts = dedupe_calls(raw_records)
+    conn.execute("DELETE FROM model_calls WHERE game_id=?", (game_id,))
+    for call in deduped:
+        row = call.to_row()
+        conn.execute(f"""INSERT INTO model_calls
+          ({",".join(_MODEL_CALL_COLUMNS)},raw_usage_json,source_ref,source_hash,
+           linkage_evidence,normalization_gaps_json,record_hash)
+          VALUES({",".join("?" * len(_MODEL_CALL_COLUMNS))},?,?,?,?,?,?)""",
+          tuple(row[k] for k in _MODEL_CALL_COLUMNS) + (
+              json.dumps(call.raw_usage_json, sort_keys=True, default=str)
+              if call.raw_usage_json is not None else None,
+              call.source_ref, call.source_hash, call.linkage_evidence,
+              json.dumps(sorted(set(call.normalization_gaps)), sort_keys=True),
+              digest({"game_id": call.game_id, "call_id": call.call_id, "row": row})))
+    return {"imported": len(deduped), "malformed": sorted(set(malformed)),
+            "conflicts": {f"{g}:{c}": v for (g, c), v in conflicts.items()}}
+
+
+def import_usage_sidecar(conn: sqlite3.Connection, game_id: str,
+                         sidecar_path: str | os.PathLike[str]) -> dict[str, Any]:
+    """Standalone entry point: import one game's usage sidecar in its own transaction."""
+    with conn:
+        return _apply_usage_calls(conn, game_id, sidecar_path)
+
+
 def _turn_links_from_db(conn: sqlite3.Connection, game_id: str) -> dict[str, str]:
     """Rebuild the revision->side_turn_id map from already-imported side_turns.
 
@@ -970,6 +1116,127 @@ def list_side_turns(conn: sqlite3.Connection, game_id: str) -> list[dict[str, An
                           WHERE game_id=? ORDER BY sequence""", (game_id,))
     return [dict(zip([d[0] for d in cur.description], row)) for row in cur]
 
+def _load_calls(conn: sqlite3.Connection, game_id: str) -> list[ModelCall]:
+    columns = list(_MODEL_CALL_COLUMNS) + ["raw_usage_json", "source_ref", "source_hash",
+                                           "linkage_evidence", "normalization_gaps_json"]
+    cur = conn.execute(f"SELECT {','.join(columns)} FROM model_calls WHERE game_id=? ORDER BY rowid",
+                       (game_id,))
+    calls = []
+    for row in cur:
+        values = dict(zip(columns, row))
+        gaps = json.loads(values.pop("normalization_gaps_json") or "[]")
+        raw_usage = values.pop("raw_usage_json")
+        values["raw_usage_json"] = json.loads(raw_usage) if raw_usage is not None else None
+        call = ModelCall(**values)
+        call.normalization_gaps = gaps
+        calls.append(call)
+    return calls
+
+
+def query_usage(conn: sqlite3.Connection, game_id: str, group_by: str = "game") -> dict[str, Any]:
+    """Query measured model-call usage for one game, grouped as the contract requires.
+
+    `group_by="call"` lists every detailed row with per-field coverage;
+    `"request"` groups detailed calls under their harness request and
+    surfaces any historical `request_aggregate` (from `model_requests`'s own
+    usage columns) purely for reconciliation -- it is never summed into the
+    detailed total; `"game"` reports one measured aggregate across all
+    calls plus which requests have only an aggregate-only historical total
+    and how many calls carry no request link. Reports do not compute a
+    combined total when detail and aggregate both exist for a request; that
+    would double count or hide a genuine disagreement.
+    """
+    if group_by not in ("call", "request", "game"):
+        raise ValueError(f"unknown group_by: {group_by!r}")
+    if conn.execute("SELECT 1 FROM games WHERE game_id=?", (game_id,)).fetchone() is None:
+        raise KeyError(game_id)
+    calls = _load_calls(conn, game_id)
+    request_legacy: dict[str, dict[str, Any]] = {}
+    for request_id, input_tokens, cached, output, reasoning in conn.execute(
+        """SELECT request_id,input_tokens,cached_input_tokens,output_tokens,reasoning_tokens
+           FROM model_requests WHERE game_id=?""", (game_id,)):
+        legacy_usage = {"input_tokens": input_tokens, "cached_input_tokens": cached,
+                        "output_tokens": output, "reasoning_tokens": reasoning}
+        if any(value is not None for value in legacy_usage.values()):
+            request_legacy[request_id] = request_aggregate_from_legacy(legacy_usage)
+
+    if group_by == "call":
+        return {"game_id": game_id, "group_by": "call",
+                "calls": [call.to_row() for call in calls],
+                "coverage": aggregate_calls(calls)}
+
+    by_request: dict[str | None, list[ModelCall]] = {}
+    for call in calls:
+        by_request.setdefault(call.request_id, []).append(call)
+
+    if group_by == "request":
+        requests: list[dict[str, Any]] = []
+        for request_id in sorted(by_request, key=lambda value: (value is None, value)):
+            group = by_request[request_id]
+            entry: dict[str, Any] = {"request_id": request_id, "detail": aggregate_calls(group),
+                                     "call_ids": [call.call_id for call in group]}
+            if request_id is not None and request_id in request_legacy:
+                entry["request_aggregate"] = request_legacy[request_id]
+                entry["note"] = "request_aggregate is reconciliation-only, never added to detail"
+            requests.append(entry)
+        for request_id, aggregate in request_legacy.items():
+            if request_id not in by_request:
+                requests.append({"request_id": request_id, "detail": None,
+                                 "request_aggregate": aggregate,
+                                 "note": "no detailed calls for this request; historical aggregate only"})
+        return {"game_id": game_id, "group_by": "request", "requests": requests}
+
+    aggregate_only_request_ids = sorted(
+        rid for rid in request_legacy if rid not in by_request or not by_request.get(rid))
+    return {"game_id": game_id, "group_by": "game", "measured": aggregate_calls(calls),
+            "call_count": len(calls),
+            "aggregate_only_request_ids": aggregate_only_request_ids,
+            "unassigned_calls": len(by_request.get(None, []))}
+
+
+def _format_usage_report(value: dict[str, Any]) -> str:
+    """Human-readable usage output built from the same query helper as --json.
+
+    Labels every partial total explicitly -- a field missing from even one
+    call in its group is never printed as if it were a complete measurement.
+    """
+    def field_line(field: str, info: dict[str, Any]) -> str:
+        label = "measured" if info["fully_measured"] else "PARTIAL"
+        return (f"  {field}: sum={info['sum']} ({label}; "
+                f"{info['known_calls']}/{info['known_calls'] + info['unknown_calls']} calls known)")
+
+    lines = [f"game_id: {value['game_id']} (group_by={value['group_by']})"]
+    if value["group_by"] == "call":
+        lines.append(f"calls: {len(value['calls'])}")
+        for call in value["calls"]:
+            lines.append(f"  {call['call_id']}: status={call['status']} "
+                        f"input={call['input_tokens']} cached={call['cached_input_tokens']} "
+                        f"output={call['output_tokens']} reasoning={call['reasoning_tokens']} "
+                        f"total={call['total_tokens']} finish_reason={call['finish_reason']}")
+        lines.append("coverage:")
+        for field in TOKEN_FIELDS:
+            lines.append(field_line(field, value["coverage"][field]))
+    elif value["group_by"] == "request":
+        for entry in value["requests"]:
+            lines.append(f"request {entry['request_id']}:")
+            if entry["detail"] is not None:
+                for field in TOKEN_FIELDS:
+                    lines.append(field_line(field, entry["detail"][field]))
+            if "request_aggregate" in entry:
+                lines.append(f"  request_aggregate (reconciliation only): "
+                            f"{entry['request_aggregate']['tokens']}")
+                lines.append(f"  note: {entry['note']}")
+    else:
+        for field in TOKEN_FIELDS:
+            lines.append(field_line(field, value["measured"][field]))
+        lines.append(f"call_count: {value['call_count']}")
+        if value["aggregate_only_request_ids"]:
+            lines.append(f"aggregate_only requests (no call detail): {value['aggregate_only_request_ids']}")
+        if value["unassigned_calls"]:
+            lines.append(f"unassigned calls (no request_id): {value['unassigned_calls']}")
+    return "\n".join(lines)
+
+
 def backup_history(source: str, destination: str) -> None:
     src = open_history(source); dst = sqlite3.connect(destination)
     with dst: src.backup(dst)
@@ -981,7 +1248,7 @@ def verify_history(path: str | os.PathLike[str]) -> dict[str, Any]:
     foreign_keys = conn.execute("PRAGMA foreign_key_check").fetchall()
     counts = {}
     for table in ("games", "game_players", "side_turns", "snapshots", "events", "model_requests",
-                  "action_batches", "actions", "evaluation_runs", "decision_evaluations"):
+                  "model_calls", "action_batches", "actions", "evaluation_runs", "decision_evaluations"):
         counts[table] = conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
     dangling_event_side_turns = conn.execute("""SELECT count(*) FROM events e
       WHERE e.side_turn_id IS NOT NULL
@@ -989,13 +1256,21 @@ def verify_history(path: str | os.PathLike[str]) -> dict[str, Any]:
     dangling_event_batches = conn.execute("""SELECT count(*) FROM events e
       WHERE e.batch_id IS NOT NULL
       AND NOT EXISTS(SELECT 1 FROM action_batches b WHERE b.batch_id=e.batch_id)""").fetchone()[0]
+    dangling_call_requests = conn.execute("""SELECT count(*) FROM model_calls c
+      WHERE c.request_id IS NOT NULL
+      AND NOT EXISTS(SELECT 1 FROM model_requests r WHERE r.request_id=c.request_id AND r.game_id=c.game_id)""").fetchone()[0]
+    cross_game_calls = conn.execute("""SELECT count(*) FROM model_calls c
+      WHERE c.request_id IS NOT NULL
+      AND EXISTS(SELECT 1 FROM model_requests r WHERE r.request_id=c.request_id AND r.game_id<>c.game_id)""").fetchone()[0]
     conn.close()
     return {"integrity": integrity, "foreign_key_errors": len(foreign_keys), "counts": counts,
             "dangling_event_side_turn_links": dangling_event_side_turns,
-            "dangling_event_batch_links": dangling_event_batches}
+            "dangling_event_batch_links": dangling_event_batches,
+            "dangling_call_request_links": dangling_call_requests,
+            "cross_game_call_links": cross_game_calls}
 
 TABLES = ("games", "game_players", "side_turns", "snapshots", "events", "model_requests",
-          "action_batches", "actions", "evaluation_runs", "decision_evaluations")
+          "model_calls", "action_batches", "actions", "evaluation_runs", "decision_evaluations")
 
 
 def inventory_history(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -1040,7 +1315,8 @@ def delete_history(conn: sqlite3.Connection, cohort_id: str | None = None,
             conn.execute("DELETE FROM decision_evaluations WHERE request_id IN (%s) OR preferred_request_id IN (%s)" %
                          (placeholders_for(request_ids), placeholders_for(request_ids)), request_ids + request_ids)
         if selected:
-            for table in ("events", "actions", "action_batches", "model_requests", "side_turns", "snapshots", "game_players", "games"):
+            for table in ("events", "model_calls", "actions", "action_batches", "model_requests",
+                          "side_turns", "snapshots", "game_players", "games"):
                 conn.execute(f"DELETE FROM {table} WHERE game_id IN ({placeholders})", selected)
         for run_id in eval_ids:
             if conn.execute("SELECT 1 FROM decision_evaluations WHERE evaluation_run_id=? LIMIT 1", (run_id,)).fetchone() is None:
@@ -1115,6 +1391,9 @@ def main(argv: list[str]) -> int:
     coverage = sub.add_parser("payload-coverage"); coverage.add_argument("--db", required=True); coverage.add_argument("--cohort")
     show = sub.add_parser("game"); show.add_argument("--db", required=True); show.add_argument("game_id")
     turns = sub.add_parser("turns"); turns.add_argument("--db", required=True); turns.add_argument("game_id")
+    usage = sub.add_parser("usage"); usage.add_argument("--db", required=True); usage.add_argument("game_id")
+    usage.add_argument("--group-by", choices=("call", "request", "game"), default="game")
+    usage.add_argument("--json", action="store_true")
     inv = sub.add_parser("inventory"); inv.add_argument("--db", required=True)
     backfill = sub.add_parser("backfill-events"); backfill.add_argument("--db", required=True)
     backfill_selector = backfill.add_mutually_exclusive_group(required=True)
@@ -1125,7 +1404,7 @@ def main(argv: list[str]) -> int:
     selector.add_argument("--cohort"); selector.add_argument("--game-id", action="append"); selector.add_argument("--reset", action="store_true")
     delete.add_argument("--compact", action="store_true")
     args = parser.parse_args(argv)
-    read_commands = {"inventory", "game", "turns"}
+    read_commands = {"inventory", "game", "turns", "usage"}
     conn = open_history(args.db, read_only=args.command in read_commands)
     exit_code = 0
     if args.command == "import": value = import_game(conn, args.archive, args.cohort)
@@ -1134,6 +1413,11 @@ def main(argv: list[str]) -> int:
     elif args.command == "inventory": value = inventory_history(conn)
     elif args.command == "delete": value = delete_history(conn, args.cohort, args.game_id or [], args.reset, args.compact)
     elif args.command == "game": value = summarize_game(conn, args.game_id)
+    elif args.command == "usage":
+        value = query_usage(conn, args.game_id, args.group_by)
+        if not args.json:
+            print(_format_usage_report(value))
+            conn.close(); return exit_code
     elif args.command == "backfill-events":
         value = backfill_events(conn, args.game_id or [], args.all)
         if value["unavailable"] or value["failed"]:

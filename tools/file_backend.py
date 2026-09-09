@@ -14,7 +14,31 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
+
+
+
+def request_context() -> dict[str, object]:
+    """Read the harness request context the client published for this dispatch.
+
+    Absent or unreadable context is not an error: the transport still works, the
+    handshake simply records no harness identity and any host usage collected
+    against it stays unlinked rather than being guessed.
+    """
+    path = os.environ.get("NORRUST_REQUEST_CONTEXT_FILE")
+    if not path:
+        return {}
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    keep = ("harness_request_id", "request_sequence", "conversation_id", "side",
+            "side_turn_id", "state_revision", "requested_model",
+            "requested_reasoning_effort", "dispatched_at")
+    return {key: value[key] for key in keep if key in value}
 
 
 def run(directory: Path, prompt: str, timeout: float = 600.0, poll: float = 0.05) -> str:
@@ -30,15 +54,32 @@ def run(directory: Path, prompt: str, timeout: float = 600.0, poll: float = 0.05
     reply_path = directory / f"reply_{request_id}.txt"
     waiting_path = directory / f"waiting_{request_id}"
     prompt_path.write_text(prompt, encoding="utf-8")
-    waiting_path.write_text(json.dumps({"request_id": request_id,
-                                        "prompt_bytes": len(prompt.encode()),
-                                        "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest()}),
-                            encoding="utf-8")
+    # The transport's own request_id is a sequence plus prompt hash; it is NOT
+    # the harness request ID that owns the spending. When the client publishes a
+    # request context, carry that ID and the handshake timestamps into the
+    # waiting record, so host inference calls can be attributed to the request
+    # whose prompt was open at the time. That is proven handshake ordering, not
+    # timestamp proximity: this transport blocks until the reply appears, so at
+    # most one harness request is open at once.
+    handshake = {"request_id": request_id,
+                 "prompt_bytes": len(prompt.encode()),
+                 "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
+                 "published_at": datetime.now(timezone.utc).isoformat()}
+    handshake.update(request_context())
+    waiting_path.write_text(json.dumps(handshake, sort_keys=True), encoding="utf-8")
     deadline = time.monotonic() + timeout
     try:
         while time.monotonic() < deadline:
             if reply_path.is_file():
                 text = reply_path.read_text(encoding="utf-8")
+                # Durable close of the handshake window. Everything the host
+                # inferred between published_at and answered_at belongs to this
+                # harness request; a collector reconciles by recorded identity
+                # and event order within that window.
+                record = dict(handshake, answered_at=datetime.now(timezone.utc).isoformat(),
+                              reply_bytes=len(text.encode()))
+                with (directory / "handshake_log.ndjson").open("a", encoding="utf-8") as stream:
+                    stream.write(json.dumps(record, sort_keys=True) + "\n")
                 return json.dumps({"text": text}, separators=(",", ":"))
             time.sleep(poll)
     finally:

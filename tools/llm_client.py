@@ -2253,6 +2253,22 @@ def classify_terminal(reason: Optional[str]) -> str:
     return TERMINAL_INFRASTRUCTURE
 
 
+def write_request_context(path: str | os.PathLike[str], context: dict[str, Any]) -> None:
+    """Publish the current harness request context for maintained adapters.
+
+    Written atomically before dispatch: an adapter must never read a half-written
+    context, and a call that is dispatched but never answered still has to be
+    attributable to the request that paid for it. Credentials, prompt text and
+    reasoning content are deliberately absent - a token ledger needs identity and
+    counts, not the conversation.
+    """
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    pending = destination.with_suffix(destination.suffix + ".tmp")
+    pending.write_text(json.dumps(context, sort_keys=True), encoding="utf-8")
+    os.replace(pending, destination)
+
+
 def set_terminal(metadata: dict[str, Any], terminal_class: str,
                  **fields: Any) -> str:
     """Stamp the three-way terminal classification onto metadata.
@@ -2511,6 +2527,17 @@ def run(args: argparse.Namespace) -> int:
         return max((int(value[len(prefix):]) for value in values
                     if isinstance(value, str) and value.startswith(prefix)
                     and value[len(prefix):].isdigit()), default=0)
+    # One documented context file per match, exported so every maintained adapter
+    # spawned for this run finds it without extra flags. Adapters inherit this
+    # environment; the file is rewritten before each dispatch. An explicit
+    # setting from the caller wins, and a match with no log falls back to the
+    # current directory so accounting still lands somewhere durable.
+    request_context_path = os.environ.get("NORRUST_REQUEST_CONTEXT_FILE")
+    if not request_context_path:
+        base = Path(log_path).resolve().parent if log_path else Path.cwd()
+        request_context_path = str(base / "request_context.json")
+        os.environ["NORRUST_REQUEST_CONTEXT_FILE"] = request_context_path
+
     request_sequence = previous_sequence("request")
     batch_sequence = previous_sequence("batch")
     def complete_model(model_prompt: str) -> ModelReply:
@@ -2526,6 +2553,34 @@ def run(args: argparse.Namespace) -> int:
             model_prompt, state if isinstance(state, dict) else {})
         request_sequence += 1
         request_id = f"{metadata.get('conversation_id', 'match')}:request:{request_sequence}"
+        # Durable request context, written BEFORE dispatch so a call that never
+        # returns is still attributable. Adapters that cannot otherwise know the
+        # harness request - tools/file_backend.py mints its own transport ID from
+        # a prompt hash, which is not this ID - read it from this file. The
+        # canonical prompt still reaches the adapter on stdin byte for byte;
+        # nothing here is added to it.
+        context_path = request_context_path
+        if context_path:
+            try:
+                write_request_context(context_path, {
+                    "harness_request_id": request_id,
+                    "request_sequence": request_sequence,
+                    "conversation_id": metadata.get("conversation_id"),
+                    "game_log": str(log_path) if log_path else None,
+                    "side_turn_id": metadata.get("current_side_turn_id"),
+                    "side": metadata.get("llm_side"),
+                    "state_revision": (state.get("state_revision")
+                                       if isinstance(state, dict) else None),
+                    "requested_model": metadata.get("requested_model"),
+                    "requested_reasoning_effort": metadata.get("requested_reasoning_effort"),
+                    "prompt_sha256": hashlib.sha256(delivered_prompt.encode()).hexdigest(),
+                    "prompt_bytes": len(delivered_prompt.encode()),
+                    "dispatched_at": datetime.now(timezone.utc).isoformat(),
+                })
+            except OSError as exc:
+                # Accounting context must never take a game down.
+                print(f"warning: could not write request context: {exc}",
+                      file=sys.stderr, flush=True)
         started = time.monotonic()
         before = getattr(backend, "transport_retries", 0)
         try:
