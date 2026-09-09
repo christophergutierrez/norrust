@@ -120,6 +120,7 @@ class GameHistoryTests(unittest.TestCase):
             self.assertEqual(coverage["unresolved_turn_endpoints"], 1)
             metrics = json.loads(conn.execute("SELECT metrics_json FROM side_turns WHERE game_id=?", (game_id,)).fetchone()[0])
             self.assertEqual(metrics["handoff_review"]["side_turn_id"], "turn-a")
+            conn.close()
 
     def test_annotations_and_explicit_request_links_survive_reimport(self):
         with tempfile.TemporaryDirectory() as td:
@@ -187,6 +188,7 @@ class GameHistoryTests(unittest.TestCase):
             with self.assertRaises(KeyError):
                 delete_history(conn, game_ids=["missing"])
             self.assertEqual(inventory_history(conn)["counts"]["games"], 1)
+            conn.close()
 
 def _write_checkpoint(archive: Path, filename: str, save_state: dict) -> dict:
     """Write a real checkpoint sidecar and return its driver-log reference."""

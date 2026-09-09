@@ -249,8 +249,17 @@ class AggregationFixtureTests(unittest.TestCase):
         records = [{"type": "metadata"}, {"type": "model_error", "terminal_class": "model_invalid",
                                           "model_calls": 2}]
         cell_dir = self._write_log("bad-cell", records)
-        entry = bakeoff.aggregate_cell(_cell_result("bad-cell", cell_dir), cell)
+        res = _cell_result("bad-cell", cell_dir, status="failed")
+        entry = bakeoff.aggregate_cell(res, cell)
         self.assertEqual(entry["terminal_class"], "model_invalid")
+        self.assertFalse(bakeoff._is_infrastructure_failure(entry))
+        resolved = bakeoff.resolve_manifest(_small_manifest(cells=[cell]))
+        report = bakeoff.build_report(resolved, [res])
+        self.assertEqual(report["totals"]["model_invalid"], 1)
+        self.assertEqual(report["totals"]["infrastructure_invalid"], 0)
+        bucket = report["configurations"][resolved["cells"][0]["configuration"]]
+        self.assertEqual(bucket["model_invalid"], 1)
+        self.assertEqual(bucket["infrastructure_invalid"], 0)
 
     def test_infrastructure_failure_process_crash(self):
         cell = _base_cell("crash-cell")
@@ -303,9 +312,11 @@ class AggregationFixtureTests(unittest.TestCase):
         self.assertEqual(ids, ["ran", "scheduled-only"])
         self.assertEqual(report["totals"]["scheduled"], 2)
         self.assertEqual(report["totals"]["not_run"], 1)
+        self.assertEqual(report["totals"]["infrastructure_invalid"], 0)
         # A failure/absence must never be excluded from the denominators.
         self.assertEqual(report["configurations"]["other"]["cells"], 1)
         self.assertEqual(report["configurations"]["other"]["not_run"], 1)
+        self.assertEqual(report["configurations"]["other"]["infrastructure_invalid"], 0)
 
 
 class BaselineLockTests(unittest.TestCase):

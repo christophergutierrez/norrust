@@ -25,6 +25,7 @@ class TrainingExportTests(unittest.TestCase):
                     reason_codes_json,metrics_json,evidence_json) VALUES('review1','r1','approve','[]','{}','{}')""")
             out = Path(td) / "dataset"
             manifest = export(conn, str(out), "review1", split_seed=7)
+            conn.close()
             self.assertEqual(manifest["count"], 1)
             self.assertEqual(json.loads((out / f"{assign_split('g1', 7)}.jsonl").read_text())["id"], "r1")
             original_hash = manifest["output_sha256"]
@@ -49,6 +50,7 @@ class TrainingExportTests(unittest.TestCase):
             self.assertEqual(import_review(conn, reviews, "review2"), 1)
             out = Path(td) / "dataset"
             self.assertEqual(export(conn, str(out), "review2", rationale=True)["count"], 1)
+            conn.close()
             exported = [json.loads(line) for split in ("train", "validation", "test")
                         for line in (out / f"{split}.jsonl").read_text().splitlines()]
             self.assertEqual(exported[0]["rationale"], "because")

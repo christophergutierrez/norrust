@@ -46,6 +46,7 @@ def build_bundle(db: str | os.PathLike[str], game_id: str,
     archive = Path(metadata["artifact_path"])
     log = archive if archive.is_file() else archive / "match.ndjson"
     if not log.is_file():
+        conn.close()
         raise FileNotFoundError(f"game archive does not exist: {log}")
     players = [dict(zip(("side", "player_kind", "display_name", "backend", "model_requested", "model_reported"), row))
                for row in conn.execute(

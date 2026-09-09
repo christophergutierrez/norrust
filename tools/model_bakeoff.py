@@ -489,10 +489,16 @@ def aggregate_cell(result: CellRunResult, cell: dict[str, Any]) -> dict[str, Any
 
 
 def _is_infrastructure_failure(entry: dict[str, Any]) -> bool:
-    if entry["status"] != "ok":
+    if entry.get("status") == "not_run":
+        return False
+    if entry.get("terminal_class") == "model_invalid":
+        return False
+    if entry.get("status") in ("failed", "error"):
         return True
     match = entry.get("match")
-    if isinstance(match, dict) and match.get("terminal_class") == "unfinished_recoverable":
+    if isinstance(match, dict) and match.get("terminal_class") in ("unfinished_recoverable", "infrastructure"):
+        return True
+    if entry.get("terminal_class") == "infrastructure":
         return True
     return False
 
@@ -574,7 +580,7 @@ def build_report(resolved_manifest: dict[str, Any], results: list[CellRunResult]
         if entry["status"] == "ok":
             bucket["completed"] += 1
         terminal_class = entry.get("terminal_class")
-        if terminal_class == "not_run":
+        if terminal_class == "not_run" or entry.get("status") == "not_run":
             bucket["not_run"] += 1
         elif terminal_class == "gameplay":
             bucket["gameplay_cells"] += 1
@@ -587,7 +593,7 @@ def build_report(resolved_manifest: dict[str, Any], results: list[CellRunResult]
                 bucket["losses"] += 1
         elif terminal_class == "model_invalid":
             bucket["model_invalid"] += 1
-        if _is_infrastructure_failure(entry) and terminal_class != "model_invalid":
+        elif _is_infrastructure_failure(entry):
             bucket["infrastructure_invalid"] += 1
     for bucket in configurations.values():
         gameplay = bucket["gameplay_cells"]
