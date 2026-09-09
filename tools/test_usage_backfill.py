@@ -395,5 +395,71 @@ class CompareUsageTests(unittest.TestCase):
             conn.close()
 
 
+
+class PromptHashLinkageTests(unittest.TestCase):
+    """Unique prompt-hash evidence links a recovered call to its harness request.
+
+    Real archives make the cross-game hazard concrete: two different games that
+    open with the same prompt record the SAME prompt sha256, so a hash lookup
+    that was not scoped to one game would attribute one game's spending to
+    another.
+    """
+
+    def _conn_with_requests(self, rows):
+        from .game_history import open_history
+        conn = open_history(":memory:")
+        for game_id in ("g1", "g2"):
+            conn.execute(
+                "INSERT INTO games(game_id,status,config_json,provenance_json,schema_version,"
+                "artifact_path,import_status,coverage_json) VALUES(?,?,?,?,?,?,?,?)",
+                (game_id, "complete", "{}", "{}", 1, f"/nonexistent/{game_id}", "complete", "{}"))
+        for game_id, request_id, prompt_hash in rows:
+            conn.execute("INSERT INTO model_requests(game_id,request_id,prompt_hash,record_hash) "
+                         "VALUES(?,?,?,?)", (game_id, request_id, prompt_hash, request_id))
+        return conn
+
+    def _call(self, source_hash):
+        from .model_usage import ModelCall
+        return ModelCall(game_id="g1", call_id="c1", provider="fireworks",
+                         transport="archive", source_hash=source_hash)
+
+    def test_a_unique_hash_links_and_records_its_evidence(self):
+        from .usage_backfill import link_calls_by_unique_prompt_hash
+        conn = self._conn_with_requests([("g1", "g1:request:1", "aaa")])
+        call = self._call("aaa")
+        self.assertEqual(link_calls_by_unique_prompt_hash(conn, "g1", [call]), 1)
+        self.assertEqual(call.request_id, "g1:request:1")
+        self.assertEqual(call.linkage_evidence, "prompt_sha256_unique")
+        conn.close()
+
+    def test_a_hash_shared_by_two_requests_proves_nothing_and_stays_unlinked(self):
+        from .usage_backfill import link_calls_by_unique_prompt_hash
+        conn = self._conn_with_requests([("g1", "g1:request:1", "aaa"),
+                                         ("g1", "g1:request:2", "aaa")])
+        call = self._call("aaa")
+        self.assertEqual(link_calls_by_unique_prompt_hash(conn, "g1", [call]), 0)
+        self.assertIsNone(call.request_id)
+        conn.close()
+
+    def test_an_identical_prompt_in_another_game_never_cross_links(self):
+        from .usage_backfill import link_calls_by_unique_prompt_hash
+        # Only the OTHER game recorded this hash. Two real archives share an
+        # opening prompt exactly like this.
+        conn = self._conn_with_requests([("g2", "g2:request:1", "aaa")])
+        call = self._call("aaa")
+        self.assertEqual(link_calls_by_unique_prompt_hash(conn, "g1", [call]), 0)
+        self.assertIsNone(call.request_id,
+                          "another game's request must never own this call")
+        conn.close()
+
+    def test_a_call_with_no_recorded_hash_stays_unlinked(self):
+        from .usage_backfill import link_calls_by_unique_prompt_hash
+        conn = self._conn_with_requests([("g1", "g1:request:1", "aaa")])
+        call = self._call(None)
+        self.assertEqual(link_calls_by_unique_prompt_hash(conn, "g1", [call]), 0)
+        self.assertIsNone(call.request_id)
+        conn.close()
+
+
 if __name__ == "__main__":
     unittest.main()

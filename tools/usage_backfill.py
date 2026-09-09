@@ -258,6 +258,39 @@ def collect_host_session_calls(game_id: str, entry: Mapping[str, Any]) -> tuple[
     return calls, diagnostics
 
 
+def link_calls_by_unique_prompt_hash(conn, game_id: str,
+                                     calls: list[ModelCall]) -> int:
+    """Link backfilled calls to harness requests by UNIQUE prompt hash.
+
+    A preserved receipt records the sha256 of the exact prompt that was sent,
+    and the match log records the same hash on the harness request that sent
+    it. Where a hash identifies exactly ONE request in this game, that is
+    unique evidence of which request paid for the call - the kind Stack 3
+    requires - not the nth-call pairing or timestamp proximity it forbids.
+
+    A hash shared by more than one request proves nothing about which of them a
+    call belongs to, so those calls stay unlinked. This is linkage only: prompt
+    hashes must never merge calls, because two paid retries of one prompt are
+    two calls, and both were paid for.
+    """
+    counts: dict[str, list[str]] = {}
+    for request_id, prompt_hash in conn.execute(
+            "SELECT request_id, prompt_hash FROM model_requests "
+            "WHERE game_id=? AND prompt_hash IS NOT NULL", (game_id,)):
+        counts.setdefault(prompt_hash, []).append(request_id)
+    unique = {h: ids[0] for h, ids in counts.items() if len(ids) == 1}
+    linked = 0
+    for call in calls:
+        if call.request_id or not call.source_hash:
+            continue
+        request_id = unique.get(call.source_hash)
+        if request_id:
+            call.request_id = request_id
+            call.linkage_evidence = "prompt_sha256_unique"
+            linked += 1
+    return linked
+
+
 def _collect_entry_calls(game_id: str, entry: Mapping[str, Any]) -> tuple[list[ModelCall], list[str]]:
     kind = entry.get("kind")
     if kind == "fireworks_requests":
@@ -286,6 +319,8 @@ def backfill_one_game(conn, game_id: str, entry: Mapping[str, Any], execute: boo
 
     try:
         new_calls, diagnostics = _collect_entry_calls(game_id, entry)
+        # Prove harness links from unique prompt-hash evidence before storing.
+        linked = link_calls_by_unique_prompt_hash(conn, game_id, new_calls)
     except UsageBackfillUnavailable as exc:
         return {"game_id": game_id, "status": "unavailable", "reason": str(exc)}
     except UsageBackfillError as exc:
@@ -313,6 +348,9 @@ def backfill_one_game(conn, game_id: str, entry: Mapping[str, Any], execute: boo
         "new_calls_found": len(dedupe_calls(new_calls)[0]),
         "calls_before": len(existing_calls),
         "calls_after": len(merged),
+        # How much of the recovered spending could be tied to a harness request
+        # by unique evidence. The rest stays unlinked rather than guessed.
+        "linked_by_prompt_hash": linked,
         "diagnostics": sorted(set(diagnostics)),
         "conflicts": {f"{g}:{c}": v for (g, c), v in conflicts.items()},
         "measured": aggregate_calls(merged),
