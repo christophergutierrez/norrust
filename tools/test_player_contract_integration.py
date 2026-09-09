@@ -265,10 +265,10 @@ class PlayerContractIntegrationTests(unittest.TestCase):
             self.assertTrue(updates)
             self.assertEqual(updates[0]["agenda"], agenda)
             requests = [r for r in records if r["type"] == "model_request" and r["status"] == "completed"]
-            boards = [json.loads(r["prompt"].split("BOARD_UNTRUSTED_DATA_BEGIN:\n", 1)[1].split("\nBOARD_UNTRUSTED_DATA_END", 1)[0]) for r in requests]
-            self.assertNotIn("agenda", boards[0])
+            memories = [json.loads(r["prompt"].split("MEMORY_UNTRUSTED_DATA_BEGIN:\n", 1)[1].split("\nMEMORY_UNTRUSTED_DATA_END", 1)[0]) for r in requests]
+            self.assertNotIn("agenda", memories[0])
             # Strictly later revision excludes an initial draft review echo.
-            next_turn = [board for r, board in zip(requests, boards) if r["state_revision"] > requests[0]["state_revision"]]
+            next_turn = [memory for r, memory in zip(requests, memories) if r["state_revision"] > requests[0]["state_revision"]]
             self.assertTrue(next_turn)
             self.assertEqual(next_turn[0]["agenda"], {"tasks": agenda["tasks"], "holds": []})
             conn = open_history(root / "history.sqlite")

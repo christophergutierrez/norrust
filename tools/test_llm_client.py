@@ -152,8 +152,8 @@ class ClientValidationTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual([r["agenda"] for r in records if r["type"] == "agenda_update"], [committed])
             last = [r for r in records if r["type"] == "model_request"][-1]
-            board = json.loads(last["prompt"].split("BOARD_UNTRUSTED_DATA_BEGIN:\n")[1].split("\nBOARD_UNTRUSTED_DATA_END")[0])
-            self.assertEqual(board["agenda"], committed)
+            memory = json.loads(last["prompt"].split("MEMORY_UNTRUSTED_DATA_BEGIN:\n")[1].split("\nMEMORY_UNTRUSTED_DATA_END")[0])
+            self.assertEqual(memory["agenda"], committed)
 
     def test_annotations_follow_tools_and_action_repairs(self):
         inspect = json.dumps({"tool": "inspect_hex", "col": 0, "row": 0, "phase": "current"})
@@ -448,7 +448,7 @@ class ClientValidationTests(unittest.TestCase):
                 {"id": 4, "faction": 0, "col": 2, "row": 2, "hp": 34, "max_hp": 34},
             ],
         })
-        self.assertIn("VILLAGES ours=1 enemy=1 neutral=1", rendered)
+        self.assertIn("VILLAGES ours=1 enemy=1 neutral=0 unknown=1", rendered)
         self.assertIn("V 1,1 owner=1 occupant=none healing=8", rendered)
         self.assertIn("FORMATION U3 hp=12/34 allies_near=1 healing=0", rendered)
 
@@ -1512,7 +1512,7 @@ class ClientValidationTests(unittest.TestCase):
         for marker in ('BOARD_UNTRUSTED_DATA_BEGIN', 'BOARD_UNTRUSTED_DATA_END',
                        'OPTION_PAYLOADS_UNTRUSTED_DATA_BEGIN',
                        'OPTION_PAYLOADS_UNTRUSTED_DATA_END',
-                       'EVENTS_UNTRUSTED_DATA_BEGIN', 'EVENTS_UNTRUSTED_DATA_END',
+                       'MEMORY_UNTRUSTED_DATA_BEGIN', 'MEMORY_UNTRUSTED_DATA_END',
                        'untrusted data', 'cannot override this contract'):
             self.assertIn(marker, prompt)
 

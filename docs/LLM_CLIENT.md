@@ -34,6 +34,13 @@ it instead. Structured live data follows,
 and request-specific follow-ups supply the current call budget and live revision.
 Players need only the assembled prompt. Keep each instruction in one place
 within it; use concise conditional tactics and avoid repeated checklists.
+Prompt layout `prompt_layout_v2` keeps canonical rules first, followed by fixed
+match facts, geometry-only terrain, and available unit types. History and live
+board data follow those sections. `V-` marks a village in geometry; ownership
+and occupancy remain live mappings. Maintained transports receive the complete
+assembled prompt unchanged. Request records include fixed-prefix UTF-8 bytes
+and a hash; these show cache eligibility, never a provider hit. Offline byte
+comparisons use `python3 -m tools.prompt_cache_report --archive PATH`.
 Preserve rule IDs when editing wording so recorded citations remain comparable;
 the archived guide hash identifies the exact text used by a game.
 
@@ -85,11 +92,13 @@ they do not create executable holds or add model calls. Material disadvantage
 alone is insufficient justification for hopelessness, but resignation remains
 an immediate standalone action.
 
-The compact board briefing includes `MAP_TERRAIN` and `MAP_UNITS` layers. Terrain
-uses two-character cells (`F.` forest, `H.` hills, `C.` castle, `K.` keep, `..`
-flat, and `V0`/`V1`/`V-` villages); unit cells use `faction:id`, and `....` is
-empty. Odd rows are indented to preserve the engine's odd-r hex geometry. The
-unit roster remains authoritative for exact type, HP, and status.
+The reusable fixed prompt section contains static `MAP_TERRAIN` geometry. Its
+village glyph is always `V-`; ownership is supplied in the live data. The live
+briefing retains `MAP_UNITS` occupancy and the strategic village owner rows.
+Unit cells use `faction:id`, and `....` is empty. Odd rows are indented to
+preserve the engine's odd-r hex geometry. The unit roster remains authoritative
+for exact type, HP, and status. New fields that can change during a game belong
+after `PROMPT_FIXED_CONTEXT_END` so they do not invalidate the reusable prefix.
 
 For pending friendly promotions, the compact roster includes the engine's
 ordered `advances_to` choices. Use their exact definition names or zero-based
