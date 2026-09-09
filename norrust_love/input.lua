@@ -16,6 +16,7 @@ local shared, combat_state, pending_anims, sound
 local game_data, mods
 local MODES
 local UI_SCALE
+local fonts
 -- Helper functions from main.lua
 local get_viewport, screen_to_game, int
 local center_camera, clear_selection, cancel_ghost, cancel_combat_preview
@@ -166,6 +167,7 @@ function M.init(ctx)
     mods = ctx.mods
     MODES = ctx.MODES
     UI_SCALE = ctx.UI_SCALE
+    fonts = ctx.fonts
     get_viewport = ctx.get_viewport
     screen_to_game = ctx.screen_to_game
     int = ctx.int
@@ -330,6 +332,22 @@ local function leave_replay()
     vars.game_mode = shared.recorded_browser and MODES.RECORDED_GAMES or MODES.PICK_SCENARIO
 end
 
+-- Dispatch a replay toolbar button by key. Shared by mouse and keyboard so
+-- both select identical frames. The caller is responsible for checking
+-- whether the button is disabled first (a disabled control does nothing).
+local function apply_replay_button(key)
+    if key == "back_frame" then replay_mod.step(shared.replay, -1)
+    elseif key == "forward_frame" then replay_mod.step(shared.replay, 1)
+    elseif key == "back_turn" then replay_mod.step_turn(shared.replay, -1)
+    elseif key == "forward_turn" then replay_mod.step_turn(shared.replay, 1)
+    elseif key == "play" then replay_mod.toggle(shared.replay)
+    elseif key == "restart" then replay_mod.restart(shared.replay)
+    elseif key == "back_to_games" then leave_replay()
+    elseif key == "speed_Slow" or key == "speed_Medium" or key == "speed_Fast" then
+        replay_mod.set_speed(shared.replay, key:sub(7))
+    end
+end
+
 function M.keypressed(key)
     if vars.game_mode == MODES.RECORDED_GAMES then
         local browser = shared.recorded_browser
@@ -346,10 +364,12 @@ function M.keypressed(key)
     if shared.replay then
         if key == "escape" then
             leave_replay()
-        elseif key == "left" or key == "a" then replay_mod.step(shared.replay, -1)
-        elseif key == "right" or key == "d" then replay_mod.step(shared.replay, 1)
-        elseif key == "space" then replay_mod.toggle(shared.replay)
-        elseif key == "home" or key == "r" then replay_mod.restart(shared.replay)
+        elseif key == "left" or key == "a" then apply_replay_button("back_frame")
+        elseif key == "right" or key == "d" then apply_replay_button("forward_frame")
+        elseif key == "pageup" then apply_replay_button("back_turn")
+        elseif key == "pagedown" then apply_replay_button("forward_turn")
+        elseif key == "space" then apply_replay_button("play")
+        elseif key == "home" or key == "r" then apply_replay_button("restart")
         end
         return
     end
@@ -416,20 +436,20 @@ end
 function M.mousepressed(sx, sy, button)
     if shared.replay then
         local x, y = screen_to_game(sx, sy)
-        local replay_buttons = shared.buttons.replay_buttons or shared.replay_buttons
-        if button == 1 and replay_buttons then
-            local function hit(b) return b and x >= b.x and x <= b.x + b.w and y >= b.y and y <= b.y + b.h end
-            if hit(replay_buttons.back) then replay_mod.step(shared.replay, -1); return end
-            if hit(replay_buttons.forward) then replay_mod.step(shared.replay, 1); return end
-            if hit(replay_buttons.play) then replay_mod.toggle(shared.replay); return end
-            if hit(replay_buttons.restart) then replay_mod.restart(shared.replay); return end
-            if hit(replay_buttons.back_to_games) then leave_replay(); return end
-            for _, speed in ipairs({"Slow", "Medium", "Fast"}) do
-                if hit(replay_buttons["speed_" .. speed]) then replay_mod.set_speed(shared.replay, speed); return end
+        local vp_w = select(1, get_viewport())
+        local layout = replay_mod.layout(shared.replay, {vp_w = vp_w, fonts = fonts})
+        if y <= layout.height then
+            -- The toolbar consumes every click in its band, including
+            -- disabled buttons and empty space, so it can never inspect or
+            -- select an underlying unit.
+            if button == 1 then
+                local key = replay_mod.button_at(layout, x, y)
+                if key and not layout.buttons[key].disabled then apply_replay_button(key) end
             end
+            return
         end
-        -- A replay click only selects a unit for inspection; it cannot mutate state.
-        if button == 1 and y > 48 and x < select(1, get_viewport()) - 200 then
+        -- A replay click below the toolbar only selects a unit for inspection; it cannot mutate state.
+        if button == 1 and x < vp_w - 200 then
             local local_x = (x - camera.origin_x) / camera.zoom - camera.offset_x
             local local_y = (y - camera.origin_y) / camera.zoom - camera.offset_y
             local col, row = mods.hex.from_pixel(local_x, local_y)

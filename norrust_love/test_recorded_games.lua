@@ -140,7 +140,9 @@ shared.recorded_browser = nil
 shared.replay = replay.new({frames = {{state = {}}}}); vars.game_mode = 4
 input.keypressed("escape"); assert(vars.game_mode == -1)
 shared.replay = replay.new({frames = {{state = {}}}}); vars.game_mode = 4
-shared.buttons.replay_buttons = {back_to_games = {x = 10, y = 10, w = 30, h = 20}}
-click(shared.buttons.replay_buttons.back_to_games); assert(vars.game_mode == -1)
+-- Toolbar hit testing recomputes the same layout drawing uses; it does not
+-- read a cached rectangle table.
+local replay_layout = replay.layout(shared.replay, {vp_w = 768})
+click(replay_layout.buttons.back_to_games); assert(vars.game_mode == -1)
 io.popen, os.tmpname, os.remove = original_popen, original_tmpname, original_remove
 print("recorded games regression tests passed")

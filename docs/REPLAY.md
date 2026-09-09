@@ -11,14 +11,42 @@ both participants explicitly as `Side 0` and `Side 1`, including each player's
 name, requested LLM model when applicable, and faction. If the archive did not
 record the model, it says `LLM (model unavailable)` rather than treating the
 backend transport name as a model. It uses the normal board renderer and
-inspection panel, while
-all gameplay actions and saves are disabled. `Back 1` and `Forward 1` move one
-recorded frame, as do Left/A and Right/D. A frame is a saved board snapshot;
-snapshots are not necessarily spaced one side-turn or round apart. The toolbar
-shows the recorded turn number and the number of frames remaining, so missing
-snapshots can still produce gaps in turn numbers. `Play`/`Pause` follows the
-recording, and `Restart` returns to frame 0. Playback speeds are Slow
-(2 seconds per frame), Medium (1 second), and Fast (0.5 seconds).
+inspection panel, while all gameplay actions and saves are disabled.
+
+### Frame, round, side turn, and stored event
+
+A **frame** is one saved board snapshot; snapshots are not necessarily spaced
+one side-turn or round apart, so consecutive frames can span an uneven number
+of moves. A **turn** (also called a round) is the game's own `state.turn`
+number, normally covering both sides' side turns; it is not a side turn and
+not a fixed count of frames. A **side turn** is one player's turn within a
+round and is not separately navigable here. A **stored event** (see
+[GAME_HISTORY.md](GAME_HISTORY.md)) is an individual executed action recorded
+in SQLite; replay does not step through events or animate them; it only
+visits the saved snapshot frames.
+
+### Navigation
+
+`Back Frame` and `Forward Frame` (also Left/A and Right/D) move exactly one
+recorded frame, clamped at the ends. `Back Turn` and `Forward Turn` (also Page
+Up/Page Down) jump to the first available frame of the previous or next
+recorded turn: from anywhere in turn 3, Back Turn goes straight to the first
+frame of turn 2, not to the start of turn 3 first. If there is no earlier
+turn, Back Turn goes to the first frame; if there is no later turn, Forward
+Turn goes to the last frame — so the opening and the winning partial frame
+stay reachable even in a single-turn game. A turn control is disabled exactly
+when its target is the current frame, or when turn information isn't usable.
+Turn anchors are the first *available* snapshot carrying that turn number, not
+proof of the true turn start: if turn numbers jump from 3 to 5, Forward Turn
+goes to the first available turn 5 frame — turn 4 is never fabricated. If any
+frame lacks a usable turn number, or turn numbers decrease without a resolved
+timeline, the Turn controls disable entirely and the toolbar shows
+`Turn navigation unavailable`; Frame navigation keeps working. All manual
+navigation (mouse or keyboard) pauses playback and clears its elapsed timer,
+including when used during Play. `Play`/`Pause` follows the recording, and
+`Restart` returns to frame 0. Playback speeds are Slow (2 seconds per frame),
+Medium (1 second), and Fast (0.5 seconds); Play always traverses every frame,
+regardless of turn boundaries.
 
 The launcher accepts `--export PATH` to inspect the generated relocatable JSON
 bundle without opening Love2D. Missing or incomplete snapshots are reported;

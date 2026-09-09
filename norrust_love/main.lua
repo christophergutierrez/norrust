@@ -582,6 +582,7 @@ function love.load()
         mods = {norrust = norrust, hex = hex, events = events, save = save},
         MODES = MODES,
         UI_SCALE = UI_SCALE,
+        fonts = fonts,
         get_viewport = get_viewport, screen_to_game = screen_to_game,
         int = int,
         center_camera = center_camera, clear_selection = clear_selection,
@@ -827,7 +828,6 @@ function love.draw()
     ctx.tile_color_cache = tile_color_cache
     draw_mod.draw_frame(ctx, state)
     shared.buttons = ctx.buttons or {}
-    shared.buttons.replay_buttons = ctx.replay_buttons
 
     -- AI planning indicator
     if shared.ai_planning then
