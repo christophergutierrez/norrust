@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 GUIDE_VERSION = "tactics-v1"
-RULE_IDS = frozenset({"S1", "S2", "T1", "T2", "T3", "T3.1", "T3.2", "T3.3", "T3.4", "T4", "T5", "T6", "T7", "T8"})
+RULE_IDS = frozenset({"S1", "S2", "T0", "T1", "T2", "T3", "T3.1", "T3.2", "T3.3", "T4", "T5", "T6", "T7", "T8"})
 MAX_GROUPS = 16
 MAX_REFERENCES = 256
 MAX_TEXT_BYTES = 240

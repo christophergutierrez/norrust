@@ -2269,4 +2269,138 @@ mod tests {
 
         assert_eq!(state.check_winner(), None);
     }
+
+    // --- Documented engine rules (see the "Engine rules" block in tools/llm_client.py).
+    // These lock the movement facts stated to the model. A change here must update that block.
+
+    /// A path may run THROUGH an occupied hex; only the destination must be free.
+    #[test]
+    fn test_documented_rule_path_may_cross_occupied_hex_but_not_end_on_one() {
+        let board = Board::new(10, 10);
+        let mut state = GameState::new(board);
+        let mut mover = Unit::new(1, "fighter", 30, 0);
+        mover.movement = 3;
+        state.place_unit(mover, Hex::from_offset(0, 0));
+        // Friendly blocker directly between start and destination.
+        state.place_unit(Unit::new(2, "fighter", 30, 0), Hex::from_offset(0, 1));
+
+        // Ending on the blocker is refused.
+        assert_eq!(
+            apply_action(&mut state, Action::Move { unit_id: 1, destination: Hex::from_offset(0, 1) }),
+            Err(ActionError::DestinationOccupied)
+        );
+        // Passing through it to a free hex beyond is allowed: occupancy is not
+        // consulted by pathfinding, only the destination is checked.
+        assert!(apply_action(&mut state, Action::Move { unit_id: 1, destination: Hex::from_offset(0, 2) }).is_ok());
+        assert_eq!(state.positions[&1], Hex::from_offset(0, 2));
+    }
+
+    /// Entering a hex adjacent to an enemy ends movement there.
+    #[test]
+    fn test_documented_rule_entering_zoc_stops_movement() {
+        let board = Board::new(10, 10);
+        let mut state = GameState::new(board);
+        let mut mover = Unit::new(1, "fighter", 30, 0);
+        mover.movement = 6;
+        state.place_unit(mover, Hex::from_offset(0, 0));
+        // Enemy at (0,3): its neighbours, including (0,2), exert ZOC on faction 0.
+        state.place_unit(Unit::new(2, "enemy", 30, 1), Hex::from_offset(0, 3));
+
+        let zoc = crate::pathfinding::get_zoc_hexes(&state, 0);
+        assert!(zoc.contains(&Hex::from_offset(0, 2)), "hex adjacent to the enemy exerts ZOC");
+
+        // (0,2) is enterable and within budget.
+        assert!(legal_moves(&state, 1).unwrap().contains(&Hex::from_offset(0, 2)));
+        // (0,4) lies beyond the ZOC hex: movement must stop on entry, so it is not legal
+        // even though its raw terrain cost is inside the budget.
+        assert!(!legal_moves(&state, 1).unwrap().contains(&Hex::from_offset(0, 4)));
+        assert_eq!(
+            apply_action(&mut state, Action::Move { unit_id: 1, destination: Hex::from_offset(0, 4) }),
+            Err(ActionError::DestinationUnreachable)
+        );
+    }
+
+    /// A unit that STARTS inside a ZOC hex may still leave it and keep moving.
+    #[test]
+    fn test_documented_rule_starting_inside_zoc_does_not_prevent_leaving() {
+        let board = Board::new(10, 10);
+        let mut state = GameState::new(board);
+        let mut mover = Unit::new(1, "fighter", 30, 0);
+        mover.movement = 4;
+        // Start adjacent to the enemy: the start hex is itself a ZOC hex.
+        state.place_unit(mover, Hex::from_offset(0, 1));
+        state.place_unit(Unit::new(2, "enemy", 30, 1), Hex::from_offset(0, 0));
+
+        let zoc = crate::pathfinding::get_zoc_hexes(&state, 0);
+        assert!(zoc.contains(&Hex::from_offset(0, 1)), "start hex is in ZOC");
+
+        // Retreat away from the enemy succeeds: the stop rule exempts the start hex.
+        assert!(apply_action(&mut state, Action::Move { unit_id: 1, destination: Hex::from_offset(0, 3) }).is_ok());
+        assert_eq!(state.positions[&1], Hex::from_offset(0, 3));
+    }
+
+    /// The skirmisher ability is NOT wired into movement: every unit is pathed as a
+    /// non-skirmisher. This test documents current behavior so the model prompt does not
+    /// promise an exemption the engine does not grant.
+    #[test]
+    fn test_documented_rule_skirmisher_ability_does_not_yet_bypass_zoc() {
+        let board = Board::new(10, 10);
+        let mut state = GameState::new(board);
+        let mut mover = Unit::new(1, "skirmisher_unit", 30, 0);
+        mover.movement = 6;
+        mover.abilities.push("skirmisher".to_string());
+        state.place_unit(mover, Hex::from_offset(0, 0));
+        state.place_unit(Unit::new(2, "enemy", 30, 1), Hex::from_offset(0, 3));
+
+        // Identical to the non-skirmisher case: the ability is ignored by pathfinding.
+        assert!(!legal_moves(&state, 1).unwrap().contains(&Hex::from_offset(0, 4)));
+    }
+
+    /// Attack reach: melee needs distance exactly 1, ranged exactly 2, and distance 3
+    /// is out of reach for every weapon. Complements
+    /// `test_ranged_attacker_gets_no_retaliation_from_melee_only_defender`, which covers
+    /// matching-range retaliation, and the melee-at-distance-2 case above.
+    #[test]
+    fn test_documented_rule_attack_reach_is_one_for_melee_and_two_for_ranged() {
+        let bow = AttackDef {
+            id: "bow".to_string(),
+            name: "Bow".to_string(),
+            damage: 5,
+            strikes: 3,
+            attack_type: "pierce".to_string(),
+            range: "ranged".to_string(),
+            ..Default::default()
+        };
+        let sword = AttackDef {
+            id: "sword".to_string(),
+            name: "Sword".to_string(),
+            damage: 6,
+            strikes: 3,
+            attack_type: "blade".to_string(),
+            range: "melee".to_string(),
+            ..Default::default()
+        };
+
+        // Distance 3 is beyond every weapon, ranged included.
+        let mut state = GameState::new(Board::new(10, 10));
+        let mut archer = Unit::new(1, "archer", 30, 0);
+        archer.attacks = vec![bow.clone(), sword.clone()];
+        state.place_unit(archer, Hex::ORIGIN);
+        state.place_unit(Unit::new(2, "target", 30, 1), Hex::from_offset(3, 0));
+        assert_eq!(Hex::ORIGIN.distance(Hex::from_offset(3, 0)), 3);
+        assert_eq!(
+            apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }),
+            Err(ActionError::NotAdjacent)
+        );
+        assert_eq!(state.units[&2].hp, 30, "no damage at distance 3");
+
+        // The same attacker reaches distance 2 with its ranged weapon.
+        let mut state = GameState::new(Board::new(10, 10));
+        let mut archer = Unit::new(1, "archer", 30, 0);
+        archer.attacks = vec![bow, sword];
+        state.place_unit(archer, Hex::ORIGIN);
+        state.place_unit(Unit::new(2, "target", 30, 1), Hex::from_offset(2, 0));
+        assert_eq!(Hex::ORIGIN.distance(Hex::from_offset(2, 0)), 2);
+        assert!(apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).is_ok());
+    }
 }

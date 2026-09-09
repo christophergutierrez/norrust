@@ -610,6 +610,28 @@ def enforce_usage(reply: ModelReply, args: argparse.Namespace) -> None:
         raise RuntimeError("model_error: total token limit exceeded")
 
 
+# Engine rules stated to every model. Each line is locked by a test named
+# test_documented_rule_* in norrust_core/src/game_state.rs; change them together.
+# Facts only — tactical advice belongs in docs/LLM_TACTICAL_PLAYBOOK.md.
+ENGINE_RULES = (
+    "## Engine rules\n"
+    "- Distance is hex distance: steps between hexes in any of the six directions.\n"
+    "- Attack reach is exact: melee needs distance 1, ranged needs distance 2. Distance 3 or more is out of "
+    "reach for every weapon.\n"
+    "- A defender retaliates only with an attack of the same range as the one it received; with no attack at "
+    "that range it does not retaliate.\n"
+    "- Moving spends each hex's terrain cost against the unit's movement, halved while slowed. Cost 99 or more "
+    "is impassable.\n"
+    "- A move must END on a free hex (else DestinationOccupied), but its path MAY cross hexes occupied by other "
+    "units: occupancy blocks only the destination.\n"
+    "- Every hex adjacent to an enemy is a zone of control. Entering one ends that unit's movement, so a "
+    "destination beyond it is DestinationUnreachable even when its terrain cost fits. Starting inside a zone of "
+    "control does not restrict leaving it.\n"
+    "- No unit is exempt: the skirmisher ability does not currently bypass that stop rule.\n"
+    "- A rejected action rolls back its whole batch, leaving state, accounting, and combat RNG unchanged.\n"
+)
+
+
 PLAYBOOK_PATH = Path(__file__).resolve().parents[1] / "docs" / "LLM_TACTICAL_PLAYBOOK.md"
 
 
@@ -1792,7 +1814,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         recruitment_guidance = (
             "\n- RecruitBatch can automatically vacate eligible castle occupants and recruit beyond the initially empty spaces, "
             "including beyond six. It attempts the requested count subject to affordability and actual capacity; "
-            "vacating spends movement and can disrupt screens. Use individual Recruit for exact placement and deployment (T3.4)."
+            "vacating spends movement and can disrupt screens. Use individual Recruit for exact placement and deployment (T0)."
         )
     tactical_guidance = (
         "\n## Tactical data and read-only tools\n"
@@ -1828,6 +1850,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         if state.get("incremental_turns") is True else "")
     rules = (
         (load_tactical_playbook() if playbook is None else playbook) + "\n"
+        + ENGINE_RULES +
         "## Match rules\n"
         "- Play only the configured model-controlled side; the driver automatically executes the opponent. "
         "The headless driver disables scenario objective and scenario turn-limit conditions. A side wins by recruiter loss: "

@@ -11,6 +11,7 @@ from unittest import mock
 
 from . import llm_client
 from .llm_client import (
+    ENGINE_RULES,
     TERMINAL_EXIT_CODES, TERMINAL_GAMEPLAY, TERMINAL_INFRASTRUCTURE,
     TERMINAL_MODEL_INVALID, ModelReply, classify_terminal, enforce_usage,
     compact_batch_preview, compact_hex_inspection, compact_observation,
@@ -1147,6 +1148,32 @@ class ClientValidationTests(unittest.TestCase):
                               {"unit_id": 3, "reason": "b"}]}]
         with self.assertRaisesRegex(ValueError, r"duplicate unit ID 2.*unit_ids\[0\].*duplicate unit ID 3.*holds\[0\]"):
             validate_orders(json.dumps(orders))
+
+    def test_prompt_states_engine_rules_locked_by_rust_fixtures(self):
+        """The facts below are proven by test_documented_rule_* in game_state.rs.
+
+        Any change must move together with those fixtures; a confidently stated
+        wrong rule is worse for play than an omitted one.
+        """
+        prompt = prompt_for({"units": []}, [])
+        self.assertIn("## Engine rules", prompt)
+        for fact in (
+                "melee needs distance 1, ranged needs distance 2",
+                "Distance 3 or more is out of reach",
+                "retaliates only with an attack of the same range",
+                "must END on a free hex (else DestinationOccupied)",
+                "path MAY cross hexes occupied by other units",
+                "Every hex adjacent to an enemy is a zone of control",
+                "Entering one ends that unit's movement",
+                "Starting inside a zone of control does not restrict leaving it",
+                "skirmisher ability does not currently bypass that stop rule",
+                "A rejected action rolls back its whole batch",
+        ):
+            self.assertIn(fact, prompt)
+        # The block reaches the model verbatim rather than being re-typed per call.
+        self.assertIn(ENGINE_RULES, prompt)
+        # Engine facts precede the match rules and the tactical guide's advice.
+        self.assertLess(prompt.index("## Engine rules"), prompt.index("## Match rules"))
 
     def test_prompt_documents_greedy_handoff_and_recruitment_ownership(self):
         prompt = prompt_for({"units": []}, [])

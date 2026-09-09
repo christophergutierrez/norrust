@@ -3581,6 +3581,9 @@ mod protocol_tests {
         assert_eq!(state.hex_to_unit, before.hex_to_unit);
         assert_eq!(state.next_unit_id, before.next_unit_id);
         assert_eq!(next_id, before.next_unit_id);
+        // The RNG is part of "unchanged": a rejected batch must not consume rolls,
+        // or a retried turn would diverge from the same authored actions.
+        assert_eq!(state.rng.state(), before.rng.state());
         assert!(events.is_empty());
     }
 }

@@ -7,18 +7,23 @@ The client supplies the response contract, tool syntax, and current board separa
 ## Strategy
 
 - **S1.** Open with village capture and army deployment. Assign fast scouts to
-  named villages and keep the main army together around one objective. For
-  Undead side 0 on `big_battle_6`, route bats toward (5,3) and (6,11), and a
-  combat recruit toward (2,4), subject to live legality and threats; other
-  maps/sides need their own routes. Village ownership persists after leaving:
+  named villages and keep the main army together around one objective.
+  Village ownership persists after leaving:
   move an unthreatened holder to its next useful job.
-- **S2.** Convert an advantage into pressure on the enemy recruiter. Greedy may
-  concentrate attacks on the nearest exposed unit; look-ahead may hold villages
-  and refuse bad melee. Break defended positions with coordinated attacks when
+- **S2.** Convert an advantage into pressure on the enemy recruiter.
+  Look-ahead may hold villages and refuse bad melee.
+  Break defended positions with coordinated attacks when
   the combined exchange justifies it. A stalemate at the safety cap is not a win.
 
 ## Tactical priorities
 
+- **T0.** Default to one recruit at a time, in the location that lets it reach
+  the best destination, then reuse the freed forward hex. Continue to recruit
+  until ALL GOLD IS SPENT; explain deliberate saving. Recruit a stationary group
+  first when it must screen the recruiter. Place each unit in a proactive
+  placement. Compare cost with HP, resistance to enemy weapons, terrain, and
+  role: durable units can heal and fight again, while replacing
+  casualties costs gold, travel time, and accumulated XP.
 - **T1.** Protect the recruiter so the army can win. Prefer the keep while
   recruiting; retain a screen that blocks actual enemy attack origins. If the
   position is threatened, compare removing attackers, restoring the screen,
@@ -39,14 +44,6 @@ The client supplies the response contract, tool syntax, and current board separa
     advancement pending: the unit must survive combat, then a legal `Advance`
     upgrades it and restores its new maximum HP. Advance eligible units before
     further combat.
-  - **T3.4.** Recruit useful units and deploy them efficiently. Default to one
-    recruit at a time on the best legal castle hex, move it toward its assigned
-    job, then reuse the freed forward hex. Observe new IDs and legal moves
-    before ordering recruits. Recruit a stationary group first when it must
-    screen the recruiter. Continue while gold and safe capacity permit useful
-    recruitment; explain deliberate saving. Compare cost with HP, resistance
-    to enemy weapons, terrain, and role: durable units can heal and fight again,
-    while replacing casualties costs gold, travel time, and accumulated XP.
 - **T4.** Advance durable frontline units with ranged support and attack from
   favorable terrain. Use weapon matchups, including melee against units with
   no melee retaliation, and coordinated pressure rather than waiting for a
@@ -69,9 +66,7 @@ The client supplies the response contract, tool syntax, and current board separa
   the existing decision/hold fields; compare it with a useful action elsewhere.
 - **T8 — Concede a clearly lost game.** Resign when live facts leave no
   credible recovery or victory route; state the decisive reason. A bad roll,
-  temporary threat, or material deficit alone is insufficient. A material deficit
-  in units, gold, villages, or position alone is not proof. do not resign merely
-  for being behind.
+  temporary threat, or material deficit alone is insufficient.
 
 For an uncertain consequential choice, compare the complete batch with one
 legal alternative. Record the concrete expected effect and main tradeoff in

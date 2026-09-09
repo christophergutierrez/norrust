@@ -62,7 +62,7 @@ class DecisionAnnotationIntegrationTests(unittest.TestCase):
     def test_real_driver_valid_annotation_reaches_catalog_and_export(self):
         response = {"actions": [{"action": "Move", "unit_id": 1, "col": 3, "row": 7},
                                  {"action": "EndTurn"}],
-                    "decisions": [{"orders": [0, 1], "rules": ["S1"],
+                    "decisions": [{"orders": [0, 1], "rules": ["T0", "S1"],
                                    "expected": "Preserve the force while the opponent closes.",
                                    "risk": "A passive turn can surrender ground."}]}
         with tempfile.TemporaryDirectory() as td:
@@ -79,7 +79,9 @@ class DecisionAnnotationIntegrationTests(unittest.TestCase):
             annotation = forwarded["decision_annotation"]
             self.assertEqual(annotation, request["decision_annotation"])
             self.assertEqual(annotation.get("status"), "valid")
-            self.assertEqual(annotation["decisions"][0]["rules"], ["S1"])
+            # T0 is the guide's recruitment ID; citing it proves the renamed rule
+            # survives validation, the real driver, and catalog import.
+            self.assertEqual(annotation["decisions"][0]["rules"], ["T0", "S1"])
             self.assertIsInstance(annotation.get("guide_hash"), str)
             self.assertEqual(annotation["guide_hash"], guide_hash(Path(ROOT / "docs" / "LLM_TACTICAL_PLAYBOOK.md").read_text(encoding="utf-8")))
             self.assertIn((ROOT / "docs/LLM_TACTICAL_PLAYBOOK.md").read_text(), request["prompt"])

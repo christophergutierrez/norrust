@@ -19,8 +19,18 @@ the request archive. A transport receipt proves delivery, not comprehension.
 
 The canonical prompt starts with the numbered
 [MEMORYLESS TACTICAL PLAYBOOK](LLM_TACTICAL_PLAYBOOK.md). Keep strategic choices
-there; `prompt_for` in `tools/llm_client.py` supplies match rules, response
-schemas, tool semantics, and forecast definitions. Structured live data follows,
+there; `prompt_for` in `tools/llm_client.py` supplies engine rules, match rules,
+response schemas, tool semantics, and forecast definitions.
+
+`ENGINE_RULES` in `tools/llm_client.py` states the engine mechanics a player
+cannot infer from the board: attack reach, matching-range retaliation, terrain
+movement costs, destination occupancy, the zone-of-control stop rule, and batch
+rollback. These are facts, not advice — keep tactical judgement in the playbook.
+Every line is locked by a `test_documented_rule_*` fixture in
+`norrust_core/src/game_state.rs`; change the block and its fixtures together, and
+add a fixture before adding a fact. A confidently stated wrong rule is worse than
+an omitted one, because a player that would otherwise inspect the board believes
+it instead. Structured live data follows,
 and request-specific follow-ups supply the current call budget and live revision.
 Players need only the assembled prompt. Keep each instruction in one place
 within it; use concise conditional tactics and avoid repeated checklists.
@@ -456,7 +466,7 @@ friendly unit and recruiter IDs/HP/positions. A preview or model text cannot
 replace these facts. A revised batch starts from this live revision; a rolled-back
 batch leaves it unchanged. After an accepted partial batch, the reminder is
 refreshed from the new live observation.
-Recruitment and deployment priorities live in [T3.4](LLM_TACTICAL_PLAYBOOK.md).
+Recruitment and deployment priorities live in [T0](LLM_TACTICAL_PLAYBOOK.md).
 The client supplies legal capacity and macro semantics; saving gold is legal.
 
 ```json
