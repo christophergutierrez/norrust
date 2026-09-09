@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sqlite3
 import zlib
@@ -6,9 +7,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from .game_history import (SCHEMA, backup_history, decode_payload, encode_payload, import_game,
-                           delete_history, inventory_history, list_side_turns, open_history,
+from .game_history import (IMPORTER_VERSION, SCHEMA, backup_history, decode_payload, encode_payload,
+                           import_game, delete_history, inventory_history, list_side_turns, open_history,
                            summarize_game, verify_history)
+
+FIXTURE = Path(__file__).parent / "fixtures" / "s1_sample_game"
 
 class GameHistoryTests(unittest.TestCase):
     def test_existing_catalog_migrates_annotation_columns(self):
@@ -181,6 +184,213 @@ class GameHistoryTests(unittest.TestCase):
             with self.assertRaises(KeyError):
                 delete_history(conn, game_ids=["missing"])
             self.assertEqual(inventory_history(conn)["counts"]["games"], 1)
+
+def _write_checkpoint(archive: Path, filename: str, save_state: dict) -> dict:
+    """Write a real checkpoint sidecar and return its driver-log reference."""
+    ckpt_dir = archive / "match.ckpt"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    envelope = {"version": 1, "save_state": save_state, "side_turns": save_state.get("_side_turns", 0),
+               "boundary": save_state.get("_boundary", "turn_end")}
+    payload = json.dumps(envelope).encode()
+    digest = hashlib.sha256(payload).hexdigest()
+    (ckpt_dir / filename).write_bytes(payload)
+    return {"path": filename, "digest": digest, "state_revision": save_state.get("state_revision"),
+            "side_turns": save_state.get("_side_turns"), "boundary": save_state.get("_boundary", "turn_end")}
+
+
+class S1SnapshotTimelineTests(unittest.TestCase):
+    """Covers the S1 data contract: an authoritative per-game snapshot
+    timeline, evidence-only endpoint linking, and honest coverage gaps."""
+
+    def test_tracked_fixture_produces_the_expected_ordered_distinct_timeline(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "history.sqlite"
+            conn = open_history(db)
+            game_id = import_game(conn, FIXTURE, "s1-fixture")
+            rows = conn.execute(
+                "SELECT sequence,revision,boundary_kind,renderable FROM snapshots WHERE game_id=? ORDER BY sequence",
+                (game_id,)).fetchall()
+            self.assertEqual([r[1] for r in rows], [0, 1, 2, 3, 4, 5])
+            self.assertEqual(rows[0][2], "opening")
+            self.assertEqual(rows[1][2], "partial")
+            self.assertEqual(rows[-1][2], "terminal")  # winning partial, no turn_boundary record
+            self.assertTrue(all(r[3] for r in rows))
+            coverage = json.loads(conn.execute(
+                "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+            self.assertTrue(coverage["opening_present"])
+            self.assertTrue(coverage["terminal_present"])
+            self.assertEqual(coverage["unresolved_turn_endpoints"], 0)
+            self.assertEqual(coverage["linked_reviews"], 1)
+            turns = list_side_turns(conn, game_id)
+            self.assertEqual([t["start_revision"] for t in turns], [0, 2])
+            self.assertEqual([t["end_revision"] for t in turns], [2, 4])
+            conn.close()
+
+    def test_reimport_is_idempotent_and_preserves_review_link_and_snapshot_ids(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "history.sqlite"
+            conn = open_history(db)
+            game_id = import_game(conn, FIXTURE)
+            before_snapshots = conn.execute(
+                "SELECT snapshot_id,revision,state_hash FROM snapshots WHERE game_id=? ORDER BY sequence",
+                (game_id,)).fetchall()
+            before_turns = conn.execute(
+                "SELECT side_turn_id,start_snapshot_id,end_snapshot_id FROM side_turns WHERE game_id=? ORDER BY sequence",
+                (game_id,)).fetchall()
+            import_game(conn, FIXTURE, game_id=game_id)
+            after_snapshots = conn.execute(
+                "SELECT snapshot_id,revision,state_hash FROM snapshots WHERE game_id=? ORDER BY sequence",
+                (game_id,)).fetchall()
+            after_turns = conn.execute(
+                "SELECT side_turn_id,start_snapshot_id,end_snapshot_id FROM side_turns WHERE game_id=? ORDER BY sequence",
+                (game_id,)).fetchall()
+            self.assertEqual(before_snapshots, after_snapshots)
+            self.assertEqual(before_turns, after_turns)
+            conn.close()
+
+    def test_duplicate_representation_is_coalesced_not_doubled(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); log = root / "match.ndjson"
+            state = {"type": "state", "state_revision": 0, "turn": 1, "active_faction": 0}
+            log.write_text("\n".join(json.dumps(r) for r in [
+                {"type": "metadata"},
+                {"type": "driver", "line": state},
+                {"type": "driver", "line": dict(state)},  # exact duplicate observation
+                {"type": "terminal", "reason": "max_turns"},
+            ]) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root)
+            self.assertEqual(conn.execute(
+                "SELECT count(*) FROM snapshots WHERE game_id=?", (game_id,)).fetchone()[0], 1)
+            conn.close()
+
+    def test_repeated_looking_later_state_is_kept_distinct(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); log = root / "match.ndjson"
+            log.write_text("\n".join(json.dumps(r) for r in [
+                {"type": "metadata"},
+                {"type": "driver", "line": {"type": "state", "state_revision": 0, "turn": 1, "active_faction": 0}},
+                # A resume branch reuses revision 0 with genuinely different content.
+                {"type": "driver", "line": {"type": "state", "state_revision": 0, "turn": 5, "active_faction": 1}},
+                {"type": "terminal", "reason": "max_turns"},
+            ]) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root)
+            rows = conn.execute("SELECT count(*) FROM snapshots WHERE game_id=?", (game_id,)).fetchone()[0]
+            self.assertEqual(rows, 2)
+            conn.close()
+
+    def test_missing_checkpoint_is_a_reported_gap_not_a_failure(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); log = root / "match.ndjson"
+            log.write_text("\n".join(json.dumps(r) for r in [
+                {"type": "metadata"},
+                {"type": "driver", "line": {"type": "state", "state_revision": 0, "turn": 1, "active_faction": 0}},
+                {"type": "driver", "line": {"type": "checkpoint", "path": "missing.json",
+                 "digest": "0" * 64, "state_revision": 9, "side_turns": 2, "boundary": "turn_end"}},
+                {"type": "terminal", "reason": "max_turns"},
+            ]) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root)
+            coverage = json.loads(conn.execute(
+                "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+            self.assertTrue(any(g.startswith("checkpoint_unavailable:missing.json") for g in coverage["gaps"]))
+            self.assertEqual(conn.execute(
+                "SELECT count(*) FROM snapshots WHERE game_id=?", (game_id,)).fetchone()[0], 1)
+            conn.close()
+
+    def test_corrupt_checkpoint_digest_is_a_reported_gap(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); log = root / "match.ndjson"
+            save_state = {"state_revision": 9, "turn": 5, "active_faction": 0, "_side_turns": 2}
+            ref = _write_checkpoint(root, "ck1.json", save_state)
+            ref["digest"] = "f" * 64  # corrupt: does not match the file's real digest
+            log.write_text("\n".join(json.dumps(r) for r in [
+                {"type": "metadata"},
+                {"type": "driver", "line": {"type": "state", "state_revision": 0, "turn": 1, "active_faction": 0}},
+                {"type": "driver", "line": {"type": "checkpoint", **ref}},
+                {"type": "terminal", "reason": "max_turns"},
+            ]) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root)
+            coverage = json.loads(conn.execute(
+                "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+            self.assertTrue(any("checkpoint_unavailable" in g for g in coverage["gaps"]))
+            conn.close()
+
+    def test_resume_conflict_between_checkpoint_and_log_is_reported(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); log = root / "match.ndjson"
+            save_state = {"state_revision": 3, "turn": 2, "active_faction": 1, "_side_turns": 9}
+            ref = _write_checkpoint(root, "ck2.json", save_state)
+            log.write_text("\n".join(json.dumps(r) for r in [
+                {"type": "metadata"},
+                {"type": "driver", "line": {"type": "state", "state_revision": 3, "turn": 2,
+                 "active_faction": 1, "side_turns": 2}},
+                {"type": "driver", "line": {"type": "checkpoint", **ref}},  # claims 9 completed side turns
+                {"type": "terminal", "reason": "max_turns"},
+            ]) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root)
+            coverage = json.loads(conn.execute(
+                "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+            self.assertTrue(any(c.startswith("conflict:revision:3") for c in coverage["conflicts"]))
+            # The conflicting checkpoint count never silently overwrites the log's.
+            self.assertEqual(conn.execute(
+                "SELECT completed_side_turns FROM snapshots WHERE game_id=? AND revision=3",
+                (game_id,)).fetchone()[0], 2)
+            conn.close()
+
+    def test_complete_game_with_missing_ending_stays_an_incomplete_replay(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); log = root / "match.ndjson"
+            log.write_text("\n".join(json.dumps(r) for r in [
+                {"type": "metadata"},
+                {"type": "driver", "line": {"type": "state", "state_revision": 0, "turn": 1, "active_faction": 0}},
+                {"type": "driver", "line": {"type": "state", "state_revision": 1, "turn": 3, "active_faction": 1}},
+                # No terminal record: the archive itself never proves an ending.
+            ]) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root)
+            coverage = json.loads(conn.execute(
+                "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+            self.assertTrue(coverage["opening_present"])
+            self.assertFalse(coverage["terminal_present"])
+            self.assertEqual(conn.execute(
+                "SELECT status FROM games WHERE game_id=?", (game_id,)).fetchone()[0], "incomplete")
+            conn.close()
+
+    def test_resignation_terminal_state_may_equal_the_preceding_state(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); log = root / "match.ndjson"
+            log.write_text("\n".join(json.dumps(r) for r in [
+                {"type": "metadata"},
+                {"type": "driver", "line": {"type": "state", "state_revision": 0, "turn": 1, "active_faction": 0}},
+                {"type": "turn_boundary", "accepted": True, "side_turn_id": "t1", "side": 0,
+                 "start_revision": 0, "state_revision": 1, "authored_finish_kind": "resign"},
+                {"type": "driver", "line": {"type": "state", "state_revision": 1, "turn": 1, "active_faction": 1}},
+                {"type": "terminal", "reason": "resignation", "winner": 1, "resigned_side": 0},
+            ]) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root)
+            terminal_snapshot = conn.execute(
+                "SELECT snapshot_id FROM snapshots WHERE game_id=? AND boundary_kind='terminal'",
+                (game_id,)).fetchone()[0]
+            end_snapshot = conn.execute(
+                "SELECT end_snapshot_id FROM side_turns WHERE game_id=?", (game_id,)).fetchone()[0]
+            self.assertEqual(terminal_snapshot, end_snapshot)
+            conn.close()
+
+    def test_importer_version_is_recorded_for_the_stale_export_diagnostic(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "history.sqlite"
+            conn = open_history(db)
+            game_id = import_game(conn, FIXTURE)
+            self.assertEqual(conn.execute(
+                "SELECT importer_version FROM games WHERE game_id=?", (game_id,)).fetchone()[0],
+                IMPORTER_VERSION)
+            conn.close()
+
 
 if __name__ == "__main__":
     unittest.main()

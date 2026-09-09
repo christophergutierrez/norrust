@@ -20,7 +20,25 @@ recording, and `Restart` returns to the first frame. Playback speeds are Slow
 The launcher accepts `--export PATH` to inspect the generated relocatable JSON
 bundle without opening Love2D. Missing or incomplete snapshots are reported;
 the exporter never reconstructs a state by running the game or rerolling
-combat.
+combat. It never resumes a checkpoint through a driver either — resuming can
+immediately execute a Greedy turn, which would replay history rather than
+show it.
+
+Frames come from the game's authoritative `snapshots` timeline (see
+[GAME_HISTORY.md](GAME_HISTORY.md)), one per renderable snapshot in archive
+order; a snapshot with evidence but no renderable state (a standalone
+checkpoint) is not exported as a frame, but still counts toward the bundle's
+`coverage` gaps. The bundle also carries `coverage` (`opening_present`,
+`terminal_present`, `gaps`, `conflicts`), which the toolbar shows as "Replay
+coverage incomplete" whenever the recorded engine result is complete but the
+timeline itself has a reported gap — distinct from "Recording incomplete",
+which reflects the engine's own `status`.
+
+A catalog row whose `importer_version` does not match the current importer
+(a pre-snapshot catalog, or one from an interrupted import) cannot be
+exported. The launcher and browser report an actionable error naming the
+reimport command rather than silently falling back to the old per-side-turn
+export.
 
 From the normal Love2D scenario screen, press `V` for **Recorded Games**. The
 browser lists the newest cataloged games, shows selected participants and

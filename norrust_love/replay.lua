@@ -109,7 +109,22 @@ function M.draw_toolbar(replay, ctx)
     if replay.bundle.metadata and replay.bundle.metadata.status ~= "complete" then
         love.graphics.setColor(1, 0.75, 0.3, 1)
         love.graphics.print("Recording incomplete", vp_w - 220, 26)
+    elseif M.coverage_incomplete(replay) then
+        -- The engine result is known, but the recorded timeline has a
+        -- reported gap (e.g. a checkpoint-only revision, or an unresolved
+        -- turn endpoint). Retain the result; disclose the gap.
+        love.graphics.setColor(1, 0.75, 0.3, 1)
+        love.graphics.print("Replay coverage incomplete", vp_w - 260, 26)
     end
+end
+
+-- True only when the timeline itself reports a gap or a missing endpoint,
+-- never a guessed completeness ratio.
+function M.coverage_incomplete(replay)
+    local coverage = replay.bundle.coverage
+    if type(coverage) ~= "table" then return false end
+    if coverage.opening_present == false or coverage.terminal_present == false then return true end
+    return type(coverage.gaps) == "table" and #coverage.gaps > 0
 end
 
 return M

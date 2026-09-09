@@ -1,6 +1,32 @@
 # Game history
 
-Each imported side turn keeps its start/end revisions and compressed state blobs.
+Each game has one authoritative `snapshots` collection: an ordered, deduplicated
+timeline of every provable board state the archive contains, built from logged
+`state` records and validated driver checkpoints. Snapshots are ordered by where
+their evidence first appears in the archive, not by revision number, since a
+resumed game can restart the revision counter. A checkpoint is folded onto an
+existing snapshot only when it proves the same execution state (matching
+revision and, when both are known, matching completed side-turn count);
+otherwise it becomes its own snapshot that carries identity, round, side, and
+completed-turn-count evidence but no renderable state (this importer has no
+engine-independent way to rebuild full unit/terrain data from a checkpoint
+alone). A `boundary_kind` of `opening`, `partial`, `side_turn_end`, `terminal`,
+or `resume_checkpoint` labels what each snapshot represents. `side_turns` rows
+reference `start_snapshot_id`/`end_snapshot_id` rather than holding a second
+authoritative copy of the states; `endpoint_link_kind` is `evidence` when both
+endpoints are renderable, `checkpoint_proof` when linked only through a
+checkpoint, or `unknown` when no exact-revision snapshot exists on one side.
+There is no "closest preceding state" fallback: a boundary without a proven
+endpoint stays unknown.
+
+Each game's `coverage_json` (also exported as `metadata.coverage` in a replay
+bundle) separates the recorded engine result from replay coverage:
+`opening_present`, `terminal_present`, and bounded `gaps`/`conflicts` lists
+(e.g. `checkpoint_unavailable:<path>:<reason>`, `conflict:revision:<n>:...`,
+`unresolved_turn_endpoints:<n>`). Completeness is never a guessed ratio. A
+complete game whose archive never proves an ending stays `terminal_present:
+false` — an incomplete replay, not a fabricated one.
+
 Model requests and forwarded action batches carry `side_turn_id` when the log
 contains a provable state revision, side-turn, or stable review identity. Missing
 linkage remains NULL; imports never attach the nth review or snapshot by position.
@@ -9,7 +35,14 @@ remain in the archived log/metrics JSON for ad hoc analysis and training-data
 selection.
 
 Match logs are append-only evidence. Import them after a game into a SQLite
-catalog; gameplay does not depend on the catalog being available.
+catalog; gameplay does not depend on the catalog being available. Importing a
+game is transactional and rebuilds only that game's derived timeline
+(`snapshots` and `side_turns`); requests, batches, actions, evaluations, review
+links, and the original archive are never dropped or recomputed. Each game
+records the `importer_version` that produced its timeline. A catalog row from
+before this importer (or from an interrupted import) has no matching
+`importer_version` and cannot be replayed until reimported — see
+[REPLAY.md](REPLAY.md).
 
 The Love2D **Recorded Games** browser reads the default catalog and valid
 `tmp/**/history.sqlite` catalogs read-only. It deduplicates exact game IDs and

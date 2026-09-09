@@ -10,9 +10,9 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .game_history import decode_payload, open_history
+from .game_history import IMPORTER_VERSION, decode_payload, open_history
 
-BUNDLE_VERSION = 1
+BUNDLE_VERSION = 2
 
 
 def _archive_hash(path: Path) -> str:
@@ -21,13 +21,28 @@ def _archive_hash(path: Path) -> str:
 
 def build_bundle(db: str | os.PathLike[str], game_id: str,
                  output: str | os.PathLike[str]) -> Path:
-    """Write a relocatable replay bundle for *game_id* and return its path."""
+    """Write a relocatable replay bundle for *game_id* and return its path.
+
+    Frames come from the game's authoritative `snapshots` timeline, not from
+    a pair of blobs per side turn. Only renderable snapshots become frames;
+    non-renderable evidence (identity-only, e.g. a standalone checkpoint)
+    still contributes to the reported coverage gaps.
+    """
     conn = open_history(db, read_only=True)
     game = conn.execute("SELECT * FROM games WHERE game_id=?", (game_id,)).fetchone()
     if game is None:
+        conn.close()
         raise KeyError(f"unknown game_id: {game_id}")
     columns = [item[1] for item in conn.execute("PRAGMA table_info(games)")]
     metadata = dict(zip(columns, game))
+    if metadata.get("importer_version") != IMPORTER_VERSION:
+        conn.close()
+        raise ValueError(
+            f"game {game_id} was catalogued by importer "
+            f"{metadata.get('importer_version') or 'a pre-snapshot schema'}, not {IMPORTER_VERSION}. "
+            "Reimport it (python3 -m tools.game_history import --db "
+            f"{db} <archive>) before replay; this viewer refuses to fall back "
+            "to the old per-side-turn export.")
     archive = Path(metadata["artifact_path"])
     log = archive if archive.is_file() else archive / "match.ndjson"
     if not log.is_file():
@@ -37,28 +52,24 @@ def build_bundle(db: str | os.PathLike[str], game_id: str,
                    "SELECT side,player_kind,display_name,backend,model_requested,model_reported "
                    "FROM game_players WHERE game_id=? ORDER BY side", (game_id,))]
     rows = conn.execute(
-        "SELECT sequence,side,start_revision,end_revision,start_state_blob,end_state_blob,state_codec "
-        "FROM side_turns WHERE game_id=? ORDER BY sequence", (game_id,)).fetchall()
+        "SELECT sequence,revision,round_number,active_side,completed_side_turns,boundary_kind,"
+        "renderable,state_blob,state_codec FROM snapshots WHERE game_id=? ORDER BY sequence",
+        (game_id,)).fetchall()
     frames: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for sequence, side, start_rev, end_rev, start_blob, end_blob, codec in rows:
-        for boundary, revision, blob in (("start", start_rev, start_blob), ("end", end_rev, end_blob)):
-            if blob is None:
-                continue
-            state = decode_payload(blob, codec or "zlib")
-            fingerprint = hashlib.sha256(json.dumps(state, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-            if fingerprint in seen:
-                continue
-            seen.add(fingerprint)
-            frames.append({"index": len(frames), "sequence": sequence, "side": side,
-                           "boundary": boundary, "state_revision": revision,
-                           "state": state})
+    for sequence, revision, round_number, side, completed, boundary_kind, renderable, blob, codec in rows:
+        if not renderable or blob is None:
+            continue
+        state = decode_payload(blob, codec or "zlib")
+        frames.append({"index": len(frames), "sequence": sequence, "revision": revision,
+                       "round": round_number, "side": side, "completed_side_turns": completed,
+                       "boundary_kind": boundary_kind, "state": state})
     if not frames:
         conn.close()
         raise ValueError(f"game {game_id} has no usable recorded state snapshots")
-    if frames[0]["boundary"] != "start" or frames[0]["sequence"] != 1:
+    if frames[0]["boundary_kind"] != "opening":
         conn.close()
         raise ValueError(f"game {game_id} has no provable starting snapshot")
+    coverage = json.loads(metadata.get("coverage_json") or "{}")
     bundle = {
         "version": BUNDLE_VERSION,
         "game_id": game_id,
@@ -66,12 +77,14 @@ def build_bundle(db: str | os.PathLike[str], game_id: str,
         "metadata": {key: metadata.get(key) for key in
                       ("scenario", "seed", "faction0", "faction1", "starting_gold",
                        "first_side", "max_side_turns", "status", "winner_side",
-                      "termination_reason", "source_commit", "coverage_json")},
+                      "termination_reason", "source_commit")},
+        "coverage": coverage,
         "provenance": {"catalog": str(Path(db).resolve()), "archive": str(log.resolve()),
                        "archive_sha256": _archive_hash(log)},
         "frames": frames,
     }
     bundle["metadata"]["players"] = players
+    bundle["metadata"]["coverage"] = coverage
     conn.close()
     destination = Path(output)
     destination.parent.mkdir(parents=True, exist_ok=True)

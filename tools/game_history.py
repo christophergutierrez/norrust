@@ -11,7 +11,10 @@ import zlib
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+# Bumped for S1: authoritative per-game `snapshots` collection plus
+# side_turn endpoint linkage by snapshot identity (see docs/GAME_HISTORY.md).
+IMPORTER_VERSION = "s1_snapshot_v1"
 SCHEMA = """
 PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS games (
@@ -39,6 +42,15 @@ CREATE TABLE IF NOT EXISTS side_turns (
  state_codec TEXT, metrics_json TEXT NOT NULL DEFAULT '{}', coverage_json TEXT NOT NULL DEFAULT '{}',
  record_hash TEXT NOT NULL, UNIQUE(game_id, sequence)
 );
+CREATE TABLE IF NOT EXISTS snapshots (
+ snapshot_id TEXT PRIMARY KEY, game_id TEXT NOT NULL REFERENCES games(game_id),
+ sequence INTEGER NOT NULL, revision INTEGER, round_number INTEGER, active_side INTEGER,
+ completed_side_turns INTEGER, boundary_kind TEXT NOT NULL, renderable INTEGER NOT NULL DEFAULT 0,
+ state_blob BLOB, state_codec TEXT, state_hash TEXT,
+ sources_json TEXT NOT NULL DEFAULT '[]', conflict_json TEXT NOT NULL DEFAULT '[]',
+ record_hash TEXT NOT NULL, UNIQUE(game_id, sequence)
+);
+CREATE INDEX IF NOT EXISTS idx_snapshots_game ON snapshots(game_id, sequence);
 CREATE TABLE IF NOT EXISTS model_requests (
  request_id TEXT PRIMARY KEY, game_id TEXT NOT NULL REFERENCES games(game_id), side_turn_id TEXT,
  sequence INTEGER, logical_call_id TEXT, retry_of_request_id TEXT, purpose TEXT, status TEXT,
@@ -125,6 +137,17 @@ def open_history(path: str | os.PathLike[str], *, read_only: bool = False) -> sq
     ):
         if name not in columns:
             conn.execute(f"ALTER TABLE model_requests ADD COLUMN {name} {definition}")
+    games_columns = {row[1] for row in conn.execute("PRAGMA table_info(games)")}
+    if "importer_version" not in games_columns:
+        conn.execute("ALTER TABLE games ADD COLUMN importer_version TEXT")
+    side_turn_columns = {row[1] for row in conn.execute("PRAGMA table_info(side_turns)")}
+    for name, definition in (
+        ("start_snapshot_id", "TEXT"),
+        ("end_snapshot_id", "TEXT"),
+        ("endpoint_link_kind", "TEXT"),
+    ):
+        if name not in side_turn_columns:
+            conn.execute(f"ALTER TABLE side_turns ADD COLUMN {name} {definition}")
     return conn
 
 def _records(path: Path) -> list[dict[str, Any]]:
@@ -141,6 +164,190 @@ def _state_payload(state: dict[str, Any] | None) -> tuple[bytes | None, str | No
         return None, None, None
     return encode_payload(state)
 
+def _state_fingerprint(state: dict[str, Any]) -> str:
+    return hashlib.sha256(canonical(state)).hexdigest()
+
+# Checkpoint "boundary" values map to the same coarse vocabulary used for
+# accepted turn_boundary records so the two evidence kinds can be compared.
+_CHECKPOINT_BOUNDARY_KIND = {
+    "post_batch": "partial", "postbatch": "partial", "post-batch": "partial",
+    "turn_end": "side_turn_end", "side_turn": "side_turn_end", "side_turn_end": "side_turn_end",
+    "start": "opening", "initial": "opening",
+}
+
+def _load_checkpoint_envelope(log: Path, reference: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    """Validate and load a driver checkpoint, reusing the client's own checker.
+
+    Returns (envelope, error). A checkpoint that fails validation (missing
+    file, digest mismatch, malformed JSON) is reported as a gap, never
+    silently skipped or replaced with a guess.
+    """
+    try:
+        from .llm_client import checkpoint_dir_for_log, validate_checkpoint_reference
+    except ImportError:  # pragma: no cover - direct script compatibility
+        from llm_client import checkpoint_dir_for_log, validate_checkpoint_reference  # type: ignore
+    try:
+        return validate_checkpoint_reference(reference, checkpoint_dir_for_log(log)), None
+    except ValueError as exc:
+        return None, str(exc)
+
+def _build_snapshots(log: Path, lines: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+    """Build the authoritative, ordered snapshot collection for one game.
+
+    Snapshots are ordered by the position their evidence first appears in the
+    archive (proven execution order), not by revision number -- a resumed
+    game can restart the revision counter, so sorting by revision alone would
+    misorder or falsely merge resume branches.
+
+    A checkpoint is coalesced onto an existing renderable log-state snapshot
+    only when it proves the same execution state (matching revision, and
+    matching completed side-turn count when both are known). Otherwise it
+    becomes its own non-renderable snapshot: its identity, round, side, and
+    completed-turn count still belong in the timeline and can prove a side
+    turn's endpoint, but this importer has no engine-independent way to
+    rebuild full unit/terrain data from a checkpoint alone, so it is never
+    exported as a playback frame. That is a real, reported coverage gap
+    rather than a state reconstructed from today's data files.
+    """
+    built: list[dict[str, Any]] = []
+    by_revision: dict[int, int] = {}
+    gaps: list[str] = []
+    for line in lines:
+        kind = line.get("type")
+        if kind == "state":
+            revision = _number(line.get("state_revision"))
+            fingerprint = _state_fingerprint(line)
+            if revision is not None and revision in by_revision:
+                existing = built[by_revision[revision]]
+                if existing["renderable"] and existing["state_hash"] == fingerprint:
+                    existing["sources"].append({"kind": "log_state", "ref": None, "hash": fingerprint})
+                    continue  # exact duplicate representation of the same moment
+                # Same revision number, different content: a resume/replay
+                # branch reused it. Proven distinct by content; keep both.
+            built.append({
+                "revision": revision, "round": _number(line.get("turn")),
+                "side": _number(line.get("active_faction")),
+                "completed_side_turns": _record_side_turn(line),
+                "boundary_kind": "partial" if line.get("turn_boundary") == "partial" else "unknown",
+                "renderable": True, "state": line, "state_hash": fingerprint,
+                "sources": [{"kind": "log_state", "ref": None, "hash": fingerprint}], "conflicts": [],
+            })
+            if revision is not None:
+                by_revision[revision] = len(built) - 1
+        elif kind == "checkpoint":
+            envelope, error = _load_checkpoint_envelope(log, line)
+            if error is not None:
+                gaps.append(f"checkpoint_unavailable:{line.get('path')}:{error}")
+                continue
+            revision = _number(line.get("state_revision"))
+            completed = _number(line.get("side_turns"))
+            boundary_kind = _CHECKPOINT_BOUNDARY_KIND.get(line.get("boundary"), "resume_checkpoint")
+            matched = by_revision.get(revision) if revision is not None else None
+            if matched is not None:
+                existing = built[matched]
+                if (existing["completed_side_turns"] is not None and completed is not None
+                        and existing["completed_side_turns"] != completed):
+                    note = (f"conflict:revision:{revision}: checkpoint reports {completed} "
+                            f"completed side turns, log reports {existing['completed_side_turns']}")
+                    existing["conflicts"].append(note)
+                    gaps.append(note)
+                else:
+                    if existing["completed_side_turns"] is None:
+                        existing["completed_side_turns"] = completed
+                    existing["sources"].append({"kind": "checkpoint", "ref": line.get("path"),
+                                                "hash": line.get("digest")})
+                continue
+            save_state = envelope.get("envelope", {}).get("save_state") if isinstance(envelope, dict) else None
+            built.append({
+                "revision": revision,
+                "round": _number(save_state.get("turn")) if isinstance(save_state, dict) else None,
+                "side": _number(save_state.get("active_faction")) if isinstance(save_state, dict) else None,
+                "completed_side_turns": completed, "boundary_kind": boundary_kind,
+                "renderable": False, "state": None, "state_hash": None,
+                "sources": [{"kind": "checkpoint", "ref": line.get("path"), "hash": line.get("digest")}],
+                "conflicts": [],
+            })
+            if revision is not None and revision not in by_revision:
+                by_revision[revision] = len(built) - 1
+    for index, snapshot in enumerate(built):
+        snapshot["sequence"] = index + 1
+    if built and built[0]["boundary_kind"] == "unknown":
+        # The very first recorded observation is the game's opening,
+        # whatever its boundary_kind would otherwise default to.
+        built[0]["boundary_kind"] = "opening"
+    return built, gaps
+
+def _mark_terminal(snapshots: list[dict[str, Any]], terminal: dict[str, Any]) -> None:
+    """Attach the "terminal" boundary_kind to the game's final evidence.
+
+    An explicit `state_revision` on the terminal record is proof enough when
+    it identifies exactly one snapshot. Otherwise, since the terminal record
+    is always appended after every state/checkpoint record in the archive,
+    the last built snapshot is literally the final piece of evidence before
+    the game ended -- not a guess from ordinal position among many
+    candidates, but the one and only thing that comes right before it. This
+    also covers a winning partial batch and a resignation whose terminal
+    state equals the preceding one.
+    """
+    if not terminal or not snapshots:
+        return
+    explicit_revision = _number(terminal.get("state_revision"))
+    if explicit_revision is not None:
+        match = _snapshot_for_revision(snapshots, explicit_revision)
+        if match is not None:
+            match["boundary_kind"] = "terminal"
+            return
+    snapshots[-1]["boundary_kind"] = "terminal"
+
+def _insert_snapshots(conn: sqlite3.Connection, game_id: str, snapshots: list[dict[str, Any]]) -> None:
+    for snapshot in snapshots:
+        state_blob = state_codec = state_hash = None
+        if snapshot["renderable"] and snapshot["state"] is not None:
+            state_blob, state_codec, _ = encode_payload(snapshot["state"])
+            state_hash = snapshot["state_hash"]
+        snapshot_id = f"{game_id}:snapshot:{snapshot['sequence']}"
+        snapshot["snapshot_id"] = snapshot_id
+        payload = {"sequence": snapshot["sequence"], "revision": snapshot["revision"],
+                   "boundary_kind": snapshot["boundary_kind"], "sources": snapshot["sources"]}
+        conn.execute("""INSERT INTO snapshots
+          (snapshot_id,game_id,sequence,revision,round_number,active_side,completed_side_turns,
+           boundary_kind,renderable,state_blob,state_codec,state_hash,sources_json,conflict_json,
+           record_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+          (snapshot_id, game_id, snapshot["sequence"], snapshot["revision"], snapshot["round"],
+           snapshot["side"], snapshot["completed_side_turns"], snapshot["boundary_kind"],
+           int(snapshot["renderable"]), state_blob, state_codec, state_hash,
+           json.dumps(snapshot["sources"], sort_keys=True), json.dumps(snapshot["conflicts"], sort_keys=True),
+           digest(payload)))
+
+def _coverage_summary(snapshots: list[dict[str, Any]], terminal: dict[str, Any],
+                      linkage: dict[str, Any]) -> dict[str, Any]:
+    terminal_snapshot = next((s for s in snapshots if s["boundary_kind"] == "terminal"), None)
+    gaps: list[str] = []
+    conflicts: list[str] = []
+    for snapshot in snapshots:
+        conflicts.extend(snapshot["conflicts"])
+    if terminal and terminal_snapshot is None:
+        gaps.append("terminal_state_unresolved")
+    if terminal_snapshot is not None and not terminal_snapshot["renderable"]:
+        gaps.append(f"terminal_snapshot_not_renderable:revision:{terminal_snapshot['revision']}")
+    if not snapshots:
+        gaps.append("no_recorded_snapshots")
+    elif not (snapshots[0]["boundary_kind"] == "opening" and snapshots[0]["renderable"]):
+        gaps.append("opening_state_not_renderable")
+    if linkage["unresolved_turn_endpoints"]:
+        gaps.append(f"unresolved_turn_endpoints:{linkage['unresolved_turn_endpoints']}")
+    if linkage["unattached_reviews"]:
+        gaps.append(f"unattached_reviews:{linkage['unattached_reviews']}")
+    return {
+        "opening_present": bool(snapshots) and snapshots[0]["boundary_kind"] == "opening" and snapshots[0]["renderable"],
+        "terminal_present": bool(terminal_snapshot is not None and terminal_snapshot["renderable"]),
+        "snapshot_count": len(snapshots),
+        "renderable_snapshot_count": sum(1 for s in snapshots if s["renderable"]),
+        "linked_reviews": linkage["linked_reviews"], "unattached_reviews": linkage["unattached_reviews"],
+        "unresolved_turn_endpoints": linkage["unresolved_turn_endpoints"],
+        "gaps": sorted(set(gaps)), "conflicts": sorted(set(conflicts)),
+    }
+
 def import_game(conn: sqlite3.Connection, archive: str | os.PathLike[str],
                 cohort_id: str | None = None, game_id: str | None = None) -> str:
     root = Path(archive).resolve()
@@ -148,29 +355,48 @@ def import_game(conn: sqlite3.Connection, archive: str | os.PathLike[str],
     records = _records(log)
     metadata = _first(records, "metadata")
     lines = _driver(records)
-    states = [line for line in lines if line.get("type") == "state"]
     terminal = next((r for r in reversed(records) if r.get("type") == "terminal"), {})
     game_id = game_id or digest({"archive": str(log), "metadata": metadata})[:32]
     config = {k: metadata.get(k) for k in ("scenario", "seed", "faction0", "faction1", "gold", "first_player", "max_turns", "driver_command", "turn_format")}
     status = "complete" if terminal else "incomplete"
     with conn:
+        # Transactionally rebuild this game's derived timeline (snapshots and
+        # side_turns) from the source archive on every import. Requests,
+        # batches, actions, evaluations, and reviews are never dropped here.
+        conn.execute("DELETE FROM snapshots WHERE game_id=?", (game_id,))
+        conn.execute("DELETE FROM side_turns WHERE game_id=?", (game_id,))
         conn.execute("""INSERT INTO games
           (game_id,cohort_id,lineage_root_id,seed,scenario,faction0,faction1,starting_gold,
           first_side,max_side_turns,started_at,ended_at,wall_ms,status,winner_side,
            termination_reason,source_commit,config_json,provenance_json,schema_version,
-           artifact_path,coverage_json)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           artifact_path,coverage_json,importer_version)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
           ON CONFLICT(game_id) DO UPDATE SET status=excluded.status,
-          winner_side=excluded.winner_side,termination_reason=excluded.termination_reason""",
+          winner_side=excluded.winner_side,termination_reason=excluded.termination_reason,
+          importer_version=excluded.importer_version""",
           (game_id, cohort_id, game_id, metadata.get("seed"), metadata.get("scenario"),
            metadata.get("faction0"), metadata.get("faction1"), metadata.get("gold"),
            metadata.get("first_player"), metadata.get("max_turns"), metadata.get("started_at"),
            terminal.get("ended_at"), terminal.get("wall_ms"), status, terminal.get("winner"),
            terminal.get("reason"), metadata.get("source_commit"), json.dumps(config, sort_keys=True),
-           json.dumps({"archive": str(log)}, sort_keys=True), SCHEMA_VERSION, str(root), "{}"))
-        linkage = _import_turns(conn, game_id, records, lines, states, terminal)
+           json.dumps({"archive": str(log)}, sort_keys=True), SCHEMA_VERSION, str(root), "{}",
+           IMPORTER_VERSION))
+        snapshots, checkpoint_gaps = _build_snapshots(log, lines)
+        _mark_terminal(snapshots, terminal)
+        _insert_snapshots(conn, game_id, snapshots)
+        linkage = _import_turns(conn, game_id, records, snapshots)
+        coverage = _coverage_summary(snapshots, terminal, linkage)
+        coverage["gaps"] = sorted(set(coverage["gaps"]) | set(checkpoint_gaps))
         conn.execute("UPDATE games SET coverage_json=? WHERE game_id=?",
-                     (json.dumps({"state_records": len(states), **linkage}, sort_keys=True), game_id))
+                     (json.dumps(coverage, sort_keys=True), game_id))
+        # Repair stale side_turn references left over from a prior import
+        # whose derived side_turn IDs no longer exist, without deleting the
+        # evidence rows themselves.
+        for table in ("model_requests", "action_batches"):
+            conn.execute(f"""UPDATE {table} SET side_turn_id=NULL
+              WHERE game_id=? AND side_turn_id IS NOT NULL
+              AND side_turn_id NOT IN (SELECT side_turn_id FROM side_turns WHERE game_id=?)""",
+              (game_id, game_id))
         for side in (0, 1):
             is_model = metadata.get("llm_side") == side
             requested_model = next((metadata.get(key) for key in
@@ -210,7 +436,7 @@ def _record_side_turn(record: dict[str, Any]) -> int | None:
 
 
 def _matches_review(review: dict[str, Any], boundary: dict[str, Any],
-                    start: dict[str, Any] | None, end: dict[str, Any] | None,
+                    start_revision: int | None, end_revision: int | None,
                     side_turn_id: str) -> str | None:
     """Return the proof used to attach a review, or None when it is ambiguous."""
     if review.get("side_turn_id") == side_turn_id:
@@ -220,82 +446,75 @@ def _matches_review(review: dict[str, Any], boundary: dict[str, Any],
     if review_side is not None and boundary_side is not None and review_side == boundary_side:
         return "side_turn"
     review_revision = _record_revision(review)
-    revisions = {_record_revision(boundary), _record_revision(start or {}),
-                 _record_revision(end or {})}
+    revisions = {_record_revision(boundary), start_revision, end_revision}
     if review_revision is not None and review_revision in revisions:
         return "state_revision"
     return None
 
 
-def _state_for_revision(states: list[dict[str, Any]], revision: int | None) -> dict[str, Any] | None:
+def _snapshot_for_revision(snapshots: list[dict[str, Any]], revision: int | None) -> dict[str, Any] | None:
+    """Find the one snapshot with an exact revision match.
+
+    Deliberately has no "closest preceding" fallback: a resumed game can
+    reuse revision numbers across branches, and a boundary without a provable
+    endpoint must stay unknown rather than guess from ordinal position.
+    """
     if revision is None:
         return None
-    matches = [state for state in states if _record_revision(state) == revision]
+    matches = [snapshot for snapshot in snapshots if snapshot["revision"] == revision]
     return matches[0] if len(matches) == 1 else None
 
 
-def _state_before_revision(states: list[dict[str, Any]], revision: int | None) -> dict[str, Any] | None:
-    """Use revision chronology only when it identifies one preceding state."""
-    if revision is None:
-        return None
-    candidates = [state for state in states
-                  if isinstance(state.get("state_revision"), int)
-                  and state["state_revision"] < revision]
-    if not candidates:
-        return None
-    highest = max(state["state_revision"] for state in candidates)
-    matches = [state for state in candidates if state["state_revision"] == highest]
-    return matches[0] if len(matches) == 1 else None
+def _endpoint_link_kind(before: dict[str, Any] | None, after: dict[str, Any] | None) -> str:
+    found = [s for s in (before, after) if s is not None]
+    if not found:
+        return "unknown"
+    return "evidence" if all(s["renderable"] for s in found) else "checkpoint_proof"
 
 
 def _import_turns(conn: sqlite3.Connection, game_id: str, records: list[dict[str, Any]],
-                  lines: list[dict[str, Any]], states: list[dict[str, Any]], terminal: dict[str, Any]) -> dict[str, Any]:
+                  snapshots: list[dict[str, Any]]) -> dict[str, Any]:
     boundaries = [r for r in records if r.get("type") == "turn_boundary" and r.get("accepted") is True]
     reviews = [r for r in records if r.get("type") == "handoff_review"]
     record_links: dict[str, str] = {}
-    boundary_rows: list[tuple[dict[str, Any], str, dict[str, Any] | None, dict[str, Any] | None]] = []
-    review_links: dict[int, tuple[str, str]] = {}
+    unresolved = 0
     linked_review_indexes: set[int] = set()
     for i, boundary in enumerate(boundaries, 1):
         side_turn_id = boundary.get("side_turn_id") or f"{game_id}:turn:{i}"
         end_revision = _record_revision(boundary)
-        after = _state_for_revision(states, end_revision)
+        after = _snapshot_for_revision(snapshots, end_revision)
         start_revision = _number(boundary.get("start_revision"))
-        before = _state_for_revision(states, start_revision)
-        if before is None:
-            before = _state_before_revision(states, end_revision)
-        # A boundary without explicit endpoints is intentionally incomplete.
-        # Never infer them from the ordinal position of a partial snapshot.
-        sb, codec, sh = _state_payload(before); eb, _, eh = _state_payload(after)
+        before = _snapshot_for_revision(snapshots, start_revision)
+        # A boundary without an exact-revision snapshot on both ends is
+        # intentionally left with an unknown endpoint. Never infer one from
+        # the ordinal position of a nearby partial snapshot.
+        if before is None or after is None:
+            unresolved += 1
         payload = {"sequence": i, "finish": boundary.get("authored_finish_kind"),
-                   "start_revision": before.get("state_revision") if before else None,
-                   "end_revision": after.get("state_revision") if after else None}
+                   "start_revision": before["revision"] if before else None,
+                   "end_revision": after["revision"] if after else None}
         candidates = []
         for review_index, review in enumerate(reviews):
-            proof = _matches_review(review, boundary, before, after, side_turn_id)
+            proof = _matches_review(review, boundary, payload["start_revision"], payload["end_revision"], side_turn_id)
             if proof is not None:
                 candidates.append((review_index, review, proof))
         if len(candidates) == 1:
             review_index, review, proof = candidates[0]
             payload["handoff_review"] = review
             payload["handoff_review_link"] = proof
-            review_links[review_index] = (side_turn_id, proof)
             linked_review_indexes.add(review_index)
-        boundary_rows.append((boundary, side_turn_id, before, after))
         conn.execute("""INSERT INTO side_turns
           (side_turn_id,game_id,sequence,round_number,side,status,finish_kind,end_turn_emitted,
-           start_revision,end_revision,start_state_blob,end_state_blob,start_state_hash,
-           end_state_hash,state_codec,metrics_json,record_hash)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(side_turn_id) DO UPDATE SET
-          finish_kind=excluded.finish_kind,end_state_blob=excluded.end_state_blob,
-          end_state_hash=excluded.end_state_hash,status=excluded.status,
-          metrics_json=excluded.metrics_json""",
-          (side_turn_id, game_id, i, after.get("turn") if after else None,
-           before.get("active_faction", 0) if before else (boundary.get("side") or 0),
-           "terminal" if terminal and i == len(boundaries) else "ended",
+           start_revision,end_revision,start_snapshot_id,end_snapshot_id,endpoint_link_kind,
+           metrics_json,record_hash)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+          (side_turn_id, game_id, i, after["round"] if after else None,
+           before["side"] if before is not None else (boundary.get("side") or 0),
+           "terminal" if terminal_boundary(after) else "ended",
            boundary.get("authored_finish_kind"), int(bool(boundary.get("executed_finish_kind"))),
-           before.get("state_revision") if before else None, after.get("state_revision") if after else None,
-           sb, eb, sh, eh, codec,
+           payload["start_revision"], payload["end_revision"],
+           before["snapshot_id"] if before else None, after["snapshot_id"] if after else None,
+           _endpoint_link_kind(before, after),
            json.dumps({"handoff_review": payload["handoff_review"]}, sort_keys=True)
            if "handoff_review" in payload else "{}",
            digest(payload)))
@@ -303,18 +522,17 @@ def _import_turns(conn: sqlite3.Connection, game_id: str, records: list[dict[str
             value = boundary.get(key)
             if value is not None:
                 record_links[f"{key}:{value}"] = side_turn_id
-        for revision in (before.get("state_revision") if before else None,
-                         after.get("state_revision") if after else None):
+        for revision in (payload["start_revision"], payload["end_revision"]):
             if revision is not None:
                 record_links[f"revision:{revision}"] = side_turn_id
-    for index, review in enumerate(reviews):
-        if index not in linked_review_indexes:
-            review_links[index] = ("", "unavailable")
     return {"linked_reviews": len(linked_review_indexes),
             "unattached_reviews": len(reviews) - len(linked_review_indexes),
-            "unresolved_turn_endpoints": sum(1 for _, _, before, after in boundary_rows
-                                              if before is None or after is None),
+            "unresolved_turn_endpoints": unresolved,
             "record_links": record_links}
+
+
+def terminal_boundary(snapshot: dict[str, Any] | None) -> bool:
+    return bool(snapshot is not None and snapshot.get("boundary_kind") == "terminal")
 
 def _side_turn_for_record(record: dict[str, Any], links: dict[str, str]) -> str | None:
     explicit = record.get("side_turn_id")
@@ -412,7 +630,8 @@ def summarize_game(conn: sqlite3.Connection, game_id: str) -> dict[str, Any]:
 
 def list_side_turns(conn: sqlite3.Connection, game_id: str) -> list[dict[str, Any]]:
     cur = conn.execute("""SELECT side_turn_id,sequence,round_number,side,status,finish_kind,
-                          start_revision,end_revision FROM side_turns
+                          start_revision,end_revision,start_snapshot_id,end_snapshot_id,
+                          endpoint_link_kind FROM side_turns
                           WHERE game_id=? ORDER BY sequence""", (game_id,))
     return [dict(zip([d[0] for d in cur.description], row)) for row in cur]
 
@@ -426,13 +645,13 @@ def verify_history(path: str | os.PathLike[str]) -> dict[str, Any]:
     integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
     foreign_keys = conn.execute("PRAGMA foreign_key_check").fetchall()
     counts = {}
-    for table in ("games", "game_players", "side_turns", "model_requests",
+    for table in ("games", "game_players", "side_turns", "snapshots", "model_requests",
                   "action_batches", "actions", "evaluation_runs", "decision_evaluations"):
         counts[table] = conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
     conn.close()
     return {"integrity": integrity, "foreign_key_errors": len(foreign_keys), "counts": counts}
 
-TABLES = ("games", "game_players", "side_turns", "model_requests",
+TABLES = ("games", "game_players", "side_turns", "snapshots", "model_requests",
           "action_batches", "actions", "evaluation_runs", "decision_evaluations")
 
 
@@ -478,7 +697,7 @@ def delete_history(conn: sqlite3.Connection, cohort_id: str | None = None,
             conn.execute("DELETE FROM decision_evaluations WHERE request_id IN (%s) OR preferred_request_id IN (%s)" %
                          (placeholders_for(request_ids), placeholders_for(request_ids)), request_ids + request_ids)
         if selected:
-            for table in ("actions", "action_batches", "model_requests", "side_turns", "game_players", "games"):
+            for table in ("actions", "action_batches", "model_requests", "side_turns", "snapshots", "game_players", "games"):
                 conn.execute(f"DELETE FROM {table} WHERE game_id IN ({placeholders})", selected)
         for run_id in eval_ids:
             if conn.execute("SELECT 1 FROM decision_evaluations WHERE evaluation_run_id=? LIMIT 1", (run_id,)).fetchone() is None:
