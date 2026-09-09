@@ -195,6 +195,43 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual(len(requests), 1)
         self.assertEqual(batches[0]["decision_annotation"]["status"], "valid")
 
+    def test_invalid_annotation_error_surfaces_once_in_the_next_prompt(self):
+        # A response with an invalid decision annotation (empty risk text)
+        # still executes its legal EndTurn normally. The exact validator
+        # error must appear in the very next scheduled prompt as bookkeeping
+        # context only, then never again -- no retry, no extra model call,
+        # no change to gameplay.
+        invalid_first = json.dumps({"actions": [{"action": "EndTurn"}], "decisions": [
+            {"orders": [0], "rules": ["S1"], "expected": "hold", "risk": ""}]})
+        ok_second = self.annotated_orders("second")
+        ok_third = self.annotated_orders("third")
+        lines = []
+        for revision in (7, 20, 30):
+            lines += [{"type": "state", "active_faction": 0, "state_revision": revision, "units": []},
+                      {"type": "status", "ok": True, "results": [{"ok": True}]}]
+        lines.append({"type": "game_end", "reason": "max_turns"})
+        with mock.patch.object(llm_client, "query_tactical_surface", return_value={}), \
+                mock.patch.object(llm_client, "draft_needs_preview", return_value=False):
+            code, records = self.run_with_orders(
+                [invalid_first, ok_second, ok_third], lines, return_records=True)
+        self.assertEqual(code, 0)
+        requests = [r for r in records if r["type"] == "model_request"]
+        self.assertEqual(len(requests), 3)
+        self.assertEqual(requests[0]["decision_annotation"]["status"], "invalid")
+        error = requests[0]["decision_annotation"]["error"]
+        # The mistake still executed legally; only its evidence was rejected.
+        batches = [r for r in records if r["type"] == "forwarded_orders"]
+        self.assertEqual(batches[0]["orders"], [{"action": "EndTurn"}])
+        self.assertNotIn("PRIOR_ANNOTATION_ERROR", requests[0]["prompt"])
+        self.assertIn("PRIOR_ANNOTATION_ERROR", requests[1]["prompt"])
+        self.assertIn(error, requests[1]["prompt"])
+        # Delivered once: it must not still be present, or repeated, later.
+        self.assertNotIn("PRIOR_ANNOTATION_ERROR", requests[2]["prompt"])
+        # No retry and no extra model call: exactly the three canned replies
+        # were consumed, one per scheduled request, and the driver saw
+        # exactly three forwarded batches -- one per turn, none repeated.
+        self.assertEqual(len(batches), 3)
+
     def test_draft_review_can_concede_without_another_review_or_validation(self):
         lines = [{"type": "state", "active_faction": 0},
                  {"type": "status", "ok": True, "what": "tactical_surface", "body": {}},

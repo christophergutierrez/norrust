@@ -20,6 +20,49 @@ def load_records(path: str | Path) -> list[dict[str, Any]]:
     return records
 
 
+def aggregate_publication(records: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    """Summarize `tools.publish_reply` validation-log attempts, or ``None``.
+
+    A missing local validation record (no log supplied or found) is unknown
+    evidence, not a perfect first-attempt score, so the caller must pass
+    ``None`` rather than an empty list to mean "no record available". Each
+    request's attempts are ordered by timestamp; a request whose first
+    attempt already published is first-attempt-valid, one whose later
+    attempt published after an earlier invalid one is repaired, and one all
+    of whose recorded attempts stayed invalid is unresolved (still visible
+    here even if the match ended with no later prompt).
+    """
+    if records is None:
+        return None
+    by_request: dict[str, list[dict[str, Any]]] = {}
+    for item in records:
+        request_id = item.get("request_id")
+        if isinstance(request_id, str) and request_id:
+            by_request.setdefault(request_id, []).append(item)
+    first_attempt_valid = 0
+    repaired = 0
+    unresolved = 0
+    total_attempts = 0
+    for attempts in by_request.values():
+        attempts = sorted(attempts, key=lambda item: item.get("timestamp", 0))
+        total_attempts += len(attempts)
+        published_index = next((index for index, item in enumerate(attempts)
+                                if item.get("status") != "invalid"), None)
+        if published_index is None:
+            unresolved += 1
+        elif published_index == 0:
+            first_attempt_valid += 1
+        else:
+            repaired += 1
+    return {
+        "requests": len(by_request),
+        "first_attempt_valid": first_attempt_valid,
+        "repaired": repaired,
+        "unresolved": unresolved,
+        "total_attempts": total_attempts,
+    }
+
+
 def _forced_partial_limit_boundaries(records: list[dict[str, Any]], boundaries: list[dict[str, Any]]) -> set[int]:
     """Find safety finishes by stable identity, or immediate legacy chronology."""
     forced = [item for item in records if item.get("type") == "partial_limit_finish"]
@@ -46,7 +89,8 @@ def _forced_partial_limit_boundaries(records: list[dict[str, Any]], boundaries: 
     return result
 
 
-def classify(records: list[dict[str, Any]]) -> dict[str, Any]:
+def classify(records: list[dict[str, Any]],
+             publication_records: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     terminal = next((item for item in reversed(records) if item.get("type") == "terminal"), {})
     metadata = next((item for item in records if item.get("type") == "metadata"), {})
     events = [item.get("line", {}) for item in records if item.get("type") == "driver"]
@@ -237,6 +281,11 @@ def classify(records: list[dict[str, Any]]) -> dict[str, Any]:
                          if applicable_submissions else None),
             "rule_counts": dict(rule_counts),
         },
+        # A separate breakdown of local pre-publication validation attempts
+        # (tools.publish_reply), alongside the final-annotation coverage
+        # above. It does not redefine or replace decision_annotations
+        # coverage, and repair effort is not folded into it as if free.
+        "publication_attempts": aggregate_publication(publication_records),
     }
     if not telemetry_available:
         report.update({
@@ -313,11 +362,23 @@ def classify(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def main(argv: list[str]) -> int:
-    if not argv:
-        print("usage: match_report.py LOG [LOG ...]", file=sys.stderr)
+    args = list(argv)
+    publication_log = None
+    if "--publication-log" in args:
+        index = args.index("--publication-log")
+        try:
+            publication_log = args[index + 1]
+        except IndexError:
+            print("--publication-log requires a path", file=sys.stderr)
+            return 2
+        del args[index:index + 2]
+    if not args:
+        print("usage: match_report.py [--publication-log PATH] LOG [LOG ...]", file=sys.stderr)
         return 2
-    for name in argv:
-        print(json.dumps({"log": name, **classify(load_records(name))}, sort_keys=True))
+    publication_records = load_records(publication_log) if publication_log else None
+    for name in args:
+        print(json.dumps({"log": name, **classify(load_records(name), publication_records)},
+                         sort_keys=True))
     return 0
 
 

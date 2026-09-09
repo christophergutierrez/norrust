@@ -172,6 +172,43 @@ hold IDs are kept; other units remain unswept. Neither mechanism prevents
 earlier authored moves or recruitment, auto-vacating, or later opponent attacks.
 Delegated destinations remain a tactical choice and are not guaranteed safe.
 
+### Publishing a file-transport reply
+
+`tools/file_backend.py` is the file-transport `--model-command` adapter: it writes
+the complete prompt unchanged to `prompt_<ID>.txt`, publishes a `waiting_<ID>`
+marker, and blocks until `reply_<ID>.txt` appears. A human or agent player using
+that transport must never write `reply_<ID>.txt` directly. Draft the reply to a
+temporary file in the same directory, then publish it with `tools/publish_reply.py`:
+
+```bash
+python3 -m tools.publish_reply --directory /absolute/run/requests --pending /absolute/run/requests/draft.tmp
+```
+
+`--request-id` is optional; it is inferred from the single `waiting_*` marker in
+the directory when omitted, and required only when more than one is present.
+`publish_reply` validates the draft with the same `tools.decision_annotations`
+validator the client applies after publication — malformed JSON, an unknown rule
+ID, uncovered actions, empty risk/expected text, and text over the 240 UTF-8 byte
+cap are all rejected before publication, with the exact error printed and nothing
+written to `reply_<ID>.txt`. Tool-only requests and replies with no decisions
+(including a bare action array) remain eligible: missing annotations can still
+execute legally, so only genuinely malformed evidence blocks publication. On
+success it publishes atomically with an exclusive filesystem link, so a duplicate
+or concurrent publish attempt can never replace an already-published reply.
+
+Every attempt — accepted or rejected — is appended to `validation_log.ndjson` in
+the same directory as one JSON object per line: `request_id`, `timestamp`,
+`status`, `error`, `attempt_sha256`, and `attempt_bytes`. The raw rejected bytes
+are preserved there, never shortened or rewritten, even though they never reach
+the driver. Pass that log to `tools/match_report.py --publication-log PATH` to
+aggregate first-attempt-valid, repaired, and unresolved publication counts
+alongside the existing final-annotation coverage; a request with no local
+validation record at all is reported as unknown, not scored as a perfect
+first attempt. A reply that bypasses `publish_reply` entirely (written straight
+to `reply_<ID>.txt` by some other backend or script) still gets diagnosed by the
+same `annotation_for_response` validator inside the client itself, so reading an
+annotation error never requires having used this helper.
+
 ## Build and run
 
 Build the driver from the repository root:

@@ -2345,6 +2345,10 @@ def run(args: argparse.Namespace) -> int:
     pending_intent: Optional[str] = None
     agenda_memory: Optional[dict[str, Any]] = None
     pending_agenda: Optional[dict[str, Any]] = None
+    # Set when a response's decision annotation is invalid. Delivered once,
+    # as short factual context, on the next request that was already going
+    # to be sent; never triggers a retry or extra model call on its own.
+    pending_annotation_notice: Optional[str] = None
     pending_finish_kind: Optional[str] = None
     pending_commit: Optional[dict[str, Any]] = None
     final_reply: Optional[ModelReply] = None
@@ -2462,7 +2466,14 @@ def run(args: argparse.Namespace) -> int:
     request_sequence = 0
     batch_sequence = 0
     def complete_model(model_prompt: str) -> ModelReply:
-        nonlocal request_sequence
+        nonlocal request_sequence, pending_annotation_notice
+        notice, pending_annotation_notice = pending_annotation_notice, None
+        if notice:
+            # Client-side context only, appended after the canonical prompt
+            # content and before the live-state/response-instruction footer
+            # that finalize_model_prompt adds; the playbook and response
+            # contract are unchanged.
+            model_prompt = model_prompt.rstrip() + "\n" + notice
         delivered_prompt = finalize_model_prompt(
             model_prompt, state if isinstance(state, dict) else {})
         request_sequence += 1
@@ -2524,6 +2535,14 @@ def run(args: argparse.Namespace) -> int:
                                     if isinstance(state, dict) else None),
                     phase="model_response")
             reply.decision_annotation = annotation_for_response(reply.text, guide_text=playbook)
+            if reply.decision_annotation.get("status") == "invalid":
+                # Bookkeeping only: this reply's actions still execute
+                # normally. The exact error is queued as short factual
+                # context for the next request the client was already going
+                # to send, so the same mistake is not repeated silently.
+                pending_annotation_notice = (
+                    "PRIOR_ANNOTATION_ERROR: " + str(reply.decision_annotation.get("error"))
+                    + " That reply's decisions were rejected and not recorded as evidence.")
             record({"type": "model_request",
                     "request_id": request_id,
                     "sequence": request_sequence,

@@ -1,6 +1,6 @@
 import unittest
 
-from .match_report import classify
+from .match_report import aggregate_publication, classify
 from .llm_client import replay_accepted_progress
 
 
@@ -125,6 +125,53 @@ class ReportTests(unittest.TestCase):
                             "orders": [{"action": "Move"}]}])
         self.assertEqual(report["decision_annotations"]["coverage"], None)
         self.assertEqual(report["decision_annotations"]["submitted_batches"], 0)
+
+    def test_publication_attempts_is_unknown_without_a_validation_log(self):
+        report = classify([{"type": "metadata"}])
+        self.assertIsNone(report["publication_attempts"])
+
+    def test_publication_attempts_distinguishes_first_attempt_repaired_and_unresolved(self):
+        summary = aggregate_publication([
+            {"request_id": "r1", "timestamp": 1, "status": "valid"},
+            {"request_id": "r2", "timestamp": 1, "status": "invalid"},
+            {"request_id": "r2", "timestamp": 2, "status": "valid"},
+            {"request_id": "r3", "timestamp": 1, "status": "invalid"},
+            {"request_id": "r3", "timestamp": 2, "status": "invalid"},
+        ])
+        self.assertEqual(summary, {
+            "requests": 3, "first_attempt_valid": 1, "repaired": 1,
+            "unresolved": 1, "total_attempts": 5})
+
+    def test_publication_attempts_terminal_failure_visible_with_no_later_prompt(self):
+        # Only one attempt was ever recorded for this request and it never
+        # published; this must stay visible as unresolved rather than being
+        # dropped for lack of a later prompt in the match log.
+        summary = aggregate_publication([
+            {"request_id": "only", "timestamp": 1, "status": "invalid", "error": "bad"},
+        ])
+        self.assertEqual(summary["unresolved"], 1)
+        self.assertEqual(summary["requests"], 1)
+
+    def test_publication_attempts_orders_by_timestamp_not_log_order(self):
+        # A first-attempt success recorded after an unrelated later-timestamped
+        # entry in file order must not be miscounted as repaired.
+        summary = aggregate_publication([
+            {"request_id": "r1", "timestamp": 5, "status": "valid"},
+            {"request_id": "r1", "timestamp": 1, "status": "valid"},
+        ])
+        self.assertEqual(summary["first_attempt_valid"], 1)
+        self.assertEqual(summary["repaired"], 0)
+
+    def test_publication_attempts_included_alongside_final_annotations(self):
+        valid = {"status": "valid", "decisions": [{"orders": [0], "rules": ["T8"]}]}
+        report = classify(
+            [{"type": "forwarded_orders", "request_id": "r1", "orders": [{"action": "EndTurn"}],
+              "decision_annotation": valid}],
+            publication_records=[{"request_id": "r1", "timestamp": 1, "status": "valid"}])
+        self.assertEqual(report["decision_annotations"]["valid_batches"], 1)
+        self.assertEqual(report["publication_attempts"], {
+            "requests": 1, "first_attempt_valid": 1, "repaired": 0,
+            "unresolved": 0, "total_attempts": 1})
 
 
 if __name__ == "__main__":
