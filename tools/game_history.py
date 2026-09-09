@@ -12,9 +12,14 @@ import zlib
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 3
-# Bumped for S1: authoritative per-game `snapshots` collection plus
-# side_turn endpoint linkage by snapshot identity (see docs/GAME_HISTORY.md).
+SCHEMA_VERSION = 4
+# IMPORTER_VERSION guards the SNAPSHOT TIMELINE contract that tools/replay_game.py
+# refuses to export against. Storing executed events did not change how a frame is
+# built, so it deliberately does NOT bump: bumping it would make all previously
+# catalogued games refuse to replay, and backfill-events - which only adds derived
+# event rows - would not clear that. Whether a game has event evidence is reported
+# by coverage_json.events_status instead. Bump this only when the timeline or the
+# exported frame contract itself changes.
 IMPORTER_VERSION = "s1_snapshot_v1"
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -52,6 +57,15 @@ CREATE TABLE IF NOT EXISTS snapshots (
  record_hash TEXT NOT NULL, UNIQUE(game_id, sequence)
 );
 CREATE INDEX IF NOT EXISTS idx_snapshots_game ON snapshots(game_id, sequence);
+CREATE TABLE IF NOT EXISTS events (
+ game_id TEXT NOT NULL REFERENCES games(game_id), event_sequence INTEGER NOT NULL,
+ side_turn_id TEXT, batch_id TEXT, kind TEXT NOT NULL, source TEXT,
+ event_json TEXT NOT NULL, record_sequence INTEGER NOT NULL, event_index INTEGER NOT NULL,
+ record_hash TEXT NOT NULL,
+ PRIMARY KEY(game_id, event_sequence),
+ UNIQUE(game_id, record_sequence, event_index)
+);
+CREATE INDEX IF NOT EXISTS idx_events_side_turn ON events(side_turn_id);
 CREATE TABLE IF NOT EXISTS model_requests (
  request_id TEXT PRIMARY KEY, game_id TEXT NOT NULL REFERENCES games(game_id), side_turn_id TEXT,
  sequence INTEGER, logical_call_id TEXT, retry_of_request_id TEXT, purpose TEXT, status TEXT,
@@ -530,6 +544,20 @@ def import_game(conn: sqlite3.Connection, archive: str | os.PathLike[str],
                metadata.get("runtime_reasoning_effort") if is_model else None))
         _import_requests(conn, game_id, records, linkage["record_links"])
         _import_actions(conn, game_id, records, linkage["record_links"])
+        event_result = _import_events(conn, game_id, records, linkage["record_links"])
+        coverage = json.loads(conn.execute(
+            "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+        coverage["event_count"] = event_result["imported"]
+        if event_result["malformed"]:
+            coverage["events_status"] = "incomplete"
+            coverage["gaps"] = sorted(set(coverage["gaps"]) |
+                                      {f"event_malformed:{m}" for m in event_result["malformed"]})
+        elif event_result["imported"] == 0:
+            coverage["events_status"] = "no_event_evidence"
+        else:
+            coverage["events_status"] = "complete"
+        conn.execute("UPDATE games SET coverage_json=? WHERE game_id=?",
+                     (json.dumps(coverage, sort_keys=True), game_id))
     return game_id
 
 def _number(value: Any) -> int | None:
@@ -747,6 +775,144 @@ def _import_actions(conn: sqlite3.Connection, game_id: str, records: list[dict[s
                json.dumps(order, sort_keys=True), "accepted_unknown", request_id,
                digest({"action_id": action_id, "order": order})))
 
+def _import_events(conn: sqlite3.Connection, game_id: str, records: list[dict[str, Any]],
+                   links: dict[str, str], *, strict: bool = False) -> dict[str, Any]:
+    """Import every real executed driver event in original archive order.
+
+    Reads only `type: driver` records whose `line.type == "events"` -- never
+    proposed actions, preview/simulation payloads, or moves inferred from
+    changed snapshots. `record_sequence` is this record's 1-based position in
+    the source archive; `event_index` is 0-based within its `events` array,
+    so `(game_id, record_sequence, event_index)` identifies exactly one
+    logged occurrence even when its JSON payload is byte-identical to another
+    at a different position -- a repeat is not a duplicate.
+
+    Batch/side-turn linkage is attached only through explicit evidence: a
+    `forwarded_orders` record names its own `batch_id` and (via `links`) its
+    side turn by exact revision or ID match. Because the driver protocol is
+    synchronous, the events printed for the model's own authored batch (its
+    "llm" source) and any events it delegates within the same batch
+    ("delegated_greedy") are the only ones attached to that batch_id -- an
+    opponent's own turn (source "greedy") or any unrecognized source is never
+    guessed onto a nearby batch. `event_source` prefers the event's own
+    `source` field over the enclosing envelope's, in case a future driver
+    mixes sources within one record; today they are always equal.
+
+    Malformed records (a non-list `events` field, or an event missing a
+    string `kind`) are never silently dropped: their source position is
+    recorded in the returned `malformed` list. With `strict=True` (used by
+    `backfill-events`, whose only job is this table) any malformed record
+    raises so the whole transaction rolls back and prior rows are untouched;
+    the default (used by full game import, which owns much more than events)
+    instead imports every well-formed event and reports the game's event
+    coverage as incomplete.
+    """
+    conn.execute("DELETE FROM events WHERE game_id=?", (game_id,))
+    sequence = 0
+    malformed: list[str] = []
+    current_batch: dict[str, Any] | None = None
+    for record_index, record in enumerate(records, 1):
+        rtype = record.get("type")
+        if rtype == "forwarded_orders":
+            batch_id = record.get("batch_id")
+            current_batch = {"batch_id": batch_id if isinstance(batch_id, str) else None,
+                             "side_turn_id": _side_turn_for_record(record, links)}
+            continue
+        if rtype != "driver":
+            continue
+        line = record.get("line")
+        if not isinstance(line, dict) or line.get("type") != "events":
+            continue
+        raw_events = line.get("events")
+        if not isinstance(raw_events, list):
+            malformed.append(f"record:{record_index}:events_not_list")
+            continue
+        envelope_source = line.get("source") if isinstance(line.get("source"), str) else None
+        for event_index, event in enumerate(raw_events):
+            if not isinstance(event, dict) or not isinstance(event.get("kind"), str):
+                malformed.append(f"record:{record_index}:event:{event_index}:malformed_event")
+                continue
+            sequence += 1
+            event_source = event.get("source") if isinstance(event.get("source"), str) else envelope_source
+            batch_id = side_turn_id = None
+            if envelope_source in ("llm", "delegated_greedy") and current_batch is not None:
+                batch_id = current_batch["batch_id"]
+                side_turn_id = current_batch["side_turn_id"]
+            conn.execute("""INSERT INTO events
+              (game_id,event_sequence,side_turn_id,batch_id,kind,source,event_json,
+               record_sequence,event_index,record_hash)
+              VALUES(?,?,?,?,?,?,?,?,?,?)""",
+              (game_id, sequence, side_turn_id, batch_id, event["kind"], event_source,
+               json.dumps(event, sort_keys=True), record_index, event_index,
+               digest({"game_id": game_id, "record_sequence": record_index,
+                       "event_index": event_index, "event": event})))
+    if malformed and strict:
+        raise ValueError(f"malformed event record(s) in {game_id}: {malformed}")
+    return {"imported": sequence, "malformed": malformed}
+
+
+def _turn_links_from_db(conn: sqlite3.Connection, game_id: str) -> dict[str, str]:
+    """Rebuild the revision->side_turn_id map from already-imported side_turns.
+
+    Used by `backfill-events`, which changes only derived event rows and must
+    not recompute or touch `snapshots`/`side_turns` itself.
+    """
+    links: dict[str, str] = {}
+    for side_turn_id, start_revision, end_revision in conn.execute(
+        "SELECT side_turn_id,start_revision,end_revision FROM side_turns WHERE game_id=?", (game_id,)):
+        for revision in (start_revision, end_revision):
+            if revision is not None:
+                links[f"revision:{revision}"] = side_turn_id
+    return links
+
+
+def backfill_events(conn: sqlite3.Connection, game_ids: Iterable[str] = (),
+                    all_games: bool = False) -> dict[str, Any]:
+    """Import event rows for already-catalogued games, one transaction each.
+
+    Resolves each game's source archive from its stored `artifact_path`,
+    preserving the catalog's own game ID rather than importing a relocated
+    path as a second game. A missing/unreadable archive or a malformed event
+    record fails only that game (its prior event rows, if any, are left
+    exactly as they were); other selected games are unaffected. Zero observed
+    events for an available archive is reported honestly and is never treated
+    as evidence of a fully captured execution.
+    """
+    ids = ([row[0] for row in conn.execute("SELECT game_id FROM games ORDER BY game_id")]
+          if all_games else list(dict.fromkeys(game_ids)))
+    imported: list[dict[str, Any]] = []
+    unavailable: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+    total_events = 0
+    for game_id in ids:
+        row = conn.execute("SELECT artifact_path FROM games WHERE game_id=?", (game_id,)).fetchone()
+        if row is None:
+            unavailable.append({"game_id": game_id, "reason": "unknown_game_id"})
+            continue
+        root = Path(row[0])
+        log = root if root.is_file() else root / "match.ndjson"
+        if not log.is_file():
+            unavailable.append({"game_id": game_id, "reason": f"archive_missing:{log}"})
+            continue
+        try:
+            records = _records(log)
+        except (OSError, json.JSONDecodeError) as exc:
+            unavailable.append({"game_id": game_id, "reason": f"archive_unreadable:{exc}"})
+            continue
+        links = _turn_links_from_db(conn, game_id)
+        try:
+            with conn:
+                result = _import_events(conn, game_id, records, links, strict=True)
+        except ValueError as exc:
+            failed.append({"game_id": game_id, "reason": str(exc)})
+            continue
+        imported.append({"game_id": game_id, "event_count": result["imported"],
+                         "no_event_evidence": result["imported"] == 0})
+        total_events += result["imported"]
+    return {"attempted": len(ids), "imported": imported, "unavailable": unavailable,
+            "failed": failed, "total_events": total_events}
+
+
 def summarize_game(conn: sqlite3.Connection, game_id: str) -> dict[str, Any]:
     cur = conn.execute("SELECT * FROM game_summary WHERE game_id=?", (game_id,))
     row = cur.fetchone()
@@ -771,13 +937,21 @@ def verify_history(path: str | os.PathLike[str]) -> dict[str, Any]:
     integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
     foreign_keys = conn.execute("PRAGMA foreign_key_check").fetchall()
     counts = {}
-    for table in ("games", "game_players", "side_turns", "snapshots", "model_requests",
+    for table in ("games", "game_players", "side_turns", "snapshots", "events", "model_requests",
                   "action_batches", "actions", "evaluation_runs", "decision_evaluations"):
         counts[table] = conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+    dangling_event_side_turns = conn.execute("""SELECT count(*) FROM events e
+      WHERE e.side_turn_id IS NOT NULL
+      AND NOT EXISTS(SELECT 1 FROM side_turns st WHERE st.side_turn_id=e.side_turn_id)""").fetchone()[0]
+    dangling_event_batches = conn.execute("""SELECT count(*) FROM events e
+      WHERE e.batch_id IS NOT NULL
+      AND NOT EXISTS(SELECT 1 FROM action_batches b WHERE b.batch_id=e.batch_id)""").fetchone()[0]
     conn.close()
-    return {"integrity": integrity, "foreign_key_errors": len(foreign_keys), "counts": counts}
+    return {"integrity": integrity, "foreign_key_errors": len(foreign_keys), "counts": counts,
+            "dangling_event_side_turn_links": dangling_event_side_turns,
+            "dangling_event_batch_links": dangling_event_batches}
 
-TABLES = ("games", "game_players", "side_turns", "snapshots", "model_requests",
+TABLES = ("games", "game_players", "side_turns", "snapshots", "events", "model_requests",
           "action_batches", "actions", "evaluation_runs", "decision_evaluations")
 
 
@@ -823,7 +997,7 @@ def delete_history(conn: sqlite3.Connection, cohort_id: str | None = None,
             conn.execute("DELETE FROM decision_evaluations WHERE request_id IN (%s) OR preferred_request_id IN (%s)" %
                          (placeholders_for(request_ids), placeholders_for(request_ids)), request_ids + request_ids)
         if selected:
-            for table in ("actions", "action_batches", "model_requests", "side_turns", "snapshots", "game_players", "games"):
+            for table in ("events", "actions", "action_batches", "model_requests", "side_turns", "snapshots", "game_players", "games"):
                 conn.execute(f"DELETE FROM {table} WHERE game_id IN ({placeholders})", selected)
         for run_id in eval_ids:
             if conn.execute("SELECT 1 FROM decision_evaluations WHERE evaluation_run_id=? LIMIT 1", (run_id,)).fetchone() is None:
@@ -899,6 +1073,10 @@ def main(argv: list[str]) -> int:
     show = sub.add_parser("game"); show.add_argument("--db", required=True); show.add_argument("game_id")
     turns = sub.add_parser("turns"); turns.add_argument("--db", required=True); turns.add_argument("game_id")
     inv = sub.add_parser("inventory"); inv.add_argument("--db", required=True)
+    backfill = sub.add_parser("backfill-events"); backfill.add_argument("--db", required=True)
+    backfill_selector = backfill.add_mutually_exclusive_group(required=True)
+    backfill_selector.add_argument("--game-id", action="append")
+    backfill_selector.add_argument("--all", action="store_true")
     delete = sub.add_parser("delete"); delete.add_argument("--db", required=True)
     selector = delete.add_mutually_exclusive_group(required=True)
     selector.add_argument("--cohort"); selector.add_argument("--game-id", action="append"); selector.add_argument("--reset", action="store_true")
@@ -906,15 +1084,20 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     read_commands = {"inventory", "game", "turns"}
     conn = open_history(args.db, read_only=args.command in read_commands)
+    exit_code = 0
     if args.command == "import": value = import_game(conn, args.archive, args.cohort)
     elif args.command == "review": value = import_review(conn, args.path, args.run_id)
     elif args.command == "payload-coverage": value = evaluate_payload_coverage(conn, args.cohort)
     elif args.command == "inventory": value = inventory_history(conn)
     elif args.command == "delete": value = delete_history(conn, args.cohort, args.game_id or [], args.reset, args.compact)
     elif args.command == "game": value = summarize_game(conn, args.game_id)
+    elif args.command == "backfill-events":
+        value = backfill_events(conn, args.game_id or [], args.all)
+        if value["unavailable"] or value["failed"]:
+            exit_code = 1
     else: value = list_side_turns(conn, args.game_id)
     print(json.dumps(value, sort_keys=True, default=lambda value: value.hex() if isinstance(value, bytes) else value))
-    conn.close(); return 0
+    conn.close(); return exit_code
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))

@@ -83,6 +83,89 @@ one label, so the opening role is tracked separately rather than inferred from
 it; `coverage.opening_present` and `terminal_present` are then both true for
 that one snapshot.
 
+## Executed events
+
+Each game has an `events` table holding every individually executed driver
+event in original archive order -- moves, attacks, recruitment, healing, gold
+changes, and so on -- separate from the `snapshots` timeline. Importing events
+does not turn them into board frames: playback still visits saved snapshots,
+and this table adds no animation and no intermediate state reconstruction. The
+primary key is `(game_id, event_sequence)`, 1-based across every event
+imported for that game; `(game_id, record_sequence, event_index)` is unique
+and traces each row back to its exact source position (the 1-based NDJSON
+record and the 0-based position within that record's `events` array) -- an
+identical event payload recorded at a different log position is a second row,
+never a merged duplicate. `side_turn_id` indexes into `side_turns` for turn
+queries.
+
+The importer reads only real `type: driver` records whose `line.type` is
+`"events"` -- never proposed actions, preview/simulation payloads, or moves
+inferred from snapshot differences. A move stores the moved unit's ID and its
+`(col,row)` endpoints, not every traversed hex; an attack stores the recorded
+exchange result (both units' resulting HP/XP/kill/status and the damage each
+side took), not individual weapon-strike rolls. `kind` is the recorded event
+kind (`move`, `attack`, `recruit`, `vacate`, `spawn`, `village`, `poison`,
+`slow`, `heal`, `gold`, `advance`, `end_turn`, or any future kind, preserved
+verbatim); `source` prefers the event's own recorded source, falling back to
+its enclosing record's, and stays NULL when neither is known. `actions`
+remains the authored orders table; it is not also given a duplicate copy of
+event data in its unused `events_json` column.
+
+`batch_id`/`side_turn_id` are attached only through explicit evidence, never
+inferred by counting nearby records: a `forwarded_orders` record's own
+`batch_id` covers the events the driver emits from executing that one batch
+(its own authored events, source `llm` or `model`, and anything it delegates
+within the same batch, source `delegated_greedy`) -- because the driver
+protocol is strictly synchronous, only one batch is ever in flight, so this is
+a committed execution relationship, not a position guess. An opponent's own
+turn (source `greedy`) is never attached to the preceding model batch merely
+because it is nearby; its `batch_id` stays NULL. The side turn a batch belongs
+to resolves only when the batch's own recorded `state_revision` matches a
+proven turn-boundary endpoint; when it doesn't, `side_turn_id` stays NULL
+rather than guessing the nth turn. A malformed event record (a non-list
+`events` field, or an event without a string `kind`) is never silently
+dropped: its exact source position is recorded, the well-formed events around
+it still import, and the game's `coverage_json.events_status` becomes
+`"incomplete"` with an `event_malformed:<position>` gap. Zero observed events
+for an otherwise-available archive reports `events_status: "no_event_evidence"`
+-- never proof that execution was fully captured.
+
+Normal import rebuilds a game's event rows deterministically and
+transactionally, in step with its snapshot/turn rebuild, so nullable links
+never dangle; reimporting unchanged evidence produces identical rows, and
+append-only log growth adds only the new rows.
+
+Backfill existing catalog games that predate this table (or need
+recomputation) without touching any other table:
+
+    python3 -m tools.game_history backfill-events --db PATH/history.sqlite --game-id GAME_ID [--game-id GAME_ID ...]
+    python3 -m tools.game_history backfill-events --db PATH/history.sqlite --all
+
+Each selected game is resolved from its stored catalog `artifact_path` (never
+importing a relocated path as a second game) and processed in its own
+transaction. A missing/unreadable archive is reported `unavailable`; a
+malformed event record fails only that game, rolling back so its prior event
+rows are left exactly as they were, while independent games continue. The
+command reports attempted/imported/unavailable/failed games, event totals, and
+exits nonzero if any selected game could not be backfilled. Repeating it is
+idempotent.
+
+Example query, once a game's events are imported:
+
+```sql
+SELECT kind, COUNT(*)
+FROM events
+WHERE game_id = 'GAME_ID'
+GROUP BY kind
+ORDER BY kind;
+```
+
+`inventory`, `verify_history`, and `delete` all cover the `events` table:
+inventory and verification are read-only over an existing catalog and never
+mutate it merely by being browsed; deleting a game or cohort removes its
+event rows without touching any other game, and verification reports the
+count of `side_turn_id`/`batch_id` links that would dangle (expected zero).
+
 Match logs are append-only evidence. Import them after a game into a SQLite
 catalog; gameplay does not depend on the catalog being available. Importing a
 game is transactional and rebuilds only that game's derived timeline
