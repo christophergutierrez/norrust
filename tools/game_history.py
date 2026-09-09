@@ -454,6 +454,10 @@ def _coverage_summary(snapshots: list[dict[str, Any]], terminal: dict[str, Any],
         "renderable_snapshot_count": sum(1 for s in snapshots if s["renderable"]),
         "linked_reviews": linkage["linked_reviews"], "unattached_reviews": linkage["unattached_reviews"],
         "unresolved_turn_endpoints": linkage["unresolved_turn_endpoints"],
+        # Additive breakdown; unresolved_turn_endpoints keeps its meaning
+        # (a boundary missing either end).
+        "unresolved_turn_starts": linkage["unresolved_turn_starts"],
+        "unresolved_turn_ends": linkage["unresolved_turn_ends"],
         "gaps": sorted(set(gaps)), "conflicts": sorted(set(conflicts)),
     }
 
@@ -587,6 +591,8 @@ def _import_turns(conn: sqlite3.Connection, game_id: str, records: list[dict[str
     reviews = [r for r in records if r.get("type") == "handoff_review"]
     record_links: dict[str, str] = {}
     unresolved = 0
+    unresolved_starts = 0
+    unresolved_ends = 0
     linked_review_indexes: set[int] = set()
     for i, boundary in enumerate(boundaries, 1):
         side_turn_id = boundary.get("side_turn_id") or f"{game_id}:turn:{i}"
@@ -599,6 +605,15 @@ def _import_turns(conn: sqlite3.Connection, game_id: str, records: list[dict[str
         # the ordinal position of a nearby partial snapshot.
         if before is None or after is None:
             unresolved += 1
+        # Which END is missing is the useful distinction. An archive recorded
+        # before the driver emitted start_revision has no proof of where a
+        # turn began, yet every ending can still resolve. Reporting only the
+        # combined count makes a fully recovered legacy timeline look as
+        # broken as one with no endings at all.
+        if before is None:
+            unresolved_starts += 1
+        if after is None:
+            unresolved_ends += 1
         payload = {"sequence": i, "finish": boundary.get("authored_finish_kind"),
                    "start_revision": before["revision"] if before else None,
                    "end_revision": after["revision"] if after else None}
@@ -637,6 +652,8 @@ def _import_turns(conn: sqlite3.Connection, game_id: str, records: list[dict[str
     return {"linked_reviews": len(linked_review_indexes),
             "unattached_reviews": len(reviews) - len(linked_review_indexes),
             "unresolved_turn_endpoints": unresolved,
+            "unresolved_turn_starts": unresolved_starts,
+            "unresolved_turn_ends": unresolved_ends,
             "record_links": record_links}
 
 

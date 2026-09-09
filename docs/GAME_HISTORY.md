@@ -68,6 +68,14 @@ opponent moving first, or winning outright on the opening position — would hav
 no provable opening at all. Consumers that read the stream positionally must
 expect this record between `protocol` and the first playable `state`.
 
+`coverage` counts a turn boundary as an unresolved endpoint when either end
+lacks an exact-revision snapshot, and additionally reports
+`unresolved_turn_starts` and `unresolved_turn_ends` separately. The split
+matters for archives recorded before the driver emitted `start_revision`: those
+games can recover every turn ENDING from their saved checkpoints while no turn
+START is provable, and the combined count alone would make a fully recovered
+legacy timeline look as broken as one with no endings at all.
+
 A single snapshot can hold both roles. When a match ends before any state
 change — a turn-one resignation, or a win on the opening position — the opening
 and the terminal coalesce into one proven state. `boundary_kind` carries only
