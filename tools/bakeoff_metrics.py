@@ -163,6 +163,91 @@ def _event_matches_order(event: dict[str, Any], order: dict[str, Any]) -> bool:
     return True
 
 
+def _physical_request_totals(records: list[dict[str, Any]],
+                            physical_calls: list[dict[str, Any]]) -> dict[str, int | None]:
+    """Return cumulative physical tokens at each logged model request.
+
+    The catalog's call rows are a set of evidence, not a chronology: SQLite
+    row order can change on reimport and a host can finish a later retry before
+    an earlier request is written.  Group calls by their harness request, then
+    apply those groups in the request order recorded in the audit log.  A
+    request with no detailed call, an unlinked call, or an unknown/conflicting
+    total makes every subsequent offset unknown.  This is conservative about
+    missing attempts while keeping retries for one request in that request's
+    group.
+    """
+    request_ids = []
+    seen_requests: set[str] = set()
+    for record in records:
+        if record.get("type") not in ("model_request", "model"):
+            continue
+        request_id = record.get("request_id")
+        if isinstance(request_id, str) and request_id and request_id not in seen_requests:
+            request_ids.append(request_id)
+            seen_requests.add(request_id)
+
+    # Physical rows normally come from query_usage(..., "call") and are
+    # already lifecycle-deduplicated.  Fold duplicate IDs here as well so the
+    # pure helper remains correct for callers supplying raw sidecar fixtures.
+    calls_by_id: dict[tuple[str, str], dict[str, Any]] = {}
+    conflicts: set[tuple[str, str]] = set()
+    unlinked = False
+    for index, raw in enumerate(physical_calls):
+        if not isinstance(raw, dict):
+            unlinked = True
+            continue
+        request_id = raw.get("request_id")
+        call_id = raw.get("call_id")
+        if not isinstance(request_id, str) or not request_id or not isinstance(call_id, str) or not call_id:
+            unlinked = True
+            continue
+        key = (request_id, call_id)
+        total = raw.get("total_tokens")
+        if isinstance(raw.get("usage"), dict):
+            total = raw["usage"].get("total_tokens")
+        if key in calls_by_id:
+            old = calls_by_id[key].get("total_tokens")
+            if old is None and total is not None:
+                # A dispatch lifecycle row may be followed by its terminal
+                # row.  The catalog normally merges these before this helper
+                # sees them, but retain the same fill-unknown behavior for
+                # direct fixtures.
+                calls_by_id[key]["total_tokens"] = total
+            elif old is not None and total is not None and old != total:
+                conflicts.add(key)
+            continue
+        calls_by_id[key] = {"request_id": request_id, "call_id": call_id,
+                            "total_tokens": total,
+                            "normalization_gaps": raw.get("normalization_gaps")}
+
+    known_request_ids = set(request_ids)
+    if any(request_id not in known_request_ids for request_id, _ in calls_by_id):
+        unlinked = True
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for call in calls_by_id.values():
+        grouped.setdefault(call["request_id"], []).append(call)
+
+    offsets: dict[str, int | None] = {}
+    cumulative: int | None = None if unlinked else 0
+    for request_id in request_ids:
+        calls = grouped.get(request_id)
+        if not calls:
+            cumulative = None
+        elif cumulative is not None:
+            request_total = 0
+            for call in calls:
+                total = call.get("total_tokens")
+                if (type(total) is not int or total < 0 or call.get("normalization_gaps")
+                        or (request_id, call["call_id"]) in conflicts):
+                    cumulative = None
+                    break
+                request_total += total
+            if cumulative is not None:
+                cumulative += request_total
+        offsets[request_id] = cumulative
+    return offsets
+
+
 def evaluate_trial_actions(records: list[dict[str, Any]],
                             useful_predicate: Optional[Callable[[dict[str, Any]], bool]] = None,
                             useful_spec: Optional[dict[str, Any]] = None,
@@ -172,29 +257,12 @@ def evaluate_trial_actions(records: list[dict[str, Any]],
     ``forwarded_orders`` is a proposal. A model action becomes committed only
     when a following driver event from ``llm`` proves it executed.
     """
-    cumulative_tokens: int | None = 0
-    request_usage_map: dict[str, int | None] = {}
-
     if physical_calls is not None:
-        # An unassigned call could precede any action. Its position in a later
-        # catalog import is not evidence that it happened after that action.
-        if any(not call.get("request_id") for call in physical_calls):
-            cumulative_tokens = None
-        for call in physical_calls:
-            usage = call.get("usage") if isinstance(call.get("usage"), dict) else call
-            total = usage.get("total_tokens") if isinstance(usage, dict) else None
-            if (type(total) is not int or total < 0 or call.get("normalization_gaps")
-                    or not call.get("request_id")):
-                cumulative_tokens = None
-            elif cumulative_tokens is not None:
-                cumulative_tokens += total
-            req_id = call.get("request_id")
-            if isinstance(req_id, str) and req_id:
-                request_usage_map[req_id] = cumulative_tokens
+        request_usage_map = _physical_request_totals(records, physical_calls)
     else:
         # Request usage can already include retries. Without physical evidence,
         # these token/timing metrics are unknown, never a sum of request hints.
-        cumulative_tokens = None
+        request_usage_map = {}
 
     first_legal_action: Optional[dict[str, Any]] = None
     tokens_to_first_legal: Optional[int] = None

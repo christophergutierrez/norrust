@@ -127,6 +127,8 @@ class UsefulActionEvaluationTests(unittest.TestCase):
 
     def test_first_useful_tokens_use_physical_calls_and_unknowns(self):
         records = [
+            {"type": "model_request", "request_id": "r0", "sequence": 1},
+            {"type": "model_request", "request_id": "r1", "sequence": 2},
             {"type": "forwarded_orders", "request_id": "r1", "batch_id": "b1",
              "orders": [{"action": "Move", "unit_id": 4}]},
             {"type": "driver", "line": {"type": "events", "source": "llm",
@@ -269,6 +271,41 @@ class EvidenceBoundaryTests(unittest.TestCase):
         result=bm.evaluate_trial_actions(records,useful_spec={'kind':'move'})
         self.assertTrue(result['useful_action_achieved'])
         self.assertIsNone(result['tokens_to_first_useful'])
+
+    def test_missing_earlier_request_makes_first_action_tokens_unknown(self):
+        records = [
+            {'type': 'model_request', 'request_id': 'r0', 'sequence': 1},
+            {'type': 'model_request', 'request_id': 'r1', 'sequence': 2},
+            {'type': 'forwarded_orders', 'request_id': 'r1', 'orders': [
+                {'action': 'Move', 'unit_id': 4}]},
+            {'type': 'driver', 'line': {'type': 'events', 'source': 'llm',
+                                        'events': [{'kind': 'move', 'unit': 4}]}}]
+        result = bm.evaluate_trial_actions(
+            records, useful_spec={'kind': 'move'},
+            physical_calls=[{'call_id': 'c1', 'request_id': 'r1', 'total_tokens': 60}])
+        self.assertTrue(result['useful_action_achieved'])
+        self.assertIsNone(result['tokens_to_first_useful'])
+
+    def test_physical_rows_are_ordered_by_audit_requests_and_retries_sum(self):
+        records = [
+            {'type': 'model_request', 'request_id': 'r1', 'sequence': 1},
+            {'type': 'forwarded_orders', 'request_id': 'r1', 'orders': [
+                {'action': 'Move', 'unit_id': 4}]},
+            {'type': 'driver', 'line': {'type': 'events', 'source': 'llm',
+                                        'events': [{'kind': 'move', 'unit': 4}]}},
+            {'type': 'model_request', 'request_id': 'r2', 'sequence': 2}]
+        # The later request was inserted first in the catalog, while r1 had
+        # two physical attempts. Chronology comes from the audit request order.
+        result = bm.evaluate_trial_actions(
+            records, useful_spec={'kind': 'move'},
+            physical_calls=[
+                {'call_id': 'r2-call', 'request_id': 'r2', 'total_tokens': 500},
+                {'call_id': 'r1-retry', 'request_id': 'r1', 'total_tokens': 20},
+                {'call_id': 'r1-first', 'request_id': 'r1', 'total_tokens': None,
+                 'status': 'dispatched'},
+                {'call_id': 'r1-first', 'request_id': 'r1', 'total_tokens': 10},
+            ])
+        self.assertEqual(result['tokens_to_first_useful'], 30)
 
     def test_other_attacker_event_cannot_prove_authored_attack(self):
         records=[{'type':'forwarded_orders','request_id':'r','orders':[
