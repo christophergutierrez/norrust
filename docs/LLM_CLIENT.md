@@ -94,9 +94,9 @@ batch log carries a fresh handoff audit of its final orders after review/repair;
 the draft review retains the original candidate's audit.
 
 Advance ranged support with its screen, and use specific rescues and guards
-while letting routine healthy units contribute. Explain consequential holds
-with a current job, the action or pressure forgone, and a release condition in
-the existing hold reason and decision fields. Such explanations are evidence;
+while letting routine healthy units contribute. Hold only for a concrete
+purpose, and explain consequential idle units or deliberate saving in the
+existing hold reason and decision fields. Such explanations are evidence;
 they do not create executable holds or add model calls. Material disadvantage
 alone is insufficient justification for hopelessness, but resignation remains
 an immediate standalone action.

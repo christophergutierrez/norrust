@@ -325,7 +325,10 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("conversation_continuity", prompt)
         self.assertIn("hold U7", prompt)
         self.assertIn("Automatic eligibility excludes recruiters, critically wounded units, and spent units", prompt)
-        self.assertIn("contribution forgone, and feasible release condition",
+        # T7's hold guidance was deliberately shortened: the old essay demanded a
+        # job, contribution forgone and release condition for EVERY hold, which is
+        # exactly the routine over-explanation stack 3 exists to stop.
+        self.assertIn("Hold for a concrete purpose",
                       " ".join(prompt.split()))
     def test_checkpoint_reference_confines_path_and_verifies_digest(self):
         with tempfile.TemporaryDirectory() as directory:
