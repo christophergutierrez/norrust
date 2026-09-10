@@ -112,19 +112,19 @@ class FireworksBackendTests(unittest.TestCase):
         self.assertEqual(rows[1]["raw_usage_json"]["prompt_tokens_details"], {"cached_tokens": 4})
         self.assertEqual(rows[0]["call_id"], rows[1]["call_id"])
 
-    def test_length_finish_reason_empty_content_records_exact_counts_and_raises(self):
+    def test_length_finish_reason_empty_content_returns_typed_exhaustion(self):
         """The Stack 1 headline case: input=5881, output=16384, reasoning=16384,
-        total=22265, empty content, finish_reason=length -- client stops
-        normally for an inference failure, but usage is retained exactly."""
+        total=22265, empty content, finish_reason=length -- the typed error
+        lets the harness escalate while usage is retained exactly."""
         body = {"id": "resp-2", "model": "runtime-model-x",
                 "choices": [{"finish_reason": "length", "message": {"content": ""}}],
                 "usage": {"prompt_tokens": 5881, "completion_tokens": 16384,
                           "reasoning_tokens": 16384, "total_tokens": 22265}}
-        with self.assertRaises(RuntimeError) as ctx:
-            fb.run("prompt", model="m1", max_output_tokens=16384, game_id="g2",
-                   request_id="r2", sidecar_path=self.sidecar,
-                   opener=_fake_opener(body), api_key="key123")
-        self.assertIn("model_backend_failure", str(ctx.exception))
+        reply = fb.run("prompt", model="m1", max_output_tokens=16384, game_id="g2",
+                       request_id="r2", sidecar_path=self.sidecar,
+                       opener=_fake_opener(body), api_key="key123")
+        self.assertEqual(reply["error"]["code"], "output_limit")
+        self.assertEqual(reply["error"]["output_limit"], 16384)
         rows = _read_sidecar(self.sidecar)
         final = rows[-1]
         self.assertEqual(final["status"], "failed")

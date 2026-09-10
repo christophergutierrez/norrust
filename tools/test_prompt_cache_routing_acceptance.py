@@ -47,7 +47,7 @@ def run(*args,**kwargs):
     kwargs.update(opener=opener,api_key='offline-fixture-key')
     return original_run(*args,**kwargs)
 fb.run=run
-raise SystemExit(fb.main(['--model','fixture-model','--max-output-tokens','99']))
+raise SystemExit(fb.main(['--model','fixture-model']))
 '''
 
 
@@ -184,7 +184,8 @@ class RoutingLifecycleAcceptanceTests(unittest.TestCase):
                         "--gold", "300", "--seed", "9101", "--llm-side", "0", "--max-turns", "1",
                         "--incremental-turns", "--log", str(run / "match.ndjson"),
                         "--disable-agenda-sweep", "--query-budget-seconds", "10",
-                        "--model-timeout", "10", "--turn-timeout", "30", *extra]
+                        "--model-timeout", "10", "--turn-timeout", "30",
+                        "--max-output-tokens", "99", *extra]
                 return args, env
 
             game = root / "game"

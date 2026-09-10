@@ -313,6 +313,15 @@ notifications, produces identical `model_calls` rows -- never extra ones.
 
 ### Querying usage
 
+Output-limit retries are separate physical `model_calls` linked to one
+`model_requests` row. Each records its actual requested `output_limit`;
+`retry_of_call_id` links the next attempt to the exhausted call. Failed
+`finish_reason: length` usage remains included. The shared harness's
+`model_output_limit` archive events retain the discarded text and durable
+game-wide escalation state (128k initially, then 512k, stopping after three
+failures at 512k). A final request's aggregate usage includes its exhausted
+attempts and is still reconciliation-only, never added to the child-call sum.
+
     python3 -m tools.game_history usage --db PATH/history.sqlite GAME_ID --group-by call
     python3 -m tools.game_history usage --db PATH/history.sqlite GAME_ID --group-by request
     python3 -m tools.game_history usage --db PATH/history.sqlite GAME_ID --group-by game --json

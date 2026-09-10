@@ -348,6 +348,58 @@ available."
 
 ## Build and run
 
+### Output-token limits and retries
+
+The shared harness starts supported API responses at **131,072 output tokens
+(128k)**. Set `--max-output-tokens` on `tools.llm_client` to change that initial
+limit; do not put the option inside its `--model-command`. The standalone
+Fireworks adapter also defaults to 128k and accepts its own option when no
+harness context is present.
+
+When the provider explicitly ends a response with `finish_reason: length`,
+the harness discards it as an action response, raises the limit directly to
+**524,288 (512k)**, and retries the identical canonical prompt. The larger
+limit remains in effect for the rest of the game. **Three output-exhaustion
+failures at 512k stop the game**, including failures across different requests;
+successful calls do not reset the count. The initial 128k failure is not one
+of those three. This is a limit on repeated output exhaustion, not a cap on
+all successful calls or a monetary budget.
+
+In-place resume retains the raised limit and failure count. Durable
+`model_output_limit` archive events record policy changes before another
+attempt. The conventional `usage.ndjson` beside the game log also recovers
+provider failures written just before a client interruption. A checkpoint
+branch is a new game and starts with a new budget. Preserve the archive and
+usage sidecar together; a harness-run Fireworks adapter requires that sidecar
+location so resume and normal import use the same evidence.
+
+Each attempt keeps the same harness request ID and exact prompt bytes, but has
+its own physical call ID, recorded output limit and usage. A retry's
+`retry_of_call_id` identifies the preceding exhausted call. Request usage sums
+the attempts, including failures; missing counts remain unknown. Truncated
+content is preserved as evidence even when it happens to be valid JSON.
+
+The command-backend protocol represents exhaustion as a JSON envelope with
+`error: {code: "output_limit", output_limit: N, call_id: "..."}`, plus optional
+`text`, `usage`, and `cache`. Adapters read `output_limit` and
+`retry_of_call_id` from `NORRUST_REQUEST_CONTEXT_FILE`. A reported limit that
+does not match the harness request stops the run. Other provider errors,
+unsupported limits/context sizes, malformed replies and timeouts do not
+trigger token-limit escalation. There is no silent provider-specific clamp.
+
+Existing `--model-timeout`, `--turn-timeout` and explicit usage checks remain
+independent and can stop earlier. Large completions can exceed the usual short
+game timeouts: choose suitable timeouts when launching such a run. Fireworks
+uses the harness's per-attempt timeout, minus five seconds to report failures,
+rather than a fixed 840-second HTTP timeout. No timeout is automatically
+extended by an output-limit retry.
+
+File, interactive and native-host players receive request context where
+supported, but their hosts do not expose a maintained output-limit control or
+typed exhaustion result here. The harness must not claim to enforce these
+token limits or retry unknown host outcomes for them. This policy changes no
+model-facing tactics, reasoning-effort settings, or chat roles.
+
 Build the driver from the repository root:
 
 ```bash

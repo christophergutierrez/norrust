@@ -23,11 +23,15 @@ try:
     from .decision_annotations import annotation_for_response, inapplicable_annotation
     from .request_journal import append_request_milestone
     from .request_recovery import recoverable_answer
+    from .output_limits import (INITIAL_OUTPUT_LIMIT, MAX_OUTPUT_LIMIT, OutputLimitExceeded,
+                                OutputLimitPolicy, combined_usage)
 except ImportError:  # pragma: no cover - direct script compatibility
     from turn_agenda import agenda_from_response, compact_agenda
     from decision_annotations import annotation_for_response, inapplicable_annotation
     from request_journal import append_request_milestone
     from request_recovery import recoverable_answer
+    from output_limits import (INITIAL_OUTPUT_LIMIT, MAX_OUTPUT_LIMIT, OutputLimitExceeded,
+                               OutputLimitPolicy, combined_usage)
 
 ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "Engage", "EndTurn", "Advance", "Resign",
            "DoneWithImportantMoves", "FinishWithGreedy"}
@@ -226,6 +230,32 @@ class ModelReply:
     decision_annotation: Optional[dict[str, Any]] = None
 
 
+def apply_backend_settings(cache: Any, metadata: dict[str, Any], args: argparse.Namespace) -> None:
+    """Record and validate identity/settings before accepting or retrying a response."""
+    if isinstance(cache, dict):
+        for source, destination in (("native_session_id", "native_session_id"),
+                                    ("transport", "native_transport"),
+                                    ("runtime_model", "runtime_model"),
+                                    ("runtime_reasoning_effort", "runtime_reasoning_effort"),
+                                    ("requested_model", "backend_requested_model"),
+                                    ("requested_reasoning_effort", "backend_requested_reasoning_effort"),
+                                    ("runtime_settings_source", "runtime_settings_source"),
+                                    ("tool_restriction", "tool_restriction")):
+            metadata[destination] = cache.get(source)
+        requested_model = cache.get("requested_model")
+        reported_model = cache.get("runtime_model")
+        if requested_model is not None and reported_model is not None and reported_model != requested_model:
+            raise RuntimeError("runtime model mismatch")
+        requested_effort = getattr(args, "reasoning_effort", None)
+        backend_effort = cache.get("requested_reasoning_effort")
+        reported_effort = cache.get("runtime_reasoning_effort")
+        if requested_effort and backend_effort is not None and backend_effort != requested_effort:
+            raise RuntimeError("backend requested reasoning effort mismatch")
+        expected_effort = requested_effort or backend_effort
+        if expected_effort and reported_effort is not None and reported_effort != expected_effort:
+            raise RuntimeError("runtime reasoning effort mismatch")
+
+
 class ModelBackend:
     def complete(self, prompt: str) -> ModelReply:
         raise NotImplementedError
@@ -291,6 +321,10 @@ class CommandBackend(ModelBackend):
             break
         try:
             obj = json.loads(proc.stdout)
+            if isinstance(obj, dict) and isinstance(obj.get("error"), dict):
+                if obj["error"].get("code") == "output_limit":
+                    raise OutputLimitExceeded(obj)
+                raise RuntimeError(f"model_backend_failure: {obj['error']}")
             if not isinstance(obj, dict) or not isinstance(obj.get("text"), str):
                 raise ValueError("model reply must be an object with text")
             usage = obj.get("usage")
@@ -2425,6 +2459,17 @@ def run(args: argparse.Namespace) -> int:
             raise ValueError("--resume-checkpoint requires a new --log")
     if selected_checkpoint is not None:
         validate_checkpoint_identity(selected_checkpoint["envelope"], args)
+    previous_metadata = next((record for record in reversed(parent_records)
+                              if record.get("type") in {
+                                  "terminal", "metadata", "model_error", "checkpoint_error",
+                                  "query_error"}), {})
+    conversation_id = (previous_metadata["conversation_id"]
+                       if resume_log and isinstance(previous_metadata.get("conversation_id"), str)
+                       else uuid.uuid4().hex)
+    # Restore the spending guard before starting an engine subprocess.
+    output_policy = OutputLimitPolicy.restore(
+        parent_records, conversation_id, getattr(args, "max_output_tokens", INITIAL_OUTPUT_LIMIT),
+        Path(log_path).resolve().with_name("usage.ndjson") if resume_log else None)
     checkpoint_dir = checkpoint_dir_for_log(log_path) if log_path else None
     validate_model_orders = lambda text: validate_orders(
         text, args.no_recruit_macro, require_end_turn=not getattr(args, "incremental_turns", False))
@@ -2503,7 +2548,8 @@ def run(args: argparse.Namespace) -> int:
                 "opponent_planner": "no_skirmisher_pathing",
                 "turn_format": "incremental" if getattr(args, "incremental_turns", False) else "single_batch",
                 "continuity_mode": "bounded_transcript",
-                "conversation_id": uuid.uuid4().hex,
+                "conversation_id": conversation_id,
+                "output_limit_policy": output_policy.state(),
                 "native_session_id": None,
                 "native_transport": None,
                 "runtime_model": None,
@@ -2556,10 +2602,6 @@ def run(args: argparse.Namespace) -> int:
                 "started_at": datetime.now(timezone.utc).isoformat(),
                 "ended_at": None, "wall_ms": None}
     if parent_records:
-        previous_metadata = next((record for record in reversed(parent_records)
-                                  if record.get("type") in {
-                                      "terminal", "metadata", "model_error", "checkpoint_error",
-                                      "query_error"}), {})
         identity_keys = ("scenario", "faction0", "faction1", "gold", "seed", "llm_side",
                          "max_turns", "llm_recruit_macro")
         for key in identity_keys:
@@ -2575,8 +2617,6 @@ def run(args: argparse.Namespace) -> int:
                     "selective_finish_turns", "timeout_finish_turns"):
             if isinstance(previous_metadata.get(key), int):
                 metadata[key] = previous_metadata[key]
-        if not resume_checkpoint and isinstance(previous_metadata.get("conversation_id"), str):
-            metadata["conversation_id"] = previous_metadata["conversation_id"]
         previous_tools = previous_metadata.get("tool_calls_by_name")
         if isinstance(previous_tools, dict):
             metadata["tool_calls_by_name"] = dict(previous_tools)
@@ -2677,9 +2717,10 @@ def run(args: argparse.Namespace) -> int:
         # canonical prompt still reaches the adapter on stdin byte for byte;
         # nothing here is added to it.
         context_path = request_context_path
+        context_error = None
         if context_path:
             try:
-                write_request_context(context_path, {
+                request_context = {
                     "harness_request_id": request_id,
                     "request_sequence": request_sequence,
                     "conversation_id": metadata.get("conversation_id"),
@@ -2696,14 +2737,21 @@ def run(args: argparse.Namespace) -> int:
                     "fixed_prefix_sha256": delivered_regions["fixed_prefix_sha256"],
                     "fixed_prefix_bytes": delivered_regions["fixed_prefix_bytes"],
                     "dispatched_at": datetime.now(timezone.utc).isoformat(),
-                })
+                    "output_limit": output_policy.output_limit,
+                    "model_timeout_seconds": args.model_timeout,
+                    "retry_of_call_id": None,
+                }
+                write_request_context(context_path, request_context)
             except OSError as exc:
-                # Accounting context must never take a game down.
-                print(f"warning: could not write request context: {exc}",
-                      file=sys.stderr, flush=True)
+                context_error = exc
         started = time.monotonic()
         before = getattr(backend, "transport_retries", 0)
+        attempt_usage = []
         try:
+            if context_error is not None:
+                raise RuntimeError(f"request_context_unavailable: {context_error}")
+            if output_policy.exhausted:
+                raise RuntimeError("model_output_limit_exhausted: three failures at 524288 tokens")
             recovered = None
             journal_root = os.environ.get("NORRUST_CODEX_JOURNAL_ROOT")
             session_id = os.environ.get("NORRUST_CODEX_MATCH_ID")
@@ -2719,29 +2767,37 @@ def run(args: argparse.Namespace) -> int:
                 cache["request_state_path"] = str(request_state_path)
                 reply = ModelReply(answer["text"], answer.get("usage"), cache)
             else:
-                reply = backend.complete(delivered_prompt)
-            if isinstance(reply.cache, dict):
-                for source, destination in (("native_session_id", "native_session_id"),
-                                            ("transport", "native_transport"),
-                                            ("runtime_model", "runtime_model"),
-                                            ("runtime_reasoning_effort", "runtime_reasoning_effort"),
-                                            ("requested_model", "backend_requested_model"),
-                                            ("requested_reasoning_effort", "backend_requested_reasoning_effort"),
-                                            ("runtime_settings_source", "runtime_settings_source"),
-                                            ("tool_restriction", "tool_restriction")):
-                    metadata[destination] = reply.cache.get(source)
-                requested_model = reply.cache.get("requested_model")
-                reported_model = reply.cache.get("runtime_model")
-                if requested_model is not None and reported_model is not None and reported_model != requested_model:
-                    raise RuntimeError("runtime model mismatch")
-                requested_effort = getattr(args, "reasoning_effort", None)
-                backend_effort = reply.cache.get("requested_reasoning_effort")
-                reported_effort = reply.cache.get("runtime_reasoning_effort")
-                if requested_effort and backend_effort is not None and backend_effort != requested_effort:
-                    raise RuntimeError("backend requested reasoning effort mismatch")
-                expected_effort = requested_effort or backend_effort
-                if expected_effort and reported_effort is not None and reported_effort != expected_effort:
-                    raise RuntimeError("runtime reasoning effort mismatch")
+                while True:
+                    try:
+                        reply = backend.complete(delivered_prompt)
+                        if attempt_usage:
+                            reply.usage = combined_usage(attempt_usage + [reply.usage])
+                            enforce_usage(reply, args)
+                        break
+                    except OutputLimitExceeded as exc:
+                        apply_backend_settings(exc.envelope.get("cache"), metadata, args)
+                        output_policy.record_failure(exc)
+                        attempt_usage.append(exc.envelope.get("usage"))
+                        metadata["output_limit_policy"] = output_policy.state()
+                        # Persist before any retry. In-place resume replays this
+                        # event even if killed before request/terminal logging.
+                        durable({"type": "model_output_limit", "request_id": request_id,
+                                 "conversation_id": metadata["conversation_id"],
+                                 "call_id": exc.call_id, "output_limit": exc.output_limit,
+                                 "policy": output_policy.state(), "usage": exc.envelope.get("usage"),
+                                 "raw_output": exc.envelope.get("text"),
+                                 "cache": exc.envelope.get("cache"),
+                                 "prompt_hash": hashlib.sha256(delivered_prompt.encode()).hexdigest()})
+                        enforce_usage(ModelReply("", combined_usage(attempt_usage)), args)
+                        if output_policy.exhausted:
+                            raise RuntimeError("model_output_limit_exhausted: three failures at 524288 tokens") from exc
+                        request_context.update(output_limit=output_policy.output_limit,
+                                               retry_of_call_id=exc.call_id,
+                                               dispatched_at=datetime.now(timezone.utc).isoformat())
+                        # Unlike an optional accounting hint, the updated limit
+                        # must reach the adapter before another paid call.
+                        write_request_context(context_path, request_context)
+            apply_backend_settings(reply.cache, metadata, args)
             reply.request_id = request_id
             reply.prompt_hash = hashlib.sha256(delivered_prompt.encode()).hexdigest()
             backend_cache = reply.cache if isinstance(reply.cache, dict) else {}
@@ -3913,6 +3969,9 @@ def main() -> int:
     p.add_argument("--model-command")
     p.add_argument("--interactive-model", action="store_true")
     p.add_argument("--model-timeout", type=float, default=300)
+    p.add_argument("--max-output-tokens", type=int, default=INITIAL_OUTPUT_LIMIT,
+                   help="initial per-response output limit for supported adapters (default 131072); "
+                        "output exhaustion raises it to 524288 for the game, stopping after three failures there")
     p.add_argument("--reasoning-effort", choices=("low", "medium", "high", "xhigh", "max", "ultra"),
                    help="requested model reasoning setting, recorded for the backend")
     p.add_argument("--player-model",
@@ -3960,6 +4019,8 @@ def main() -> int:
         p.error("choose exactly one of --orders-file, --model-command, or --interactive-model")
     if a.event_window_observations < 1:
         p.error("--event-window-observations must be positive")
+    if not 1 <= a.max_output_tokens <= MAX_OUTPUT_LIMIT:
+        p.error("--max-output-tokens must be between 1 and 524288")
     if a.max_model_calls_per_turn < 1:
         p.error("--max-model-calls-per-turn must be positive")
     if a.max_tool_calls_per_turn < 0:
