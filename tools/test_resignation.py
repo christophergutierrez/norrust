@@ -30,8 +30,8 @@ class ResignationTests(unittest.TestCase):
         prompt = prompt_for({"units": []}, [])
         self.assertIn('[{"action":"Resign"}]', prompt)
         normalized = " ".join(prompt.split())
-        self.assertIn("Resign when live facts leave no credible recovery or victory route", normalized)
-        self.assertIn("material deficit alone is insufficient", normalized)
+        self.assertIn("Resign only when live facts leave no credible recovery or victory route", normalized)
+        self.assertIn("A bad roll, deficit, or one simulated loss is insufficient", normalized)
         with self.assertRaisesRegex(ValueError, "cannot be previewed"):
             validate_preview_request('{"tool":"preview_batch","candidates":[[{"action":"Resign"}]]}')
 

@@ -27,8 +27,14 @@ class HandoffGuideTests(unittest.TestCase):
 
     def test_exact_guide_is_in_canonical_prompt(self):
         self.assertEqual(load_tactical_playbook(), self.guide)
-        prompt = prompt_for({}, [])
-        self.assertIn(self.guide, prompt)
+        for encoding in ("coordinates", "choices"):
+            for incremental in (False, True):
+                with self.subTest(encoding=encoding, incremental=incremental):
+                    prompt = prompt_for(
+                        {"incremental_turns": incremental}, [],
+                        action_encoding=encoding)
+                    self.assertTrue(prompt.startswith(self.guide + "\n"))
+                    self.assertEqual(prompt.count(self.guide), 1)
 
     def test_assembled_prompt_is_bounded_and_separates_tactics_from_protocol(self):
         for compact in (False, True):

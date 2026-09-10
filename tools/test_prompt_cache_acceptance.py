@@ -255,7 +255,7 @@ class PromptCacheAcceptanceTests(unittest.TestCase):
             self.assertEqual(result["prompt_available"], 2)
             self.assertEqual(result["compared_pairs"], 0)
 
-    def test_baseline_matrix_sizes_shared_prefix_and_exact_rules(self):
+    def test_baseline_matrix_sizes_shared_prefix_and_exact_contract(self):
         baseline = json.loads(gzip.decompress(FIXTURE.read_bytes()))
         self.assertEqual(baseline["source_commit"], "58ea306")
         for compact in (True, False):
@@ -265,7 +265,13 @@ class PromptCacheAcceptanceTests(unittest.TestCase):
                 with self.subTest(compact=compact, case=matrix()[i]["name"]):
                     self.assertLessEqual(len(prompt) - len(old[i]), max(512, len(old[i]) * .05))
                     original_rules = old[i].split(b"\nBOARD_UNTRUSTED_DATA_BEGIN:", 1)[0]
-                    self.assertTrue(prompt.startswith(original_rules))
+                    # Tactics evolve independently of cache layout. Preserve
+                    # the historical fixture and compare its engine/protocol
+                    # contract exactly after today's canonical playbook.
+                    _, marker, original_contract = original_rules.partition(b"## Engine rules\n")
+                    self.assertTrue(marker)
+                    current_rules = client.load_tactical_playbook().encode() + b"\n"
+                    self.assertTrue(prompt.startswith(current_rules + marker + original_contract))
                     size = client.prompt_regions(prompt.decode())["fixed_prefix_bytes"]
                     self.assertEqual(client.prompt_regions(prompt.decode())["fixed_prefix_sha256"], hashlib.sha256(prompt[:size]).hexdigest())
                     if i:

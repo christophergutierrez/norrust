@@ -325,7 +325,8 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("conversation_continuity", prompt)
         self.assertIn("hold U7", prompt)
         self.assertIn("Automatic eligibility excludes recruiters, critically wounded units, and spent units", prompt)
-        self.assertIn("contribution forgone, and release condition", prompt)
+        self.assertIn("contribution forgone, and feasible release condition",
+                      " ".join(prompt.split()))
     def test_checkpoint_reference_confines_path_and_verifies_digest(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "match.ckpt"
@@ -1581,8 +1582,8 @@ class ClientValidationTests(unittest.TestCase):
         for guidance in (
             "Village ownership persists after leaving",
             "one recruit at a time",
-            "Recruit a stationary group first when it must screen the recruiter",
-            "replacing casualties costs gold, travel time, and accumulated XP",
+            "Recruit a screen before deploying if needed",
+            "Replacing casualties costs gold, travel time, and XP",
             "restores its new maximum HP",
             "the unit must survive combat",
             "judge the combined attack",
