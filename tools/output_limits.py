@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .model_identity import classify_model_identity
+
 INITIAL_OUTPUT_LIMIT = 128 * 1024
 MAX_OUTPUT_LIMIT = 512 * 1024
 MAX_CEILING_FAILURES = 3
@@ -78,7 +80,7 @@ class OutputLimitPolicy:
                         and call.get("finish_reason") == "length"
                         and not (call.get("requested_model") is not None
                                  and call.get("reported_model") is not None
-                                 and call["requested_model"] != call["reported_model"])):
+                                 and classify_model_identity(call["requested_model"], call["reported_model"])[1])):
                     failed[call["call_id"]] = call
         if failed:
             policy.output_limit = MAX_OUTPUT_LIMIT

@@ -25,6 +25,8 @@ try:
     from .request_recovery import recoverable_answer
     from .output_limits import (INITIAL_OUTPUT_LIMIT, MAX_OUTPUT_LIMIT, OutputLimitExceeded,
                                 OutputLimitPolicy, combined_usage)
+    from .response_parsing import parse_action_response, ResponseParseError
+    from .model_identity import classify_model_identity
 except ImportError:  # pragma: no cover - direct script compatibility
     from turn_agenda import agenda_from_response, compact_agenda
     from decision_annotations import annotation_for_response, inapplicable_annotation
@@ -32,6 +34,8 @@ except ImportError:  # pragma: no cover - direct script compatibility
     from request_recovery import recoverable_answer
     from output_limits import (INITIAL_OUTPUT_LIMIT, MAX_OUTPUT_LIMIT, OutputLimitExceeded,
                                OutputLimitPolicy, combined_usage)
+    from response_parsing import parse_action_response, ResponseParseError
+    from model_identity import classify_model_identity
 
 ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "Engage", "EndTurn", "Advance", "Resign",
            "DoneWithImportantMoves", "FinishWithGreedy"}
@@ -244,8 +248,13 @@ def apply_backend_settings(cache: Any, metadata: dict[str, Any], args: argparse.
             metadata[destination] = cache.get(source)
         requested_model = cache.get("requested_model")
         reported_model = cache.get("runtime_model")
-        if requested_model is not None and reported_model is not None and reported_model != requested_model:
-            raise RuntimeError("runtime model mismatch")
+        if requested_model is not None and reported_model is not None:
+            identity_status, is_mismatch = classify_model_identity(requested_model, reported_model)
+            metadata["model_identity_status"] = identity_status
+            if is_mismatch:
+                raise RuntimeError(
+                    f"runtime model mismatch: requested {requested_model!r}, reported conflicting canonical ID {reported_model!r}"
+                )
         requested_effort = getattr(args, "reasoning_effort", None)
         backend_effort = cache.get("requested_reasoning_effort")
         reported_effort = cache.get("runtime_reasoning_effort")
@@ -467,9 +476,9 @@ def _validate_finish_with_greedy(order: dict[str, Any], action_index: int) -> No
 
 def validate_orders(text: str, strict: bool = False, require_end_turn: bool = True) -> list[dict[str, Any]]:
     try:
-        orders = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"invalid JSON: {exc.msg}") from exc
+        orders = parse_action_response(text)
+    except ValueError as exc:
+        raise ValueError(f"invalid JSON: {exc}") from exc
     if isinstance(orders, dict) and set(orders).issubset({"actions", "intent", "agenda", "decisions"}) and "actions" in orders:
         if "intent" in orders and (not isinstance(orders["intent"], str)
                                     or len(orders["intent"].encode()) > 512):
@@ -577,8 +586,8 @@ def is_resignation(orders: list[dict[str, Any]]) -> bool:
 def response_intent(text: str) -> Optional[str]:
     """Extract optional client-only intent without changing action validation."""
     try:
-        decoded = json.loads(text)
-    except json.JSONDecodeError:
+        decoded = parse_action_response(text)
+    except ValueError:
         return None
     if not isinstance(decoded, dict) or "actions" not in decoded:
         return None
@@ -2033,6 +2042,118 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
     )
 
 
+def format_committed_action_summary(
+    orders: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+    start_revision: Optional[int],
+    end_revision: Optional[int],
+    repair: bool = False,
+    finish_kind: Optional[str] = None,
+) -> str:
+    """Render a concise, bounded engine-grounded summary of a committed action batch."""
+    summaries: list[str] = []
+    for order in orders:
+        if not isinstance(order, dict):
+            continue
+        act = order.get("action")
+        if act == "Move":
+            summaries.append(f"Move(U{order.get('unit_id')}->{order.get('col')},{order.get('row')})")
+        elif act == "Attack":
+            summaries.append(f"Attack(U{order.get('attacker_id')}->U{order.get('defender_id')})")
+        elif act == "Recruit":
+            summaries.append(f"Recruit({order.get('def_id')}@{order.get('col')},{order.get('row')})")
+        elif act == "RecruitBatch":
+            summaries.append(f"RecruitBatch({order.get('def_id')}x{order.get('count')})")
+        elif act == "Engage":
+            summaries.append(f"Engage(U{order.get('target_id')})")
+        elif act == "Advance":
+            target = order.get("def_id") if order.get("def_id") is not None else order.get("target_index")
+            summaries.append(f"Advance(U{order.get('unit_id')}->{target})")
+        elif act in {"EndTurn", "DoneWithImportantMoves", "FinishWithGreedy", "Resign"}:
+            summaries.append(str(act))
+        else:
+            summaries.append(str(act))
+    if len(summaries) > 8:
+        action_text = ", ".join(summaries[:8]) + f"... ({len(summaries)} actions)"
+    else:
+        action_text = ", ".join(summaries) or "none"
+
+    new_units: list[str] = []
+    casualties: list[str] = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        if event.get("kind") == "recruit" and isinstance(event.get("unit"), int):
+            new_units.append(f"U{event['unit']}")
+        elif event.get("kind") == "attack":
+            for role in ("defender", "attacker"):
+                u = event.get(role)
+                if isinstance(u, dict) and u.get("killed") and isinstance(u.get("unit"), int):
+                    casualties.append(f"U{u['unit']}")
+    new_units = list(dict.fromkeys(new_units))
+    casualties = list(dict.fromkeys(casualties))
+
+    prefix = "committed (repaired)" if repair else "committed"
+    rev_text = f"rev={start_revision}->{end_revision}" if start_revision is not None and end_revision is not None else f"rev={end_revision}"
+    boundary_text = f"finish={finish_kind}" if finish_kind else "boundary=partial"
+    cas_text = f"casualties={','.join(casualties) or 'none'}"
+    units_text = f"new_units={','.join(new_units) or 'none'}"
+    return f"{prefix}: {action_text} | {rev_text} | {cas_text} | {units_text} | {boundary_text}"
+
+
+def replay_committed_continuity(records: list[dict[str, Any]]) -> list[str]:
+    """Reconstruct bounded committed action/result summaries from durable records."""
+    entries: list[str] = []
+    i = 0
+    n = len(records)
+    while i < n:
+        rec = records[i]
+        if rec.get("type") == "forwarded_orders" and isinstance(rec.get("orders"), list):
+            orders = rec["orders"]
+            start_rev = rec.get("state_revision")
+            repair = bool(rec.get("repair"))
+            finish_kind = rec.get("authored_finish_kind")
+            batch_events: list[dict[str, Any]] = []
+            end_rev = None
+            failed = False
+            j = i + 1
+            while j < n:
+                next_rec = records[j]
+                if next_rec.get("type") == "forwarded_orders":
+                    break
+                if next_rec.get("type") == "action_failure":
+                    failed = True
+                    break
+                if next_rec.get("type") == "driver":
+                    line = next_rec.get("line")
+                    if isinstance(line, dict):
+                        if line.get("type") == "events" and isinstance(line.get("events"), list):
+                            batch_events.extend(line["events"])
+                        elif line.get("type") == "status" and isinstance(line.get("state_revision"), int):
+                            end_rev = line["state_revision"]
+                        elif line.get("type") == "state" and isinstance(line.get("state_revision"), int) and end_rev is None:
+                            end_rev = line["state_revision"]
+                elif next_rec.get("type") == "turn_boundary":
+                    if isinstance(next_rec.get("state_revision"), int):
+                        end_rev = next_rec["state_revision"]
+                    if next_rec.get("executed_finish_kind"):
+                        finish_kind = next_rec["executed_finish_kind"]
+                elif next_rec.get("type") == "batch_committed":
+                    if isinstance(next_rec.get("state_revision"), int):
+                        end_rev = next_rec["state_revision"]
+                j += 1
+            if not failed:
+                entries.append(
+                    format_committed_action_summary(
+                        orders, batch_events, start_rev, end_rev, repair=repair, finish_kind=finish_kind
+                    )
+                )
+            i = j
+        else:
+            i += 1
+    return entries[-4:]
+
+
 def authoritative_live_state_reminder(state: dict[str, Any]) -> str:
     """Render compact live facts from the latest engine observation only."""
     units = [unit for unit in state.get("units", []) if isinstance(unit, dict)]
@@ -2457,6 +2578,11 @@ def run(args: argparse.Namespace) -> int:
         inferred_parent = parent_log_for_checkpoint(resume_checkpoint)
         if inferred_parent is not None and inferred_parent == Path(log_path).resolve():
             raise ValueError("--resume-checkpoint requires a new --log")
+        if inferred_parent is not None and inferred_parent.is_file():
+            try:
+                parent_records = _read_log_records(inferred_parent)
+            except Exception:
+                parent_records = []
     if selected_checkpoint is not None:
         validate_checkpoint_identity(selected_checkpoint["envelope"], args)
     previous_metadata = next((record for record in reversed(parent_records)
@@ -2537,6 +2663,10 @@ def run(args: argparse.Namespace) -> int:
     final_reply: Optional[ModelReply] = None
     agenda_enabled = not getattr(args, "disable_agenda_sweep", False)
     continuity_entries: list[str] = []
+    last_forwarded_orders: Optional[list[dict[str, Any]]] = None
+    last_forwarded_revision: Optional[int] = None
+    last_forwarded_repair: bool = False
+    last_forwarded_finish_kind: Optional[str] = None
     turn_progress_moved: set[int] = set()
     turn_progress_attacked: set[int] = set()
     metadata = {"scenario": args.scenario, "faction0": args.faction0, "faction1": args.faction1,
@@ -2603,23 +2733,27 @@ def run(args: argparse.Namespace) -> int:
                 "ended_at": None, "wall_ms": None}
     if parent_records:
         identity_keys = ("scenario", "faction0", "faction1", "gold", "seed", "llm_side",
-                         "max_turns", "llm_recruit_macro")
+                         "llm_recruit_macro") if resume_checkpoint else (
+            "scenario", "faction0", "faction1", "gold", "seed", "llm_side",
+            "max_turns", "llm_recruit_macro"
+        )
         for key in identity_keys:
             if key in previous_metadata and metadata.get(key) != previous_metadata[key]:
                 raise ValueError(f"resume configuration mismatch: {key}")
-        for key in ("queries", "model_orders", "model_calls", "rejected_batches",
-                    "rejected_action_items", "draft_reviews", "draft_revisions",
-                    "draft_confirmations", "draft_review_repairs", "transport_retries",
-                    "attack_opportunity_unit_turns", "planned_attack_unit_turns"):
-            if isinstance(previous_metadata.get(key), int):
+        if resume_log:
+            for key in ("queries", "model_orders", "model_calls", "rejected_batches",
+                        "rejected_action_items", "draft_reviews", "draft_revisions",
+                        "draft_confirmations", "draft_review_repairs", "transport_retries",
+                        "attack_opportunity_unit_turns", "planned_attack_unit_turns"):
+                if isinstance(previous_metadata.get(key), int):
                     metadata[key] = previous_metadata[key]
-        for key in ("explicit_done_turns", "implicit_end_turn_turns",
-                    "selective_finish_turns", "timeout_finish_turns"):
-            if isinstance(previous_metadata.get(key), int):
-                metadata[key] = previous_metadata[key]
-        previous_tools = previous_metadata.get("tool_calls_by_name")
-        if isinstance(previous_tools, dict):
-            metadata["tool_calls_by_name"] = dict(previous_tools)
+            for key in ("explicit_done_turns", "implicit_end_turn_turns",
+                        "selective_finish_turns", "timeout_finish_turns"):
+                if isinstance(previous_metadata.get(key), int):
+                    metadata[key] = previous_metadata[key]
+            previous_tools = previous_metadata.get("tool_calls_by_name")
+            if isinstance(previous_tools, dict):
+                metadata["tool_calls_by_name"] = dict(previous_tools)
         if isinstance(previous_metadata.get("agenda"), dict):
             agenda_memory = previous_metadata["agenda"]
         for record in parent_records:
@@ -2640,17 +2774,16 @@ def run(args: argparse.Namespace) -> int:
                     # side's turn start, whether or not it later closed with
                     # an EndTurn before the process stopped.
                     turn_start_revision = line["state_revision"]
-            if record.get("type") == "side_turn_started":
+            if resume_log and record.get("type") == "side_turn_started":
                 # The resumed side continues the turn the parent log left open,
                 # rather than opening a second identity for the same turn.
                 metadata["current_side_turn_id"] = record.get("side_turn_id")
-            if record.get("type") == "model" and isinstance(record.get("raw_output"), str):
-                continuity_entries.append("assistant: " + record["raw_output"][:1200])
-        continuity_entries = continuity_entries[-4:]
-        if events:
-            event_window.extend(events)
-        turn_progress_moved, turn_progress_attacked = replay_accepted_progress(
-            parent_records, args.llm_side)
+        continuity_entries = replay_committed_continuity(parent_records)
+        if resume_log:
+            if events:
+                event_window.extend(events)
+            turn_progress_moved, turn_progress_attacked = replay_accepted_progress(
+                parent_records, args.llm_side)
     log = open(log_path, "a", buffering=1) if log_path else None
     def record(obj: dict[str, Any]) -> None:
         if log:
@@ -2679,13 +2812,13 @@ def run(args: argparse.Namespace) -> int:
         request_context_path = str(base / "request_context.json")
         os.environ["NORRUST_REQUEST_CONTEXT_FILE"] = request_context_path
 
-    request_sequence = previous_sequence("request")
-    batch_sequence = previous_sequence("batch")
+    request_sequence = previous_sequence("request") if resume_log else 0
+    batch_sequence = previous_sequence("batch") if resume_log else 0
     # A side turn gets a stable identity the moment it OPENS, before its first
     # model request, so usage spent on a turn that never reaches an EndTurn is
     # still attributable to it. Opening a turn is not completing one: this
     # counter never feeds completed-turn totals or replay frames.
-    side_turn_sequence = previous_sequence("side_turn")
+    side_turn_sequence = previous_sequence("side_turn") if resume_log else 0
 
     def open_side_turn(start_revision: Optional[int], round_number: Any) -> None:
         nonlocal side_turn_sequence
@@ -3054,8 +3187,8 @@ def run(args: argparse.Namespace) -> int:
                                 # follow-up instead of classifying the run as
                                 # invalid before the model can correct itself.
                                 try:
-                                    repair_request = json.loads(repaired.text)
-                                except json.JSONDecodeError:
+                                    repair_request = parse_action_response(repaired.text)
+                                except ValueError:
                                     raise
                                 if (not isinstance(repair_request, dict)
                                         or "tool" not in repair_request
@@ -3120,6 +3253,10 @@ def run(args: argparse.Namespace) -> int:
                                 "repair": True, "intent": turn_intent,
                                 "authored_finish_kind": pending_finish_kind,
                                 "handoff_audit": final_audit})
+                        last_forwarded_orders = list(orders)
+                        last_forwarded_revision = state.get("state_revision") if isinstance(state, dict) else None
+                        last_forwarded_repair = True
+                        last_forwarded_finish_kind = pending_finish_kind
                         try:
                             proc.stdin.write(json.dumps(orders, separators=(",", ":")) + "\n")
                             proc.stdin.flush()
@@ -3183,6 +3320,18 @@ def run(args: argparse.Namespace) -> int:
                     if not trend_states or trend_states[-1].get("state_revision") != revision:
                         trend_states.append(dict(line))
                         trend_states[:] = trend_states[-3:]
+                if pending_action and last_forwarded_orders is not None:
+                    summary = format_committed_action_summary(
+                        last_forwarded_orders,
+                        event_window,
+                        last_forwarded_revision,
+                        line.get("state_revision"),
+                        repair=last_forwarded_repair,
+                        finish_kind=last_forwarded_finish_kind if not is_partial_boundary else None,
+                    )
+                    continuity_entries.append(summary)
+                    continuity_entries[:] = continuity_entries[-4:]
+                    last_forwarded_orders = None
                 pending_action = False
                 action_repair_attempted = False
                 if not is_partial_boundary:
@@ -3319,8 +3468,6 @@ def run(args: argparse.Namespace) -> int:
                             **regions,
                             "raw_output": reply.text, "usage": reply.usage,
                             "cache": reply.cache})
-                    continuity_entries.append("assistant: " + reply.text[:1200])
-                    continuity_entries[:] = continuity_entries[-4:]
                     if isinstance(reply.cache, dict):
                         metadata["prompt_cache_requested"] = reply.cache.get("requested", "unreported")
                         metadata["prompt_cache_used"] = reply.cache.get("used", "unreported")
@@ -3332,7 +3479,7 @@ def run(args: argparse.Namespace) -> int:
                         tool_context = ""
                         preview_candidates = None
                         while True:
-                            decoded = json.loads(current_reply.text)
+                            decoded = parse_action_response(current_reply.text)
                             if not isinstance(decoded, dict):
                                 orders = validate_model_orders(current_reply.text)
                                 turn_intent = response_intent(current_reply.text)
@@ -3697,11 +3844,9 @@ def run(args: argparse.Namespace) -> int:
                             "results": validation.get("results"),
                             "failed_index": validation.get("failed_index")})
                     repair_tool_context = ""
-                    # Keep the complete repair conversation across iterations.
-                    # In particular, an inspection response must reach the next
-                    # repair inference; rebuilding this string from `orders`
-                    # alone silently discarded it.
-                    repair_base = None
+                    rejected_orders = list(orders)
+                    rejected_error = dict(validation)
+                    rejected_raw_text = None
                     while validation.get("valid") is not True:
                         if validation.get("error_code") == "partial_limit":
                             # The engine has committed the maximum number of
@@ -3730,17 +3875,41 @@ def run(args: argparse.Namespace) -> int:
                                          message="pre-submit batch validation failed within repair budget")
                             durable({"type": "model_error", **metadata})
                             return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
-                        if repair_base is None:
-                            repair_base = (prompt + "\nDRAFT_ACTIONS_UNTRUSTED_DATA_BEGIN:\n" + json.dumps(
-                                orders, sort_keys=True, separators=(",", ":")) +
-                                "\nDRAFT_ACTIONS_UNTRUSTED_DATA_END\nENGINE_ACTION_ERROR: " + json.dumps(
-                                {"code": "validate_batch_failed",
-                                 "failed_index": validation.get("failed_index"),
-                                 "results": validation.get("results")},
-                                sort_keys=True, separators=(",", ":")) + \
-                                "\nROLLBACK_NOTICE: the batch was rejected before submission; the state and revision is unchanged. Return one corrected JSON action envelope with decisions."
+                        if rejected_raw_text is not None:
+                            candidate_block = (
+                                "\nMODEL_RESPONSE_UNTRUSTED_DATA_BEGIN:\n"
+                                + rejected_raw_text
+                                + "\nMODEL_RESPONSE_UNTRUSTED_DATA_END\n"
                             )
-                        repair_prompt = repair_base + repair_tool_context
+                            error_block = (
+                                "VALIDATION_ERROR: " + str(rejected_error.get("parse_error", "invalid format")) + "\n"
+                            )
+                        else:
+                            candidate_block = (
+                                "\nDRAFT_ACTIONS_UNTRUSTED_DATA_BEGIN:\n"
+                                + json.dumps(rejected_orders, sort_keys=True, separators=(",", ":"))
+                                + "\nDRAFT_ACTIONS_UNTRUSTED_DATA_END\n"
+                            )
+                            error_block = (
+                                "ENGINE_ACTION_ERROR: "
+                                + json.dumps(
+                                    {
+                                        "code": "validate_batch_failed",
+                                        "failed_index": rejected_error.get("failed_index"),
+                                        "results": rejected_error.get("results"),
+                                    },
+                                    sort_keys=True,
+                                    separators=(",", ":"),
+                                )
+                                + "\n"
+                            )
+                        repair_prompt = (
+                            prompt
+                            + candidate_block
+                            + error_block
+                            + "ROLLBACK_NOTICE: the batch was rejected before submission; the state and revision is unchanged. Return one corrected JSON action envelope with decisions."
+                            + repair_tool_context
+                        )
                         action_repair_attempted = True
                         model_calls_this_turn += 1
                         metadata["model_calls"] += 1
@@ -3752,8 +3921,8 @@ def run(args: argparse.Namespace) -> int:
                                     "attempt": model_calls_this_turn,
                                     "prompt_hash": repaired.prompt_hash,
                                     "raw_output": repaired.text, "usage": repaired.usage,
-                                    "engine_error": validation})
-                            decoded_repair = json.loads(repaired.text)
+                                    "engine_error": rejected_error})
+                            decoded_repair = parse_action_response(repaired.text)
                             if isinstance(decoded_repair, dict) and decoded_repair.get("tool") in {
                                 "inspect_unit", "inspect_target", "inspect_targets", "inspect_hex"
                             }:
@@ -3799,6 +3968,9 @@ def run(args: argparse.Namespace) -> int:
                                     "valid": False, "failed_index": None,
                                     "results": [], "parse_error": str(repair_error),
                                     "repair": True})
+                            rejected_raw_text = repaired.text
+                            rejected_orders = None
+                            rejected_error = validation
                             continue
                         except RuntimeError as repair_error:
                             set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
@@ -3814,6 +3986,9 @@ def run(args: argparse.Namespace) -> int:
                                 "results": validation.get("results"),
                                 "failed_index": validation.get("failed_index"),
                                 "repair": True})
+                        rejected_raw_text = None
+                        rejected_orders = list(orders)
+                        rejected_error = dict(validation)
                 if getattr(args, "decision_metrics", False) and not is_resignation(orders):
                     try:
                         final_preview = query_preview_batch(
@@ -3895,6 +4070,10 @@ def run(args: argparse.Namespace) -> int:
                          "review_id": active_review_id,
                          "handoff_audit": final_audit,
                          "forced_finish": forced_finish})
+                last_forwarded_orders = list(orders)
+                last_forwarded_revision = state.get("state_revision") if isinstance(state, dict) else None
+                last_forwarded_repair = bool(action_repair_attempted)
+                last_forwarded_finish_kind = pending_finish_kind
                 try:
                     proc.stdin.write(json.dumps(orders, separators=(",", ":")) + "\n")
                     proc.stdin.flush()

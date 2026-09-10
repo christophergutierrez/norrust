@@ -193,5 +193,52 @@ class FireworksBackendTests(unittest.TestCase):
         self.assertIn("FIREWORKS_API_KEY", result.stderr)
 
 
+class ModelIdentityTests(unittest.TestCase):
+    def test_verified_match(self):
+        from .model_identity import classify_model_identity
+        status, is_mismatch = classify_model_identity(
+            "accounts/fireworks/models/qwen3p8-max",
+            "accounts/fireworks/models/qwen3p8-max"
+        )
+        self.assertEqual(status, "verified_match")
+        self.assertFalse(is_mismatch)
+
+    def test_unverified_display_label(self):
+        from .model_identity import classify_model_identity
+        status, is_mismatch = classify_model_identity(
+            "accounts/fireworks/models/qwen3p8-max",
+            "Qwen 3.8 Max"
+        )
+        self.assertEqual(status, "unverified_label")
+        self.assertFalse(is_mismatch)
+
+    def test_unverified_leaf_slug(self):
+        from .model_identity import classify_model_identity
+        status, is_mismatch = classify_model_identity(
+            "accounts/fireworks/models/qwen3p8-max",
+            "qwen3p8-max"
+        )
+        self.assertEqual(status, "unverified_label")
+        self.assertFalse(is_mismatch)
+
+    def test_conflicting_canonical_id(self):
+        from .model_identity import classify_model_identity
+        status, is_mismatch = classify_model_identity(
+            "accounts/fireworks/models/qwen3p8-max",
+            "accounts/fireworks/models/llama-v3p3-70b-instruct"
+        )
+        self.assertEqual(status, "conflicting_canonical_id")
+        self.assertTrue(is_mismatch)
+
+    def test_missing_identity(self):
+        from .model_identity import classify_model_identity
+        status, is_mismatch = classify_model_identity(None, "qwen3p8-max")
+        self.assertEqual(status, "unknown")
+        self.assertFalse(is_mismatch)
+        status, is_mismatch = classify_model_identity("qwen3p8-max", "")
+        self.assertEqual(status, "unknown")
+        self.assertFalse(is_mismatch)
+
+
 if __name__ == "__main__":
     unittest.main()

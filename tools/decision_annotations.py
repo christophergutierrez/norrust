@@ -5,6 +5,8 @@ import hashlib
 import json
 from typing import Any
 
+from .response_parsing import parse_action_response
+
 GUIDE_VERSION = "tactics-v1"
 RULE_IDS = frozenset({"S1", "S2", "T0", "T1", "T2", "T3", "T3.1", "T3.2", "T3.3", "T4", "T5", "T6", "T7", "T8"})
 MAX_GROUPS = 16
@@ -75,10 +77,10 @@ def annotation_for_response(text: str, *, action_count: int | None = None,
     base = {"status": "missing", "guide_version": GUIDE_VERSION,
             "guide_hash": guide_hash(guide_text), "decisions": [], "error": None}
     try:
-        decoded = json.loads(text)
-    except (TypeError, json.JSONDecodeError):
+        decoded = parse_action_response(text)
+    except (TypeError, ValueError) as exc:
         base["status"] = "invalid"
-        base["error"] = "response is not valid JSON"
+        base["error"] = str(exc)
         return base
     if isinstance(decoded, dict) and "tool" in decoded and "actions" not in decoded:
         base["status"] = "not_applicable"

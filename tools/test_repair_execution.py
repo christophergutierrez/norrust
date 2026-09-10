@@ -204,3 +204,133 @@ class RepairExecutionIntegrationTests(unittest.TestCase):
             terminal = next(r for r in records if r.get("type") == "terminal")
             self.assertEqual(terminal["reason"], "max_turns")
             self.assertEqual(terminal["side_turns"], 11)
+
+    def test_candidate_a_error_a_then_candidate_b_error_b_then_candidate_c_executes(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            checkpoint = _checkpoint(root)
+            invalid_a = (FIXTURE / "failed-response.json").read_text(encoding="utf-8").strip()
+            # Candidate B has a different error: attacking nonexistent defender 999
+            invalid_b = json.dumps({
+                "actions": [
+                    {"action": "Attack", "attacker_id": 7, "defender_id": 999},
+                    {"action": "FinishWithGreedy", "groups": [], "holds": []},
+                ],
+                "decisions": [{"orders": [0, 1], "rules": ["T3.3", "T7"],
+                               "expected": "Attack invalid defender.",
+                               "risk": "none"}],
+            })
+            # Candidate C is legal and wrapped in prose + code fence
+            legal_c_body = {
+                "actions": [
+                    {"action": "Attack", "attacker_id": 7, "defender_id": 24},
+                    {"action": "FinishWithGreedy", "groups": [], "holds": []},
+                ],
+                "decisions": [{"orders": [0, 1], "rules": ["T3.3", "T7"],
+                               "expected": "Attack the supplied adjacent target, then finish without delegation.",
+                               "risk": "The attack may leave U7 exposed to retaliation."}],
+            }
+            legal_c_text = (
+                "Here is the plan for turn 15:\n```json\n"
+                + json.dumps(legal_c_body, indent=2)
+                + "\n```\nExecuting now."
+            )
+            captures = root / "requests.ndjson"
+            backend = root / "backend.py"
+            backend.write_text(
+                "import json,sys\n"
+                "prompt=sys.stdin.read()\n"
+                f"capture={str(captures)!r}\n"
+                "with open(capture, 'a', encoding='utf-8') as out: out.write(json.dumps({'prompt':prompt})+'\\n')\n"
+                "count=sum(1 for _ in open(capture, encoding='utf-8'))\n"
+                f"if count == 1:\n"
+                f"    resp = {invalid_a!r}\n"
+                f"elif count == 2:\n"
+                f"    resp = {invalid_b!r}\n"
+                f"else:\n"
+                f"    resp = {legal_c_text!r}\n"
+                "print(json.dumps({'text': resp}))\n",
+                encoding="utf-8",
+            )
+            log = root / "match.ndjson"
+            command = [sys.executable, "-m", "tools.llm_client", "--driver", str(DRIVER),
+                       "--model-command", shlex.join([sys.executable, str(backend)]),
+                       "--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
+                       "--gold", "300", "--seed", "2002", "--llm-side", "0", "--max-turns", "15",
+                       "--log", str(log), "--resume-checkpoint", str(checkpoint),
+                       "--query-budget-seconds", "10", "--model-timeout", "10", "--turn-timeout", "30"]
+            result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr[-3000:] + log.read_text()[-3000:])
+
+            # 1. Verify captured prompts
+            captured = [json.loads(line) for line in captures.read_text().splitlines()]
+            self.assertGreaterEqual(len(captured), 3)
+            prompt_repair_1 = captured[1]["prompt"]
+            prompt_repair_2 = captured[2]["prompt"]
+
+            # Prompt repair 1 contains candidate A error A
+            self.assertIn("actions[3].holds[3].unit_id", prompt_repair_1)
+            self.assertIn("MODEL_RESPONSE_UNTRUSTED_DATA_BEGIN", prompt_repair_1)
+
+            # Prompt repair 2 contains candidate B error B, NOT candidate A
+            self.assertIn("DRAFT_ACTIONS_UNTRUSTED_DATA_BEGIN", prompt_repair_2)
+            self.assertIn('"defender_id":999', prompt_repair_2.replace(" ", ""))
+            self.assertNotIn("actions[3].holds[3].unit_id", prompt_repair_2)
+            self.assertIn("ENGINE_ACTION_ERROR", prompt_repair_2)
+
+            # 2. Verify driver execution: committed C exactly once
+            records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+            forwarded = [r for r in records if r.get("type") == "forwarded_orders"]
+            self.assertEqual(len(forwarded), 1)
+            self.assertEqual(forwarded[0]["orders"], legal_c_body["actions"])
+
+            # Events: attack 7 -> 24 executed
+            events = [e for r in records if r.get("type") == "driver"
+                      for e in r.get("line", {}).get("events", [])]
+            self.assertTrue(any(e.get("kind") == "attack" and e.get("attacker", {}).get("unit") == 7
+                                and e.get("defender", {}).get("unit") == 24 for e in events))
+            # No phantom events from A or B
+            self.assertFalse(any(e.get("defender", {}).get("unit") == 999 for e in events))
+
+            # 3. Post-batch checkpoint and restart verification
+            post = next(r for r in records if r.get("type") == "checkpoint_ref" and r.get("boundary") == "postbatch")
+            post_ckpt_path = log.with_suffix(".ckpt") / post["path"]
+            self.assertTrue(post_ckpt_path.exists())
+
+            # Simulate restart from this postbatch checkpoint with a clean mock backend
+            restart_captures = root / "restart_requests.ndjson"
+            restart_backend = root / "restart_backend.py"
+            restart_backend.write_text(
+                "import json,sys\n"
+                "prompt=sys.stdin.read()\n"
+                f"capture={str(restart_captures)!r}\n"
+                "with open(capture, 'a', encoding='utf-8') as out: out.write(json.dumps({'prompt':prompt})+'\\n')\n"
+                "print(json.dumps({'text': json.dumps([{'action': 'EndTurn'}])}))\n",
+                encoding="utf-8",
+            )
+            restart_log = root / "restart_match.ndjson"
+            restart_cmd = [sys.executable, "-m", "tools.llm_client", "--driver", str(DRIVER),
+                           "--model-command", shlex.join([sys.executable, str(restart_backend)]),
+                           "--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
+                           "--gold", "300", "--seed", "2002", "--llm-side", "0", "--max-turns", "18",
+                           "--log", str(restart_log), "--resume-checkpoint", str(post_ckpt_path),
+                           "--query-budget-seconds", "10", "--model-timeout", "10", "--turn-timeout", "30"]
+            res2 = subprocess.run(restart_cmd, cwd=ROOT, capture_output=True, text=True, timeout=60)
+            self.assertEqual(res2.returncode, 0, res2.stderr[-3000:] + restart_log.read_text()[-3000:])
+            restart_captured = [json.loads(line) for line in restart_captures.read_text().splitlines()]
+            restart_first_prompt = restart_captured[0]["prompt"]
+            # It sees committed C in continuity summary, not A or B
+            self.assertIn("Attack(U7->U24)", restart_first_prompt)
+            self.assertNotIn("defender=999", restart_first_prompt)
+            self.assertNotIn("holds[3]", restart_first_prompt)
+
+            # 4. History double import check
+            conn = open_history(root / "history.sqlite")
+            try:
+                g1 = import_game(conn, log)
+                g2 = import_game(conn, log)
+                self.assertEqual(g1, g2)
+                self.assertEqual(conn.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+                self.assertEqual(conn.execute("PRAGMA foreign_key_check").fetchall(), [])
+            finally:
+                conn.close()

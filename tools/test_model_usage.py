@@ -55,6 +55,22 @@ class NormalizeUsageTests(unittest.TestCase):
         self.assertIsNone(normalized["reasoning_tokens"])
         self.assertEqual(gaps, [])
 
+    def test_fireworks_nested_reasoning_and_cache_tokens(self):
+        raw = {
+            "prompt_tokens": 120,
+            "completion_tokens": 60,
+            "total_tokens": 180,
+            "completion_tokens_details": {"reasoning_tokens": 25},
+            "prompt_tokens_details": {"cached_tokens": 40},
+        }
+        normalized, gaps = normalize_usage(raw, FIREWORKS_USAGE_MAP)
+        self.assertEqual(normalized["input_tokens"], 120)
+        self.assertEqual(normalized["output_tokens"], 60)
+        self.assertEqual(normalized["total_tokens"], 180)
+        self.assertEqual(normalized["reasoning_tokens"], 25)
+        self.assertEqual(normalized["cached_input_tokens"], 40)
+        self.assertEqual(gaps, [])
+
     def test_never_derives_total_from_parts(self):
         raw = {"prompt_tokens": 100, "completion_tokens": 50}  # no explicit total
         normalized, _ = normalize_usage(raw, FIREWORKS_USAGE_MAP)

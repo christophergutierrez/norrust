@@ -450,6 +450,14 @@ ignored unless the seed, scenario, gold, cap and factions it repeats all match
 the catalog, so a stale or copied sidecar cannot relabel a different game. Prefer
 `--player-model`: it travels inside the archive and cannot be separated from it.
 
+Model identity resolution distinguishes between verified canonical model matches,
+unverified display labels (e.g. `Qwen 3.8 Max` vs canonical
+`accounts/fireworks/models/qwen3p8-max`), and conflicting canonical IDs (e.g.
+`accounts/fireworks/models/llama-v3p3-70b-instruct`). Display labels and leaf slugs
+are treated as unverified labels without discarding output limits or treating them
+as conflicting mismatches. An actual conflicting canonical ID is reported as a
+mismatch while preserving raw identity evidence.
+
 **`--model-command`** runs an automated backend. The command receives the full
 prompt on **stdin** and must write **one JSON object** to **stdout**:
 
@@ -471,12 +479,13 @@ as estimated rather than measured. A minimal backend:
 import json, sys
 prompt = sys.stdin.read()
 reply = call_your_provider(prompt)        # returns a string
-reply = reply.strip().removeprefix("```json").removeprefix("```").removesuffix("```")
 sys.stdout.write(json.dumps({"text": reply}))
 ```
 
-Strip markdown fences before emitting: models frequently wrap their JSON reply,
-and a fenced reply is a validation failure that costs a repair round.
+The harness normalizes responses through a shared parser: both raw JSON and a
+single complete fenced JSON payload surrounded by explanatory prose are accepted.
+Do not emit multiple candidate code blocks, unclosed/truncated fences, or
+unfenced JSON with surrounding text (greedy brace extraction is not used).
 
 **`--interactive-model`** prints the prompt to the terminal and reads the reply
 from stdin, so a human or an agent driving the terminal *is* the model. No
@@ -586,7 +595,7 @@ completed match leaves nothing to analyse.
 | --- | --- | --- |
 | `driver_broken_pipe` terminal | driver exited while the client was writing | inspect the recorded stderr tail and timeout budgets |
 | Terminal `max_turns`, no winner | cap too low to reach a decision | raise `--max-turns` to 24+ |
-| `model_error` after one repair | backend emitted prose, fences, or a non-array | strip fences in the backend |
+| `model_error` after one repair | backend emitted multiple candidate blocks, truncated fences, or invalid JSON | emit a single valid JSON payload (raw or single-fenced) |
 | Log stops growing for minutes | normal during a slow model call | check log mtime over minutes, not seconds |
 
 Judge liveness from the log's size and mtime over a multi-minute window. A model

@@ -124,7 +124,78 @@ class PublishReplyTests(unittest.TestCase):
             pending = _pending(directory, text)
             with self.assertRaises(PublishError) as ctx:
                 publish_reply(pending, directory, request_id)
-            self.assertIn("240 UTF-8 bytes", str(ctx.exception))
+    def test_single_fenced_json_with_prose_publishes(self):
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            request_id = _make_request(directory)
+            text = (
+                "Here is my move proposal:\n"
+                "```json\n"
+                '{"actions": [{"action": "EndTurn"}]}\n'
+                "```\n"
+                "Hope this ends the turn cleanly."
+            )
+            pending = _pending(directory, text)
+            resolved = publish_reply(pending, directory, request_id)
+            self.assertEqual(resolved, request_id)
+            self.assertEqual((directory / f"reply_{request_id}.txt").read_text(encoding="utf-8"), text)
+            records = _validation_records(directory)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["status"], "missing")
+
+    def test_multiple_fences_do_not_publish(self):
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            request_id = _make_request(directory)
+            text = (
+                "```json\n"
+                '{"actions": [{"action": "EndTurn"}]}\n'
+                "```\n"
+                "Or alternatively:\n"
+                "```json\n"
+                '{"actions": [{"action": "DoneWithImportantMoves"}]}\n'
+                "```\n"
+            )
+            pending = _pending(directory, text)
+            with self.assertRaises(PublishError) as ctx:
+                publish_reply(pending, directory, request_id)
+            self.assertIn("multiple candidate payloads", str(ctx.exception))
+            self.assertFalse((directory / f"reply_{request_id}.txt").exists())
+
+    def test_truncated_fence_does_not_publish(self):
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            request_id = _make_request(directory)
+            text = (
+                "```json\n"
+                '{"actions": [{"action": "EndTurn"}]}\n'
+            )
+            pending = _pending(directory, text)
+            with self.assertRaises(PublishError) as ctx:
+                publish_reply(pending, directory, request_id)
+            self.assertIn("truncated code fence", str(ctx.exception))
+            self.assertFalse((directory / f"reply_{request_id}.txt").exists())
+
+    def test_greedy_braces_without_fence_do_not_publish(self):
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            request_id = _make_request(directory)
+            text = 'Here is the move: {"actions": [{"action": "EndTurn"}]} please execute.'
+            pending = _pending(directory, text)
+            with self.assertRaises(PublishError) as ctx:
+                publish_reply(pending, directory, request_id)
+            self.assertIn("not valid JSON", str(ctx.exception))
+            self.assertFalse((directory / f"reply_{request_id}.txt").exists())
+
+    def test_unsupported_root_shape_does_not_publish(self):
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            request_id = _make_request(directory)
+            text = '```json\n"just a string"\n```'
+            pending = _pending(directory, text)
+            with self.assertRaises(PublishError) as ctx:
+                publish_reply(pending, directory, request_id)
+            self.assertIn("unsupported response shape", str(ctx.exception))
             self.assertFalse((directory / f"reply_{request_id}.txt").exists())
 
     def test_invalid_then_corrected_reaches_backend_exactly_once(self):

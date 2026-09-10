@@ -62,39 +62,60 @@ def normalize_int(value: Any) -> tuple[int | None, str | None]:
     return None, f"non_integer_count:{value!r}"
 
 
-def normalize_usage(raw: Any, mapping: dict[str, str]) -> tuple[dict[str, int | None], list[str]]:
-    """Normalize a provider's raw usage object using an explicit field mapping.
+def _extract_raw_value(raw: dict[str, Any], key: str) -> tuple[bool, Any]:
+  if key in raw:
+    return True, raw[key]
+  if "." in key:
+    current: Any = raw
+    for part in key.split("."):
+      if not isinstance(current, dict) or part not in current:
+        return False, None
+      current = current[part]
+    return True, current
+  return False, None
 
-    `mapping` maps THIS provider's raw field names to contract token field
-    names (a subset of TOKEN_FIELDS); unmapped raw fields are left untouched
-    here (callers keep the complete raw object separately). Never derives
-    `total_tokens` from other fields -- it is used only when the provider
-    itself reports a field mapped to it.
-    """
-    normalized: dict[str, int | None] = {field: None for field in TOKEN_FIELDS}
-    gaps: list[str] = []
-    if not isinstance(raw, dict):
-        if raw is not None:
-            gaps.append(f"usage_not_an_object:{raw!r}")
-        return normalized, gaps
-    for raw_key, field in mapping.items():
-        if field not in TOKEN_FIELDS or raw_key not in raw:
-            continue
-        value, gap = normalize_int(raw.get(raw_key))
-        if gap is not None:
-            gaps.append(f"{field}:{gap}")
-        normalized[field] = value
+
+def normalize_usage(raw: Any, mapping: dict[str, str]) -> tuple[dict[str, int | None], list[str]]:
+  """Normalize a provider's raw usage object using an explicit field mapping.
+
+  `mapping` maps THIS provider's raw field names to contract token field
+  names (a subset of TOKEN_FIELDS); unmapped raw fields are left untouched
+  here (callers keep the complete raw object separately). Dotted keys
+  (e.g. 'completion_tokens_details.reasoning_tokens') resolve through nested
+  dictionaries. Never derives `total_tokens` from other fields -- it is used
+  only when the provider itself reports a field mapped to it.
+  """
+  normalized: dict[str, int | None] = {field: None for field in TOKEN_FIELDS}
+  gaps: list[str] = []
+  if not isinstance(raw, dict):
+    if raw is not None:
+      gaps.append(f"usage_not_an_object:{raw!r}")
     return normalized, gaps
+  for raw_key, field in mapping.items():
+    if field not in TOKEN_FIELDS:
+      continue
+    found, raw_val = _extract_raw_value(raw, raw_key)
+    if not found:
+      continue
+    value, gap = normalize_int(raw_val)
+    if gap is not None:
+      gaps.append(f"{field}:{gap}")
+    if normalized[field] is None:
+      normalized[field] = value
+  return normalized, gaps
 
 
 # Known per-provider raw -> contract field maps. Each mapping is exercised by
 # a small synthetic fixture in tools/test_model_usage.py documenting the
 # source semantics (e.g. Fireworks counts cache hits within prompt_tokens).
 FIREWORKS_USAGE_MAP = {
-    "prompt_tokens": "input_tokens",
-    "completion_tokens": "output_tokens",
-    "total_tokens": "total_tokens",
-    "prompt_cache_hit_tokens": "cached_input_tokens",
+  "prompt_tokens": "input_tokens",
+  "completion_tokens": "output_tokens",
+  "total_tokens": "total_tokens",
+  "prompt_cache_hit_tokens": "cached_input_tokens",
+  "prompt_tokens_details.cached_tokens": "cached_input_tokens",
+  "reasoning_tokens": "reasoning_tokens",
+  "completion_tokens_details.reasoning_tokens": "reasoning_tokens",
 }
 
 CODEX_USAGE_MAP = {

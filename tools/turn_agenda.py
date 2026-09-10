@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .response_parsing import parse_action_response
+
 MAX_TASKS = 8
 MAX_GOAL_BYTES = 160
 MAX_AGENDA_BYTES = 4096
@@ -63,8 +65,8 @@ def normalize_agenda(value: Any) -> tuple[dict[str, Any] | None, str | None]:
 
 def response_agenda(text: str) -> tuple[dict[str, Any] | None, str | None]:
     try:
-        value = json.loads(text)
-    except (json.JSONDecodeError, UnicodeDecodeError, TypeError):
+        value = parse_action_response(text)
+    except (ValueError, TypeError):
         return None, None
     if not isinstance(value, dict) or "agenda" not in value:
         return None, None
