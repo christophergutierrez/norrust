@@ -1,0 +1,1096 @@
+{
+  "schema_version": 1,
+  "experiment_kind": "bakeoff",
+  "objective": "offline Stack 4 matrix",
+  "cells": [
+    {
+      "id": "opening_deployment-v1-A",
+      "arm": "A",
+      "position_family": "opening_deployment",
+      "variant": 1,
+      "match_group": "opening_deployment:v1",
+      "checkpoint_fixture": null,
+      "success_predicate": {
+        "friendly_unit_min": 2,
+        "completed_side_turns_at_least": 2
+      },
+      "useful_action": {
+        "kind": "move",
+        "unit_id": 3,
+        "col": 2,
+        "row": 5
+      },
+      "scenario": "big_battle_6",
+      "seed": 42,
+      "faction0": "undead",
+      "faction1": "undead",
+      "llm_side": 0,
+      "gold": 300,
+      "max_turns": 2,
+      "model": "offline-fixture",
+      "reasoning_effort": "low",
+      "decision_mode": "batch",
+      "action_encoding": "coordinates",
+      "incremental_turns": true,
+      "budgets": {
+        "max_partial_batches_per_turn": 3,
+        "max_game_total_tokens": 200000
+      },
+      "backend": {
+        "kind": "command",
+        "command": "python3 tools/fixtures/task_harness/scripted_responder.py",
+        "env": {
+          "TASK_HARNESS_FAMILY": "opening_deployment",
+          "TASK_HARNESS_VARIANT": "1"
+        }
+      }
+    },
+    {
+      "id": "opening_deployment-v1-B",
+      "arm": "B",
+      "position_family": "opening_deployment",
+      "variant": 1,
+      "match_group": "opening_deployment:v1",
+      "checkpoint_fixture": null,
+      "success_predicate": {
+        "friendly_unit_min": 2,
+        "completed_side_turns_at_least": 2
+      },
+      "useful_action": {
+        "kind": "move",
+        "unit_id": 3,
+        "col": 2,
+        "row": 5
+      },
+      "scenario": "big_battle_6",
+      "seed": 42,
+      "faction0": "undead",
+      "faction1": "undead",
+      "llm_side": 0,
+      "gold": 300,
+      "max_turns": 2,
+      "model": "offline-fixture",
+      "reasoning_effort": "low",
+      "decision_mode": "focused",
+      "action_encoding": "coordinates",
+      "incremental_turns": true,
+      "budgets": {
+        "max_partial_batches_per_turn": 64,
+        "max_game_total_tokens": 200000
+      },
+      "backend": {
+        "kind": "command",
+        "command": "python3 tools/fixtures/task_harness/scripted_responder.py",
+        "env": {
+          "TASK_HARNESS_FAMILY": "opening_deployment",
+          "TASK_HARNESS_VARIANT": "1"
+        }
+      }
+    },
+    {
+      "id": "opening_deployment-v1-C",
+      "arm": "C",
+      "position_family": "opening_deployment",
+      "variant": 1,
+      "match_group": "opening_deployment:v1",
+      "checkpoint_fixture": null,
+      "success_predicate": {
+        "friendly_unit_min": 2,
+        "completed_side_turns_at_least": 2
+      },
+      "useful_action": {
+        "kind": "move",
+        "unit_id": 3,
+        "col": 2,
+        "row": 5
+      },
+      "scenario": "big_battle_6",
+      "seed": 42,
+      "faction0": "undead",
+      "faction1": "undead",
+      "llm_side": 0,
+      "gold": 300,
+      "max_turns": 2,
+      "model": "offline-fixture",
+      "reasoning_effort": "low",
+      "decision_mode": "focused",
+      "action_encoding": "choices",
+      "incremental_turns": true,
+      "budgets": {
+        "max_partial_batches_per_turn": 64,
+        "max_game_total_tokens": 200000
+      },
+      "backend": {
+        "kind": "command",
+        "command": "python3 tools/fixtures/task_harness/scripted_responder.py",
+        "env": {
+          "TASK_HARNESS_FAMILY": "opening_deployment",
+          "TASK_HARNESS_VARIANT": "1"
+        }
+      }
+    },
+    {
+      "id": "opening_deployment-v2-A",
+      "arm": "A",
+      "position_family": "opening_deployment",
+      "variant": 2,
+      "match_group": "opening_deployment:v2",
+      "checkpoint_fixture": null,
+      "success_predicate": {
+        "friendly_unit_min": 2,
+        "completed_side_turns_at_least": 2
+      },
+      "useful_action": {
+        "kind": "move",
+        "unit_id": 3,
+        "col": 2,
+        "row": 5
+      },
+      "scenario": "big_battle_6",
+      "seed": 43,
+      "faction0": "undead",
+      "faction1": "undead",
+      "llm_side": 0,
+      "gold": 300,
+      "max_turns": 2,
+      "model": "offline-fixture",
+      "reasoning_effort": "low",
+      "decision_mode": "batch",
+      "action_encoding": "coordinates",
+      "incremental_turns": true,
+      "budgets": {
+        "max_partial_batches_per_turn": 3,
+        "max_game_total_tokens": 200000
+      },
+      "backend": {
+        "kind": "command",
+        "command": "python3 tools/fixtures/task_harness/scripted_responder.py",
+        "env": {
+          "TASK_HARNESS_FAMILY": "opening_deployment",
+          "TASK_HARNESS_VARIANT": "2"
+        }
+      }
+    },
+    {
+      "id": "opening_deployment-v2-B",
+      "arm": "B",
+      "position_family": "opening_deployment",
+      "variant": 2,
+      "match_group": "opening_deployment:v2",
+      "checkpoint_fixture": null,
+      "success_predicate": {
+        "friendly_unit_min": 2,
+        "completed_side_turns_at_least": 2
+      },
+      "useful_action": {
+        "kind": "move",
+        "unit_id": 3,
+        "col": 2,
+        "row": 5
+      },
+      "scenario": "big_battle_6",
+      "seed": 43,
+      "faction0": "undead",
+      "faction1": "undead",
+      "llm_side": 0,
+      "gold": 300,
+      "max_turns": 2,
+      "model": "offline-fixture",
+      "reasoning_effort": "low",
+      "decision_mode": "focused",
+      "action_encoding": "coordinates",
+      "incremental_turns": true,
+      "budgets": {
+        "max_partial_batches_per_turn": 64,
+        "max_game_total_tokens": 200000
+      },
+      "backend": {
+        "kind": "command",
+        "command": "python3 tools/fixtures/task_harness/scripted_responder.py",
+        "env": {
+          "TASK_HARNESS_FAMILY": "opening_deployment",
+          "TASK_HARNESS_VARIANT": "2"
+        }
+      }
+    },
+    {
+      "id": "opening_deployment-v2-C",
+      "arm": "C",
+      "position_family": "opening_deployment",
+      "variant": 2,
+      "match_group": "opening_deployment:v2",
+      "checkpoint_fixture": null,
+      "success_predicate": {
+        "friendly_unit_min": 2,
+        "completed_side_turns_at_least": 2
+      },
+      "useful_action": {
+        "kind": "move",
+        "unit_id": 3,
+        "col": 2,
+        "row": 5
+      },
+      "scenario": "big_battle_6",
+      "seed": 43,
+      "faction0": "undead",
+      "faction1": "undead",
+      "llm_side": 0,
+      "gold": 300,
+      "max_turns": 2,
+      "model": "offline-fixture",
+      "reasoning_effort": "low",
+      "decision_mode": "focused",
+      "action_encoding": "choices",
+      "incremental_turns": true,
+      "budgets": {
+        "max_partial_batches_per_turn": 64,
+        "max_game_total_tokens": 200000
+      },
+      "backend": {
+        "kind": "command",
+        "command": "python3 tools/fixtures/task_harness/scripted_responder.py",
+        "env": {
+          "TASK_HARNESS_FAMILY": "opening_deployment",
+          "TASK_HARNESS_VARIANT": "2"
+        }
+      }
+    },
+    {
+      "id": "competing_villages-v1-A",
+      "arm": "A",
+      "position_family": "competing_villages",
+      "variant": 1,
+      "match_group": "competing_villages:v1",
+      "checkpoint_fixture": null,
+      "success_predicate": {
+        "owned_villages": [
+          {
+            "col": 2,
+            "row": 4,
+            "owner": 0
+          }
+        ],
+        "completed_side_turns_at_least": 2
+      },
+      "useful_action": {
+        "kind": "move",
+        "unit_id": 3
+      },
+      "scenario": "big_battle_6",
+      "seed": 44,
+      "faction0": "undead",
+      "faction1": "undead",
+      "llm_side": 0,
+      "gold": 300,
+      "max_turns": 2,
+      "model": "offline-fixture",
+      "reasoning_effort": "low",
+      "decision_mode": "batch",
+      "action_encoding": "coordinates",
+      "incremental_turns": true,
+      "budgets": {
+        "max_partial_batches_per_turn": 3,
+        "max_game_total_tokens": 200000
+      },
+      "backend": {
+        "kind": "command",
+        "command": "python3 tools/fixtures/task_harness/scripted_responder.py",
+        "env": {
+          "TASK_HARNESS_FAMILY": "competing_villages",
+          "TASK_HARNESS_VARIANT": "1"
+        }
+      }
+    },
+    {
+      "id": "competing_villages-v1-B",
+      "arm": "B",
+      "position_family": "competing_villages",
+      "variant": 1,
+      "match_group": "competing_villages:v1",
+      "checkpoint_fixture": null,
+      "success_predicate": {
+        "owned_villages": [
+          {
+            "col": 2,
+            "row": 4,
+            "owner": 0
+          }
+        ],
+        "completed_side_turns_at_least": 2
+      },
+      "useful_action": {
+        "kind": "move",
+        "unit_id": 3
+      },
+      "scenario": "big_battle_6",
+      "seed": 44,
+      "faction0": "undead",
+      "faction1": "undead",
+      "llm_side": 0,
+      "gold": 300,
+      "max_turns": 2,
+      "model": "offline-fixture",
+      "reasoning_effort": "low",
+      "decision_mode": "focused",
+      "action_encoding": "coordinates",
+      "incremental_turns": true,
+      "budgets": {
+        "max_partial_batches_per_turn": 64,
+        "max_game_total_tokens": 200000
+      },
+      "backend": {
+        "kind": "command",
+        "command": "python3 tools/fixtures/task_harness/scripted_responder.py",
+        "env": {
+          "TASK_HARNESS_FAMILY": "competing_villages",
+          "TASK_HARNESS_VARIANT": "1"
+        }
+      }
+    },
+    {
+      "id": "competing_villages-v1-C",
+      "arm": "C",
+      "position_family": "competing_villages",
+      "variant": 1,
+      "match_group": "competing_villages:v1",
+      "checkpoint_fixture": null,
+      "success_predicate": {
+        "owned_villages": [
+          {
+            "col": 2,
+            "row": 4,
+            "owner": 0
+          }
+        ],
+        "completed_side_turns_at_least": 2
+      },
+      "useful_action": {
+        "kind": "move",
+        "unit_id": 3
+      },
+      "scenario": "big_battle_6",
+      "seed": 44,
+      "faction0": "undead",
+      "faction1": "undead",
+      "llm_side": 0,
+      "gold": 300,
+      "max_turns": 2,
+      "model": "offline-fixture",
+      "reasoning_effort": "low",
+      "decision_mode": "focused",
+      "action_encoding": "choices",
+      "incremental_turns": true,
+      "budgets": {
+        "max_partial_batches_per_turn": 64,
+        "max_game_total_tokens": 200000
+      },
+      "backend": {
+        "kind": "command",
+        "command": "python3 tools/fixtures/task_harness/scripted_responder.py",
+        "env": {
+          "TASK_HARNESS_FAMILY": "competing_villages",
+          "TASK_HARNESS_VARIANT": "1"
+        }
+      }
+    },
+    {
+      "id": "competing_villages-v2-A",
+      "arm": "A",
+      "position_family": "competing_villages",
+      "variant": 2,
+      "match_group": "competing_villages:v2",
+      "checkpoint_fixture": null,
+      "success_predicate": {
+        "owned_villages": [
+          {
+            "col": 2,
+            "row": 4,
+            "owner": 0
+          }
+        ],
+        "completed_side_turns_at_least": 2
+      },
+      "useful_action": {
+        "kind": "move",
+        "unit_id": 3
+      },
+      "scenario": "big_battle_6",
+      "seed": 45,
+      "faction0": "undead",
+      "faction1": "undead",
+      "llm_side": 0,
+      "gold": 300,
+      "max_turns": 2,
+      "model": "offline-fixture",
+      "reasoning_effort": "low",
+      "decision_mode": "batch",
+      "action_encoding": "coordinates",
+      "incremental_turns": true,
+      "budgets": {
+        "max_partial_batches_per_turn": 3,
+        "max_game_total_tokens": 200000
+      },
+      "backend": {
+        "kind": "command",
+        "command": "python3 tools/fixtures/task_harness/scripted_responder.py",
+        "env": {
+          "TASK_HARNESS_FAMILY": "competing_villages",
+          "TASK_HARNESS_VARIANT": "2"
+        }
+      }
+    },
+    {
+      "id": "competing_villages-v2-B",
+      "arm": "B",
+      "position_family": "competing_villages",
+      "variant": 2,
+      "match_group": "competing_villages:v2",
+      "checkpoint_fixture": null,
+      "success_predicate": {
+        "owned_villages": [
+          {
+            "col": 2,
+            "row": 4,
+            "owner": 0
+          }
+        ],
+        "completed_side_turns_at_least": 2
+      },
+      "useful_action": {
+        "kind": "move",
+        "unit_id": 3
+      },
+      "scenario": "big_battle_6",
+      "seed": 45,
+      "faction0": "undead",
+      "faction1": "undead",
+      "llm_side": 0,
+      "gold": 300,
+      "max_turns": 2,
+      "model": "offline-fixture",
+      "reasoning_effort": "low",
+      "decision_mode": "focused",
+      "action_encoding": "coordinates",
+      "incremental_turns": true,
+      "budgets": {
+        "max_partial_batches_per_turn": 64,
+        "max_game_total_tokens": 200000
+      },
+      "backend": {
+        "kind": "command",
+        "command": "python3 tools/fixtures/task_harness/scripted_responder.py",
+        "env": {
+          "TASK_HARNESS_FAMILY": "competing_villages",
+          "TASK_HARNESS_VARIANT": "2"
+        }
+      }
+    },
+    {
+      "id": "competing_villages-v2-C",
+      "arm": "C",
+      "position_family": "competing_villages",
+      "variant": 2,
+      "match_group": "competing_villages:v2",
+      "checkpoint_fixture": null,
+      "success_predicate": {
+        "owned_villages": [
+          {
+            "col": 2,
+            "row": 4,
+            "owner": 0
+          }
+        ],
+        "completed_side_turns_at_least": 2
+      },
+      "useful_action": {
+        "kind": "move",
+        "unit_id": 3
+      },
+      "scenario": "big_battle_6",
+      "seed": 45,
+      "faction0": "undead",
+      "faction1": "undead",
+      "llm_side": 0,
+      "gold": 300,
+      "max_turns": 2,
+      "model": "offline-fixture",
+      "reasoning_effort": "low",
+      "decision_mode": "focused",
+      "action_encoding": "choices",
+      "incremental_turns": true,
+      "budgets": {
+        "max_partial_batches_per_turn": 64,
+        "max_game_total_tokens": 200000
+      },
+      "backend": {
+        "kind": "command",
+        "command": "python3 tools/fixtures/task_harness/scripted_responder.py",
+        "env": {
+          "TASK_HARNESS_FAMILY": "competing_villages",
+          "TASK_HARNESS_VARIANT": "2"
+        }
+      }
+    },
+    {
+      "id": "recruiter_defense-v1-A",
+      "arm": "A",
+      "position_family": "recruiter_defense",
+      "variant": 1,
+      "match_group": "recruiter_defense:v1",
+      "checkpoint_fixture": "tools/fixtures/task_harness/defense_variant1.json",
+      "success_predicate": {
+        "recruiter_alive": true,
+        "alive_units": [
+          1
+        ],
+        "absent_units": [
+          38
+        ],
+        "completed_side_turns_at_least": 18
+      },
+      "useful_action": {
+        "kind": "attack",
+        "unit_id": 13,
+        "target_id": 38
+      },
+      "scenario": "big_battle_6",
+      "seed": 2003,
+      "faction0": "undead",
+      "faction1": "undead",
+      "llm_side": 0,
+      "gold": 300,
+      "max_turns": 18,
+      "model": "offline-fixture",
+      "reasoning_effort": "low",
+      "decision_mode": "batch",
+      "action_encoding": "coordinates",
+      "incremental_turns": true,
+      "budgets": {
+        "max_partial_batches_per_turn": 3,
+        "max_game_total_tokens": 200000
+      },
+      "backend": {
+        "kind": "command",
+        "command": "python3 tools/fixtures/task_harness/scripted_responder.py",
+        "env": {
+          "TASK_HARNESS_FAMILY": "recruiter_defense",
+          "TASK_HARNESS_VARIANT": "1"
+        }
+      }
+    },
+    {
+      "id": "recruiter_defense-v1-B",
+      "arm": "B",
+      "position_family": "recruiter_defense",
+      "variant": 1,
+      "match_group": "recruiter_defense:v1",
+      "checkpoint_fixture": "tools/fixtures/task_harness/defense_variant1.json",
+      "success_predicate": {
+        "recruiter_alive": true,
+        "alive_units": [
+          1
+        ],
+        "absent_units": [
+          38
+        ],
+        "completed_side_turns_at_least": 18
+      },
+      "useful_action": {
+        "kind": "attack",
+        "unit_id": 13,
+        "target_id": 38
+      },
+      "scenario": "big_battle_6",
+      "seed": 2003,
+      "faction0": "undead",
+      "faction1": "undead",
+      "llm_side": 0,
+      "gold": 300,
+      "max_turns": 18,
+      "model": "offline-fixture",
+      "reasoning_effort": "low",
+      "decision_mode": "focused",
+      "action_encoding": "coordinates",
+      "incremental_turns": true,
+      "budgets": {
+        "max_partial_batches_per_turn": 64,
+        "max_game_total_tokens": 200000
+      },
+      "backend": {
+        "kind": "command",
+        "command": "python3 tools/fixtures/task_harness/scripted_responder.py",
+        "env": {
+          "TASK_HARNESS_FAMILY": "recruiter_defense",
+          "TASK_HARNESS_VARIANT": "1"
+        }
+      }
+    },
+    {
+      "id": "recruiter_defense-v1-C",
+      "arm": "C",
+      "position_family": "recruiter_defense",
+      "variant": 1,
+      "match_group": "recruiter_defense:v1",
+      "checkpoint_fixture": "tools/fixtures/task_harness/defense_variant1.json",
+      "success_predicate": {
+        "recruiter_alive": true,
+        "alive_units": [
+          1
+        ],
+        "absent_units": [
+          38
+        ],
+        "completed_side_turns_at_least": 18
+      },
+      "useful_action": {
+        "kind": "attack",
+        "unit_id": 13,
+        "target_id": 38
+      },
+      "scenario": "big_battle_6",
+      "seed": 2003,
+      "faction0": "undead",
+      "faction1": "undead",
+      "llm_side": 0,
+      "gold": 300,
+      "max_turns": 18,
+      "model": "offline-fixture",
+      "reasoning_effort": "low",
+      "decision_mode": "focused",
+      "action_encoding": "choices",
+      "incremental_turns": true,
+      "budgets": {
+        "max_partial_batches_per_turn": 64,
+        "max_game_total_tokens": 200000
+      },
+      "backend": {
+        "kind": "command",
+        "command": "python3 tools/fixtures/task_harness/scripted_responder.py",
+        "env": {
+          "TASK_HARNESS_FAMILY": "recruiter_defense",
+          "TASK_HARNESS_VARIANT": "1"
+        }
+      }
+    },
+    {
+      "id": "recruiter_defense-v2-A",
+      "arm": "A",
+      "position_family": "recruiter_defense",
+      "variant": 2,
+      "match_group": "recruiter_defense:v2",
+      "checkpoint_fixture": "tools/fixtures/task_harness/defense_variant2.json",
+      "success_predicate": {
+        "recruiter_alive": true,
+        "alive_units": [
+          1
+        ],
+        "absent_units": [
+          40
+        ],
+        "completed_side_turns_at_least": 18
+      },
+      "useful_action": {
+        "kind": "attack",
+        "unit_id": 21,
+        "target_id": 40
+      },
+      "scenario": "big_battle_6",
+      "seed": 2003,
+      "faction0": "undead",
+      "faction1": "undead",
+      "llm_side": 0,
+      "gold": 300,
+      "max_turns": 18,
+      "model": "offline-fixture",
+      "reasoning_effort": "low",
+      "decision_mode": "batch",
+      "action_encoding": "coordinates",
+      "incremental_turns": true,
+      "budgets": {
+        "max_partial_batches_per_turn": 3,
+        "max_game_total_tokens": 200000
+      },
+      "backend": {
+        "kind": "command",
+        "command": "python3 tools/fixtures/task_harness/scripted_responder.py",
+        "env": {
+          "TASK_HARNESS_FAMILY": "recruiter_defense",
+          "TASK_HARNESS_VARIANT": "2"
+        }
+      }
+    },
+    {
+      "id": "recruiter_defense-v2-B",
+      "arm": "B",
+      "position_family": "recruiter_defense",
+      "variant": 2,
+      "match_group": "recruiter_defense:v2",
+      "checkpoint_fixture": "tools/fixtures/task_harness/defense_variant2.json",
+      "success_predicate": {
+        "recruiter_alive": true,
+        "alive_units": [
+          1
+        ],
+        "absent_units": [
+          40
+        ],
+        "completed_side_turns_at_least": 18
+      },
+      "useful_action": {
+        "kind": "attack",
+        "unit_id": 21,
+        "target_id": 40
+      },
+      "scenario": "big_battle_6",
+      "seed": 2003,
+      "faction0": "undead",
+      "faction1": "undead",
+      "llm_side": 0,
+      "gold": 300,
+      "max_turns": 18,
+      "model": "offline-fixture",
+      "reasoning_effort": "low",
+      "decision_mode": "focused",
+      "action_encoding": "coordinates",
+      "incremental_turns": true,
+      "budgets": {
+        "max_partial_batches_per_turn": 64,
+        "max_game_total_tokens": 200000
+      },
+      "backend": {
+        "kind": "command",
+        "command": "python3 tools/fixtures/task_harness/scripted_responder.py",
+        "env": {
+          "TASK_HARNESS_FAMILY": "recruiter_defense",
+          "TASK_HARNESS_VARIANT": "2"
+        }
+      }
+    },
+    {
+      "id": "recruiter_defense-v2-C",
+      "arm": "C",
+      "position_family": "recruiter_defense",
+      "variant": 2,
+      "match_group": "recruiter_defense:v2",
+      "checkpoint_fixture": "tools/fixtures/task_harness/defense_variant2.json",
+      "success_predicate": {
+        "recruiter_alive": true,
+        "alive_units": [
+          1
+        ],
+        "absent_units": [
+          40
+        ],
+        "completed_side_turns_at_least": 18
+      },
+      "useful_action": {
+        "kind": "attack",
+        "unit_id": 21,
+        "target_id": 40
+      },
+      "scenario": "big_battle_6",
+      "seed": 2003,
+      "faction0": "undead",
+      "faction1": "undead",
+      "llm_side": 0,
+      "gold": 300,
+      "max_turns": 18,
+      "model": "offline-fixture",
+      "reasoning_effort": "low",
+      "decision_mode": "focused",
+      "action_encoding": "choices",
+      "incremental_turns": true,
+      "budgets": {
+        "max_partial_batches_per_turn": 64,
+        "max_game_total_tokens": 200000
+      },
+      "backend": {
+        "kind": "command",
+        "command": "python3 tools/fixtures/task_harness/scripted_responder.py",
+        "env": {
+          "TASK_HARNESS_FAMILY": "recruiter_defense",
+          "TASK_HARNESS_VARIANT": "2"
+        }
+      }
+    },
+    {
+      "id": "coordinated_combat-v1-A",
+      "arm": "A",
+      "position_family": "coordinated_combat",
+      "variant": 1,
+      "match_group": "coordinated_combat:v1",
+      "checkpoint_fixture": "tools/fixtures/task_harness/combat_variant1.json",
+      "success_predicate": {
+        "alive_units": [
+          1
+        ],
+        "absent_units": [
+          24
+        ],
+        "completed_side_turns_at_least": 16
+      },
+      "useful_action": {
+        "kind": "attack",
+        "unit_id": 7,
+        "target_id": 24
+      },
+      "scenario": "big_battle_6",
+      "seed": 2002,
+      "faction0": "undead",
+      "faction1": "undead",
+      "llm_side": 0,
+      "gold": 300,
+      "max_turns": 16,
+      "model": "offline-fixture",
+      "reasoning_effort": "low",
+      "decision_mode": "batch",
+      "action_encoding": "coordinates",
+      "incremental_turns": true,
+      "budgets": {
+        "max_partial_batches_per_turn": 3,
+        "max_game_total_tokens": 200000
+      },
+      "backend": {
+        "kind": "command",
+        "command": "python3 tools/fixtures/task_harness/scripted_responder.py",
+        "env": {
+          "TASK_HARNESS_FAMILY": "coordinated_combat",
+          "TASK_HARNESS_VARIANT": "1"
+        }
+      }
+    },
+    {
+      "id": "coordinated_combat-v1-B",
+      "arm": "B",
+      "position_family": "coordinated_combat",
+      "variant": 1,
+      "match_group": "coordinated_combat:v1",
+      "checkpoint_fixture": "tools/fixtures/task_harness/combat_variant1.json",
+      "success_predicate": {
+        "alive_units": [
+          1
+        ],
+        "absent_units": [
+          24
+        ],
+        "completed_side_turns_at_least": 16
+      },
+      "useful_action": {
+        "kind": "attack",
+        "unit_id": 7,
+        "target_id": 24
+      },
+      "scenario": "big_battle_6",
+      "seed": 2002,
+      "faction0": "undead",
+      "faction1": "undead",
+      "llm_side": 0,
+      "gold": 300,
+      "max_turns": 16,
+      "model": "offline-fixture",
+      "reasoning_effort": "low",
+      "decision_mode": "focused",
+      "action_encoding": "coordinates",
+      "incremental_turns": true,
+      "budgets": {
+        "max_partial_batches_per_turn": 64,
+        "max_game_total_tokens": 200000
+      },
+      "backend": {
+        "kind": "command",
+        "command": "python3 tools/fixtures/task_harness/scripted_responder.py",
+        "env": {
+          "TASK_HARNESS_FAMILY": "coordinated_combat",
+          "TASK_HARNESS_VARIANT": "1"
+        }
+      }
+    },
+    {
+      "id": "coordinated_combat-v1-C",
+      "arm": "C",
+      "position_family": "coordinated_combat",
+      "variant": 1,
+      "match_group": "coordinated_combat:v1",
+      "checkpoint_fixture": "tools/fixtures/task_harness/combat_variant1.json",
+      "success_predicate": {
+        "alive_units": [
+          1
+        ],
+        "absent_units": [
+          24
+        ],
+        "completed_side_turns_at_least": 16
+      },
+      "useful_action": {
+        "kind": "attack",
+        "unit_id": 7,
+        "target_id": 24
+      },
+      "scenario": "big_battle_6",
+      "seed": 2002,
+      "faction0": "undead",
+      "faction1": "undead",
+      "llm_side": 0,
+      "gold": 300,
+      "max_turns": 16,
+      "model": "offline-fixture",
+      "reasoning_effort": "low",
+      "decision_mode": "focused",
+      "action_encoding": "choices",
+      "incremental_turns": true,
+      "budgets": {
+        "max_partial_batches_per_turn": 64,
+        "max_game_total_tokens": 200000
+      },
+      "backend": {
+        "kind": "command",
+        "command": "python3 tools/fixtures/task_harness/scripted_responder.py",
+        "env": {
+          "TASK_HARNESS_FAMILY": "coordinated_combat",
+          "TASK_HARNESS_VARIANT": "1"
+        }
+      }
+    },
+    {
+      "id": "coordinated_combat-v2-A",
+      "arm": "A",
+      "position_family": "coordinated_combat",
+      "variant": 2,
+      "match_group": "coordinated_combat:v2",
+      "checkpoint_fixture": "tools/fixtures/task_harness/combat_variant2.json",
+      "success_predicate": {
+        "alive_units": [
+          1
+        ],
+        "absent_units": [
+          58,
+          59
+        ],
+        "completed_side_turns_at_least": 50
+      },
+      "useful_action": {
+        "kind": "attack",
+        "unit_id": 6,
+        "target_id": 58
+      },
+      "scenario": "big_battle_6",
+      "seed": 2001,
+      "faction0": "undead",
+      "faction1": "undead",
+      "llm_side": 0,
+      "gold": 300,
+      "max_turns": 50,
+      "model": "offline-fixture",
+      "reasoning_effort": "low",
+      "decision_mode": "batch",
+      "action_encoding": "coordinates",
+      "incremental_turns": true,
+      "budgets": {
+        "max_partial_batches_per_turn": 3,
+        "max_game_total_tokens": 200000
+      },
+      "backend": {
+        "kind": "command",
+        "command": "python3 tools/fixtures/task_harness/scripted_responder.py",
+        "env": {
+          "TASK_HARNESS_FAMILY": "coordinated_combat",
+          "TASK_HARNESS_VARIANT": "2"
+        }
+      }
+    },
+    {
+      "id": "coordinated_combat-v2-B",
+      "arm": "B",
+      "position_family": "coordinated_combat",
+      "variant": 2,
+      "match_group": "coordinated_combat:v2",
+      "checkpoint_fixture": "tools/fixtures/task_harness/combat_variant2.json",
+      "success_predicate": {
+        "alive_units": [
+          1
+        ],
+        "absent_units": [
+          58,
+          59
+        ],
+        "completed_side_turns_at_least": 50
+      },
+      "useful_action": {
+        "kind": "attack",
+        "unit_id": 6,
+        "target_id": 58
+      },
+      "scenario": "big_battle_6",
+      "seed": 2001,
+      "faction0": "undead",
+      "faction1": "undead",
+      "llm_side": 0,
+      "gold": 300,
+      "max_turns": 50,
+      "model": "offline-fixture",
+      "reasoning_effort": "low",
+      "decision_mode": "focused",
+      "action_encoding": "coordinates",
+      "incremental_turns": true,
+      "budgets": {
+        "max_partial_batches_per_turn": 64,
+        "max_game_total_tokens": 200000
+      },
+      "backend": {
+        "kind": "command",
+        "command": "python3 tools/fixtures/task_harness/scripted_responder.py",
+        "env": {
+          "TASK_HARNESS_FAMILY": "coordinated_combat",
+          "TASK_HARNESS_VARIANT": "2"
+        }
+      }
+    },
+    {
+      "id": "coordinated_combat-v2-C",
+      "arm": "C",
+      "position_family": "coordinated_combat",
+      "variant": 2,
+      "match_group": "coordinated_combat:v2",
+      "checkpoint_fixture": "tools/fixtures/task_harness/combat_variant2.json",
+      "success_predicate": {
+        "alive_units": [
+          1
+        ],
+        "absent_units": [
+          58,
+          59
+        ],
+        "completed_side_turns_at_least": 50
+      },
+      "useful_action": {
+        "kind": "attack",
+        "unit_id": 6,
+        "target_id": 58
+      },
+      "scenario": "big_battle_6",
+      "seed": 2001,
+      "faction0": "undead",
+      "faction1": "undead",
+      "llm_side": 0,
+      "gold": 300,
+      "max_turns": 50,
+      "model": "offline-fixture",
+      "reasoning_effort": "low",
+      "decision_mode": "focused",
+      "action_encoding": "choices",
+      "incremental_turns": true,
+      "budgets": {
+        "max_partial_batches_per_turn": 64,
+        "max_game_total_tokens": 200000
+      },
+      "backend": {
+        "kind": "command",
+        "command": "python3 tools/fixtures/task_harness/scripted_responder.py",
+        "env": {
+          "TASK_HARNESS_FAMILY": "coordinated_combat",
+          "TASK_HARNESS_VARIANT": "2"
+        }
+      }
+    }
+  ]
+}

@@ -33,6 +33,7 @@ import hashlib
 import json
 import os
 import random
+import sqlite3
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -40,6 +41,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import bakeoff_metrics
 from . import game_history
 from . import match_report
 from .decision_annotations import guide_hash as _annotation_guide_hash
@@ -55,8 +57,12 @@ REQUIRED_CELL_KEYS = ("id", "scenario", "seed", "faction0", "faction1",
 # Fields that must match across every cell being compared, unless a
 # baseline/candidate experiment explicitly declares exactly one of them as
 # its permitted change.
-FINGERPRINT_KEYS = ("guide_hash", "driver_hash", "source_commit", "dirty_patch_hash")
-FIXED_SETTING_KEYS = ("scenario", "gold", "max_turns")
+FINGERPRINT_KEYS = ("guide_hash", "driver_hash", "source_commit", "dirty_patch_hash",
+                    "transport_fingerprint", "checkpoint_sha256")
+FIXED_SETTING_KEYS = ("scenario", "gold", "max_turns", "faction0", "faction1",
+                      "seed", "reasoning_effort")
+TREATMENT_KEYS = ("decision_mode", "action_encoding", "incremental_turns",
+                  "max_partial_batches_per_turn")
 
 _BUDGET_FLAGS = {
     "turn_timeout": "--turn-timeout",
@@ -67,6 +73,8 @@ _BUDGET_FLAGS = {
     "token_input_limit": "--token-input-limit",
     "token_output_limit": "--token-output-limit",
     "token_total_limit": "--token-total-limit",
+    "max_game_total_tokens": "--max-game-total-tokens",
+    "max_partial_batches_per_turn": "--max-partial-batches-per-turn",
 }
 
 
@@ -121,6 +129,8 @@ def resolve_manifest(manifest: dict[str, Any], *, rng: random.Random | None = No
             raise ManifestError("cell 'id' must be a non-empty string")
         if cell_id in seen_ids:
             raise ManifestError(f"duplicate cell id: {cell_id!r}")
+        if _safe_dirname(cell_id) != cell_id or cell_id in {".", ".."}:
+            raise ManifestError(f"cell id is not a safe unique directory name: {cell_id!r}")
         seen_ids.add(cell_id)
         if cell["seed"] == "random":
             cell["seed"] = rng.randrange(1, 2 ** 31 - 1)
@@ -130,16 +140,47 @@ def resolve_manifest(manifest: dict[str, Any], *, rng: random.Random | None = No
         cell["driver"] = driver
         if driver not in driver_hashes:
             driver_hashes[driver] = _driver_hash(driver)
+        backend = cell.get("backend") or {}
+        transport_fingerprint = hashlib.sha256(
+            json.dumps(backend, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        checkpoint = cell.get("checkpoint_fixture")
+        checkpoint_hash = None
+        if checkpoint:
+            checkpoint_path = Path(checkpoint)
+            if not checkpoint_path.is_absolute():
+                checkpoint_path = REPO_ROOT / checkpoint_path
+            if not checkpoint_path.is_file():
+                raise ManifestError(f"cell {cell_id!r}: checkpoint_fixture not found: {checkpoint}")
+            checkpoint_hash = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
+        mode = cell.get("decision_mode", "focused" if cell.get("arm") in ("B", "C") else "batch")
+        encoding = cell.get("action_encoding", "choices" if cell.get("arm") == "C" else "coordinates")
+        if mode not in ("batch", "focused") or encoding not in ("coordinates", "choices"):
+            raise ManifestError(f"cell {cell_id!r}: invalid decision mode or action encoding")
+        if encoding == "choices" and mode != "focused":
+            raise ManifestError("choices encoding requires focused mode")
+        if cell.get("extra_client_args") and resolved.get("experiment_kind") == "bakeoff":
+            raise ManifestError("bakeoff settings must use declared manifest fields, not extra_client_args")
+        pricing = cell.get("pricing")
+        if pricing is not None and (not isinstance(pricing, dict)
+                or not isinstance(pricing.get("date"), str)
+                or not isinstance(pricing.get("rates"), dict)):
+            raise ManifestError("pricing requires an explicit date and rates object")
+        cell["decision_mode"], cell["action_encoding"] = mode, encoding
+        cell["incremental_turns"] = bool(cell.get("incremental_turns", mode == "focused"))
+        cell["budgets"] = dict(cell.get("budgets") or {})
+        cell["budgets"].setdefault("max_partial_batches_per_turn", 64 if mode == "focused" else 3)
+        cell["max_partial_batches_per_turn"] = cell["budgets"]["max_partial_batches_per_turn"]
         provenance = {
             "guide_hash": guide,
             "driver_hash": driver_hashes[driver],
             "requested_model": cell.get("model"),
             "requested_reasoning_effort": cell.get("reasoning_effort"),
+            "transport_fingerprint": transport_fingerprint,
+            "checkpoint_sha256": checkpoint_hash,
         }
         provenance.update(source_metadata())
         cell["provenance"] = provenance
-        cell["budgets"] = dict(cell.get("budgets") or {})
-        cell.setdefault("configuration", cell.get("model"))
+        cell.setdefault("configuration", cell.get("arm") or cell.get("model"))
     resolved["resolved_at"] = _now()
     resolved.setdefault("experiment_kind", "matched")
     return resolved
@@ -182,6 +223,9 @@ def write_identity(cell_dir: Path, cell: dict[str, Any]) -> None:
             "faction0": cell.get("faction0"),
             "faction1": cell.get("faction1"),
             "reasoning_effort": cell.get("reasoning_effort"),
+            "decision_mode": cell.get("decision_mode"),
+            "action_encoding": cell.get("action_encoding"),
+            "checkpoint_fixture": cell.get("checkpoint_fixture"),
         },
         "backend": {"kind": cell.get("backend", {}).get("kind")},
         "provenance": cell.get("provenance"),
@@ -203,11 +247,18 @@ def build_llm_client_argv(cell: dict[str, Any], cell_dir: Path) -> tuple[list[st
             "--faction0", cell["faction0"], "--faction1", cell["faction1"],
             "--gold", str(cell["gold"]), "--seed", str(cell["seed"]),
             "--llm-side", str(cell["llm_side"]), "--max-turns", str(cell["max_turns"]),
-            "--log", str(log_path)]
+            "--log", str(log_path), "--player-model", str(cell["model"])]
     for key, flag in _BUDGET_FLAGS.items():
         value = cell.get("budgets", {}).get(key)
         if value is not None:
             argv += [flag, str(value)]
+    if cell.get("decision_mode"):
+        argv += ["--decision-mode", str(cell["decision_mode"])]
+    if cell.get("action_encoding"):
+        argv += ["--action-encoding", str(cell["action_encoding"])]
+    checkpoint = cell.get("_prepared_checkpoint") or cell.get("checkpoint")
+    if checkpoint:
+        argv += ["--resume-checkpoint", str(checkpoint)]
     if cell.get("reasoning_effort"):
         argv += ["--reasoning-effort", cell["reasoning_effort"]]
     if cell.get("incremental_turns"):
@@ -246,18 +297,57 @@ def build_llm_client_argv(cell: dict[str, Any], cell_dir: Path) -> tuple[list[st
         env["NORRUST_CODEX_MODEL"] = str(cell.get("model"))
         if cell.get("reasoning_effort"):
             env["NORRUST_CODEX_REASONING_EFFORT"] = str(cell["reasoning_effort"])
-        env.setdefault("NORRUST_CODEX_SESSION_FILE", str(cell_dir / "session.json"))
-        env.setdefault("NORRUST_CODEX_ARTIFACT_DIR", str(cell_dir / "artifacts"))
-        env.setdefault("NORRUST_CODEX_MATCH_ID", cell["id"])
+        env["NORRUST_CODEX_SESSION_FILE"] = str(cell_dir / "session.json")
+        env["NORRUST_CODEX_ARTIFACT_DIR"] = str(cell_dir / "artifacts")
+        env["NORRUST_CODEX_MATCH_ID"] = cell["id"]
     else:
         raise ManifestError(f"cell {cell['id']!r}: unsupported backend kind {kind!r}")
+    env["NORRUST_REQUEST_CONTEXT_FILE"] = str((cell_dir / "request_context.json").resolve())
+    env["NORRUST_USAGE_SIDECAR"] = str((cell_dir / "usage.ndjson").resolve())
+    for key in ("NORRUST_GAME_ID", "NORRUST_REQUEST_ID"):
+        env.pop(key, None)
     return argv, env
 
 
 def run_cell(cell: dict[str, Any], run_dir: Path, *, timeout: float | None = None) -> CellRunResult:
     """Run exactly one cell as its own isolated client process."""
+    current = dict(source_metadata(), guide_hash=guide_hash(),
+                   driver_hash=_driver_hash(cell.get("driver", DEFAULT_DRIVER)))
+    for key, value in current.items():
+        if (cell.get("provenance") or {}).get(key) != value:
+            raise ManifestError(f"cell {cell['id']!r}: {key} changed after manifest resolution")
     cell_dir = cell_dir_for(run_dir, cell["id"])
     cell_dir.mkdir(parents=True, exist_ok=True)
+    if cell.get("checkpoint_fixture"):
+        source = Path(cell["checkpoint_fixture"])
+        if not source.is_absolute():
+            source = REPO_ROOT / source
+        try:
+            source_bytes = source.read_bytes()
+            source_hash = hashlib.sha256(source_bytes).hexdigest()
+            if source_hash != cell["provenance"]["checkpoint_sha256"]:
+                raise ValueError("checkpoint source changed after manifest resolution")
+            payload = json.loads(source_bytes)
+            if (payload.get("boundary") != "model" or payload.get("pending_opponent_turn")
+                    or payload.get("accepted_partial_batches", 0)):
+                raise ValueError("comparison branches require a model side-turn boundary")
+            (cell_dir / "source_checkpoint.json").write_bytes(source_bytes)
+            board = REPO_ROOT / "scenarios" / str(payload["scenario"]) / "board.toml"
+            board_text = str(board)
+            payload["board_path"] = board_text
+            payload["save_state"]["board_path"] = board_text
+            if hashlib.sha256(board.read_bytes()).hexdigest() != payload["board_sha256"]:
+                raise ValueError("fixture board digest mismatch")
+            encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+            prepared = cell_dir / ("checkpoint-" + hashlib.sha256(encoded).hexdigest() + ".json")
+            prepared.write_bytes(encoded)
+            cell = dict(cell)
+            cell["_prepared_checkpoint"] = str(prepared)
+        except (OSError, KeyError, TypeError, ValueError) as exc:
+            result = CellRunResult(cell["id"], cell_dir, cell_dir / "match.ndjson", None,
+                                   _now(), _now(), "error", f"invalid checkpoint_fixture: {exc}")
+            _write_run_status(result)
+            return result
     write_identity(cell_dir, cell)
     log_path = cell_dir / "match.ndjson"
     started = _now()
@@ -310,6 +400,9 @@ def run_manifest(resolved_manifest: dict[str, Any], run_dir: Path, *, only_cell:
     reported from that record rather than silently restarted as an
     unrecorded fresh game, unless `force=True`.
     """
+    validity = check_comparison_validity(resolved_manifest)
+    if not validity["valid"]:
+        raise ManifestError(f"comparison settings mismatch: {validity['mismatches']}")
     run_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = run_dir / "manifest.json"
     if not manifest_path.is_file():
@@ -324,6 +417,8 @@ def run_manifest(resolved_manifest: dict[str, Any], run_dir: Path, *, only_cell:
             if previous is not None:
                 results.append(previous)
                 continue
+        if (cell_dir / "match.ndjson").exists():
+            raise ManifestError("existing game evidence cannot be overwritten; use a new run directory")
         results.append(run_cell(cell, run_dir, timeout=timeout))
     return results
 
@@ -384,11 +479,15 @@ def villages_at_round5_side0(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _final_state(records: list[dict[str, Any]]) -> dict[str, Any] | None:
-    terminal = next((r for r in reversed(records) if r.get("type") == "terminal"), None)
-    if isinstance(terminal, dict) and isinstance(terminal.get("state"), dict):
-        return terminal["state"]
-    lines = _driver_state_lines(records)
-    return lines[-1] if lines else None
+    for record in reversed(records):
+        line = record.get("line") if record.get("type") == "driver" else record
+        if not isinstance(line, dict):
+            continue
+        if line.get("type") in ("game_end", "terminal") and isinstance(line.get("state"), dict):
+            return line["state"]
+        if line.get("type") == "state" and isinstance(line.get("units"), list):
+            return line
+    return None
 
 
 def recruiter_status(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -412,6 +511,50 @@ def recruiter_status(records: list[dict[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def evaluate_objective(records: list[dict[str, Any]], predicate: Any, llm_side: int = 0) -> bool | None:
+    """Conjunction of declared factual final-state requirements; no inferred goals."""
+    if not isinstance(predicate, dict) or not predicate:
+        return None
+    allowed = {"friendly_unit_min", "enemy_unit_min", "recruiter_alive", "units_at",
+               "alive_units", "absent_units", "owned_villages", "completed_side_turns_at_least"}
+    if set(predicate) - allowed:
+        raise ManifestError("unknown success predicate fields")
+    state = _final_state(records)
+    if not isinstance(state, dict) or not isinstance(state.get("units"), list):
+        return None
+    units = {u["id"]: u for u in state["units"] if isinstance(u, dict) and "id" in u
+             and isinstance(u.get("hp"), int) and u["hp"] > 0}
+    friendly = [u for u in units.values() if u.get("faction") == llm_side]
+    checks = []
+    if "friendly_unit_min" in predicate:
+        checks.append(len(friendly) >= predicate["friendly_unit_min"])
+    if "enemy_unit_min" in predicate:
+        checks.append(len(units)-len(friendly) >= predicate["enemy_unit_min"])
+    if "recruiter_alive" in predicate:
+        checks.append(any(u.get("can_recruit") for u in friendly) == predicate["recruiter_alive"])
+    checks.extend(uid in units for uid in predicate.get("alive_units", []))
+    checks.extend(uid not in units for uid in predicate.get("absent_units", []))
+    for wanted in predicate.get("units_at", []):
+        unit = units.get(wanted["unit_id"], {})
+        checks.append(unit.get("col") == wanted["col"] and unit.get("row") == wanted["row"])
+    if "owned_villages" in predicate:
+        owners = {(t["col"], t["row"]): t.get("owner") for t in state.get("terrain", [])
+                  if isinstance(t, dict) and "col" in t and "row" in t}
+        owners.update({(v[0], v[1]): v[2] for v in state.get("village_owners", [])
+                       if isinstance(v, list) and len(v) == 3})
+        if not owners:
+            return None
+        for village in predicate["owned_villages"]:
+            checks.append(owners.get((village["col"], village["row"])) == village["owner"])
+    if "completed_side_turns_at_least" in predicate:
+        completed = next((r.get("line", {}).get("side_turns") for r in reversed(records)
+                          if r.get("type") == "driver" and r.get("line", {}).get("type") == "game_end"), None)
+        if not isinstance(completed, int):
+            return None
+        checks.append(completed >= predicate["completed_side_turns_at_least"])
+    return all(checks) if checks else None
+
+
 def resignation_rationale(records: list[dict[str, Any]], terminal: dict[str, Any]) -> dict[str, Any] | None:
     """Recorded resignation rationale, when the match ended that way."""
     if terminal.get("reason") != "resignation":
@@ -433,7 +576,8 @@ def resignation_rationale(records: list[dict[str, Any]], terminal: dict[str, Any
     return {"resigned_side": terminal.get("resigned_side"), "rules": None, "expected": None, "risk": None}
 
 
-def aggregate_cell(result: CellRunResult, cell: dict[str, Any]) -> dict[str, Any]:
+def aggregate_cell(result: CellRunResult, cell: dict[str, Any], *,
+                   catalog_path: Path | None = None, cohort_id: str | None = None) -> dict[str, Any]:
     """Build one cell's report entry. Always returns an entry, even for a cell
     that never produced a log -- unknown evidence is reported as unknown, never
     omitted."""
@@ -449,6 +593,11 @@ def aggregate_cell(result: CellRunResult, cell: dict[str, Any]) -> dict[str, Any
         "scenario": cell.get("scenario"),
         "seed": cell.get("seed"),
         "provenance": cell.get("provenance"),
+        "arm": cell.get("arm"),
+        "decision_mode": cell.get("decision_mode"),
+        "action_encoding": cell.get("action_encoding"),
+        "position_family": cell.get("position_family"),
+        "variant": cell.get("variant"),
     }
     if not result.log_path.is_file():
         entry.update(terminal_class="not_run", match=None)
@@ -461,6 +610,58 @@ def aggregate_cell(result: CellRunResult, cell: dict[str, Any]) -> dict[str, Any
     classified = match_report.classify(records, publication_records)
     metadata = next((r for r in records if r.get("type") == "metadata"), {})
     terminal = next((r for r in reversed(records) if r.get("type") == "terminal"), {})
+    trial = bakeoff_metrics.evaluate_trial_actions(
+        records, useful_spec=cell.get("useful_action") if isinstance(cell.get("useful_action"), dict) else None)
+    entry["first_legal_action"] = trial["first_legal_action"]
+    entry["tokens_to_first_legal"] = trial["tokens_to_first_legal"]
+    entry["ms_to_first_legal"] = trial["ms_to_first_legal"]
+    entry["first_useful_action"] = trial["first_useful_action"]
+    entry["tokens_to_first_useful"] = trial["tokens_to_first_useful"]
+    entry["ms_to_first_useful"] = trial["ms_to_first_useful"]
+    entry["useful_action_achieved"] = trial["useful_action_achieved"]
+    entry["objective_success"] = evaluate_objective(
+        records, cell.get("success_predicate"), int(cell.get("llm_side", 0)))
+    entry["task_success"] = (entry["objective_success"] if classified["terminal_class"] == "gameplay" else False)
+    if cell.get("useful_action") and trial["useful_action_achieved"] is not True:
+        entry["task_success"] = False
+    telemetry = bakeoff_metrics.extract_telemetry(records)
+    entry["telemetry"] = telemetry
+    usage = None
+    physical_call_rows = None
+    if catalog_path is not None:
+        game_id = f"{cohort_id}:{result.cell_id}" if cohort_id else result.cell_id
+        try:
+            conn = game_history.open_history(catalog_path, read_only=True)
+            try:
+                usage_report = game_history.query_usage(conn, game_id, "call")
+                coverage_report = game_history.query_usage(conn, game_id, "game")
+                entry["aggregate_only_request_ids"] = coverage_report["aggregate_only_request_ids"]
+                entry["unassigned_calls"] = coverage_report["unassigned_calls"]
+            finally:
+                conn.close()
+            physical_call_rows = usage_report.get("calls", [])
+            usage = bakeoff_metrics.aggregate_usage(
+                physical_call_rows,
+                model=(metadata.get("runtime_model") or metadata.get("requested_model") or cell.get("model")),
+                price_date=(cell.get("pricing") or {}).get("date"),
+                custom_prices=(cell.get("pricing") or {}).get("rates"))
+        except (KeyError, OSError, sqlite3.Error) as exc:
+            entry["usage_error"] = str(exc)
+            usage = None
+    if physical_call_rows is not None:
+        trial = bakeoff_metrics.evaluate_trial_actions(
+            records,
+            useful_spec=cell.get("useful_action") if isinstance(cell.get("useful_action"), dict) else None,
+            physical_calls=physical_call_rows)
+        entry.update({"first_legal_action": trial["first_legal_action"],
+                      "tokens_to_first_legal": trial["tokens_to_first_legal"],
+                      "ms_to_first_legal": trial["ms_to_first_legal"],
+                      "first_useful_action": trial["first_useful_action"],
+                      "tokens_to_first_useful": trial["tokens_to_first_useful"],
+                      "ms_to_first_useful": trial["ms_to_first_useful"],
+                      "useful_action_achieved": trial["useful_action_achieved"],
+                      "objective_success": entry["objective_success"],
+                      "task_success": entry["task_success"]})
     entry.update({
         "terminal_class": classified["terminal_class"],
         "winner": classified["winner"],
@@ -476,22 +677,31 @@ def aggregate_cell(result: CellRunResult, cell: dict[str, Any]) -> dict[str, Any
             "model_calls": classified.get("model_calls"),
             "wall_ms": terminal.get("wall_ms"),
             "usage_measured": metadata.get("usage_measured"),
+            "physical_usage": usage,
         },
         "display_turns": classified.get("engine_rounds"),
         "completed_side_turns": classified.get("completed_side_turns"),
-        "cap_remaining": (cell["max_turns"] - classified["engine_rounds"]
-                         if isinstance(classified.get("engine_rounds"), int) else None),
+        "cap_remaining": (cell["max_turns"] - classified["completed_side_turns"]
+                         if isinstance(classified.get("completed_side_turns"), int) else None),
         "villages_round5_side0": villages_at_round5_side0(records),
         "recruiter_status": recruiter_status(records),
         "resignation": resignation_rationale(records, terminal),
     })
+    if classified.get("reason") == "budget_interrupted":
+        entry["terminal_class"] = "budget_interrupted"
+    if usage is not None:
+        entry["known_cost"] = usage.get("known_cost")
+        entry["physical_calls"] = usage.get("physical_calls")
+        entry["physical_tokens"] = usage.get("total_tokens")
+        entry["usage_coverage"] = usage.get("usage_coverage")
+        entry["cost_coverage"] = usage.get("cost_coverage")
     return entry
 
 
 def _is_infrastructure_failure(entry: dict[str, Any]) -> bool:
     if entry.get("status") == "not_run":
         return False
-    if entry.get("terminal_class") == "model_invalid":
+    if entry.get("terminal_class") in ("model_invalid", "budget_interrupted"):
         return False
     if entry.get("status") in ("failed", "error"):
         return True
@@ -518,30 +728,70 @@ def check_comparison_validity(resolved_manifest: dict[str, Any]) -> dict[str, An
     if kind == "baseline_candidate" and not declared_field:
         return {"experiment_kind": kind, "valid": False, "mismatches": [
             {"error": "baseline_candidate experiments must set 'declared_change_field'"}]}
-    baseline_fp = None
-    baseline_id = None
+    # Compare arms within each position/variant group. Different variants are
+    # intentionally different engine states; the three arms for one group must
+    # share every frozen setting and may differ only in declared treatment.
+    groups: dict[str, list[dict[str, Any]]] = {}
     for cell in cells:
-        provenance = cell.get("provenance") or {}
-        fingerprint = {key: provenance.get(key) for key in FINGERPRINT_KEYS}
-        fingerprint.update({key: cell.get(key) for key in FIXED_SETTING_KEYS})
-        if baseline_fp is None:
-            baseline_fp, baseline_id = fingerprint, cell["id"]
-            continue
-        for key, value in fingerprint.items():
-            if value == baseline_fp[key]:
+        group = str(cell.get("match_group")) if kind == "bakeoff" else "all"
+        groups.setdefault(group, []).append(cell)
+    for group_cells in groups.values():
+        baseline_fp = None
+        baseline_id = None
+        for cell in group_cells:
+            provenance = cell.get("provenance") or {}
+            fingerprint = {key: provenance.get(key) for key in FINGERPRINT_KEYS}
+            fingerprint.update({key: cell.get(key) for key in FIXED_SETTING_KEYS})
+            fingerprint["backend"] = cell.get("backend")
+            if kind == "bakeoff":
+                fingerprint.update({key: cell.get(key) for key in
+                                    ("model", "llm_side", "success_predicate", "useful_action", "pricing")})
+            frozen_budgets = dict(cell.get("budgets") or {})
+            frozen_budgets.pop("max_partial_batches_per_turn", None)
+            fingerprint["budgets"] = frozen_budgets
+            fingerprint.update({key: cell.get(key) for key in TREATMENT_KEYS})
+            if baseline_fp is None:
+                baseline_fp, baseline_id = fingerprint, cell["id"]
                 continue
-            if kind == "baseline_candidate" and key == declared_field:
-                continue
-            mismatches.append({"cell": cell["id"], "baseline_cell": baseline_id, "field": key,
-                               "baseline_value": baseline_fp[key], "candidate_value": value})
+            for key, value in fingerprint.items():
+                if value == baseline_fp[key]:
+                    continue
+                # Treatment fields are checked separately and are allowed to
+                # differ for the declared A/B/C bakeoff.
+                if kind == "bakeoff" and key in TREATMENT_KEYS:
+                    continue
+                if kind == "baseline_candidate" and key == declared_field:
+                    continue
+                mismatches.append({"cell": cell["id"], "baseline_cell": baseline_id, "field": key,
+                                   "baseline_value": baseline_fp[key], "candidate_value": value})
+        if kind == "bakeoff":
+            if sorted(c.get("arm", "") for c in group_cells) != ["A", "B", "C"]:
+                mismatches.append({"error": "each matched position needs exactly arms A, B, C"})
+            partial_limits = {c.get("arm"): c.get("max_partial_batches_per_turn")
+                              for c in group_cells}
+            if partial_limits.get("A") != 3 or partial_limits.get("B") != partial_limits.get("C"):
+                mismatches.append({"error": "arm A requires partial cap 3; B and C require equal partial caps"})
+            for cell in group_cells:
+                arm = cell.get("arm")
+                expected = {"A": ("batch", "coordinates"),
+                            "B": ("focused", "coordinates"),
+                            "C": ("focused", "choices")}.get(arm)
+                if (expected is None or not cell.get("incremental_turns") or
+                        (cell.get("decision_mode"), cell.get("action_encoding")) != expected):
+                    mismatches.append({"cell": cell["id"], "field": "treatment",
+                                       "expected": expected,
+                                       "actual": {"decision_mode": cell.get("decision_mode"),
+                                                  "action_encoding": cell.get("action_encoding")}})
     return {"experiment_kind": kind, "valid": not mismatches, "mismatches": mismatches}
 
 
-def build_report(resolved_manifest: dict[str, Any], results: list[CellRunResult]) -> dict[str, Any]:
+def build_report(resolved_manifest: dict[str, Any], results: list[CellRunResult], *,
+                 catalog_path: Path | None = None, cohort_id: str | None = None) -> dict[str, Any]:
     """Aggregate every scheduled cell, even ones absent from `results`."""
     by_id = {cell["id"]: cell for cell in resolved_manifest["cells"]}
     scheduled_ids = list(by_id)
-    reported_by_id = {result.cell_id: aggregate_cell(result, by_id[result.cell_id])
+    reported_by_id = {result.cell_id: aggregate_cell(result, by_id[result.cell_id],
+                                                       catalog_path=catalog_path, cohort_id=cohort_id)
                       for result in results if result.cell_id in by_id}
     cells_report = []
     for cell_id in scheduled_ids:
@@ -556,6 +806,9 @@ def build_report(resolved_manifest: dict[str, Any], results: list[CellRunResult]
                 "configuration": cell.get("configuration", cell.get("model")),
                 "llm_side": cell.get("llm_side"), "scenario": cell.get("scenario"),
                 "seed": cell.get("seed"), "provenance": cell.get("provenance"),
+                "arm": cell.get("arm"), "decision_mode": cell.get("decision_mode"),
+                "action_encoding": cell.get("action_encoding"),
+                "position_family": cell.get("position_family"), "variant": cell.get("variant"),
             })
 
     totals = {
@@ -565,6 +818,7 @@ def build_report(resolved_manifest: dict[str, Any], results: list[CellRunResult]
         "error": sum(1 for e in cells_report if e["status"] == "error"),
         "not_run": sum(1 for e in cells_report if e["status"] == "not_run"),
         "model_invalid": sum(1 for e in cells_report if e.get("terminal_class") == "model_invalid"),
+        "budget_interrupted": sum(1 for e in cells_report if e.get("terminal_class") == "budget_interrupted"),
         "infrastructure_invalid": sum(1 for e in cells_report if _is_infrastructure_failure(e)),
     }
 
@@ -602,6 +856,7 @@ def build_report(resolved_manifest: dict[str, Any], results: list[CellRunResult]
         bucket["completion_rate"] = {"numerator": bucket["completed"], "denominator": bucket["cells"],
                                      "rate": (bucket["completed"] / bucket["cells"]) if bucket["cells"] else None}
 
+    arms_present = any(entry.get("arm") in {"A", "B", "C"} for entry in cells_report)
     return {
         "schema_version": SCHEMA_VERSION,
         "objective": resolved_manifest.get("objective"),
@@ -610,6 +865,7 @@ def build_report(resolved_manifest: dict[str, Any], results: list[CellRunResult]
         "totals": totals,
         "configurations": configurations,
         "cells": cells_report,
+        "bakeoff": bakeoff_metrics.compare_arms(cells_report) if arms_present else None,
         "note": ("Draws are counted separately from wins and are never wins. "
                 "Compute cost (model_calls, wall_ms) is reported per cell, "
                 "separate from outcome. Every scheduled cell above is listed "
@@ -682,6 +938,11 @@ def main(argv: list[str]) -> int:
     run_dir = Path(args.run_dir)
 
     if args.command == "run":
+        cohort_path = run_dir / "cohort.json"
+        saved_cohort = json.loads(cohort_path.read_text())["cohort_id"] if cohort_path.is_file() else None
+        if saved_cohort and args.cohort and args.cohort != saved_cohort:
+            raise ManifestError("existing run cannot be relabeled with a different cohort")
+        cohort_id = args.cohort or saved_cohort or run_dir.name
         manifest = json.loads(Path(args.manifest).read_text())
         manifest_path = run_dir / "manifest.json"
         if manifest_path.is_file():
@@ -690,9 +951,9 @@ def main(argv: list[str]) -> int:
             resolved = resolve_manifest(manifest)
         results = run_manifest(resolved, run_dir, only_cell=args.only_cell,
                                force=args.force, timeout=args.timeout)
-        cohort_id = args.cohort or run_dir.name
+        cohort_path.write_text(json.dumps({"cohort_id": cohort_id}))
         import_cells(run_dir / "catalog.sqlite", results, cohort_id)
-        report = build_report(resolved, results)
+        report = build_report(resolved, results, catalog_path=run_dir / "catalog.sqlite", cohort_id=cohort_id)
     else:
         manifest_path = run_dir / "manifest.json"
         if not manifest_path.is_file():
@@ -704,7 +965,8 @@ def main(argv: list[str]) -> int:
                                   cell_dir_for(run_dir, cell["id"]) / "match.ndjson",
                                   None, "", None, "not_run")
                   for cell in resolved["cells"]]
-        report = build_report(resolved, results)
+        report = build_report(resolved, results, catalog_path=run_dir / "catalog.sqlite", cohort_id=json.loads((run_dir / "cohort.json").read_text())["cohort_id"]
+                              if (run_dir / "cohort.json").is_file() else run_dir.name)
 
     (run_dir / "report.json").write_text(json.dumps(report, sort_keys=True, indent=2))
     if args.lock_baseline:

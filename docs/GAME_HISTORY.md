@@ -487,3 +487,17 @@ catalog and any surviving backup after maintenance:
 
 The maintenance command rejects missing game IDs and ambiguous selectors. It
 removes dependent evaluation rows safely while preserving unrelated cohorts.
+
+
+## Harness comparison reports
+
+`tools.model_bakeoff` imports each isolated trial into its run's `catalog.sqlite`.
+Its reports use existing `model_calls` records and per-field coverage; request
+aggregates are reconciliation evidence and are not added to retries. Missing
+reasoning, cached input, prices, or call linkage remain unknown. Reports expose
+aggregate-only request IDs and unassigned calls, and distinguish budget stops
+from gameplay outcomes. Useful-action measurements require committed model
+engine events; final task predicates use the latest observed state, including
+terminal snapshots. Authored choice handles, their expansion, and coordinate
+fallbacks remain in the archive/request payloads. See [MODEL_BAKEOFF.md](MODEL_BAKEOFF.md)
+for the offline matrix, dated pricing inputs, and comparison contract.

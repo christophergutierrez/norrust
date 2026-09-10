@@ -70,6 +70,12 @@ cargo test --lib --manifest-path norrust_core/Cargo.toml
 cargo test --test driver_protocol --manifest-path norrust_core/Cargo.toml
 ```
 
+The matched harness comparison uses the existing client, driver, and history
+catalog through [`docs/MODEL_BAKEOFF.md`](MODEL_BAKEOFF.md). Keep its three
+treatments on one resolved source commit and use isolated cell directories;
+offline fixtures are sufficient for plumbing checks and do not launch paid
+model games.
+
 The Rust test suite runs entirely headlessly — no Love2D required. Its integration
 suites are `campaign`, `dialogue`, `driver_protocol`, `scenario_validation`,
 `simulation`, and `test_ffi`; select each with `--test` as needed.

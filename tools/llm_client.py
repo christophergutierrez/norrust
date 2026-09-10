@@ -27,6 +27,7 @@ try:
                                 OutputLimitPolicy, combined_usage)
     from .response_parsing import parse_action_response, ResponseParseError
     from .model_identity import classify_model_identity
+    from .game_token_budget import measured_game_budget
     from .action_choices import ChoiceRegistry, extract_available_choices, extract_inspection_choices, Choice
 except ImportError:  # pragma: no cover - direct script compatibility
     from turn_agenda import agenda_from_response, compact_agenda, annotate_agenda_unit_status
@@ -37,6 +38,7 @@ except ImportError:  # pragma: no cover - direct script compatibility
                                OutputLimitPolicy, combined_usage)
     from response_parsing import parse_action_response, ResponseParseError
     from model_identity import classify_model_identity
+    from game_token_budget import measured_game_budget
     from action_choices import ChoiceRegistry, extract_available_choices, extract_inspection_choices, Choice
 
 ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "Engage", "EndTurn", "Advance", "Resign",
@@ -147,6 +149,9 @@ def resolve_client_config(args: Any) -> None:
     limit = getattr(args, "max_partial_batches_per_turn", 3)
     if not 1 <= limit <= 1024:
         raise ValueError(f"--max-partial-batches-per-turn must be between 1 and 1024, got {limit}")
+    max_game_tokens = getattr(args, "max_game_total_tokens", None)
+    if max_game_tokens is not None and max_game_tokens <= 0:
+        raise ValueError(f"--max-game-total-tokens must be positive, got {max_game_tokens}")
 
 
 def validate_checkpoint_identity(envelope: dict[str, Any], args: argparse.Namespace) -> None:
@@ -2891,6 +2896,9 @@ def run(args: argparse.Namespace) -> int:
                 "token_input_limit": args.token_input_limit,
                 "token_output_limit": args.token_output_limit,
                 "token_total_limit": args.token_total_limit,
+                "max_game_total_tokens": getattr(args, "max_game_total_tokens", None),
+                "cumulative_game_total_tokens": 0,
+                "game_token_limit_enforced": False,
                 "prompt_cache_requested": "unreported", "prompt_cache_used": "unreported",
                 "prompt_cache_reported_tokens": None, "usage_measured": True,
                 "tool_calls_by_name": {}, "max_observed_prompt_bytes": 0,
@@ -2931,7 +2939,8 @@ def run(args: argparse.Namespace) -> int:
             if key in previous_metadata and metadata.get(key) != previous_metadata[key]:
                 raise ValueError(f"resume configuration mismatch: {key}")
         if resume_log:
-            for key in ("decision_mode", "action_encoding", "max_partial_batches_per_turn"):
+            for key in ("decision_mode", "action_encoding", "max_partial_batches_per_turn",
+                        "max_game_total_tokens"):
                 if key in previous_metadata and metadata.get(key) != previous_metadata[key]:
                     raise ValueError(f"resume configuration mismatch: {key}")
             for key in ("queries", "model_orders", "model_calls", "rejected_batches",
@@ -3005,6 +3014,43 @@ def run(args: argparse.Namespace) -> int:
         record(obj)
         if log:
             os.fsync(log.fileno())
+    expected_budget_requests = {
+        r["request_id"] for r in parent_records
+        if resume_log and r.get("type") == "model_request"
+        and isinstance(r.get("request_id"), str)
+        and "max_game_total_tokens_exhausted" not in str(r.get("error", ""))
+    }
+    def refresh_game_budget(request_id: str | None = None) -> None:
+        if request_id is not None:
+            expected_budget_requests.add(request_id)
+        if log_path:
+            metadata.update(measured_game_budget(
+                Path(log_path).resolve().with_name("usage.ndjson"),
+                conversation_id, expected_budget_requests))
+        if getattr(args, "max_game_total_tokens", None) is None:
+            metadata["game_token_limit_enforced"] = False
+
+    def check_game_budget() -> None:
+        refresh_game_budget()
+        cap = getattr(args, "max_game_total_tokens", None)
+        if cap is not None and metadata["cumulative_game_total_tokens"] >= cap:
+            raise RuntimeError(
+                f"max_game_total_tokens_exhausted: ceiling {cap} reached "
+                f"({metadata['cumulative_game_total_tokens']} measured tokens spent)")
+
+    def emit_budget_interrupted(code: str, message: str) -> int:
+        set_terminal(metadata, TERMINAL_MODEL_INVALID,
+                     winner=None,
+                     reason="budget_interrupted",
+                     code=code,
+                     message=message)
+        durable({"type": "budget_interrupted",
+                 "side_turn_id": metadata.get("current_side_turn_id"),
+                 "model_calls_this_turn": model_calls_this_turn,
+                 "tool_calls_this_turn": tool_calls_this_turn,
+                 **metadata})
+        durable({"type": "terminal", **metadata})
+        return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
     # An in-place resume retains its conversation ID, so its IDs must continue
     # past every archived attempt, including failed requests/uncommitted batches.
     def previous_sequence(kind: str) -> int:
@@ -3083,6 +3129,8 @@ def run(args: argparse.Namespace) -> int:
                     "fixed_prefix_bytes": delivered_regions["fixed_prefix_bytes"],
                     "dispatched_at": datetime.now(timezone.utc).isoformat(),
                     "output_limit": output_policy.output_limit,
+                    "decision_mode": getattr(args, "decision_mode", "batch"),
+                    "action_encoding": getattr(args, "action_encoding", "coordinates"),
                     "model_timeout_seconds": args.model_timeout,
                     "retry_of_call_id": None,
                 }
@@ -3113,8 +3161,14 @@ def run(args: argparse.Namespace) -> int:
                 reply = ModelReply(answer["text"], answer.get("usage"), cache)
             else:
                 while True:
+                    check_game_budget()
                     try:
-                        reply = backend.complete(delivered_prompt)
+                        try:
+                            reply = backend.complete(delivered_prompt)
+                        finally:
+                            # Includes failures whose usage was durable even
+                            # when no executable response reached the client.
+                            refresh_game_budget(request_id)
                         if attempt_usage:
                             reply.usage = combined_usage(attempt_usage + [reply.usage])
                             enforce_usage(reply, args)
@@ -3136,6 +3190,7 @@ def run(args: argparse.Namespace) -> int:
                         enforce_usage(ModelReply("", combined_usage(attempt_usage)), args)
                         if output_policy.exhausted:
                             raise RuntimeError("model_output_limit_exhausted: three failures at 524288 tokens") from exc
+                        check_game_budget()
                         request_context.update(output_limit=output_policy.output_limit,
                                                retry_of_call_id=exc.call_id,
                                                dispatched_at=datetime.now(timezone.utc).isoformat())
@@ -3226,6 +3281,7 @@ def run(args: argparse.Namespace) -> int:
         if changed:
             pending_agenda = candidate
             record({"type": "agenda_proposed", "agenda": candidate})
+    refresh_game_budget()
     record({"type": "metadata", **metadata, "driver_command": cmd,
             "model_command_hash": hashlib.sha256(args.model_command.encode()).hexdigest()
             if args.model_command else None})
@@ -3263,7 +3319,8 @@ def run(args: argparse.Namespace) -> int:
                              raw_line=raw.rstrip("\r\n"))
                 durable({"type": "terminal", **metadata})
                 return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
-            record({"type": "driver", "line": line})
+            record({"type": "driver", "line": line,
+                    "observed_at": datetime.now(timezone.utc).isoformat()})
             if line.get("type") == "checkpoint":
                 if checkpoint_dir is None:
                     set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
@@ -3433,6 +3490,8 @@ def run(args: argparse.Namespace) -> int:
                             if repaired_intent is not None:
                                 turn_intent = repaired_intent
                         except (RuntimeError, ValueError) as repair_error:
+                            if isinstance(repair_error, RuntimeError) and "max_game_total_tokens_exhausted" in str(repair_error):
+                                return emit_budget_interrupted("max_game_total_tokens_exhausted", str(repair_error))
                             # ValueError comes from validate_orders: the model's
                             # repaired output was still not a legal batch.
                             # RuntimeError comes from the backend or usage
@@ -3688,17 +3747,9 @@ def run(args: argparse.Namespace) -> int:
                              "bytes": len(prompt_bytes), "limit": args.max_prompt_bytes})
                     return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
                 if model_calls_this_turn >= metadata["max_model_calls_per_turn"]:
-                    set_terminal(metadata, TERMINAL_MODEL_INVALID,
-                                 winner=None,
-                                 reason="budget_interrupted",
-                                 code="model_calls_budget_exhausted",
-                                 message="model decision call budget exhausted for this side turn")
-                    durable({"type": "budget_interrupted",
-                             "side_turn_id": metadata.get("current_side_turn_id"),
-                             "model_calls_this_turn": model_calls_this_turn,
-                             "tool_calls_this_turn": tool_calls_this_turn,
-                             **metadata})
-                    return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
+                    return emit_budget_interrupted(
+                        "model_calls_budget_exhausted",
+                        "model decision call budget exhausted for this side turn")
                 metadata["model_calls"] += 1
                 model_calls_this_turn += 1
                 timeout_fallback = False
@@ -3870,6 +3921,8 @@ def run(args: argparse.Namespace) -> int:
                         orders = validate_model_orders(repaired.text)
                         turn_intent = response_intent(repaired.text)
                 except (RuntimeError, ValueError) as first:
+                    if isinstance(first, RuntimeError) and "max_game_total_tokens_exhausted" in str(first):
+                        return emit_budget_interrupted("max_game_total_tokens_exhausted", str(first))
                     # Same split: a ValueError here means the model failed
                     # validation twice (initial plus repair).
                     if (isinstance(first, RuntimeError)
@@ -3934,43 +3987,48 @@ def run(args: argparse.Namespace) -> int:
                                         "\nReturn the final JSON action envelope with decisions. State the relevant difference "
                                         "between the shown branches; repeat the draft only if the live facts still support it, "
                                         "or revise it if they warrant a different choice."))
-                                    model_calls_this_turn += 1
-                                    metadata["model_calls"] += 1
-                                    reviewed = complete_model(review_prompt)
-                                    final_reply = reviewed
-                                    enforce_usage(reviewed, args)
-                                    record({"type": "draft_review", "call": metadata["model_calls"],
-                                            "review_id": active_review_id,
-                                            "original_candidate_digest": original_digest,
-                                            "prompt_hash": reviewed.prompt_hash,
-                                            "prompt_bytes": len(finalize_model_prompt(review_prompt, state).encode()),
-                                            "raw_output": reviewed.text, "body": draft_preview,
-                                            "handoff_audit": audit})
                                     try:
-                                        revised_orders = validate_model_orders(reviewed.text)
-                                        reviewed_intent = response_intent(reviewed.text)
-                                    except ValueError as review_validation_error:
-                                        if model_calls_this_turn >= metadata["max_model_calls_per_turn"]:
-                                            raise
-                                        repair_prompt = (
-                                            review_prompt +
-                                            "\nREVIEW_RESPONSE_UNTRUSTED_DATA_BEGIN:\n" + reviewed.text +
-                                            "\nREVIEW_RESPONSE_UNTRUSTED_DATA_END\nMODEL_RESPONSE_ERROR: " + str(review_validation_error) + (
-                                            "\nReturn one final JSON action envelope with decisions. Do not request another tool.")
-                                        )
                                         model_calls_this_turn += 1
                                         metadata["model_calls"] += 1
-                                        metadata["draft_review_repairs"] += 1
-                                        repaired_review = complete_model(repair_prompt)
-                                        final_reply = repaired_review
-                                        enforce_usage(repaired_review, args)
-                                        record({"type": "draft_review_repair", "call": metadata["model_calls"],
-                                                "prompt_hash": repaired_review.prompt_hash,
-                                                "prompt_bytes": len(finalize_model_prompt(repair_prompt, state).encode()),
-                                                "raw_output": repaired_review.text,
-                                                "validation_error": str(review_validation_error)})
-                                        revised_orders = validate_model_orders(repaired_review.text)
-                                        reviewed_intent = response_intent(repaired_review.text)
+                                        reviewed = complete_model(review_prompt)
+                                        final_reply = reviewed
+                                        enforce_usage(reviewed, args)
+                                        record({"type": "draft_review", "call": metadata["model_calls"],
+                                                "review_id": active_review_id,
+                                                "original_candidate_digest": original_digest,
+                                                "prompt_hash": reviewed.prompt_hash,
+                                                "prompt_bytes": len(finalize_model_prompt(review_prompt, state).encode()),
+                                                "raw_output": reviewed.text, "body": draft_preview,
+                                                "handoff_audit": audit})
+                                        try:
+                                            revised_orders = validate_model_orders(reviewed.text)
+                                            reviewed_intent = response_intent(reviewed.text)
+                                        except ValueError as review_validation_error:
+                                            if model_calls_this_turn >= metadata["max_model_calls_per_turn"]:
+                                                raise
+                                            repair_prompt = (
+                                                review_prompt +
+                                                "\nREVIEW_RESPONSE_UNTRUSTED_DATA_BEGIN:\n" + reviewed.text +
+                                                "\nREVIEW_RESPONSE_UNTRUSTED_DATA_END\nMODEL_RESPONSE_ERROR: " + str(review_validation_error) + (
+                                                "\nReturn one final JSON action envelope with decisions. Do not request another tool.")
+                                            )
+                                            model_calls_this_turn += 1
+                                            metadata["model_calls"] += 1
+                                            metadata["draft_review_repairs"] += 1
+                                            repaired_review = complete_model(repair_prompt)
+                                            final_reply = repaired_review
+                                            enforce_usage(repaired_review, args)
+                                            record({"type": "draft_review_repair", "call": metadata["model_calls"],
+                                                    "prompt_hash": repaired_review.prompt_hash,
+                                                    "prompt_bytes": len(finalize_model_prompt(repair_prompt, state).encode()),
+                                                    "raw_output": repaired_review.text,
+                                                    "validation_error": str(review_validation_error)})
+                                            revised_orders = validate_model_orders(repaired_review.text)
+                                            reviewed_intent = response_intent(repaired_review.text)
+                                    except RuntimeError as review_runtime_error:
+                                        if "max_game_total_tokens_exhausted" in str(review_runtime_error):
+                                            return emit_budget_interrupted("max_game_total_tokens_exhausted", str(review_runtime_error))
+                                        raise
                                     draft_orders = orders
                                     if revised_orders == draft_orders:
                                         metadata["draft_confirmations"] += 1
@@ -4043,6 +4101,8 @@ def run(args: argparse.Namespace) -> int:
                             durable({"type": "model_error", **metadata})
                             return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
                         except RuntimeError as repair_error:
+                            if "max_game_total_tokens_exhausted" in str(repair_error):
+                                return emit_budget_interrupted("max_game_total_tokens_exhausted", str(repair_error))
                             set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
                                          reason="infrastructure_failure",
                                          code="model_backend_failure",
@@ -4225,6 +4285,8 @@ def run(args: argparse.Namespace) -> int:
                             rejected_error = validation
                             continue
                         except RuntimeError as repair_error:
+                            if "max_game_total_tokens_exhausted" in str(repair_error):
+                                return emit_budget_interrupted("max_game_total_tokens_exhausted", str(repair_error))
                             set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
                                          reason="infrastructure_failure",
                                          code="validate_batch_error",
@@ -4426,6 +4488,8 @@ def main() -> int:
     p.add_argument("--token-input-limit", type=int)
     p.add_argument("--token-output-limit", type=int)
     p.add_argument("--token-total-limit", type=int)
+    p.add_argument("--max-game-total-tokens", type=int,
+                   help="cumulative total token limit across the entire game")
     p.add_argument("--no-recruit-macro", action="store_true")
     p.add_argument("--incremental-turns", action="store_true",
                    help="allow up to three bounded partial action batches before EndTurn")

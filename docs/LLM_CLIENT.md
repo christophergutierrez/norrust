@@ -261,6 +261,13 @@ duplicate it.
 
 ### What the client and a maintained adapter record automatically
 
+For a matched offline or live comparison, use the maintained
+`tools.model_bakeoff` entry point described in [`MODEL_BAKEOFF.md`](MODEL_BAKEOFF.md).
+Its report joins usage by physical `model_calls` identities from the SQLite
+catalog. A proposal in `forwarded_orders` is counted as a committed useful
+action only when the driver records the corresponding `source=llm` event;
+missing event or token evidence stays unknown.
+
 `tools/llm_client.py` allocates a stable harness request ID before every
 dispatch and publishes it -- with the current side-turn identity, live
 revision, controlled side, and requested settings -- to
@@ -436,6 +443,30 @@ python -m tools.llm_client \
 
 That fixture run is a **protocol smoke test**. It proves the client, driver, and
 log path work. It does not play a real match — see the cap guidance below.
+
+### Cumulative game token ceiling
+
+`--max-game-total-tokens N` optionally stops further dispatch after the existing
+physical-call usage sidecar reports at least N total tokens for this game. It
+counts failed calls and output-limit attempts once, without adding their combined
+request totals. At most the current direct API call can overshoot. Existing
+`--token-*-limit` flags still constrain replies, and the 131,072 → 524,288 output
+escalation policy remains separate.
+
+The guard reads durable evidence before each dispatch and after each attempt,
+including a failed adapter response. An in-place restart retains the same game
+identity, ceiling, and spend. A checkpoint branch is a new game with a fresh
+budget. A host with post-run-only usage collection, missing usage, or an unmatched
+request has `game_token_limit_enforced: false`; this is not a guaranteed spend
+cap for that player. Hard call/time bounds still apply. Players must not estimate
+or self-report tokens to fill those gaps. Budget stops are recorded interruptions,
+not gameplay losses, and their open side-turn usage remains attributable.
+
+For matched task experiments, see [MODEL_BAKEOFF.md](MODEL_BAKEOFF.md). The launcher
+still follows this document's usage-accounting procedure, including host binding,
+collection after completion/interruption, import, and final coverage reporting.
+The canonical client prompt supplies focused-mode instructions; a player need
+not read the benchmark implementation or fixtures.
 
 ### Running a real match against a live model
 
