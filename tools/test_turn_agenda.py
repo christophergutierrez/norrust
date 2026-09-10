@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from .turn_agenda import compact_agenda, normalize_agenda, response_agenda
+from .llm_client import select_resume_checkpoint
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_ROOT = ROOT / "norrust_core/tests/fixtures/s2_deterministic_duel"
@@ -148,6 +149,9 @@ class RejectedAgendaFeedbackTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("at most one active task", errors[0]["message"])
         self.assertEqual(errors[0]["retained_task_ids"], ["hold-left"])
+        self.assertIsInstance(errors[0]["request_id"], str)
+        self.assertIsInstance(errors[0]["state_revision"], int)
+        self.assertIn(errors[0]["request_id"], prompts[2])
 
         # A committed first, C replaced it: the invalid B never became memory.
         self.assertEqual([[task["id"] for task in u["agenda"]["tasks"]] for u in updates],
@@ -163,6 +167,56 @@ class RejectedAgendaFeedbackTests(unittest.TestCase):
         # and no extra model call was spent correcting metadata.
         self.assertEqual(len(forwarded), 4)
         self.assertEqual(len(prompts), 4)
+
+    def test_checkpoint_resume_preserves_pending_but_not_delivered_correction(self):
+        """Ending-response feedback survives interruption, then expires after one response."""
+        invalid = {"tasks": [
+            {"id": "a", "goal": "first", "units": [], "status": "active"},
+            {"id": "b", "goal": "second", "units": [], "status": "active"}], "holds": []}
+        end = [{"action": "EndTurn"}]
+        inspect = json.dumps({"text": json.dumps(
+            {"tool": "inspect_hex", "col": 0, "row": 0, "phase": "current"})})
+        for delivered in (False, True):
+            with self.subTest(delivered=delivered), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                log = root / "match.ndjson"
+                orders = root / "orders.jsonl"
+                first = [_reply(end, invalid)]
+                if delivered:
+                    first += [inspect, _reply(end)]
+                orders.write_text("\n".join(first) + "\n")
+                command = [sys.executable, "-m", "tools.llm_client", "--driver", str(DRIVER),
+                           "--orders-file", str(orders), "--scenario", "duel",
+                           "--faction0", "fragile", "--faction1", "fragile", "--gold", "0",
+                           "--seed", "42", "--llm-side", "0", "--max-turns", "8",
+                           "--log", str(log), "--query-budget-seconds", "30",
+                           "--model-timeout", "10", "--turn-timeout", "60"]
+                env = dict(os.environ, NORRUST_TEST_ROOT_DIR=str(FIXTURE_ROOT))
+                stopped = subprocess.run(command, cwd=ROOT, env=env, capture_output=True,
+                                         text=True, timeout=120)
+                self.assertNotEqual(stopped.returncode, 0, "orders exhaust before the turn cap")
+                prior = [json.loads(line) for line in log.read_text().splitlines()]
+                original_error = next(r for r in prior if r.get("type") == "agenda_error")
+                if delivered:
+                    seen = [r for r in prior if r.get("type") == "model_request"
+                            and r.get("status") != "failed" and "AGENDA_REJECTED" in r.get("prompt", "")]
+                    self.assertEqual(len(seen), 1)
+                checkpoint = Path(select_resume_checkpoint(log)[0]["absolute_path"])
+                self.assertTrue(checkpoint.is_file())
+                resumed_log = root / "resumed.ndjson"
+                orders.write_text("\n".join([inspect] + [_reply(end)] * 4) + "\n")
+                command[command.index(str(log))] = str(resumed_log)
+                command += ["--resume-checkpoint", str(checkpoint)]
+                resumed = subprocess.run(command, cwd=ROOT, env=env, capture_output=True,
+                                         text=True, timeout=120)
+                self.assertEqual(resumed.returncode, 0, resumed.stderr[-2000:])
+                records = [json.loads(line) for line in resumed_log.read_text().splitlines()]
+                prompts = [r["prompt"] for r in records if r.get("type") == "model_request"]
+                notices = [p for p in prompts if "AGENDA_REJECTED" in p]
+                self.assertEqual(len(notices), 0 if delivered else 1)
+                if notices:
+                    self.assertIn(original_error["request_id"], notices[0])
+                    self.assertIn(f"revision={original_error['state_revision']}", notices[0])
 
 
 if __name__ == "__main__":

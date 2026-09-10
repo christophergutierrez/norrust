@@ -204,7 +204,13 @@ while agenda tasks persist. They do not restrict the ordinary automatic
 sweep. Only a `FinishWithGreedy` hold is an explicit executable instruction in
 the submitted action batch. Malformed agenda data is logged and ignored while
 valid actions continue, and a proposed agenda is published only after its action
-batch is accepted. Each observation includes a compact whole-army sweep unless
+batch is accepted. Rejected metadata keeps the committed agenda and adds a
+correction to subsequent requests, linked to its original request and revision.
+The correction expires on an accepted replacement or the end of that side turn.
+An error in the ending response is delivered once on the next own turn;
+checkpoint resume preserves pending feedback without resurrecting expired errors.
+The correction does not claim that rejected or rolled-back actions executed.
+Each observation includes a compact whole-army sweep unless
 `--disable-agenda-sweep` is passed; this adds no review call and never prevents
 `EndTurn`. In a selective finish, only listed group IDs are swept and listed
 hold IDs are kept; other units remain unswept. Neither mechanism prevents

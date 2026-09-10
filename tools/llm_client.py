@@ -3076,9 +3076,12 @@ def run(args: argparse.Namespace) -> int:
                 pending_agenda_feedback = {
                     "message": record.get("message"),
                     "request_id": record.get("request_id"),
-                    "state_revision": None,
+                    "state_revision": record.get("state_revision"),
                     "retained_task_ids": record.get("retained_task_ids") or [],
                 }
+            if "agenda_feedback_after" in record:
+                feedback = record["agenda_feedback_after"]
+                pending_agenda_feedback = dict(feedback) if isinstance(feedback, dict) else None
             if record.get("type") == "driver":
                 line = record.get("line")
                 if isinstance(line, dict) and line.get("type") == "events":
@@ -3198,7 +3201,7 @@ def run(args: argparse.Namespace) -> int:
                  "start_revision": start_revision,
                  "started_at": datetime.now(timezone.utc).isoformat()})
     def complete_model(model_prompt: str) -> ModelReply:
-        nonlocal request_sequence, pending_annotation_notice
+        nonlocal request_sequence, pending_annotation_notice, pending_agenda_feedback
         # The agenda complaint is NOT popped here: it is retained until a valid
         # agenda commits or the side turn ends, because a player that keeps
         # re-proposing the same rejected shape needs it on each attempt, not
@@ -3207,13 +3210,15 @@ def run(args: argparse.Namespace) -> int:
             kept = pending_agenda_feedback.get("retained_task_ids") or []
             model_prompt = model_prompt.rstrip() + "\n" + (
                 "AGENDA_REJECTED: your last proposed agenda was refused whole and NOT stored: %s. "
-                "Your previously committed agenda is unchanged and still in force (%s). Your actions from "
-                "that response executed normally. Send a corrected agenda to replace it, or omit the agenda "
+                "Origin request=%s revision=%s. Your previously committed agenda is unchanged (%s). "
+                "This metadata error does not reject legal actions; LIVE_STATE shows what committed. "
+                "Send a corrected agenda to replace it, or omit the agenda "
                 "field to keep the current one; this costs you no extra request.\n"
                 % (pending_agenda_feedback.get("message") or "invalid agenda metadata",
+                   pending_agenda_feedback.get("request_id"),
+                   pending_agenda_feedback.get("state_revision"),
                    ("tasks " + ", ".join(kept)) if kept else "no tasks recorded")
             )
-            pending_agenda_feedback["delivered"] = True
         notice, pending_annotation_notice = pending_annotation_notice, None
         if notice:
             # Client-side context only, appended after the canonical prompt
@@ -3349,8 +3354,16 @@ def run(args: argparse.Namespace) -> int:
                 pending_annotation_notice = (
                     "PRIOR_ANNOTATION_ERROR: " + str(reply.decision_annotation.get("error"))
                     + " That reply's decisions were rejected and not recorded as evidence.")
+            # Only a returned response acknowledges delivery. A failed dispatch
+            # keeps the correction pending, including through checkpoint resume.
+            if pending_agenda_feedback:
+                if pending_agenda_feedback.get("next_turn_once"):
+                    pending_agenda_feedback = None
+                else:
+                    pending_agenda_feedback["delivered"] = True
             record({"type": "model_request",
                     "request_id": request_id,
+                    "agenda_feedback_after": pending_agenda_feedback,
                     "sequence": request_sequence,
                     "status": "completed",
                     "prompt": delivered_prompt,
@@ -3414,6 +3427,7 @@ def run(args: argparse.Namespace) -> int:
             }
             record({"type": "agenda_error", "message": error,
                     "request_id": request_id,
+                    "state_revision": pending_agenda_feedback["state_revision"],
                     "retained_task_ids": kept})
             return
         if changed:
@@ -3551,7 +3565,10 @@ def run(args: argparse.Namespace) -> int:
                     # request, which is what the contract promises.
                     if pending_agenda_feedback and pending_agenda_feedback.get("delivered"):
                         pending_agenda_feedback = None
+                    elif pending_agenda_feedback:
+                        pending_agenda_feedback["next_turn_once"] = True
                     durable({"type": "turn_boundary",
+                             "agenda_feedback_after": pending_agenda_feedback,
                              "side_turn_id": metadata.get("current_side_turn_id"),
                              "authored_finish_kind": pending_finish_kind,
                              "executed_finish_kind": driver_kind or expected_driver_kind,
@@ -4485,7 +4502,8 @@ def run(args: argparse.Namespace) -> int:
                         "planned": sorted(used_attackers),
                         "unused": sorted(coverage["available"] - used_attackers)})
                 pending_finish_kind = finish_kind_for_orders(orders, timeout_fallback)
-                capture_agenda(final_reply.text if final_reply is not None else "null")
+                capture_agenda(final_reply.text if final_reply is not None else "null",
+                               final_reply.request_id if final_reply is not None else None)
                 batch_sequence += 1
                 batch_id = f"{metadata.get('conversation_id', 'match')}:batch:{batch_sequence}"
                 backend_cache = (final_reply.cache if final_reply is not None and
