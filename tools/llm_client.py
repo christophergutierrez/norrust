@@ -2939,6 +2939,13 @@ def run(args: argparse.Namespace) -> int:
     # as short factual context, on the next request that was already going
     # to be sent; never triggers a retry or extra model call on its own.
     pending_annotation_notice: Optional[str] = None
+    # Set when a proposed agenda is rejected whole. The player's committed
+    # objective survives, but silently: without this it cannot tell a kept
+    # agenda from an accepted one, and re-proposes the same invalid shape.
+    # Delivered on the next own-side request that was already going to be
+    # sent, retained until a valid agenda commits or the side turn ends, and
+    # never accumulated into a transcript of past mistakes.
+    pending_agenda_feedback: Optional[dict[str, Any]] = None
     pending_finish_kind: Optional[str] = None
     pending_commit: Optional[dict[str, Any]] = None
     final_reply: Optional[ModelReply] = None
@@ -3062,7 +3069,16 @@ def run(args: argparse.Namespace) -> int:
                 intent_memory = record["intent"]
             elif record.get("type") == "agenda_update" and isinstance(record.get("agenda"), dict):
                 agenda_memory = dict(record["agenda"])
-
+                pending_agenda_feedback = None
+            elif record.get("type") == "agenda_error":
+                # Undelivered at interruption: the resumed side still owes the
+                # player this explanation, so replay it rather than dropping it.
+                pending_agenda_feedback = {
+                    "message": record.get("message"),
+                    "request_id": record.get("request_id"),
+                    "state_revision": None,
+                    "retained_task_ids": record.get("retained_task_ids") or [],
+                }
             if record.get("type") == "driver":
                 line = record.get("line")
                 if isinstance(line, dict) and line.get("type") == "events":
@@ -3183,6 +3199,21 @@ def run(args: argparse.Namespace) -> int:
                  "started_at": datetime.now(timezone.utc).isoformat()})
     def complete_model(model_prompt: str) -> ModelReply:
         nonlocal request_sequence, pending_annotation_notice
+        # The agenda complaint is NOT popped here: it is retained until a valid
+        # agenda commits or the side turn ends, because a player that keeps
+        # re-proposing the same rejected shape needs it on each attempt, not
+        # once. `pending_annotation_notice` is one-shot; this is not.
+        if pending_agenda_feedback:
+            kept = pending_agenda_feedback.get("retained_task_ids") or []
+            model_prompt = model_prompt.rstrip() + "\n" + (
+                "AGENDA_REJECTED: your last proposed agenda was refused whole and NOT stored: %s. "
+                "Your previously committed agenda is unchanged and still in force (%s). Your actions from "
+                "that response executed normally. Send a corrected agenda to replace it, or omit the agenda "
+                "field to keep the current one; this costs you no extra request.\n"
+                % (pending_agenda_feedback.get("message") or "invalid agenda metadata",
+                   ("tasks " + ", ".join(kept)) if kept else "no tasks recorded")
+            )
+            pending_agenda_feedback["delivered"] = True
         notice, pending_annotation_notice = pending_annotation_notice, None
         if notice:
             # Client-side context only, appended after the canonical prompt
@@ -3359,7 +3390,7 @@ def run(args: argparse.Namespace) -> int:
                 for cause in getattr(backend, "retry_causes", [])[before:after]:
                     durable({"type": "model_transport_retry", "cause": cause,
                              "retry_number": metadata["transport_retries"]})
-    def capture_agenda(text: str) -> None:
+    def capture_agenda(text: str, request_id: Optional[str] = None) -> None:
         """Stage a model agenda; commit it only after its action batch succeeds."""
         nonlocal pending_agenda
         if not agenda_enabled:
@@ -3367,10 +3398,23 @@ def run(args: argparse.Namespace) -> int:
         # Called only for the final submitted response, never a discarded
         # draft. Omitted/invalid metadata or a generated finish must not
         # publish a replacement; committed memory remains unchanged.
+        nonlocal pending_agenda_feedback
         pending_agenda = None
         candidate, error, changed = agenda_from_response(text, agenda_memory)
         if error:
-            record({"type": "agenda_error", "message": error})
+            # The actions in this response still execute; only the optional
+            # metadata is refused. Report it rather than losing it silently.
+            kept = sorted(task.get("id") for task in (agenda_memory or {}).get("tasks", [])
+                          if isinstance(task, dict) and task.get("id"))
+            pending_agenda_feedback = {
+                "message": error,
+                "request_id": request_id,
+                "state_revision": state.get("state_revision") if isinstance(state, dict) else None,
+                "retained_task_ids": kept,
+            }
+            record({"type": "agenda_error", "message": error,
+                    "request_id": request_id,
+                    "retained_task_ids": kept})
             return
         if changed:
             pending_agenda = candidate
@@ -3477,6 +3521,8 @@ def run(args: argparse.Namespace) -> int:
                     metadata["agenda"] = agenda_memory
                     record({"type": "agenda_update", "agenda": agenda_memory})
                     pending_agenda = None
+                    # A valid replacement supersedes any outstanding complaint.
+                    pending_agenda_feedback = None
                 if failure is None and pending_action and pending_finish_kind is not None:
                     driver_kind = line.get("finish_kind")
                     expected_driver_kind = ("selective" if pending_finish_kind == "timeout"
@@ -3497,6 +3543,14 @@ def run(args: argparse.Namespace) -> int:
                         "timeout": "timeout_finish_turns",
                     }[pending_finish_kind]
                     metadata[counter] += 1
+                    # The side turn is over, so a complaint the player has
+                    # already seen does not follow it into the next turn. One
+                    # raised by the ENDING response has not been shown yet --
+                    # capture_agenda runs before this boundary -- so it
+                    # survives to be delivered once at the next own-side
+                    # request, which is what the contract promises.
+                    if pending_agenda_feedback and pending_agenda_feedback.get("delivered"):
+                        pending_agenda_feedback = None
                     durable({"type": "turn_boundary",
                              "side_turn_id": metadata.get("current_side_turn_id"),
                              "authored_finish_kind": pending_finish_kind,
@@ -3606,7 +3660,8 @@ def run(args: argparse.Namespace) -> int:
                             return TERMINAL_EXIT_CODES[terminal_class]
                         metadata["model_orders"] += len(orders)
                         pending_finish_kind = finish_kind_for_orders(orders)
-                        capture_agenda(final_reply.text)
+                        capture_agenda(final_reply.text,
+                                       getattr(final_reply, "request_id", None))
                         batch_sequence += 1
                         final_audit = ({} if is_resignation(orders)
                                        else handoff_audit(state, orders, coverage))
