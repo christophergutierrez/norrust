@@ -2403,4 +2403,184 @@ mod tests {
         assert_eq!(Hex::ORIGIN.distance(Hex::from_offset(2, 0)), 2);
         assert!(apply_action(&mut state, Action::Attack { attacker_id: 1, defender_id: 2 }).is_ok());
     }
+
+    // --- Documented engine rules (see the "Engine rules" block in
+    // tools/llm_client.py: recruitment, capture timing, ownership persistence,
+    // village income, absence of upkeep, and round progression). A change here
+    // must update that block.
+
+    /// A newly recruited unit has not moved or attacked this turn, so it may
+    /// do both immediately — no "arrived this turn" restriction exists.
+    #[test]
+    fn test_documented_rule_fresh_recruit_can_act_immediately() {
+        use crate::board::Tile;
+        let keep_hex = Hex::from_offset(0, 0);
+        let castle_hex = Hex::from_offset(1, 0);
+        let mut board = Board::new(5, 3);
+        board.set_tile(
+            keep_hex,
+            Tile { terrain_id: "keep".to_string(), movement_cost: 1, defense: 40, healing: 0, color: "#c8a030".to_string() },
+        );
+        board.set_tile(
+            castle_hex,
+            Tile { terrain_id: "castle".to_string(), movement_cost: 1, defense: 40, healing: 0, color: "#c8b47a".to_string() },
+        );
+        let mut state = GameState::new(board);
+        state.gold = [100, 100];
+        let mut leader = Unit::new(99, "leader", 30, 0);
+        leader.abilities = vec!["leader".to_string()];
+        state.place_unit(leader, keep_hex);
+        // An enemy stands adjacent to the recruitment hex so the fresh recruit
+        // can also attack immediately, not only move.
+        state.place_unit(Unit::new(2, "target", 10, 1), Hex::from_offset(2, 0));
+
+        let mut recruit = Unit::new(1, "fighter", 30, 0);
+        recruit.movement = 3;
+        apply_recruit(&mut state, recruit, castle_hex, 10).expect("recruit must succeed");
+
+        // Move: still legal, proving `moved` starts false on a fresh recruit.
+        assert!(
+            !legal_moves(&state, 1).unwrap().contains(&Hex::from_offset(2, 0)),
+            "destination is occupied by the enemy, not a legal move target"
+        );
+        assert!(apply_action(&mut state, Action::Move { unit_id: 1, destination: Hex::from_offset(0, 1) }).is_ok());
+        // Attack: still legal after moving, proving `attacked` also starts false.
+        // Move back adjacent to the enemy is unnecessary here — attack a fresh
+        // recruit directly instead, to isolate the "may attack" half of the claim.
+        let mut recruit2 = Unit::new(3, "fighter", 30, 0);
+        recruit2.attacks = vec![AttackDef {
+            id: "sword".to_string(),
+            name: "Sword".to_string(),
+            damage: 5,
+            strikes: 1,
+            attack_type: "blade".to_string(),
+            range: "melee".to_string(),
+            ..Default::default()
+        }];
+        state.place_unit(recruit2, Hex::from_offset(1, 1));
+        assert_eq!(Hex::from_offset(1, 1).distance(Hex::from_offset(2, 0)), 1);
+        assert!(
+            apply_action(&mut state, Action::Attack { attacker_id: 3, defender_id: 2 }).is_ok(),
+            "a unit placed this turn (never moved/attacked) may attack immediately"
+        );
+    }
+
+    /// A village stays neutral while an occupying unit merely stands on it; it
+    /// only changes ownership when its occupier's faction ENDS its turn there.
+    #[test]
+    fn test_documented_rule_village_captures_on_end_turn_not_entry() {
+        use crate::board::Tile;
+        let village_hex = Hex::from_offset(2, 2);
+        let mut board = Board::new(10, 10);
+        board.set_tile(
+            village_hex,
+            Tile { terrain_id: "village".to_string(), movement_cost: 1, defense: 40, healing: 8, color: "#8b7355".to_string() },
+        );
+        let mut state = GameState::new(board);
+        state.place_unit(Unit::new(1, "fighter", 30, 0), village_hex);
+
+        // Standing on the village mid-turn does not yet capture it.
+        assert_eq!(state.village_owners.get(&village_hex), None);
+
+        apply_action(&mut state, Action::EndTurn).unwrap();
+
+        // Only ending the turn there captures it.
+        assert_eq!(state.village_owners.get(&village_hex).copied(), Some(0i8));
+    }
+
+    /// Once captured, a village remains owned after its occupier leaves — there
+    /// is no "only owned while occupied" rule.
+    #[test]
+    fn test_documented_rule_village_ownership_persists_after_unit_leaves() {
+        use crate::board::Tile;
+        let village_hex = Hex::from_offset(2, 2);
+        let mut board = Board::new(10, 10);
+        board.set_tile(
+            village_hex,
+            Tile { terrain_id: "village".to_string(), movement_cost: 1, defense: 40, healing: 8, color: "#8b7355".to_string() },
+        );
+        let mut state = GameState::new(board);
+        let mut mover = Unit::new(1, "fighter", 30, 0);
+        mover.movement = 5;
+        state.place_unit(mover, village_hex);
+        apply_action(&mut state, Action::EndTurn).unwrap(); // faction 0 captures; faction 1 active
+        assert_eq!(state.village_owners.get(&village_hex).copied(), Some(0i8));
+
+        apply_action(&mut state, Action::EndTurn).unwrap(); // faction 1 has no unit there; faction 0 active again
+        // Move the original occupier away from the village entirely.
+        assert!(apply_action(&mut state, Action::Move { unit_id: 1, destination: Hex::from_offset(4, 4) }).is_ok());
+        apply_action(&mut state, Action::EndTurn).unwrap();
+
+        // No unit of either faction stands on the village any more, yet faction 0
+        // still owns it: capture is sticky, not tied to current occupancy.
+        assert_eq!(state.village_owners.get(&village_hex).copied(), Some(0i8));
+    }
+
+    /// The newly active side earns exactly 2 gold per village it owns,
+    /// applied at activation (i.e. to the side about to move, not the side
+    /// that just ended its turn).
+    #[test]
+    fn test_documented_rule_two_gold_per_owned_village_on_activation() {
+        let board = Board::new(10, 10);
+        let mut state = GameState::new(board);
+        state.gold = [10, 10];
+        state.village_owners.insert(Hex::from_offset(1, 1), 0);
+        state.village_owners.insert(Hex::from_offset(2, 2), 0);
+
+        apply_action(&mut state, Action::EndTurn).unwrap();
+        // Faction 1 is now active but owns 0 villages: no income for it.
+        assert_eq!(state.active_faction, 1);
+        assert_eq!(state.gold[1], 10);
+
+        apply_action(&mut state, Action::EndTurn).unwrap();
+        // Faction 0 is newly active and owns 2 villages: +2 each = +4.
+        assert_eq!(state.active_faction, 0);
+        assert_eq!(state.gold[0], 14, "10 + 2*2 owned villages = 14");
+    }
+
+    /// There is no Wesnoth-style per-unit upkeep and no base income beyond
+    /// village gold: gold changes only via recruitment cost and village
+    /// income, never merely from fielding units or the passage of turns.
+    #[test]
+    fn test_documented_rule_no_upkeep_or_base_income_beyond_village_gold() {
+        let board = Board::new(10, 10);
+        let mut state = GameState::new(board);
+        state.gold = [10, 10];
+        // Field several units for both factions; none owns a village.
+        for i in 0..5u32 {
+            state.place_unit(Unit::new(10 + i, "fighter", 30, 0), Hex::from_offset(i as i32, 0));
+            state.place_unit(Unit::new(20 + i, "fighter", 30, 1), Hex::from_offset(i as i32, 5));
+        }
+
+        for _ in 0..6 {
+            apply_action(&mut state, Action::EndTurn).unwrap();
+        }
+
+        assert_eq!(
+            state.gold,
+            [10, 10],
+            "no village income and no upkeep: gold is untouched by fielding units or ending turns"
+        );
+    }
+
+    /// A round (and its shared time of day) advances only once BOTH sides have
+    /// ended a turn; a single EndTurn only switches the active faction.
+    #[test]
+    fn test_documented_rule_round_advances_only_after_both_sides_end_turn() {
+        let board = Board::new(10, 10);
+        let mut state = GameState::new(board);
+        assert_eq!(state.turn, 1);
+        assert_eq!(state.active_faction, 0);
+        assert_eq!(state.sides_acted_this_round, 0);
+
+        apply_action(&mut state, Action::EndTurn).unwrap();
+        assert_eq!(state.active_faction, 1);
+        assert_eq!(state.sides_acted_this_round, 1);
+        assert_eq!(state.turn, 1, "only one side has acted: the round has not advanced");
+
+        apply_action(&mut state, Action::EndTurn).unwrap();
+        assert_eq!(state.active_faction, 0);
+        assert_eq!(state.sides_acted_this_round, 0);
+        assert_eq!(state.turn, 2, "both sides have now acted: the round advances");
+    }
 }

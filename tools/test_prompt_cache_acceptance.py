@@ -257,7 +257,12 @@ class PromptCacheAcceptanceTests(unittest.TestCase):
 
     def test_baseline_matrix_sizes_shared_prefix_and_exact_contract(self):
         baseline = json.loads(gzip.decompress(FIXTURE.read_bytes()))
-        self.assertEqual(baseline["source_commit"], "58ea306")
+        # Re-rendered for stack 1, which changes the pinned contract by design
+        # (shared response rules, split recruit counts, B4 engine facts, split
+        # time-of-day). Cases, cache-layout assertions and the growth budget are
+        # unchanged; deltas are recorded in
+        # tmp/glm-efficiency-exec/prompt_baseline_regen.md.
+        self.assertEqual(baseline["source_commit"], "342d1b5+glm-stack1")
         for compact in (True, False):
             prompts = [render(case, compact=compact).encode() for case in matrix()]
             old = [p.encode() for p in baseline["prompts"][str(compact)]]
@@ -276,7 +281,14 @@ class PromptCacheAcceptanceTests(unittest.TestCase):
                     self.assertEqual(client.prompt_regions(prompt.decode())["fixed_prefix_sha256"], hashlib.sha256(prompt[:size]).hexdigest())
                     if i:
                         self.assertGreaterEqual(report.common_prefix_bytes(prompts[0], prompt), size)
-            self.assertGreater(report.common_prefix_bytes(prompts[0], prompts[2]), report.common_prefix_bytes(old[0], old[2]))
+            # Cache-sharing ratchet. This must compare against a FIXED historical
+            # point, not against the baseline bytes beside it: once the baseline is
+            # re-rendered for an intended contract change, comparing to itself is
+            # trivially equal and the ratchet silently stops guarding anything.
+            # The 58ea306 figures are carried forward in the fixture for exactly
+            # this reason.
+            self.assertGreater(report.common_prefix_bytes(prompts[0], prompts[2]),
+                               baseline["historical_common_prefix_bytes"][str(compact)])
 
     def test_real_engine_fixture_prompt_growth_stays_within_budget(self):
         baseline = json.loads(gzip.decompress(FIXTURE.read_bytes()))

@@ -44,7 +44,19 @@ class HandoffGuideTests(unittest.TestCase):
                         prompt = prompt_for(
                             {"tactical_surface": {}, "incremental_turns": incremental}, [],
                             compact=compact, recruit_batch_enabled=macro)
-                        self.assertLessEqual(len(prompt.encode("utf-8")), 15000)
+                        # Raised deliberately from 15000, once, with measurements
+                        # recorded in tmp/glm-efficiency-exec/prompt_budget_note.md.
+                        # HEAD had 85 bytes of headroom while this work had to add
+                        # the shared response contract, the B4 engine facts a player
+                        # was otherwise guessing (it fell back on another game's
+                        # income and upkeep rules), and the stopping-rule guide.
+                        # This prose sits before PROMPT_FIXED_CONTEXT_BEGIN, so it is
+                        # byte-identical every call of a match and paid once per
+                        # cache lifetime, not per call: ~1.3KB is roughly 340 tokens
+                        # against the 37,178 reasoning tokens one routine request
+                        # actually spent. The cap still exists to catch runaway
+                        # growth; do not raise it again without the same evidence.
+                        self.assertLessEqual(len(prompt.encode("utf-8")), 16500)
                         self.assertEqual(prompt.count(self.guide), 1)
                         self.assertEqual(prompt.count("Each decision group has exactly"), 1)
                         self.assertNotIn("Use RecruitBatch for ordinary recruitment", prompt)

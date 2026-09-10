@@ -784,6 +784,83 @@ fn unit_type_profiles_preserve_attack_specials() {
     );
 }
 
+// `next_opponent_time_of_day` must reuse the same post-EndTurn projection as
+// `threats.projected_time_of_day` / `exposure.projected_time_of_day`, and must
+// diverge from the naive `next_time_of_day` (which always names the phase of
+// the round after this one) whenever the query happens on the FIRST half of a
+// round, since the opponent then acts before the round -- and its time of
+// day -- advances.
+
+#[test]
+fn next_opponent_time_of_day_matches_current_phase_on_first_half_of_round() {
+    // side 0 is active at game start: turn 1 (Dawn), no side has acted this
+    // round yet. Ending side 0's turn only flips the active faction; the
+    // round (and tod) does not advance until side 1 also ends its turn. So
+    // the imminent opponent (side 1) shares the CURRENT phase, not the next
+    // round's.
+    let response = tactical_surface_query(&[
+        "--scenario",
+        "big_battle_6",
+        "--faction0",
+        "undead",
+        "--faction1",
+        "undead",
+        "--llm-side",
+        "0",
+    ]);
+    assert_eq!(response["body"]["time_of_day"], "Dawn");
+    assert_eq!(response["body"]["next_round_time_of_day"], "Day");
+    assert_eq!(response["body"]["next_opponent_time_of_day"], "Dawn");
+    assert_ne!(
+        response["body"]["next_opponent_time_of_day"],
+        response["body"]["next_round_time_of_day"]
+    );
+    assert_eq!(
+        response["body"]["next_opponent_time_of_day"],
+        response["body"]["threats"]["projected_time_of_day"]
+    );
+    assert_eq!(
+        response["body"]["next_opponent_time_of_day"],
+        response["body"]["exposure"]["projected_time_of_day"]
+    );
+}
+
+#[test]
+fn next_opponent_time_of_day_matches_next_round_on_second_half_of_round() {
+    // With the model on side 1, the driver auto-plays side 0's greedy turn
+    // before handing control back, so the model's first query lands with
+    // side 1 active, turn 1 (Dawn), one side already having acted this
+    // round. Ending side 1's turn is the round's SECOND EndTurn, so it
+    // advances both the round counter and the time of day: the imminent
+    // opponent (side 0, next round) now agrees with the naive next-round
+    // value.
+    let response = tactical_surface_query(&[
+        "--scenario",
+        "big_battle_6",
+        "--faction0",
+        "undead",
+        "--faction1",
+        "undead",
+        "--llm-side",
+        "1",
+    ]);
+    assert_eq!(response["body"]["time_of_day"], "Dawn");
+    assert_eq!(response["body"]["next_round_time_of_day"], "Day");
+    assert_eq!(response["body"]["next_opponent_time_of_day"], "Day");
+    assert_eq!(
+        response["body"]["next_opponent_time_of_day"],
+        response["body"]["next_round_time_of_day"]
+    );
+    assert_eq!(
+        response["body"]["next_opponent_time_of_day"],
+        response["body"]["threats"]["projected_time_of_day"]
+    );
+    assert_eq!(
+        response["body"]["next_opponent_time_of_day"],
+        response["body"]["exposure"]["projected_time_of_day"]
+    );
+}
+
 #[test]
 fn greedy_failure_is_typed_terminal_without_boundary_events_or_accounting_mutation() {
     let lines = run_driver_with_env(

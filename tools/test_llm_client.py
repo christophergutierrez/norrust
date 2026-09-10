@@ -1409,7 +1409,8 @@ class ClientValidationTests(unittest.TestCase):
 
     def test_tactical_prompt_names_coordinate_sources_and_recruitment_choice(self):
         prompt = prompt_for({"tactical_surface": {"units": [], "visibility": "full",
-                                                    "next_time_of_day": "Night"}}, [], compact=True)
+                                                    "next_round_time_of_day": "Night",
+                                                    "next_opponent_time_of_day": "Dusk"}}, [], compact=True)
         for text in (
                 "COORDS=col,row", '"tool":"inspect_unit"', "Move destination", "compact R `open`",
                 "RecruitBatch", "explain deliberate saving"):
@@ -1419,7 +1420,10 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("e[damage-to-defender,damage-to-attacker] and focus_e use tenths of HP", prompt)
         self.assertIn("open_m, and detail damage use whole HP", prompt)
         self.assertIn("visibility=full", prompt)
-        self.assertIn("next_time_of_day=Night", prompt)
+        # Both phases are shown, and the imminent opponent phase is distinct
+        # from the next round's: conflating them was finding B5.
+        self.assertIn("next_round_time_of_day=Night", prompt)
+        self.assertIn("next_opponent_time_of_day=Dusk", prompt)
         self.assertNotIn('"origins"', prompt)
         self.assertNotIn('"outcome_bps"', prompt)
 
@@ -1427,7 +1431,7 @@ class ClientValidationTests(unittest.TestCase):
         state = {"units": [{"id": 1, "faction": 0, "def_id": "leader",
                              "col": 3, "row": 7, "hp": 1, "max_hp": 1}],
                  "terrain": [], "tactical_surface": {"visibility": "full",
-                                                        "next_time_of_day": "Dawn"}}
+                                                        "next_round_time_of_day": "Dawn"}}
         rendered = compact_observation(state)
         self.assertIn("pos=(3,7)", rendered)
         self.assertNotIn("pos=(7,3)", rendered)

@@ -719,6 +719,16 @@ ENGINE_RULES = (
     "control does not restrict leaving it.\n"
     "- No unit is exempt: the skirmisher ability does not currently bypass that stop rule.\n"
     "- A rejected action rolls back its whole batch, leaving state, accounting, and combat RNG unchanged.\n"
+    # B4: facts a player otherwise has to guess, and guessed wrong -- the
+    # diagnosed game fell back on Wesnoth priors for income and upkeep, and
+    # doubted that recruits could act. Each line is locked by a
+    # test_documented_rule_* fixture in norrust_core/src/game_state.rs.
+    "- A newly recruited unit can act the same turn: it may move and attack immediately.\n"
+    "- A village changes owner on the occupying side's EndTurn, not on entry, and stays owned after that unit "
+    "leaves. Standing on a village mid-turn has captured nothing yet.\n"
+    "- At the moment a side becomes active it receives 2 gold for each village it owns. There is no per-unit "
+    "upkeep and no separate base income: village gold and recruit costs are the only things that change gold.\n"
+    "- A round advances only after BOTH sides have ended a turn.\n"
 )
 
 
@@ -1432,29 +1442,52 @@ def compact_tactical_surface(surface: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def budget_line(remaining_model_calls: int | None, remaining_tools: int | None,
+                remaining_partials: int | None) -> str:
+    """One budget statement, shown on every request shape including repairs.
+
+    A player that cannot see what it has left cannot tell "think again" from
+    "this is your last chance to act", and guesses. Exhausting a budget is a
+    limit on further deliberation, never a new way for the side turn to end:
+    the finishing rules are unchanged by anything reported here.
+    """
+    def show(value: int | None) -> str:
+        return "unknown" if value is None else str(max(0, value))
+    return ("BUDGETS model_calls_left=%s tool_calls_left=%s partial_batches_left=%s"
+            " (a budget bounds further deliberation; it does not end the side turn)\n"
+            % (show(remaining_model_calls), show(remaining_tools), show(remaining_partials)))
+
+
 def tool_followup_instruction(remaining_tools: int, remaining_model_calls: int,
-                              incremental: bool = False, final_only: bool = False) -> str:
+                              incremental: bool = False, final_only: bool = False,
+                              remaining_partials: int | None = None) -> str:
     """Tell the model exactly whether another tool request can be useful."""
     envelope = "final JSON action envelope" if (not incremental or final_only) else "JSON action envelope"
+    budgets = budget_line(remaining_model_calls, remaining_tools, remaining_partials)
     if remaining_tools <= 0 or remaining_model_calls <= 1:
         return (
+            budgets +
             f"TOOL_BUDGET remaining=0; return the {envelope} with decisions now. "
             "Do not request another tool."
         )
     return (
+        budgets +
         f"TOOL_BUDGET remaining={remaining_tools}; return another allowed tool request or the {envelope} "
         "with decisions."
     )
 
 
 def tool_budget_repair_prompt(prompt: str, tool_context: str, error: str,
-                              model_output: str = "") -> str:
+                              model_output: str = "",
+                              remaining_model_calls: int | None = None,
+                              remaining_partials: int | None = None) -> str:
     """Preserve tool observations when correcting an over-budget tool request."""
     attempted = ("\nMODEL_RESPONSE_UNTRUSTED_DATA_BEGIN:\n" + model_output +
                  "\nMODEL_RESPONSE_UNTRUSTED_DATA_END\n") if model_output else ""
     return (
-        prompt + tool_context + attempted + "\nTOOL_ERROR: " + error +
-        "\nReturn one corrected JSON action envelope with decisions; do not request another tool."
+        prompt + tool_context + attempted + "\nTOOL_ERROR: " + error + "\n" +
+        budget_line(remaining_model_calls, 0, remaining_partials) +
+        "Return one corrected JSON action envelope with decisions; do not request another tool."
     )
 
 
@@ -1900,6 +1933,35 @@ def draft_needs_preview(state: dict[str, Any], orders: list[dict[str, Any]],
     return danger_before or any(order.get("action") != "EndTurn" for order in orders)
 
 
+def shared_response_rules(boundary_guidance: str) -> str:
+    """Response semantics that are identical under every action encoding.
+
+    The executor and the validators do not care which encoding produced a
+    response, so the contract must not either. Describing these separately per
+    branch is what let the choices contract advertise "agenda is at most eight
+    tasks" while `tools.turn_agenda` also required at most one ACTIVE task:
+    four agendas were rejected for a limit the player was never told about,
+    silently discarding its working objective.
+
+    `boundary_guidance` is the only part that varies with match configuration
+    rather than with encoding.
+    """
+    return (
+        "- Partial progress: a non-empty response may omit the finishing boundary." + boundary_guidance
+        + " A request requiring final actions accepts no inspection and no partial-only reply.\n"
+        "- Each decision group has exactly orders, rules, expected, risk. orders holds the zero-based indices of the "
+        "entries you authored in THIS response (choices or actions, before macro expansion), covering each exactly "
+        "once, related entries grouped. rules: 1-4 unique guide IDs. expected and risk: nonempty, at most 240 UTF-8 "
+        "bytes each. At most 16 groups and 256 references. An empty orders group explains a consequential omission.\n"
+        "- Optional intent is memory under 512 UTF-8 bytes: it is how a conclusion survives to your next request.\n"
+        "- Optional agenda replaces prior bookkeeping wholesale: exactly tasks and holds, at most eight tasks, at most "
+        "4096 UTF-8 bytes compact. Each task has exactly id, goal, units, status; id unique and nonempty, goal at most "
+        "160 UTF-8 bytes, units and holds integer friendly IDs; status pending, active, done or deferred, with AT MOST "
+        "ONE ACTIVE. A breach rejects the agenda whole: your previous agenda stands, your actions still execute, and "
+        "the reason reaches your next request.\n"
+    )
+
+
 def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
                recruit_options: Optional[dict[str, Any]] = None,
                recruit_batch_enabled: bool = True,
@@ -1976,30 +2038,24 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "e[damage-to-defender,damage-to-attacker] and focus_e use tenths of HP (24 = 2.4 HP). "
         "max_damage, max_sum, m, direct_m, open_m, and detail damage use whole HP.\n"
         + (
+            # Encoding-specific envelope only. Everything below the envelope is
+            # SHARED: both encodings run the same executor and the same
+            # validators, so describing them differently taught the choices
+            # player rules its own validator did not have. A choices-mode
+            # agenda was rejected for having two active tasks by a validator
+            # whose one-active limit the choices contract never mentioned.
             "\n## Response contract (choices mode)\n"
             "- Return one JSON envelope with decisions on every response. You may select displayed handles with `{\"choices\": [\"<handle>\", ...], ...}` "
             "or provide coordinate actions with `{\"actions\": [...], ...}` (for finish, resignation, or coordinate fallback). "
             "choices and actions are strictly mutually exclusive: do not provide both in one response.\n"
-            "- Each decision group has exactly orders, rules, expected, risk. orders contains zero-based authored choice or action indices: "
-            "cover every authored entry exactly once. rules contains 1-4 unique IDs from the guide; expected and risk are nonempty strings "
-            "of at most 240 UTF-8 bytes each.\n"
-            "- Optional intent is memory under 512 UTF-8 bytes. Optional agenda is at most eight tasks.\n"
             "- To finish the side turn, use the actions envelope: `{\"actions\": [{\"action\": \"DoneWithImportantMoves\"}], ...}` or `{\"actions\": [{\"action\": \"EndTurn\"}], ...}`.\n"
             if action_encoding == "choices" else
             "\n## Response contract\n"
             "- Return one JSON actions envelope with decisions on every action response, including review, repair, finish, and resignation. "
             "actions is a non-empty JSON array of at most 256 objects executing sequentially. Except for standalone Resign, "
-            "normal mode requires exactly one final DoneWithImportantMoves, EndTurn, or FinishWithGreedy boundary."
-            + boundary_guidance + "\n"
-            "- Each decision group has exactly orders, rules, expected, risk. orders contains zero-based authored action indices "
-            "before macro expansion: cover every action exactly once, with related actions sharing a group. "
-            "rules contains 1-4 unique IDs from the guide; expected and risk are nonempty strings of at most 240 UTF-8 bytes each. "
-            "Use at most 16 groups and 256 action references. An empty orders group explains a consequential omission; name the unit or resource.\n"
-            "- Optional intent is memory under 512 UTF-8 bytes. Optional agenda fully replaces prior bookkeeping: "
-            "exactly tasks and holds, at most eight tasks, at most 4096 UTF-8 bytes when serialized compactly. "
-            "Each task has exactly id, goal, units, status; id is unique and nonempty, goal at most 160 UTF-8 bytes, "
-            "units and holds contain integer friendly IDs. status is pending, active, done, or deferred; at most one task is active.\n"
+            "normal mode requires exactly one final DoneWithImportantMoves, EndTurn, or FinishWithGreedy boundary.\n"
         )
+        + shared_response_rules(boundary_guidance)
         + "\n## Action schemas\n- " + "\n- ".join(schemas) + "\n"
         "- Fields must match the schemas; engine responses remain authoritative. Only entries with \"movable\":true are Move destinations. "
         "Moving onto your own hex causes DestinationOccupied and rolls back the batch. "
@@ -2309,7 +2365,17 @@ def build_completion_audit_data(state: dict[str, Any], agenda: Optional[dict[str
             gold = "?"
     affordable = [item.get("def_id", "?") for item in recruitment.get("options", [])
                   if isinstance(item, dict) and item.get("affordable")]
-    vacatable = len(recruitment.get("placement_hexes", [])) or len(economy.get("vacatable_castles", []))
+    # Two independent facts, never one "cap". The old field collapsed them with
+    # `or`, so it reported open placements, or -- only when there were none --
+    # the count of occupants that could vacate. A player reasonably read that
+    # single number as a per-turn recruitment limit, which it never was.
+    # Neither count is a cap, and they are deliberately NOT added together:
+    # vacating spends movement and the freed hex may not be usable in the same
+    # step. Affordability and actual recruitment legality stay authoritative.
+    open_recruit_hexes = (len(recruitment["placement_hexes"])
+                          if isinstance(recruitment.get("placement_hexes"), list) else None)
+    vacatable_castle_units = (len(economy["vacatable_castles"])
+                              if isinstance(economy.get("vacatable_castles"), list) else None)
     ready_units = []
     promotions = []
     for u in state.get("units", []):
@@ -2323,7 +2389,8 @@ def build_completion_audit_data(state: dict[str, Any], agenda: Optional[dict[str
     return {
         "gold": gold,
         "affordable_recruits": sorted(affordable),
-        "recruit_capacity": vacatable,
+        "open_recruit_hexes": open_recruit_hexes,
+        "vacatable_castle_units": vacatable_castle_units,
         "ready_units": sorted(ready_units),
         "promotions": sorted(promotions),
         "holds": sorted(holds),
@@ -2338,9 +2405,20 @@ def completion_audit_text(state: dict[str, Any], agenda: Optional[dict[str, Any]
     holds_str = ",".join(f"U{uid}" for uid in data["holds"]) or "none"
     return (
         f"COMPLETION_AUDIT gold={data['gold']} affordable={aff_str} "
-        f"recruit_cap={data['recruit_capacity']} ready={ready_str} "
+        f"open_recruit_hexes={_known(data['open_recruit_hexes'])} "
+        f"vacatable_castle_units={_known(data['vacatable_castle_units'])} ready={ready_str} "
         f"promo={promo_str} holds={holds_str}"
     )
+
+
+def _known(value: Any) -> str:
+    """Render a count, or `unknown` when the engine did not supply one.
+
+    Absent evidence must not print as 0: a player cannot tell a genuine zero
+    (no open hexes) from a missing field, and the difference decides whether
+    recruiting is impossible or merely unreported.
+    """
+    return "unknown" if value is None else str(value)
 
 
 def compact_observation(state: dict[str, Any], *, include_map: bool = True,
@@ -2353,13 +2431,28 @@ def compact_observation(state: dict[str, Any], *, include_map: bool = True,
                    key=lambda u: (u.get("faction", 255), u.get("id", 0)))
     tactical = state.get("tactical_surface")
     visibility = tactical.get("visibility", "?") if isinstance(tactical, dict) else "?"
-    next_tod = tactical.get("next_time_of_day", "?") if isinstance(tactical, dict) else "?"
+    # Two genuinely different phases. `next_round_time_of_day` is the phase of
+    # the round AFTER this one finishes; the opponent may act before then, in
+    # THIS round, under a different phase. The diagnosed game read the
+    # round value as the opponent's and planned against the wrong alignment.
+    # `next_opponent_time_of_day` comes from the driver's own post-EndTurn
+    # projection, the same one behind the threat forecasts, so the two cannot
+    # disagree. Historical archives predate both keys and fall back to the old
+    # one so old evidence still reads.
+    if isinstance(tactical, dict):
+        next_round_tod = tactical.get("next_round_time_of_day",
+                                      tactical.get("next_time_of_day", "?"))
+        next_opponent_tod = tactical.get("next_opponent_time_of_day", "?")
+    else:
+        next_round_tod = next_opponent_tod = "?"
     part_info = f"partials_left={state.get('remaining_partial_batches', '?')}"
     if state.get("accepted_partial_batches") is not None and state.get("max_partial_batches") is not None:
         part_info = (f"accepted_partials={state.get('accepted_partial_batches')} "
                      f"max_partials={state.get('max_partial_batches')} " + part_info)
     lines = [f"turn={state.get('turn', '?')} active_faction={state.get('active_faction', '?')} "
-             f"time_of_day={state.get('time_of_day', '?')} next_time_of_day={next_tod} "
+             f"time_of_day={state.get('time_of_day', '?')} "
+             f"next_opponent_time_of_day={next_opponent_tod} "
+             f"next_round_time_of_day={next_round_tod} "
              f"visibility={visibility} map={state.get('cols', '?')}x{state.get('rows', '?')} "
              f"boundary={state.get('turn_boundary', 'turn')} "
              f"incremental={state.get('incremental_turns', False)} "
@@ -2969,6 +3062,7 @@ def run(args: argparse.Namespace) -> int:
                 intent_memory = record["intent"]
             elif record.get("type") == "agenda_update" and isinstance(record.get("agenda"), dict):
                 agenda_memory = dict(record["agenda"])
+
             if record.get("type") == "driver":
                 line = record.get("line")
                 if isinstance(line, dict) and line.get("type") == "events":

@@ -2872,7 +2872,20 @@ fn interactive_protocol_game(mut c: Config) {
                                         Ok(exposure),
                                         Ok((next_village_income, vacatable_castles)),
                                     ) => {
-                                        json!({"type":"status","ok":true,"what":what,"body":{"visibility":"full","time_of_day":tod_label(state.turn),"next_time_of_day":tod_label(state.turn.saturating_add(1)),"units":tactical_units,"unit_types":unit_types,"threats":threats,"exposure":exposure,"force":force_summaries(&state),"economy":{"gold":state.gold[side],"next_village_income":next_village_income,"vacatable_castles":vacatable_castles},"recruitment":{"gold":state.gold[side],"placement_hexes":placement_hexes,"options":options,"legal_now":legal_now,"reason":recruit_reason,"recruiter_on_keep":recruiter_on_keep,"batch_macro_enabled":!c.disable_recruit_batch}}})
+                                        // `next_opponent_time_of_day` reuses the same
+                                        // post-EndTurn projection already computed for the
+                                        // threat/exposure forecasts (see
+                                        // `recruiter_threats_after_end_turn` and
+                                        // `unit_threats_after_end_turn` in tactics.rs), so it
+                                        // cannot disagree with `threats.projected_time_of_day`
+                                        // or `exposure.projected_time_of_day`. It is the phase
+                                        // the opponent will actually act in next, which may
+                                        // equal the CURRENT `time_of_day` (when this end-turn is
+                                        // only the first half of the round) rather than
+                                        // `next_round_time_of_day` (which always names the phase of
+                                        // the round after this one finishes).
+                                        let imminent_opponent_time_of_day = threats.projected_time_of_day;
+                                        json!({"type":"status","ok":true,"what":what,"body":{"visibility":"full","time_of_day":tod_label(state.turn),"next_round_time_of_day":tod_label(state.turn.saturating_add(1)),"next_opponent_time_of_day":imminent_opponent_time_of_day,"units":tactical_units,"unit_types":unit_types,"threats":threats,"exposure":exposure,"force":force_summaries(&state),"economy":{"gold":state.gold[side],"next_village_income":next_village_income,"vacatable_castles":vacatable_castles},"recruitment":{"gold":state.gold[side],"placement_hexes":placement_hexes,"options":options,"legal_now":legal_now,"reason":recruit_reason,"recruiter_on_keep":recruiter_on_keep,"batch_macro_enabled":!c.disable_recruit_batch}}})
                                     }
                                     (Err(message), _, _) => {
                                         json!({"type":"status","ok":false,"what":what,"code":"tactical_surface_error","message":message})
