@@ -84,23 +84,34 @@ def annotation_for_response(text: str, *, action_count: int | None = None,
         base["status"] = "invalid"
         base["error"] = str(exc)
         return base
-    if isinstance(decoded, dict) and "tool" in decoded and "actions" not in decoded:
+    if isinstance(decoded, dict) and "tool" in decoded and "actions" not in decoded and "choices" not in decoded:
         base["status"] = "not_applicable"
         return base
     if isinstance(decoded, list):
         return base
-    if not isinstance(decoded, dict) or "actions" not in decoded:
+    if not isinstance(decoded, dict):
         base["status"] = "invalid"
-        base["error"] = "response must contain actions"
+        base["error"] = "response must be an object or array"
+        return base
+    has_actions = "actions" in decoded
+    has_choices = "choices" in decoded
+    if has_actions and has_choices:
+        base["status"] = "invalid"
+        base["error"] = "response cannot contain both actions and choices"
+        return base
+    if not has_actions and not has_choices:
+        base["status"] = "invalid"
+        base["error"] = "response must contain actions or choices"
         return base
     if "decisions" not in decoded:
         return base
     if action_count is None:
-        actions = decoded.get("actions")
-        if not isinstance(actions, list):
-            base.update(status="invalid", error="actions must be an array")
+        items = decoded.get("actions") if has_actions else decoded.get("choices")
+        if not isinstance(items, list):
+            name = "actions" if has_actions else "choices"
+            base.update(status="invalid", error=f"{name} must be an array")
             return base
-        action_count = len(actions)
+        action_count = len(items)
     try:
         base["decisions"] = validate_decisions(
             decoded["decisions"], action_count, require_full_coverage=require_full_coverage

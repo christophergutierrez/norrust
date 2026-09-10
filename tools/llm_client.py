@@ -27,6 +27,7 @@ try:
                                 OutputLimitPolicy, combined_usage)
     from .response_parsing import parse_action_response, ResponseParseError
     from .model_identity import classify_model_identity
+    from .action_choices import ChoiceRegistry, extract_available_choices, extract_inspection_choices, Choice
 except ImportError:  # pragma: no cover - direct script compatibility
     from turn_agenda import agenda_from_response, compact_agenda, annotate_agenda_unit_status
     from decision_annotations import annotation_for_response, inapplicable_annotation
@@ -36,6 +37,7 @@ except ImportError:  # pragma: no cover - direct script compatibility
                                OutputLimitPolicy, combined_usage)
     from response_parsing import parse_action_response, ResponseParseError
     from model_identity import classify_model_identity
+    from action_choices import ChoiceRegistry, extract_available_choices, extract_inspection_choices, Choice
 
 ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "Engage", "EndTurn", "Advance", "Resign",
            "DoneWithImportantMoves", "FinishWithGreedy"}
@@ -899,7 +901,7 @@ def query_inspect_unit(exchange, unit_id: int, state_revision: int) -> dict[str,
     return response["body"]
 
 
-def compact_unit_inspection(unit: dict[str, Any]) -> str:
+def compact_unit_inspection(unit: dict[str, Any], choices: Optional[list[Any]] = None) -> str:
     if unit.get("available") is False:
         return "INSPECT_UNIT unavailable unit=%s reason=%s" % (
             unit.get("unit_id", "?"), unit.get("reason", "unknown"))
@@ -928,6 +930,13 @@ def compact_unit_inspection(unit: dict[str, Any]) -> str:
             rendered.append(item)
         if rendered:
             lines.append("DESTINATION_DANGER " + " ".join(rendered))
+    if choices:
+        choice_items = []
+        for c in choices:
+            h = getattr(c, "handle", None) or (c.get("handle") if isinstance(c, dict) else str(c))
+            d = getattr(c, "description", None) or (c.get("description") if isinstance(c, dict) else "")
+            choice_items.append(f"{h}: {d}")
+        lines.append("CHOICES " + "; ".join(choice_items))
     return "\n".join(lines)
 
 
@@ -1895,7 +1904,9 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
                agenda: Optional[dict[str, Any]] = None,
                sweep: Optional[str] = None,
                trend: Optional[str] = None,
-               playbook: Optional[str] = None) -> str:
+               playbook: Optional[str] = None,
+               action_encoding: str = "coordinates",
+               choices: Optional[list[Any]] = None) -> str:
     schemas = [
         'Move: {"action":"Move","unit_id": integer,"col": integer,"row": integer}',
         'Attack: {"action":"Attack","attacker_id": integer,"defender_id": integer}',
@@ -1959,20 +1970,32 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "- Forecast p[defender-killed,both-survive,attacker-killed] and focus_p use basis points (6400 = 64%); "
         "e[damage-to-defender,damage-to-attacker] and focus_e use tenths of HP (24 = 2.4 HP). "
         "max_damage, max_sum, m, direct_m, open_m, and detail damage use whole HP.\n"
-        "\n## Response contract\n"
-        "- Return one JSON actions envelope with decisions on every action response, including review, repair, finish, and resignation. "
-        "actions is a non-empty JSON array of at most 256 objects executing sequentially. Except for standalone Resign, "
-        "normal mode requires exactly one final DoneWithImportantMoves, EndTurn, or FinishWithGreedy boundary."
-        + boundary_guidance + "\n"
-        "- Each decision group has exactly orders, rules, expected, risk. orders contains zero-based authored action indices "
-        "before macro expansion: cover every action exactly once, with related actions sharing a group. "
-        "rules contains 1-4 unique IDs from the guide; expected and risk are nonempty strings of at most 240 UTF-8 bytes each. "
-        "Use at most 16 groups and 256 action references. An empty orders group explains a consequential omission; name the unit or resource.\n"
-        "- Optional intent is memory under 512 UTF-8 bytes. Optional agenda fully replaces prior bookkeeping: "
-        "exactly tasks and holds, at most eight tasks, at most 4096 UTF-8 bytes when serialized compactly. "
-        "Each task has exactly id, goal, units, status; id is unique and nonempty, goal at most 160 UTF-8 bytes, "
-        "units and holds contain integer friendly IDs. status is pending, active, done, or deferred; at most one task is active.\n"
-        "\n## Action schemas\n- " + "\n- ".join(schemas) + "\n"
+        + (
+            "\n## Response contract (choices mode)\n"
+            "- Return one JSON envelope with decisions on every response. You may select displayed handles with `{\"choices\": [\"<handle>\", ...], ...}` "
+            "or provide coordinate actions with `{\"actions\": [...], ...}` (for finish, resignation, or coordinate fallback). "
+            "choices and actions are strictly mutually exclusive: do not provide both in one response.\n"
+            "- Each decision group has exactly orders, rules, expected, risk. orders contains zero-based authored choice or action indices: "
+            "cover every authored entry exactly once. rules contains 1-4 unique IDs from the guide; expected and risk are nonempty strings "
+            "of at most 240 UTF-8 bytes each.\n"
+            "- Optional intent is memory under 512 UTF-8 bytes. Optional agenda is at most eight tasks.\n"
+            "- To finish the side turn, use the actions envelope: `{\"actions\": [{\"action\": \"DoneWithImportantMoves\"}], ...}` or `{\"actions\": [{\"action\": \"EndTurn\"}], ...}`.\n"
+            if action_encoding == "choices" else
+            "\n## Response contract\n"
+            "- Return one JSON actions envelope with decisions on every action response, including review, repair, finish, and resignation. "
+            "actions is a non-empty JSON array of at most 256 objects executing sequentially. Except for standalone Resign, "
+            "normal mode requires exactly one final DoneWithImportantMoves, EndTurn, or FinishWithGreedy boundary."
+            + boundary_guidance + "\n"
+            "- Each decision group has exactly orders, rules, expected, risk. orders contains zero-based authored action indices "
+            "before macro expansion: cover every action exactly once, with related actions sharing a group. "
+            "rules contains 1-4 unique IDs from the guide; expected and risk are nonempty strings of at most 240 UTF-8 bytes each. "
+            "Use at most 16 groups and 256 action references. An empty orders group explains a consequential omission; name the unit or resource.\n"
+            "- Optional intent is memory under 512 UTF-8 bytes. Optional agenda fully replaces prior bookkeeping: "
+            "exactly tasks and holds, at most eight tasks, at most 4096 UTF-8 bytes when serialized compactly. "
+            "Each task has exactly id, goal, units, status; id is unique and nonempty, goal at most 160 UTF-8 bytes, "
+            "units and holds contain integer friendly IDs. status is pending, active, done, or deferred; at most one task is active.\n"
+        )
+        + "\n## Action schemas\n- " + "\n- ".join(schemas) + "\n"
         "- Fields must match the schemas; engine responses remain authoritative. Only entries with \"movable\":true are Move destinations. "
         "Moving onto your own hex causes DestinationOccupied and rolls back the batch. "
         "Advance requires advancement_pending=true (compact pending=True); target_index indexes the unit's advances_to list "
@@ -2059,6 +2082,8 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
     if trend:
         body["recent_trend"] = trend
     option_payloads = {key: body.pop(key) for key in ("turn_options", "recruit_options", "tactical_surface") if key in body}
+    if choices:
+        option_payloads["choices"] = [c.to_display_dict() if hasattr(c, "to_display_dict") else c for c in choices]
     event_payload = events if not compact else compact_events(events)
     memory_payload = {key: body.pop(key) for key in
                       ("previous_intent", "conversation_continuity", "agenda",
@@ -2701,11 +2726,62 @@ def run(args: argparse.Namespace) -> int:
         Path(log_path).resolve().with_name("usage.ndjson") if resume_log else None)
     checkpoint_dir = checkpoint_dir_for_log(log_path) if log_path else None
     state: Optional[dict[str, Any]] = None
+    choice_registry = ChoiceRegistry(game_id=conversation_id)
+    authored_choices: Optional[list[str]] = None
+    expansion_mapping: Optional[list[int]] = None
+    is_coordinate_fallback: bool = False
+
     def validate_model_orders(text: str, final_only: Optional[bool] = None) -> list[dict[str, Any]]:
+        nonlocal authored_choices, expansion_mapping, is_coordinate_fallback
         if final_only is None:
             final_only = bool(isinstance(state, dict) and state.get("final_only"))
         req_end = (not getattr(args, "incremental_turns", False)) or final_only
-        return validate_orders(text, args.no_recruit_macro, require_end_turn=req_end)
+        try:
+            decoded = parse_action_response(text)
+        except ValueError as exc:
+            raise ValueError(f"invalid JSON: {exc}") from exc
+
+        if isinstance(decoded, list):
+            orders = validate_orders(text, args.no_recruit_macro, require_end_turn=req_end)
+            authored_choices = None
+            expansion_mapping = list(range(len(orders)))
+            is_coordinate_fallback = (getattr(args, "action_encoding", "coordinates") == "choices")
+            return orders
+
+        if not isinstance(decoded, dict):
+            raise ValueError("response must be a JSON object or array")
+
+        has_actions = "actions" in decoded
+        has_choices = "choices" in decoded
+
+        if has_actions and has_choices:
+            raise ValueError("response cannot contain both actions and choices")
+        if not has_actions and not has_choices:
+            raise ValueError("response must contain actions or choices")
+
+        if has_choices:
+            if getattr(args, "action_encoding", "coordinates") != "choices":
+                raise ValueError("choices envelope is only permitted when action_encoding is choices")
+            handles = decoded.get("choices")
+            if not isinstance(handles, list) or not handles:
+                raise ValueError("choices must be a non-empty array of handles")
+            rev = int(state.get("state_revision", 0)) if isinstance(state, dict) else 0
+            resolved_actions, exp_map, _ = choice_registry.resolve(handles, rev)
+            if len(resolved_actions) > 256:
+                raise ValueError("resolved actions exceed 256")
+            if req_end:
+                raise ValueError("turn requires a finishing action; finish with DoneWithImportantMoves, EndTurn, or FinishWithGreedy using actions envelope")
+            authored_choices = handles
+            expansion_mapping = exp_map
+            is_coordinate_fallback = False
+            return resolved_actions
+
+        # has_actions
+        orders = validate_orders(text, args.no_recruit_macro, require_end_turn=req_end)
+        authored_choices = None
+        expansion_mapping = list(range(len(orders)))
+        is_coordinate_fallback = (getattr(args, "action_encoding", "coordinates") == "choices")
+        return orders
     if selected_checkpoint and resume_checkpoint and resume_log is None:
         # A branch gets a new sidecar directory. The source remains immutable.
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -2835,6 +2911,10 @@ def run(args: argparse.Namespace) -> int:
                 "finish_telemetry_available": True,
                 "handoff_policy": "important_moves_v1",
                 "decision_metrics": getattr(args, "decision_metrics", False),
+                "handle_choices_used": 0,
+                "coordinate_fallbacks": 0,
+                "choice_handles_authored": 0,
+                "choice_actions_expanded": 0,
                 "sampling": None, "llm_authored_extra": False,
                 "winner": None, "reason": None, "terminal_class": None,
                 "infrastructure_invalid": False, "gameplay_valid": False,
@@ -2857,7 +2937,9 @@ def run(args: argparse.Namespace) -> int:
             for key in ("queries", "model_orders", "model_calls", "rejected_batches",
                         "rejected_action_items", "draft_reviews", "draft_revisions",
                         "draft_confirmations", "draft_review_repairs", "transport_retries",
-                        "attack_opportunity_unit_turns", "planned_attack_unit_turns"):
+                        "attack_opportunity_unit_turns", "planned_attack_unit_turns",
+                        "handle_choices_used", "coordinate_fallbacks", "choice_handles_authored",
+                        "choice_actions_expanded"):
                 if isinstance(previous_metadata.get(key), int):
                     metadata[key] = previous_metadata[key]
             for key in ("explicit_done_turns", "implicit_end_turn_turns",
@@ -3384,7 +3466,17 @@ def run(args: argparse.Namespace) -> int:
                                 "prompt_hash": final_reply.prompt_hash,
                                 "repair": True, "intent": turn_intent,
                                 "authored_finish_kind": pending_finish_kind,
-                                "handoff_audit": final_audit})
+                                "handoff_audit": final_audit,
+                                "action_encoding": "choices" if (authored_choices is not None) else "coordinates",
+                                "coordinate_fallback": is_coordinate_fallback,
+                                "authored_choices": authored_choices,
+                                "expansion_mapping": expansion_mapping})
+                        if authored_choices is not None:
+                            metadata["handle_choices_used"] += len(authored_choices)
+                            metadata["choice_handles_authored"] += len(authored_choices)
+                            metadata["choice_actions_expanded"] += len(orders)
+                        elif getattr(args, "action_encoding", "coordinates") == "choices":
+                            metadata["coordinate_fallbacks"] += 1
                         last_forwarded_orders = list(orders)
                         last_forwarded_revision = state.get("state_revision") if isinstance(state, dict) else None
                         last_forwarded_repair = True
@@ -3513,6 +3605,12 @@ def run(args: argparse.Namespace) -> int:
                     return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
                 state = dict(state)
                 state.update(option_bodies)
+                encoding = getattr(args, "action_encoding", "coordinates")
+                if encoding == "choices":
+                    current_rev = int(state.get("state_revision", 0))
+                    choice_registry.sync_revision(current_rev)
+                    avail_choices = extract_available_choices(state, metadata.get("conversation_id"), current_rev)
+                    choice_registry.register_all(avail_choices)
                 coverage = tactical_attack_coverage(state.get("tactical_surface", {}))
                 state["turn_progress"] = {
                     "moved": sorted(turn_progress_moved),
@@ -3554,6 +3652,7 @@ def run(args: argparse.Namespace) -> int:
                 prompt_events = select_event_window(event_intervals, event_window, interval_count)
                 continuity = "\n".join(continuity_entries[-4:])
                 playbook = load_tactical_playbook()
+                prompt_choices = choice_registry.get_exposed_list() if encoding == "choices" else None
                 prompt = prompt_for(state, prompt_events,
                                     recruit_batch_enabled=not args.no_recruit_macro,
                                     compact=not getattr(args, "diagnostic", False),
@@ -3561,7 +3660,9 @@ def run(args: argparse.Namespace) -> int:
                                     continuity=continuity,
                                     agenda=agenda_memory if agenda_enabled else None,
                                     sweep=sweep,
-                                    trend=compact_trend(trend_states), playbook=playbook)
+                                    trend=compact_trend(trend_states), playbook=playbook,
+                                    action_encoding=encoding,
+                                    choices=prompt_choices)
                 delivered_prompt = finalize_model_prompt(prompt, state)
                 prompt_bytes = delivered_prompt.encode()
                 prompt_hash = hashlib.sha256(prompt_bytes).hexdigest()
@@ -3628,7 +3729,7 @@ def run(args: argparse.Namespace) -> int:
                                 orders = validate_model_orders(current_reply.text)
                                 turn_intent = response_intent(current_reply.text)
                                 break
-                            if "actions" in decoded:
+                            if "actions" in decoded or "choices" in decoded:
                                 orders = validate_model_orders(current_reply.text)
                                 turn_intent = response_intent(current_reply.text)
                                 break
@@ -3664,7 +3765,12 @@ def run(args: argparse.Namespace) -> int:
                                 unit_id = validate_inspect_unit_request(decoded)
                                 result = query_inspect_unit(
                                     exchange, unit_id, int(state.get("state_revision", 0)))
-                                rendered = compact_unit_inspection(result)
+                                insp_choices = []
+                                if getattr(args, "action_encoding", "coordinates") == "choices":
+                                    insp_choices = extract_inspection_choices(
+                                        result, metadata.get("conversation_id"), int(state.get("state_revision", 0)))
+                                    choice_registry.register_all(insp_choices)
+                                rendered = compact_unit_inspection(result, choices=insp_choices)
                                 record({"type": "tool_result", "tool": tool,
                                         "request": decoded, "result_bytes": len(rendered.encode()),
                                         "body": result})
@@ -4215,7 +4321,17 @@ def run(args: argparse.Namespace) -> int:
                          "authored_finish_kind": pending_finish_kind,
                          "review_id": active_review_id,
                          "handoff_audit": final_audit,
-                         "forced_finish": forced_finish})
+                         "forced_finish": forced_finish,
+                         "action_encoding": "choices" if (authored_choices is not None) else "coordinates",
+                         "coordinate_fallback": is_coordinate_fallback,
+                         "authored_choices": authored_choices,
+                         "expansion_mapping": expansion_mapping})
+                if authored_choices is not None:
+                    metadata["handle_choices_used"] += len(authored_choices)
+                    metadata["choice_handles_authored"] += len(authored_choices)
+                    metadata["choice_actions_expanded"] += len(orders)
+                elif getattr(args, "action_encoding", "coordinates") == "choices":
+                    metadata["coordinate_fallbacks"] += 1
                 last_forwarded_orders = list(orders)
                 last_forwarded_revision = state.get("state_revision") if isinstance(state, dict) else None
                 last_forwarded_repair = bool(action_repair_attempted)

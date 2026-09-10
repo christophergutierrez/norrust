@@ -95,6 +95,31 @@ class DecisionAnnotationTests(unittest.TestCase):
         self.assertEqual(focused_res["status"], "valid")
         self.assertEqual(len(focused_res["decisions"]), 1)
 
+    def test_choices_envelope_and_mutual_exclusivity(self):
+        valid_choices = {
+            "choices": ["c_1_abc1234"],
+            "decisions": [{"orders": [0], "rules": ["T1"], "expected": "move", "risk": "none"}]
+        }
+        res = annotation_for_response(json.dumps(valid_choices))
+        self.assertEqual(res["status"], "valid")
+        self.assertEqual(len(res["decisions"]), 1)
+
+        # Mutually exclusive: cannot contain both actions and choices
+        both = {
+            "actions": [{"action": "EndTurn"}],
+            "choices": ["c_1_abc1234"],
+            "decisions": [{"orders": [0], "rules": ["T0"], "expected": "done", "risk": "none"}]
+        }
+        res_both = annotation_for_response(json.dumps(both))
+        self.assertEqual(res_both["status"], "invalid")
+        self.assertIn("cannot contain both actions and choices", res_both["error"])
+
+        # Neither actions nor choices
+        neither = {"decisions": [{"orders": [], "rules": ["T0"], "expected": "x", "risk": "y"}]}
+        res_neither = annotation_for_response(json.dumps(neither))
+        self.assertEqual(res_neither["status"], "invalid")
+        self.assertIn("must contain actions or choices", res_neither["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

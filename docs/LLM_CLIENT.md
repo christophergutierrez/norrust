@@ -801,6 +801,25 @@ client exit, not gameplay losses or draws. A driver status rejection after
 forwarding an action is also recorded as infrastructure-invalid so the client
 cannot wait indefinitely for a new boundary.
 
+### Choices mode and action handles
+
+When `--action-encoding choices` is enabled, the prompt and unit inspection results
+expose legal operations with deterministic, revision-bound handles in the format
+`c_<revision>_<hash>`.
+
+The model may reply with a choices envelope instead of explicit primitive actions:
+
+```json
+{"choices": ["c_338_1a2b3c4d"], "decisions": [{"orders": [0], "rules": ["T2"], "expected": "Attack adjacent target", "risk": "none"}]}
+```
+
+Key semantics for choices mode:
+- **Mutual exclusivity**: An envelope contains either `choices` or `actions`, never both.
+- **Revision binding**: Handles are bound to the exact engine `state_revision`. When the state advances (after an accepted action batch or turn transition), previous handles are invalidated. Repeated inspections at the same revision produce identical, stable handles.
+- **Resolution**: Handles resolve deterministically to engine operations: moves, standing attacks, move-and-attack sequences, recruitment, or advancement. Decision indices (`orders`) refer to authored choices, and the client records the expansion mapping back to the primitive actions.
+- **Coordinate fallback**: Coordinate actions remain permitted via the `actions` envelope (for instance, to issue `DoneWithImportantMoves`, `EndTurn`, `Resign`, or macros). Every such use is recorded in telemetry as a coordinate fallback.
+- **Validation**: Unknown, stale, cross-game, or malformed handles are rejected before submission. Conflicting choices (such as two units moving to the same destination) roll back transactionally without changing state revision, allowing repair.
+
 ## Singleton engine queries
 
 The client—not the model—sends queries as singleton JSON lines before each model
