@@ -29,7 +29,8 @@ def _bounded_text(value: Any, name: str) -> str:
     return value
 
 
-def validate_decisions(decisions: Any, action_count: int) -> list[dict[str, Any]]:
+def validate_decisions(decisions: Any, action_count: int,
+                       require_full_coverage: bool = True) -> list[dict[str, Any]]:
     if not isinstance(decisions, list) or len(decisions) > MAX_GROUPS:
         raise ValueError("decisions must contain at most 16 groups")
     covered: set[int] = set()
@@ -62,13 +63,14 @@ def validate_decisions(decisions: Any, action_count: int) -> list[dict[str, Any]
         if total > MAX_REFERENCES:
             raise ValueError("decision order references exceed 256")
         result.append({"orders": list(orders), "rules": list(rules), "expected": expected, "risk": risk})
-    if covered != set(range(action_count)):
+    if require_full_coverage and covered != set(range(action_count)):
         raise ValueError("decision groups must cover every authored action exactly once")
     return result
 
 
 def annotation_for_response(text: str, *, action_count: int | None = None,
-                            guide_text: str = "") -> dict[str, Any]:
+                            guide_text: str = "",
+                            require_full_coverage: bool = True) -> dict[str, Any]:
     """Return the fixed annotation object for any model response.
 
     Tool requests are deliberately inapplicable. Action responses with no
@@ -100,7 +102,9 @@ def annotation_for_response(text: str, *, action_count: int | None = None,
             return base
         action_count = len(actions)
     try:
-        base["decisions"] = validate_decisions(decoded["decisions"], action_count)
+        base["decisions"] = validate_decisions(
+            decoded["decisions"], action_count, require_full_coverage=require_full_coverage
+        )
     except ValueError as exc:
         base["status"] = "invalid"
         base["error"] = str(exc)[:240]

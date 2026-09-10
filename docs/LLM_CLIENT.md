@@ -118,13 +118,30 @@ unit without a pending promotion cannot advance merely because its type has
 an upgrade. The driver validates the action against the current state.
 
 For an opt-in incremental turn, add `--incremental-turns`. The driver permits
-up to three accepted partial action arrays without `EndTurn`, returns a fresh
-state after each one, and then requires a final array ending in `EndTurn`.
+accepted partial action arrays without `EndTurn`, returns a fresh state after
+each one, and then requires a final array ending in `EndTurn`. The cap is
+governed by `--max-partial-batches-per-turn` (default 3 in batch mode, 64 in
+focused mode, configurable up to 1024 without overflow).
 The state includes `turn_boundary`, `accepted_partial_batches`,
 `remaining_partial_batches`, and `final_only`. A partial observation does not
 run the opponent or reset the model turn; a failed partial batch is rolled back
 without discarding earlier accepted batches. Checkpoints are published before
 an accepted partial is acknowledged when `--log` is supplied.
+
+### Decision modes and action encoding
+
+`--decision-mode {batch,focused}` configures turn granularity:
+- `batch` (default): full-turn planning. Incremental turns require explicit
+  `--incremental-turns` and default to 3 partial batches, 8 model calls per turn,
+  and 4 tool calls per turn. Decision annotations must cover all authored orders.
+- `focused`: focused task loop over bounded incremental turns. Incremental turns
+  are enabled by default, with defaults of up to 64 partial batches, 128 model
+  calls, and 64 tool calls per turn. The model pursues at most one active task
+  at a time, and decision annotations may cover only consequential actions.
+  Exhausted tool calls do not force a premature `EndTurn` while `final_only` is False.
+
+`--action-encoding {coordinates,choices}` selects how actions are represented
+(default `coordinates`).
 
 The canonical per-turn instructions are the
 [MEMORYLESS TACTICAL PLAYBOOK](LLM_TACTICAL_PLAYBOOK.md). The client reads that
@@ -513,6 +530,17 @@ python -m tools.llm_client \
   --scenario big_battle_6 --faction0 undead --faction1 undead \
   --gold 300 --seed 2001 --llm-side 0 --max-turns 25 \
   --incremental-turns --log /path/to/isolated/match.ndjson
+```
+
+A focused task evaluation enables incremental turns by default and uses focused mode:
+
+```bash
+python -m tools.llm_client \
+  --driver norrust_core/target/debug/greedy_driver \
+  --model-command 'python3 /path/to/your_backend.py' \
+  --scenario big_battle_6 --faction0 undead --faction1 undead \
+  --gold 300 --seed 2001 --llm-side 0 --max-turns 25 \
+  --decision-mode focused --log /path/to/isolated/match.ndjson
 ```
 
 Use a distinct log and checkpoint directory for every concurrent run. The

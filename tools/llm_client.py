@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 try:
-    from .turn_agenda import agenda_from_response, compact_agenda
+    from .turn_agenda import agenda_from_response, compact_agenda, annotate_agenda_unit_status
     from .decision_annotations import annotation_for_response, inapplicable_annotation
     from .request_journal import append_request_milestone
     from .request_recovery import recoverable_answer
@@ -28,7 +28,7 @@ try:
     from .response_parsing import parse_action_response, ResponseParseError
     from .model_identity import classify_model_identity
 except ImportError:  # pragma: no cover - direct script compatibility
-    from turn_agenda import agenda_from_response, compact_agenda
+    from turn_agenda import agenda_from_response, compact_agenda, annotate_agenda_unit_status
     from decision_annotations import annotation_for_response, inapplicable_annotation
     from request_journal import append_request_milestone
     from request_recovery import recoverable_answer
@@ -121,6 +121,32 @@ def _checkpoint_order(reference: dict[str, Any]) -> tuple[int, int, int]:
             number(reference.get("state_revision")), boundary_rank)
 
 
+def resolve_client_config(args: Any) -> None:
+    """Resolve default budgets, modes, and formats once for client consistency."""
+    decision_mode = getattr(args, "decision_mode", None) or "batch"
+    setattr(args, "decision_mode", decision_mode)
+    action_encoding = getattr(args, "action_encoding", None) or "coordinates"
+    setattr(args, "action_encoding", action_encoding)
+    if decision_mode == "focused":
+        setattr(args, "incremental_turns", True)
+        if getattr(args, "max_partial_batches_per_turn", None) is None:
+            setattr(args, "max_partial_batches_per_turn", 64)
+        if getattr(args, "max_model_calls_per_turn", None) is None:
+            setattr(args, "max_model_calls_per_turn", 128)
+        if getattr(args, "max_tool_calls_per_turn", None) is None:
+            setattr(args, "max_tool_calls_per_turn", 64)
+    else:
+        if getattr(args, "max_partial_batches_per_turn", None) is None:
+            setattr(args, "max_partial_batches_per_turn", 3)
+        if getattr(args, "max_model_calls_per_turn", None) is None:
+            setattr(args, "max_model_calls_per_turn", 8)
+        if getattr(args, "max_tool_calls_per_turn", None) is None:
+            setattr(args, "max_tool_calls_per_turn", 4)
+    limit = getattr(args, "max_partial_batches_per_turn", 3)
+    if not 1 <= limit <= 1024:
+        raise ValueError(f"--max-partial-batches-per-turn must be between 1 and 1024, got {limit}")
+
+
 def validate_checkpoint_identity(envelope: dict[str, Any], args: argparse.Namespace) -> None:
     """Reject identity mismatches when the checkpoint exposes those fields.
 
@@ -139,6 +165,20 @@ def validate_checkpoint_identity(envelope: dict[str, Any], args: argparse.Namesp
                 "llm_side": getattr(args, "llm_side", None),
                 "max_turns": getattr(args, "max_turns", None),
                 "incremental_turns": getattr(args, "incremental_turns", None)}
+    is_branch = bool(getattr(args, "resume_checkpoint", None) and not getattr(args, "resume_log", None))
+    at_side_turn_boundary = (envelope.get("boundary") in ("turn", "model"))
+    if is_branch and not at_side_turn_boundary:
+        if "max_partial_batches_per_turn" in identity:
+            if identity.get("max_partial_batches_per_turn") != getattr(args, "max_partial_batches_per_turn", None):
+                raise ValueError("cannot change mode or partial limit at mid-turn boundary")
+    elif not is_branch:
+        if "max_partial_batches_per_turn" in identity:
+            expected["max_partial_batches_per_turn"] = getattr(args, "max_partial_batches_per_turn", None)
+        elif envelope.get("incremental_turns") and getattr(args, "max_partial_batches_per_turn", None) is not None:
+            if getattr(args, "max_partial_batches_per_turn") != 3:
+                raise ValueError("resume configuration mismatch: max_partial_batches_per_turn")
+    if is_branch and at_side_turn_boundary:
+        expected.pop("incremental_turns", None)
     for key, value in expected.items():
         if key == "max_turns":
             # A branch may deliberately use a new safety cap.  It must still
@@ -1378,16 +1418,18 @@ def compact_tactical_surface(surface: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def tool_followup_instruction(remaining_tools: int, remaining_model_calls: int) -> str:
+def tool_followup_instruction(remaining_tools: int, remaining_model_calls: int,
+                              incremental: bool = False, final_only: bool = False) -> str:
     """Tell the model exactly whether another tool request can be useful."""
+    envelope = "final JSON action envelope" if (not incremental or final_only) else "JSON action envelope"
     if remaining_tools <= 0 or remaining_model_calls <= 1:
         return (
-            "TOOL_BUDGET remaining=0; return the final JSON action envelope with decisions now. "
+            f"TOOL_BUDGET remaining=0; return the {envelope} with decisions now. "
             "Do not request another tool."
         )
     return (
-        "TOOL_BUDGET remaining=%s; return another allowed tool request or the final "
-        "JSON action envelope with decisions." % remaining_tools
+        f"TOOL_BUDGET remaining={remaining_tools}; return another allowed tool request or the {envelope} "
+        "with decisions."
     )
 
 
@@ -1967,7 +2009,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
     if compact and isinstance(state.get("tactical_surface"), dict):
         surface_for_prompt = dict(state["tactical_surface"])
         surface_for_prompt.pop("unit_types", None)
-        body = {"briefing": compact_observation(state, include_map=False),
+        body = {"briefing": compact_observation(state, include_map=False, agenda=agenda),
                 "strategy": compact_strategic_briefing(state),
                 "tactical_surface": compact_tactical_surface(surface_for_prompt)}
         option_payloads = {}
@@ -1994,7 +2036,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
                 elif not position.get("moved"):
                     positions.append(item)
             compact_options.append({"unit_id": option.get("unit_id"), "positions": positions})
-        body = {"briefing": compact_observation(state, include_map=False),
+        body = {"briefing": compact_observation(state, include_map=False, agenda=agenda),
                 "strategy": compact_strategic_briefing(state),
                 "turn_options": {"units": compact_options},
                 "recruit_options": state.get("recruit_options", {})}
@@ -2006,6 +2048,12 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         body["conversation_continuity"] = continuity
     if agenda:
         body["agenda"] = agenda
+        if isinstance(agenda, dict):
+            annotated_agenda = annotate_agenda_unit_status(agenda, state)
+            active_task = next((t for t in (annotated_agenda.get("tasks", []) if annotated_agenda else [])
+                                if isinstance(t, dict) and t.get("status") == "active"), None)
+            if active_task:
+                body["active_task"] = active_task
     if sweep:
         body["whole_army_sweep"] = sweep
     if trend:
@@ -2217,7 +2265,56 @@ def finalize_model_prompt(prompt: str, state: dict[str, Any]) -> str:
     return value + "\n" + authoritative_live_state_reminder(state)
 
 
-def compact_observation(state: dict[str, Any], *, include_map: bool = True) -> str:
+def build_completion_audit_data(state: dict[str, Any], agenda: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    surface = state.get("tactical_surface", {})
+    recruitment = surface.get("recruitment", {}) if isinstance(surface, dict) else {}
+    economy = surface.get("economy", {}) if isinstance(surface, dict) else {}
+    active_faction = state.get("active_faction", 0)
+    gold = recruitment.get("gold", economy.get("gold"))
+    if gold is None:
+        gold_list = state.get("gold")
+        if isinstance(gold_list, list) and isinstance(active_faction, int) and active_faction < len(gold_list):
+            gold = gold_list[active_faction]
+        else:
+            gold = "?"
+    affordable = [item.get("def_id", "?") for item in recruitment.get("options", [])
+                  if isinstance(item, dict) and item.get("affordable")]
+    vacatable = len(recruitment.get("placement_hexes", [])) or len(economy.get("vacatable_castles", []))
+    ready_units = []
+    promotions = []
+    for u in state.get("units", []):
+        if isinstance(u, dict) and u.get("faction") == active_faction:
+            uid = u.get("id")
+            if uid is not None and (not u.get("moved") or not u.get("attacked")):
+                ready_units.append(uid)
+            if uid is not None and u.get("advancement_pending"):
+                promotions.append(uid)
+    holds = list((agenda or {}).get("holds", []))
+    return {
+        "gold": gold,
+        "affordable_recruits": sorted(affordable),
+        "recruit_capacity": vacatable,
+        "ready_units": sorted(ready_units),
+        "promotions": sorted(promotions),
+        "holds": sorted(holds),
+    }
+
+
+def completion_audit_text(state: dict[str, Any], agenda: Optional[dict[str, Any]] = None) -> str:
+    data = build_completion_audit_data(state, agenda)
+    aff_str = ",".join(data["affordable_recruits"]) or "none"
+    ready_str = ",".join(f"U{uid}" for uid in data["ready_units"]) or "none"
+    promo_str = ",".join(f"U{uid}" for uid in data["promotions"]) or "none"
+    holds_str = ",".join(f"U{uid}" for uid in data["holds"]) or "none"
+    return (
+        f"COMPLETION_AUDIT gold={data['gold']} affordable={aff_str} "
+        f"recruit_cap={data['recruit_capacity']} ready={ready_str} "
+        f"promo={promo_str} holds={holds_str}"
+    )
+
+
+def compact_observation(state: dict[str, Any], *, include_map: bool = True,
+                        agenda: Optional[dict[str, Any]] = None) -> str:
     """Render a deterministic briefing; legality remains in engine options."""
     terrain = {tile.get("terrain_id", "?") for tile in state.get("terrain", [])}
     terrain_at = {(tile.get("col"), tile.get("row")): tile.get("terrain_id", "?")
@@ -2227,13 +2324,17 @@ def compact_observation(state: dict[str, Any], *, include_map: bool = True) -> s
     tactical = state.get("tactical_surface")
     visibility = tactical.get("visibility", "?") if isinstance(tactical, dict) else "?"
     next_tod = tactical.get("next_time_of_day", "?") if isinstance(tactical, dict) else "?"
+    part_info = f"partials_left={state.get('remaining_partial_batches', '?')}"
+    if state.get("accepted_partial_batches") is not None and state.get("max_partial_batches") is not None:
+        part_info = (f"accepted_partials={state.get('accepted_partial_batches')} "
+                     f"max_partials={state.get('max_partial_batches')} " + part_info)
     lines = [f"turn={state.get('turn', '?')} active_faction={state.get('active_faction', '?')} "
              f"time_of_day={state.get('time_of_day', '?')} next_time_of_day={next_tod} "
              f"visibility={visibility} map={state.get('cols', '?')}x{state.get('rows', '?')} "
              f"boundary={state.get('turn_boundary', 'turn')} "
              f"incremental={state.get('incremental_turns', False)} "
              f"final_only={state.get('final_only', False)} "
-             f"partials_left={state.get('remaining_partial_batches', '?')}",
+             f"{part_info}",
              f"gold={state.get('gold', '?')} terrain_types={','.join(sorted(terrain))}"]
     progress = state.get("turn_progress")
     if isinstance(progress, dict):
@@ -2242,6 +2343,7 @@ def compact_observation(state: dict[str, Any], *, include_map: bool = True) -> s
         remaining = ",".join("U%s" % value for value in progress.get("remaining_attackers", [])) or "-"
         lines.append("TURN_PROGRESS moved=%s attacked=%s remaining_attackers=%s" %
                      (moved, attacked, remaining))
+    lines.append(completion_audit_text(state, agenda))
     # Geometry is emitted once in the reusable fixed section.  Occupancy stays
     # here because it is live state and changes after every action.
     lines.extend(compact_spatial_map(state, geometry_only=False,
@@ -2555,6 +2657,7 @@ def set_terminal(metadata: dict[str, Any], terminal_class: str,
 
 
 def run(args: argparse.Namespace) -> int:
+    resolve_client_config(args)
     driver = args.driver
     log_path = getattr(args, "log", None)
     resume_log = getattr(args, "resume_log", None)
@@ -2597,8 +2700,12 @@ def run(args: argparse.Namespace) -> int:
         parent_records, conversation_id, getattr(args, "max_output_tokens", INITIAL_OUTPUT_LIMIT),
         Path(log_path).resolve().with_name("usage.ndjson") if resume_log else None)
     checkpoint_dir = checkpoint_dir_for_log(log_path) if log_path else None
-    validate_model_orders = lambda text: validate_orders(
-        text, args.no_recruit_macro, require_end_turn=not getattr(args, "incremental_turns", False))
+    state: Optional[dict[str, Any]] = None
+    def validate_model_orders(text: str, final_only: Optional[bool] = None) -> list[dict[str, Any]]:
+        if final_only is None:
+            final_only = bool(isinstance(state, dict) and state.get("final_only"))
+        req_end = (not getattr(args, "incremental_turns", False)) or final_only
+        return validate_orders(text, args.no_recruit_macro, require_end_turn=req_end)
     if selected_checkpoint and resume_checkpoint and resume_log is None:
         # A branch gets a new sidecar directory. The source remains immutable.
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -2612,6 +2719,7 @@ def run(args: argparse.Namespace) -> int:
            "--max-queries-per-turn", str(args.max_queries_per_turn)]
     if getattr(args, "incremental_turns", False):
         cmd.append("--incremental-turns")
+    cmd.extend(["--max-partial-batches-per-turn", str(args.max_partial_batches_per_turn)])
     if args.no_recruit_macro:
         cmd.append("--disable-recruit-batch")
     if checkpoint_dir is not None:
@@ -2636,7 +2744,6 @@ def run(args: argparse.Namespace) -> int:
     event_window: list[dict[str, Any]] = []
     event_intervals: list[list[dict[str, Any]]] = []
     trend_states: list[dict[str, Any]] = []
-    state: Optional[dict[str, Any]] = None
     # The state_revision at which the side currently on move began acting,
     # captured from the most recent non-partial "state" boundary. Recorded
     # alongside each turn_boundary's end revision so the importer can bind
@@ -2677,6 +2784,9 @@ def run(args: argparse.Namespace) -> int:
                 "opponent": "greedy+driver-recruit", "opponent_recruit_policy": "standard_driver_macro",
                 "opponent_planner": "no_skirmisher_pathing",
                 "turn_format": "incremental" if getattr(args, "incremental_turns", False) else "single_batch",
+                "decision_mode": getattr(args, "decision_mode", "batch"),
+                "action_encoding": getattr(args, "action_encoding", "coordinates"),
+                "max_partial_batches_per_turn": getattr(args, "max_partial_batches_per_turn", 3),
                 "continuity_mode": "bounded_transcript",
                 "conversation_id": conversation_id,
                 "output_limit_policy": output_policy.state(),
@@ -2700,7 +2810,7 @@ def run(args: argparse.Namespace) -> int:
                 "max_turns": args.max_turns, "turn_timeout_seconds": args.turn_timeout,
                 "query_budget_seconds": args.query_budget_seconds,
                 "max_queries_per_turn": args.max_queries_per_turn,
-                "max_model_calls_per_turn": getattr(args, "max_model_calls_per_turn", 4), "max_prompt_bytes": args.max_prompt_bytes,
+                "max_model_calls_per_turn": getattr(args, "max_model_calls_per_turn", 8), "max_prompt_bytes": args.max_prompt_bytes,
                 "max_tool_calls_per_turn": getattr(args, "max_tool_calls_per_turn", 4),
                 "token_input_limit": args.token_input_limit,
                 "token_output_limit": args.token_output_limit,
@@ -2741,6 +2851,9 @@ def run(args: argparse.Namespace) -> int:
             if key in previous_metadata and metadata.get(key) != previous_metadata[key]:
                 raise ValueError(f"resume configuration mismatch: {key}")
         if resume_log:
+            for key in ("decision_mode", "action_encoding", "max_partial_batches_per_turn"):
+                if key in previous_metadata and metadata.get(key) != previous_metadata[key]:
+                    raise ValueError(f"resume configuration mismatch: {key}")
             for key in ("queries", "model_orders", "model_calls", "rejected_batches",
                         "rejected_action_items", "draft_reviews", "draft_revisions",
                         "draft_confirmations", "draft_review_repairs", "transport_retries",
@@ -2763,6 +2876,8 @@ def run(args: argparse.Namespace) -> int:
                 # A post-batch checkpoint can precede the intent_update emitted
                 # after the driver's successful status. Preserve it regardless.
                 intent_memory = record["intent"]
+            elif record.get("type") == "agenda_update" and isinstance(record.get("agenda"), dict):
+                agenda_memory = dict(record["agenda"])
             if record.get("type") == "driver":
                 line = record.get("line")
                 if isinstance(line, dict) and line.get("type") == "events":
@@ -2784,6 +2899,21 @@ def run(args: argparse.Namespace) -> int:
                 event_window.extend(events)
             turn_progress_moved, turn_progress_attacked = replay_accepted_progress(
                 parent_records, args.llm_side)
+            last_open_idx = -1
+            for idx, r in enumerate(parent_records):
+                if r.get("type") == "side_turn_started":
+                    last_open_idx = idx
+            if last_open_idx != -1:
+                open_records = parent_records[last_open_idx:]
+                if not any(r.get("type") == "turn_boundary" for r in open_records):
+                    model_calls_this_turn = sum(
+                        1 for r in open_records
+                        if r.get("type") in {"model", "repair", "draft_review", "draft_review_repair", "action_repair"}
+                    )
+                    tool_calls_this_turn = sum(
+                        1 for r in open_records
+                        if r.get("type") in {"tool_result", "batch_preview", "tool_followup"}
+                    )
     log = open(log_path, "a", buffering=1) if log_path else None
     def record(obj: dict[str, Any]) -> None:
         if log:
@@ -2946,7 +3076,9 @@ def run(args: argparse.Namespace) -> int:
                     state_revision=(state.get("state_revision")
                                     if isinstance(state, dict) else None),
                     phase="model_response")
-            reply.decision_annotation = annotation_for_response(reply.text, guide_text=playbook)
+            reply.decision_annotation = annotation_for_response(
+                reply.text, guide_text=playbook,
+                require_full_coverage=(getattr(args, "decision_mode", "batch") != "focused"))
             if reply.decision_annotation.get("status") == "invalid":
                 # Bookkeeping only: this reply's actions still execute
                 # normally. The exact error is queued as short factual
@@ -3454,6 +3586,18 @@ def run(args: argparse.Namespace) -> int:
                     durable({"type": "preflight_error", **metadata,
                              "bytes": len(prompt_bytes), "limit": args.max_prompt_bytes})
                     return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
+                if model_calls_this_turn >= metadata["max_model_calls_per_turn"]:
+                    set_terminal(metadata, TERMINAL_MODEL_INVALID,
+                                 winner=None,
+                                 reason="budget_interrupted",
+                                 code="model_calls_budget_exhausted",
+                                 message="model decision call budget exhausted for this side turn")
+                    durable({"type": "budget_interrupted",
+                             "side_turn_id": metadata.get("current_side_turn_id"),
+                             "model_calls_this_turn": model_calls_this_turn,
+                             "tool_calls_this_turn": tool_calls_this_turn,
+                             **metadata})
+                    return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
                 metadata["model_calls"] += 1
                 model_calls_this_turn += 1
                 timeout_fallback = False
@@ -3560,6 +3704,8 @@ def run(args: argparse.Namespace) -> int:
                             followup_prompt = prompt + tool_context + "\n" + tool_followup_instruction(
                                 metadata["max_tool_calls_per_turn"] - tool_calls_this_turn,
                                 metadata["max_model_calls_per_turn"] - model_calls_this_turn,
+                                incremental=getattr(args, "incremental_turns", False),
+                                final_only=bool(isinstance(state, dict) and state.get("final_only")),
                             )
                             delivered_followup = finalize_model_prompt(followup_prompt, state)
                             followup_bytes = len(delivered_followup.encode())
@@ -4167,6 +4313,12 @@ def main() -> int:
     p.add_argument("--no-recruit-macro", action="store_true")
     p.add_argument("--incremental-turns", action="store_true",
                    help="allow up to three bounded partial action batches before EndTurn")
+    p.add_argument("--decision-mode", choices=("batch", "focused"), default="batch",
+                   help="turn decision mode ('batch' or 'focused')")
+    p.add_argument("--action-encoding", choices=("coordinates", "choices"), default="coordinates",
+                   help="action encoding ('coordinates' or 'choices')")
+    p.add_argument("--max-partial-batches-per-turn", type=int, default=None,
+                   help="maximum partial batches per side turn (default: 3 in batch, 64 in focused; range: 1..1024)")
     p.add_argument("--disable-agenda-sweep", action="store_true",
                    help="disable optional model agenda and whole-army sweep context")
     p.add_argument("--diagnostic", action="store_true",
@@ -4178,10 +4330,10 @@ def main() -> int:
                             action="store_false",
                             help="skip revision-pinned validation before submitting model batches")
     p.set_defaults(validate_before_submit=True)
-    p.add_argument("--max-model-calls-per-turn", type=int, default=8,
-                   help="decision and repair calls allowed per model turn")
-    p.add_argument("--max-tool-calls-per-turn", type=int, default=4,
-                   help="maximum read-only model tool requests per turn")
+    p.add_argument("--max-model-calls-per-turn", type=int, default=None,
+                   help="decision and repair calls allowed per model turn (default: 8 in batch, 128 in focused)")
+    p.add_argument("--max-tool-calls-per-turn", type=int, default=None,
+                   help="maximum read-only model tool requests per turn (default: 4 in batch, 64 in focused)")
     p.add_argument("--decision-metrics", action="store_true",
                    help="preview final batches for recruiter-danger and recruitment telemetry")
     p.add_argument("--timeout-finish", action="store_true",
@@ -4200,10 +4352,12 @@ def main() -> int:
         p.error("--event-window-observations must be positive")
     if not 1 <= a.max_output_tokens <= MAX_OUTPUT_LIMIT:
         p.error("--max-output-tokens must be between 1 and 524288")
-    if a.max_model_calls_per_turn < 1:
+    if a.max_model_calls_per_turn is not None and a.max_model_calls_per_turn < 1:
         p.error("--max-model-calls-per-turn must be positive")
-    if a.max_tool_calls_per_turn < 0:
+    if a.max_tool_calls_per_turn is not None and a.max_tool_calls_per_turn < 0:
         p.error("--max-tool-calls-per-turn must be non-negative")
+    if a.max_partial_batches_per_turn is not None and not 1 <= a.max_partial_batches_per_turn <= 1024:
+        p.error("--max-partial-batches-per-turn must be between 1 and 1024")
     if a.resume_log and not a.log:
         p.error("--resume-log requires --log pointing to the same audit log")
     if a.resume_log and Path(a.resume_log).resolve() != Path(a.log).resolve():

@@ -48,6 +48,35 @@ class AgendaTests(unittest.TestCase):
         self.assertIsNone(agenda)
         self.assertIsNone(error)
 
+    def test_annotates_agenda_with_live_unit_status(self):
+        from .turn_agenda import annotate_agenda_unit_status
+        agenda = {
+            "tasks": [
+                {"id": "capture", "goal": "Take village", "units": [1, 99], "status": "active"}
+            ],
+            "holds": [2]
+        }
+        state = {
+            "units": [
+                {"id": 1, "hp": 30, "max_hp": 34, "col": 5, "row": 6, "moved": True, "attacked": False},
+                {"id": 2, "hp": 48, "max_hp": 48, "col": 2, "row": 7, "moved": False, "attacked": False},
+            ]
+        }
+        annotated = annotate_agenda_unit_status(agenda, state)
+        task_status = annotated["tasks"][0]["unit_status"]
+        self.assertEqual(len(task_status), 2)
+        # Unit 1 is alive and moved
+        self.assertTrue(task_status[0]["alive"])
+        self.assertEqual(task_status[0]["status"], "moved")
+        self.assertEqual(task_status[0]["hp"], 30)
+        # Unit 99 is not in state -> dead
+        self.assertFalse(task_status[1]["alive"])
+        self.assertEqual(task_status[1]["status"], "dead")
+        # Check compact representation includes unit status
+        compact = compact_agenda(agenda, state)
+        self.assertIn("U1(acted,hp=30,pos=5,6)", compact)
+        self.assertIn("U99(dead)", compact)
+
 
 if __name__ == "__main__":
     unittest.main()

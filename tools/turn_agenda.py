@@ -73,16 +73,70 @@ def response_agenda(text: str) -> tuple[dict[str, Any] | None, str | None]:
     return normalize_agenda(value.get("agenda"))
 
 
-def compact_agenda(agenda: dict[str, Any] | None) -> str:
-    if not agenda:
+def task_unit_status(task: dict[str, Any], state: dict[str, Any]) -> list[dict[str, Any]]:
+    units_by_id = {u.get("id"): u for u in state.get("units", []) if isinstance(u, dict)}
+    statuses = []
+    for uid in task.get("units", []):
+        unit = units_by_id.get(uid)
+        if unit is None:
+            statuses.append({"id": uid, "alive": False, "status": "dead"})
+        else:
+            moved = bool(unit.get("moved"))
+            attacked = bool(unit.get("attacked"))
+            state_str = "spent" if (moved and attacked) else ("ready" if not moved and not attacked else ("moved" if moved else "attacked"))
+            statuses.append({
+                "id": uid,
+                "alive": True,
+                "status": state_str,
+                "hp": unit.get("hp"),
+                "max_hp": unit.get("max_hp"),
+                "col": unit.get("col"),
+                "row": unit.get("row"),
+            })
+    return statuses
+
+
+def annotate_agenda_unit_status(agenda: dict[str, Any] | None, state: dict[str, Any]) -> dict[str, Any] | None:
+    if not agenda or not isinstance(agenda, dict):
+        return None
+    tasks = []
+    for task in agenda.get("tasks", []):
+        if not isinstance(task, dict):
+            continue
+        t = dict(task)
+        t["unit_status"] = task_unit_status(task, state)
+        tasks.append(t)
+    return {"tasks": tasks, "holds": list(agenda.get("holds", []))}
+
+
+def compact_agenda(agenda: dict[str, Any] | None, state: dict[str, Any] | None = None) -> str:
+    if not agenda or not isinstance(agenda, dict):
         return "AGENDA none"
-    tasks = "; ".join(
-        "%s[%s] U%s: %s" % (
-            task["id"], task["status"], ",".join("U%s" % unit for unit in task["units"]) or "-", task["goal"])
-        for task in agenda.get("tasks", [])
-    )
+    units_by_id = {u.get("id"): u for u in (state.get("units", []) if state else []) if isinstance(u, dict)}
+    tasks = []
+    for task in agenda.get("tasks", []):
+        if not isinstance(task, dict):
+            continue
+        unit_strs = []
+        for uid in task.get("units", []):
+            if state is not None:
+                u = units_by_id.get(uid)
+                if u is None:
+                    unit_strs.append(f"U{uid}(dead)")
+                else:
+                    moved = bool(u.get("moved"))
+                    attacked = bool(u.get("attacked"))
+                    st = "spent" if (moved and attacked) else ("ready" if not moved and not attacked else "acted")
+                    unit_strs.append(f"U{uid}({st},hp={u.get('hp')},pos={u.get('col')},{u.get('row')})")
+            else:
+                unit_strs.append(f"U{uid}")
+        tasks.append(
+            "%s[%s] %s: %s" % (
+                task.get("id", "?"), task.get("status", "?"), ",".join(unit_strs) or "-", task.get("goal", "")
+            )
+        )
     holds = ",".join("U%s" % unit for unit in agenda.get("holds", [])) or "-"
-    return "AGENDA tasks=%s holds=%s" % (tasks or "none", holds)
+    return "AGENDA tasks=%s holds=%s" % ("; ".join(tasks) or "none", holds)
 
 
 def agenda_from_response(text: str, current: dict[str, Any] | None) -> tuple[dict[str, Any] | None, str | None, bool]:

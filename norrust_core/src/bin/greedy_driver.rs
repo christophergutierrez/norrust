@@ -66,6 +66,7 @@ struct Config {
     max_queries: u32,
     disable_recruit_batch: bool,
     incremental_turns: bool,
+    max_partial_batches_per_turn: u32,
     checkpoint_dir: Option<PathBuf>,
     resume_checkpoint: Option<PathBuf>,
 }
@@ -76,6 +77,10 @@ struct Faction {
     recruits: Vec<String>,
 }
 
+fn default_max_partial_batches_per_turn() -> u32 {
+    3
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DriverCheckpoint {
     version: u32,
@@ -83,7 +88,9 @@ struct DriverCheckpoint {
     side_turns: u32,
     next_id: u32,
     #[serde(default)]
-    accepted_partial_batches: u8,
+    accepted_partial_batches: u32,
+    #[serde(default = "default_max_partial_batches_per_turn")]
+    max_partial_batches_per_turn: u32,
     boundary: String,
     pending_opponent_turn: bool,
     scenario: String,
@@ -138,7 +145,7 @@ fn write_checkpoint(
     state: &GameState,
     side_turns: u32,
     next_id: u32,
-    accepted_partial_batches: u8,
+    accepted_partial_batches: u32,
     boundary: &str,
     pending_opponent_turn: bool,
 ) -> Result<Option<Value>, String> {
@@ -157,6 +164,7 @@ fn write_checkpoint(
         side_turns,
         next_id,
         accepted_partial_batches,
+        max_partial_batches_per_turn: c.max_partial_batches_per_turn,
         boundary: boundary.to_string(),
         pending_opponent_turn,
         scenario: c.scenario.clone(),
@@ -224,7 +232,8 @@ Options:
   Model final actions: EndTurn (implicit eligibility-based sweep), DoneWithImportantMoves (explicit eligibility-based sweep), or FinishWithGreedy
   --disable-recruit-batch  Reject the model-only RecruitBatch macro
   Resign as a standalone action to concede without advancing the turn
-  --incremental-turns    Allow up to three partial model batches before EndTurn
+  --incremental-turns    Allow partial model batches before EndTurn (up to --max-partial-batches-per-turn, default 3)
+  --max-partial-batches-per-turn N  Maximum partial model batches per turn (1..1024, default 3)
   --checkpoint-dir DIR     Atomically write resumable checkpoints here
   --resume-checkpoint PATH Restore a driver checkpoint instead of starting a game
   --scripted            Run full game unattended with greedy-vs-greedy (for testing)
@@ -248,6 +257,7 @@ fn parse_args() -> Config {
         max_queries: 256,
         disable_recruit_batch: false,
         incremental_turns: false,
+        max_partial_batches_per_turn: 3,
         checkpoint_dir: None,
         resume_checkpoint: None,
     };
@@ -288,6 +298,13 @@ fn parse_args() -> Config {
             "--turn-timeout" => c.turn_timeout = value.parse().unwrap_or_else(|_| usage()),
             "--query-budget-seconds" => c.query_timeout = value.parse().unwrap_or_else(|_| usage()),
             "--max-queries-per-turn" => c.max_queries = value.parse().unwrap_or_else(|_| usage()),
+            "--max-partial-batches-per-turn" => {
+                let limit: u32 = value.parse().unwrap_or_else(|_| usage());
+                if !(1..=1024).contains(&limit) {
+                    usage();
+                }
+                c.max_partial_batches_per_turn = limit;
+            }
             "--checkpoint-dir" => c.checkpoint_dir = Some(PathBuf::from(value)),
             "--resume-checkpoint" => c.resume_checkpoint = Some(PathBuf::from(value)),
             _ => usage(),
@@ -800,13 +817,14 @@ fn authorize_model_batch(
 fn validate_model_boundary(
     orders: &[Value],
     incremental: bool,
-    accepted_partial_batches: u8,
-) -> Result<(), (&'static str, &'static str)> {
+    accepted_partial_batches: u32,
+    max_partial_batches: u32,
+) -> Result<(), (&'static str, String)> {
     if orders.iter().any(|order| order.get("action").and_then(Value::as_str) == Some("Resign")) {
         return if orders == [json!({"action":"Resign"})] {
             Ok(())
         } else {
-            Err(("parse", "Resign must be the only action and have no extra fields"))
+            Err(("parse", "Resign must be the only action and have no extra fields".into()))
         };
     }
     let end_turn_count = orders
@@ -830,16 +848,21 @@ fn validate_model_boundary(
         });
     if incremental {
         if end_turn_count > 1 || (end_turn_count == 1 && !ends) {
-            return Err(("parse", "EndTurn must be final and may appear at most once"));
+            return Err(("parse", "EndTurn must be final and may appear at most once".into()));
         }
-        if end_turn_count == 0 && accepted_partial_batches >= 3 {
+        if end_turn_count == 0 && accepted_partial_batches >= max_partial_batches {
+            let msg = if max_partial_batches == 3 {
+                "three partial batches are committed; the next batch must end the turn".to_string()
+            } else {
+                format!("{max_partial_batches} partial batches are committed; the next batch must end the turn")
+            };
             return Err((
                 "partial_limit",
-                "three partial batches are committed; the next batch must end the turn",
+                msg,
             ));
         }
     } else if end_turn_count != 1 || !ends {
-        return Err(("parse", "exactly one final EndTurn is required"));
+        return Err(("parse", "exactly one final EndTurn is required".into()));
     }
     Ok(())
 }
@@ -2215,7 +2238,8 @@ fn boundary_value(
     units: &Registry<UnitDef>,
     partial: bool,
     incremental: bool,
-    accepted_partial_batches: u8,
+    accepted_partial_batches: u32,
+    max_partial_batches: u32,
 ) -> Value {
     let mut value = game_state_to_json(state, units);
     if let Some(object) = value.as_object_mut() {
@@ -2231,12 +2255,16 @@ fn boundary_value(
             json!(accepted_partial_batches),
         );
         object.insert(
+            "max_partial_batches".into(),
+            json!(max_partial_batches),
+        );
+        object.insert(
             "remaining_partial_batches".into(),
-            json!(3u8.saturating_sub(accepted_partial_batches)),
+            json!(max_partial_batches.saturating_sub(accepted_partial_batches)),
         );
         object.insert(
             "final_only".into(),
-            json!(incremental && accepted_partial_batches >= 3),
+            json!(incremental && accepted_partial_batches >= max_partial_batches),
         );
     }
     value
@@ -2247,18 +2275,26 @@ fn print_boundary(
     units: &Registry<UnitDef>,
     partial: bool,
     incremental: bool,
-    accepted_partial_batches: u8,
+    accepted_partial_batches: u32,
+    max_partial_batches: u32,
 ) {
     println!(
         "{}",
-        boundary_value(state, units, partial, incremental, accepted_partial_batches)
+        boundary_value(
+            state,
+            units,
+            partial,
+            incremental,
+            accepted_partial_batches,
+            max_partial_batches
+        )
     );
     io::stdout().flush().unwrap();
 }
 
 /// Protocol driver.  Queries are deliberately kept at the boundary: the
 /// engine remains the sole authority for mutation and legality.
-fn interactive_protocol_game(c: &Config) {
+fn interactive_protocol_game(mut c: Config) {
     println!("{}", json!({"type":"protocol", "version":2}));
     io::stdout().flush().unwrap();
     if c.seed == 0
@@ -2289,7 +2325,10 @@ fn interactive_protocol_game(c: &Config) {
         }
         None => None,
     };
-    let (initial_state, f0, f1, units) = match init_game(c) {
+    if let Some(checkpoint) = checkpoint.as_ref() {
+        c.max_partial_batches_per_turn = checkpoint.max_partial_batches_per_turn;
+    }
+    let (initial_state, f0, f1, units) = match init_game(&c) {
         Ok(game) => game,
         Err(message) => {
             println!(
@@ -2310,7 +2349,8 @@ fn interactive_protocol_game(c: &Config) {
             || checkpoint.seed != c.seed
             || checkpoint.starting_gold != c.gold
             || checkpoint.disable_recruit_batch != c.disable_recruit_batch
-            || checkpoint.incremental_turns != c.incremental_turns
+            || (checkpoint.incremental_turns != c.incremental_turns
+                && (checkpoint.pending_opponent_turn || checkpoint.accepted_partial_batches > 0))
         {
             println!(
                 "{}",
@@ -2369,7 +2409,7 @@ fn interactive_protocol_game(c: &Config) {
         .as_ref()
         .map(|checkpoint| checkpoint.side_turns)
         .unwrap_or(0);
-    let mut partial_batches = checkpoint
+    let mut partial_batches: u32 = checkpoint
         .as_ref()
         .map(|checkpoint| checkpoint.accepted_partial_batches)
         .unwrap_or(0);
@@ -2386,7 +2426,7 @@ fn interactive_protocol_game(c: &Config) {
         "{}",
         json!({"type":"game_start",
                "side_turns": side_turns,
-               "state": boundary_value(&state, &units, false, c.incremental_turns, partial_batches)})
+               "state": boundary_value(&state, &units, false, c.incremental_turns, partial_batches, c.max_partial_batches_per_turn)})
     );
     io::stdout().flush().unwrap();
 
@@ -2416,7 +2456,7 @@ fn interactive_protocol_game(c: &Config) {
             "{}",
             json!({"type":"game_end","reason":"winner","winner":winner,"turns":state.turn,
                 "side_turns":side_turns,"state_revision":state.state_revision,
-                "state":boundary_value(&state, &units, false, c.incremental_turns, partial_batches)})
+                "state":boundary_value(&state, &units, false, c.incremental_turns, partial_batches, c.max_partial_batches_per_turn)})
         );
         return;
     }
@@ -2425,7 +2465,7 @@ fn interactive_protocol_game(c: &Config) {
             "{}",
             json!({"type":"game_end","reason":"max_turns","turns":state.turn,"side_turns":side_turns,
                 "state_revision":state.state_revision,
-                "state":boundary_value(&state, &units, false, c.incremental_turns, partial_batches)})
+                "state":boundary_value(&state, &units, false, c.incremental_turns, partial_batches, c.max_partial_batches_per_turn)})
         );
         return;
     }
@@ -2447,7 +2487,7 @@ fn interactive_protocol_game(c: &Config) {
             "{}",
             json!({"type":"game_end","reason":"winner","winner":winner,"turns":state.turn,
                 "side_turns":side_turns,"state_revision":state.state_revision,
-                "state":boundary_value(&state, &units, false, c.incremental_turns, partial_batches)})
+                "state":boundary_value(&state, &units, false, c.incremental_turns, partial_batches, c.max_partial_batches_per_turn)})
         );
         return;
     }
@@ -2456,12 +2496,12 @@ fn interactive_protocol_game(c: &Config) {
             "{}",
             json!({"type":"game_end","reason":"max_turns","turns":state.turn,"side_turns":side_turns,
                 "state_revision":state.state_revision,
-                "state":boundary_value(&state, &units, false, c.incremental_turns, partial_batches)})
+                "state":boundary_value(&state, &units, false, c.incremental_turns, partial_batches, c.max_partial_batches_per_turn)})
         );
         return;
     }
     if let Ok(Some(reference)) = write_checkpoint(
-        c,
+        &c,
         &state,
         side_turns,
         next_id,
@@ -2472,7 +2512,7 @@ fn interactive_protocol_game(c: &Config) {
         println!("{}", reference);
         io::stdout().flush().unwrap();
     }
-    print_boundary(&state, &units, false, c.incremental_turns, partial_batches);
+    print_boundary(&state, &units, false, c.incremental_turns, partial_batches, c.max_partial_batches_per_turn);
 
     let (line_tx, line_rx) = mpsc::sync_channel::<Result<String, String>>(8);
     std::thread::spawn(move || {
@@ -2596,13 +2636,19 @@ fn interactive_protocol_game(c: &Config) {
                     {
                         Some(json!({"code":"parse","message":"invalid action shape"}))
                     } else if orders.is_some_and(|items| {
-                        validate_model_boundary(items, c.incremental_turns, partial_batches)
-                            .is_err()
+                        validate_model_boundary(
+                            items,
+                            c.incremental_turns,
+                            partial_batches,
+                            c.max_partial_batches_per_turn,
+                        )
+                        .is_err()
                     }) {
                         let (code, message) = validate_model_boundary(
                             orders.as_ref().unwrap(),
                             c.incremental_turns,
                             partial_batches,
+                            c.max_partial_batches_per_turn,
                         )
                         .unwrap_err();
                         Some(json!({"code":code,"message":message}))
@@ -3316,7 +3362,12 @@ fn interactive_protocol_game(c: &Config) {
             continue;
         }
         if let Err((code, message)) =
-            validate_model_boundary(&orders, c.incremental_turns, partial_batches)
+            validate_model_boundary(
+                &orders,
+                c.incremental_turns,
+                partial_batches,
+                c.max_partial_batches_per_turn,
+            )
         {
             println!(
                 "{}",
@@ -3367,7 +3418,7 @@ fn interactive_protocol_game(c: &Config) {
         if batch_succeeded {
             if did_end {
                 match write_checkpoint(
-                    c,
+                    &c,
                     &batch_state,
                     side_turns + 1,
                     batch_next_id,
@@ -3396,7 +3447,7 @@ fn interactive_protocol_game(c: &Config) {
         if c.incremental_turns && batch_succeeded && !did_end {
             partial_batches += 1;
             match write_checkpoint(
-                c,
+                &c,
                 &state,
                 side_turns,
                 next_id,
@@ -3446,7 +3497,7 @@ fn interactive_protocol_game(c: &Config) {
                     "{}",
                     json!({"type":"game_end","reason":"max_turns","turns":state.turn,"side_turns":side_turns,
                         "state_revision":state.state_revision,
-                        "state":boundary_value(&state, &units, false, c.incremental_turns, partial_batches)})
+                        "state":boundary_value(&state, &units, false, c.incremental_turns, partial_batches, c.max_partial_batches_per_turn)})
                 );
                 terminal = true;
                 break;
@@ -3480,7 +3531,7 @@ fn interactive_protocol_game(c: &Config) {
                 "{}",
                 json!({"type":"game_end","reason":"winner","winner":winner,"turns":state.turn,
                     "side_turns":side_turns,"state_revision":state.state_revision,
-                    "state":boundary_value(&state, &units, !did_end, c.incremental_turns, partial_batches)})
+                    "state":boundary_value(&state, &units, !did_end, c.incremental_turns, partial_batches, c.max_partial_batches_per_turn)})
             );
             terminal = true;
             break;
@@ -3490,7 +3541,7 @@ fn interactive_protocol_game(c: &Config) {
                 "{}",
                 json!({"type":"game_end","reason":"max_turns","turns":state.turn,"side_turns":side_turns,
                     "state_revision":state.state_revision,
-                    "state":boundary_value(&state, &units, !did_end, c.incremental_turns, partial_batches)})
+                    "state":boundary_value(&state, &units, !did_end, c.incremental_turns, partial_batches, c.max_partial_batches_per_turn)})
             );
             terminal = true;
             break;
@@ -3499,7 +3550,7 @@ fn interactive_protocol_game(c: &Config) {
             query_count = 0;
             query_elapsed = Duration::ZERO;
             action_count = 0;
-            match write_checkpoint(c, &state, side_turns, next_id, 0, "model", false) {
+            match write_checkpoint(&c, &state, side_turns, next_id, 0, "model", false) {
                 Ok(Some(reference)) => {
                     println!("{}", reference);
                     io::stdout().flush().unwrap();
@@ -3514,10 +3565,10 @@ fn interactive_protocol_game(c: &Config) {
                     break;
                 }
             }
-            print_boundary(&state, &units, false, c.incremental_turns, partial_batches);
+            print_boundary(&state, &units, false, c.incremental_turns, partial_batches, c.max_partial_batches_per_turn);
             deadline = Instant::now() + Duration::from_secs(c.turn_timeout);
         } else if c.incremental_turns && batch_succeeded {
-            print_boundary(&state, &units, true, c.incremental_turns, partial_batches);
+            print_boundary(&state, &units, true, c.incremental_turns, partial_batches, c.max_partial_batches_per_turn);
         }
     }
     if !terminal && state.check_winner().is_none() {
@@ -3551,7 +3602,7 @@ fn main() {
     if c.scripted {
         scripted_game(&c);
     } else {
-        interactive_protocol_game(&c);
+        interactive_protocol_game(c);
     }
 }
 
@@ -3565,6 +3616,29 @@ mod protocol_tests {
         assert_eq!(completed_finish_kind(&orders, false), None);
         assert_eq!(completed_finish_kind(&[json!({"action": "EndTurn"})], true),
                    Some("implicit_end_turn"));
+    }
+
+    #[test]
+    fn validate_model_boundary_respects_custom_max_partial_batches() {
+        let orders = vec![json!({"action": "Move", "unit_id": 1, "col": 2, "row": 2})];
+        // 63 partial batches accepted under limit 64 -> still allowed
+        assert!(validate_model_boundary(&orders, true, 63, 64).is_ok());
+        // 64 partial batches accepted under limit 64 -> must end turn
+        assert_eq!(
+            validate_model_boundary(&orders, true, 64, 64),
+            Err((
+                "partial_limit",
+                "64 partial batches are committed; the next batch must end the turn".to_string()
+            ))
+        );
+        // Default 3 partial batches limit
+        assert_eq!(
+            validate_model_boundary(&orders, true, 3, 3),
+            Err((
+                "partial_limit",
+                "three partial batches are committed; the next batch must end the turn".to_string()
+            ))
+        );
     }
 
     #[test]
@@ -3583,6 +3657,7 @@ mod protocol_tests {
             max_queries: 1,
             disable_recruit_batch: false,
             incremental_turns: false,
+            max_partial_batches_per_turn: 3,
             checkpoint_dir: None,
             resume_checkpoint: None,
         };
@@ -3625,6 +3700,7 @@ mod protocol_tests {
             max_queries: 1,
             disable_recruit_batch: false,
             incremental_turns: false,
+            max_partial_batches_per_turn: 3,
             checkpoint_dir: None,
             resume_checkpoint: None,
         };
@@ -3688,6 +3764,7 @@ mod tests {
             max_queries: 1,
             disable_recruit_batch: false,
             incremental_turns: false,
+            max_partial_batches_per_turn: 3,
             checkpoint_dir: Some(dir.clone()),
             resume_checkpoint: None,
         };
@@ -3705,6 +3782,7 @@ mod tests {
         let restored = read_checkpoint(&path).expect("read checkpoint");
         assert_eq!(restored.save_state.rng_state, 42);
         assert_eq!(restored.side_turns, 0);
+        assert_eq!(restored.max_partial_batches_per_turn, 3);
         assert_eq!(restored.boundary, "model");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -3768,6 +3846,7 @@ mod tests {
             max_queries: 1,
             disable_recruit_batch: false,
             incremental_turns: false,
+            max_partial_batches_per_turn: 3,
             checkpoint_dir: None,
             resume_checkpoint: None,
         };
@@ -3841,6 +3920,7 @@ mod tests {
             max_queries: 1,
             disable_recruit_batch: false,
             incremental_turns: false,
+            max_partial_batches_per_turn: 3,
             checkpoint_dir: None,
             resume_checkpoint: None,
         };

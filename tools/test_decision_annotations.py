@@ -75,6 +75,26 @@ class DecisionAnnotationTests(unittest.TestCase):
         annotation = annotation_for_response(json.dumps(response), guide_text=guide)
         self.assertEqual(annotation["guide_hash"], guide_hash(guide))
 
+    def test_consequential_only_partial_coverage_allowed(self):
+        # In focused mode (require_full_coverage=False), annotating only a subset of actions is valid
+        response = {
+            "actions": [
+                {"action": "Move", "unit_id": 1, "col": 1, "row": 1},
+                {"action": "Move", "unit_id": 2, "col": 2, "row": 2},
+                {"action": "Attack", "attacker_id": 1, "defender_id": 3},
+            ],
+            "decisions": [
+                {"orders": [2], "rules": ["T1"], "expected": "Attack defender", "risk": "Counterattack"}
+            ]
+        }
+        # Default (batch mode) requires full coverage -> invalid
+        batch_res = annotation_for_response(json.dumps(response), action_count=3, require_full_coverage=True)
+        self.assertEqual(batch_res["status"], "invalid")
+        # Focused mode allows partial coverage -> valid
+        focused_res = annotation_for_response(json.dumps(response), action_count=3, require_full_coverage=False)
+        self.assertEqual(focused_res["status"], "valid")
+        self.assertEqual(len(focused_res["decisions"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
