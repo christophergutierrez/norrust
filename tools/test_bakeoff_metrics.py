@@ -307,6 +307,25 @@ class EvidenceBoundaryTests(unittest.TestCase):
             ])
         self.assertEqual(result['tokens_to_first_useful'], 30)
 
+    def test_canonical_call_with_conflicting_request_links_is_unknown(self):
+        records = [
+            {'type': 'model_request', 'request_id': 'r1', 'sequence': 1},
+            {'type': 'forwarded_orders', 'request_id': 'r1', 'orders': [
+                {'action': 'Move', 'unit_id': 4}]},
+            {'type': 'driver', 'line': {'type': 'events', 'source': 'llm',
+                                        'events': [{'kind': 'move', 'unit': 4}]}},
+            {'type': 'model_request', 'request_id': 'r2', 'sequence': 2}]
+        result = bm.evaluate_trial_actions(
+            records, useful_spec={'kind': 'move'},
+            physical_calls=[
+                {'game_id': 'g', 'call_id': 'same-call', 'request_id': 'r1',
+                 'total_tokens': 10},
+                {'game_id': 'g', 'call_id': 'same-call', 'request_id': 'r2',
+                 'total_tokens': 10},
+            ])
+        self.assertTrue(result['useful_action_achieved'])
+        self.assertIsNone(result['tokens_to_first_useful'])
+
     def test_other_attacker_event_cannot_prove_authored_attack(self):
         records=[{'type':'forwarded_orders','request_id':'r','orders':[
             {'action':'Attack','attacker_id':1,'defender_id':2}]},

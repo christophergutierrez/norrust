@@ -201,11 +201,20 @@ def _physical_request_totals(records: list[dict[str, Any]],
         if not isinstance(request_id, str) or not request_id or not isinstance(call_id, str) or not call_id:
             unlinked = True
             continue
-        key = (request_id, call_id)
+        # Usage identity is the catalog's canonical (game_id, call_id), not
+        # the request link. A retry can update its request linkage while the
+        # call itself remains one physical attempt.
+        game_id = raw.get("game_id")
+        if not isinstance(game_id, str) or not game_id:
+            game_id = "fixture"
+        key = (game_id, call_id)
         total = raw.get("total_tokens")
         if isinstance(raw.get("usage"), dict):
             total = raw["usage"].get("total_tokens")
         if key in calls_by_id:
+            old_request_id = calls_by_id[key].get("request_id")
+            if old_request_id != request_id:
+                conflicts.add(key)
             old = calls_by_id[key].get("total_tokens")
             if old is None and total is not None:
                 # A dispatch lifecycle row may be followed by its terminal
@@ -216,12 +225,12 @@ def _physical_request_totals(records: list[dict[str, Any]],
             elif old is not None and total is not None and old != total:
                 conflicts.add(key)
             continue
-        calls_by_id[key] = {"request_id": request_id, "call_id": call_id,
+        calls_by_id[key] = {"game_id": game_id, "request_id": request_id, "call_id": call_id,
                             "total_tokens": total,
                             "normalization_gaps": raw.get("normalization_gaps")}
 
     known_request_ids = set(request_ids)
-    if any(request_id not in known_request_ids for request_id, _ in calls_by_id):
+    if any(call["request_id"] not in known_request_ids for call in calls_by_id.values()):
         unlinked = True
     grouped: dict[str, list[dict[str, Any]]] = {}
     for call in calls_by_id.values():
@@ -237,8 +246,9 @@ def _physical_request_totals(records: list[dict[str, Any]],
             request_total = 0
             for call in calls:
                 total = call.get("total_tokens")
+                key = (call["game_id"], call["call_id"])
                 if (type(total) is not int or total < 0 or call.get("normalization_gaps")
-                        or (request_id, call["call_id"]) in conflicts):
+                        or key in conflicts):
                     cumulative = None
                     break
                 request_total += total
