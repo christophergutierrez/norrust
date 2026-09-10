@@ -136,6 +136,9 @@ class ModelCall:
 
     requested_model: str | None = None
     reported_model: str | None = None
+    requested_affinity: str | None = None
+    prompt_layout_version: str | None = None
+    prompt_layout_source: str | None = None
     requested_reasoning_effort: str | None = None
     reported_reasoning_effort: str | None = None
     output_limit: int | None = None
@@ -236,7 +239,8 @@ def merge_lifecycle(existing: ModelCall, update: ModelCall) -> tuple[ModelCall, 
                   "native_thread_id", "usage_source", "raw_usage_json", "source_ref",
                   "source_hash", "request_id", "retry_of_call_id", "linkage_evidence",
                   "started_at", "requested_model", "requested_reasoning_effort", "output_limit",
-                  "provider", "transport"):
+                  "provider", "transport", "requested_affinity", "prompt_layout_version",
+                  "prompt_layout_source"):
         new = getattr(update, field)
         if new is not None:
             setattr(merged, field, new)

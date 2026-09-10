@@ -41,6 +41,15 @@ and occupancy remain live mappings. Maintained transports receive the complete
 assembled prompt unchanged. Request records include fixed-prefix UTF-8 bytes
 and a hash; these show cache eligibility, never a provider hit. Offline byte
 comparisons use `python3 -m tools.prompt_cache_report --archive PATH`.
+SQLite reports use `python3 -m tools.prompt_cache_report --db DB --game-id ID`
+with optional `--model MODEL` and `--layout LAYOUT`; these filters select the
+same physical calls as their linked prompt rows. Fireworks sends the supported
+`x-session-affinity` header only when request context supplies a durable
+conversation ID. Its value is stable for an in-place game/model resume and
+changes for a fresh game or checkpoint branch. Missing context leaves affinity
+unknown. Equal prompt prefixes and elapsed time do not establish cache hits or
+processing speedups.
+
 Preserve rule IDs when editing wording so recorded citations remain comparable;
 the archived guide hash identifies the exact text used by a game.
 

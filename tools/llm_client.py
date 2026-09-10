@@ -2575,7 +2575,7 @@ def run(args: argparse.Namespace) -> int:
                     "selective_finish_turns", "timeout_finish_turns"):
             if isinstance(previous_metadata.get(key), int):
                 metadata[key] = previous_metadata[key]
-        if isinstance(previous_metadata.get("conversation_id"), str):
+        if not resume_checkpoint and isinstance(previous_metadata.get("conversation_id"), str):
             metadata["conversation_id"] = previous_metadata["conversation_id"]
         previous_tools = previous_metadata.get("tool_calls_by_name")
         if isinstance(previous_tools, dict):

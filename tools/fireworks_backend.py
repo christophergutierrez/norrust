@@ -51,6 +51,14 @@ DEFAULT_MAX_OUTPUT_TOKENS = 16384
 TRANSPORT = "fireworks_chat_completions"
 
 
+def session_affinity_for(conversation_id: Any, model: Any) -> str | None:
+    if not isinstance(conversation_id, str) or not conversation_id:
+        return None
+    model_text = model if isinstance(model, str) and model else DEFAULT_MODEL
+    return "norrust-" + hashlib.sha256(
+        f"norrust-session-affinity-v1:{conversation_id}:{model_text}".encode()).hexdigest()[:32]
+
+
 def _sidecar_path(explicit: str | None) -> Path:
     return Path(explicit or os.environ.get("NORRUST_USAGE_SIDECAR") or "usage.ndjson")
 
@@ -74,7 +82,9 @@ _UNSET = object()
 
 def run(prompt: str, *, model: str, max_output_tokens: int, game_id: str | None,
         request_id: str | None, sidecar_path: Path,
-        opener=urllib.request.urlopen, api_key: str | None = _UNSET) -> dict[str, Any]:
+        opener=urllib.request.urlopen, api_key: str | None = _UNSET,
+        session_affinity: str | None = None,
+        prompt_layout_version: str | None = None) -> dict[str, Any]:
     """Dispatch one Fireworks chat-completions call and return the reply envelope.
 
     Raises on any failure (network, HTTP, empty/invalid content); the usage
@@ -85,6 +95,8 @@ def run(prompt: str, *, model: str, max_output_tokens: int, game_id: str | None,
     call_id = _allocate_call_id(game_id, prompt_sha256)
     call = ModelCall(game_id=game_id or "unbound", call_id=call_id, request_id=request_id,
                       provider="fireworks", transport=TRANSPORT, requested_model=model,
+                      requested_affinity=session_affinity,
+                      prompt_layout_version=prompt_layout_version,
                       output_limit=max_output_tokens, status="dispatched",
                       started_at=str(time.time()), source_hash=prompt_sha256)
     _append_sidecar(sidecar_path, call, "dispatch")
@@ -106,12 +118,14 @@ def run(prompt: str, *, model: str, max_output_tokens: int, game_id: str | None,
         raise RuntimeError("request_unknown: FIREWORKS_API_KEY is not set")
 
     started = time.monotonic()
-    request = urllib.request.Request(FIREWORKS_URL, data=json.dumps(payload).encode(),
-                                      headers={"Authorization": f"Bearer {key}",
-                                               "Content-Type": "application/json"})
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    if session_affinity:
+        headers["x-session-affinity"] = session_affinity
+    request = urllib.request.Request(FIREWORKS_URL, data=json.dumps(payload).encode(), headers=headers)
     try:
         with opener(request, timeout=840) as response:
             raw = response.read()
+            response_headers = getattr(response, "headers", None)
     except urllib.error.HTTPError as exc:
         body = exc.read().decode(errors="replace")
         final = dataclasses.replace(call, status="failed", error_code=f"http_{exc.code}",
@@ -138,7 +152,33 @@ def run(prompt: str, *, model: str, max_output_tokens: int, game_id: str | None,
         _append_sidecar(sidecar_path, final, "final")
         raise RuntimeError("request_unknown: Fireworks reply was not a well-formed chat completion") from exc
 
-    usage_raw = body.get("usage") if isinstance(body.get("usage"), dict) else None
+    body_usage = dict(body.get("usage")) if isinstance(body.get("usage"), dict) else {}
+    usage_raw = dict(body_usage)
+    details = usage_raw.get("prompt_tokens_details")
+    if "prompt_cache_hit_tokens" not in usage_raw and isinstance(details, dict):
+        if "cached_tokens" in details:
+            usage_raw["prompt_cache_hit_tokens"] = details["cached_tokens"]
+    header_counts: dict[str, Any] = {}
+    header_names: dict[str, str] = {}
+    if response_headers is not None:
+        header_evidence = {}
+        for header, field in (("fireworks-prompt-tokens", "prompt_tokens"),
+                              ("fireworks-cached-prompt-tokens", "prompt_cache_hit_tokens")):
+            value = response_headers.get(header) if hasattr(response_headers, "get") else None
+            if value is None:
+                continue
+            header_evidence[header] = value
+            if isinstance(value, str) and value.isdecimal():
+                header_counts[field] = int(value)
+                header_names[field] = header
+                if field not in usage_raw:
+                    usage_raw[field] = int(value)
+        if header_evidence:
+            usage_raw["fireworks_response_headers"] = header_evidence
+    if body_usage:
+        usage_raw["fireworks_body_usage"] = body_usage
+    if not usage_raw:
+        usage_raw = None
     finish_reason = choice.get("finish_reason")
     content = choice.get("message", {}).get("content") if isinstance(choice.get("message"), dict) else None
     call_status = "completed" if isinstance(content, str) and content.strip() else "failed"
@@ -149,7 +189,24 @@ def run(prompt: str, *, model: str, max_output_tokens: int, game_id: str | None,
                         provider_response_id=body.get("id"), finish_reason=finish_reason,
                         output_limit=max_output_tokens, started_at=call.started_at,
                         ended_at=str(time.time()), elapsed_ms=elapsed_ms, source_hash=prompt_sha256,
+                        requested_affinity=session_affinity,
+                        prompt_layout_version=prompt_layout_version,
                         usage_source="provider_response" if usage_raw is not None else None)
+    body_counts = {
+        "prompt_tokens": body_usage.get("prompt_tokens"),
+        "prompt_cache_hit_tokens": body_usage.get("prompt_cache_hit_tokens"),
+    }
+    details = body_usage.get("prompt_tokens_details")
+    if body_counts["prompt_cache_hit_tokens"] is None and isinstance(details, dict):
+        body_counts["prompt_cache_hit_tokens"] = details.get("cached_tokens")
+    for field, header_value in header_counts.items():
+        body_value = body_counts.get(field)
+        if body_value is not None and body_value != header_value:
+            contract_field = {"prompt_tokens": "input_tokens",
+                              "prompt_cache_hit_tokens": "cached_input_tokens"}[field]
+            final.normalization_gaps.append(
+                f"conflict:{contract_field}:body={body_value}!={header_names[field]}={header_value}")
+    final.normalization_gaps = sorted(set(final.normalization_gaps))
     _append_sidecar(sidecar_path, final, "final")
 
     if call_status == "failed":
@@ -165,7 +222,10 @@ def run(prompt: str, *, model: str, max_output_tokens: int, game_id: str | None,
     reply: dict[str, Any] = {"text": text, "cache": {
         "requested_model": model, "runtime_model": body.get("model"),
         "requested_reasoning_effort": None, "runtime_reasoning_effort": None,
-        "runtime_settings_source": "provider_response", "transport": TRANSPORT}}
+        "runtime_settings_source": "provider_response", "transport": TRANSPORT,
+        "session_affinity": session_affinity,
+        "prompt_layout_version": prompt_layout_version,
+        "session_affinity_status": "sent" if session_affinity else "unavailable"}}
     normalized = {field: getattr(final, field) for field in
                   ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_tokens")}
     if any(value is not None for value in normalized.values()):
@@ -208,11 +268,15 @@ def main(argv: list[str] | None = None) -> int:
         args.request_id = context.get("harness_request_id")
     if not args.game_id:
         args.game_id = context.get("conversation_id")
+    affinity = session_affinity_for(context.get("conversation_id"), args.model)
+    layout = context.get("prompt_layout_version")
     prompt = sys.stdin.read()
     sidecar = _sidecar_path(args.usage_sidecar)
     try:
         reply = run(prompt, model=args.model, max_output_tokens=args.max_output_tokens,
-                    game_id=args.game_id, request_id=args.request_id, sidecar_path=sidecar)
+                    game_id=args.game_id, request_id=args.request_id, sidecar_path=sidecar,
+                    session_affinity=affinity,
+                    prompt_layout_version=layout if isinstance(layout, str) else None)
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 1

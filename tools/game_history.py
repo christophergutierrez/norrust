@@ -18,7 +18,7 @@ try:
 except ImportError:  # pragma: no cover - direct script compatibility
     from model_usage import ModelCall, TOKEN_FIELDS, aggregate_calls, dedupe_calls, request_aggregate_from_legacy  # type: ignore
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 # IMPORTER_VERSION guards the SNAPSHOT TIMELINE contract that tools/replay_game.py
 # refuses to export against. Storing executed events did not change how a frame is
 # built, so it deliberately does NOT bump: bumping it would make all previously
@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS model_calls (
  request_id TEXT, retry_of_call_id TEXT,
  provider TEXT, transport TEXT, native_thread_id TEXT, provider_response_id TEXT,
  requested_model TEXT, reported_model TEXT, requested_reasoning_effort TEXT,
+ requested_affinity TEXT, prompt_layout_version TEXT, prompt_layout_source TEXT,
  reported_reasoning_effort TEXT, output_limit INTEGER,
  status TEXT NOT NULL, finish_reason TEXT, error_code TEXT,
  started_at TEXT, ended_at TEXT, elapsed_ms INTEGER,
@@ -235,6 +236,12 @@ def open_history(path: str | os.PathLike[str], *, read_only: bool = False) -> sq
     ):
         if name not in side_turn_columns:
             conn.execute(f"ALTER TABLE side_turns ADD COLUMN {name} {definition}")
+    call_columns = {row[1] for row in conn.execute("PRAGMA table_info(model_calls)")}
+    for name, definition in (("requested_affinity", "TEXT"),
+                             ("prompt_layout_version", "TEXT"),
+                             ("prompt_layout_source", "TEXT")):
+        if name not in call_columns:
+            conn.execute(f"ALTER TABLE model_calls ADD COLUMN {name} {definition}")
     return conn
 
 def _records(path: Path) -> list[dict[str, Any]]:
@@ -974,6 +981,7 @@ def _import_events(conn: sqlite3.Connection, game_id: str, records: list[dict[st
 _MODEL_CALL_COLUMNS = (
     "game_id", "call_id", "request_id", "retry_of_call_id", "provider", "transport",
     "native_thread_id", "provider_response_id", "requested_model", "reported_model",
+    "requested_affinity", "prompt_layout_version", "prompt_layout_source",
     "requested_reasoning_effort", "reported_reasoning_effort", "output_limit",
     "status", "finish_reason", "error_code", "started_at", "ended_at", "elapsed_ms",
     "input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens",
@@ -1055,6 +1063,14 @@ def _apply_usage_calls(conn: sqlite3.Connection, game_id: str,
             malformed.append(f"call:{record.call_id}:wrong_game:{record.game_id}")
     raw_records = [replace(r, game_id=game_id) for r in raw_records if r.game_id in accepted]
     deduped, conflicts = dedupe_calls(raw_records)
+    request_layouts = {row[0]: row[1] for row in conn.execute(
+        "SELECT request_id,prompt_layout_version FROM model_requests WHERE game_id=?", (game_id,))}
+    for index, call in enumerate(deduped):
+        if call.prompt_layout_version is None and call.request_id in request_layouts:
+            layout = request_layouts[call.request_id]
+            if layout is not None:
+                deduped[index] = replace(call, prompt_layout_version=layout,
+                                         prompt_layout_source="linked_harness_request")
     conn.execute("DELETE FROM model_calls WHERE game_id=?", (game_id,))
     for call in deduped:
         row = call.to_row()

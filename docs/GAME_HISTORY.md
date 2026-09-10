@@ -206,6 +206,24 @@ request records, submitted action batches, primitive authored actions, evaluatio
 runs, and decision evaluations. State and request payloads are compressed and
 hashed. Reimporting a game with the same ID is idempotent.
 
+`python3 -m tools.prompt_cache_report --db PATH --game-id ID [--model MODEL]
+[--layout LAYOUT]` reports canonical prompt byte-prefix comparisons and
+provider cache usage from physical `model_calls`. Filters apply to those calls
+and their linked prompts. Results are grouped by actual model, layout,
+transport, and scope; unknown values remain separate. The cache ratio includes
+only calls with both measured input and cached-input tokens and valid
+`cached_input_tokens <= input_tokens`; unknown or conflicting calls are
+excluded and labeled. Zero cached tokens are measured evidence. Byte equality
+is cache eligibility evidence, never a measured hit, and tokens are never
+inferred from bytes. Historical catalogs without call provenance remain
+explicitly unknown.
+
+Fireworks calls record the requested `x-session-affinity` value and prompt
+layout in each physical call's provenance, including dispatch-only and failed
+calls. The value is derived from the durable conversation ID and actual model,
+so in-place resume keeps it while a fresh game or checkpoint branch changes it.
+No affinity is sent when standalone adapter context is unavailable.
+
 For annotation-enabled logs, each model request stores the exact UTF-8 prompt and
 raw response (compressed and hashed), its explicit `state_revision`, and
 `annotation_status`. A valid `decision_annotation` is retained as canonical

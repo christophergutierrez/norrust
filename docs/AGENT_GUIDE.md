@@ -68,6 +68,16 @@ engine result can still be invalid for model comparison if native requests faile
 and greedy fallback completed the game. Check `terminal_class`, request statuses,
 native session IDs, token coverage, and fallback counts in the archive and catalog.
 
+For prompt-cache evidence, use the maintained Fireworks adapter and preserve
+the request context file it receives. Its session affinity is a routing hint
+derived from the durable game conversation and requested model: it remains
+stable across in-place resume and changes for a fresh game or checkpoint
+branch. Run `python3 -m tools.prompt_cache_report --db DB --game-id ID` for the
+physical-call report. Select `--model` and `--layout` when comparing cohorts;
+the report keeps transport and native-host scopes separate. Missing usage,
+layout, model, affinity, or provider cache fields are unknown, and equal prompt
+prefixes do not establish a provider cache hit or speedup.
+
 For LLM game analysis, use the canonical prompt recorded by `tools/llm_client.py`
 and its request artifacts. Historical file-backend summaries may omit draft-review,
 rescue, economy, or budget evidence; their absence is unknown, not proof that the

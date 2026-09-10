@@ -37,6 +37,58 @@ class FireworksBackendTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_affinity_header_and_call_provenance_are_recorded(self):
+        seen = {}
+        body = {"id": "resp-affinity", "model": "runtime-m1",
+                "choices": [{"finish_reason": "stop",
+                             "message": {"content": "{\"action\":\"EndTurn\"}"}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 4, "total_tokens": 104}}
+        class Response:
+            headers = {"fireworks-prompt-tokens": "100", "fireworks-cached-prompt-tokens": "80"}
+            def __enter__(self): return self
+            def __exit__(self, *exc): return False
+            def read(self): return json.dumps(body).encode()
+        def opener(request, timeout=None):
+            seen.update(request.headers)
+            return Response()
+        affinity = fb.session_affinity_for("game-a", "m1")
+        fb.run("prompt", model="m1", max_output_tokens=99, game_id="game-a",
+               request_id="r1", sidecar_path=self.sidecar, opener=opener,
+               api_key="key123", session_affinity=affinity,
+               prompt_layout_version="prompt_layout_v2")
+        self.assertEqual(seen["X-session-affinity"], affinity)
+        rows = _read_sidecar(self.sidecar)
+        self.assertEqual(rows[0]["requested_affinity"], affinity)
+        self.assertEqual(rows[-1]["prompt_layout_version"], "prompt_layout_v2")
+        self.assertEqual(rows[-1]["cached_input_tokens"], 80)
+
+    def test_affinity_is_durable_per_game_and_model_and_absent_without_context(self):
+        self.assertEqual(fb.session_affinity_for("game-a", "m1"),
+                         fb.session_affinity_for("game-a", "m1"))
+        self.assertNotEqual(fb.session_affinity_for("game-a", "m1"),
+                            fb.session_affinity_for("game-b", "m1"))
+        self.assertNotEqual(fb.session_affinity_for("game-a", "m1"),
+                            fb.session_affinity_for("game-a", "m2"))
+        self.assertIsNone(fb.session_affinity_for(None, "m1"))
+
+    def test_conflicting_response_header_is_preserved_and_marked(self):
+        body = {"id": "resp-conflict", "model": "m1",
+                "choices": [{"finish_reason": "stop", "message": {"content": "{}"}}],
+                "usage": {"prompt_tokens": 100, "prompt_cache_hit_tokens": 40}}
+        class Response:
+            headers = {"fireworks-prompt-tokens": "101", "fireworks-cached-prompt-tokens": "40"}
+            def __enter__(self): return self
+            def __exit__(self, *exc): return False
+            def read(self): return json.dumps(body).encode()
+        fb.run("prompt", model="m1", max_output_tokens=99, game_id="g-conflict",
+               request_id="r1", sidecar_path=self.sidecar,
+               opener=lambda request, timeout=None: Response(), api_key="key123")
+        final = _read_sidecar(self.sidecar)[-1]
+        self.assertTrue(any(g.startswith("conflict:input_tokens:")
+                            for g in final["normalization_gaps"]))
+        self.assertIn("fireworks_body_usage", final["raw_usage_json"])
+        self.assertIn("fireworks_response_headers", final["raw_usage_json"])
+
     def test_successful_reply_preserves_canonical_prompt_and_usage(self):
         prompt = "PLAY THE GAME exactly as given"
         body = {"id": "resp-1", "model": "runtime-model-x",
