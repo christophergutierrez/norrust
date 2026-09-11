@@ -1,6 +1,11 @@
 # Correct mechanics, readable decisions, and an observed GLM retest
 
-Status: planned, before implementation. Baseline: `90fb2a8`.
+Status: complete through stack 5 on 2026-09-11. Baseline: `90fb2a8`.
+Code stacks: `b7023bf`, `84eeb6c`, `8c4e7d4`, `f817fba`; each passed the
+cumulative supported gate before commitment. The single observed game stopped
+at 1,026,917 tokens, no winner, four ended turns plus open turn 5.
+See the [execution and findings report](../experiments/glm-mechanics-context.md).
+New retest findings are documented there and were not added to the frozen run.
 Evidence: [previous diagnostic](../experiments/glm-followup-corrections.md),
 game `ee269ac3ee0a761f8dcd433feb9476e6`, and the source audits in
 `tmp/glm-followup-exec/`. This is the next iteration, not a rerun of completed work.
