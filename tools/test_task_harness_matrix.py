@@ -6,10 +6,12 @@ import hashlib
 import os
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from . import game_history
 from . import model_bakeoff
+from .fixtures.task_harness import scripted_responder
 
 ROOT = Path(__file__).resolve().parents[1]
 DRIVER = Path(os.environ.get("NORRUST_TEST_DRIVER", ROOT / "norrust_core/target/debug/greedy_driver"))
@@ -35,6 +37,35 @@ class TaskHarnessMatrixTests(unittest.TestCase):
                 self.assertEqual({c["arm"] for c in cells
                                   if c["position_family"] == family and c["variant"] == variant},
                                  {"A", "B", "C"})
+
+    def test_responder_consumes_focused_local_options_after_inspection(self):
+        prompt = ("FOCUSED_LOCAL_CONTEXT_BEGIN revision=1 tool=inspect_units selected=[3]\n"
+                  "LOCAL_OPERATION_OPTIONS_UNTRUSTED_DATA_BEGIN: INSPECT_UNITS n=1 "
+                  "U3 facts=type:Skeleton Archer hp:31/31 at=2,6 "
+                  "move_destinations=2,5|1,2|3,6\n"
+                  "LOCAL_OPERATION_OPTIONS_UNTRUSTED_DATA_END\n")
+        with mock.patch.dict(os.environ, {"TASK_HARNESS_FAMILY": "opening_deployment",
+                                          "TASK_HARNESS_VARIANT": "1",
+                                          "TASK_HARNESS_ARM": "A"}, clear=False):
+            reply = scripted_responder._reply_for(prompt)
+        self.assertEqual(reply["actions"], [{"action": "Move", "unit_id": 3, "col": 2, "row": 5}])
+
+        choices_prompt = prompt.replace(
+            "LOCAL_OPERATION_OPTIONS_UNTRUSTED_DATA_END\n",
+            "LOCAL_OPERATION_OPTIONS_UNTRUSTED_DATA_END\n"
+            "CHOICES c_3_deadbeef: Move U3 to (2,5)\n")
+        with mock.patch.dict(os.environ, {"TASK_HARNESS_FAMILY": "opening_deployment",
+                                          "TASK_HARNESS_VARIANT": "1",
+                                          "TASK_HARNESS_ARM": "C"}, clear=False):
+            reply = scripted_responder._reply_for(choices_prompt, choices_mode=True)
+        self.assertEqual(reply["choices"], ["c_3_deadbeef"])
+
+        with mock.patch.dict(os.environ, {"TASK_HARNESS_FAMILY": "recruiter_defense",
+                                          "TASK_HARNESS_VARIANT": "1",
+                                          "TASK_HARNESS_ARM": "B"}, clear=False):
+            reply = scripted_responder._reply_for(
+                prompt.replace("opening_deployment", "recruiter_defense"))
+        self.assertEqual(reply["actions"], [{"action": "Attack", "attacker_id": 13, "defender_id": 38}])
 
     def test_all_24_isolated_cells_run_import_and_report(self):
         with tempfile.TemporaryDirectory() as td:

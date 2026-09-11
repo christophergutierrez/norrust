@@ -1,10 +1,15 @@
+import json
 import unittest
 
 from .llm_client import (
     compact_batch_preview,
+    compact_local_recruiter_danger,
     compact_target_inspection,
     compact_tactical_surface,
     compact_unit_inspection,
+    build_local_execution_context,
+    build_current_turn_readiness,
+    compact_local_guardrails,
     enrich_inspected_units,
     enrich_target_inspection,
     game_budget_context,
@@ -15,6 +20,116 @@ from .llm_client import (
 
 
 class ReadableMechanicsTests(unittest.TestCase):
+    def test_local_context_requires_usable_inspection_and_keeps_revision(self):
+        state = {"state_revision": 7, "turn": 2, "active_faction": 0,
+                 "units": [{"id": 4, "faction": 0, "hp": 10,
+                            "advancement_pending": False},
+                           {"id": 8, "faction": 0, "hp": 12,
+                            "advancement_pending": True, "advances_to": ["Mage", "Scout"]}],
+                 "terrain": [{"terrain_id": "village", "owner": 0}],
+                 "tactical_surface": {"economy": {"gold": 30},
+                                      "threats": {"recruiters": []}}}
+        unavailable = build_local_execution_context(
+            state, {"tool": "inspect_units", "unit_ids": [4]}, "inspect_units",
+            [{"unit_id": 4, "available": False}], "INSPECT_UNIT unavailable")
+        self.assertIsNone(unavailable)
+        context = build_local_execution_context(
+            state, {"tool": "inspect_units", "unit_ids": [4]}, "inspect_units",
+            [{"unit_id": 4, "origins": [{"current": True}]}],
+            "INSPECT_UNITS n=1\nmove_destinations=1\nCHOICES move:4:2,1")
+        self.assertEqual(context["revision"], 7)
+        self.assertIn("pending_promotions", context["guardrails"])
+        self.assertIn("army", context["guardrails"])
+        prompt = prompt_for(state, [], decision_mode="focused", local_context=context)
+        self.assertIn("CHOICES move:4:2,1", prompt)
+        self.assertIn("Mage", prompt)
+        self.assertIn("Scout", prompt)
+
+        target_context = build_local_execution_context(
+            state, {"tool": "inspect_target", "unit_id": 9}, "inspect_target",
+            {"target_id": 9, "available": True},
+            "TARGET U9 ATTACK U4 defender_killed=0% attacker_retaliation=2.4HP")
+        target_prompt = prompt_for(state, [], decision_mode="focused",
+                                   local_context=target_context)
+        self.assertIn("attacker_retaliation=2.4HP", target_prompt)
+
+    def test_local_guardrails_do_not_fabricate_missing_global_data(self):
+        rendered = compact_local_guardrails({"state_revision": 8, "active_faction": 0})
+        self.assertIn('"army":"unknown"', rendered)
+        self.assertIn('"recruiter_danger":"unknown"', rendered)
+        self.assertIn('"villages":"unknown"', rendered)
+
+        malformed = compact_local_guardrails({
+            "active_faction": 0, "units": None,
+            "tactical_surface": {"economy": None, "recruitment": None,
+                                  "threats": {"recruiters": []}},
+        }, {"tasks": [{"units": None}], "holds": None})
+        self.assertIn('"army":"unknown"', malformed)
+        self.assertIn('"pending_promotions":"unknown"', malformed)
+        self.assertIn('"agenda_assigned":[]', malformed)
+        self.assertIn('"agenda_holds":"unknown"', malformed)
+
+        readable = compact_local_guardrails({
+            "state_revision": 8, "active_faction": 0,
+            "units": [{"id": 1, "faction": 0, "hp": 10},
+                      {"id": 2, "faction": 0}],
+            "terrain": [{"terrain_id": "village", "owner": 0}],
+            "tactical_surface": {
+                "threats": {"projected_time_of_day": "Night", "recruiters": [{
+                    "recruiter_id": 9, "hp": 20, "col": 2, "row": 7,
+                    "distinct_attacker_count": 1, "max_incoming_sum": 20,
+                    "lethal_attackers_needed": 1,
+                    "focus_kill_bps": [705],
+                    "focus_expected_damage_tenths": [24],
+                }]},
+                "economy": {"next_village_income": 4},
+                "recruitment": {"gold": 6, "legal_now": True, "reason": "ready",
+                                "placement_hexes": [{"col": 1, "row": 1}],
+                                "options": [{"def_id": "Skeleton", "affordable": True}]},
+            },
+        })
+        self.assertIn('"hp":"unknown"', readable)
+        self.assertIn('projected_village_income', readable)
+        self.assertIn('Skeleton', readable)
+        self.assertIn('legal_now', readable)
+        self.assertIn('focus_expected=(damage_from_1=2.4HP', readable)
+        self.assertIn('lethal_attackers_needed=1', readable)
+        self.assertNotIn("focus_kill_bps", readable)
+        self.assertNotIn("tenths", readable)
+        self.assertNotIn("bps", readable)
+
+        self.assertIn("lethal_attackers_needed=null (unreachable under supplied maximum volleys)",
+                      compact_local_recruiter_danger({
+                          "tactical_surface": {"threats": {"recruiters": [
+                              {"recruiter_id": 9, "lethal_attackers_needed": None}
+                          ]}}
+                      }))
+        self.assertIn("lethal_attackers_needed=unknown", compact_local_recruiter_danger({
+            "tactical_surface": {"threats": {"recruiters": [{"recruiter_id": 9}]}}
+        }))
+
+    def test_local_prompt_uses_selected_inspection_options_only(self):
+        state = {"state_revision": 3, "active_faction": 0, "units": [],
+                 "terrain": [], "tactical_surface": {"unit_types": []}}
+        context = build_local_execution_context(
+            state, {"tool": "inspect_hex", "col": 2, "row": 1, "phase": "current"},
+            "inspect_hex", {"col": 2, "row": 1, "phase": "current", "options": ["x"]},
+            "HEX 2,1 current options=x")
+        readiness = build_current_turn_readiness(
+            state, moved=[4], attacked=[5], agenda_unassigned=[6], agenda_holds=[7])
+        prompt = prompt_for(
+            state, [], choices=[{"handle": "unrelated-global-choice"}],
+            decision_mode="focused", local_context=context,
+            current_turn_readiness=readiness)
+        self.assertIn("FOCUSED_LOCAL_CONTEXT_BEGIN revision=3", prompt)
+        self.assertIn("HEX 2,1 current options=x", prompt)
+        self.assertIn("LOCAL_OPERATION_OPTIONS_UNTRUSTED_DATA_BEGIN:", prompt)
+        self.assertIn("LOCAL_OPERATION_OPTIONS_UNTRUSTED_DATA_END", prompt)
+        self.assertNotIn("unrelated-global-choice", prompt)
+        memory = json.loads(prompt.split("MEMORY_UNTRUSTED_DATA_BEGIN:\n", 1)[1]
+                            .split("\nMEMORY_UNTRUSTED_DATA_END", 1)[0])
+        self.assertEqual(memory["current_turn_readiness"], readiness)
+
     def test_shared_formatter_scales_raw_values_and_names_exchange_roles(self):
         forecast = {"outcome_bps": [705, 9000, 295],
                     "expected_damage_tenths": [24, 14]}

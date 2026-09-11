@@ -1,6 +1,7 @@
 # Reliable facts, inspection recovery, and local execution
 
-Status: planned, 2026-09-11. Baseline: `90e35f7`.
+Status: code stacks complete and cumulatively tested, 2026-09-11; observed retest pending.
+Baseline: `90e35f7`.
 Evidence: [last diagnostic](../experiments/glm-mechanics-context.md), game
 `acf48862062d7233448b750b762b6216`. Inspect its catalog before original archives.
 

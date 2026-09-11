@@ -1974,7 +1974,7 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("Bare tools: documented keys only", prompt)
         self.assertIn("focused_context", prompt)
         self.assertIn("finish the wounded target before ending the turn", prompt)
-        self.assertIn("completing that operation does not end the turn", prompt)
+        self.assertIn("completing an operation does not end the turn", prompt)
 
     def test_annotation_contract_is_shared_and_matches_utf8_validator(self):
         for mode in ("batch", "focused"):

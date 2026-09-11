@@ -154,12 +154,18 @@ an accepted partial is acknowledged when `--log` is supplied.
   at a time, and decision annotations may cover only consequential actions.
   Exhausted tool calls do not force a premature `EndTurn` while `final_only` is False.
   The two tiers choose one small objective, inspect its target or preferably at
-  most four relevant units, then request one useful operation using context
-  pinned to the inspection revision. Accepted partial actions invalidate that
-  local context; the global board, recruiter, economy, and opponent danger stay
-  visible. Intent and agenda retain origin request, turn, and revision
-  internally when available, and remain provisional rationale rather than rules
-  or permanent garrisons.
+  most four relevant units when a missing fact matters, then enter a local
+  execution phase. Inspection is optional when the supplied legal actions
+  already establish the objective. The next
+  request replaces the full tactical option rows with the exact inspected
+  options in an explicit untrusted-data block plus compact live guardrails (side/phase, recruiter danger,
+  economy/villages, army IDs, and pending promotions), all pinned to the
+  inspection revision. A fresh inspection replaces that local task. Accepted
+  partial actions invalidate the local context; an engine validation rollback
+  keeps it for repair and another permitted inspection. Legal action envelopes
+  remain accepted without an inspection. Intent and agenda retain origin
+  request, turn, and revision internally when available, and remain provisional
+  rationale rather than rules or permanent garrisons.
 
 `--action-encoding {coordinates,choices}` selects how actions are represented
 (default `coordinates`).
@@ -698,11 +704,14 @@ client's expectation. The backend result, sidecar, and reply `cache` use
 runtime settings. A requested value is not runtime confirmation.
 
 When an engine rejects a submitted batch, the client allows bounded action
-repairs. Inspection results requested during pre-submit repair remain in every
-subsequent repair prompt, including across multiple inspections and malformed
-responses. Tool requests have their own four-request cap; physical model calls
-remain separately recorded. Repeated illegal proposals remain a model-invalid
-result and are recorded separately from infrastructure failures.
+repairs. In batch mode, inspection results requested during pre-submit repair
+remain in every subsequent repair prompt, including across multiple inspections
+and malformed responses. Focused mode keeps the structured local projection and
+replaces its inspected operation when a new inspection succeeds; raw requests
+and results remain in the archive without accumulating prompt copies. Tool
+requests have their own four-request cap; physical model calls remain separately
+recorded. Repeated illegal proposals remain a model-invalid result and are
+recorded separately from infrastructure failures.
 
 Execution parsing remains strict: a complete inspection object followed by
 unfenced rationale is rejected as a model response. For the one existing syntax

@@ -11,6 +11,8 @@ import sys
 import tempfile
 import unittest
 
+from .llm_client import prompt_regions
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DRIVER = Path(os.environ.get(
@@ -75,12 +77,118 @@ else:
 '''
 
 
+SCENARIO_BACKEND = r'''import json, os, pathlib, sys
+scenario = os.environ["FOCUSED_SCENARIO"]
+path = pathlib.Path(os.environ["FOCUSED_PROMPTS"])
+prompt = sys.stdin.read()
+index = len(path.read_text().splitlines()) if path.exists() else 0
+with path.open("a", encoding="utf-8") as stream:
+    stream.write(json.dumps({"prompt": prompt}) + "\n")
+inspect = {"tool": "inspect_units", "unit_ids": [1]}
+preview = {"tool": "preview_batch", "candidates": [[{"action": "EndTurn"}]]}
+if scenario == "preview":
+    response = inspect if index == 0 else preview if index == 1 else {"actions": [{"action": "Resign"}]}
+elif scenario == "unavailable":
+    response = inspect if index == 0 else ({"tool": "inspect_target", "unit_id": 999999}
+                                           if index == 1 else {"actions": [{"action": "Resign"}]})
+elif scenario == "rollback":
+    response = (inspect if index == 0 else
+                {"actions": [{"action": "Move", "unit_id": 1, "col": 2, "row": 7}]} if index == 1 else
+                inspect if index == 2 else {"actions": [{"action": "EndTurn"}]})
+elif scenario == "rollback_unavailable":
+    response = (inspect if index == 0 else
+                {"actions": [{"action": "Move", "unit_id": 1, "col": 2, "row": 7}]} if index == 1 else
+                {"tool": "inspect_target", "unit_id": 999999} if index == 2 else
+                {"actions": [{"action": "EndTurn"}]})
+else:  # malformed action repair while a local inspection is active
+    response = (inspect if index == 0 else
+                {"actions": [{"action": "Move", "unit_id": 1, "col": 2, "row": 7}]} if index == 1 else
+                {"actions": [{"action": "Move", "unit_id": 1, "col": 2, "row": 7}]} if index == 2 else
+                {"actions": [{"action": "EndTurn"}]})
+print(json.dumps({"text": json.dumps(response, separators=(",", ":"))}))
+'''
+
+
 def records(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines()]
 
 
 @unittest.skipUnless(DRIVER.is_file(), "build greedy_driver before running real-driver tests")
 class FocusedContextDriverTests(unittest.TestCase):
+    def run_scenario(self, scenario: str) -> tuple[list[dict], list[dict]]:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            backend = root / "backend.py"
+            backend.write_text(SCENARIO_BACKEND)
+            prompt_log = root / "prompts.ndjson"
+            log = root / "match.ndjson"
+            result = subprocess.run(
+                [sys.executable, "-m", "tools.llm_client", "--driver", str(DRIVER),
+                 "--model-command", shlex.join([sys.executable, str(backend)]),
+                 "--scenario", "big_battle_6", "--faction0", "undead",
+                 "--faction1", "undead", "--gold", "100", "--seed", "9211",
+                 "--llm-side", "0", "--max-turns", "1", "--incremental-turns",
+                 "--decision-mode", "focused", "--max-partial-batches-per-turn", "5",
+                 "--disable-agenda-sweep", "--player-model", "offline-fixture",
+                 "--log", str(log), "--query-budget-seconds", "10",
+                 "--model-timeout", "10", "--turn-timeout", "30"],
+                cwd=ROOT, capture_output=True, text=True, timeout=60,
+                env={**os.environ, "PYTHONPATH": str(ROOT),
+                     "FOCUSED_PROMPTS": str(prompt_log), "FOCUSED_SCENARIO": scenario},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + log.read_text())
+            return records(prompt_log), records(log)
+
+    def test_local_preview_followup_keeps_actual_preview_result(self):
+        prompts, rows = self.run_scenario("preview")
+        self.assertEqual(len(prompts), 3)
+        preview_prompt = prompts[2]["prompt"]
+        self.assertEqual(preview_prompt.count("FOCUSED_LOCAL_CONTEXT_BEGIN"), 1)
+        self.assertIn("TOOL_RESULT_UNTRUSTED_DATA_BEGIN tool=preview_batch", preview_prompt)
+        self.assertIn("SIMULATION", preview_prompt)
+        self.assertEqual(sum(row.get("type") == "batch_preview" for row in rows), 1)
+
+    def test_unavailable_new_inspection_clears_old_local_view(self):
+        prompts, rows = self.run_scenario("unavailable")
+        self.assertEqual(len(prompts), 3)
+        first_local, unavailable = prompts[1]["prompt"], prompts[2]["prompt"]
+        self.assertIn("FOCUSED_LOCAL_CONTEXT_BEGIN", first_local)
+        self.assertNotIn("FOCUSED_LOCAL_CONTEXT_BEGIN", unavailable)
+        self.assertIn("TARGET unavailable", unavailable)
+        self.assertEqual(sum(row.get("available") is False for row in rows
+                             if row.get("type") == "focused_context"), 1)
+
+    def test_validation_rollback_reinspection_reuses_live_revision(self):
+        prompts, rows = self.run_scenario("rollback")
+        self.assertEqual(len(prompts), 4)
+        self.assertEqual([prompt["prompt"].count("FOCUSED_LOCAL_CONTEXT_BEGIN")
+                          for prompt in prompts], [0, 1, 1, 1])
+        local_prompts = [item["prompt"] for item in prompts[1:]]
+        self.assertTrue(all("revision=0" in item for item in local_prompts))
+        self.assertEqual(sum(row.get("tool") == "inspect_units" for row in rows
+                             if row.get("type") == "tool_result"), 2)
+        self.assertEqual([row["orders"][0]["action"] for row in rows
+                          if row.get("type") == "forwarded_orders"], ["EndTurn"])
+
+    def test_validation_unavailable_reinspection_clears_local_view(self):
+        prompts, rows = self.run_scenario("rollback_unavailable")
+        self.assertEqual(len(prompts), 4)
+        self.assertEqual([prompt["prompt"].count("FOCUSED_LOCAL_CONTEXT_BEGIN")
+                          for prompt in prompts], [0, 1, 1, 0])
+        self.assertIn("TARGET unavailable", prompts[3]["prompt"])
+        self.assertEqual(sum(row.get("available") is False for row in rows
+                             if row.get("type") == "focused_context"), 1)
+        self.assertEqual([row["orders"][0]["action"] for row in rows
+                          if row.get("type") == "forwarded_orders"], ["EndTurn"])
+
+    def test_action_repairs_do_not_reappend_stale_inspection_copies(self):
+        prompts, rows = self.run_scenario("malformed")
+        self.assertEqual(len(prompts), 4)
+        for item in prompts[1:]:
+            prompt = item["prompt"]
+            self.assertEqual(prompt.count("FOCUSED_LOCAL_CONTEXT_BEGIN"), 1)
+            self.assertEqual(prompt.count("MODEL_TOOL_REQUEST_UNTRUSTED_DATA_BEGIN"), 0)
+        self.assertEqual(sum(row.get("type") == "action_repair" for row in rows), 2)
     def test_inspection_followup_is_revision_pinned_and_expires_after_partial(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -115,10 +223,43 @@ class FocusedContextDriverTests(unittest.TestCase):
             self.assertIn('weapons:[{"damage":4,"name":"staff"', followup)
             self.assertIn("move_destinations=", followup)
             self.assertIn("attack_options=", followup)
+            self.assertIn('"local_guardrails"', followup)
+            self.assertIn('"pending_promotions"', followup)
+            self.assertIn('"local_execution"', followup)
+            self.assertEqual(prompt_regions(first)["fixed_prefix_sha256"],
+                             prompt_regions(followup)["fixed_prefix_sha256"])
+            # The old path resent the full prompt and appended the same raw
+            # inspection result. Use the recorded rendered-result bytes plus
+            # the actual request/block framing to model that exact dynamic
+            # shape, with the same followup instruction on both prompts.
+            rows = records(log)
+            inspection_bytes = next(row["result_bytes"] for row in rows
+                                    if row.get("type") == "tool_result"
+                                    and row.get("tool") == "inspect_units")
+            request_text = json.dumps(
+                {"tool": "inspect_units", "unit_ids": [1]}, separators=(",", ":"))
+            rendered_placeholder = "x" * inspection_bytes
+            old_tool_context = (
+                "\nMODEL_TOOL_REQUEST_UNTRUSTED_DATA_BEGIN:\n" + request_text +
+                "\nMODEL_TOOL_REQUEST_UNTRUSTED_DATA_END\n" +
+                "TOOL_RESULT_UNTRUSTED_DATA_BEGIN tool=inspect_units\n" +
+                rendered_placeholder + "\nTOOL_RESULT_UNTRUSTED_DATA_END\n")
+            instruction_start = followup.index("\nBUDGETS ")
+            same_followup_instruction = followup[instruction_start:]
+            # Strip the initial dispatch's budget/footer before reusing the
+            # followup's suffix. Counting both would exaggerate the savings.
+            full_base = first.split("\nGAME_BUDGET_CONTEXT_BEGIN\n", 1)[0]
+            legacy_followup = full_base + old_tool_context + same_followup_instruction
+            self.assertEqual(legacy_followup.count("AUTHORITATIVE_LIVE_STATE_BEGIN"), 1)
+            self.assertEqual(legacy_followup.count("GAME_BUDGET_CONTEXT_BEGIN"), 1)
+            legacy_bytes = len(legacy_followup.encode())
+            self.assertLess(len(followup.encode()), legacy_bytes,
+                            "local=%d legacy_full_followup=%d (rendered_result=%d)" %
+                            (len(followup.encode()), legacy_bytes, inspection_bytes))
+            self.assertNotIn('"tactical_surface"', followup[followup.index("BOARD_UNTRUSTED_DATA_BEGIN:"):])
             self.assertNotIn("FOCUSED_LOCAL_CONTEXT_BEGIN", after_partial)
             self.assertIn("revision=1 controlled_side=0", after_partial)
 
-            rows = records(log)
             requests = [row for row in rows if row.get("type") == "model_request"]
             self.assertEqual(len(requests), 3)
             self.assertEqual(

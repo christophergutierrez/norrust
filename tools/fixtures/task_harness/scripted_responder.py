@@ -40,6 +40,26 @@ def _units(briefing: str, faction: int = 0) -> list[dict]:
     return result
 
 
+def _local_selected_unit(prompt: str) -> int | None:
+    """Read the focused local task without requiring the global board card."""
+    match = re.search(r"FOCUSED_LOCAL_CONTEXT_BEGIN[^\n]*selected=\[(\d+)\]", prompt)
+    return int(match.group(1)) if match else None
+
+
+def _local_has_destination(prompt: str, unit_id: int, destination: tuple[int, int]) -> bool:
+    """Check a selected unit's revision-pinned local move options."""
+    marker = "LOCAL_OPERATION_OPTIONS_UNTRUSTED_DATA_BEGIN:"
+    if marker not in prompt:
+        return False
+    local = prompt.split(marker, 1)[1].split("LOCAL_OPERATION_OPTIONS_UNTRUSTED_DATA_END", 1)[0]
+    unit_line = next((line for line in local.splitlines()
+                      if re.search(rf"\bU{unit_id}\b", line)), "")
+    match = re.search(r"\bmove_destinations=([^\s]+)", unit_line)
+    if not match:
+        return False
+    return f"{destination[0]},{destination[1]}" in match.group(1).split("|")
+
+
 def _choice(options: list[dict], category: str, **wanted: object) -> dict | None:
     for item in options:
         if item.get("category") == category and all(item.get(k) == v for k, v in wanted.items()):
@@ -95,6 +115,16 @@ def _reply_for(prompt: str, choices_mode: bool = False) -> dict:
                                "expected": action.get("action", "operation"), "risk": "none"}]}
 
     if family == "opening_deployment":
+        local_id = _local_selected_unit(prompt)
+        if local_id is not None and _local_has_destination(prompt, local_id, (2, 5)):
+            if arm == "C":
+                handle = _tool_handle(prompt, (2, 5))
+                if handle:
+                    return {"choices": [handle], "intent": "opening move by handle",
+                            "decisions": [{"orders": [0], "rules": ["T2"],
+                                           "expected": "move", "risk": "none"}]}
+            return emit({"action": "Move", "unit_id": local_id, "col": 2, "row": 5},
+                        "move", unit_id=local_id, col=2, row=5)
         if partial == 0 and recruited is None:
             return emit({"action": "Recruit", "def_id": "Skeleton Archer", "col": 2, "row": 6},
                         "recruit", def_id="Skeleton Archer", col=2, row=6)
@@ -109,6 +139,16 @@ def _reply_for(prompt: str, choices_mode: bool = False) -> dict:
         return {"actions": [{"action": "EndTurn"}], "intent": "opening complete"}
 
     if family == "competing_villages":
+        local_id = _local_selected_unit(prompt)
+        if local_id is not None and _local_has_destination(prompt, local_id, (2, 4)):
+            if arm == "C":
+                handle = _tool_handle(prompt, (2, 4))
+                if handle:
+                    return {"choices": [handle], "intent": "village move by handle",
+                            "decisions": [{"orders": [0], "rules": ["T2"],
+                                           "expected": "move", "risk": "none"}]}
+            return emit({"action": "Move", "unit_id": local_id, "col": 2, "row": 4},
+                        "move", unit_id=local_id, col=2, row=4)
         scout = next((u for u in units if u["def_id"] == "Vampire" or u["def_id"] == "Vampire Bat"), None)
         if scout is None:
             return emit({"action": "Recruit", "def_id": "Vampire Bat", "col": 2, "row": 6},
@@ -138,7 +178,9 @@ def _reply_for(prompt: str, choices_mode: bool = False) -> dict:
             inspected = _tool_attack(prompt, target)
             if inspected:
                 return {"actions": [inspected], "intent": "answer recruiter threat"}
-            if "TOOL_RESULT_UNTRUSTED_DATA_BEGIN" not in prompt and "CHOICES " not in prompt:
+            if ("TOOL_RESULT_UNTRUSTED_DATA_BEGIN" not in prompt
+                    and "CHOICES " not in prompt
+                    and "LOCAL_OPERATION_OPTIONS_UNTRUSTED_DATA_BEGIN" not in prompt):
                 return {"tool": "inspect_units", "unit_ids": [attacker]}
             # The inspection result has already established the live threat;
             # submit the same factual attack once rather than re-inspecting.
