@@ -230,6 +230,9 @@ Options:
   --query-budget-seconds N  Query servicing budget per model turn (default: 300)
   --max-queries-per-turn N  Query cap (default: 256)
   Model final actions: EndTurn (implicit eligibility-based sweep), DoneWithImportantMoves (explicit eligibility-based sweep), or FinishWithGreedy
+  MoveGroupToward is a nonfinal movement-only macro: it steps 1-8 named units toward a
+  rally hex (which may be occupied) without ending the turn, attacking, recruiting, or
+  running the opponent. Geometric progress is not proof of safety or a clear route.
   --disable-recruit-batch  Reject the model-only RecruitBatch macro
   Resign as a standalone action to concede without advancing the turn
   --incremental-turns    Allow partial model batches before EndTurn (up to --max-partial-batches-per-turn, default 3)
@@ -762,11 +765,41 @@ fn authorize_model_batch(
                 if state
                     .units
                     .get(&id)
-                    .is_none_or(|unit| unit.faction != model_side)
+                    .is_none_or(|unit| {
+                        unit.faction != model_side
+                            || unit.hp == 0
+                            || !state.positions.contains_key(&id)
+                    })
                 {
                     return Err((
                         "unauthorized_unit",
                         "FinishWithGreedy may reference only living model-side units",
+                    ));
+                }
+            }
+            continue;
+        }
+        if order.get("action").and_then(Value::as_str) == Some("MoveGroupToward") {
+            let ids = order
+                .get("unit_ids")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_u64)
+                .map(|id| id as u32);
+            for id in ids {
+                if state
+                    .units
+                    .get(&id)
+                    .is_none_or(|unit| {
+                        unit.faction != model_side
+                            || unit.hp == 0
+                            || !state.positions.contains_key(&id)
+                    })
+                {
+                    return Err((
+                        "unauthorized_unit",
+                        "MoveGroupToward may reference only living model-side units",
                     ));
                 }
             }
@@ -1054,6 +1087,10 @@ fn valid_action_shape(order: &Value) -> bool {
         "RecruitBatch" => (&["action", "def_id", "count"], &["def_id", "count"]),
         "Engage" => (&["action", "target_id", "steps"], &["target_id", "steps"]),
         "FinishWithGreedy" => (&["action", "groups", "holds"], &["groups"]),
+        "MoveGroupToward" => (
+            &["action", "unit_ids", "col", "row"],
+            &["unit_ids", "col", "row"],
+        ),
         "DoneWithImportantMoves" => (&["action"], &[]),
         "EndTurn" => (&["action"], &[]),
         "Resign" => (&["action"], &[]),
@@ -1147,6 +1184,29 @@ fn valid_action_shape(order: &Value) -> bool {
                 .and_then(Value::as_str)
                 .is_none_or(|reason| reason.chars().count() > 120)
             {
+                return false;
+            }
+        }
+        return true;
+    }
+    if action == "MoveGroupToward" {
+        let in_i32 =
+            |value: &Value| value.as_i64().is_some_and(|v| (i32::MIN as i64..=i32::MAX as i64).contains(&v));
+        if !object.get("col").is_some_and(in_i32) || !object.get("row").is_some_and(in_i32) {
+            return false;
+        }
+        let Some(unit_ids) = object.get("unit_ids").and_then(Value::as_array) else {
+            return false;
+        };
+        if unit_ids.is_empty() || unit_ids.len() > 8 {
+            return false;
+        }
+        let mut ids = HashSet::new();
+        for id in unit_ids {
+            let Some(id) = id.as_u64().filter(|id| *id <= u32::MAX as u64) else {
+                return false;
+            };
+            if !ids.insert(id) {
                 return false;
             }
         }
@@ -1316,7 +1376,19 @@ struct BatchExecution {
     next_id: u32,
     results: Vec<Value>,
     events: Vec<GameEvent>,
-    delegated_event_start: Option<usize>,
+    /// One entry per event, identifying the authored macro order that
+    /// generated it. `None` is an ordinary authored engine event. This keeps
+    /// multiple macros in one batch distinguishable even when adjacent
+    /// delegated envelopes are coalesced for the wire protocol.
+    delegated_order_indices: Vec<Option<usize>>,
+    /// Half-open `[start, end)` byte ranges into `events` contributed by a
+    /// macro (`FinishWithGreedy`, the automatic `DoneWithImportantMoves`/
+    /// `EndTurn` sweep, or `MoveGroupToward`) rather than directly authored
+    /// by the model. Multiple ranges can appear in one batch because
+    /// `MoveGroupToward` does not end the turn, so authored orders may
+    /// follow it before an eventual terminal macro. Ranges are pushed in
+    /// ascending, non-overlapping order because `events` only ever grows.
+    delegated_ranges: Vec<(usize, usize)>,
     did_end: bool,
     forecasts: Vec<Value>,
     sequence_attacks: BTreeMap<u32, (u32, Vec<(u32, CombatParameters)>)>,
@@ -1344,7 +1416,8 @@ fn execute_model_batch(
 ) -> BatchExecution {
     let mut results = Vec::with_capacity(orders.len());
     let mut events = Vec::new();
-    let mut delegated_event_start = None;
+    let mut delegated_order_indices: Vec<Option<usize>> = Vec::new();
+    let mut delegated_ranges: Vec<(usize, usize)> = Vec::new();
     let mut did_end = false;
     let mut forecasts = Vec::new();
     let mut sequence_attacks = BTreeMap::<u32, (u32, Vec<(u32, CombatParameters)>)>::new();
@@ -1373,6 +1446,15 @@ fn execute_model_batch(
         }
         let mut conditional_action = conditional_on_survival;
         let mut conditional_steps = Vec::new();
+        let mut move_group_report: Option<(Vec<Value>, Vec<Value>)> = None;
+        let is_delegating_order = matches!(
+            action_name,
+            Some("FinishWithGreedy")
+                | Some("DoneWithImportantMoves")
+                | Some("EndTurn")
+                | Some("MoveGroupToward")
+        );
+        let events_len_before = events.len();
         let result = match action_name {
             // Read-only validate_batch accepts resignation without advancing state.
             // Live resignation is handled by the protocol before this executor.
@@ -1582,6 +1664,9 @@ fn execute_model_batch(
                 ) {
                     Ok(recruited) => {
                         results.push(json!({"ok":true,"requested":count,"recruited":recruited,"partial":(recruited as u64) < count}));
+                        delegated_order_indices.extend(std::iter::repeat(None).take(
+                            events.len().saturating_sub(events_len_before),
+                        ));
                         continue;
                     }
                     Err(error) => Err(error),
@@ -1629,7 +1714,6 @@ fn execute_model_batch(
                 }
                 selected.sort_unstable();
                 selected.dedup();
-                delegated_event_start = Some(events.len());
                 generated.extend(ai_take_selected_greedy_actions(
                     &mut state, model_side, &selected,
                 )?);
@@ -1638,6 +1722,75 @@ fn execute_model_batch(
                 }
                 events.extend(generated);
                 Ok(Vec::new())
+            })(),
+            // Nonfinal group movement (stack 5): step each named unit toward
+            // a rally hex without attacking, recruiting, promoting, sweeping
+            // remaining units, or ending the turn. The target is a direction,
+            // so it may be occupied; ordinary reachability/ZOC rules and the
+            // deterministic tie-break in `choose_toward_hex_destination` are
+            // reused unchanged, evaluated against the state left by earlier
+            // units already processed in this same order (submitted order,
+            // not id order). Every id gets an explicit moved/skipped outcome
+            // -- there is no invented success.
+            Some("MoveGroupToward") => (|| {
+                let (Some(col), Some(row)) = (
+                    order.get("col").and_then(Value::as_i64),
+                    order.get("row").and_then(Value::as_i64),
+                ) else {
+                    return Err(norrust_core::game_state::ActionError::DestinationOutOfBounds);
+                };
+                let target = Hex::from_offset(col as i32, row as i32);
+                if !state.board.contains(target) {
+                    return Err(norrust_core::game_state::ActionError::DestinationOutOfBounds);
+                }
+                let unit_ids: Vec<u32> = order
+                    .get("unit_ids")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_u64)
+                    .map(|id| id as u32)
+                    .collect();
+                let mut produced = Vec::new();
+                let mut moved = Vec::new();
+                let mut skipped = Vec::new();
+                for id in unit_ids {
+                    match choose_toward_hex_destination(&state, id, target) {
+                        Some(destination) => {
+                            let from = state.positions.get(&id).copied();
+                            produced.extend(apply_action(
+                                &mut state,
+                                Action::Move {
+                                    unit_id: id,
+                                    destination,
+                                },
+                            )?);
+                            if let Some(from) = from {
+                                let (from_col, from_row) = from.to_offset();
+                                let (to_col, to_row) = destination.to_offset();
+                                moved.push(json!({
+                                    "unit_id": id,
+                                    "from": {"col": from_col, "row": from_row},
+                                    "to": {"col": to_col, "row": to_row}
+                                }));
+                            }
+                        }
+                        None => {
+                            let reason = if state
+                                .units
+                                .get(&id)
+                                .is_some_and(|unit| unit.moved)
+                            {
+                                "spent"
+                            } else {
+                                "no_improving_destination"
+                            };
+                            skipped.push(json!({"unit_id": id, "reason": reason}));
+                        }
+                    }
+                }
+                move_group_report = Some((moved, skipped));
+                Ok(produced)
             })(),
             Some("DoneWithImportantMoves") | Some("EndTurn") => {
                 if !sample_attacks {
@@ -1702,7 +1855,6 @@ fn execute_model_batch(
                         }
                     }
                 }
-                delegated_event_start = Some(events.len());
                 if sample_attacks {
                     automatic_model_finish(&mut state, model_side)
                 } else {
@@ -1745,6 +1897,9 @@ fn execute_model_batch(
         match result {
             Ok(mut produced) => {
                 events.append(&mut produced);
+                delegated_order_indices.extend(std::iter::repeat(
+                    if is_delegating_order { Some(results.len()) } else { None },
+                ).take(events.len().saturating_sub(events_len_before)));
                 let mut result_value = if conditional_action {
                     json!({"ok":true,"conditional_on_survival":true})
                 } else {
@@ -1753,7 +1908,23 @@ fn execute_model_batch(
                 if !conditional_steps.is_empty() {
                     result_value["conditional_steps"] = json!(conditional_steps);
                 }
+                if let Some((moved, skipped)) = move_group_report {
+                    result_value["moved"] = json!(moved);
+                    result_value["skipped"] = json!(skipped);
+                }
                 results.push(result_value);
+                if is_delegating_order && events.len() > events_len_before {
+                    // Merge into the previous range when two delegating
+                    // orders run back to back with no authored event
+                    // between them (e.g. MoveGroupToward immediately
+                    // followed by the terminal FinishWithGreedy sweep), so
+                    // adjacent macro output does not fragment into extra
+                    // same-source envelopes.
+                    match delegated_ranges.last_mut() {
+                        Some(last) if last.1 == events_len_before => last.1 = events.len(),
+                        _ => delegated_ranges.push((events_len_before, events.len())),
+                    }
+                }
                 if matches!(
                     action_name,
                     Some("EndTurn") | Some("DoneWithImportantMoves") | Some("FinishWithGreedy")
@@ -1777,6 +1948,8 @@ fn execute_model_batch(
         .all(|result| result.get("ok") == Some(&Value::Bool(true)));
     if !succeeded {
         events.clear();
+        delegated_order_indices.clear();
+        delegated_ranges.clear();
         did_end = false;
     }
     BatchExecution {
@@ -1784,7 +1957,8 @@ fn execute_model_batch(
         next_id,
         results,
         events,
-        delegated_event_start,
+        delegated_order_indices,
+        delegated_ranges,
         did_end,
         forecasts,
         sequence_attacks: sequence_attacks.clone(),
@@ -1952,7 +2126,7 @@ fn scripted_game(c: &Config) {
                 return;
             }
         };
-        print_events(&events, "greedy", "greedy", None);
+        print_events(&events, "greedy", "greedy", None, None);
 
         if let Some(winner) = state.check_winner() {
             eprintln!(
@@ -2207,13 +2381,25 @@ fn print_events(
     envelope_source: &str,
     event_source: &str,
     finish_kind: Option<&str>,
+    delegated_order_indices: Option<&[Option<usize>]>,
 ) {
     if events.is_empty() {
         return;
     }
     let body: Vec<Value> = events
         .iter()
-        .map(|event| event_value(event, event_source))
+        .enumerate()
+        .map(|(index, event)| {
+            let mut value = event_value(event, event_source);
+            if let Some(indices) = delegated_order_indices {
+                if let Some(Some(order_index)) = indices.get(index) {
+                    if let Some(object) = value.as_object_mut() {
+                        object.insert("delegated_order_index".into(), json!(order_index));
+                    }
+                }
+            }
+            value
+        })
         .collect();
     let mut envelope = json!({"type":"events", "source": envelope_source, "events": body});
     if let Some(finish_kind) = finish_kind {
@@ -2442,7 +2628,7 @@ fn interactive_protocol_game(mut c: Config) {
             ) {
                 Ok(events) => {
                     side_turns += 1;
-                    print_events(&events, "greedy", "greedy", None);
+                    print_events(&events, "greedy", "greedy", None, None);
                 }
                 Err(_) => {
                     println!("{}", greedy_infrastructure_failure(&state, side_turns));
@@ -2480,7 +2666,7 @@ fn interactive_protocol_game(mut c: Config) {
                 }
             };
         side_turns += 1;
-        print_events(&events, "greedy", "greedy", None);
+        print_events(&events, "greedy", "greedy", None, None);
     }
     if let Some(winner) = state.check_winner() {
         println!(
@@ -3345,6 +3531,7 @@ fn interactive_protocol_game(mut c: Config) {
                             | "Recruit"
                             | "RecruitBatch"
                             | "Engage"
+                            | "MoveGroupToward"
                             | "EndTurn"
                             | "DoneWithImportantMoves"
                             | "FinishWithGreedy"
@@ -3404,7 +3591,8 @@ fn interactive_protocol_game(mut c: Config) {
             next_id: batch_next_id,
             results,
             events,
-            delegated_event_start,
+            delegated_ranges,
+            delegated_order_indices,
             did_end,
             forecasts: _,
             sequence_attacks: _,
@@ -3491,16 +3679,37 @@ fn interactive_protocol_game(mut c: Config) {
         }
         println!("{}", status);
         io::stdout().flush().unwrap();
-        if let Some(start) = delegated_event_start {
-            print_events(&events[..start], "llm", "llm", None);
-            print_events(
-                &events[start..],
-                "delegated_greedy",
-                "delegated_greedy",
-                finish_kind,
-            );
-        } else {
-            print_events(&events, "llm", "llm", finish_kind);
+        // Split `events` into alternating authored/"llm" and macro-generated
+        // /"delegated_greedy" envelopes along `delegated_ranges`. A batch
+        // with no delegation (or exactly one trailing delegated range, the
+        // pre-stack-5 shape) collapses to the original one- or two-envelope
+        // output; `MoveGroupToward` mid-batch can now interleave several
+        // authored/delegated segments before an eventual terminal macro.
+        // `finish_kind` describes how the batch ended, so it belongs only on
+        // the very last envelope printed.
+        let mut segments: Vec<(usize, usize, bool)> = Vec::new();
+        let mut cursor = 0usize;
+        for &(start, end) in &delegated_ranges {
+            if start > cursor {
+                segments.push((cursor, start, false));
+            }
+            segments.push((start, end, true));
+            cursor = end;
+        }
+        if cursor < events.len() {
+            segments.push((cursor, events.len(), false));
+        }
+        let last_index = segments.len().checked_sub(1);
+        for (index, (start, end, is_delegated)) in segments.into_iter().enumerate() {
+            let kind = if Some(index) == last_index { finish_kind } else { None };
+            if is_delegated {
+                print_events(
+                    &events[start..end], "delegated_greedy", "delegated_greedy", kind,
+                    Some(&delegated_order_indices[start..end]),
+                );
+            } else {
+                print_events(&events[start..end], "llm", "llm", kind, None);
+            }
         }
         if did_end && state.check_winner().is_none() {
             partial_batches = 0;
@@ -3531,7 +3740,7 @@ fn interactive_protocol_game(mut c: Config) {
                 }
             };
             side_turns += 1;
-            print_events(&greedy_events, "greedy", "greedy", None);
+            print_events(&greedy_events, "greedy", "greedy", None, None);
         }
         if let Some(winner) = state.check_winner() {
             // A partial batch that wins is a terminal boundary the model never
@@ -3820,6 +4029,35 @@ mod tests {
         let orders = vec![json!({"action":"Resign"})];
         assert!(authorize_model_batch(&orders, &state, 0).is_ok());
         assert_eq!(authorize_model_batch(&orders, &state, 1).unwrap_err().0, "unauthorized_side");
+    }
+
+    #[test]
+    fn move_group_preflight_rejects_dead_or_unplaced_friendly_units() {
+        let mut state = GameState::new(norrust_core::board::Board::new(3, 3));
+        state.place_unit(Unit::new(1, "dead", 0, 0), Hex::from_offset(1, 1));
+        assert_eq!(
+            authorize_model_batch(
+                &[json!({"action":"MoveGroupToward","unit_ids":[1],"col":2,"row":2})],
+                &state,
+                0,
+            ),
+            Err((
+                "unauthorized_unit",
+                "MoveGroupToward may reference only living model-side units",
+            ))
+        );
+        state.units.insert(2, Unit::new(2, "unplaced", 10, 0));
+        assert_eq!(
+            authorize_model_batch(
+                &[json!({"action":"MoveGroupToward","unit_ids":[2],"col":2,"row":2})],
+                &state,
+                0,
+            ),
+            Err((
+                "unauthorized_unit",
+                "MoveGroupToward may reference only living model-side units",
+            ))
+        );
     }
 
     #[test]

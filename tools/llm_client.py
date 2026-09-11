@@ -55,7 +55,7 @@ except ImportError:  # pragma: no cover - direct script compatibility
                                       extract_units_inspection_choices)
 
 ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "Engage", "EndTurn", "Advance", "Resign",
-           "DoneWithImportantMoves", "FinishWithGreedy"}
+           "DoneWithImportantMoves", "FinishWithGreedy", "MoveGroupToward"}
 CHECKPOINT_REF_DIGEST_BYTES = 64
 
 
@@ -565,6 +565,7 @@ def validate_orders(text: str, strict: bool = False, require_end_turn: bool = Tr
             "DoneWithImportantMoves": {"action"},
             "Advance": {"action", "unit_id", "target_index", "def_id"},
             "FinishWithGreedy": {"action", "groups", "holds"},
+            "MoveGroupToward": {"action", "unit_ids", "col", "row"},
         }[action]
         if set(order) - allowed:
             raise ValueError(f"unknown key at index {i}")
@@ -578,6 +579,7 @@ def validate_orders(text: str, strict: bool = False, require_end_turn: bool = Tr
             "DoneWithImportantMoves": set(),
             "Advance": {"unit_id"},
             "FinishWithGreedy": {"groups", "holds"},
+            "MoveGroupToward": {"unit_ids", "col", "row"},
         }[action]
         if not required.issubset(order):
             raise ValueError(f"missing field at index {i}")
@@ -589,6 +591,7 @@ def validate_orders(text: str, strict: bool = False, require_end_turn: bool = Tr
             "Recruit": ("col", "row"),
             "RecruitBatch": ("count",),
             "Advance": ("unit_id", "target_index"),
+            "MoveGroupToward": ("col", "row"),
         }.get(action, ())
         for field in integer_fields:
             if field in order and (not isinstance(order[field], int) or isinstance(order[field], bool)):
@@ -600,6 +603,14 @@ def validate_orders(text: str, strict: bool = False, require_end_turn: bool = Tr
                         raise ValueError(f"{field} is out of range at index {i}")
                 elif not -(2**31) <= value <= 2**31 - 1:
                     raise ValueError(f"{field} is out of range at index {i}")
+        if action == "MoveGroupToward":
+            unit_ids = order["unit_ids"]
+            if (not isinstance(unit_ids, list) or not 1 <= len(unit_ids) <= 8
+                    or any(not isinstance(unit_id, int) or isinstance(unit_id, bool)
+                           or not 0 <= unit_id <= 2**32 - 1 for unit_id in unit_ids)
+                    or len(set(unit_ids)) != len(unit_ids)):
+                raise ValueError(
+                    f"unit_ids must contain 1-8 unique integer IDs at index {i}")
         if action == "Engage":
             if (not isinstance(order["target_id"], int) or isinstance(order["target_id"], bool)
                     or not 0 <= order["target_id"] <= 2**32 - 1
@@ -1595,6 +1606,10 @@ def handoff_audit(state: dict[str, Any], orders: list[dict[str, Any]],
     planned_moves = {order.get("unit_id") for order in orders
                      if isinstance(order, dict) and order.get("action") in {"Move", "Advance"}
                      and isinstance(order.get("unit_id"), int)}
+    for order in orders:
+        if isinstance(order, dict) and order.get("action") == "MoveGroupToward":
+            planned_moves.update(unit_id for unit_id in order.get("unit_ids", [])
+                                 if isinstance(unit_id, int))
     placements = recruitment.get("placement_hexes", []) if isinstance(recruitment, dict) else []
     reasons = []
     if healthy_idle and healthy_idle <= held and not delegated and (actionable_idle or placements):
@@ -1999,9 +2014,9 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
     if recruit_batch_enabled:
         schemas.insert(3, 'RecruitBatch: {"action":"RecruitBatch","def_id": string,"count": positive integer}; optional driver-assisted placement')
         recruitment_guidance = (
-            "\n- RecruitBatch can automatically vacate eligible castle occupants and recruit beyond the initially empty spaces, "
-            "including beyond six. It attempts the requested count subject to affordability and actual capacity; "
-            "vacating spends movement and can disrupt screens. Use individual Recruit for exact placement and deployment (T0)."
+            "\n- RecruitBatch auto-vacates eligible castle occupants, enabling recruits beyond initial empty spaces, "
+            "including beyond six, within gold and capacity; "
+            "vacating spends movement and may disrupt screens. Recruit gives exact placement (T0)."
         )
     tactical_guidance = (
         "\n## Tactical data and read-only tools\n"
@@ -2017,9 +2032,9 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "- OPEN_THREAT removes unit blockers that could move or die: a conservative geometry bound, not an executable batch. "
         "EXPOSURE gives the same direct/open facts for friendly units. RESCUE is a bounded priority list of recruiter then "
         "directly threatened wounded units. E income projects current ownership; E vacate lists legal off-castle destinations, not recommendations.\n"
-        "- Request detailed friendly origins and DESTINATION_DANGER, grouped by unit, with "
-        "{\"tool\":\"inspect_units\",\"unit_ids\":[N,...]} (one to eight unique friendly living ids; "
-        "a one-element list inspects one unit, and the whole group costs a single tool call); "
+        "- Per-unit origins and DESTINATION_DANGER: "
+        "{\"tool\":\"inspect_units\",\"unit_ids\":[N,...]} (1-8 unique living friendly IDs; "
+        "one tool call, one driver query per ID); "
         "enemy attack coverage with {\"tool\":\"inspect_target\",\"unit_id\":N} or "
         "{\"tool\":\"inspect_targets\",\"unit_ids\":[N,...]} (at most eight); hex coverage with "
         "{\"tool\":\"inspect_hex\",\"col\":C,\"row\":R,\"phase\":\"current|next_opponent_turn\"}.\n"
@@ -2033,9 +2048,14 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "- turn_options lists each unit's attack origins and reachable target IDs; "
         "an entry with \"current\":true (\"movable\":false) is a standing attack origin: never issue a Move to it.\n"
     )
+    movement_guidance = (
+        "\n- MoveGroupToward: {\"action\":\"MoveGroupToward\",\"unit_ids\":[int,...],\"col\":int,\"row\":int}; "
+        "nonfinal; 1-8 unique living friendly IDs; in-bounds rally (occupied OK); move in listed order; moved/skipped (spent or no closer hex); "
+        "no attack/recruit/promote/sweep/end/opponent; progress is not safety."
+    )
     boundary_guidance = (
         " In incremental mode, a partial non-empty action array may omit the boundary; "
-        "submit a coherent small step, observe fresh state, then continue."
+        "observe fresh state after each step."
         if state.get("incremental_turns") is True else "")
     rules = (
         (load_tactical_playbook() if playbook is None else playbook) + "\n"
@@ -2092,9 +2112,8 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "Concession: "
         "`{\"actions\":[{\"action\":\"Resign\"}],\"decisions\":[{\"orders\":[0],\"rules\":[\"T8\"],\"expected\":\"Concede: recruiter trapped, no defenders or recruits.\",\"risk\":\"Ends the match as a loss.\"}]}`\n"
         + tactical_guidance
+        + movement_guidance
     )
-
-
     body = dict(state)
     if isinstance(body.get("terrain"), list):
         body["terrain"] = sorted((tile for tile in body["terrain"] if isinstance(tile, dict)),
@@ -2195,6 +2214,7 @@ def format_committed_action_summary(
     end_revision: Optional[int],
     repair: bool = False,
     finish_kind: Optional[str] = None,
+    results: Optional[list[dict[str, Any]]] = None,
 ) -> str:
     """Render a concise, bounded engine-grounded summary of a committed action batch."""
     summaries: list[str] = []
@@ -2212,6 +2232,10 @@ def format_committed_action_summary(
             summaries.append(f"RecruitBatch({order.get('def_id')}x{order.get('count')})")
         elif act == "Engage":
             summaries.append(f"Engage(U{order.get('target_id')})")
+        elif act == "MoveGroupToward":
+            ids = order.get("unit_ids", [])
+            rendered_ids = ",".join(f"U{unit_id}" for unit_id in ids) if isinstance(ids, list) else "?"
+            summaries.append(f"MoveGroupToward([{rendered_ids}]->{order.get('col')},{order.get('row')})")
         elif act == "Advance":
             target = order.get("def_id") if order.get("def_id") is not None else order.get("target_index")
             summaries.append(f"Advance(U{order.get('unit_id')}->{target})")
@@ -2219,6 +2243,28 @@ def format_committed_action_summary(
             summaries.append(str(act))
         else:
             summaries.append(str(act))
+    # A movement macro can legally make no progress for one named unit while
+    # moving another. Preserve that per-unit engine report in continuity so a
+    # later request sees the committed outcome, rather than inferring success
+    # from the authored macro alone.
+    if isinstance(results, list):
+        for order, result in zip(orders, results):
+            if not isinstance(order, dict) or order.get("action") != "MoveGroupToward":
+                continue
+            if not isinstance(result, dict):
+                continue
+            moved_ids = [item.get("unit_id") for item in result.get("moved", [])
+                         if isinstance(item, dict) and isinstance(item.get("unit_id"), int)]
+            skipped = [
+                f"U{item.get('unit_id')}:{item.get('reason')}"
+                for item in result.get("skipped", [])
+                if isinstance(item, dict) and isinstance(item.get("unit_id"), int)
+            ]
+            if moved_ids or skipped:
+                outcome = "moved=" + ",".join(f"U{unit_id}" for unit_id in moved_ids) if moved_ids else "moved=-"
+                if skipped:
+                    outcome += " skipped=" + ",".join(skipped)
+                summaries.append(outcome)
     if len(summaries) > 8:
         action_text = ", ".join(summaries[:8]) + f"... ({len(summaries)} actions)"
     else:
@@ -2260,6 +2306,7 @@ def replay_committed_continuity(records: list[dict[str, Any]]) -> list[str]:
             repair = bool(rec.get("repair"))
             finish_kind = rec.get("authored_finish_kind")
             batch_events: list[dict[str, Any]] = []
+            batch_results: Optional[list[dict[str, Any]]] = None
             end_rev = None
             failed = False
             j = i + 1
@@ -2275,8 +2322,11 @@ def replay_committed_continuity(records: list[dict[str, Any]]) -> list[str]:
                     if isinstance(line, dict):
                         if line.get("type") == "events" and isinstance(line.get("events"), list):
                             batch_events.extend(line["events"])
-                        elif line.get("type") == "status" and isinstance(line.get("state_revision"), int):
-                            end_rev = line["state_revision"]
+                        elif line.get("type") == "status":
+                            if isinstance(line.get("state_revision"), int):
+                                end_rev = line["state_revision"]
+                            if isinstance(line.get("results"), list):
+                                batch_results = line["results"]
                         elif line.get("type") == "state" and isinstance(line.get("state_revision"), int) and end_rev is None:
                             end_rev = line["state_revision"]
                 elif next_rec.get("type") == "turn_boundary":
@@ -2291,7 +2341,8 @@ def replay_committed_continuity(records: list[dict[str, Any]]) -> list[str]:
             if not failed:
                 entries.append(
                     format_committed_action_summary(
-                        orders, batch_events, start_rev, end_rev, repair=repair, finish_kind=finish_kind
+                        orders, batch_events, start_rev, end_rev, repair=repair,
+                        finish_kind=finish_kind, results=batch_results
                     )
                 )
             i = j
@@ -2964,6 +3015,7 @@ def run(args: argparse.Namespace) -> int:
     agenda_enabled = not getattr(args, "disable_agenda_sweep", False)
     continuity_entries: list[str] = []
     last_forwarded_orders: Optional[list[dict[str, Any]]] = None
+    last_forwarded_results: Optional[list[dict[str, Any]]] = None
     last_forwarded_revision: Optional[int] = None
     last_forwarded_repair: bool = False
     last_forwarded_finish_kind: Optional[str] = None
@@ -3538,6 +3590,8 @@ def run(args: argparse.Namespace) -> int:
                 continue
             if line.get("type") == "status":
                 failure = status_failure(line)
+                if failure is None and pending_action and isinstance(line.get("results"), list):
+                    last_forwarded_results = line["results"]
                 if failure is None and pending_action and pending_intent is not None:
                     intent_memory = pending_intent
                     record({"type": "intent_update", "intent": intent_memory})
@@ -3715,6 +3769,7 @@ def run(args: argparse.Namespace) -> int:
                         elif getattr(args, "action_encoding", "coordinates") == "choices":
                             metadata["coordinate_fallbacks"] += 1
                         last_forwarded_orders = list(orders)
+                        last_forwarded_results = None
                         last_forwarded_revision = state.get("state_revision") if isinstance(state, dict) else None
                         last_forwarded_repair = True
                         last_forwarded_finish_kind = pending_finish_kind
@@ -3789,10 +3844,12 @@ def run(args: argparse.Namespace) -> int:
                         line.get("state_revision"),
                         repair=last_forwarded_repair,
                         finish_kind=last_forwarded_finish_kind if not is_partial_boundary else None,
+                        results=last_forwarded_results,
                     )
                     continuity_entries.append(summary)
                     continuity_entries[:] = continuity_entries[-4:]
                     last_forwarded_orders = None
+                    last_forwarded_results = None
                 pending_action = False
                 action_repair_attempted = False
                 if not is_partial_boundary:
@@ -4593,6 +4650,7 @@ def run(args: argparse.Namespace) -> int:
                 elif getattr(args, "action_encoding", "coordinates") == "choices":
                     metadata["coordinate_fallbacks"] += 1
                 last_forwarded_orders = list(orders)
+                last_forwarded_results = None
                 last_forwarded_revision = state.get("state_revision") if isinstance(state, dict) else None
                 last_forwarded_repair = bool(action_repair_attempted)
                 last_forwarded_finish_kind = pending_finish_kind

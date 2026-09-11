@@ -117,7 +117,10 @@ inferred by counting nearby records: a `forwarded_orders` record's own
 (its own authored events, source `llm` or `model`, and anything it delegates
 within the same batch, source `delegated_greedy`) -- because the driver
 protocol is strictly synchronous, only one batch is ever in flight, so this is
-a committed execution relationship, not a position guess. An opponent's own
+a committed execution relationship, not a position guess. Delegated events
+may also carry `delegated_order_index`, the zero-based authored macro index,
+so adjacent macros remain attributable without turning generated moves into
+separate authored actions. An opponent's own
 turn (source `greedy`) is never attached to the preceding model batch merely
 because it is nearby; its `batch_id` stays NULL. The side turn a batch belongs
 to resolves only when the batch's own recorded `state_revision` matches a

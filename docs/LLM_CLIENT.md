@@ -93,6 +93,16 @@ authored moves, recruitment vacates, or subsequent enemy actions. The submitted
 batch log carries a fresh handoff audit of its final orders after review/repair;
 the draft review retains the original candidate's audit.
 
+`MoveGroupToward` is the corresponding nonfinal movement macro. It accepts one to
+eight unique living friendly IDs and an in-bounds rally hex, processes IDs in the
+submitted order, and takes at most one legal step per unit strictly closer to the
+target. The target may be occupied because it is a direction. It reports moved
+and skipped IDs and returns control for another action in the same side turn. It
+performs no attacks, recruiting, promotion, greedy sweep, EndTurn, or opponent
+activation. Geometric progress does not establish safety, screen quality, or a
+route around blockers. Explicitly listed recruiters may move and carry the same
+loss-of-keep consequence as a manual move; omitted units are never added.
+
 Advance ranged support with its screen, and use specific rescues and guards
 while letting routine healthy units contribute. Hold only for a concrete
 purpose, and explain consequential idle units or deliberate saving in the
@@ -807,6 +817,7 @@ The client supplies legal capacity and macro semantics; saving gold is legal.
 {"action":"Attack","attacker_id":12,"defender_id":19}
 {"action":"Recruit","def_id":"Skeleton","col":3,"row":6}
 {"action":"RecruitBatch","def_id":"Skeleton","count":2}
+{"action":"MoveGroupToward","unit_ids":[12,13],"col":8,"row":6}
 {"action":"Advance","unit_id":12,"target_index":0}
 {"action":"Advance","unit_id":12,"def_id":"Veteran Skeleton"}
 {"action":"DoneWithImportantMoves"}
@@ -832,6 +843,14 @@ of at most 120 characters (the client counts characters, not UTF-8 bytes), and
 held IDs must be disjoint from delegated group IDs and from other held IDs.
 Explain consequential holds with the existing reason, expected, and risk
 fields.
+
+`MoveGroupToward` has integer `col` and `row`, plus a `unit_ids` array
+containing one to eight unique living friendly IDs. It is a nonfinal
+movement-only macro; the client forwards it as one authored action and the
+driver expands it into ordinary legal moves. A unit with no improving
+destination or spent movement is reported as skipped. The generated moves
+retain delegated provenance and are not separately authored actions or decision
+annotation indices.
 
 The client rejects malformed JSON, unknown fields, missing fields, non-integer
 numeric fields, non-positive batch counts, and invalid batch structure before

@@ -51,8 +51,8 @@ class HandoffGuideTests(unittest.TestCase):
                         # was otherwise guessing (it fell back on another game's
                         # income and upkeep rules), and the stopping-rule guide.
                         # This prose sits before PROMPT_FIXED_CONTEXT_BEGIN, so it is
-                        # byte-identical every call of a match and paid once per
-                        # cache lifetime, not per call: ~1.3KB is roughly 340 tokens
+                        # byte-identical across calls and eligible for prefix caching;
+                        # cached tokens may still be billed. ~1.3KB is roughly 340 tokens
                         # against the 37,178 reasoning tokens one routine request
                         # actually spent. The cap still exists to catch runaway
                         # growth; do not raise it again without the same evidence.

@@ -1168,6 +1168,32 @@ class ClientValidationTests(unittest.TestCase):
     def test_final_end_turn(self):
         self.assertEqual(validate_orders('[{"action":"Move","unit_id":1,"col":1,"row":1},{"action":"EndTurn"}]')[-1]["action"], "EndTurn")
 
+    def test_move_group_toward_is_a_nonfinal_coordinate_action(self):
+        action = {"action": "MoveGroupToward", "unit_ids": [12, 13], "col": 8, "row": 6}
+        self.assertEqual(validate_orders(json.dumps([action]), require_end_turn=False), [action])
+        with self.assertRaisesRegex(ValueError, "exactly one final turn boundary"):
+            validate_orders(json.dumps([action]))
+        for malformed in (
+            {**action, "unit_ids": []},
+            {**action, "unit_ids": [12, 12]},
+            {**action, "unit_ids": list(range(9))},
+            {**action, "unit_ids": [True]},
+            {**action, "col": 2**31},
+            {**action, "unexpected": 1},
+        ):
+            with self.subTest(malformed=malformed), self.assertRaises(ValueError):
+                validate_orders(json.dumps([malformed]), require_end_turn=False)
+
+    def test_move_group_toward_result_is_preserved_in_continuity(self):
+        summary = llm_client.format_committed_action_summary(
+            [{"action": "MoveGroupToward", "unit_ids": [3, 4], "col": 10, "row": 7}],
+            [{"kind": "move", "unit": 3}], 4, 5,
+            results=[{"ok": True, "moved": [{"unit_id": 3}],
+                      "skipped": [{"unit_id": 4, "reason": "spent"}]}],
+        )
+        self.assertIn("MoveGroupToward([U3,U4]->10,7)", summary)
+        self.assertIn("moved=U3 skipped=U4:spent", summary)
+
     def test_missing_final_end_turn_rejected(self):
         with self.assertRaises(ValueError):
             validate_orders('[{"action":"Move","unit_id":1,"col":1,"row":1}]')
@@ -1419,7 +1445,7 @@ class ClientValidationTests(unittest.TestCase):
                                                     "next_opponent_time_of_day": "Dusk"}}, [], compact=True)
         for text in (
                 "COORDS=col,row", '"tool":"inspect_units"', "Move destination", "compact R `open`",
-                "RecruitBatch", "explain deliberate saving"):
+                "RecruitBatch", "MoveGroupToward", "nonfinal", "moved/skipped", "explain deliberate saving"):
             with self.subTest(text=text):
                 self.assertIn(text, prompt)
         self.assertIn("p[defender-killed,both-survive,attacker-killed] and focus_p use basis points", prompt)
@@ -1432,6 +1458,12 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("next_opponent_time_of_day=Dusk", prompt)
         self.assertNotIn('"origins"', prompt)
         self.assertNotIn('"outcome_bps"', prompt)
+        choices_prompt = prompt_for(
+            {"tactical_surface": {"units": [], "visibility": "full"}}, [],
+            compact=True, action_encoding="choices", choices=[])
+        self.assertIn('"choices": ["<handle>", ...]', choices_prompt)
+        self.assertIn('"actions": [...', choices_prompt)
+        self.assertIn("MoveGroupToward", choices_prompt)
 
     def test_compact_observation_uses_col_row_coordinates(self):
         state = {"units": [{"id": 1, "faction": 0, "def_id": "leader",
@@ -1540,7 +1572,7 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual(example["actions"], [{"action": "DoneWithImportantMoves"}])
         self.assertEqual(example["decisions"][0]["orders"], [0])
         for text in ("6400", "64%", "24", "2.4 HP", "basis points", "tenths of HP",
-                     "beyond six", "automatically vacate", "affordability and actual capacity",
+                     "beyond six", "auto-vacates", "within gold and capacity",
                      "Agenda and annotation prose create no normal engine holds",
                      "Only FinishWithGreedy's explicit holds encode executable holds",
                      "Omitted units are not swept by this selective finish"):

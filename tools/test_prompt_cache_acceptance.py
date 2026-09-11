@@ -257,12 +257,10 @@ class PromptCacheAcceptanceTests(unittest.TestCase):
 
     def test_baseline_matrix_sizes_shared_prefix_and_exact_contract(self):
         baseline = json.loads(gzip.decompress(FIXTURE.read_bytes()))
-        # Re-rendered for stack 1, which changes the pinned contract by design
-        # (shared response rules, split recruit counts, B4 engine facts, split
-        # time-of-day). Cases, cache-layout assertions and the growth budget are
-        # unchanged; deltas are recorded in
-        # tmp/glm-efficiency-exec/prompt_baseline_regen.md.
-        self.assertEqual(baseline["source_commit"], "342d1b5+glm-stack1+glm-stack4")
+        # Re-rendered for the intentional stack 1/4/5 contract changes.
+        # Stored cases, historical prefix ratchet, layout checks, and growth
+        # budget are preserved; see docs/experiments/glm-decision-efficiency.md.
+        self.assertEqual(baseline["source_commit"], '342d1b5+glm-stack1+glm-stack4+glm-stack5')
         for compact in (True, False):
             prompts = [render(case, compact=compact).encode() for case in matrix()]
             old = [p.encode() for p in baseline["prompts"][str(compact)]]

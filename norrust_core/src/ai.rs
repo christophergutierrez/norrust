@@ -1894,6 +1894,91 @@ mod tests {
         assert_eq!(choose_toward_hex_destination(&state, 1, target), None);
     }
 
+    /// `MoveGroupToward` (stack 5) computes each unit's destination after
+    /// earlier units in the same submitted order have already moved, reusing
+    /// this exact function per unit. Prove the resulting split is driven by
+    /// submission order, not unit id: whichever unit is evaluated first
+    /// claims the single hex both would otherwise contest.
+    #[test]
+    fn toward_hex_recomputes_after_earlier_units_move_in_submission_order() {
+        let build = || {
+            let mut board = Board::new(5, 3);
+            for col in 0..5 {
+                for row in 0..3 {
+                    board.set_terrain(Hex::from_offset(col, row), "flat");
+                }
+            }
+            let mut state = GameState::new(board);
+            state.active_faction = 0;
+            let mut a = make_fighter(1, 0, 30);
+            a.movement = 3;
+            let mut b = make_fighter(2, 0, 30);
+            b.movement = 2;
+            state.place_unit(a, Hex::from_offset(0, 1));
+            state.place_unit(b, Hex::from_offset(1, 1));
+            state
+        };
+        let target = Hex::from_offset(4, 1);
+        let contested = Hex::from_offset(3, 1);
+        let fallback = Hex::from_offset(3, 2);
+
+        // Submitted order [1, 2]: unit 1 is evaluated first and claims the
+        // contested hex; unit 2 recomputes against the post-move state and
+        // settles for the fallback.
+        let mut state = build();
+        let first = choose_toward_hex_destination(&state, 1, target).unwrap();
+        apply_action(&mut state, Action::Move { unit_id: 1, destination: first }).unwrap();
+        let second = choose_toward_hex_destination(&state, 2, target).unwrap();
+        apply_action(&mut state, Action::Move { unit_id: 2, destination: second }).unwrap();
+        assert_eq!(first, contested);
+        assert_eq!(second, fallback);
+        assert_eq!(state.positions[&1], contested);
+        assert_eq!(state.positions[&2], fallback);
+
+        // Reversed submitted order [2, 1]: the same contested hex now goes
+        // to unit 2 because it is evaluated first -- the outcome follows
+        // submitted order, not unit id.
+        let mut state = build();
+        let first = choose_toward_hex_destination(&state, 2, target).unwrap();
+        apply_action(&mut state, Action::Move { unit_id: 2, destination: first }).unwrap();
+        let second = choose_toward_hex_destination(&state, 1, target).unwrap();
+        apply_action(&mut state, Action::Move { unit_id: 1, destination: second }).unwrap();
+        assert_eq!(first, contested);
+        assert_eq!(second, fallback);
+        assert_eq!(state.positions[&2], contested);
+        assert_eq!(state.positions[&1], fallback);
+    }
+
+    /// A blocking enemy's zone of control curbs how far a unit can advance
+    /// toward a rally hex this turn, exactly as it curbs an ordinary Move.
+    #[test]
+    fn toward_hex_destination_is_limited_by_enemy_zone_of_control() {
+        let mut board = Board::new(6, 3);
+        for col in 0..6 {
+            for row in 0..3 {
+                board.set_terrain(Hex::from_offset(col, row), "flat");
+            }
+        }
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+        let mut unit = make_fighter(1, 0, 30);
+        unit.movement = 4;
+        let start = Hex::from_offset(0, 1);
+        let target = Hex::from_offset(5, 1);
+        state.place_unit(unit, start);
+        // An enemy at (2,1) projects zone of control onto its neighbors,
+        // stopping further movement into or past them this turn.
+        state.place_unit(make_fighter(2, 1, 30), Hex::from_offset(2, 1));
+
+        let destination = choose_toward_hex_destination(&state, 1, target)
+            .expect("a legal closer destination remains available outside the zone of control");
+        assert!(destination.distance(target) < start.distance(target));
+        // Unconstrained, movement 4 would reach col 4; the zone of control
+        // must curb that reach short of the enemy.
+        assert_ne!(destination, Hex::from_offset(4, 1));
+        assert!(destination.distance(target) > Hex::from_offset(4, 1).distance(target));
+    }
+
     #[test]
     fn test_expected_damage_no_defense() {
         // 7 damage × 3 strikes × 1.0 hit_chance = 21.0

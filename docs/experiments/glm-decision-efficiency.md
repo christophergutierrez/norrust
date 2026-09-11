@@ -30,3 +30,39 @@ changed. The maintained prompt cache baseline was regenerated for the grouped
 inspection contract with source label `342d1b5+glm-stack1+glm-stack4`; its
 cache layout, shared-prefix, and growth assertions remain covered by the full
 gate.
+
+## Stack 5 — nonfinal group movement
+
+This stack adds the nonfinal `MoveGroupToward` action. It accepts one to eight
+unique living friendly IDs and an in-bounds rally coordinate, attempts one legal
+move per ID in submitted order, and returns moved or skipped results. The rally
+is a direction and may be occupied; the action never attacks, recruits,
+promotes, sweeps, ends the turn, or runs the opponent. Generated engine moves
+retain delegated provenance and their authored macro index.
+
+The real-driver fixture in `tools/test_movement_integration.py` runs the
+recruit → nonfinal group movement (including a no-progress skip) → recruit →
+movement → explicit finish sequence with both coordinate actions and choices
+mode coordinate fallback. It verifies no opponent or unintended attack/end
+events, decision annotations, SQLite import and reimport idempotence, action
+rows, delegated source, and `delegated_order_index`. The next canonical prompt
+contains the committed `skipped=U3:no_improving_destination` continuity fact.
+
+Focused commands:
+
+```text
+cargo test --bin greedy_driver --manifest-path norrust_core/Cargo.toml
+cargo test --test driver_protocol --manifest-path norrust_core/Cargo.toml
+python3 -m unittest tools.test_llm_client tools.test_movement_integration tools.test_handoff_guide tools.test_prompt_cache_acceptance
+```
+
+The worker passed the full `python3 -m tools.fast_check` gate (560 Python
+tests plus Rust and Lua). The combined stack-4/5 integration gate passed
+583 Python tests plus Rust and Lua; its output is recorded in `tmp/glm-efficiency-exec/resume/stack45-full-gate.log`. The static prompt
+contract was shortened to preserve the 16,500-byte cap: the largest minimal
+fixture is 16,485 bytes. The stored cache fixture cases and historical prefix
+ratchet are unchanged; expected contract bytes were regenerated for stacks
+1+4+5. Cached input remains potentially billable.
+
+Remaining limits: geometric progress is not a safety or route guarantee, and
+the action does not plan around blockers. No paid model evaluation was run.

@@ -1065,3 +1065,340 @@ fn resume_from_a_postbatch_checkpoint_runs_the_pending_opponent_turn_exactly_onc
 
     let _ = fs::remove_dir_all(&checkpoint_dir);
 }
+
+// ── MoveGroupToward (stack 5: delegate movement without ending the turn) ──
+
+const MOVE_GROUP_ARGS: [&str; 11] = [
+    "--scenario",
+    "big_battle_6",
+    "--faction0",
+    "undead",
+    "--faction1",
+    "undead",
+    "--gold",
+    "100",
+    "--max-turns",
+    "4",
+    "--incremental-turns",
+];
+
+#[test]
+fn move_group_toward_moves_named_units_and_stays_within_one_side_turn() {
+    // Recruit two units, deploy them as a group toward a rally hex, then
+    // finish -- all as separate incremental batches inside one side turn.
+    // This is the plan's "recruit, deploy, recruit again" shape distilled to
+    // its minimal proof: the group step must not itself end the turn.
+    let lines = run_driver(
+        &["--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
+          "--gold", "100", "--max-turns", "4", "--incremental-turns"],
+        concat!(
+            "[{\"action\":\"Recruit\",\"def_id\":\"Skeleton\",\"col\":3,\"row\":7},",
+            "{\"action\":\"Recruit\",\"def_id\":\"Skeleton\",\"col\":3,\"row\":6}]\n",
+            "[{\"action\":\"MoveGroupToward\",\"unit_ids\":[3,4],\"col\":10,\"row\":7}]\n",
+            "[{\"action\":\"FinishWithGreedy\",\"groups\":[],\"holds\":[]}]\n",
+        ),
+    );
+    let statuses: Vec<&Value> = lines.iter().filter(|line| line["type"] == "status").collect();
+    assert_eq!(statuses.len(), 3);
+    assert!(statuses.iter().all(|status| status["ok"] == true));
+
+    // The recruit batch and the move batch are both partial: only the final
+    // FinishWithGreedy line ends the side turn. `boundaries[0]` is the
+    // opening pre-input snapshot; `[1]` and `[2]` follow the two partial
+    // batches.
+    let boundaries: Vec<&Value> = lines.iter().filter(|line| line["type"] == "state").collect();
+    assert!(boundaries[1]["turn_boundary"] == "partial");
+    assert!(boundaries[2]["turn_boundary"] == "partial");
+
+    let move_result = &statuses[1]["results"][0];
+    assert_eq!(move_result["ok"], true);
+    let moved = move_result["moved"].as_array().expect("moved list");
+    assert_eq!(moved.len(), 2);
+    let moved_ids: Vec<u64> = moved.iter().map(|entry| entry["unit_id"].as_u64().unwrap()).collect();
+    assert_eq!(moved_ids, vec![3, 4]);
+    assert_eq!(move_result["skipped"].as_array().unwrap().len(), 0);
+    for entry in moved {
+        assert_ne!(entry["from"], entry["to"], "a reported move must be an actual displacement");
+    }
+
+    // The generated moves are macro output, not individually authored --
+    // they must appear in a delegated_greedy envelope, distinct from the
+    // llm envelope carrying the two authored Recruit orders.
+    let recruit_events = lines
+        .iter()
+        .find(|line| line["type"] == "events" && line["source"] == "llm")
+        .expect("authored recruit events");
+    assert!(recruit_events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|event| event["kind"] == "recruit" && event["source"] == "llm"));
+    let move_events = lines
+        .iter()
+        .find(|line| {
+            line["type"] == "events"
+                && line["source"] == "delegated_greedy"
+                && line["events"].as_array().is_some_and(|events| {
+                    events.iter().any(|event| event["kind"] == "move")
+                })
+        })
+        .expect("delegated move events");
+    assert!(move_events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|event| event["kind"] == "move" && event["source"] == "delegated_greedy"));
+    assert!(move_events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|event| event["delegated_order_index"] == 0));
+    // Movement-only: no attack, recruit, advance, or end_turn event may share
+    // this delegated envelope with the generated moves.
+    assert!(!move_events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| !matches!(event["kind"].as_str(), Some("move"))));
+}
+
+// Order-dependent recomputation against a genuinely contested hex is proven
+// precisely, with an engineered board, in
+// `ai::tests::toward_hex_recomputes_after_earlier_units_move_in_submission_order`,
+// which exercises the exact function this action calls per unit. This test
+// instead covers the driver-level claim that is specific to this action: the
+// rally hex may be occupied at all, by an enemy, without rejecting the batch
+// or forcing a collision between the group's own units.
+#[test]
+fn move_group_toward_accepts_an_occupied_rally_hex_as_a_direction() {
+    let lines = run_driver(
+        &["--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
+          "--gold", "100", "--max-turns", "4", "--incremental-turns"],
+        concat!(
+            "[{\"action\":\"Recruit\",\"def_id\":\"Skeleton\",\"col\":3,\"row\":7},",
+            "{\"action\":\"Recruit\",\"def_id\":\"Skeleton\",\"col\":3,\"row\":6}]\n",
+            // The enemy leader's own keep hex: certainly occupied.
+            "[{\"action\":\"MoveGroupToward\",\"unit_ids\":[3,4],\"col\":21,\"row\":6}]\n",
+            "[{\"action\":\"FinishWithGreedy\",\"groups\":[],\"holds\":[]}]\n",
+        ),
+    );
+    let statuses: Vec<&Value> = lines.iter().filter(|line| line["type"] == "status").collect();
+    assert!(statuses.iter().all(|status| status["ok"] == true), "{statuses:?}");
+    let moved = statuses[1]["results"][0]["moved"].as_array().unwrap();
+    assert_eq!(moved.len(), 2, "an occupied rally hex must not block a legal group move");
+    assert_ne!(moved[0]["to"], moved[1]["to"], "the two units cannot land on the same hex");
+    for entry in moved {
+        let to = &entry["to"];
+        assert!(
+            !(to["col"] == 21 && to["row"] == 6),
+            "the occupied target itself is never a legal destination"
+        );
+    }
+}
+
+#[test]
+fn move_group_toward_gives_spent_and_no_progress_units_an_explicit_skip() {
+    let lines = run_driver(
+        &["--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
+          "--gold", "100", "--max-turns", "4", "--incremental-turns"],
+        concat!(
+            "[{\"action\":\"Recruit\",\"def_id\":\"Skeleton\",\"col\":3,\"row\":7}]\n",
+            // Already at the rally hex: no reachable destination is
+            // strictly closer than the unit's own position.
+            "[{\"action\":\"MoveGroupToward\",\"unit_ids\":[3],\"col\":3,\"row\":7}]\n",
+            // Moves the unit for real, then targets it again in the same
+            // batch: the second attempt must see it as spent.
+            "[{\"action\":\"MoveGroupToward\",\"unit_ids\":[3],\"col\":10,\"row\":7},",
+            "{\"action\":\"MoveGroupToward\",\"unit_ids\":[3],\"col\":10,\"row\":7}]\n",
+            "[{\"action\":\"FinishWithGreedy\",\"groups\":[],\"holds\":[]}]\n",
+        ),
+    );
+    let statuses: Vec<&Value> = lines.iter().filter(|line| line["type"] == "status").collect();
+    assert!(statuses.iter().all(|status| status["ok"] == true), "{statuses:?}");
+
+    let no_progress = &statuses[1]["results"][0];
+    assert_eq!(no_progress["moved"].as_array().unwrap().len(), 0);
+    assert_eq!(no_progress["skipped"][0]["unit_id"], 3);
+    assert_eq!(no_progress["skipped"][0]["reason"], "no_improving_destination");
+
+    let real_move = &statuses[2]["results"][0];
+    assert_eq!(real_move["moved"].as_array().unwrap().len(), 1);
+    let repeat_attempt = &statuses[2]["results"][1];
+    assert_eq!(repeat_attempt["moved"].as_array().unwrap().len(), 0);
+    assert_eq!(repeat_attempt["skipped"][0]["unit_id"], 3);
+    assert_eq!(repeat_attempt["skipped"][0]["reason"], "spent");
+}
+
+#[test]
+fn move_group_toward_permits_an_explicit_recruiter_with_manual_loss_of_keep() {
+    // The model's own leader (id 1) can be named explicitly. Moving it off
+    // the keep has the same recruiting consequence a manual Move would have.
+    let lines = run_driver(
+        &["--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
+          "--gold", "100", "--max-turns", "4", "--incremental-turns"],
+        concat!(
+            "[{\"action\":\"MoveGroupToward\",\"unit_ids\":[1],\"col\":10,\"row\":7}]\n",
+            "[{\"action\":\"FinishWithGreedy\",\"groups\":[],\"holds\":[]}]\n",
+            "[{\"action\":\"Recruit\",\"def_id\":\"Skeleton\",\"col\":3,\"row\":7}]\n",
+        ),
+    );
+    let statuses: Vec<&Value> = lines.iter().filter(|line| line["type"] == "status").collect();
+    let move_result = &statuses[0]["results"][0];
+    assert_eq!(move_result["moved"][0]["unit_id"], 1);
+    // Once the model's next turn comes back around, the leader is still off
+    // the keep it left under its own power, so recruiting fails exactly as
+    // it would after any other manual departure.
+    assert_eq!(statuses[2]["results"][0]["code"], "LeaderNotOnKeep");
+}
+
+#[test]
+fn move_group_toward_never_attacks_recruits_or_ends_the_turn() {
+    let lines = run_driver(
+        &MOVE_GROUP_ARGS,
+        "[{\"action\":\"MoveGroupToward\",\"unit_ids\":[1],\"col\":10,\"row\":7}]\n",
+    );
+    let status = lines.iter().find(|line| line["type"] == "status").expect("move status");
+    assert_eq!(status["ok"], true);
+    assert!(status.get("finish_kind").is_none(), "a nonfinal move must not report a finish kind");
+    // The first "state" line is the opening pre-input snapshot; the second
+    // is the boundary printed after this move batch.
+    let boundary = lines
+        .iter()
+        .filter(|line| line["type"] == "state")
+        .nth(1)
+        .expect("partial boundary");
+    assert_eq!(boundary["turn_boundary"], "partial");
+    assert_eq!(boundary["active_faction"], 0, "the opponent must not be activated");
+    let events = lines.iter().find(|line| line["type"] == "events").expect("move events");
+    assert!(events["events"].as_array().unwrap().iter().all(|event| {
+        matches!(event["kind"].as_str(), Some("move"))
+    }));
+    // Stdin closes right after this one partial batch, so the driver's own
+    // end-of-input shutdown is expected -- the claim under test is that
+    // MoveGroupToward itself never ends the turn or activates the opponent,
+    // not that the process runs forever.
+    let terminal = lines.iter().find(|line| line["type"] == "game_end");
+    if let Some(terminal) = terminal {
+        assert_eq!(terminal["reason"], "eof");
+        assert_eq!(terminal["side_turns"], 0, "the side turn never closed");
+    }
+}
+
+#[test]
+fn move_group_toward_rejects_duplicate_foreign_and_enemy_ids_before_mutation() {
+    let lines = run_driver(
+        &MOVE_GROUP_ARGS,
+        concat!(
+            "[{\"action\":\"MoveGroupToward\",\"unit_ids\":[1,1],\"col\":10,\"row\":7}]\n",
+            "[{\"action\":\"MoveGroupToward\",\"unit_ids\":[999],\"col\":10,\"row\":7}]\n",
+            "[{\"action\":\"MoveGroupToward\",\"unit_ids\":[2],\"col\":10,\"row\":7}]\n",
+        ),
+    );
+    let statuses: Vec<&Value> = lines.iter().filter(|line| line["type"] == "status").collect();
+    assert_eq!(statuses[0]["code"], "parse", "duplicate ids in one order are malformed shape");
+    assert_eq!(statuses[1]["code"], "unauthorized_unit", "a nonexistent id is never guessed at");
+    assert_eq!(statuses[2]["code"], "unauthorized_unit", "the enemy leader is not a model-side unit");
+    // Only the opening pre-input snapshot may appear -- every rejected batch
+    // above is caught before any mutation, so none of them commits a state
+    // boundary or an events line of its own.
+    assert_eq!(lines.iter().filter(|line| line["type"] == "state").count(), 1);
+    assert!(!lines.iter().any(|line| line["type"] == "events"));
+}
+
+#[test]
+fn move_group_toward_rejects_an_out_of_bounds_target_and_rolls_back_only_that_batch() {
+    let lines = run_driver(
+        &["--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
+          "--gold", "100", "--max-turns", "4", "--incremental-turns"],
+        concat!(
+            "[{\"action\":\"Recruit\",\"def_id\":\"Skeleton\",\"col\":3,\"row\":7}]\n",
+            "[{\"action\":\"MoveGroupToward\",\"unit_ids\":[3],\"col\":10,\"row\":7}]\n",
+            "[{\"action\":\"MoveGroupToward\",\"unit_ids\":[3],\"col\":999999,\"row\":7}]\n",
+            "[{\"action\":\"FinishWithGreedy\",\"groups\":[],\"holds\":[]}]\n",
+        ),
+    );
+    let statuses: Vec<&Value> = lines.iter().filter(|line| line["type"] == "status").collect();
+    assert_eq!(statuses.len(), 4);
+    assert_eq!(statuses[0]["ok"], true);
+    assert_eq!(statuses[1]["ok"], true);
+    assert_eq!(statuses[2]["results"][0]["code"], "DestinationOutOfBounds");
+    // The rejected batch's revision must equal the last accepted one -- the
+    // earlier recruit and successful move stay committed, and only the
+    // failed batch itself is rolled back.
+    assert_eq!(statuses[2]["state_revision"], statuses[1]["state_revision"]);
+    assert_eq!(statuses[3]["ok"], true);
+    assert!(statuses[3]["state_revision"].as_u64() > statuses[1]["state_revision"].as_u64());
+}
+
+// The pre-stack-5 finishing macros keep exactly their existing shape: a
+// FinishWithGreedy-only batch still produces a single delegated_greedy
+// envelope, unaffected by MoveGroupToward's ability to split that envelope
+// when it runs first in the same batch.
+#[test]
+fn move_group_toward_and_finish_with_greedy_share_one_delegated_envelope_when_adjacent() {
+    let lines = run_driver(
+        &MOVE_GROUP_ARGS,
+        "[{\"action\":\"MoveGroupToward\",\"unit_ids\":[1],\"col\":10,\"row\":7},{\"action\":\"FinishWithGreedy\",\"groups\":[],\"holds\":[]}]\n",
+    );
+    let delegated: Vec<&Value> = lines
+        .iter()
+        .filter(|line| line["type"] == "events" && line["source"] == "delegated_greedy")
+        .collect();
+    assert_eq!(
+        delegated.len(),
+        1,
+        "adjacent delegating orders with no authored event between them must not fragment"
+    );
+    let kinds: Vec<&str> = delegated[0]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| event["kind"].as_str().unwrap())
+        .collect();
+    assert!(kinds.contains(&"move"));
+    assert!(kinds.contains(&"end_turn"));
+    assert_eq!(delegated[0]["finish_kind"], "selective");
+}
+
+#[test]
+fn move_group_toward_preserves_macro_indices_across_authored_interleaving() {
+    // The two movement macros are separated by an ordinary authored Move. The
+    // wire envelopes may split around that event, but each generated event
+    // must retain the zero-based authored action index that produced it.
+    let lines = run_driver(
+        &["--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
+          "--gold", "100", "--max-turns", "1", "--incremental-turns"],
+        concat!(
+            "[{\"action\":\"RecruitBatch\",\"def_id\":\"Skeleton\",\"count\":3}]\n",
+            "[{\"action\":\"MoveGroupToward\",\"unit_ids\":[3],\"col\":10,\"row\":7},",
+            "{\"action\":\"Move\",\"unit_id\":1,\"col\":1,\"row\":7},",
+            "{\"action\":\"MoveGroupToward\",\"unit_ids\":[4],\"col\":10,\"row\":7},",
+            "{\"action\":\"FinishWithGreedy\",\"groups\":[],\"holds\":[]}]\n",
+        ),
+    );
+    let statuses: Vec<&Value> = lines.iter().filter(|line| line["type"] == "status").collect();
+    assert!(statuses.iter().all(|status| status["ok"] == true), "{statuses:?}");
+    assert_eq!(statuses[1]["results"].as_array().unwrap().len(), 4);
+
+    let event_lines: Vec<&Value> = lines.iter().filter(|line| line["type"] == "events").collect();
+    assert_eq!(event_lines.len(), 4, "recruit plus delegated/authored/delegated segments should remain observable");
+    assert_eq!(event_lines[0]["source"], "llm");
+    assert_eq!(event_lines[1]["source"], "delegated_greedy");
+    assert_eq!(event_lines[2]["source"], "llm");
+    assert_eq!(event_lines[3]["source"], "delegated_greedy");
+    assert!(event_lines[1]["events"].as_array().unwrap().iter().all(|event| {
+        event["kind"] == "move" && event["delegated_order_index"] == 0
+    }));
+    assert!(event_lines[2]["events"].as_array().unwrap().iter().all(|event| {
+        event["kind"] == "move" && event.get("delegated_order_index").is_none()
+    }));
+    assert!(event_lines[3]["events"].as_array().unwrap().iter().all(|event| {
+        event["delegated_order_index"] == 2 || event["delegated_order_index"] == 3
+    }));
+    assert!(event_lines[3]["events"].as_array().unwrap().iter().any(|event| {
+        event["kind"] == "move" && event["delegated_order_index"] == 2
+    }));
+    assert!(event_lines[3]["events"].as_array().unwrap().iter().any(|event| {
+        event["kind"] == "end_turn" && event["delegated_order_index"] == 3
+    }));
+}
