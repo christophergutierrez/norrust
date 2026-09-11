@@ -14,6 +14,7 @@ import unittest
 import zlib
 
 from .game_history import import_game, open_history
+from .llm_client import compact_strategic_briefing, compact_trend
 
 ROOT = Path(__file__).resolve().parents[1]
 DRIVER = Path(os.environ.get("NORRUST_TEST_DRIVER", ROOT / "norrust_core/target/debug/greedy_driver"))
@@ -230,6 +231,80 @@ class PlayerContractIntegrationTests(unittest.TestCase):
             self.assertEqual(positions[omitted["id"]], (omitted["col"], omitted["row"]))
             self.assertNotEqual(positions[delegated["id"]], (delegated["col"], delegated["row"]))
             self.assertFalse(any(e.get("faction") == 1 and e["kind"] == "recruit" for e in events))
+        finally:
+            if process.poll() is None:
+                process.terminate()
+            process.wait(timeout=5)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                stream.close()
+
+    def test_empty_selective_finish_skips_own_sweep_and_allows_opponent_response(self):
+        """Empty groups are a valid explicit no-own-sweep turn boundary."""
+        process = self._driver("--max-turns", "4")
+        try:
+            self._until(process, "state")
+            self._send(process, [{"action": "FinishWithGreedy", "groups": [], "holds": []}])
+            _, first_records = self._until(process, "state")
+            own_events = [event for record in first_records for event in record.get("events", [])
+                          if event.get("source") == "delegated_greedy"]
+            self.assertEqual([event.get("kind") for event in own_events], ["end_turn"])
+            self.assertTrue(any(event.get("source") == "greedy" and
+                                event.get("kind") in {"move", "attack", "recruit", "end_turn"}
+                                for record in first_records for event in record.get("events", [])))
+
+            # A new model boundary starts with no executable hold carried over
+            # from the empty finish; another empty finish remains legal.
+            self._send(process, [{"action": "FinishWithGreedy", "groups": [], "holds": []}])
+            terminal, _ = self._until(process, "game_end")
+            self.assertEqual(terminal["reason"], "max_turns")
+        finally:
+            if process.poll() is None:
+                process.terminate()
+            process.wait(timeout=5)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                stream.close()
+
+    def test_real_boundaries_keep_terrain_village_counts_and_reset_finish_holds(self):
+        process = self._driver("--max-turns", "4")
+        try:
+            opening, _ = self._until(process, "state")
+            opening_summary = compact_strategic_briefing(opening).splitlines()[0]
+            self.assertEqual(opening_summary, "VILLAGES ours=0 enemy=0 neutral=6 unknown=0")
+            self._send(process, [{"action": "FinishWithGreedy", "groups": [],
+                                 "holds": [{"unit_id": 1, "reason": "keep reserve"}]}])
+            following, records = self._until(process, "state")
+            following_villages = [tile for tile in following["terrain"]
+                                  if tile.get("terrain_id") == "village"]
+            expected_following = "VILLAGES ours=%s enemy=%s neutral=%s unknown=%s" % (
+                sum(tile.get("owner") == 0 for tile in following_villages),
+                sum(tile.get("owner") == 1 for tile in following_villages),
+                sum(tile.get("owner") == -1 for tile in following_villages),
+                sum(tile.get("owner") not in (-1, 0, 1) for tile in following_villages))
+            self.assertEqual(compact_strategic_briefing(following).splitlines()[0], expected_following)
+            trend = compact_trend([opening, following])
+            trend_rows = json.loads(trend.removeprefix("TREND "))
+            for row, snapshot in zip(trend_rows, (opening, following)):
+                villages = [tile for tile in snapshot["terrain"]
+                            if tile.get("terrain_id") == "village"]
+                self.assertEqual([side["villages"] for side in row["sides"]], [
+                    sum(tile.get("owner") == 0 for tile in villages),
+                    sum(tile.get("owner") == 1 for tile in villages)])
+
+            # The prior explicit hold is turn-local. Query a legal movement
+            # destination for the recruiter and move it on the new boundary.
+            self._send(process, {"action": "Query", "what": "tactical_surface",
+                                 "state_revision": following["state_revision"]})
+            tactical, _ = self._until(process, "status")
+            recruiter = next(unit for unit in tactical["body"]["units"] if unit["unit_id"] == 1)
+            destination = next(origin for origin in recruiter["origins"] if origin.get("movable"))
+            self._send(process, [{"action": "Move", "unit_id": 1,
+                                  "col": destination["col"], "row": destination["row"]},
+                                 {"action": "FinishWithGreedy", "groups": [], "holds": []}])
+            terminal, records = self._until(process, "game_end")
+            self.assertEqual(terminal["reason"], "max_turns")
+            own_moves = [event for record in records for event in record.get("events", [])
+                         if event.get("source") == "llm" and event.get("kind") == "move"]
+            self.assertTrue(any(event.get("unit") == 1 for event in own_moves))
         finally:
             if process.poll() is None:
                 process.terminate()

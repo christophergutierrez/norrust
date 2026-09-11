@@ -46,13 +46,17 @@ class ReadableMechanicsTests(unittest.TestCase):
         self.assertIn("maximum_incoming=144HP", rendered)
         self.assertIn("kill_by_1=7.05%", rendered)
         self.assertIn("damage_from_1=2.4HP", rendered)
-        unknown = compact_batch_preview({"candidates": [{
+        nonlethal = compact_batch_preview({"candidates": [{
             "recruiter_threats": {"recruiters": [{
                 "recruiter_id": 1, "hp": 10, "distinct_attacker_count": 0,
                 "max_incoming_sum": 0, "lethal_attackers_needed": None,
             }]},
         }]})
-        self.assertIn("lethal_attacker_count=unknown", unknown)
+        self.assertIn("lethal_attackers_needed=null (unreachable under supplied maximum volleys)", nonlethal)
+        missing = compact_batch_preview({"candidates": [{
+            "recruiter_threats": {"recruiters": [{"recruiter_id": 1, "hp": 10}]},
+        }]})
+        self.assertIn("lethal_attackers_needed=unknown", missing)
 
     def test_readiness_does_not_turn_no_target_into_spent(self):
         rendered = compact_tactical_surface({"units": [{

@@ -20,7 +20,7 @@ from .llm_client import (
     compact_target_inspection, compact_tactical_surface, compact_spatial_map, prompt_for, query_options,
     authoritative_live_state_reminder, finalize_model_prompt,
     compact_unit_inspection, compact_draft_review, tool_followup_instruction, tool_budget_repair_prompt,
-    compact_events, compact_trend, tactical_attack_coverage,
+    compact_events, compact_trend, tactical_attack_coverage, build_current_turn_readiness,
     replay_accepted_progress, update_committed_progress,
     select_event_window,
     query_tactical_surface, query_validate_batch, query_preview_batch, query_bounded_comparison,
@@ -462,14 +462,30 @@ class ClientValidationTests(unittest.TestCase):
 
     def test_compact_trend_is_bounded_and_excludes_partial_states(self):
         states = [
-            {"turn": 1, "state_revision": 1, "turn_boundary": "turn", "units": [], "gold": [10, 8]},
+            {"turn": 1, "state_revision": 1, "turn_boundary": "turn", "units": [], "gold": [10, 8],
+             "terrain": [{"terrain_id": "village", "owner": -1}]},
             {"turn": 1, "state_revision": 2, "turn_boundary": "partial", "units": [], "gold": [9, 8]},
-            {"turn": 2, "state_revision": 3, "turn_boundary": "turn", "units": [], "gold": [8, 7]},
+            {"turn": 2, "state_revision": 3, "turn_boundary": "turn", "units": [], "gold": [8, 7],
+             "terrain": [{"terrain_id": "village", "owner": 0}]},
         ]
         rendered = compact_trend(states)
         self.assertIn('"turn":1', rendered)
         self.assertIn('"turn":2', rendered)
         self.assertNotIn('"state_revision":2', rendered)
+        self.assertIn('"villages":1', rendered)
+
+    def test_current_turn_readiness_is_revision_pinned_and_explicit(self):
+        readiness = build_current_turn_readiness(
+            {"turn": 5, "state_revision": 18, "active_faction": 0},
+            moved={7}, attacked={8}, agenda_unassigned={9}, agenda_holds={10})
+        self.assertEqual(readiness, {
+            "turn": 5, "state_revision": 18, "active_faction": 0,
+            "moved_this_turn": [7], "attacked_this_turn": [8],
+            "agenda_unassigned": [9], "agenda_holds": [10]})
+        prompt = prompt_for({"turn": 5, "state_revision": 18, "units": []}, [],
+                            current_turn_readiness=readiness)
+        self.assertIn("current_turn_readiness", prompt)
+        self.assertNotIn("whole_army_sweep", prompt)
 
     def test_prompt_carries_bounded_continuity_and_turn_progress(self):
         prompt = prompt_for(
@@ -785,8 +801,8 @@ class ClientValidationTests(unittest.TestCase):
             ],
         })
         self.assertIn("DESTINATION_DANGER", rendered)
-        self.assertIn("@2,7 direct_attackers=3 direct_max=42HP lethal_attacker_count=2 origins_conflict=False focus_kills=(kill_by_1=1%,kill_by_2=2%,kill_by_3=3%)", rendered)
-        self.assertIn("->1,7 direct_attackers=0 direct_max=0HP lethal_attacker_count=unknown", rendered)
+        self.assertIn("@2,7 direct_attackers=3 direct_max=42HP lethal_attackers_needed=2 origins_conflict=False focus_kills=(kill_by_1=1%,kill_by_2=2%,kill_by_3=3%)", rendered)
+        self.assertIn("->1,7 direct_attackers=0 direct_max=0HP lethal_attackers_needed=null", rendered)
 
     def test_target_and_hex_requests_are_exact_and_revision_pinned(self):
         self.assertEqual(validate_inspect_target_request(
@@ -1033,7 +1049,7 @@ class ClientValidationTests(unittest.TestCase):
                 "threats": [{"attacker_id": 9, "origin_col": 4, "origin_row": 7}],
             }]},
         }]})
-        self.assertIn("C0 R1 hp=38HP attackers=3 maximum_incoming=42HP lethal_attacker_count=3 origins_conflict=True", rendered)
+        self.assertIn("C0 R1 hp=38HP attackers=3 maximum_incoming=42HP lethal_attackers_needed=3 origins_conflict=True", rendered)
         self.assertIn("SIMULATION — NOT EXECUTED BEGIN", rendered)
         self.assertIn("originating_revision=17", rendered)
         self.assertIn("SIMULATION — NOT EXECUTED END", rendered)
@@ -1364,7 +1380,7 @@ class ClientValidationTests(unittest.TestCase):
                         "vacatable_castles": [{"unit_id": 8, "col": 3, "row": 7,
                                                "destinations": [{"col": 4, "row": 7}]}]},
         })
-        self.assertIn("THREAT R1 hp=20HP at=2,7 projected_opponent_phase=Night attackers=1 maximum_incoming=20HP lethal_attacker_count=1", rendered)
+        self.assertIn("THREAT R1 hp=20HP at=2,7 projected_opponent_phase=Night attackers=1 maximum_incoming=20HP lethal_attackers_needed=1", rendered)
         self.assertIn("detail=U16:20HP", rendered)
         self.assertIn("ECONOMY gold=6 projected_village_income=4 vacatable_castles=U8@3,7>4,7", rendered)
 
@@ -1383,7 +1399,7 @@ class ClientValidationTests(unittest.TestCase):
                                   "origin_row": 10, "moved": True, "max_damage": 20}],
             }]},
         })
-        self.assertIn("OPEN_THREAT R1 movement_inclusive=true attackers=1 maximum_incoming=20HP lethal_attacker_count=1", rendered)
+        self.assertIn("OPEN_THREAT R1 movement_inclusive=true attackers=1 maximum_incoming=20HP open_lethal_attackers_needed=1", rendered)
         self.assertIn("OPEN_THREAT_HEX R1 at=0,10~ attackers=U17 maximum_damage=20HP", rendered)
 
     def test_compact_tactical_surface_groups_recruiter_threat_origins(self):
@@ -1402,6 +1418,31 @@ class ClientValidationTests(unittest.TestCase):
         })
         self.assertIn("terrain=keep on_keep=True", rendered)
         self.assertIn("THREAT_HEX R1 at=4,7~ attackers=U16,U18 maximum_damage=20HP", rendered)
+
+    def test_threat_rendering_distinguishes_null_missing_zero_and_partial_exposure(self):
+        rendered = compact_tactical_surface({
+            "visibility": "partial",
+            "units": [{"unit_id": 1}, {"unit_id": 2}, {"unit_id": 3}],
+            "threats": {"recruiters": [{
+                "recruiter_id": 1, "hp": 30, "distinct_attacker_count": 0,
+                "max_incoming_sum": 0, "lethal_attackers_needed": None,
+                "open_distinct_attacker_count": 0,
+                "open_max_incoming_sum": 0,
+                "open_lethal_attackers_needed": 0,
+            }]},
+            "exposure": {"visibility": "partial", "units": [
+                {"unit_id": 1, "hp": 10, "distinct_attacker_count": 0,
+                 "open_distinct_attacker_count": 0},
+                {"unit_id": 2, "hp": 10, "distinct_attacker_count": 1,
+                 "max_incoming_sum": 12, "lethal_attackers_needed": 2,
+                 "open_distinct_attacker_count": 0},
+            ]},
+        })
+        self.assertIn("lethal_attackers_needed=null (unreachable under supplied maximum volleys)", rendered)
+        self.assertIn("open_lethal_attackers_needed=0 origins_conflict=False detail=none", rendered)
+        self.assertIn("EXPOSURE_SCOPE target=current_position direct=enemy_movement_with_blockers_zoc open=enemy_movement_without_blockers_zoc visibility=partial evaluated=2 threatened=1 zero=1 missing=1", rendered)
+        self.assertIn("EXPOSURE U2", rendered)
+        self.assertNotIn("EXPOSURE U1", rendered)
 
     def test_compact_observation_is_deterministic_and_keeps_instance_facts(self):
         state = {"turn": 2, "active_faction": 0, "time_of_day": "day", "cols": 3, "rows": 2,

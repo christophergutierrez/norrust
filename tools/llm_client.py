@@ -1047,6 +1047,85 @@ def _readable_optional_count(value: Any) -> str:
     return "unknown" if value is None else str(value)
 
 
+def _readable_threat_count(item: dict[str, Any], key: str) -> str:
+    """Render an evaluated count without turning missing data into zero."""
+    value = item.get(key) if key in item else None
+    return "unknown" if key not in item or value is None else str(value)
+
+
+def _readable_lethal_attackers(item: dict[str, Any], key: str = "lethal_attackers_needed") -> str:
+    """Explain the nullable lethal-volley bound while preserving its meaning.
+
+    The tactics engine uses ``None`` for an evaluated scope where the supplied
+    maximum volleys cannot reach the target HP.  An absent field means that no
+    evaluated result was supplied, which is a different fact.
+    """
+    if key not in item:
+        return "unknown"
+    value = item[key]
+    if value is None:
+        return "null (unreachable under supplied maximum volleys)"
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return str(value)
+    return "unknown"
+
+
+def _village_counts(state: dict[str, Any], side: int | None = None) -> dict[str, int | None]:
+    """Count live terrain village tiles, retaining unknown ownership.
+
+    ``StateSnapshot`` exposes villages as terrain tiles with an ``owner``;
+    there is no serialized ``village_owners`` field.  Missing terrain means
+    that every count is unknown, while an empty supplied terrain list is a
+    known board with no villages.
+    """
+    terrain = state.get("terrain")
+    if not isinstance(terrain, list):
+        return {"ours": None, "enemy": None, "neutral": None, "unknown": None}
+    ours = state.get("active_faction") if side is None else side
+    known_side = isinstance(ours, int) and not isinstance(ours, bool) and ours in (0, 1)
+    counts = {"ours": 0, "enemy": 0, "neutral": 0, "unknown": 0}
+    neutral_owners = {-1}
+    for tile in terrain:
+        if not isinstance(tile, dict) or tile.get("terrain_id") != "village":
+            continue
+        if "owner" not in tile or tile.get("owner") == "unknown":
+            counts["unknown"] += 1
+        elif known_side and tile.get("owner") == ours:
+            counts["ours"] += 1
+        elif tile.get("owner") in neutral_owners:
+            counts["neutral"] += 1
+        elif known_side and tile.get("owner") in (0, 1):
+            counts["enemy"] += 1
+        else:
+            counts["unknown"] += 1
+    return counts
+
+
+def build_current_turn_readiness(state: dict[str, Any], moved: Any = None,
+                                 attacked: Any = None,
+                                 agenda_unassigned: Any = None,
+                                 agenda_holds: Any = None) -> dict[str, Any]:
+    """Build live completion facts for the current side turn.
+
+    The explicit revision and turn prevent this card from being mistaken for
+    provenance about a previous finish or for a prediction of the next turn.
+    """
+    def ids(value: Any) -> list[int] | str:
+        if not isinstance(value, (set, list, tuple)):
+            return "unknown"
+        return sorted(item for item in value if isinstance(item, int) and not isinstance(item, bool))
+
+    return {
+        "turn": state.get("turn", "unknown"),
+        "state_revision": state.get("state_revision", "unknown"),
+        "active_faction": state.get("active_faction", "unknown"),
+        "moved_this_turn": ids(moved),
+        "attacked_this_turn": ids(attacked),
+        "agenda_unassigned": ids(agenda_unassigned),
+        "agenda_holds": ids(agenda_holds),
+    }
+
+
 def compact_unit_inspection(unit: dict[str, Any], choices: Optional[list[Any]] = None) -> str:
     if unit.get("available") is False:
         return "INSPECT_UNIT unavailable unit=%s reason=%s" % (
@@ -1059,19 +1138,19 @@ def compact_unit_inspection(unit: dict[str, Any], choices: Optional[list[Any]] =
             if not isinstance(destination, dict):
                 continue
             marker = "@" if destination.get("current") else "->"
-            item = "%s%s,%s direct_attackers=%s direct_max=%s lethal_attacker_count=%s origins_conflict=%s focus_kills=(%s) focus_expected=(%s)" % (
+            item = "%s%s,%s direct_attackers=%s direct_max=%s lethal_attackers_needed=%s origins_conflict=%s focus_kills=(%s) focus_expected=(%s)" % (
                 marker, destination.get("col", "?"), destination.get("row", "?"),
-                destination.get("distinct_attacker_count", "?"),
+                _readable_threat_count(destination, "distinct_attacker_count"),
                 _readable_whole_hp(destination.get("max_incoming_sum")),
-                _readable_optional_count(destination.get("lethal_attackers_needed")),
+                _readable_lethal_attackers(destination),
                 destination.get("origins_conflict", "?"),
                 _readable_focus(destination.get("focus_kill_bps")),
                 _readable_focus(destination.get("focus_expected_damage_tenths"), damage=True))
             if "open_distinct_attacker_count" in destination:
-                item += " open_direct_attackers=%s open_direct_max=%s open_lethal_attacker_count=%s open_origins_conflict=%s" % (
-                    destination.get("open_distinct_attacker_count", "?"),
+                item += " open_direct_attackers=%s open_direct_max=%s open_lethal_attackers_needed=%s open_origins_conflict=%s" % (
+                    _readable_threat_count(destination, "open_distinct_attacker_count"),
                     _readable_whole_hp(destination.get("open_max_incoming_sum")),
-                    _readable_optional_count(destination.get("open_lethal_attackers_needed")),
+                    _readable_lethal_attackers(destination, "open_lethal_attackers_needed"),
                     destination.get("open_origins_conflict", "?"))
             rendered.append(item)
         if rendered:
@@ -1400,17 +1479,17 @@ def compact_batch_preview(preview: dict[str, Any], originating_revision: Any = N
                 _readable_damage(sequence.get("expected_damage_tenths"))))
         threats = candidate.get("recruiter_threats", {})
         for recruiter in threats.get("recruiters", []) if isinstance(threats, dict) else []:
-            lines.append(" C%s R%s hp=%s attackers=%s maximum_incoming=%s lethal_attacker_count=%s origins_conflict=%s focus_kills=(%s) focus_expected=(%s)" % (
+            lines.append(" C%s R%s hp=%s attackers=%s maximum_incoming=%s lethal_attackers_needed=%s origins_conflict=%s focus_kills=(%s) focus_expected=(%s)" % (
                 index, recruiter.get("recruiter_id", "?"), _readable_whole_hp(recruiter.get("hp")),
-                recruiter.get("distinct_attacker_count", "?"), _readable_whole_hp(recruiter.get("max_incoming_sum")),
-                _readable_optional_count(recruiter.get("lethal_attackers_needed")), recruiter.get("origins_conflict", "?"),
+                _readable_threat_count(recruiter, "distinct_attacker_count"), _readable_whole_hp(recruiter.get("max_incoming_sum")),
+                _readable_lethal_attackers(recruiter), recruiter.get("origins_conflict", "?"),
                 _readable_focus(recruiter.get("focus_kill_bps")), _readable_focus(recruiter.get("focus_expected_damage_tenths"), damage=True)))
             if "open_distinct_attacker_count" in recruiter:
-                lines.append(" C%s OPEN_R%s attackers=%s maximum_incoming=%s lethal_attacker_count=%s origins_conflict=%s" % (
+                lines.append(" C%s OPEN_R%s attackers=%s maximum_incoming=%s open_lethal_attackers_needed=%s origins_conflict=%s" % (
                     index, recruiter.get("recruiter_id", "?"),
-                    recruiter.get("open_distinct_attacker_count", "?"),
+                    _readable_threat_count(recruiter, "open_distinct_attacker_count"),
                     _readable_whole_hp(recruiter.get("open_max_incoming_sum")),
-                    _readable_optional_count(recruiter.get("open_lethal_attackers_needed")),
+                    _readable_lethal_attackers(recruiter, "open_lethal_attackers_needed"),
                     recruiter.get("open_origins_conflict", "?")))
         exposure = candidate.get("exposure", {})
         for unit in exposure.get("units", []) if isinstance(exposure, dict) else []:
@@ -1419,13 +1498,14 @@ def compact_batch_preview(preview: dict[str, Any], originating_revision: Any = N
             if not (unit.get("distinct_attacker_count", 0) or
                     unit.get("open_distinct_attacker_count", 0)):
                 continue
-            lines.append(" C%s EXPOSURE U%s hp=%s at=%s,%s direct_attackers=%s direct_max=%s focus_kills=(%s) focus_expected=(%s) open_attackers=%s open_max=%s open_lethal_attacker_count=%s" % (
+            lines.append(" C%s EXPOSURE scope=target_current_position/direct_blockers_zoc/open_no_blockers_zoc U%s hp=%s at=%s,%s direct_attackers=%s direct_max=%s lethal_attackers_needed=%s focus_kills=(%s) focus_expected=(%s) open_attackers=%s open_max=%s open_lethal_attackers_needed=%s" % (
                 index, unit.get("unit_id", "?"), unit.get("hp", "?"),
                 unit.get("col", "?"), unit.get("row", "?"),
-                unit.get("distinct_attacker_count", 0), _readable_whole_hp(unit.get("max_incoming_sum")),
+                _readable_threat_count(unit, "distinct_attacker_count"), _readable_whole_hp(unit.get("max_incoming_sum")),
+                _readable_lethal_attackers(unit),
                 _readable_focus(unit.get("focus_kill_bps")), _readable_focus(unit.get("focus_expected_damage_tenths"), damage=True),
-                unit.get("open_distinct_attacker_count", 0), _readable_whole_hp(unit.get("open_max_incoming_sum")),
-                _readable_optional_count(unit.get("open_lethal_attackers_needed"))))
+                _readable_threat_count(unit, "open_distinct_attacker_count"), _readable_whole_hp(unit.get("open_max_incoming_sum")),
+                _readable_lethal_attackers(unit, "open_lethal_attackers_needed")))
     lines.append("SIMULATION — NOT EXECUTED END; preview queries execute no actions. "
                  "Candidate rosters, gold, casualties, villages, and threats are hypothetical.")
     return "\n".join(lines)
@@ -1650,19 +1730,23 @@ def compact_tactical_surface(surface: dict[str, Any]) -> str:
                 force.get("max_hp", "?"), force.get("recruit_cost", "?"), force.get("low_hp", "?"),
                 force.get("healthy_hp", "?"), force.get("recruiters", "?"),
                 force.get("recruiters_on_keep", "?")))
-    for recruiter in surface.get("threats", {}).get("recruiters", []):
+    threats = surface.get("threats")
+    if not isinstance(threats, dict):
+        lines.append("THREATS unavailable evaluated=unknown")
+        threats = {}
+    for recruiter in threats.get("recruiters", []):
         if not isinstance(recruiter, dict):
             continue
         maxima = ",".join("U%s:%s" % (item.get("attacker_id", "?"), _readable_whole_hp(item.get("max_damage")))
                           for item in recruiter.get("attacker_max_damage", []) if isinstance(item, dict))
         terrain = recruiter.get("terrain", "?")
         on_keep = terrain == "keep"
-        lines.append("THREAT R%s hp=%s at=%s,%s projected_opponent_phase=%s attackers=%s maximum_incoming=%s lethal_attacker_count=%s origins_conflict=%s focus_kills=(%s) focus_expected=(%s) detail=%s terrain=%s on_keep=%s" % (
+        lines.append("THREAT R%s hp=%s at=%s,%s projected_opponent_phase=%s attackers=%s maximum_incoming=%s lethal_attackers_needed=%s origins_conflict=%s focus_kills=(%s) focus_expected=(%s) detail=%s terrain=%s on_keep=%s" % (
             recruiter.get("recruiter_id", "?"), _readable_whole_hp(recruiter.get("hp")),
             recruiter.get("col", "?"), recruiter.get("row", "?"),
-            surface.get("threats", {}).get("projected_time_of_day", "?"),
-            recruiter.get("distinct_attacker_count", 0), _readable_whole_hp(recruiter.get("max_incoming_sum")),
-            _readable_optional_count(recruiter.get("lethal_attackers_needed")),
+            threats.get("projected_time_of_day", "?"),
+            _readable_threat_count(recruiter, "distinct_attacker_count"), _readable_whole_hp(recruiter.get("max_incoming_sum")),
+            _readable_lethal_attackers(recruiter),
             recruiter.get("origins_conflict", False),
             _readable_focus(recruiter.get("focus_kill_bps")), _readable_focus(recruiter.get("focus_expected_damage_tenths"), damage=True),
             maxima or "none", terrain, on_keep))
@@ -1689,11 +1773,11 @@ def compact_tactical_surface(surface: dict[str, Any]) -> str:
                 item.get("attacker_id", "?"), _readable_whole_hp(item.get("max_damage")))
                 for item in recruiter.get("open_attacker_max_damage", [])
                 if isinstance(item, dict))
-            lines.append("OPEN_THREAT R%s movement_inclusive=true attackers=%s maximum_incoming=%s lethal_attacker_count=%s origins_conflict=%s detail=%s" % (
+            lines.append("OPEN_THREAT R%s movement_inclusive=true attackers=%s maximum_incoming=%s open_lethal_attackers_needed=%s origins_conflict=%s detail=%s" % (
                 recruiter.get("recruiter_id", "?"),
-                recruiter.get("open_distinct_attacker_count", 0),
+                _readable_threat_count(recruiter, "open_distinct_attacker_count"),
                 _readable_whole_hp(recruiter.get("open_max_incoming_sum")),
-                _readable_optional_count(recruiter.get("open_lethal_attackers_needed")),
+                _readable_lethal_attackers(recruiter, "open_lethal_attackers_needed"),
                 recruiter.get("open_origins_conflict", False),
                 open_maxima or "none"))
             open_origin_groups: dict[tuple[Any, Any], dict[str, Any]] = {}
@@ -1716,24 +1800,44 @@ def compact_tactical_surface(surface: dict[str, Any]) -> str:
                     _readable_whole_hp(group.get("max_damage"))))
     exposure = surface.get("exposure")
     if isinstance(exposure, dict):
+        exposure_units = [unit for unit in exposure.get("units", []) if isinstance(unit, dict)]
+        expected_units = {unit.get("unit_id") for unit in surface.get("units", [])
+                          if isinstance(unit, dict) and isinstance(unit.get("unit_id"), int)}
+        evaluated_ids = {unit.get("unit_id") for unit in exposure_units
+                         if isinstance(unit.get("unit_id"), int)}
         exposed = []
-        for unit in exposure.get("units", []):
+        zero_count = 0
+        for unit in exposure_units:
             if not isinstance(unit, dict):
                 continue
-            if unit.get("distinct_attacker_count", 0) or unit.get("open_distinct_attacker_count", 0):
+            direct = unit.get("distinct_attacker_count")
+            open_count = unit.get("open_distinct_attacker_count")
+            if direct == 0 and open_count == 0:
+                zero_count += 1
+            elif direct is not None or open_count is not None:
                 exposed.append(unit)
+        if expected_units:
+            missing = len(expected_units - evaluated_ids)
+        elif not exposure_units:
+            missing = 0
+        else:
+            missing = "unknown"
+        lines.append("EXPOSURE_SCOPE target=current_position direct=enemy_movement_with_blockers_zoc open=enemy_movement_without_blockers_zoc visibility=%s evaluated=%s threatened=%s zero=%s missing=%s" % (
+            exposure.get("visibility", surface.get("visibility", "unknown")),
+            len(evaluated_ids) if exposure_units else 0,
+            len(exposed), zero_count, missing))
         if exposed:
             for unit in exposed:
-                lines.append("EXPOSURE U%s hp=%s at=%s,%s terrain=%s direct_attackers=%s direct_max=%s lethal_attacker_count=%s focus_kills=(%s) focus_expected=(%s) open_attackers=%s open_max=%s open_lethal_attacker_count=%s" % (
+                lines.append("EXPOSURE U%s hp=%s at=%s,%s terrain=%s direct_attackers=%s direct_max=%s lethal_attackers_needed=%s focus_kills=(%s) focus_expected=(%s) open_attackers=%s open_max=%s open_lethal_attackers_needed=%s" % (
                     unit.get("unit_id", "?"), _readable_whole_hp(unit.get("hp")),
                     unit.get("col", "?"), unit.get("row", "?"), unit.get("terrain", "?"),
-                    unit.get("distinct_attacker_count", 0), _readable_whole_hp(unit.get("max_incoming_sum")),
-                    _readable_optional_count(unit.get("lethal_attackers_needed")),
+                    _readable_threat_count(unit, "distinct_attacker_count"), _readable_whole_hp(unit.get("max_incoming_sum")),
+                    _readable_lethal_attackers(unit),
                     _readable_focus(unit.get("focus_kill_bps")), _readable_focus(unit.get("focus_expected_damage_tenths"), damage=True),
-                    unit.get("open_distinct_attacker_count", 0), _readable_whole_hp(unit.get("open_max_incoming_sum")),
-                    _readable_optional_count(unit.get("open_lethal_attackers_needed"))))
-        else:
-            lines.append("EXPOSURE none")
+                    _readable_threat_count(unit, "open_distinct_attacker_count"), _readable_whole_hp(unit.get("open_max_incoming_sum")),
+                    _readable_lethal_attackers(unit, "open_lethal_attackers_needed")))
+    elif exposure is None:
+        lines.append("EXPOSURE_SCOPE target=current_position direct=enemy_movement_with_blockers_zoc open=enemy_movement_without_blockers_zoc visibility=unknown evaluated=unknown threatened=unknown zero=unknown missing=unknown")
     economy = surface.get("economy")
     if isinstance(economy, dict):
         vacatable = []
@@ -2297,8 +2401,10 @@ def select_event_window(event_intervals: list[list[dict[str, Any]]],
 def compact_trend(states: list[dict[str, Any]], limit: int = 3) -> str:
     """Render a bounded sequence of completed post-opponent observations."""
     rows = []
-    for state in states[-limit:]:
-        if not isinstance(state, dict) or state.get("turn_boundary") == "partial":
+    completed = [state for state in states
+                 if isinstance(state, dict) and state.get("turn_boundary") != "partial"]
+    for state in completed[-limit:]:
+        if not isinstance(state, dict):
             continue
         sides = []
         for side in (0, 1):
@@ -2308,8 +2414,7 @@ def compact_trend(states: list[dict[str, Any]], limit: int = 3) -> str:
                 "units": len(units),
                 "hp": sum(u.get("hp", 0) for u in units if isinstance(u.get("hp", 0), int)),
                 "material_cost": sum(u.get("cost", 0) for u in units if isinstance(u.get("cost", 0), int)),
-                "villages": sum(1 for owner in state.get("village_owners", [])
-                                 if owner == side),
+                "villages": _village_counts(state, side)["ours"],
                 "gold": (state.get("gold") or [None, None])[side],
             })
         rows.append({"turn": state.get("turn"), "side_turns": state.get("side_turns"),
@@ -2385,7 +2490,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
                continuity: Optional[str] = None,
                agenda: Optional[dict[str, Any]] = None,
                agenda_origin: Optional[dict[str, Any]] = None,
-               sweep: Optional[str] = None,
+               current_turn_readiness: Optional[dict[str, Any]] = None,
                trend: Optional[str] = None,
                playbook: Optional[str] = None,
                action_encoding: str = "coordinates",
@@ -2412,15 +2517,12 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
     tactical_guidance = (
         "\n## Tactical data and read-only tools\n"
         "- Use tactical_surface exactly. COORDS=col,row; `at` is current. The base card gives move/target counts, current-position attacks, "
-        "and target-centric COVERAGE index. TYPE profiles give attacks and incoming-damage modifiers: +40 takes 40% more damage, "
-        "-60 takes 60% less; missing is unknown.\n"
+        "and target-centric COVERAGE. TYPE profiles give authoritative alignment, attacks, modifiers: +40 more damage, -60 less; missing unknown.\n"
         "- Engage failures retain the engine code/message, step_index, subaction, attacker_id, and target_id; repair cause.\n"
-        "- THREAT describes attacks if you EndTurn now in the imminent opponent phase, including supplied enemy movement to legal "
-        "attack origins under the current blockers and zones of control. attackers counts enemies; "
-        "maximum_incoming is maximum whole-HP volleys ignoring origin conflicts; lethal_attacker_count counts volleys to reach HP; "
-        "detail lists attacker:max-damage. Focus kills and focus expected values give the best origin-compatible "
-        "volleys of one to three distinct attackers across all supplied legal origins, breaking equal kill odds by expected damage. "
-        "Each attacker delivers its full volley; retaliation and subsequent board changes are ignored. "
+        "- THREAT describes attacks if you EndTurn in the imminent opponent phase, including enemy movement to legal origins under blockers/ZOC. "
+        "maximum_incoming is maximum whole-HP volleys ignoring origin conflicts; lethal_attackers_needed is minimum attackers under maximum hits; "
+        "Focus/expected values give the best volleys of one to three distinct attackers across all supplied legal origins. "
+        "Each attacker delivers its full volley; damage per successful strike is fixed after modifiers (no random dice); retaliation and subsequent board changes are ignored. "
         "Zero can mean no compatible sequence of that size, not safety against more attackers or newly opened routes.\n"
         "- OPEN_THREAT is movement-inclusive and removes other-unit blockers/ZOC while retaining terrain: a conservative bound, "
         "not an executable batch or safety certificate. Explicit zero covers only the supplied scope and attacker count; missing "
@@ -2494,7 +2596,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "\n## Finishing a side turn\n"
         "- DoneWithImportantMoves runs the automatic greedy sweep then ends the turn; EndTurn runs the same sweep and records "
         "implicit completion. Automatic eligibility excludes recruiters, critically wounded units, and spent units; it does not "
-        "establish tactical safety. The sweep never recruits.\n"
+        "establish tactical safety. The sweep never recruits. Empty FinishWithGreedy groups/holds still end turn; opponent responds; holds apply only there.\n"
         "- FinishWithGreedy delegates only listed group IDs, optionally including the recruiter. Unit IDs must be unique across "
         "groups and holds; Omitted units are not swept by this selective finish. Holds have reasons at most 120 characters. "
         "Agenda and annotation prose create no normal engine holds. Only FinishWithGreedy's explicit holds encode executable holds.\n"
@@ -2503,6 +2605,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "{\"actions\":[{\"action\":\"DoneWithImportantMoves\"}],\"decisions\":[{\"orders\":[0],\"rules\":[\"T7\"],\"expected\":\"Idle units advance.\",\"risk\":\"Positions change.\"}],\"agenda\":{\"tasks\":[{\"id\":\"recruit\",\"goal\":\"deploy\",\"units\":[1],\"status\":\"active\"}],\"holds\":[]}}\n"
         "Selective: "
         "`{\"actions\":[{\"action\":\"FinishWithGreedy\",\"groups\":[{\"mode\":\"greedy\",\"unit_ids\":[12]}],\"holds\":[{\"unit_id\":14,\"reason\":\"screen\"}]}],\"decisions\":[{\"orders\":[0],\"rules\":[\"T7\"],\"expected\":\"U12 advances.\",\"risk\":\"U14 forgoes attack.\"}]}`\n"
+        "No-sweep: {\"actions\":[{\"action\":\"FinishWithGreedy\",\"groups\":[],\"holds\":[]}]}\n"
         "Resign: "
         "`{\"actions\":[{\"action\":\"Resign\"}],\"decisions\":[{\"orders\":[0],\"rules\":[\"T8\"],\"expected\":\"Recruiter trapped; concede.\",\"risk\":\"Loss.\"}]}`\n"
         + tactical_guidance
@@ -2579,8 +2682,8 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
                                 if isinstance(t, dict) and t.get("status") == "active"), None)
             if active_task:
                 body["active_task"] = active_task
-    if sweep:
-        body["whole_army_sweep"] = sweep
+    if current_turn_readiness:
+        body["current_turn_readiness"] = current_turn_readiness
     if trend:
         body["recent_trend"] = trend
     option_payloads = {key: body.pop(key) for key in ("turn_options", "recruit_options", "tactical_surface") if key in body}
@@ -2590,7 +2693,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
     memory_payload = {key: body.pop(key) for key in
                       ("previous_intent", "intent_provenance", "conversation_continuity", "agenda",
                        "agenda_provenance",
-                       "whole_army_sweep", "recent_trend") if key in body}
+                       "current_turn_readiness", "recent_trend") if key in body}
     if decision_mode == "focused":
         # Keep the settled objective and its reason together in the dynamic
         # section. The full board, force, economy, and recruiter danger remain
@@ -3167,20 +3270,13 @@ def compact_strategic_briefing(state: dict[str, Any]) -> str:
     by_hex = {(unit.get("col"), unit.get("row")): unit for unit in state.get("units", [])
               if isinstance(unit, dict)}
     villages = [tile for tile in terrain.values() if tile.get("terrain_id") == "village"]
-    owners = {tile.get("owner") for tile in villages}
     ours = state.get("active_faction")
-    neutral_owners = (None, -1, "-1", "neutral")
-    counts = {
-        "ours": sum(tile.get("owner") == ours for tile in villages),
-        "enemy": sum("owner" in tile and tile.get("owner") in (0, 1)
-                     and tile.get("owner") != ours for tile in villages),
-        # Keep the compact headline's historical neutral count while exposing
-        # unknown ownership separately below; per-village rows remain exact.
-        "neutral": sum("owner" in tile and tile.get("owner") in neutral_owners for tile in villages),
-        "unknown": sum("owner" not in tile or tile.get("owner") == "unknown" for tile in villages),
-    }
+    counts = _village_counts(state)
+    # A missing terrain snapshot is different from a known board with zero
+    # villages. Keep each headline count explicit rather than inventing zero.
+    count_text = lambda key: "unknown" if counts[key] is None else str(counts[key])
     lines = ["VILLAGES ours=%s enemy=%s neutral=%s unknown=%s" %
-             (counts["ours"], counts["enemy"], counts["neutral"], counts["unknown"])]
+             tuple(count_text(key) for key in ("ours", "enemy", "neutral", "unknown"))]
     surface = state.get("tactical_surface", {})
     if isinstance(surface, dict):
         forces = {item.get("side"): item for item in surface.get("force", [])
@@ -4805,7 +4901,7 @@ def run(args: argparse.Namespace) -> int:
                     "attacked": sorted(turn_progress_attacked),
                     "remaining_attackers": sorted(coverage["available"] - turn_progress_attacked),
                 }
-                sweep = None
+                current_turn_readiness = None
                 if agenda_enabled:
                     unassigned = []
                     assigned = {unit for task in (agenda_memory or {}).get("tasks", [])
@@ -4816,15 +4912,13 @@ def run(args: argparse.Namespace) -> int:
                             unit_id = unit.get("id", unit.get("unit_id"))
                             if isinstance(unit_id, int) and unit_id not in assigned and unit_id not in held:
                                 unassigned.append(unit_id)
-                    sweep = "remaining_attackers=%s; moved=%s; attacked=%s; unassigned=%s; holds=%s" % (
-                        ",".join("U%s" % unit for unit in sorted(coverage["available"] - turn_progress_attacked)) or "-",
-                        ",".join("U%s" % unit for unit in sorted(turn_progress_moved)) or "-",
-                        ",".join("U%s" % unit for unit in sorted(turn_progress_attacked)) or "-",
-                        ",".join("U%s" % unit for unit in sorted(unassigned)) or "-",
-                        ",".join("U%s" % unit for unit in sorted(held)) or "-")
+                    current_turn_readiness = build_current_turn_readiness(
+                        state, moved=turn_progress_moved, attacked=turn_progress_attacked,
+                        agenda_unassigned=unassigned, agenda_holds=held)
                     metadata["agenda_observations"] += 1
                     record({"type": "agenda_observation", "agenda": agenda_memory,
-                            "sweep": sweep, "side_turn": state.get("side_turns", state.get("turn")),
+                            "current_turn_readiness": current_turn_readiness,
+                            "side_turn": state.get("side_turns", state.get("turn")),
                             "state_revision": state.get("state_revision")})
                 record({"type": "turn_progress", "turn": state.get("turn"),
                         **state["turn_progress"]})
@@ -4849,7 +4943,7 @@ def run(args: argparse.Namespace) -> int:
                                     continuity=continuity,
                                     agenda=agenda_memory if agenda_enabled else None,
                                     agenda_origin=agenda_origin,
-                                    sweep=sweep,
+                                    current_turn_readiness=current_turn_readiness,
                                     trend=compact_trend(trend_states), playbook=playbook,
                                     action_encoding=encoding,
                                     choices=prompt_choices,
@@ -5684,7 +5778,7 @@ def main() -> int:
     p.add_argument("--max-partial-batches-per-turn", type=int, default=None,
                    help="maximum partial batches per side turn (default: 3 in batch, 64 in focused; range: 1..1024)")
     p.add_argument("--disable-agenda-sweep", action="store_true",
-                   help="disable optional model agenda and whole-army sweep context")
+                   help="disable optional model agenda and current-turn readiness context")
     p.add_argument("--diagnostic", action="store_true",
                    help="send the full legacy snapshot instead of the compact briefing")
     validation = p.add_mutually_exclusive_group()

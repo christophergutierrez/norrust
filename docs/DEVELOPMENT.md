@@ -297,6 +297,17 @@ and zero is unchanged. Render readable `TYPE` descriptions, retain raw fields
 for diagnostic/archive output, and report missing values as unknown. A positive
 `+40` therefore means 40% more incoming damage; `-60` means 60% less.
 
+Prompt-facing readiness is current-turn bookkeeping tied to the displayed
+`turn` and `state_revision`: `moved_this_turn`, `attacked_this_turn`,
+`agenda_unassigned`, and `agenda_holds` remain separate. Village totals come
+from `StateSnapshot.terrain` village tiles and their owner (`-1` neutral);
+missing terrain or ownership stays unknown. Threat renderers describe
+`lethal_attackers_needed` as minimum attackers under maximum hits: present null
+means the supplied maximum volleys cannot reach HP, while an absent summary is
+unavailable. Both exposure views target the current position: direct includes
+enemy movement with blockers/ZOC, while open removes those blockers/ZOC.
+Evaluated, threatened, zero, and missing coverage counts are explicit.
+
 Run the real-driver player-contract regressions with:
 
 ```bash

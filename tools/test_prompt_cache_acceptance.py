@@ -148,11 +148,12 @@ class PromptCacheAcceptanceTests(unittest.TestCase):
                     second = client.finalize_model_prompt(client.prompt_for(changed, [], compact=compact), changed)
                     self.assertEqual(regions["fixed_prefix_sha256"], client.prompt_regions(second)["fixed_prefix_sha256"])
                     self.assertNotEqual(first, second)
-            for field in ("intent", "continuity", "agenda", "sweep", "trend"):
+            for field in ("intent", "continuity", "agenda", "current_turn_readiness", "trend"):
                 with self.subTest(compact=compact, memory=field):
-                    value = {"tasks": ["REVIEW_SENTINEL"]} if field == "agenda" else "REVIEW_SENTINEL"
+                    value = {"tasks": ["REVIEW_SENTINEL"]} if field == "agenda" else ({} if field == "current_turn_readiness" else "REVIEW_SENTINEL")
                     second = client.prompt_for(base, [], compact=compact, **{field: value})
                     self.assertEqual(regions["fixed_prefix_sha256"], client.prompt_regions(second)["fixed_prefix_sha256"])
+                if field != "current_turn_readiness":
                     self.assertIn("REVIEW_SENTINEL", second[regions["fixed_prefix_bytes"]:])
 
     def test_available_profiles_precede_memory_and_are_not_duplicated(self):
@@ -206,10 +207,13 @@ class PromptCacheAcceptanceTests(unittest.TestCase):
             events = [{"kind": "gold", "source": "EVENT_SENTINEL", "faction": 0, "delta": 10, "balance": 45}]
             prompt = client.prompt_for(fixture_state(), events, compact=compact, agenda={"tasks": ["AGENDA_SENTINEL"]},
                                        intent="INTENT_SENTINEL", continuity="HISTORY_SENTINEL",
-                                       sweep="SWEEP_SENTINEL", trend="TREND_SENTINEL")
+                                       current_turn_readiness={"turn": 1, "state_revision": 1,
+                                                               "moved_this_turn": [], "attacked_this_turn": [],
+                                                               "agenda_unassigned": [], "agenda_holds": []},
+                                       trend="TREND_SENTINEL")
             live_start = prompt.index("BOARD_UNTRUSTED_DATA_BEGIN:")
             profile_start = prompt.index("zblade")
-            for marker in ("AGENDA_SENTINEL", "INTENT_SENTINEL", "HISTORY_SENTINEL", "SWEEP_SENTINEL", "TREND_SENTINEL"):
+            for marker in ("AGENDA_SENTINEL", "INTENT_SENTINEL", "HISTORY_SENTINEL", "TREND_SENTINEL"):
                 self.assertEqual(prompt.count(marker), 1)
                 self.assertLess(profile_start, prompt.index(marker))
                 self.assertLess(prompt.index(marker), live_start)

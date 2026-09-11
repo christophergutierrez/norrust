@@ -109,6 +109,15 @@ class HandoffGuideTests(unittest.TestCase):
                 self.assertEqual(parsed_agenda, value["agenda"])
         self.assertGreaterEqual(agendas, 1)
 
+    def test_empty_finish_example_is_a_valid_no_sweep_boundary(self):
+        prompt = prompt_for({}, [])
+        raw = prompt.split("No-sweep: ", 1)[1].split("\n", 1)[0]
+        value = json.loads(raw)
+        self.assertEqual(value["actions"][0]["action"], "FinishWithGreedy")
+        self.assertEqual(value["actions"][0]["groups"], [])
+        self.assertEqual(value["actions"][0]["holds"], [])
+        validate_orders(raw)
+
 
 if __name__ == "__main__":
     unittest.main()

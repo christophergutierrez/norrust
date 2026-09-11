@@ -119,6 +119,9 @@ Unit cells use `faction:id`, and `....` is empty. Odd rows are indented to
 preserve the engine's odd-r hex geometry. The unit roster remains authoritative
 for exact type, HP, and status. New fields that can change during a game belong
 after `PROMPT_FIXED_CONTEXT_END` so they do not invalidate the reusable prefix.
+Village totals are counted from live `terrain` tiles whose `terrain_id` is
+`village` and their `owner` (`-1` is neutral). Missing terrain or ownership is
+unknown; it is never reported as zero.
 
 For pending friendly promotions, the compact roster includes the engine's
 ordered `advances_to` choices. Use their exact definition names or zero-based
@@ -230,13 +233,19 @@ the submitted action batch. Malformed agenda data is logged and ignored while
 valid actions continue, and a proposed agenda is published only after its action
 batch is accepted. Rejected metadata keeps the committed agenda and adds a
 correction to subsequent requests, linked to its original request and revision.
+For a complete valid finish with no own delegated sweep, use
+`{"actions":[{"action":"FinishWithGreedy","groups":[],"holds":[]}]}`.
+It still ends the turn and permits the opponent response; executable holds
+apply only to that finish.
 The correction expires on an accepted replacement or the end of that side turn.
 An error in the ending response is delivered once on the next own turn;
 checkpoint resume preserves pending feedback without resurrecting expired errors.
 The correction does not claim that rejected or rolled-back actions executed.
-Each observation includes a compact whole-army sweep unless
-`--disable-agenda-sweep` is passed; this adds no review call and never prevents
-`EndTurn`. In a selective finish, only listed group IDs are swept and listed
+Each observation includes a compact `current_turn_readiness` card unless
+`--disable-agenda-sweep` is passed. It is live to the displayed `turn` and
+`state_revision`, with explicit `moved_this_turn`, `attacked_this_turn`,
+`agenda_unassigned`, and `agenda_holds` lists; it is not prior finish
+provenance. In a selective finish, only listed group IDs are swept and listed
 hold IDs are kept; other units remain unswept. Neither mechanism prevents
 earlier authored moves or recruitment, auto-vacating, or later opponent attacks.
 Delegated destinations remain a tactical choice and are not guaranteed safe.
@@ -834,7 +843,9 @@ The tactical card's readable focus fields report kill probabilities and
 expected cumulative damage for the best origin-compatible volleys of one, two,
 and three distinct attackers across all supplied legal attack origins. Equal
 kill probabilities are ranked by expected damage. Each attacker is assumed to
-deliver its full volley: retaliation and subsequent board changes are ignored.
+deliver its full volley; damage per successful strike is fixed after modifiers,
+with no random damage dice. Retaliation and subsequent board changes are
+ignored. Unit TYPE alignment/profile and inspected retaliation are authoritative.
 A zero can mean no compatible sequence of that size; it does not establish
 safety against additional attackers or routes opened by earlier actions.
 Maximum incoming and maximum damage values are displayed in whole HP. Exchange
