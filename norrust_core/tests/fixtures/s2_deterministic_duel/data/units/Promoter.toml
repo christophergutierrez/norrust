@@ -1,0 +1,30 @@
+# TEST-ONLY leader with a pending advancement, used to verify that a promoted
+# friendly definition enters the tactical profile set.
+id = "Promoter"
+name = "Promoter"
+race = "test"
+level = 1
+experience = 1
+max_hp = 10
+movement = 1
+alignment = "neutral"
+cost = 1
+usage = "fighter"
+abilities = ["leader"]
+advances_to = ["Promoted"]
+
+[[attacks]]
+id = "poke"
+name = "poke"
+damage = 1
+strikes = 1
+attack_type = "impact"
+range = "ranged"
+specials = []
+
+[resistances]
+
+[movement_costs]
+keep = 1
+
+[defense]

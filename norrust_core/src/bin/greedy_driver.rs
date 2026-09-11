@@ -26,8 +26,8 @@ use norrust_core::ai::{
 };
 use norrust_core::board::Tile;
 use norrust_core::combat::{
-    combat_parameters, exact_damage_sequence, exact_exchange, preview_combat, tod_label,
-    validate_combat_preview, CombatParameters, Rng,
+    combat_parameters, exact_damage_sequence, exact_exchange, preview_combat, tod_damage_modifier,
+    tod_label, validate_combat_preview, CombatParameters, Rng, TimeOfDay,
 };
 use norrust_core::events::GameEvent;
 use norrust_core::game_state::{
@@ -47,6 +47,7 @@ use norrust_core::tactics::{
     unit_threats_after_end_turn, ThreatSurface, UnitThreatSurface,
 };
 use norrust_core::unit::Unit;
+use norrust_core::unit::parse_alignment;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -1040,6 +1041,27 @@ fn unit_type_profile(def: &UnitDef) -> Value {
     for key in resistance_keys {
         resistances.insert(key.clone(), json!(def.resistances[key]));
     }
+    let mut ability_meanings = serde_json::Map::new();
+    for ability in &def.abilities {
+        let meaning = match ability.as_str() {
+            "leader" => Some("can recruit from a keep".to_string()),
+            "leadership" => Some(
+                "adjacent lower-level allies deal 25% more damage per level difference"
+                    .to_string(),
+            ),
+            value if value
+                .strip_prefix("regenerates_")
+                .and_then(|amount| amount.parse::<u32>().ok())
+                .is_some() => {
+                let amount = value.strip_prefix("regenerates_").unwrap();
+                Some(format!("heals {amount} HP at the start of its side's turn and cures poison"))
+            }
+            _ => None,
+        };
+        if let Some(meaning) = meaning {
+            ability_meanings.insert(ability.clone(), Value::String(meaning));
+        }
+    }
     json!({
         "def_id": def.id,
         "name": def.name,
@@ -1050,6 +1072,7 @@ fn unit_type_profile(def: &UnitDef) -> Value {
         "alignment": def.alignment,
         "usage": def.usage,
         "abilities": &def.abilities,
+        "ability_meanings": Value::Object(ability_meanings),
         "advances_to": &def.advances_to,
         "resistance_semantics": "signed_percent_damage_modifier",
         "attacks": def.attacks.iter().map(|attack| json!({
@@ -1061,6 +1084,26 @@ fn unit_type_profile(def: &UnitDef) -> Value {
             "specials": attack.specials,
         })).collect::<Vec<_>>(),
         "resistances": Value::Object(resistances),
+    })
+}
+
+/// Engine-owned alignment modifiers. Call the same `tod_damage_modifier`
+/// function used by combat resolution so prompt facts cannot drift from the
+/// damage calculation. Values are percentage points applied to damage dealt;
+/// neutral alignment is unaffected in every phase.
+fn time_of_day_modifiers() -> Value {
+    fn row(phase: TimeOfDay) -> Value {
+        json!({
+            "lawful": tod_damage_modifier(parse_alignment("lawful"), phase),
+            "neutral": tod_damage_modifier(parse_alignment("neutral"), phase),
+            "chaotic": tod_damage_modifier(parse_alignment("chaotic"), phase),
+        })
+    }
+    json!({
+        "Dawn": row(TimeOfDay::Neutral),
+        "Day": row(TimeOfDay::Day),
+        "Dusk": row(TimeOfDay::Neutral),
+        "Night": row(TimeOfDay::Night),
     })
 }
 
@@ -1427,6 +1470,11 @@ fn execute_model_batch(
     let mut post_combat_conditional = false;
     let mut pre_end_recruitment_remaining = None;
     let mut conditional_ids = HashSet::new();
+    // An Engage is a macro over ordinary Move/Attack actions. Preserve the
+    // first nested failure verbatim so callers can repair the real action
+    // (for example NotAdjacent) instead of receiving a misleading
+    // UnitNotFound for the attacker.
+    let mut nested_failure: Option<Value> = None;
     for order in orders {
         let action_name = order.get("action").and_then(Value::as_str);
         let conditional_on_survival = !sample_attacks
@@ -1553,6 +1601,11 @@ fn execute_model_batch(
                 let steps = order.get("steps").and_then(Value::as_array);
                 match (target_id, steps) {
                     (Ok(target_id), Some(steps)) => {
+                        if !state.units.contains_key(&target_id) {
+                            return Err(norrust_core::game_state::ActionError::UnitNotFound(
+                                target_id,
+                            ));
+                        }
                         let mut produced = Vec::new();
                         for (step_index, step) in steps.iter().enumerate() {
                             if !state.units.contains_key(&target_id) {
@@ -1611,9 +1664,27 @@ fn execute_model_batch(
                                 .iter()
                                 .all(|result| result.get("ok") == Some(&Value::Bool(true)))
                             {
-                                return Err(norrust_core::game_state::ActionError::UnitNotFound(
-                                    attacker_id,
-                                ));
+                                let failed_index = sub
+                                    .results
+                                    .iter()
+                                    .position(|result| result.get("ok") == Some(&Value::Bool(false)))
+                                    .unwrap_or(0);
+                                let failed = sub.results.get(failed_index).cloned().unwrap_or_else(
+                                    || json!({"ok": false, "code": "unknown", "message": "nested action failed"}),
+                                );
+                                let subaction = sub_orders
+                                    .get(failed_index)
+                                    .and_then(|action| action.get("action"))
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("unknown");
+                                nested_failure = Some(json!({
+                                    "step_index": step_index,
+                                    "subaction": subaction,
+                                    "attacker_id": attacker_id,
+                                    "target_id": target_id,
+                                    "nested": failed,
+                                }));
+                                return Err(norrust_core::game_state::ActionError::NotAdjacent);
                             }
                             state = sub.state;
                             next_id = sub.next_id;
@@ -1933,7 +2004,24 @@ fn execute_model_batch(
                 }
             }
             Err(error) => {
-                results.push(json!({"ok":false,"code":error.code(),"message":error.to_string()}));
+                if let Some(mut detail) = nested_failure.take() {
+                    if let Some(object) = detail.as_object_mut() {
+                        object.insert("ok".into(), Value::Bool(false));
+                        object.insert("code".into(),
+                                      object.get("nested")
+                                          .and_then(|nested| nested.get("code"))
+                                          .cloned()
+                                          .unwrap_or_else(|| Value::String(error.code().into())));
+                        object.insert("message".into(),
+                                      object.get("nested")
+                                          .and_then(|nested| nested.get("message"))
+                                          .cloned()
+                                          .unwrap_or_else(|| Value::String(error.to_string())));
+                    }
+                    results.push(detail);
+                } else {
+                    results.push(json!({"ok":false,"code":error.code(),"message":error.to_string()}));
+                }
                 if !sample_attacks {
                     break;
                 }
@@ -3032,17 +3120,36 @@ fn interactive_protocol_game(mut c: Config) {
                                     "no_capacity"
                                 };
                                 let mut profile_ids = BTreeSet::new();
-                                profile_ids.extend(faction.recruits.iter().cloned());
+                                // Profiles describe the definitions the player can
+                                // encounter from either known recruit pool and the
+                                // living board, including friendly non-recruits such
+                                // as leaders. Do not leak unrelated registry types.
+                                for known_faction in &factions {
+                                    profile_ids.extend(known_faction.recruits.iter().cloned());
+                                }
                                 profile_ids.extend(
                                     state
                                         .units
                                         .values()
-                                        .filter(|unit| unit.faction != state.active_faction)
+                                        .filter(|unit| unit.hp > 0)
                                         .map(|unit| unit.def_id.clone()),
                                 );
                                 let unit_types: Vec<Value> = profile_ids
                                     .iter()
                                     .filter_map(|id| units.get(id).map(unit_type_profile))
+                                    .collect();
+                                let faction_profiles: Vec<Value> = factions
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(side, known_faction)| {
+                                        json!({
+                                            "side": side,
+                                            "id": known_faction.def.id,
+                                            "name": known_faction.def.name,
+                                            "leader_def": known_faction.def.leader_def,
+                                            "recruit_ids": known_faction.recruits,
+                                        })
+                                    })
                                     .collect();
                                 let threats =
                                     recruiter_threats_after_end_turn(&state, state.active_faction)
@@ -3071,7 +3178,7 @@ fn interactive_protocol_game(mut c: Config) {
                                         // `next_round_time_of_day` (which always names the phase of
                                         // the round after this one finishes).
                                         let imminent_opponent_time_of_day = threats.projected_time_of_day;
-                                        json!({"type":"status","ok":true,"what":what,"body":{"visibility":"full","time_of_day":tod_label(state.turn),"next_round_time_of_day":tod_label(state.turn.saturating_add(1)),"next_opponent_time_of_day":imminent_opponent_time_of_day,"units":tactical_units,"unit_types":unit_types,"threats":threats,"exposure":exposure,"force":force_summaries(&state),"economy":{"gold":state.gold[side],"next_village_income":next_village_income,"vacatable_castles":vacatable_castles},"recruitment":{"gold":state.gold[side],"placement_hexes":placement_hexes,"options":options,"legal_now":legal_now,"reason":recruit_reason,"recruiter_on_keep":recruiter_on_keep,"batch_macro_enabled":!c.disable_recruit_batch}}})
+                                        json!({"type":"status","ok":true,"what":what,"body":{"visibility":"full","time_of_day":tod_label(state.turn),"next_round_time_of_day":tod_label(state.turn.saturating_add(1)),"next_opponent_time_of_day":imminent_opponent_time_of_day,"time_of_day_modifiers":time_of_day_modifiers(),"factions":faction_profiles,"units":tactical_units,"unit_types":unit_types,"threats":threats,"exposure":exposure,"force":force_summaries(&state),"economy":{"gold":state.gold[side],"next_village_income":next_village_income,"vacatable_castles":vacatable_castles},"recruitment":{"gold":state.gold[side],"placement_hexes":placement_hexes,"options":options,"legal_now":legal_now,"reason":recruit_reason,"recruiter_on_keep":recruiter_on_keep,"batch_macro_enabled":!c.disable_recruit_batch}}})
                                     }
                                     (Err(message), _, _) => {
                                         json!({"type":"status","ok":false,"what":what,"code":"tactical_surface_error","message":message})

@@ -35,9 +35,11 @@ recruiter safety, contested combat, and irreversible losses.
 - **T2.** Use supplied coordinates, targets, recruitment, and promotion
   options — documented mechanics, not another game's rules. Empty
   choice list does not mean no legal moves: inspect the unit or use
-  authoritative coordinates. Uncertain legality: inspect; among similar
-  legal alternatives, choose one; reuse it instead of re-deriving settled
-  paths.
+  authoritative coordinates. For an uncertain attack origin, inspect the
+  enemy target; before retreat or deployment, inspect the specific unit.
+  Read-only inspection supplies facts; no action choice. Among
+  similar legal alternatives, choose one; reuse it instead of re-deriving
+  settled paths.
 - **T3.** Prioritize outcomes, including the enemy response:
   - **T3.1.** Take a winning recruiter kill when available.
   - **T3.2.** Save a threatened recruiter: remove threats, screen, or retreat.

@@ -784,6 +784,199 @@ fn unit_type_profiles_preserve_attack_specials() {
     );
 }
 
+#[test]
+fn engage_reports_the_nested_engine_error_and_step_context() {
+    let lines = run_driver(
+        &[
+            "--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
+            "--max-turns", "1", "--incremental-turns",
+        ],
+        r#"{"action":"Query","what":"validate_batch","state_revision":0,"orders":[{"action":"Engage","target_id":2,"steps":[{"attacker_id":1,"col":2,"row":7}]}]}
+"#,
+    );
+    let status = lines
+        .iter()
+        .find(|line| line["type"] == "status")
+        .expect("validation status");
+    let result = &status["body"]["results"][0];
+    assert_eq!(result["ok"], false);
+    assert_eq!(result["code"], "NotAdjacent");
+    assert_eq!(result["message"], "units are not in attack range");
+    assert_eq!(result["step_index"], 0);
+    assert_eq!(result["subaction"], "Attack");
+    assert_eq!(result["attacker_id"], 1);
+    assert_eq!(result["target_id"], 2);
+    assert_eq!(result["nested"]["code"], "NotAdjacent");
+    assert_eq!(status["body"]["valid"], false);
+
+    let primitive = run_driver(
+        &[
+            "--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
+            "--max-turns", "1", "--incremental-turns",
+        ],
+        r#"{"action":"Query","what":"validate_batch","state_revision":0,"orders":[{"action":"Attack","attacker_id":1,"defender_id":2}]}
+"#,
+    );
+    let primitive_status = primitive
+        .iter()
+        .find(|line| line["type"] == "status")
+        .expect("primitive validation status");
+    assert_eq!(primitive_status["body"]["results"][0]["code"], "NotAdjacent");
+
+    let unreachable = run_driver(
+        &[
+            "--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
+            "--max-turns", "1", "--incremental-turns",
+        ],
+        r#"{"action":"Query","what":"validate_batch","state_revision":0,"orders":[{"action":"Engage","target_id":2,"steps":[{"attacker_id":1,"col":10,"row":7}]}]}
+"#,
+    );
+    let unreachable_result = &unreachable
+        .iter()
+        .find(|line| line["type"] == "status")
+        .expect("unreachable validation status")["body"]["results"][0];
+    assert_eq!(unreachable_result["code"], "DestinationUnreachable");
+    assert_eq!(unreachable_result["subaction"], "Move");
+    assert_eq!(unreachable_result["step_index"], 0);
+}
+
+#[test]
+fn stationary_engage_skips_steps_after_target_death_without_moving() {
+    let fixture_root = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/s2_deterministic_duel");
+    let lines = run_driver_with_env(
+        &[
+            "--scenario", "duel", "--faction0", "lethal", "--faction1", "fragile",
+            "--max-turns", "1", "--incremental-turns",
+        ],
+        r#"[{"action":"Engage","target_id":2,"steps":[{"attacker_id":1,"col":0,"row":0},{"attacker_id":1,"col":0,"row":0}]}]
+"#,
+        &[("NORRUST_TEST_ROOT_DIR", fixture_root)],
+    );
+    let status = lines
+        .iter()
+        .find(|line| line["type"] == "status")
+        .expect("engage status");
+    assert_eq!(status["ok"], true);
+    assert_eq!(status["results"].as_array().unwrap().len(), 1);
+    let events = lines
+        .iter()
+        .find(|line| line["type"] == "events")
+        .expect("engage events");
+    let events = events["events"].as_array().unwrap();
+    assert_eq!(events.iter().filter(|event| event["kind"] == "attack").count(), 1);
+    assert_eq!(events.iter().filter(|event| event["kind"] == "move").count(), 0);
+    assert_eq!(lines.last().unwrap()["type"], "game_end");
+    assert_eq!(lines.last().unwrap()["reason"], "winner");
+}
+
+#[test]
+fn promoted_friendly_type_enters_the_next_tactical_profile_set() {
+    let fixture_root = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/s2_deterministic_duel");
+    let lines = run_driver_with_env(
+        &[
+            "--scenario", "profile", "--faction0", "promoter", "--faction1", "lethal",
+            "--max-turns", "1", "--incremental-turns",
+        ],
+        concat!(
+            "[{\"action\":\"Attack\",\"attacker_id\":1,\"defender_id\":2},",
+            "{\"action\":\"Advance\",\"unit_id\":1,\"def_id\":\"Promoted\"}]\n",
+            "{\"action\":\"Query\",\"what\":\"tactical_surface\",\"state_revision\":2}\n",
+        ),
+        &[("NORRUST_TEST_ROOT_DIR", fixture_root)],
+    );
+    let query = lines
+        .iter()
+        .find(|line| line["type"] == "status" && line["what"] == "tactical_surface")
+        .expect("post-advance tactical surface");
+    let profiles = query["body"]["unit_types"].as_array().expect("profiles");
+    let promoted = profiles
+        .iter()
+        .find(|profile| profile["def_id"] == "Promoted")
+        .expect("promoted friendly definition");
+    assert_eq!(promoted["level"], 2);
+    assert!(lines.iter().any(|line| {
+        line["type"] == "state"
+            && line["turn_boundary"] == "partial"
+            && line["units"]
+                .as_array()
+                .is_some_and(|units| units.iter().any(|unit| unit["def_id"] == "Promoted"))
+    }));
+}
+
+#[test]
+fn engage_preserves_missing_spent_and_later_step_errors_transactionally() {
+    let missing = run_driver(
+        &["--scenario", "big_battle_6", "--max-turns", "1", "--incremental-turns"],
+        r#"[{"action":"Engage","target_id":999,"steps":[{"attacker_id":1,"col":2,"row":7}]}]
+"#,
+    );
+    let missing_result = &missing
+        .iter()
+        .find(|line| line["type"] == "status")
+        .expect("missing target status")["results"][0];
+    assert_eq!(missing_result["code"], "UnitNotFound");
+    assert!(missing_result["message"].as_str().unwrap().contains("999"));
+
+    let spent = run_driver(
+        &["--scenario", "big_battle_6", "--max-turns", "1", "--incremental-turns"],
+        concat!(
+            "[{\"action\":\"Move\",\"unit_id\":1,\"col\":3,\"row\":7}]\n",
+            "[{\"action\":\"Engage\",\"target_id\":2,\"steps\":[{\"attacker_id\":1,\"col\":4,\"row\":7}]}]\n",
+        ),
+    );
+    let spent_result = spent
+        .iter()
+        .filter(|line| line["type"] == "status")
+        .last()
+        .expect("spent status");
+    assert_eq!(spent_result["ok"], true);
+    assert_eq!(spent_result["results"][0]["code"], "UnitAlreadyMoved");
+    assert_eq!(spent_result["results"][0]["subaction"], "Move");
+    assert_eq!(spent_result["state_revision"], 1);
+    assert_eq!(spent.iter().filter(|line| line["type"] == "state").count(), 2);
+
+    let fixture_root = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/s2_deterministic_duel");
+    let later = run_driver_with_env(
+        &[
+            "--scenario", "profile", "--faction0", "promoter", "--faction1", "lethal",
+            "--max-turns", "1", "--incremental-turns",
+        ],
+        r#"[{"action":"Engage","target_id":2,"steps":[{"attacker_id":1,"col":0,"row":0},{"attacker_id":1,"col":0,"row":0}]}]
+"#,
+        &[("NORRUST_TEST_ROOT_DIR", fixture_root)],
+    );
+    let later_status = later
+        .iter()
+        .find(|line| line["type"] == "status")
+        .expect("later-step status");
+    let later_result = &later_status["results"][0];
+    assert_eq!(later_result["code"], "UnitAlreadyAttacked");
+    assert_eq!(later_result["step_index"], 1);
+    assert_eq!(later_result["subaction"], "Attack");
+    assert_eq!(later_result["attacker_id"], 1);
+    assert!(later.iter().all(|line| line["type"] != "events"));
+    assert_eq!(later_status["state_revision"], 0);
+}
+
+#[test]
+fn tactical_surface_exposes_phase_modifiers_and_known_faction_pools() {
+    let response = tactical_surface_query(&[
+        "--scenario", "big_battle_6", "--faction0", "northerners", "--faction1", "loyalists",
+    ]);
+    let body = &response["body"];
+    assert_eq!(body["time_of_day_modifiers"]["Dawn"]["chaotic"], 0);
+    assert_eq!(body["time_of_day_modifiers"]["Dusk"]["lawful"], 0);
+    assert_eq!(body["time_of_day_modifiers"]["Day"]["lawful"], 25);
+    assert_eq!(body["time_of_day_modifiers"]["Day"]["chaotic"], -25);
+    assert_eq!(body["time_of_day_modifiers"]["Night"]["lawful"], -25);
+    assert_eq!(body["time_of_day_modifiers"]["Night"]["chaotic"], 25);
+    let factions = body["factions"].as_array().expect("faction profiles");
+    assert_eq!(factions[0]["name"], "Northerners");
+    assert_eq!(factions[1]["name"], "Loyalists");
+    assert!(factions[0]["recruit_ids"].as_array().unwrap().len() > 1);
+    assert!(factions[1]["recruit_ids"].as_array().unwrap().len() > 1);
+}
+
 // `next_opponent_time_of_day` must reuse the same post-EndTurn projection as
 // `threats.projected_time_of_day` / `exposure.projected_time_of_day`, and must
 // diverge from the naive `next_time_of_day` (which always names the phase of

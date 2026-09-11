@@ -912,6 +912,16 @@ are resistances (`cold: takes 60% less damage`); zero means unchanged damage.
 Missing resistance data is unknown. These descriptions are the base modifier
 before other combat effects, and engine forecasts remain authoritative. Raw
 signed fields remain available in diagnostic output and archives.
+`TYPE` ability cards preserve known empty abilities as `none`; an absent ability
+field is `unknown`. Known meanings are supplied by the driver, including
+`regenerates_N` (heals N HP at the start of that side's turn and cures poison)
+and `leadership` (adjacent lower-level allies deal 25% more damage per level
+difference). Unrecognized abilities retain their name with `meaning unknown`.
+The tactical surface also supplies both faction names and their known recruit
+pools, plus the engine's phase table: Dawn and Dusk are neutral, Day is
+lawful +25% / chaotic -25%, and Night reverses those modifiers; neutral
+alignment is unaffected. Current, imminent-opponent, and next-round phases are
+shown separately.
 
 ## Turn ownership, outcomes, and failures
 

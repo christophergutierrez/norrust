@@ -103,6 +103,10 @@ class MovementIntegrationTests(unittest.TestCase):
                     any("skipped=U3:no_improving_destination" in prompt for prompt in prompts),
                     "the next canonical prompt must carry the committed per-unit skip result",
                 )
+                self.assertTrue(
+                    any("TURN_PROGRESS moved=U3" in prompt for prompt in prompts),
+                    "a committed delegated movement macro must count in live progress",
+                )
 
                 db = root / "history.sqlite"
                 conn = open_history(db)

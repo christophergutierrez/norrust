@@ -62,7 +62,8 @@ class HandoffGuideTests(unittest.TestCase):
                         self.assertNotIn("Use RecruitBatch for ordinary recruitment", prompt)
                         self.assertNotIn("exhausting legal recruitment", prompt)
                         self.assertEqual('RecruitBatch: {"action"' in prompt, macro)
-                        self.assertEqual("a partial non-empty action array" in prompt, incremental)
+                        self.assertEqual("Observe fresh state after each step." in prompt,
+                                         incremental)
         self.assertNotIn('"actions":', self.guide)
         self.assertNotIn("focus_p", self.guide)
 

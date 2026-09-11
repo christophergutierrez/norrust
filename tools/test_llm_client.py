@@ -20,6 +20,7 @@ from .llm_client import (
     authoritative_live_state_reminder, finalize_model_prompt,
     compact_unit_inspection, compact_draft_review, tool_followup_instruction, tool_budget_repair_prompt,
     compact_events, compact_trend, tactical_attack_coverage,
+    replay_accepted_progress, update_committed_progress,
     select_event_window,
     query_tactical_surface, query_validate_batch, query_preview_batch, query_bounded_comparison,
     CandidateQueryError, CANDIDATE_QUERY_ERROR_CLASSES,
@@ -460,6 +461,71 @@ class ClientValidationTests(unittest.TestCase):
         # exactly the routine over-explanation stack 3 exists to stop.
         self.assertIn("Hold for a concrete purpose",
                       " ".join(prompt.split()))
+
+    def test_compact_profiles_preserve_known_empty_and_unknown_abilities(self):
+        rendered = compact_tactical_surface({"unit_types": [
+            {"def_id": "Troll Whelp", "abilities": ["regenerates_8"],
+             "ability_meanings": {"regenerates_8": "heals 8 HP at the start of its side's turn and cures poison"}},
+            {"def_id": "Leader", "abilities": ["leadership"],
+             "ability_meanings": {"leadership": "adjacent lower-level allies deal 25% more damage per level difference"}},
+            {"def_id": "Empty", "abilities": []},
+            {"def_id": "Unknown"},
+            {"def_id": "Mystery", "abilities": ["future_ability"]},
+        ], "units": []})
+        self.assertIn("abilities=regenerates_8[heals 8 HP", rendered)
+        self.assertIn("abilities=leadership[adjacent lower-level allies deal 25%", rendered)
+        self.assertIn("TYPE Empty", rendered)
+        self.assertIn("abilities=none", rendered)
+        self.assertIn("TYPE Unknown", rendered)
+        self.assertIn("abilities=unknown", rendered)
+        self.assertIn("future_ability[meaning unknown]", rendered)
+
+    def test_compact_observation_renders_authoritative_phase_table(self):
+        rendered = compact_observation({
+            "turn": 3, "active_faction": 0, "time_of_day": "Day",
+            "cols": 1, "rows": 1, "terrain": [], "units": [],
+            "tactical_surface": {
+                "visibility": "full", "next_opponent_time_of_day": "Day",
+                "next_round_time_of_day": "Dusk",
+                "time_of_day_modifiers": {
+                    "Dawn": {"lawful": 0, "neutral": 0, "chaotic": 0},
+                    "Day": {"lawful": 25, "neutral": 0, "chaotic": -25},
+                    "Dusk": {"lawful": 0, "neutral": 0, "chaotic": 0},
+                    "Night": {"lawful": -25, "neutral": 0, "chaotic": 25},
+                },
+            },
+        })
+        self.assertIn("PHASE_MODIFIERS current=Day opponent=Day next_round=Dusk", rendered)
+        self.assertIn("Dusk lawful=0 neutral=0 chaotic=0", rendered)
+        self.assertIn("Night lawful=-25 neutral=0 chaotic=25", rendered)
+
+    def test_progress_counts_committed_delegated_moves_and_ignores_simulation_or_opponent(self):
+        moved, attacked = set(), set()
+        update_committed_progress(moved, attacked, {
+            "type": "events", "source": "delegated_greedy",
+            "events": [{"kind": "move", "unit": 20}, {"kind": "attack",
+                       "attacker": {"unit": 21}}],
+        })
+        update_committed_progress(moved, attacked, {
+            "type": "events", "source": "greedy",
+            "events": [{"kind": "move", "unit": 99}],
+        })
+        update_committed_progress(moved, attacked, {
+            "type": "events", "source": "preview",
+            "events": [{"kind": "move", "unit": 98}],
+        })
+        self.assertEqual(moved, {20})
+        self.assertEqual(attacked, {21})
+        resumed_moved, resumed_attacked = replay_accepted_progress([
+            {"type": "driver", "line": {"type": "events", "source": "delegated_greedy",
+             "events": [{"kind": "move", "unit": 20}]}},
+            {"type": "driver", "line": {"type": "events", "source": "llm",
+             "events": [{"kind": "end_turn"}]}},
+            {"type": "driver", "line": {"type": "events", "source": "delegated_greedy",
+             "events": [{"kind": "move", "unit": 22}]}},
+        ], 0)
+        self.assertEqual(resumed_moved, {22})
+        self.assertEqual(resumed_attacked, set())
     def test_checkpoint_reference_confines_path_and_verifies_digest(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "match.ckpt"
@@ -1605,7 +1671,10 @@ class ClientValidationTests(unittest.TestCase):
                                                     "next_opponent_time_of_day": "Dusk"}}, [], compact=True)
         for text in (
                 "COORDS=col,row", '"tool":"inspect_units"', "Move destination", "compact R `open`",
-                "RecruitBatch", "MoveGroupToward", "nonfinal", "moved/skipped", "explain deliberate saving"):
+                "RecruitBatch", "MoveGroupToward", "nonfinal", "moved/skipped", "explain deliberate saving",
+                "For an uncertain attack origin, inspect the", "before retreat or deployment, inspect the specific unit",
+                "Read-only inspection supplies facts", "Engage failures retain the engine code/message",
+                '"tool":"inspect_target"', '"tool":"inspect_units"'):
             with self.subTest(text=text):
                 self.assertIn(text, prompt)
         self.assertIn("p[defender-killed,both-survive,attacker-killed] and focus_p use basis points", prompt)

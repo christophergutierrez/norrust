@@ -1,0 +1,4 @@
+# TEST-ONLY three-hex board for a ranged advancement/profile probe.
+width = 3
+height = 1
+tiles = ["keep", "flat", "keep"]

@@ -1,0 +1,6 @@
+# TEST-ONLY faction for the friendly promotion profile regression.
+id = "promoter"
+name = "Promoter Faction"
+leader_def = "Promoter"
+recruits = []
+starting_gold = 0

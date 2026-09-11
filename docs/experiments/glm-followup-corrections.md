@@ -38,8 +38,24 @@ those fixtures without raising size limits or weakening the historical cache
 prefix ratchet. Additional review caught unbounded tool-followup model calls and
 rejected intents leaking into committed memory; regression tests cover both.
 
-Stacks2–4 remain to be integrated. Their worker handoffs and focused results are
-in `tmp/glm-followup-exec/stack2-handoff.md`, `stack3-handoff.md`,
+Stack2 passed its cumulative gate: 625 Python tests plus Rust and Lua
+(`tmp/glm-followup-exec/stack2-fast-check-pass.log`). It preserves nested
+Engage errors and rollback, counts committed macro progress, supplies both faction
+recruit pools and living type abilities, and derives phase modifiers from engine
+combat functions. T2 now directs uncertain attack origins to target inspection
+and retreat/deployment to unit inspection. The exact old checkpoint reproduces
+NotAdjacent through both macro and primitive actions.
+
+The first cumulative stack2 gate found a 155-byte prompt overrun. The stack3/4
+gates additionally found a failed logical retry aggregate omitting the final
+unknown attempt, a percentile fixture whose request IDs were not catalogued, and
+isolated-worktree driver-path setup failures. Luna corrections preserve unknown
+usage while retaining all-measured ceiling-exhaustion totals. Parent supplied the
+built driver at the maintained default path for the isolated checks. Review also
+requires partial-action instructions to be conditional on incremental mode.
+
+Stacks3–4 are staged in isolated checkouts pending successful corrected gates.
+Worker handoffs and focused results are in `tmp/glm-followup-exec/stack2-handoff.md`, `stack3-handoff.md`,
 `stack3-review-handoff.md`, and `stack4-handoff.md`.
 
 Historical scratch acceptance already reproduces25requests/25calls,24measured,

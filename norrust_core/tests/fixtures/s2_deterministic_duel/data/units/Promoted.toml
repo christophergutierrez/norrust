@@ -1,0 +1,29 @@
+# TEST-ONLY advancement target for Promoter.
+id = "Promoted"
+name = "Promoted"
+race = "test"
+level = 2
+experience = 999
+max_hp = 14
+movement = 2
+alignment = "neutral"
+cost = 1
+usage = "fighter"
+abilities = ["leader"]
+advances_to = []
+
+[[attacks]]
+id = "harmless"
+name = "harmless"
+damage = 0
+strikes = 1
+attack_type = "impact"
+range = "melee"
+specials = []
+
+[resistances]
+
+[movement_costs]
+keep = 1
+
+[defense]

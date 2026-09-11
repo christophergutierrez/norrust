@@ -1325,10 +1325,28 @@ def compact_unit_type_profiles(profiles: Any) -> str:
                 resistances = "none"
         else:
             resistances = "unknown"
-        lines.append("TYPE %s cost=%s hp=%s move=%s align=%s attacks=%s resist=%s" % (
+        raw_abilities = profile.get("abilities")
+        if isinstance(raw_abilities, list):
+            if raw_abilities:
+                meanings = profile.get("ability_meanings")
+                rendered_abilities = []
+                for ability in raw_abilities:
+                    if not isinstance(ability, str):
+                        rendered_abilities.append("unknown")
+                        continue
+                    meaning = (meanings.get(ability) if isinstance(meanings, dict)
+                               else None)
+                    rendered_abilities.append(
+                        "%s[%s]" % (ability, meaning if isinstance(meaning, str) and meaning else "meaning unknown"))
+                abilities = "+".join(rendered_abilities)
+            else:
+                abilities = "none"
+        else:
+            abilities = "unknown"
+        lines.append("TYPE %s cost=%s hp=%s move=%s align=%s abilities=%s attacks=%s resist=%s" % (
             profile.get("def_id", "?"), profile.get("cost", "?"), profile.get("max_hp", "?"),
             profile.get("movement", "?"), profile.get("alignment", "?"),
-            "|".join(attacks) or "-", resistances or "-"))
+            abilities, "|".join(attacks) or "-", resistances or "-"))
     return "\n".join(lines)
 
 
@@ -1758,6 +1776,40 @@ def rescue_priorities(exposure: dict[str, Any]) -> list[dict[str, Any]]:
     return candidates[:3]
 
 
+_COMMITTED_CONTROLLED_EVENT_SOURCES = frozenset({"llm", "delegated_greedy"})
+
+
+def update_committed_progress(moved: set[int], attacked: set[int],
+                              line: dict[str, Any]) -> None:
+    """Apply one live committed event envelope to the current-side progress.
+
+    The driver labels model-authored events ``llm`` and driver-assisted
+    movement/finish events ``delegated_greedy``. Both are committed controlled
+    side actions; opponent ``greedy`` events and preview data are excluded.
+    The source remains available in the event archive for provenance.
+    """
+    if line.get("type") != "events":
+        return
+    envelope_source = line.get("source")
+    if envelope_source not in _COMMITTED_CONTROLLED_EVENT_SOURCES:
+        return
+    for event in line.get("events", []):
+        if not isinstance(event, dict):
+            continue
+        source = event.get("source", envelope_source)
+        if source not in _COMMITTED_CONTROLLED_EVENT_SOURCES:
+            continue
+        if event.get("kind") == "end_turn":
+            moved.clear()
+            attacked.clear()
+        elif event.get("kind") == "move" and isinstance(event.get("unit"), int):
+            moved.add(event["unit"])
+        elif event.get("kind") == "attack":
+            attacker = event.get("attacker", {})
+            if isinstance(attacker, dict) and isinstance(attacker.get("unit"), int):
+                attacked.add(attacker["unit"])
+
+
 def replay_accepted_progress(records: list[dict[str, Any]], faction: int) -> tuple[set[int], set[int]]:
     """Rebuild current-side-turn progress from accepted engine event envelopes."""
     moved: set[int] = set()
@@ -1766,20 +1818,7 @@ def replay_accepted_progress(records: list[dict[str, Any]], faction: int) -> tup
         if record.get("type") != "driver" or not isinstance(record.get("line"), dict):
             continue
         line = record["line"]
-        if line.get("type") != "events" or line.get("source") != "llm":
-            continue
-        for event in line.get("events", []):
-            if not isinstance(event, dict):
-                continue
-            if event.get("kind") == "end_turn":
-                moved.clear()
-                attacked.clear()
-            elif event.get("kind") == "move" and isinstance(event.get("unit"), int):
-                moved.add(event["unit"])
-            elif event.get("kind") == "attack":
-                attacker = event.get("attacker", {})
-                if isinstance(attacker, dict) and isinstance(attacker.get("unit"), int):
-                    attacked.add(attacker["unit"])
+        update_committed_progress(moved, attacked, line)
     return moved, attacked
 
 
@@ -2084,17 +2123,18 @@ def shared_response_rules(boundary_guidance: str, decision_mode: str = "batch") 
             "bytes each. At most 16 groups and 256 references. An empty orders group explains a consequential omission.\n"
         )
     return (
-        "- Partial progress: a non-empty response may omit the finishing boundary." + boundary_guidance
+        ("- Partial progress: a non-empty response may omit the finishing boundary."
+         if boundary_guidance else "- Complete the turn with one final boundary.") + boundary_guidance
         + " A request requiring final actions accepts no inspection and no partial-only reply.\n"
         + annotation_guidance
         + ("- Focused mode keeps one active task and its committed intent prominent: take the next useful operation, "
            "observe its result, and reassess remaining units in the same turn; completing that operation does not end the turn.\n"
            if decision_mode == "focused" else "")
         + "- Optional intent is memory under 512 UTF-8 bytes: it is how a conclusion survives to your next request.\n"
-        "- Optional agenda replaces prior bookkeeping wholesale: exactly tasks and holds, at most eight tasks, at most "
-        "4096 UTF-8 bytes compact. Each task has exactly id, goal, units, status; id unique and nonempty, goal at most "
-        "160 UTF-8 bytes; units and holds integer friendly IDs; status pending, active, done or deferred, with AT MOST ONE ACTIVE. "
-        "A breach rejects the agenda: your previous agenda stands, actions still execute, and the reason reaches your next request.\n"
+        "- Optional agenda replaces prior bookkeeping: exactly tasks and holds; max 8 tasks/4096 compact UTF-8 bytes. "
+        "Each task has only id, goal, units, status; id unique/nonempty, goal max 160 UTF-8 bytes; units/holds are friendly "
+        "integer IDs; status pending|active|done|deferred, at most one active. Invalid agenda is rejected; prior agenda "
+        "stands, actions execute, reason reaches next request.\n"
         "- Bare tools use only their documented keys and carry no action metadata (actions, choices, intent, agenda, decisions).\n"
     )
 
@@ -2115,7 +2155,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
     schemas = [
         'Move: {"action":"Move","unit_id": integer,"col": integer,"row": integer}',
         'Attack: {"action":"Attack","attacker_id": integer,"defender_id": integer}',
-        'Engage: {"action":"Engage","target_id": integer,"steps":[{"attacker_id": integer,"col": integer,"row": integer}]}; ordered move-and-attack steps; target death skips remaining steps; illegal steps reject the batch',
+        'Engage: {"action":"Engage","target_id": integer,"steps":[{"attacker_id": integer,"col": integer,"row": integer}]}; ordered move then attack; illegal steps reject batch',
         'Recruit: {"action":"Recruit","def_id": string,"col": integer,"row": integer}',
         'Advance: {"action":"Advance","unit_id": integer,"target_index": integer} or {"action":"Advance","unit_id": integer,"def_id": string}; exactly one of integer target_index or string def_id',
         'DoneWithImportantMoves: {"action":"DoneWithImportantMoves"}',
@@ -2127,15 +2167,15 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
     if recruit_batch_enabled:
         schemas.insert(3, 'RecruitBatch: {"action":"RecruitBatch","def_id": string,"count": positive integer}; optional driver-assisted placement')
         recruitment_guidance = (
-            "\n- RecruitBatch auto-vacates eligible castle occupants, enabling recruits beyond initial empty spaces, "
-            "including beyond six, within gold and capacity; "
-            "vacating spends movement and may disrupt screens. Recruit gives exact placement (T0)."
+            "\n- RecruitBatch auto-vacates eligible castle occupants, enabling recruits beyond initial empty spaces, including beyond six, "
+            "within gold and capacity; vacating spends movement and may disrupt screens. Recruit gives exact placement (T0)."
         )
     tactical_guidance = (
         "\n## Tactical data and read-only tools\n"
         "- Use tactical_surface exactly. COORDS=col,row; `at` is current. The base card gives move/target counts, current-position "
         "attacks, and target-centric COVERAGE. TYPE profiles give attacks and incoming-damage modifiers (+40 takes 40% more, "
         "-60 takes 60% less); missing values are unknown.\n"
+        "- Engage failures retain the engine code/message plus step_index, subaction, attacker_id, and target_id; repair the reported cause.\n"
         "- THREAT describes attacks if you EndTurn now. attackers counts enemies; max_sum is maximum volleys ignoring origin conflicts; "
         "lethal_n counts volleys to reach HP; detail lists attacker:max-damage. "
         "focus_p=[p1,p2,p3] and focus_e give kill probabilities and expected damage for the best origin-compatible "
@@ -2150,8 +2190,8 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "{\"tool\":\"inspect_targets\",\"unit_ids\":[N,...]} (at most eight); hex coverage with "
         "{\"tool\":\"inspect_hex\",\"col\":C,\"row\":R,\"phase\":\"current|next_opponent_turn\"}.\n"
         "- One preview request per turn: {\"tool\":\"preview_batch\",\"candidates\":[[actions...]]}, at most two complete candidates ending EndTurn. "
-        "Tools execute no live actions; simulations are hypothetical. Use LIVE_STATE for the current revision; revised/rolled-back drafts start there. "
-        "Follow-ups give remaining call budgets; a request requiring final actions accepts no further query.\n"
+        "Tools do not act live; simulations are hypothetical. Use LIVE_STATE for the current revision; revised/rolled-back drafts start there. "
+        "Follow-ups give remaining budgets; final-action requests accept no query.\n"
         if isinstance(state.get("tactical_surface"), dict) else
         "\n## Legal options\n"
         "- turn_options lists each unit's attack origins and reachable target IDs; "
@@ -2163,8 +2203,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "no attack/recruit/promote/sweep/end/opponent; progress is not safety."
     )
     boundary_guidance = (
-        " In incremental mode, a partial non-empty action array may omit the boundary; "
-        "observe fresh state after each step."
+        " Observe fresh state after each step."
         if state.get("incremental_turns") is True else "")
     rules = (
         (load_tactical_playbook() if playbook is None else playbook) + "\n"
@@ -2188,12 +2227,12 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
             "\n## Response contract (choices mode)\n"
             "- Return one JSON envelope for action responses. You may select displayed handles with `{\"choices\": [\"<handle>\", ...], ...}` "
             "or provide coordinate actions with `{\"actions\": [...], ...}` (for finish, resignation, or coordinate fallback). "
-            "choices and actions are strictly mutually exclusive: do not provide both in one response.\n"
+            "choices/actions are mutually exclusive; provide one.\n"
             "- To finish the side turn, use the actions envelope: `{\"actions\": [{\"action\": \"DoneWithImportantMoves\"}], ...}` or `{\"actions\": [{\"action\": \"EndTurn\"}], ...}`.\n"
             if action_encoding == "choices" else
             "\n## Response contract\n"
             "- Return one JSON actions envelope for action responses, including review, repair, finish, and resignation. "
-            "actions is a non-empty JSON array of at most 256 objects executing sequentially. Except for standalone Resign, "
+            "actions is a non-empty JSON array of at most 256 objects, in order. Except for standalone Resign, "
             "normal mode requires exactly one final DoneWithImportantMoves, EndTurn, or FinishWithGreedy boundary.\n"
         )
         + shared_response_rules(boundary_guidance, decision_mode)
@@ -2213,7 +2252,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "\n## Complete response examples\n"
         "Routine finish with optional agenda (illustrative IDs). Use this exact valid shape: "
         "{\"actions\":[{\"action\":\"DoneWithImportantMoves\"}],\"decisions\":[{\"orders\":[0],\"rules\":[\"T7\"],\"expected\":\"Delegate routine units.\",\"risk\":\"Routine positions may change.\"}],\"agenda\":{\"tasks\":[{\"id\":\"recruit\",\"goal\":\"deploy reinforcements\",\"units\":[1],\"status\":\"active\"}],\"holds\":[]}}\n"
-        "Selective finish (illustrative IDs): "
+        "Selective finish: "
         "`{\"actions\":[{\"action\":\"FinishWithGreedy\",\"groups\":[{\"mode\":\"greedy\",\"unit_ids\":[12]}],\"holds\":[{\"unit_id\":14,\"reason\":\"screen recruiter until ranged threat is removed\"}]}],\"decisions\":[{\"orders\":[0],\"rules\":[\"T7\"],\"expected\":\"U12 advances; U14 blocks recruiter access.\",\"risk\":\"U14 forgoes an attack.\"}]}`\n"
         "Concession: "
         "`{\"actions\":[{\"action\":\"Resign\"}],\"decisions\":[{\"orders\":[0],\"rules\":[\"T8\"],\"expected\":\"Concede: recruiter trapped, no defenders or recruits.\",\"risk\":\"Ends the match as a loss.\"}]}`\n"
@@ -2645,6 +2684,21 @@ def compact_observation(state: dict[str, Any], *, include_map: bool = True,
              f"final_only={state.get('final_only', False)} "
              f"{part_info}",
              f"gold={state.get('gold', '?')} terrain_types={','.join(sorted(terrain))}"]
+    if isinstance(tactical, dict):
+        modifiers = tactical.get("time_of_day_modifiers")
+        if isinstance(modifiers, dict):
+            table = []
+            for phase in ("Dawn", "Day", "Dusk", "Night"):
+                values = modifiers.get(phase)
+                if not isinstance(values, dict):
+                    table.append(f"{phase}:unknown")
+                    continue
+                table.append("%s lawful=%s neutral=%s chaotic=%s" % (
+                    phase, values.get("lawful", "unknown"),
+                    values.get("neutral", "unknown"), values.get("chaotic", "unknown")))
+            lines.append("PHASE_MODIFIERS current=%s opponent=%s next_round=%s table=%s" % (
+                state.get("time_of_day", "unknown"), next_opponent_tod,
+                next_round_tod, "; ".join(table)))
     progress = state.get("turn_progress")
     if isinstance(progress, dict):
         moved = ",".join("U%s" % value for value in progress.get("moved", [])) or "-"
@@ -2783,6 +2837,13 @@ def fixed_prompt_context(state: dict[str, Any]) -> str:
     tactical = state.get("tactical_surface")
     if isinstance(tactical, dict) and "visibility" in tactical:
         facts["visibility"] = tactical["visibility"]
+    if isinstance(tactical, dict):
+        # Faction pools and the phase modifier table are stable engine facts;
+        # keeping them in the fixed prefix prevents every compact observation
+        # from repeating or silently dropping the known roster context.
+        for key in ("factions", "time_of_day_modifiers"):
+            if key in tactical:
+                facts[key] = tactical[key]
     terrain = compact_spatial_map(state, geometry_only=True)
     return ("PROMPT_FIXED_CONTEXT_BEGIN\n"
             "MATCH_FACTS_UNTRUSTED_DATA_BEGIN\n" +
@@ -4900,15 +4961,7 @@ def run(args: argparse.Namespace) -> int:
                 new_events = line.get("events", [])
                 events.extend(new_events)
                 event_window.extend(new_events)
-                for event in new_events:
-                    if event.get("source") != "llm":
-                        continue
-                    if event.get("kind") == "move" and isinstance(event.get("unit"), int):
-                        turn_progress_moved.add(event["unit"])
-                    elif event.get("kind") == "attack":
-                        attacker = event.get("attacker", {})
-                        if isinstance(attacker.get("unit"), int):
-                            turn_progress_attacked.add(attacker["unit"])
+                update_committed_progress(turn_progress_moved, turn_progress_attacked, line)
             elif line.get("type") == "game_start":
                 # The opening, before either side acts. Recorded as an
                 # ordinary driver state record for the same reason as the
