@@ -1,7 +1,12 @@
 # GLM diagnostic corrections and observed retest
 
-Status: stacks1–4 implemented and cumulatively tested; authorized stack5 live
-retest is next. Execution record: `docs/experiments/glm-followup-corrections.md`.
+Status: all five stacks completed. Luna High implemented the four code stacks;
+each passed its cumulative gate and was committed. The one paid diagnostic
+ended on its token budget, was observed/imported/audited, and is available for
+replay. A retest-discovered annotation regression was fixed after play and
+passed the full 649-test Python plus Rust/Lua gate in commit `574f6c8`.
+Execution record and newly diagnosed next work:
+`docs/experiments/glm-followup-corrections.md`.
 Baseline: `85373d4e0e12e742977967f2284e2ec5a234309c`.
 Evidence: `tmp/quick-play-glm-efficiency-xbsjhb82/REPORT.md`,
 `OBSERVATIONS.md`, `engage-error-reproduction.json`, and
@@ -178,8 +183,8 @@ Acceptance:
 - Reimport twice: same IDs/counts/usage; no foreign-key or dangling links. Explicit
   conflicting/foreign identity cannot attach a request or silently overwrite truth.
 - Historical acceptance uses a scratch COPY of the prior archive/catalog: 25 calls,
-  24 measured, total993914, reasoning660682; all25 turn links recovered from its
-  proven contexts; failed call remains unknown; 22 snapshots/307events preserved.
+  24 measured, total 993914, reasoning 660682; all 25 turn links recovered from its
+  proven contexts; failed call remains unknown; 22 snapshots/307 events preserved.
   Original archives/catalogs remain byte-identical. Document review-link outcome.
 
 Commit: `fix(history): retain failure outcomes and incremental usage identity`.
@@ -222,7 +227,7 @@ Acceptance:
 - Driver+scripted/local transport test proves no partial JSON actions are submitted
   and all charged/unknown calls are recorded once. Complete stream and equivalent
   non-stream fixture give identical content, normalized usage and canonical prompt.
-- Passive recorder has25/25-equivalent prompt/hash checks; logs contain no API key.
+- Passive recorder has 25/25-equivalent prompt/hash checks; logs contain no API key.
   CLI docs show streaming launch and interrupted-run accounting clearly.
 
 Commit: `feat(fireworks): stream responses with durable diagnostic evidence`.
@@ -234,7 +239,7 @@ workers and commits the tested fix. Save source/driver hashes and clean status.
 Publish the implementation handoff before launching the game.
 
 The user explicitly authorized this retest: no additional permission or48-cell
-pilot. One fresh isolated GLM5.3Flash game, same seed771125826, map/factions/gold,
+pilot. One fresh isolated GLM 5.3 Flash game, same seed771125826, map/factions/gold,
 focused/choices/incremental,50side-turn cap,1M measured-token game budget,
 128k->512k existing exhaustion policy, provider-default sampling/reasoning.
 Use `--stream` and the new evidence recorder; document that transport change.
@@ -260,3 +265,21 @@ no strategic improvement is a valid diagnostic outcome, not a reason to hide it.
 
 Commit final tracked execution report and plan status; ignored paid evidence stays
 in its isolated archive with a linked `tmp/glm-followup-exec/HANDOFF.md`.
+
+## Completion record
+
+| Stack | Main commit | Cumulative acceptance |
+|---|---|---|
+| Plan before workers | `14265b3` | Written before delegation |
+| 1: contracts and decisions | `659798d` | 622 Python + Rust/Lua |
+| 2: engine facts and errors | `aa13aca` | 625 Python + Rust/Lua |
+| 3: history and accounting | `bd13595` | 631 Python + Rust/Lua; historical reimport |
+| 4: streaming evidence | `bdb5dcf` | 643 Python + Rust/Lua; paid source |
+| Post-run contract regression | `574f6c8` | 649 Python + Rust/Lua |
+| 5: observed diagnostic | Report commit containing this table | 27 measured calls; import/replay/hash reconciliation |
+
+Game `ee269ac3ee0a761f8dcd433feb9476e6` completed seven controlled turns,
+stopped with no winner at 1,036,415 measured tokens, and cost an estimated
+$0.367597. No source changed during the game. The execution report records
+remaining terrain semantics, task-memory, compact field, and catalog issues as
+new findings, not additional implemented scope. No further paid trial was run.
