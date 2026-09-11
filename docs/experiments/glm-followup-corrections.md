@@ -1,6 +1,6 @@
 # GLM diagnostic corrections: execution and retest
 
-Implementation in progress. The user authorized the
+Implementation complete and tested; paid diagnostic pending. The user authorized the
 [phased plan](../plans/glm-followup-corrections.md), Luna implementation and one
 fresh paid GLM Flash diagnostic. No new paid request has been launched yet.
 
@@ -56,8 +56,15 @@ requires partial-action instructions to be conditional on incremental mode.
 
 Stack3 passed its corrected cumulative gate: 631 Python tests plus Rust and
 Lua (`stack3-fast-check-pass.log`). The main tree matches the tested cumulative
-checkout `b76abdf` byte for byte, excluding this execution report. Stack4 is
-ready for final integration.
+checkout `b76abdf` byte for byte, excluding this execution report.
+
+Stack4 passed its cumulative gate: 643 Python tests plus Rust and Lua
+(`stack4-fast-check-pass.log`), with no skips. The main source matches tested
+checkout `943159a` byte for byte, excluding this execution report. Streaming
+retains exact payload/prompt hashes, incremental SSE chunks, reasoning/content,
+and complete or partial receipts. Incomplete responses cannot execute actions.
+Tests include local HTTP transport through the real driver, unknown usage, and
+exactly-once physical-call records. No paid calls occurred in implementation.
 Worker handoffs and focused results are in `tmp/glm-followup-exec/stack2-handoff.md`, `stack3-handoff.md`,
 `stack3-review-handoff.md`, and `stack4-handoff.md`.
 
@@ -70,7 +77,7 @@ integrity. The original archive and catalog hashes are unchanged.
 
 ## Paid diagnostic
 
-Pending completion and validation of all four implementation stacks. One new
+All four implementation stacks are complete. The one new
 game will retain the previous scenario, factions, seed, budgets and provider
 sampling/reasoning defaults, using the maintained streaming evidence recorder.
 This combined retest is descriptive; it cannot isolate which change caused a

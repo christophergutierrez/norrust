@@ -1,6 +1,7 @@
 # GLM diagnostic corrections and observed retest
 
-Status: planned; implementation and live retest authorized by the user.
+Status: stacks1–4 implemented and cumulatively tested; authorized stack5 live
+retest is next. Execution record: `docs/experiments/glm-followup-corrections.md`.
 Baseline: `85373d4e0e12e742977967f2284e2ec5a234309c`.
 Evidence: `tmp/quick-play-glm-efficiency-xbsjhb82/REPORT.md`,
 `OBSERVATIONS.md`, `engage-error-reproduction.json`, and

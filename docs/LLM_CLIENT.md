@@ -313,6 +313,32 @@ shape. This is the **direct API player**: launch `tools/llm_client.py` with
 completion or interruption, then import -- usage is already durable on disk
 however the game ended.
 
+For long Fireworks replies, add `--stream` to the maintained model command:
+
+```bash
+python3 -m tools.llm_client \
+  --model-command 'python3 -m tools.fireworks_backend --stream' \
+  --model accounts/fireworks/models/deepseek-v4-flash-0731 \
+  --log /absolute/run/match.ndjson
+```
+
+The adapter requests `stream_options: {"include_usage": true}` and waits for
+both a supported finish reason and `data: [DONE]` before emitting its one JSON
+reply. Content and provider reasoning are accumulated separately; a timeout,
+EOF, malformed frame, HTTP error, or missing credentials produces no action
+reply and is recorded as unknown or locally blocked according to the normal
+usage policy. Use `--evidence-dir /absolute/run/fireworks-evidence` (or
+`NORRUST_EVIDENCE_DIR`) to retain the exact prompt, hash, request payload and
+context, flushed received chunks, and a completed or incomplete receipt. An
+interrupted stream is never retried by the adapter; the client may apply its
+existing output-limit policy only to a provider `finish_reason: length`.
+The transport follows Fireworks' [chat completions API](https://docs.fireworks.ai/api-reference/post-chatcompletions)
+and its [reasoning stream fields](https://docs.fireworks.ai/guides/reasoning).
+Raw provider `reasoning_content` is retained in each evidence receipt's
+assembled response or partial receipt; it is diagnostic provider evidence and
+is not imported as SQLite decision annotations. Decision annotations remain
+the separately authored and archived `decisions` records.
+
 ### Binding a host thread: the launching parent's job
 
 A **parent agent driving a player** whose own inference calls the harness
