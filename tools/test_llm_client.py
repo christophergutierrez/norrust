@@ -731,7 +731,7 @@ class ClientValidationTests(unittest.TestCase):
                                                        "expected_damage_tenths": [80, 20]}}],
         })
         self.assertIn("TARGET U9 hp=20 at=4,7 terrain=flat", target)
-        self.assertIn("ENGAGE_STEP U2 via=3,7 p[1000, 9000, 0]", target)
+        self.assertIn("ENGAGE_STEP U2 via=3,7 exchange=(defender_killed=10%,both_survive=90%,attacker_killed=0%; expected_damage=(to_defender=8HP,attacker_retaliation=2HP))", target)
         empty = compact_hex_inspection({
             "phase": "next_opponent_turn", "visibility": "full",
             "inspection": {"col": 4, "row": 7, "occupant_id": None,
@@ -759,8 +759,8 @@ class ClientValidationTests(unittest.TestCase):
             ],
         })
         self.assertIn("DESTINATION_DANGER", rendered)
-        self.assertIn("@2,7 a3 m42 lethal_n=2 conflict=False focus_p=[100, 200, 300]", rendered)
-        self.assertIn("->1,7 a0 m0 lethal_n=None", rendered)
+        self.assertIn("@2,7 direct_attackers=3 direct_max=42HP lethal_attacker_count=2 origins_conflict=False focus_kills=(kill_by_1=1%,kill_by_2=2%,kill_by_3=3%)", rendered)
+        self.assertIn("->1,7 direct_attackers=0 direct_max=0HP lethal_attacker_count=unknown", rendered)
 
     def test_target_and_hex_requests_are_exact_and_revision_pinned(self):
         self.assertEqual(validate_inspect_target_request(
@@ -841,7 +841,7 @@ class ClientValidationTests(unittest.TestCase):
         }]}, True)
         self.assertTrue(lethal)
         self.assertIn("danger_before=True danger_after=True", rendered)
-        self.assertIn("R1 hp=34 attackers=5 max_sum=70 lethal_n=3", rendered)
+        self.assertIn("R1 hp=34HP attackers=5 maximum_incoming=70HP lethal_attacker_count=3", rendered)
 
     def test_compact_draft_review_treats_open_route_lethality_as_danger(self):
         rendered, lethal = compact_draft_review({"candidates": [{
@@ -856,7 +856,7 @@ class ClientValidationTests(unittest.TestCase):
         }]}, False)
         self.assertTrue(lethal)
         self.assertIn("danger_before=False danger_after=True", rendered)
-        self.assertIn("OPEN_R1 attackers=1 max_sum=20 lethal_n=1", rendered)
+        self.assertIn("OPEN_R1 attackers=1 maximum_incoming=20HP lethal_attacker_count=1", rendered)
 
     def test_compact_draft_review_reports_unused_attackers(self):
         rendered, lethal = compact_draft_review(
@@ -1007,7 +1007,7 @@ class ClientValidationTests(unittest.TestCase):
                 "threats": [{"attacker_id": 9, "origin_col": 4, "origin_row": 7}],
             }]},
         }]})
-        self.assertIn("C0 R1 hp=38 attackers=3 max_sum=42 lethal_n=3 conflicts=True", rendered)
+        self.assertIn("C0 R1 hp=38HP attackers=3 maximum_incoming=42HP lethal_attacker_count=3 origins_conflict=True", rendered)
         self.assertIn("SIMULATION — NOT EXECUTED BEGIN", rendered)
         self.assertIn("originating_revision=17", rendered)
         self.assertIn("SIMULATION — NOT EXECUTED END", rendered)
@@ -1184,7 +1184,7 @@ class ClientValidationTests(unittest.TestCase):
                                    "attacker_ids": [3, 4], "kill_bps": 8100,
                                    "expected_damage_tenths": 176}],
         }]})
-        self.assertIn("C0 OUT T7 hp=20 attackers=U3,U4 p_kill=8100 e=176", rendered)
+        self.assertIn("C0 OUT T7 hp=20 attackers=U3,U4 kill_probabilities=(81%) expected_damage=(17.6HP)", rendered)
 
     def test_compact_batch_preview_reports_typed_failure_and_assumption(self):
         rendered = compact_batch_preview({"sampling": False, "candidates": [{
@@ -1280,7 +1280,7 @@ class ClientValidationTests(unittest.TestCase):
                  "outcome_bps": [7100, 2500, 400],
                  "expected_damage_tenths": [210, 20]}}]}]})
         self.assertIn("COORDS=col,row", rendered)
-        self.assertIn("U5 at=2,7 moves=- attacks=@>T9 p[7100, 2500, 400] e[210, 20]", rendered)
+        self.assertIn("U5 at=2,7 move_destinations=none attack_options=@>T9 exchange=(defender_killed=71%,both_survive=25%,attacker_killed=4%; expected_damage=(to_defender=21HP,attacker_retaliation=2HP))", rendered)
 
         rendered = compact_unit_inspection({"unit_id": 5, "origins": [
             {"col": 3, "row": 7, "current": False, "movable": True,
@@ -1289,7 +1289,7 @@ class ClientValidationTests(unittest.TestCase):
                  "expected_damage_tenths": [210, 20]}}]},
             {"col": 4, "row": 7, "current": False, "movable": True,
              "engagements": []}]})
-        self.assertIn("U5 moves=3,7|4,7 attacks=3,7>T9 p[7100, 2500, 400] e[210, 20]", rendered)
+        self.assertIn("U5 move_destinations=3,7|4,7 attack_options=3,7>T9 exchange=(defender_killed=71%,both_survive=25%,attacker_killed=4%; expected_damage=(to_defender=21HP,attacker_retaliation=2HP))", rendered)
         self.assertNotIn("at=3,7", rendered)
 
     def test_attack_coverage_groups_targets_and_current_attackers(self):
@@ -1306,7 +1306,7 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual(coverage["current"], {3})
         self.assertEqual(coverage["targets"], {9: {3, 4}, 10: {3}})
         rendered = compact_tactical_surface(surface)
-        self.assertIn("COVERAGE available=U3,U4 current=U3 targets=U9:U3,U4;U10:U3", rendered)
+        self.assertIn("ATTACK_COVERAGE legal_origins=U3,U4 current_origins=U3 targets=U9:U3,U4;U10:U3", rendered)
 
     def test_default_tactical_card_summarizes_movable_origins(self):
         rendered = compact_tactical_surface({"units": [{"unit_id": 5, "origins": [
@@ -1317,8 +1317,8 @@ class ClientValidationTests(unittest.TestCase):
              "engagements": [{"defender_id": 10, "forecast": {
                  "outcome_bps": [0, 10000, 0], "expected_damage_tenths": [30, 0]}}]},
         ]}]})
-        self.assertIn("U5 at=2,7 move_n=1 targets=U9,U10", rendered)
-        self.assertIn("current_attacks=T9", rendered)
+        self.assertIn("U5 at=2,7 readiness=moved=unknown attacked=unknown move_destinations=1 attack_targets=U9,U10", rendered)
+        self.assertIn("current_attack_options=T9 exchange=", rendered)
         self.assertNotIn("3,7>T10", rendered)
         self.assertIn("inspect=inspect_units", rendered)
 
@@ -1338,9 +1338,9 @@ class ClientValidationTests(unittest.TestCase):
                         "vacatable_castles": [{"unit_id": 8, "col": 3, "row": 7,
                                                "destinations": [{"col": 4, "row": 7}]}]},
         })
-        self.assertIn("THREAT R1 hp=20 at=2,7 tod=Night attackers=1 max_sum=20 lethal_n=1", rendered)
-        self.assertIn("detail=U16:m20", rendered)
-        self.assertIn("E g6 income=4 vacate=U8@3,7>4,7", rendered)
+        self.assertIn("THREAT R1 hp=20HP at=2,7 projected_opponent_phase=Night attackers=1 maximum_incoming=20HP lethal_attacker_count=1", rendered)
+        self.assertIn("detail=U16:20HP", rendered)
+        self.assertIn("ECONOMY gold=6 projected_village_income=4 vacatable_castles=U8@3,7>4,7", rendered)
 
     def test_compact_tactical_surface_renders_open_route_threats(self):
         rendered = compact_tactical_surface({
@@ -1357,8 +1357,8 @@ class ClientValidationTests(unittest.TestCase):
                                   "origin_row": 10, "moved": True, "max_damage": 20}],
             }]},
         })
-        self.assertIn("OPEN_THREAT R1 attackers=1 max_sum=20 lethal_n=1", rendered)
-        self.assertIn("OPEN_THREAT_HEX R1 at=0,10~ attackers=U17 max=20", rendered)
+        self.assertIn("OPEN_THREAT R1 movement_inclusive=true attackers=1 maximum_incoming=20HP lethal_attacker_count=1", rendered)
+        self.assertIn("OPEN_THREAT_HEX R1 at=0,10~ attackers=U17 maximum_damage=20HP", rendered)
 
     def test_compact_tactical_surface_groups_recruiter_threat_origins(self):
         rendered = compact_tactical_surface({
@@ -1375,7 +1375,7 @@ class ClientValidationTests(unittest.TestCase):
             }]},
         })
         self.assertIn("terrain=keep on_keep=True", rendered)
-        self.assertIn("THREAT_HEX R1 at=4,7~ attackers=U16,U18 max=20", rendered)
+        self.assertIn("THREAT_HEX R1 at=4,7~ attackers=U16,U18 maximum_damage=20HP", rendered)
 
     def test_compact_observation_is_deterministic_and_keeps_instance_facts(self):
         state = {"turn": 2, "active_faction": 0, "time_of_day": "day", "cols": 3, "rows": 2,
@@ -1687,9 +1687,9 @@ class ClientValidationTests(unittest.TestCase):
                 '"tool":"inspect_target"', '"tool":"inspect_units"'):
             with self.subTest(text=text):
                 self.assertIn(text, prompt)
-        self.assertIn("p[defender-killed,both-survive,attacker-killed] and focus_p use basis points", prompt)
-        self.assertIn("e[damage-to-defender,damage-to-attacker] and focus_e use tenths of HP", prompt)
-        self.assertIn("open_m, and detail damage use whole HP", prompt)
+        self.assertIn("defender-killed, both-survive, and attacker-killed percentages", prompt)
+        self.assertIn("expected damage is shown as HP", prompt)
+        self.assertIn("705 bps = 7.05%", prompt)
         self.assertIn("visibility=full", prompt)
         # Both phases are shown, and the imminent opponent phase is distinct
         # from the next round's: conflating them was finding B5.
@@ -1940,7 +1940,7 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual(parsed, example["agenda"])
         self.assertEqual(example["actions"], [{"action": "DoneWithImportantMoves"}])
         self.assertEqual(example["decisions"][0]["orders"], [0])
-        for text in ("6400", "64%", "24", "2.4 HP", "basis points", "tenths of HP",
+        for text in ("705 bps = 7.05%", "144 whole HP", "24", "2.4HP", "basis points", "tenths of HP",
                      "beyond six", "auto-vacates", "within gold and capacity",
                      "Agenda and annotation prose create no normal engine holds",
                      "Only FinishWithGreedy's explicit holds encode executable holds",
@@ -1954,28 +1954,28 @@ class ClientValidationTests(unittest.TestCase):
                          "forecast": {"outcome_bps": [6400, 3600, 0],
                                        "expected_damage_tenths": [24, 7]}}],
         })
-        self.assertIn("p[6400, 3600, 0] e[24, 7] [p=bps,e=tenths]", target)
+        self.assertIn("exchange=(defender_killed=64%,both_survive=36%,attacker_killed=0%; expected_damage=(to_defender=2.4HP,attacker_retaliation=0.7HP))", target)
         preview = compact_batch_preview({"candidates": [{"forecasts": [{
             "attacker_id": 2, "defender_id": 9,
             "forecast": {"outcome_bps": [6400, 3600, 0],
                           "expected_damage_tenths": [24, 7]}}]}]})
-        self.assertIn("p[6400, 3600, 0] e[24, 7] [p=bps,e=tenths]", preview)
+        self.assertIn("exchange=(defender_killed=64%,both_survive=36%,attacker_killed=0%; expected_damage=(to_defender=2.4HP,attacker_retaliation=0.7HP))", preview)
         unit = compact_unit_inspection({
             "unit_id": 2, "origins": [],
             "destination_threats": [{"col": 1, "row": 1, "focus_kill_bps": [6400],
                                       "focus_expected_damage_tenths": [24]}]})
-        self.assertIn("focus_p=[6400] focus_e=[24] [p=bps,e=tenths]", unit)
+        self.assertIn("focus_kills=(kill_by_1=64%,kill_by_2=unknown,kill_by_3=unknown) focus_expected=(damage_from_1=2.4HP", unit)
         surface = compact_tactical_surface({
             "units": [{"unit_id": 2, "origins": [{"current": True, "col": 1, "row": 1,
                 "engagements": [{"defender_id": 9, "forecast": {
                     "outcome_bps": [6400, 3600, 0], "expected_damage_tenths": [24, 7]}}]}]}]})
-        self.assertIn("p[6400, 3600, 0] e[24, 7] [p=bps,e=tenths]", surface)
+        self.assertIn("exchange=(defender_killed=64%,both_survive=36%,attacker_killed=0%; expected_damage=(to_defender=2.4HP,attacker_retaliation=0.7HP))", surface)
         reviewed, _ = compact_draft_review({"candidates": [{"exposure": {"units": [
             {"unit_id": 2, "distinct_attacker_count": 1, "focus_kill_bps": [6400],
              "focus_expected_damage_tenths": [24]}]}}, {"exposure": {"units": [
              {"unit_id": 2, "distinct_attacker_count": 1, "focus_kill_bps": [6400],
               "focus_expected_damage_tenths": [24]}]}}]}, False)
-        self.assertIn("focus_p=[6400] focus_e=[24] [p=bps,e=tenths]", reviewed)
+        self.assertIn("focus_kills=(kill_by_1=64%,kill_by_2=unknown,kill_by_3=unknown) focus_expected=(damage_from_1=2.4HP", reviewed)
 
     def test_action_repair_explains_transactional_rollback(self):
         prompt = prompt_for({}, [])

@@ -276,11 +276,11 @@ catalog linkage without depending on ignored game archives or a native model.
 `RecruitBatch` is driver-assisted and may recruit beyond the initially empty
 castle spaces by vacating eligible occupants and reusing the freed spaces. The
 actual result is bounded by legal capacity and gold, and the positional cost of
-vacating must remain visible to the player. Compact forecast damage is in
-tenths of HP (`24` = 2.4 HP); compact probabilities are basis points (`6400` =
-64%); direct maximum-damage fields remain whole HP. Preserve these numeric
-payloads and the stable `tactics-v1` rule IDs when changing prompt wording or
-validation.
+vacating must remain visible to the player. Prompt renderers show exact
+percentages and HP, including named exchange outcomes and attacker retaliation;
+raw `outcome_bps`, `expected_damage_tenths`, and `max_damage` integers remain
+unchanged for engine/archive consumers. Preserve these numeric payloads and the
+stable `tactics-v1` rule IDs when changing prompt wording or validation.
 
 Resistance modifiers are signed incoming-damage percentages: positive is
 vulnerability and increases damage, negative is resistance and reduces damage,

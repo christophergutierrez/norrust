@@ -37,7 +37,14 @@ its old rolls 66/44 both miss against corrected 60% castle avoidance. State 2
 restores the intended hit without changing the objective predicates; all 24
 matrix cells pass. Historical evidence remains byte-identical.
 
-Stacks 2–4 are pending integration. Gate logs and worker handoffs live under
+Stack 2 passed the full cumulative gate (657 Python tests plus the supported
+Rust/Lua suites). Prompts now show explicit percentages and HP, live move/attack
+readiness, exact phase/routing/recruitment rules, and movement-inclusive threat
+scope. The presentation ceiling is 18,500 bytes, below the allowed 18,975-byte
+maximum; the final largest measured small fixture is 18,176 bytes. Historical
+cache-prefix comparisons and runtime prompt-byte limits remain intact.
+
+Stacks 3–4 are pending integration. Gate logs and worker handoffs live under
 `tmp/glm-mechanics-exec/`.
 
 ## Paid retest

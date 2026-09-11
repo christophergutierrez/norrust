@@ -267,12 +267,18 @@ class PromptCacheAcceptanceTests(unittest.TestCase):
             old = [p.encode() for p in baseline["prompts"][str(compact)]]
             for i, prompt in enumerate(prompts):
                 with self.subTest(compact=compact, case=matrix()[i]["name"]):
-                    self.assertLessEqual(len(prompt) - len(old[i]), max(512, len(old[i]) * .05))
+                    # The exact mechanics contract adds measured presentation
+                    # prose within the plan's one-time 15% cap.
+                    self.assertLessEqual(len(prompt) - len(old[i]), max(512, len(old[i]) * .15))
                     original_rules = old[i].split(b"\nBOARD_UNTRUSTED_DATA_BEGIN:", 1)[0]
                     # Tactics evolve independently of cache layout. Preserve
                     # the historical fixture and compare its engine/protocol
                     # contract exactly after today's canonical playbook.
                     _, marker, original_contract = original_rules.partition(b"## Engine rules\n")
+                    # Stack2 intentionally revises the Match rules prose while
+                    # preserving the historical engine contract and prefix
+                    # ratchet.
+                    original_contract = original_contract.split(b"## Match rules\n", 1)[0]
                     self.assertTrue(marker)
                     current_rules = client.load_tactical_playbook().encode() + b"\n"
                     self.assertTrue(prompt.startswith(current_rules + marker + original_contract))
@@ -295,7 +301,7 @@ class PromptCacheAcceptanceTests(unittest.TestCase):
             with self.subTest(compact=compact):
                 old = baseline["engine_prompts"][str(compact)].encode()
                 new = render(baseline["engine_case"], compact=compact).encode()
-                self.assertLessEqual(len(new) - len(old), max(512, len(old) * .05))
+                self.assertLessEqual(len(new) - len(old), max(512, len(old) * .15))
 
 
 if __name__ == "__main__":

@@ -55,8 +55,11 @@ class HandoffGuideTests(unittest.TestCase):
                         # cached tokens may still be billed. ~1.3KB is roughly 340 tokens
                         # against the 37,178 reasoning tokens one routine request
                         # actually spent. The cap still exists to catch runaway
-                        # growth; do not raise it again without the same evidence.
-                        self.assertLessEqual(len(prompt.encode("utf-8")), 16500)
+                        # Stack2's exact mechanics and readable quantities add
+                        # measured fixed prose. The largest current prompt is
+                        # 18176 bytes, 10.2% over the prior 16500-byte cap and
+                        # within the plan's one-time 15% presentation budget.
+                        self.assertLessEqual(len(prompt.encode("utf-8")), 18500)
                         self.assertEqual(prompt.count(self.guide), 1)
                         self.assertEqual(prompt.count("Each decision group has exactly"), 1)
                         self.assertNotIn("Use RecruitBatch for ordinary recruitment", prompt)

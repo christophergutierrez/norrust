@@ -64,6 +64,10 @@ recruiter safety, contested combat, and irreversible losses.
   Shared alignment gives no automatic relative advantage; neutral ignores
   time of day. Use forecasts rather than an automatic fight/wait rule.
 - **T6.** Keep later actions legal after earlier moves, recruits, and kills.
+  Each unit has one independent Move and one independent Attack per side turn;
+  unused movement does not create another Move. Move then Attack and Attack
+  then Move may both be legal, while Move then Attack then Move is not.
+  Coordinates use the engine's odd-r `(col,row)` layout.
   Reserve distinct destinations unless freed earlier. `Engage` may use a
   stationary attacker at its current hex and stops when its target dies;
   completing one engagement does not end the turn. Attacking does not spend

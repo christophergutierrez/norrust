@@ -799,8 +799,9 @@ another tool anyway, the client does not execute it; its correction prompt
 retains all prior tool results and requires final actions. A second
 `preview_batch` request is still not accepted.
 
-The normal card summarizes each unit with its current hex, legal move count,
-attackable target IDs, and attacks available from its current hex. Inspect the
+The normal card summarizes each unit with its current odd-r `(col,row)` hex,
+legal movement destinations, live moved/attacked flags, attackable target IDs,
+and attacks available from its current hex. Inspect the
 active-task units together when a specific decision needs detailed origins; do
 not inspect the whole army by default. Movable origins and their target
 combinations are returned by `inspect_units`; `--diagnostic` retains the
@@ -811,17 +812,19 @@ retains the raw event objects.
 `--decision-metrics` adds one read-only preview of the final model-authored
 batch to the log so evaluations can compare recruiter danger and remaining
 recruitment before and after the decision.
-The tactical card's `focus_p` and `focus_e` report kill probabilities and
+The tactical card's readable focus fields report kill probabilities and
 expected cumulative damage for the best origin-compatible volleys of one, two,
 and three distinct attackers across all supplied legal attack origins. Equal
 kill probabilities are ranked by expected damage. Each attacker is assumed to
 deliver its full volley: retaliation and subsequent board changes are ignored.
 A zero can mean no compatible sequence of that size; it does not establish
 safety against additional attackers or routes opened by earlier actions.
-`max_sum` separately adds maximum volleys without enforcing origin compatibility.
-All compact forecast `e`/`focus_e` values use tenths of HP (`24` means `2.4` HP);
-`p`/`focus_p` use basis points (`6400` means `64%`). Direct `m`/`max_damage` values
-remain whole HP. Preview outcomes are hypothetical, and sampled combat results
+Maximum incoming and maximum damage values are displayed in whole HP. Exchange
+outcomes are named defender-killed, both-survive, and attacker-killed; expected
+damage names damage to the defender and attacker retaliation. Focus values are
+named kill-by-1/2/3 attackers and damage-from-1/2/3 attackers. The underlying
+`outcome_bps`, `expected_damage_tenths`, and `max_damage` fields remain raw
+integers in engine/archive data. Preview outcomes are hypothetical, and sampled combat results
 do not establish certain outcomes.
 Automatic draft review compares
 the draft with an unchanged `EndTurn` baseline and labels reply exposure with
