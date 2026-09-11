@@ -34,6 +34,7 @@ from .llm_client import (
     validate_inspect_hex_request, validate_orders, validate_preview_request,
     timeout_finish_orders,
 )
+from .response_parsing import recover_bare_tool_prefix
 
 
 class FakeDriverProcess:
@@ -52,6 +53,34 @@ class FakeDriverProcess:
 
 
 class ClientValidationTests(unittest.TestCase):
+
+    def test_recovery_classifies_only_a_leading_complete_tool_prefix(self):
+        raw = '{"tool":"inspect_units","unit_ids":[12]} I inspected the unit.'
+        with self.assertRaises(ValueError):
+            llm_client.parse_action_response(raw)
+        self.assertEqual(recover_bare_tool_prefix(raw), {"tool": "inspect_units", "unit_ids": [12]})
+        self.assertIsNone(recover_bare_tool_prefix('Rationale {"tool":"inspect_units","unit_ids":[12]}'))
+        self.assertIsNone(recover_bare_tool_prefix('{"tool": ["inspect_units"], "unit_ids":[12]} rationale'))
+
+    def test_fenced_tool_with_extra_keys_still_uses_strict_shape_repair(self):
+        fenced = "before\n```json\n{" + '"tool":"inspect_hex","col":1,"row":2,"phase":"current","intent":"oops"' + "}\n```\nafter"
+        parsed = llm_client.parse_action_response(fenced)
+        self.assertEqual(parsed["tool"], "inspect_hex")
+        self.assertEqual(llm_client.tool_request_name(parsed), "inspect_hex")
+
+    def test_double_malformed_inspection_repair_never_dispatches_twice(self):
+        malformed = '{"tool":"inspect_hex","col":2,"row":7,"phase":"current"} rationale'
+        code, records = self.run_with_orders(
+            [malformed, malformed],
+            [{"type": "state", "active_faction": 0, "state_revision": 7, "units": []},
+             {"type": "status", "ok": True, "what": "tactical_surface", "body": {}}],
+            max_model_calls_per_turn=4, max_tool_calls_per_turn=4, return_records=True)
+        self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID])
+        self.assertEqual(records[-1]["terminal_class"], TERMINAL_MODEL_INVALID)
+        self.assertEqual(records[-1]["code"], "action_validation_invalid")
+        self.assertEqual([r for r in records if r.get("type") == "tool_result"], [])
+        self.assertNotIn("inspect_hex", [r.get("line", {}).get("what") for r in records
+                                          if r.get("type") == "query"])
 
     def test_preview_preserves_envelope_origin_revision_for_draft_rendering(self):
         body = {"candidates": [{"valid": True}]}
@@ -883,7 +912,96 @@ class ClientValidationTests(unittest.TestCase):
         }]}, True)
         self.assertTrue(lethal)
         self.assertIn("danger_before=True danger_after=True", rendered)
-        self.assertIn("R1 hp=34HP attackers=5 maximum_incoming=70HP lethal_attacker_count=3", rendered)
+        self.assertIn("R1 hp=34HP attackers=5 maximum_incoming=70HP lethal_attackers_needed=3", rendered)
+
+    def test_compact_draft_review_preserves_null_and_absent_lethal_counts(self):
+        rendered, _ = compact_draft_review({"candidates": [{
+            "valid": True,
+            "recruiter_threats": {"recruiters": [
+                {"recruiter_id": 1, "hp": 34, "distinct_attacker_count": 1,
+                 "max_incoming_sum": 10, "lethal_attackers_needed": None},
+                {"recruiter_id": 2, "hp": 34, "distinct_attacker_count": 1,
+                 "max_incoming_sum": 10},
+            ]},
+        }]}, False)
+        self.assertIn("R1 hp=34HP attackers=1 maximum_incoming=10HP lethal_attackers_needed=null (unreachable under supplied maximum volleys)", rendered)
+        self.assertIn("R2 hp=34HP attackers=1 maximum_incoming=10HP lethal_attackers_needed=unknown", rendered)
+
+    def test_sampled_transition_uses_selected_candidate_and_keeps_missing_stage_unknown(self):
+        state = {"active_faction": 0, "units": [
+            {"id": 3, "faction": 0, "col": 1, "row": 1},
+            {"id": 4, "faction": 0, "col": 2, "row": 1},
+        ]}
+        preview = {"state_revision": 77, "sampling": True, "candidates": [
+            {"valid": True, "post_sweep": {"sampling": True,
+              "coverage": {"own_finish": True, "opponent_response": True}, "stages": {
+                "post_finish": {"units_detail": [
+                    {"unit_id": 3, "side": 0, "position": {"col": 1, "row": 1}},
+                    {"unit_id": 4, "side": 0, "position": {"col": 3, "row": 1}},
+                ]},
+                "post_opponent": {"units_detail": [
+                    {"unit_id": 3, "side": 0, "position": {"col": 1, "row": 1}},
+                ]},
+            }}},
+            {"valid": True, "post_sweep": {"sampling": True,
+              "coverage": {"own_finish": True, "opponent_response": False}, "stages": {
+                "post_finish": {"units_detail": [
+                    {"unit_id": 3, "side": 0, "position": {"col": 4, "row": 1}},
+                    {"unit_id": 4, "side": 0, "position": {"col": 2, "row": 1}},
+                ]},
+                "post_opponent": None,
+            }}},
+        ]}
+        transition = llm_client.sampled_transition(preview, state, 0, 0)
+        self.assertEqual(transition["originating_revision"], 77)
+        self.assertEqual(transition["candidate_index"], 0)
+        self.assertEqual(transition["opponent_casualties"]["unit_ids"], [4])
+        self.assertEqual(transition["own_finish_movement"]["moved"][0]["unit_id"], 4)
+        self.assertTrue(llm_client.draft_review_needed(
+            preview, {}, [{"action": "FinishWithGreedy", "groups": [], "holds": []}],
+            draft_index=0, state=state, friendly_side=0))
+        self.assertEqual(llm_client.sampled_transition(preview, state, 0, 1)["opponent_casualties"]["status"], "unknown")
+
+    def test_sampled_transition_does_not_treat_empty_or_missing_opponent_as_death(self):
+        base = {"state_revision": 12, "candidates": [{"valid": True, "post_sweep": {
+            "sampling": True, "coverage": {"own_finish": True, "opponent_response": True}, "stages": {
+                "post_finish": {"units_detail": [{"unit_id": 8, "side": 0,
+                                                     "position": {"col": 1, "row": 1}}]},
+                "post_opponent": {"units_detail": []},
+            }}}]}
+        self.assertEqual(llm_client.sampled_transition(base, friendly_side=0)["opponent_casualties"]["unit_ids"], [8])
+        missing = {"state_revision": 12, "candidates": [{"valid": True, "post_sweep": {
+            "sampling": True, "coverage": {"own_finish": True, "opponent_response": True}, "stages": {
+                "post_finish": {"units_detail": [{"unit_id": 8, "side": 0,
+                                                     "position": {"col": 1, "row": 1}}]},
+                "post_opponent": None,
+            }}}]}
+        self.assertIsNone(llm_client.sampled_transition(missing, friendly_side=0)["opponent_casualties"]["unit_ids"])
+        malformed = {"state_revision": 12, "candidates": [{"valid": True, "post_sweep": {
+            "sampling": True, "coverage": {"own_finish": True, "opponent_response": True}, "stages": {
+                "post_finish": {"units_detail": [{"unit_id": 8, "side": 0}]},
+                "post_opponent": {"units_detail": []},
+            }}}]}
+        self.assertEqual(llm_client.sampled_transition(malformed, friendly_side=0)["opponent_casualties"]["status"], "unknown")
+
+    def test_sampled_transition_does_not_treat_missing_opponent_as_death(self):
+        missing = {"state_revision": 12, "candidates": [{"post_sweep": {
+            "sampling": True, "stages": {
+                "post_finish": {"units_detail": [{"unit_id": 8, "side": 0}]},
+                "post_opponent": None,
+            }}}]}
+        transition = llm_client.sampled_transition(missing, friendly_side=0)
+        self.assertEqual(transition["opponent_casualties"]["status"], "unknown")
+        self.assertIsNone(transition["opponent_casualties"]["unit_ids"])
+
+    def test_sampled_transition_requires_friendly_side_identity(self):
+        preview = {"state_revision": 12, "candidates": [{"valid": True, "post_sweep": {
+            "sampling": True, "coverage": {"own_finish": True, "opponent_response": True},
+            "stages": {"post_finish": {"units_detail": [
+                {"unit_id": 8, "side": 1, "position": {"col": 2, "row": 2}}]},
+                "post_opponent": {"units_detail": []}}}}]}
+        self.assertEqual(llm_client.sampled_transition(preview)["status"], "unknown")
+        self.assertEqual(llm_client.sampled_transition(preview, friendly_side=1)["opponent_casualties"]["unit_ids"], [8])
 
     def test_compact_draft_review_treats_open_route_lethality_as_danger(self):
         rendered, lethal = compact_draft_review({"candidates": [{
@@ -898,7 +1016,7 @@ class ClientValidationTests(unittest.TestCase):
         }]}, False)
         self.assertTrue(lethal)
         self.assertIn("danger_before=False danger_after=True", rendered)
-        self.assertIn("OPEN_R1 attackers=1 maximum_incoming=20HP lethal_attacker_count=1", rendered)
+        self.assertIn("OPEN_R1 attackers=1 maximum_incoming=20HP open_lethal_attackers_needed=1", rendered)
 
     def test_compact_draft_review_reports_unused_attackers(self):
         rendered, lethal = compact_draft_review(
@@ -945,6 +1063,18 @@ class ClientValidationTests(unittest.TestCase):
             [{"action": "EndTurn"}], {"available": set()})
         self.assertEqual([item["unit_id"] for item in audit["rescue_priorities"]], [4, 8, 9])
         self.assertIn("endangered_wounded_unresolved", audit["trigger_reasons"])
+
+    def test_review_rescue_rendering_preserves_null_and_absent_lethal_counts(self):
+        priorities = llm_client.rescue_priorities({"units": [
+            {"unit_id": 4, "hp": 2, "max_hp": 10, "distinct_attacker_count": 1,
+             "lethal_attackers_needed": None},
+            {"unit_id": 5, "hp": 2, "max_hp": 10, "distinct_attacker_count": 1},
+        ]})
+        rendered, _ = compact_draft_review(
+            {"candidates": [{"valid": True}]}, False,
+            audit={"rescue_priorities": priorities})
+        self.assertIn("RESCUE priorities=U4 hp=2/10 direct_attackers=1 direct_max=unknown lethal_attackers_needed=null (unreachable under supplied maximum volleys)", rendered)
+        self.assertIn("U5 hp=2/10 direct_attackers=1 direct_max=unknown lethal_attackers_needed=unknown", rendered)
 
     def test_strategic_briefing_keeps_economy_and_deployment_facts_together(self):
         rendered = compact_strategic_briefing({

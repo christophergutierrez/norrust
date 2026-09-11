@@ -26,7 +26,8 @@ try:
     from .request_recovery import recoverable_answer
     from .output_limits import (INITIAL_OUTPUT_LIMIT, MAX_OUTPUT_LIMIT, OutputLimitExceeded,
                                 OutputLimitPolicy, combined_usage)
-    from .response_parsing import parse_action_response, ResponseParseError
+    from .response_parsing import (parse_action_response, ResponseParseError,
+                                    recover_bare_tool_prefix, RECOGNIZED_BARE_TOOLS)
     from .model_identity import classify_model_identity
     from .game_token_budget import measured_game_budget
     from .action_choices import (ChoiceRegistry, extract_available_choices,
@@ -47,7 +48,8 @@ except ImportError:  # pragma: no cover - direct script compatibility
     from tools.request_recovery import recoverable_answer
     from tools.output_limits import (INITIAL_OUTPUT_LIMIT, MAX_OUTPUT_LIMIT, OutputLimitExceeded,
                                      OutputLimitPolicy, combined_usage)
-    from tools.response_parsing import parse_action_response, ResponseParseError
+    from tools.response_parsing import (parse_action_response, ResponseParseError,
+                                        recover_bare_tool_prefix, RECOGNIZED_BARE_TOOLS)
     from tools.model_identity import classify_model_identity
     from tools.game_token_budget import measured_game_budget
     from tools.action_choices import (ChoiceRegistry, extract_available_choices,
@@ -1043,10 +1045,6 @@ def _readable_damage(value: Any) -> str:
             else _readable_hp_tenths(value))
 
 
-def _readable_optional_count(value: Any) -> str:
-    return "unknown" if value is None else str(value)
-
-
 def _readable_threat_count(item: dict[str, Any], key: str) -> str:
     """Render an evaluated count without turning missing data into zero."""
     value = item.get(key) if key in item else None
@@ -1911,9 +1909,7 @@ def tool_request_name(value: Any) -> Optional[str]:
     if not isinstance(value, dict) or "tool" not in value:
         return None
     name = value.get("tool")
-    return (name if isinstance(name, str) and name in
-            {"preview_batch", "inspect_units", "inspect_target",
-             "inspect_targets", "inspect_hex"} else None)
+    return name if isinstance(name, str) and name in RECOGNIZED_BARE_TOOLS else None
 
 
 def tool_shape_repair_prompt(prompt: str, tool_context: str, error: str,
@@ -2103,8 +2099,10 @@ def rescue_priorities(exposure: dict[str, Any]) -> list[dict[str, Any]]:
             "can_recruit": bool(unit.get("can_recruit")),
             "direct_attackers": direct, "direct_max_damage": unit.get("max_incoming_sum"),
             "direct_lethal": unit.get("lethal_attackers_needed"),
+            "direct_lethal_present": "lethal_attackers_needed" in unit,
             "open_attackers": open_attackers, "open_max_damage": unit.get("open_max_incoming_sum"),
             "open_lethal": unit.get("open_lethal_attackers_needed"),
+            "open_lethal_present": "open_lethal_attackers_needed" in unit,
         })
     candidates.sort(key=lambda item: (
         not item["can_recruit"],
@@ -2165,12 +2163,15 @@ def _positive_lethal(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
-def draft_risk_worsened(preview: dict[str, Any]) -> bool:
+def draft_risk_worsened(preview: dict[str, Any], draft_index: int = 1) -> bool:
     """Compare the EndTurn baseline to the proposed batch using engine facts."""
     candidates = preview.get("candidates", [])
     if len(candidates) < 2 or not all(isinstance(item, dict) for item in candidates[:2]):
         return False
-    baseline, draft = candidates[:2]
+    if draft_index not in (0, 1) or not all(isinstance(item, dict) for item in candidates[:2]):
+        return False
+    draft = candidates[draft_index]
+    baseline = candidates[1 - draft_index]
 
     def values(candidate: dict[str, Any], section: str, id_key: str) -> dict[Any, tuple[int, int]]:
         body = candidate.get(section, {})
@@ -2192,25 +2193,206 @@ def draft_risk_worsened(preview: dict[str, Any]) -> bool:
     return False
 
 
+def _snapshot_unit_rows(stage: Any, friendly_side: int | None) -> dict[int, dict[str, Any]] | None:
+    """Return an exact-revision stage's friendly unit rows, or unknown."""
+    if not isinstance(stage, dict) or not isinstance(stage.get("units_detail"), list):
+        return None
+    rows: dict[int, dict[str, Any]] = {}
+    for row in stage["units_detail"]:
+        if not isinstance(row, dict):
+            return None
+        unit_id = row.get("unit_id", row.get("id"))
+        side = row.get("side", row.get("faction"))
+        if (not isinstance(unit_id, int) or isinstance(unit_id, bool)
+                or side not in (0, 1) or unit_id in rows):
+            return None
+        # A stage row without a position is incomplete.  Treating it as a
+        # roster entry could turn a truncated row into a false casualty.
+        if _row_position(row) is None:
+            return None
+        if friendly_side is None or side == friendly_side:
+            rows[unit_id] = row
+    return rows
+
+
+def _state_unit_rows(state: Any, friendly_side: int | None) -> dict[int, dict[str, Any]] | None:
+    if not isinstance(state, dict) or not isinstance(state.get("units"), list):
+        return None
+    rows: dict[int, dict[str, Any]] = {}
+    for row in state["units"]:
+        if not isinstance(row, dict):
+            return None
+        unit_id = row.get("id", row.get("unit_id"))
+        side = row.get("faction", row.get("side"))
+        if (not isinstance(unit_id, int) or isinstance(unit_id, bool)
+                or side not in (0, 1) or unit_id in rows):
+            return None
+        if friendly_side is None or side == friendly_side:
+            rows[unit_id] = row
+    return rows
+
+
+def _row_position(row: Any) -> tuple[int, int] | None:
+    if not isinstance(row, dict):
+        return None
+    position = row.get("position")
+    if isinstance(position, dict):
+        col, grid_row = position.get("col"), position.get("row")
+    else:
+        col, grid_row = row.get("col"), row.get("row")
+    if (isinstance(col, int) and not isinstance(col, bool)
+            and isinstance(grid_row, int) and not isinstance(grid_row, bool)):
+        return col, grid_row
+    return None
+
+
+def _position_delta(before: dict[int, dict[str, Any]] | None,
+                    after: dict[int, dict[str, Any]] | None) -> list[dict[str, Any]] | None:
+    if before is None or after is None:
+        return None
+    moved = []
+    for unit_id in sorted(set(before) & set(after)):
+        old_position, new_position = _row_position(before[unit_id]), _row_position(after[unit_id])
+        if old_position is not None and new_position is not None and old_position != new_position:
+            moved.append({"unit_id": unit_id, "from": old_position, "to": new_position})
+    return moved
+
+
+def _unknown_sampled_transition(reason: str, revision: Any, candidate_index: int,
+                                friendly_side: int | None = None) -> dict[str, Any]:
+    return {
+        "status": "unknown", "reason": reason,
+        "originating_revision": revision, "candidate_index": candidate_index,
+        "friendly_side": friendly_side,
+        "own_finish_movement": {"status": "unknown", "moved": None},
+        "opponent_movement": {"status": "unknown", "moved": None},
+        "opponent_casualties": {"status": "unknown", "unit_ids": None},
+    }
+
+
+def sampled_transition(preview: dict[str, Any], state: dict[str, Any] | None = None,
+                       friendly_side: int | None = None, candidate_index: int = 0) -> dict[str, Any]:
+    """Derive a small, explicitly sampled consequence delta from one candidate.
+
+    The preview candidate and its originating revision are carried through the
+    result.  A missing stage is unknown; an absent unit is a casualty only when
+    both sampled stages are present.  This keeps a missing post-opponent result
+    from becoming an invented death.
+    """
+    if not isinstance(preview, dict):
+        return _unknown_sampled_transition("preview_missing", "unknown", candidate_index)
+    candidates = preview.get("candidates")
+    candidate = (candidates[candidate_index]
+                 if isinstance(candidates, list) and 0 <= candidate_index < len(candidates)
+                 else None)
+    post_sweep = candidate.get("post_sweep") if isinstance(candidate, dict) else None
+    if not isinstance(post_sweep, dict) or post_sweep.get("sampling") is not True:
+        return _unknown_sampled_transition("sampled_rollout_missing",
+                                           preview.get("state_revision", "unknown"), candidate_index)
+    stages = post_sweep.get("stages")
+    if not isinstance(stages, dict):
+        return _unknown_sampled_transition("sampled_stages_missing",
+                                           preview.get("state_revision", "unknown"), candidate_index)
+    # Current side is supplied by the live state or the explicit caller.  A
+    # sampled row without that identity cannot safely distinguish friendly
+    # casualties from enemy casualties.
+    side = friendly_side if friendly_side in (0, 1) else (
+        state.get("active_faction") if isinstance(state, dict) else None)
+    if side not in (0, 1):
+        return _unknown_sampled_transition("friendly_side_unknown",
+                                           preview.get("state_revision", "unknown"), candidate_index)
+    if not isinstance(candidate, dict) or candidate.get("valid") is not True:
+        return _unknown_sampled_transition("candidate_invalid",
+                                           preview.get("state_revision", "unknown"), candidate_index, side)
+    coverage = post_sweep.get("coverage")
+    if not isinstance(coverage, dict):
+        return _unknown_sampled_transition("sampled_coverage_missing",
+                                           preview.get("state_revision", "unknown"), candidate_index, side)
+    initial = _state_unit_rows(state, side)
+    post_finish = (_snapshot_unit_rows(stages.get("post_finish"), side)
+                   if coverage.get("own_finish") is True else None)
+    post_opponent = (_snapshot_unit_rows(stages.get("post_opponent"), side)
+                     if coverage.get("opponent_response") is True else None)
+    own_movement = _position_delta(initial, post_finish)
+    opponent_movement = _position_delta(post_finish, post_opponent)
+    if initial is None or post_finish is None:
+        own_status = "unknown"
+    else:
+        own_status = "known"
+    if post_finish is None or post_opponent is None:
+        casualty_status = "unknown"
+        casualties = None
+    else:
+        casualty_status = "known"
+        casualties = sorted(set(post_finish) - set(post_opponent))
+    return {
+        "status": "known" if own_status == "known" or casualty_status == "known" else "unknown",
+        "originating_revision": preview.get("state_revision", "unknown"),
+        "candidate_index": candidate_index,
+        "friendly_side": side,
+        "own_finish_movement": {"status": own_status, "moved": own_movement},
+        "opponent_movement": {"status": "unknown" if post_finish is None or post_opponent is None else "known",
+                              "moved": opponent_movement},
+        "opponent_casualties": {"status": casualty_status, "unit_ids": casualties},
+    }
+
+
+def compact_sampled_transition(preview: dict[str, Any], state: dict[str, Any] | None = None,
+                               friendly_side: int | None = None, candidate_index: int = 0) -> str:
+    """Render sampled movement/casualty deltas without presenting them as live."""
+    transition = sampled_transition(preview, state, friendly_side, candidate_index)
+    lines = ["SAMPLED_TRANSITION candidate_index=%s originating_revision=%s status=%s" % (
+        transition.get("candidate_index", candidate_index),
+        transition.get("originating_revision", "unknown"), transition.get("status", "unknown"))]
+    own = transition.get("own_finish_movement", {})
+    if own.get("status") == "known":
+        changes = ",".join("U%s:%s->%s" % (item["unit_id"], item["from"], item["to"])
+                           for item in own.get("moved", [])) or "-"
+        lines.append("SAMPLED_OWN_FINISH_MOVEMENT scope=full_proposed_batch_through_own_finish status=known moved=%s" % changes)
+    else:
+        lines.append("SAMPLED_OWN_FINISH_MOVEMENT status=unknown")
+    opponent = transition.get("opponent_movement", {})
+    if opponent.get("status") == "known":
+        changes = ",".join("U%s:%s->%s" % (item["unit_id"], item["from"], item["to"])
+                           for item in opponent.get("moved", [])) or "-"
+        lines.append("SAMPLED_OPPONENT_MOVEMENT status=known moved=%s" % changes)
+    else:
+        lines.append("SAMPLED_OPPONENT_MOVEMENT status=unknown")
+    casualties = transition.get("opponent_casualties", {})
+    if casualties.get("status") == "known":
+        ids = ",".join("U%s" % unit_id for unit_id in casualties.get("unit_ids", [])) or "-"
+        lines.append("SAMPLED_OPPONENT_CASUALTIES status=known casualty_ids=%s" % ids)
+    else:
+        lines.append("SAMPLED_OPPONENT_CASUALTIES status=unknown")
+    return "\n".join(lines)
+
+
 def draft_review_needed(preview: dict[str, Any], coverage: dict[str, Any],
                         orders: list[dict[str, Any]], danger_before: bool = False,
-                        audit: Optional[dict[str, Any]] = None) -> bool:
+                        audit: Optional[dict[str, Any]] = None, draft_index: int = 1,
+                        state: Optional[dict[str, Any]] = None,
+                        friendly_side: int | None = None) -> bool:
     if audit and audit.get("trigger_reasons"):
         return True
     candidates = preview.get("candidates", [])
-    draft = candidates[1] if len(candidates) > 1 and isinstance(candidates[1], dict) else {}
+    draft = (candidates[draft_index] if 0 <= draft_index < len(candidates)
+             and isinstance(candidates[draft_index], dict) else {})
     summary = draft.get("summary", {})
     unused = set(coverage.get("available", set())) - planned_attackers(orders)
+    transition = sampled_transition(preview, state, friendly_side, draft_index)
+    casualty_data = transition.get("opponent_casualties", {})
+    sampled_casualty = (casualty_data.get("status") == "known"
+                        and bool(casualty_data.get("unit_ids")))
     if len(candidates) < 2:
         threats = draft.get("recruiter_threats", {})
         recruiters = threats.get("recruiters", []) if isinstance(threats, dict) else []
-        return danger_before or any(
+        return sampled_casualty or danger_before or any(
             isinstance(recruiter, dict) and
             (_positive_lethal(recruiter.get("lethal_attackers_needed")) or
              _positive_lethal(recruiter.get("open_lethal_attackers_needed")))
             for recruiter in recruiters
         ) or bool(unused)
-    return (draft_risk_worsened(preview) or
+    return (sampled_casualty or draft_risk_worsened(preview, draft_index) or
             summary.get("affordable_recruitment_remaining") is True or
             bool(unused))
 
@@ -2219,7 +2401,9 @@ def compact_draft_review(preview: dict[str, Any], danger_before: bool,
                          coverage: Optional[dict[str, Any]] = None,
                          orders: Optional[list[dict[str, Any]]] = None,
                          draft_index: int = 0,
-                         audit: Optional[dict[str, Any]] = None) -> tuple[str, Optional[bool]]:
+                         audit: Optional[dict[str, Any]] = None,
+                         state: Optional[dict[str, Any]] = None,
+                         friendly_side: int | None = None) -> tuple[str, Optional[bool]]:
     candidates = preview.get("candidates", [{}])
     candidate = candidates[draft_index] if draft_index < len(candidates) else {}
     threats = candidate.get("recruiter_threats") if isinstance(candidate, dict) else None
@@ -2253,25 +2437,28 @@ def compact_draft_review(preview: dict[str, Any], danger_before: bool,
         priorities = audit.get("rescue_priorities", [])
         if priorities:
             lines.append("RESCUE priorities=" + ";".join(
-                "U%s hp=%s/%s direct_attackers=%s direct_max=%s lethal_attacker_count=%s open_attackers=%s open_max=%s open_lethal_attacker_count=%s" % (
+                "U%s hp=%s/%s direct_attackers=%s direct_max=%s lethal_attackers_needed=%s open_attackers=%s open_max=%s open_lethal_attackers_needed=%s" % (
                     item.get("unit_id", "?"), item.get("hp", "?"), item.get("max_hp", "?"),
                     item.get("direct_attackers", "?"), _readable_whole_hp(item.get("direct_max_damage")),
-                    item.get("direct_lethal", "?"), item.get("open_attackers", "?"),
-                    _readable_whole_hp(item.get("open_max_damage")), item.get("open_lethal", "?"))
+                    _readable_lethal_attackers(
+                        {"lethal_attackers_needed": item.get("direct_lethal")} if item.get("direct_lethal_present", True) else {}),
+                    item.get("open_attackers", "?"), _readable_whole_hp(item.get("open_max_damage")),
+                    _readable_lethal_attackers(
+                        {"lethal_attackers_needed": item.get("open_lethal")} if item.get("open_lethal_present", True) else {}))
                 for item in priorities if isinstance(item, dict)))
     for recruiter in recruiters:
         if not isinstance(recruiter, dict):
             continue
-        lines.append("R%s hp=%s attackers=%s maximum_incoming=%s lethal_attacker_count=%s" % (
+        lines.append("R%s hp=%s attackers=%s maximum_incoming=%s lethal_attackers_needed=%s" % (
             recruiter.get("recruiter_id", "?"), _readable_whole_hp(recruiter.get("hp")),
             recruiter.get("distinct_attacker_count", "?"), _readable_whole_hp(recruiter.get("max_incoming_sum")),
-            _readable_optional_count(recruiter.get("lethal_attackers_needed"))))
+            _readable_lethal_attackers(recruiter)))
         if "open_distinct_attacker_count" in recruiter:
-            lines.append("OPEN_R%s attackers=%s maximum_incoming=%s lethal_attacker_count=%s" % (
+            lines.append("OPEN_R%s attackers=%s maximum_incoming=%s open_lethal_attackers_needed=%s" % (
                 recruiter.get("recruiter_id", "?"),
                 recruiter.get("open_distinct_attacker_count", "?"),
                 _readable_whole_hp(recruiter.get("open_max_incoming_sum")),
-                _readable_optional_count(recruiter.get("open_lethal_attackers_needed"))))
+                _readable_lethal_attackers(recruiter, "open_lethal_attackers_needed")))
     if coverage is not None:
         planned: set[int] = set()
         for order in orders or []:
@@ -2326,10 +2513,12 @@ def compact_draft_review(preview: dict[str, Any], danger_before: bool,
                     lines.append("%s_VILLAGES %s" % (label, json.dumps(villages, sort_keys=True, separators=(",", ":"))))
         if post_sweep.get("opponent_error"):
             lines.append("DELEGATION_ERROR %s" % str(post_sweep["opponent_error"]).replace("\n", " ")[:240])
+        lines.append(compact_sampled_transition(preview, state, friendly_side, draft_index))
         lines.append("SIMULATION — NOT EXECUTED END; preview queries execute no actions. "
                      "Candidate rosters, gold, casualties, villages, and threats are hypothetical.")
     if len(candidates) > 1 and isinstance(candidates[0], dict):
-        baseline = candidates[0]
+        baseline_index = 1 - draft_index if draft_index in (0, 1) else 0
+        baseline = candidates[baseline_index] if isinstance(candidates[baseline_index], dict) else {}
         base_summary = baseline.get("summary", {})
         draft_summary = candidate.get("summary", {})
         lines.append("RECRUIT baseline=%s draft=%s" % (
@@ -5013,11 +5202,18 @@ def run(args: argparse.Namespace) -> int:
                         # observed preview failure), repair that same request
                         # once before asking for actions. This keeps the
                         # pending inspection/comparison and its IDs intact.
+                        # Keep execution strict: an un-fenced rationale after a
+                        # valid inspection is still an invalid response.  The
+                        # recovery classifier may only identify the complete
+                        # bare tool at byte zero (after whitespace); it never
+                        # supplies payload text to the driver.  First retry the
+                        # strict parser so fenced tool responses retain their
+                        # existing malformed-shape repair behavior.
                         parsed_tool = None
                         try:
                             parsed_tool = parse_action_response(current_reply.text)
                         except (TypeError, ValueError):
-                            pass
+                            parsed_tool = recover_bare_tool_prefix(current_reply.text)
                         malformed_tool = tool_request_name(parsed_tool)
                         cannot_retry_tool = malformed_tool and any(
                             marker in str(first) for marker in (
@@ -5192,8 +5388,10 @@ def run(args: argparse.Namespace) -> int:
                         candidate = draft_preview.get("candidates", [{}])[draft_index]
                         if isinstance(candidate, dict) and candidate.get("valid") is True:
                             review_text, danger_after = compact_draft_review(
-                                draft_preview, danger_before, coverage, orders, draft_index, audit)
-                            if draft_review_needed(draft_preview, coverage, orders, danger_before, audit):
+                                draft_preview, danger_before, coverage, orders, draft_index, audit,
+                                state, args.llm_side)
+                            if draft_review_needed(draft_preview, coverage, orders, danger_before, audit,
+                                                   draft_index, state, args.llm_side):
                                 handoff_review_used = True
                                 handoff_outcome = "skipped"
                                 metadata["draft_reviews"] += 1

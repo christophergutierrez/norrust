@@ -57,6 +57,208 @@ def _backend(path: Path, invalid: str, captures: Path) -> None:
 
 @unittest.skipUnless(DRIVER.is_file(), "build greedy_driver before running real-driver tests")
 class RepairExecutionIntegrationTests(unittest.TestCase):
+    def test_real_driver_recovers_unfenced_inspection_rationale_before_action(self):
+        """Strict execution rejects rationale, while repair preserves lookup capability."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            checkpoint = _checkpoint(root)
+            captures = root / "requests.ndjson"
+            backend = root / "backend.py"
+            malformed = '{"tool":"inspect_units","unit_ids":[7]} I inspected the unit.'
+            corrected = '{"tool":"inspect_units","unit_ids":[7]}'
+            action = '[{"action":"EndTurn"}]'
+            backend.write_text(
+                "import json,sys\n"
+                f"capture={str(captures)!r}\n"
+                "prompt=sys.stdin.read()\n"
+                "with open(capture,'a',encoding='utf-8') as f: f.write(json.dumps({'prompt':prompt})+'\\n')\n"
+                "n=sum(1 for _ in open(capture,encoding='utf-8'))\n"
+                f"reply={malformed!r} if n==1 else ({corrected!r} if n==2 else {action!r})\n"
+                "print(json.dumps({'text':reply}))\n",
+                encoding="utf-8")
+            log = root / "match.ndjson"
+            command = [sys.executable, "-m", "tools.llm_client",
+                       "--driver", str(DRIVER),
+                       "--model-command", shlex.join([sys.executable, str(backend)]),
+                       "--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
+                       "--gold", "300", "--seed", "2002", "--llm-side", "0", "--max-turns", "15",
+                       "--incremental-turns", "--decision-mode", "focused", "--log", str(log),
+                       "--resume-checkpoint", str(checkpoint), "--query-budget-seconds", "10",
+                       "--model-timeout", "10", "--turn-timeout", "30"]
+            result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr[-4000:] + log.read_text()[-4000:])
+            records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+            requests = [r for r in records if r.get("type") == "model_request"]
+            self.assertEqual([r["raw_output"] for r in requests[:3]], [malformed, corrected, action])
+            self.assertIn("not valid JSON", requests[1]["prompt"])
+            self.assertIn("pending inspect_units operation", requests[1]["prompt"])
+            tool_results = [r for r in records if r.get("type") == "tool_result"]
+            self.assertEqual(len(tool_results), 1)
+            self.assertEqual(tool_results[0]["request"], {"tool": "inspect_units", "unit_ids": [7]})
+            forwarded = [r for r in records if r.get("type") == "forwarded_orders"]
+            self.assertEqual(forwarded[0]["orders"], [{"action": "EndTurn"}])
+
+    def test_real_driver_samples_casualty_once_then_confirms_and_imports_review(self):
+        """A sampled casualty drives one review without an extra warning query."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            checkpoint = _checkpoint(root)
+            captures = root / "requests.ndjson"
+            backend = root / "backend.py"
+            draft = json.dumps({
+                "actions": [{"action": "FinishWithGreedy", "groups": [], "holds": []}],
+                "decisions": [{"orders": [0], "rules": ["T7"],
+                               "expected": "Finish after the current position.",
+                               "risk": "The sampled opponent response may remove a unit."}],
+            })
+            backend.write_text(
+                "import json,sys\n"
+                f"capture={str(captures)!r}\n"
+                "prompt=sys.stdin.read()\n"
+                "with open(capture,'a',encoding='utf-8') as f: f.write(json.dumps({'prompt':prompt})+'\\n')\n"
+                f"print(json.dumps({{'text':{draft!r}}}))\n",
+                encoding="utf-8")
+            log = root / "match.ndjson"
+            command = [sys.executable, "-m", "tools.llm_client",
+                       "--driver", str(DRIVER),
+                       "--model-command", shlex.join([sys.executable, str(backend)]),
+                       "--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
+                       "--gold", "300", "--seed", "2002", "--llm-side", "0", "--max-turns", "15",
+                       "--incremental-turns", "--decision-mode", "focused", "--log", str(log),
+                       "--resume-checkpoint", str(checkpoint), "--query-budget-seconds", "10",
+                       "--model-timeout", "10", "--turn-timeout", "30"]
+            result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr[-4000:] + log.read_text()[-4000:])
+            records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+            requests = [r for r in records if r.get("type") == "model_request"]
+            reviews = [r for r in records if r.get("type") == "draft_review"]
+            self.assertEqual(len(requests), 2, "draft plus exactly one client review call")
+            self.assertEqual(len(reviews), 1)
+            self.assertIn("SAMPLED_TRANSITION candidate_index=1 originating_revision=338 status=known",
+                          requests[1]["prompt"])
+            review_body = reviews[0]["body"]
+            self.assertEqual(review_body["state_revision"], 338)
+            self.assertTrue(review_body["candidates"][1]["valid"])
+            self.assertIsNone(review_body["candidates"][1]["exposure"])
+            self.assertNotEqual(review_body["candidates"][1]["post_sweep"]["stages"]["post_finish"]["state_revision"], 338)
+            self.assertIn("SAMPLED_OPPONENT_CASUALTIES status=known casualty_ids=U19", requests[1]["prompt"])
+            self.assertEqual(reviews[0]["handoff_audit"].get("trigger_reasons"), [])
+            self.assertIn("SIMULATION", requests[1]["prompt"])
+            forwarded = [r for r in records if r.get("type") == "forwarded_orders"]
+            self.assertEqual(len(forwarded), 1)
+            self.assertEqual(forwarded[0]["state_revision"], 338)
+            self.assertEqual(forwarded[0]["orders"], json.loads(draft)["actions"])
+            terminal = next(r for r in records if r.get("type") == "terminal")
+            # The automatic warning's bounded preview is internal to the
+            # handoff record, so it does not emit a player tool-result event.
+            # Pin the query sequence for this fixture: tactical surface, one
+            # bounded preview, and final validation only.
+            self.assertEqual([r["line"].get("what") for r in records if r.get("type") == "query"],
+                             ["tactical_surface", "preview_batch", "validate_batch"])
+            self.assertEqual(terminal["queries"], 3)
+            self.assertEqual(terminal["draft_reviews"], 1)
+            self.assertEqual(terminal["draft_confirmations"], 1)
+            self.assertEqual(terminal["draft_revisions"], 0)
+
+            conn = open_history(root / "history.sqlite")
+            try:
+                game_id = import_game(conn, log)
+                coverage = json.loads(conn.execute(
+                    "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+                self.assertEqual(coverage["review_coverage"]["raw"], 1)
+                self.assertEqual(coverage["review_coverage"]["linked"], 1)
+                self.assertEqual(coverage["review_coverage"]["raw_decisions"][0]["identity_status"], "linked")
+                counts = conn.execute(
+                    "SELECT (SELECT COUNT(*) FROM model_requests WHERE game_id=?), "
+                    "(SELECT COUNT(*) FROM action_batches WHERE game_id=?), "
+                    "(SELECT COUNT(*) FROM side_turns WHERE game_id=?)",
+                    (game_id, game_id, game_id)).fetchone()
+                import_game(conn, log, game_id=game_id)
+                coverage_again = json.loads(conn.execute(
+                    "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+                counts_again = conn.execute(
+                    "SELECT (SELECT COUNT(*) FROM model_requests WHERE game_id=?), "
+                    "(SELECT COUNT(*) FROM action_batches WHERE game_id=?), "
+                    "(SELECT COUNT(*) FROM side_turns WHERE game_id=?)",
+                    (game_id, game_id, game_id)).fetchone()
+                self.assertEqual(coverage_again["review_coverage"], coverage["review_coverage"])
+                self.assertEqual(counts_again, counts)
+            finally:
+                conn.close()
+
+    def test_real_driver_samples_casualty_then_replaces_from_original_revision(self):
+        """A changed review response validates and forwards at the live revision."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            checkpoint = _checkpoint(root)
+            captures = root / "requests.ndjson"
+            backend = root / "backend.py"
+            draft = json.dumps({
+                "actions": [{"action": "FinishWithGreedy", "groups": [], "holds": []}],
+                "decisions": [{"orders": [0], "rules": ["T7"],
+                               "expected": "Finish after the current position.",
+                               "risk": "The sampled opponent response may remove a unit."}],
+            })
+            replacement = json.dumps({
+                "actions": [{"action": "DoneWithImportantMoves"}],
+                "decisions": [{"orders": [0], "rules": ["T7"],
+                               "expected": "Stop after the important moves.",
+                               "risk": "The remaining units wait for the next turn."}],
+            })
+            backend.write_text(
+                "import json,sys\n"
+                f"capture={str(captures)!r}\n"
+                "prompt=sys.stdin.read()\n"
+                "with open(capture,'a',encoding='utf-8') as f: f.write(json.dumps({'prompt':prompt})+'\\n')\n"
+                "n=sum(1 for _ in open(capture,encoding='utf-8'))\n"
+                f"reply={draft!r} if n == 1 else {replacement!r}\n"
+                "print(json.dumps({'text':reply}))\n",
+                encoding="utf-8")
+            log = root / "match.ndjson"
+            command = [sys.executable, "-m", "tools.llm_client",
+                       "--driver", str(DRIVER),
+                       "--model-command", shlex.join([sys.executable, str(backend)]),
+                       "--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
+                       "--gold", "300", "--seed", "2002", "--llm-side", "0", "--max-turns", "15",
+                       "--incremental-turns", "--decision-mode", "focused", "--log", str(log),
+                       "--resume-checkpoint", str(checkpoint), "--query-budget-seconds", "10",
+                       "--model-timeout", "10", "--turn-timeout", "30"]
+            result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr[-4000:] + log.read_text()[-4000:])
+            records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+            requests = [r for r in records if r.get("type") == "model_request"]
+            self.assertEqual([r["raw_output"] for r in requests], [draft, replacement])
+            reviews = [r for r in records if r.get("type") == "draft_review"]
+            self.assertEqual(len(reviews), 1)
+            decision = next(r for r in records if r.get("type") == "draft_review_decision")
+            self.assertEqual(decision["outcome"], "revised")
+            self.assertEqual(decision["revision"], 1)
+            forwarded_records = [r for r in records if r.get("type") == "forwarded_orders"]
+            self.assertEqual(len(forwarded_records), 1)
+            forwarded = forwarded_records[0]
+            self.assertEqual(forwarded["orders"], json.loads(replacement)["actions"])
+            self.assertEqual(forwarded["state_revision"], 338)
+            self.assertEqual(forwarded["request_id"], requests[1]["request_id"])
+            self.assertEqual([r["line"].get("what") for r in records if r.get("type") == "query"],
+                             ["tactical_surface", "preview_batch", "validate_batch"])
+            terminal = next(r for r in records if r.get("type") == "terminal")
+            self.assertEqual(terminal["draft_revisions"], 1)
+            self.assertEqual(terminal["draft_confirmations"], 0)
+            self.assertNotEqual(reviews[0]["body"]["candidates"][1]["post_sweep"]["stages"]["post_finish"]["state_revision"],
+                                forwarded["state_revision"])
+            conn = open_history(root / "history.sqlite")
+            try:
+                game_id = import_game(conn, log)
+                coverage = json.loads(conn.execute(
+                    "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+                self.assertEqual(coverage["review_coverage"]["linked"], 1)
+                self.assertEqual(conn.execute(
+                    "SELECT COUNT(*) FROM action_batches WHERE game_id=?", (game_id,)).fetchone()[0], 1)
+                self.assertEqual(conn.execute(
+                    "SELECT COUNT(*) FROM model_requests WHERE game_id=?", (game_id,)).fetchone()[0], 2)
+            finally:
+                conn.close()
+
     def test_real_driver_repairs_bare_preview_then_executes_partial_combat(self):
         """Tool metadata errors keep the comparison alive through its result."""
         with tempfile.TemporaryDirectory() as td:

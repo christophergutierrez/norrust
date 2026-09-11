@@ -704,6 +704,14 @@ responses. Tool requests have their own four-request cap; physical model calls
 remain separately recorded. Repeated illegal proposals remain a model-invalid
 result and are recorded separately from infrastructure failures.
 
+Execution parsing remains strict: a complete inspection object followed by
+unfenced rationale is rejected as a model response. For the one existing syntax
+repair, the client may classify only a complete recognized bare-tool object at
+the beginning of that malformed response so it can preserve the pending lookup.
+It never executes that prefix or an arbitrary brace fragment. A fully parsed
+corrected bare-tool response is required before dispatch; final-only responses,
+exhausted budgets, and the per-turn inspection limits still apply.
+
 The default `--turn-timeout` is 930 seconds. The client keeps the model command
 timeout and driver query budget independently. It warns when the turn timeout
 is below `query_budget_seconds + 2 * model_timeout`, since an action repair can
@@ -775,7 +783,14 @@ by the authoritative live-state reminder. Simulated rosters, gold, casualties,
 villages, and winners are hypothetical and do not
 replace the live observation. It never mutates live state or claims that one
 sampled branch is a probability or a best move. Queries themselves execute no
-actions. The model may inspect a small friendly group in one read-only request:
+actions. Automatic review also renders a compact sampled transition for the
+actual proposed candidate: movement through the own-finish stage and friendly
+casualty IDs between the post-finish and post-opponent stages. It includes the
+originating live revision and candidate index. A missing stage, side identity,
+invalid candidate, or false coverage remains unknown; an empty fully covered
+post-opponent roster means the sampled units were absent in that branch. These
+are simulation facts only and do not veto or mutate a legal draft. The model
+may inspect a small friendly group in one read-only request:
 
 The preview result retains the query envelope's authoritative `state_revision`
 at its top level. Automatic `draft_review`, `draft_review_repair`, and

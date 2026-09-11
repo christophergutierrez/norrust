@@ -9,8 +9,42 @@ import json
 from typing import Any
 
 
+# This list intentionally lives beside the parser rather than being inferred
+# from arbitrary object keys.  Recovery may identify a pending lookup from a
+# malformed response, but it must never turn an arbitrary JSON fragment into a
+# request that the driver executes.
+RECOGNIZED_BARE_TOOLS = frozenset({
+  "preview_batch", "inspect_units", "inspect_target", "inspect_targets", "inspect_hex",
+})
+
+
 class ResponseParseError(ValueError):
   """Raised when a model response cannot be normalized to a single valid JSON payload."""
+
+
+def recover_bare_tool_prefix(text: str) -> dict[str, Any] | None:
+  """Recognize a complete bare-tool object at the start of malformed text.
+
+  This is deliberately a recovery classifier, not an execution parser.  It
+  only decodes one JSON value beginning at the first non-whitespace byte and
+  returns it when that value is an object naming one of the documented bare
+  tools.  Trailing rationale remains untrusted and is never executed; callers
+  must obtain a separately parsed, complete corrected response before
+  dispatching anything.
+  """
+  if not isinstance(text, str):
+    return None
+  start = len(text) - len(text.lstrip())
+  if start >= len(text) or text[start] != "{":
+    return None
+  try:
+    value, _end = json.JSONDecoder().raw_decode(text, start)
+  except json.JSONDecodeError:
+    return None
+  name = value.get("tool") if isinstance(value, dict) else None
+  if not isinstance(name, str) or name not in RECOGNIZED_BARE_TOOLS:
+    return None
+  return value
 
 
 def parse_action_response(text: str) -> Any:
