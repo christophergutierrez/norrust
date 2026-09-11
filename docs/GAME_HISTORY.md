@@ -35,9 +35,16 @@ bundle) separates the recorded engine result from replay coverage:
 complete game whose archive never proves an ending stays `terminal_present:
 false` — an incomplete replay, not a fabricated one.
 
-Model requests and forwarded action batches carry `side_turn_id` when the log
-contains a provable state revision, side-turn, or stable review identity. Missing
-linkage remains NULL; imports never attach the nth review or snapshot by position.
+Model requests and forwarded action batches carry the canonical `side_turn_id`
+allocated before dispatch. For older logs the importer may recover that same
+identity from a matching archived `request_context.json` or handshake record,
+but only after checking the request ID, game conversation, controlled side and
+logged revision against an existing side turn. Conflicting or foreign identity
+evidence remains unassigned; imports never attach the nth request, review or
+snapshot by position, and never use a nearest revision as a substitute. A
+request's identity is updated on reimport only when the previously missing link
+is proven, so an interrupted open turn retains all of its request and call
+spending.
 Review IDs, candidate digests, forced partial-limit finishes, and review outcomes
 remain in the archived log/metrics JSON for ad hoc analysis and training-data
 selection.
@@ -48,10 +55,17 @@ began, from the most recent full boundary) and `state_revision` (the revision
 right after that side's own batch, before any opponent response). Recording
 both lets a completed turn bind to an exact snapshot on both ends instead of
 leaving `start_revision` unresolved on every turn. A game's terminal record
-(`type:"terminal"` in the log) always carries an explicit `state_revision` and
-`side_turns`, whatever ended the match — a model or Greedy win, the turn cap,
-a timeout, an infrastructure failure, or a clean EOF — so a boundary count is
-never confused with a round count or misread as a gameplay win. When the
+(`type:"terminal"` in the log), or the typed terminal failure record used by
+older maintained clients (`model_error`, `budget_interrupted`, `query_error`,
+`checkpoint_error`, `preflight_error`), retains the ending time, elapsed wall
+time, reason and failure code. Its `terminal_class` distinguishes
+infrastructure/model-invalid outcomes from a gameplay result; a failure never
+becomes a loss and `winner_side` remains NULL. When available, its exact
+`state_revision` identifies the final proven snapshot; otherwise the final
+logged state is used as the terminal evidence. This applies whatever ended the
+match — a model or Greedy win, the turn cap, a timeout, an infrastructure
+failure, or a clean EOF — so a boundary count is never confused with a round
+count or misread as a gameplay win. When the
 match ended without the driver having already printed a matching `state`
 line (a winning partial batch that never called `EndTurn`, or a win that
 lands before the next boundary would otherwise print), the driver embeds the
@@ -347,8 +361,9 @@ mistaken for a complete one.
 `--group-by turn` groups measured calls by their request's own proven
 side-turn link rather than maintaining a second, independent turn link on
 the call itself: a call reaches a turn only when its request carries a
-`model_requests.side_turn_id`, which is itself set only when that request's
-recorded `state_revision` matches a proven turn-boundary endpoint. It reports
+`model_requests.side_turn_id`, which is set from the request's canonical
+pre-dispatch identity or from independently validated archived context. A
+revision match is used only when no conflicting identity exists. It reports
 `completed_turns` and `open_turns` as separate lists -- averaging an
 interrupted, still-open turn's usage into completed-turn figures would
 distort both -- plus one `unassigned` group holding every call whose request
@@ -358,10 +373,17 @@ on a turn. Each turn or the `unassigned` group carries its member `call_ids`
 and an `aggregate_calls` `detail` block (the same per-field sum/coverage
 shape as the other groupings). `attribution_coverage` reports `linked_calls`,
 `unassigned_calls`, `total_calls`, and `linked_fraction` -- `None`, not `1.0`,
-for a game with zero calls, since no evidence is not full coverage. As with
+for a game with zero calls, since no evidence is not full coverage. A call
+whose request belongs to another game, or has no matching request, remains in
+the current game's measured totals with `request_id: null`; the importer
+records an explicit usage conflict instead of creating a dangling cross-game
+link. As with
 `--group-by request`, a turn's calls are its measured detail only; a
 request's own historical `request_aggregate` is never summed into that
-detail.
+detail. Game coverage also separates `usage_call_records` from
+`usage_measured`: a complete set of lifecycle rows can have partial measured
+fields, and any failed call without usage makes `usage_status` partial. An
+unreported cache-write count remains unknown; it is never filled or estimated.
 
 `inventory`, `verify_history`, and `delete` all cover `model_calls`:
 inventory and verification are read-only and never mutate a catalog merely by

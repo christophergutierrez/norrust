@@ -54,7 +54,10 @@ usage while retaining all-measured ceiling-exhaustion totals. Parent supplied th
 built driver at the maintained default path for the isolated checks. Review also
 requires partial-action instructions to be conditional on incremental mode.
 
-Stacks3–4 are staged in isolated checkouts pending successful corrected gates.
+Stack3 passed its corrected cumulative gate: 631 Python tests plus Rust and
+Lua (`stack3-fast-check-pass.log`). The main tree matches the tested cumulative
+checkout `b76abdf` byte for byte, excluding this execution report. Stack4 is
+ready for final integration.
 Worker handoffs and focused results are in `tmp/glm-followup-exec/stack2-handoff.md`, `stack3-handoff.md`,
 `stack3-review-handoff.md`, and `stack4-handoff.md`.
 

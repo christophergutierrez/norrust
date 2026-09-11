@@ -337,7 +337,18 @@ class CompareUsageTests(unittest.TestCase):
     def test_percentiles_reported_with_included_excluded_counts(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _write_minimal_game(root, "cmp-2")
+            log = _write_minimal_game(root, "cmp-2")
+            # Sidecar calls may only retain their request link when the
+            # archived request identity is present in this game's catalog.
+            # These rows model the three requests represented below; omitting
+            # them would intentionally exercise foreign/unknown-link
+            # rejection rather than percentile coverage.
+            with log.open("a", encoding="utf-8") as stream:
+                for request_id in ("r1", "r2", "r3"):
+                    stream.write(json.dumps({
+                        "type": "model_request", "request_id": request_id,
+                        "status": "completed", "sequence": int(request_id[1:]),
+                    }) + "\n")
             conn = open_history(root / "history.sqlite")
             game_id = import_game(conn, root, game_id="cmp-2")
             (root / "usage.ndjson").write_text("\n".join(json.dumps(row) for row in [

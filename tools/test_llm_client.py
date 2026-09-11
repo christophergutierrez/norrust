@@ -2645,7 +2645,8 @@ class ClientValidationTests(unittest.TestCase):
              "sequence": 5, "status": "failed"},
             {"type": "forwarded_orders", "batch_id": "same-game:batch:1"},
             {"type": "model_error", "conversation_id": "same-game", "model_calls": 5,
-             "model_orders": 1, "queries": 3, "draft_reviews": 1},
+             "model_orders": 1, "queries": 3, "draft_reviews": 1,
+             "terminal_class": TERMINAL_INFRASTRUCTURE},
         ]
         lines = [
             {"type": "state", "active_faction": 0, "state_revision": 6, "units": []},
@@ -2668,6 +2669,18 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual(new[-1]["model_calls"], 6)
         self.assertEqual(new[-1]["model_orders"], 2)
         self.assertEqual(new[-1]["draft_reviews"], 1)
+
+    def test_resume_log_rejects_classified_typed_completed_outcomes(self):
+        for terminal in (
+                {"type": "model_error", "terminal_class": TERMINAL_MODEL_INVALID},
+                {"type": "budget_interrupted"}):
+            with self.subTest(terminal_type=terminal["type"]):
+                parent = [
+                    {"type": "metadata", "conversation_id": "typed-terminal"},
+                    terminal,
+                ]
+                with self.assertRaisesRegex(ValueError, "completed terminal result"):
+                    self.run_with_orders([], [], resume_records=parent)
 
     def run_after_forwarded_orders(self, action_status, tail=None):
         with tempfile.TemporaryDirectory() as directory:

@@ -2967,6 +2967,33 @@ TERMINAL_EXIT_CODES = {
     TERMINAL_MODEL_INVALID: 2,
 }
 
+# These records are terminal outcomes in maintained and historical logs.  An
+# unclassified model_error remains compatible with older resume logs, where it
+# was also used as a diagnostic; classified failures are authoritative.
+TYPED_TERMINAL_RECORD_TYPES = frozenset({
+    "model_error", "budget_interrupted", "query_error", "checkpoint_error",
+    "preflight_error",
+})
+
+
+def terminal_record(records: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Return the newest explicit or classified typed terminal record.
+
+    Infrastructure failures remain resumable, matching the existing explicit
+    terminal behavior. A completed gameplay/model-invalid outcome, including
+    budget interruption, must not be bypassed merely because an older client
+    used a typed failure record instead of ``type=terminal``.
+    """
+    for record in reversed(records):
+        kind = record.get("type")
+        if kind == "terminal":
+            return record
+        if kind not in TYPED_TERMINAL_RECORD_TYPES:
+            continue
+        if kind == "budget_interrupted" or isinstance(record.get("terminal_class"), str):
+            return record
+    return None
+
 
 def classify_terminal(reason: Optional[str]) -> str:
     """Map a terminal reason to one of the three terminal classes."""
@@ -3042,9 +3069,14 @@ def run(args: argparse.Namespace) -> int:
         selected_checkpoint, parent_records = select_resume_checkpoint(resume_log)
         if Path(log_path).resolve() != Path(resume_log).resolve():
             raise ValueError("--resume-log must be the same path supplied to --log")
-        terminal = next((record for record in reversed(parent_records)
-                         if record.get("type") == "terminal"), None)
-        if isinstance(terminal, dict) and terminal.get("terminal_class") != TERMINAL_INFRASTRUCTURE:
+        terminal = terminal_record(parent_records)
+        if isinstance(terminal, dict):
+            terminal_class = terminal.get("terminal_class")
+            if terminal.get("type") == "budget_interrupted" and terminal_class is None:
+                terminal_class = TERMINAL_MODEL_INVALID
+        else:
+            terminal_class = None
+        if isinstance(terminal, dict) and terminal_class != TERMINAL_INFRASTRUCTURE:
             raise ValueError("cannot resume a log with a completed terminal result")
     elif resume_checkpoint:
         selected_checkpoint = load_resume_checkpoint(resume_checkpoint)
@@ -3059,9 +3091,8 @@ def run(args: argparse.Namespace) -> int:
     if selected_checkpoint is not None:
         validate_checkpoint_identity(selected_checkpoint["envelope"], args)
     previous_metadata = next((record for record in reversed(parent_records)
-                              if record.get("type") in {
-                                  "terminal", "metadata", "model_error", "checkpoint_error",
-                                  "query_error"}), {})
+                              if record.get("type") in
+                              ({"terminal", "metadata"} | TYPED_TERMINAL_RECORD_TYPES)), {})
     conversation_id = (previous_metadata["conversation_id"]
                        if resume_log and isinstance(previous_metadata.get("conversation_id"), str)
                        else uuid.uuid4().hex)
@@ -3277,6 +3308,7 @@ def run(args: argparse.Namespace) -> int:
                 "choice_actions_expanded": 0,
                 "sampling": None, "llm_authored_extra": False,
                 "winner": None, "reason": None, "terminal_class": None,
+                "state_revision": None, "current_turn": None,
                 "infrastructure_invalid": False, "gameplay_valid": False,
                 **source_metadata(),
                 "started_at": datetime.now(timezone.utc).isoformat(),
@@ -3521,8 +3553,11 @@ def run(args: argparse.Namespace) -> int:
             except OSError as exc:
                 context_error = exc
         started = time.monotonic()
+        dispatched_at = request_context.get("dispatched_at")
+        request_side_turn_id = request_context.get("side_turn_id")
         before = getattr(backend, "transport_retries", 0)
         attempt_usage = []
+        attempt_dispatched = False
         try:
             if context_error is not None:
                 raise RuntimeError(f"request_context_unavailable: {context_error}")
@@ -3547,6 +3582,7 @@ def run(args: argparse.Namespace) -> int:
                     check_game_budget()
                     try:
                         try:
+                            attempt_dispatched = True
                             reply = backend.complete(delivered_prompt)
                         finally:
                             # Includes failures whose usage was durable even
@@ -3560,6 +3596,14 @@ def run(args: argparse.Namespace) -> int:
                         apply_backend_settings(exc.envelope.get("cache"), metadata, args)
                         output_policy.record_failure(exc)
                         attempt_usage.append(exc.envelope.get("usage"))
+                        # This attempt ended with a measured output-limit
+                        # response, so it is safe to include in the logical
+                        # request aggregate. A later retry will set this flag
+                        # again until it either returns or fails unknown. Keep
+                        # it set until the usage has actually been appended;
+                        # settings/policy rejection of this response must
+                        # leave the aggregate unknown.
+                        attempt_dispatched = False
                         metadata["output_limit_policy"] = output_policy.state()
                         # Persist before any retry. In-place resume replays this
                         # event even if killed before request/terminal logging.
@@ -3616,9 +3660,12 @@ def run(args: argparse.Namespace) -> int:
                     pending_agenda_feedback["delivered"] = True
             record({"type": "model_request",
                     "request_id": request_id,
+                    "side_turn_id": request_side_turn_id,
                     "agenda_feedback_after": pending_agenda_feedback,
                     "sequence": request_sequence,
                     "status": "completed",
+                    "started_at": dispatched_at,
+                    "ended_at": datetime.now(timezone.utc).isoformat(),
                     "prompt": delivered_prompt,
                     "raw_output": reply.text,
                     "state_revision": state.get("state_revision") if isinstance(state, dict) else None,
@@ -3635,10 +3682,28 @@ def run(args: argparse.Namespace) -> int:
                     "cache": reply.cache})
             return reply
         except Exception as exc:
-            record({"type": "model_request",
+            message = str(exc)
+            # Preserve a stable diagnostic code alongside the human-readable
+            # exception.  The request ID and side-turn identity were allocated
+            # before dispatch, so even an output exhaustion or provider EOF
+            # remains attributable in the archive.
+            error_code = message.split(":", 1)[0].strip() or None
+            if attempt_usage and attempt_dispatched:
+                failed_usage = combined_usage(attempt_usage + [None])
+            elif attempt_usage:
+                # No new physical attempt failed after the measured attempts
+                # (for example, the three-failure ceiling stopped dispatch),
+                # so their aggregate remains complete and trustworthy.
+                failed_usage = combined_usage(attempt_usage)
+            else:
+                failed_usage = None
+            durable({"type": "model_request",
                     "request_id": request_id,
+                    "side_turn_id": request_side_turn_id,
                     "sequence": request_sequence,
                     "status": "failed",
+                    "started_at": dispatched_at,
+                    "ended_at": datetime.now(timezone.utc).isoformat(),
                     "prompt": delivered_prompt,
                     "prompt_hash": hashlib.sha256(delivered_prompt.encode()).hexdigest(),
                     "elapsed_ms": round((time.monotonic() - started) * 1000),
@@ -3647,7 +3712,12 @@ def run(args: argparse.Namespace) -> int:
                     "fixed_prefix_sha256": delivered_regions["fixed_prefix_sha256"],
                     "fixed_prefix_bytes": delivered_regions["fixed_prefix_bytes"],
                     "prompt_regions": delivered_regions,
-                    "error": str(exc)})
+                    "error": message,
+                    "error_code": error_code,
+                    # Include an unknown final attempt when one was actually
+                    # dispatched; do not present earlier measured attempts as
+                    # a complete logical-request total in that case.
+                    "usage": failed_usage})
             raise
         finally:
             after = getattr(backend, "transport_retries", 0)
@@ -4133,6 +4203,12 @@ def run(args: argparse.Namespace) -> int:
                 continue
             if line.get("type") == "state":
                 state = line
+                # Keep the last proven engine position on metadata so every
+                # maintained terminal/failure path records the same ending
+                # identity without each exception branch having to duplicate
+                # this bookkeeping.
+                metadata["state_revision"] = line.get("state_revision")
+                metadata["current_turn"] = line.get("turn")
                 is_partial_boundary = line.get("turn_boundary") == "partial"
                 if not is_partial_boundary:
                     revision = line.get("state_revision")

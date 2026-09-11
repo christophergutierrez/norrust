@@ -192,6 +192,12 @@ match-owned native session when the session sidecar is available; generic model
 commands receive the restored state and bounded transcript through the new
 backend process.
 
+An explicit `terminal` record and a classified typed terminal failure
+(`model_error`, `budget_interrupted`, `query_error`, `checkpoint_error`, or
+`preflight_error`) use the same resume guard. Gameplay, model-invalid, and
+budget outcomes cannot be resumed in place; an infrastructure outcome remains
+eligible for recovery.
+
 An in-place resume appends to the same archive and retains the conversation ID.
 Request and batch IDs continue after archived attempts, including failures, and
 the latest client failure metadata supplies cumulative counters.

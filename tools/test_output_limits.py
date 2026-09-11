@@ -214,6 +214,10 @@ class OutputLimitIntegrationTests(unittest.TestCase):
         self.assertEqual(sum(r.get("type") == "forwarded_orders" for r in rows), 1)
         failures = [r for r in rows if r.get("type") == "model_output_limit"]
         self.assertEqual([r["policy"]["ceiling_failures"] for r in failures], [0, 1, 2, 3])
+        requests = [r for r in rows if r.get("type") == "model_request"]
+        failed_request = next(r for r in reversed(requests) if r.get("status") == "failed")
+        self.assertEqual(failed_request["usage"]["output_tokens"], 2 * MAX_OUTPUT_LIMIT)
+        self.assertEqual(failed_request["usage"]["input_tokens"], 2 * 100)
         resumed = self.run_game(["stop"], ["--resume-log", str(self.log)])
         self.assertEqual(resumed.returncode, 1, resumed.stderr)
         self.assertEqual(len(self.records("wire.ndjson")), 5)

@@ -84,10 +84,13 @@ def build_bundle(db: str | os.PathLike[str], game_id: str,
     if not frames:
         conn.close()
         raise ValueError(f"game {game_id} has no usable recorded state snapshots")
-    if frames[0]["boundary_kind"] != "opening":
+    coverage = json.loads(metadata.get("coverage_json") or "{}")
+    # A terminal outcome can coalesce with the opening state.  In that case
+    # `boundary_kind` is necessarily `terminal`, while coverage retains the
+    # independently proven opening role.
+    if frames[0]["boundary_kind"] != "opening" and not coverage.get("opening_present"):
         conn.close()
         raise ValueError(f"game {game_id} has no provable starting snapshot")
-    coverage = json.loads(metadata.get("coverage_json") or "{}")
     bundle = {
         "version": BUNDLE_VERSION,
         "game_id": game_id,

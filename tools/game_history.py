@@ -27,6 +27,13 @@ SCHEMA_VERSION = 6
 # by coverage_json.events_status instead. Bump this only when the timeline or the
 # exported frame contract itself changes.
 IMPORTER_VERSION = "s1_snapshot_v1"
+# These records are emitted by maintained client failure paths.  They carry
+# the same terminal metadata as a normal `terminal` record, but older logs
+# used the typed record itself as the final durable marker.
+TERMINAL_FAILURE_TYPES = {
+    "model_error", "budget_interrupted", "query_error", "checkpoint_error",
+    "preflight_error", "action_failure",
+}
 SCHEMA = """
 PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS games (
@@ -252,6 +259,26 @@ def _driver(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _first(records: list[dict[str, Any]], kind: str) -> dict[str, Any]:
     return next((r for r in records if r.get("type") == kind), {})
+
+
+def _terminal_record(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return the last explicit or typed failure terminal in an archive.
+
+    A maintained client historically wrote ``model_error`` (and, for a few
+    early exits, another typed failure) after the driver stopped.  Treating
+    only ``type=terminal`` as an ending loses the failure's timing and code.
+    Records with a terminal class are unambiguous; an unclassified
+    ``action_failure`` remains an ordinary diagnostic record.
+    """
+    for record in reversed(records):
+        kind = record.get("type")
+        if kind == "terminal":
+            return record
+        if kind in TERMINAL_FAILURE_TYPES and (
+                isinstance(record.get("terminal_class"), str)
+                or kind == "model_error"):
+            return record
+    return {}
 
 def _state_payload(state: dict[str, Any] | None) -> tuple[bytes | None, str | None, str | None]:
     if not state:
@@ -561,10 +588,13 @@ def import_game(conn: sqlite3.Connection, archive: str | os.PathLike[str],
     records = _records(log)
     metadata = _first(records, "metadata")
     lines = _driver(records)
-    terminal = next((r for r in reversed(records) if r.get("type") == "terminal"), {})
+    terminal = _terminal_record(records)
     game_id = game_id or digest({"archive": str(log), "metadata": metadata})[:32]
     config = {k: metadata.get(k) for k in ("scenario", "seed", "faction0", "faction1", "gold", "first_player", "max_turns", "driver_command", "turn_format")}
     status = "complete" if terminal else "incomplete"
+    termination_reason = terminal.get("reason") or terminal.get("termination_reason")
+    failure_code = (terminal.get("failure_code") or terminal.get("code")
+                    or terminal.get("error_code"))
     with conn:
         # Transactionally rebuild this game's derived timeline (snapshots and
         # side_turns) from the source archive on every import. Requests,
@@ -574,17 +604,18 @@ def import_game(conn: sqlite3.Connection, archive: str | os.PathLike[str],
         conn.execute("""INSERT INTO games
           (game_id,cohort_id,lineage_root_id,seed,scenario,faction0,faction1,starting_gold,
           first_side,max_side_turns,started_at,ended_at,wall_ms,status,winner_side,
-           termination_reason,source_commit,config_json,provenance_json,schema_version,
+           termination_reason,failure_code,source_commit,config_json,provenance_json,schema_version,
            artifact_path,coverage_json,importer_version)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
           ON CONFLICT(game_id) DO UPDATE SET status=excluded.status,
           winner_side=excluded.winner_side,termination_reason=excluded.termination_reason,
+          ended_at=excluded.ended_at,wall_ms=excluded.wall_ms,failure_code=excluded.failure_code,
           importer_version=excluded.importer_version""",
           (game_id, cohort_id, game_id, metadata.get("seed"), metadata.get("scenario"),
            metadata.get("faction0"), metadata.get("faction1"), metadata.get("gold"),
            metadata.get("first_player"), metadata.get("max_turns"), metadata.get("started_at"),
            terminal.get("ended_at"), terminal.get("wall_ms"), status, terminal.get("winner"),
-           terminal.get("reason"), metadata.get("source_commit"), json.dumps(config, sort_keys=True),
+           termination_reason, failure_code, metadata.get("source_commit"), json.dumps(config, sort_keys=True),
            json.dumps({"archive": str(log)}, sort_keys=True), SCHEMA_VERSION, str(root), "{}",
            IMPORTER_VERSION))
         snapshots, checkpoint_gaps = _build_snapshots(log, lines)
@@ -621,7 +652,11 @@ def import_game(conn: sqlite3.Connection, archive: str | os.PathLike[str],
                reported_model if is_model else None,
                metadata.get("requested_reasoning_effort") if is_model else None,
                metadata.get("runtime_reasoning_effort") if is_model else None))
-        _import_requests(conn, game_id, records, linkage["record_links"])
+        request_result = _import_requests(
+            conn, game_id, records, linkage["record_links"],
+            root if root.is_dir() else root.parent,
+            metadata=metadata, side_turn_bounds={row[0]: (row[1], row[2], row[3]) for row in conn.execute(
+                "SELECT side_turn_id,start_revision,end_revision,side FROM side_turns WHERE game_id=?", (game_id,))})
         _import_actions(conn, game_id, records, linkage["record_links"])
         event_result = _import_events(conn, game_id, records, linkage["record_links"])
         coverage = json.loads(conn.execute(
@@ -648,6 +683,40 @@ def import_game(conn: sqlite3.Connection, archive: str | os.PathLike[str],
         if usage_result["conflicts"]:
             coverage["conflicts"] = sorted(set(coverage.get("conflicts", [])) |
                                            {f"usage_conflict:{k}:{v}" for k, vs in usage_result["conflicts"].items() for v in vs})
+        terminal_snapshot = next((snapshot for snapshot in snapshots
+                                  if snapshot["boundary_kind"] == "terminal"), None)
+        coverage["terminal_class"] = terminal.get("terminal_class")
+        coverage["terminal_state_revision"] = (
+            _record_revision(terminal) if _record_revision(terminal) is not None
+            else terminal_snapshot.get("revision") if terminal_snapshot else None)
+        coverage["terminal_snapshot_id"] = (
+            terminal_snapshot.get("snapshot_id") if terminal_snapshot else None)
+        coverage["request_count"] = request_result["seen"]
+        coverage["linked_requests"] = request_result["linked"]
+        coverage["unassigned_requests"] = request_result["unassigned"]
+        all_identity_conflicts = (list(linkage.get("link_conflicts", []))
+                                  + request_result["conflicts"])
+        if all_identity_conflicts:
+            coverage["conflicts"] = sorted(set(coverage.get("conflicts", [])) |
+                                             {f"request_identity_conflict:{value}"
+                                              for value in all_identity_conflicts})
+            coverage["gaps"] = sorted(set(coverage.get("gaps", [])) |
+                                        {f"request_identity_conflict:{value}"
+                                         for value in all_identity_conflicts})
+        if usage_result["imported"]:
+            # `usage_status` is a badge for a fully measured, complete call
+            # set.  The detailed query still reports each field separately,
+            # but a failed call without usage must never look complete here.
+            call_rows = conn.execute(
+                "SELECT status,input_tokens,cached_input_tokens,output_tokens,reasoning_tokens,total_tokens "
+                "FROM model_calls WHERE game_id=?", (game_id,)).fetchall()
+            measured = all(row[index] is not None for row in call_rows
+                           for index in range(1, 6))
+            lifecycle_complete = all(row[0] == "completed" for row in call_rows)
+            coverage["usage_call_records"] = "complete"
+            coverage["usage_measured"] = "complete" if measured else "partial"
+            if not lifecycle_complete and coverage.get("usage_status") != "incomplete":
+                coverage["usage_status"] = "partial"
         conn.execute("UPDATE games SET coverage_json=? WHERE game_id=?",
                      (json.dumps(coverage, sort_keys=True), game_id))
     return game_id
@@ -672,14 +741,36 @@ def _matches_review(review: dict[str, Any], boundary: dict[str, Any],
                     start_revision: int | None, end_revision: int | None,
                     side_turn_id: str) -> str | None:
     """Return the proof used to attach a review, or None when it is ambiguous."""
-    if review.get("side_turn_id") == side_turn_id:
-        return "side_turn_id"
+    review_identity = review.get("side_turn_id")
+    if review_identity is not None and review_identity != side_turn_id:
+        return None
+    for key in ("side_turn", "side_turns"):
+        if key in review and review.get(key) is not None and _record_side_turn(review) is None:
+            return None
+    if "state_revision" in review and review.get("state_revision") is not None \
+            and _record_revision(review) is None:
+        return None
     review_side = _record_side_turn(review)
     boundary_side = _record_side_turn(boundary)
-    if review_side is not None and boundary_side is not None and review_side == boundary_side:
-        return "side_turn"
+    if (review_side is not None and boundary_side is not None
+            and review_side != boundary_side):
+        return None
+    if review_identity == side_turn_id:
+        return "side_turn_id"
     review_revision = _record_revision(review)
     revisions = {_record_revision(boundary), start_revision, end_revision}
+    if review_revision is not None:
+        if (start_revision is not None and review_revision < start_revision) \
+                or (end_revision is not None and review_revision > end_revision):
+            return None
+    # Review IDs are allocated for one draft and copied onto the accepted
+    # boundary.  This is stronger evidence than a shared revision, and fixes
+    # legacy logs where the review carried only a numeric side-turn counter.
+    if (isinstance(review.get("review_id"), str)
+            and review.get("review_id") == boundary.get("review_id")):
+        return "review_id"
+    if review_side is not None and boundary_side is not None and review_side == boundary_side:
+        return "side_turn"
     if review_revision is not None and review_revision in revisions:
         return "state_revision"
     return None
@@ -710,6 +801,21 @@ def _import_turns(conn: sqlite3.Connection, game_id: str, records: list[dict[str
     boundaries = [r for r in records if r.get("type") == "turn_boundary" and r.get("accepted") is True]
     reviews = [r for r in records if r.get("type") == "handoff_review"]
     record_links: dict[str, str] = {}
+    link_conflicts: list[str] = []
+    ambiguous_keys: set[str] = set()
+
+    def add_link(key: str, value: str) -> None:
+        if key in ambiguous_keys:
+            return
+        previous = record_links.get(key)
+        if previous is None or previous == value:
+            record_links[key] = value
+        else:
+            # A reused revision or identity is not enough to choose a turn.
+            # Remove the ambiguous key so callers cannot silently attach it.
+            record_links.pop(key, None)
+            ambiguous_keys.add(key)
+            link_conflicts.append(f"{key}:{previous}!={value}")
     unresolved = 0
     unresolved_starts = 0
     unresolved_ends = 0
@@ -740,6 +846,11 @@ def _import_turns(conn: sqlite3.Connection, game_id: str, records: list[dict[str
                    "end_revision": after["revision"] if after else None}
         candidates = []
         for review_index, review in enumerate(reviews):
+            if review_index in linked_review_indexes:
+                # A review record belongs to one accepted boundary. Reusing a
+                # review ID across boundaries is conflicting evidence, not a
+                # reason to attach it twice.
+                continue
             proof = _matches_review(review, boundary, payload["start_revision"], payload["end_revision"], side_turn_id)
             if proof is not None:
                 candidates.append((review_index, review, proof))
@@ -766,10 +877,18 @@ def _import_turns(conn: sqlite3.Connection, game_id: str, records: list[dict[str
         for key in ("side_turn_id", "side_turn"):
             value = boundary.get(key)
             if value is not None:
-                record_links[f"{key}:{value}"] = side_turn_id
-        for revision in (payload["start_revision"], payload["end_revision"]):
-            if revision is not None:
-                record_links[f"revision:{revision}"] = side_turn_id
+                add_link(f"{key}:{value}", side_turn_id)
+        start_revision = payload["start_revision"]
+        end_revision = payload["end_revision"]
+        if start_revision is not None:
+            # A request's state_revision is the state at dispatch, so preserve
+            # the opening endpoint separately when it is also the prior
+            # turn's closing endpoint.
+            add_link(f"start_revision:{start_revision}", side_turn_id)
+            add_link(f"revision:{start_revision}", side_turn_id)
+        if end_revision is not None:
+            add_link(f"end_revision:{end_revision}", side_turn_id)
+            add_link(f"revision:{end_revision}", side_turn_id)
         closed_side_turn_ids.add(side_turn_id)
     # A turn that opened but never reached an accepted boundary - a game that
     # failed, timed out or was interrupted mid-turn - still owns the work spent
@@ -799,7 +918,13 @@ def _import_turns(conn: sqlite3.Connection, game_id: str, records: list[dict[str
            before["snapshot_id"] if before else None, None,
            _endpoint_link_kind(before, None),
            "{}", digest({"open_side_turn": side_turn_id})))
-        record_links[f"side_turn_id:{side_turn_id}"] = side_turn_id
+        add_link(f"side_turn_id:{side_turn_id}", side_turn_id)
+        # The opening revision is explicit evidence for an open turn too; it
+        # owns all requests dispatched from that boundary until another
+        # proven turn identity is supplied.
+        if before is not None and before["revision"] is not None:
+            add_link(f"start_revision:{before['revision']}", side_turn_id)
+            add_link(f"revision:{before['revision']}", side_turn_id)
         closed_side_turn_ids.add(side_turn_id)
 
     return {"linked_reviews": len(linked_review_indexes),
@@ -807,7 +932,8 @@ def _import_turns(conn: sqlite3.Connection, game_id: str, records: list[dict[str
             "unresolved_turn_endpoints": unresolved,
             "unresolved_turn_starts": unresolved_starts,
             "unresolved_turn_ends": unresolved_ends,
-            "record_links": record_links}
+            "record_links": record_links,
+            "link_conflicts": sorted(set(link_conflicts))}
 
 
 def terminal_boundary(snapshot: dict[str, Any] | None) -> bool:
@@ -815,25 +941,181 @@ def terminal_boundary(snapshot: dict[str, Any] | None) -> bool:
 
 def _side_turn_for_record(record: dict[str, Any], links: dict[str, str]) -> str | None:
     explicit = record.get("side_turn_id")
-    if isinstance(explicit, str) and explicit in set(links.values()):
-        return explicit
+    if explicit is not None:
+        # An explicit but foreign identity rejects the record; do not fall
+        # through to a convenient revision match and relabel it.
+        return explicit if isinstance(explicit, str) and explicit in set(links.values()) else None
     for key in ("side_turn_id", "side_turn"):
         value = record.get(key)
-        if value is not None and f"{key}:{value}" in links:
-            return links[f"{key}:{value}"]
+        if value is not None:
+            return links.get(f"{key}:{value}")
     revision = _record_revision(record)
-    return links.get(f"revision:{revision}") if revision is not None else None
+    if revision is None:
+        return None
+    # Dispatch records carry the state before their turn.  That opening
+    # endpoint remains usable when the same revision closes the preceding
+    # turn; the generic key is reserved for an unambiguous endpoint.
+    return (links.get(f"start_revision:{revision}")
+            or links.get(f"revision:{revision}"))
+
+
+def _request_identity_evidence(root: Path, request_records: list[dict[str, Any]],
+                               side_turn_bounds: dict[str, tuple[int | None, int | None, int]],
+                               metadata: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
+    """Read archived request contexts and return only proven request links.
+
+    Contexts are written before dispatch and contain the harness request ID,
+    side-turn ID, conversation, side and revision.  Every identity is checked
+    against the current archive; a missing, foreign, or conflicting identity
+    stays unresolved rather than being assigned by revision proximity.
+    """
+    known_records = {r.get("request_id"): r for r in request_records
+                     if isinstance(r.get("request_id"), str)}
+    known = set(known_records)
+    candidates: dict[str, set[str]] = {}
+    conflicts: list[str] = []
+    paths = list(root.rglob("request_context.json")) if root.is_dir() else []
+    # Host handoff logs use the same immutable identity fields.  They are
+    # optional, but reading them lets an old archive recover without a copied
+    # per-request context file.
+    def consider(value: dict[str, Any]) -> None:
+        request_id = value.get("harness_request_id") or value.get("request_id")
+        if not isinstance(request_id, str) or request_id not in known:
+            return
+        side_turn_id = value.get("side_turn_id")
+        request = known_records[request_id]
+        if not isinstance(side_turn_id, str) or side_turn_id not in side_turn_bounds:
+            conflicts.append(f"{request_id}:foreign_side_turn:{side_turn_id}")
+            return
+        context_side = value.get("side")
+        context_revision = value.get("state_revision")
+        if (context_side is not None
+                and (not isinstance(context_side, int) or isinstance(context_side, bool))):
+            conflicts.append(f"{request_id}:invalid_side:{context_side!r}")
+            return
+        if (context_revision is not None
+                and (not isinstance(context_revision, int) or isinstance(context_revision, bool))):
+            conflicts.append(f"{request_id}:invalid_revision:{context_revision!r}")
+            return
+        expected_conversation = metadata.get("conversation_id")
+        context_conversation = value.get("conversation_id")
+        if (context_conversation is not None
+                and not isinstance(context_conversation, str)):
+            conflicts.append(f"{request_id}:invalid_conversation:{context_conversation!r}")
+            return
+        if (isinstance(expected_conversation, str)
+                and context_conversation not in (None, expected_conversation)):
+            conflicts.append(f"{request_id}:foreign_conversation")
+            return
+        expected_side = metadata.get("llm_side")
+        if (context_side is not None and context_side != expected_side):
+            conflicts.append(f"{request_id}:foreign_side:{context_side}")
+            return
+        start_revision, end_revision, side = side_turn_bounds[side_turn_id]
+        if side != expected_side:
+            conflicts.append(f"{request_id}:foreign_side_turn_side:{side}")
+            return
+        expected_revision = request.get("state_revision")
+        if (expected_revision is not None
+                and (not isinstance(expected_revision, int) or isinstance(expected_revision, bool))):
+            conflicts.append(f"{request_id}:invalid_logged_revision:{expected_revision!r}")
+            return
+        if (expected_revision is not None and context_revision is not None
+                and expected_revision != context_revision):
+            conflicts.append(f"{request_id}:revision:{expected_revision}!={context_revision}")
+            return
+        if isinstance(context_revision, int) and (
+                (start_revision is not None and context_revision < start_revision)
+                or (end_revision is not None and context_revision > end_revision)):
+            conflicts.append(f"{request_id}:revision_outside_side_turn:{context_revision}")
+            return
+        candidates.setdefault(request_id, set()).add(side_turn_id)
+
+    for handshake in root.rglob("handshake_log.ndjson") if root.is_dir() else []:
+        try:
+            for line in handshake.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                value = json.loads(line)
+                if isinstance(value, dict):
+                    consider(value)
+        except (OSError, ValueError):
+            continue
+    for path in paths:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(value, dict):
+            continue
+        consider(value)
+    links: dict[str, str] = {}
+    for request_id, values in candidates.items():
+        values.discard(None)
+        if len(values) == 1:
+            links[request_id] = next(iter(values))
+        elif values:
+            conflicts.append(f"{request_id}:conflicting_side_turns:{','.join(sorted(values))}")
+    return links, sorted(set(conflicts))
 
 
 def _import_requests(conn: sqlite3.Connection, game_id: str, records: list[dict[str, Any]],
-                     links: dict[str, str]) -> None:
+                     links: dict[str, str], root: Path, *,
+                     metadata: dict[str, Any],
+                     side_turn_bounds: dict[str, tuple[int | None, int | None, int]]) -> dict[str, Any]:
     request_records = [r for r in records if r.get("type") == "model_request"]
     if not request_records:
         request_records = [r for r in records if r.get("type") == "model"]
+    context_links, identity_conflicts = _request_identity_evidence(
+        root, request_records, side_turn_bounds, metadata)
+    for request_id, side_turn_id in context_links.items():
+        links[f"request:{request_id}"] = side_turn_id
+    linked = 0
+    unassigned = 0
+    conflict_request_ids = {
+        request_id for request_id in
+        (value for value in [r.get("request_id") for r in request_records]
+         if isinstance(value, str))
+        if any(conflict.startswith(request_id + ":") for conflict in identity_conflicts)
+    }
     for index, record in enumerate(request_records):
         raw = record.get("raw_output") if isinstance(record.get("raw_output"), str) else None
         prompt = record.get("prompt") if isinstance(record.get("prompt"), str) else None
         req_id = record.get("request_id") or f"{game_id}:request:{index + 1}"
+        existing = conn.execute("SELECT game_id FROM model_requests WHERE request_id=?", (req_id,)).fetchone()
+        if existing is not None and existing[0] != game_id:
+            identity_conflicts.append(f"{req_id}:belongs_to:{existing[0]}")
+            # This request is present in the source archive but cannot be
+            # imported into this game. Keep the coverage denominator honest:
+            # a foreign request is observed and unassigned, not absent.
+            unassigned += 1
+            continue
+        context_side_turn = links.get(f"request:{req_id}")
+        explicit_side_turn = record.get("side_turn_id")
+        explicit_legacy_turn = record.get("side_turn")
+        explicit_identity = (explicit_side_turn if explicit_side_turn is not None
+                             else explicit_legacy_turn)
+        if (explicit_identity is not None and context_side_turn is not None
+                and explicit_identity != context_side_turn):
+            identity_conflicts.append(
+                f"{req_id}:explicit_side_turn:{explicit_identity}!={context_side_turn}")
+            conflict_request_ids.add(req_id)
+        elif explicit_identity is not None and not isinstance(explicit_identity, (str, int)):
+            identity_conflicts.append(f"{req_id}:invalid_side_turn:{explicit_identity!r}")
+            conflict_request_ids.add(req_id)
+        elif explicit_identity is not None and _side_turn_for_record(record, links) is None:
+            # An explicit identity is evidence only when it names one of this
+            # archive's proven side turns. Preserve the request row, but make
+            # the foreign identity visible in coverage instead of silently
+            # turning it into an ordinary unassigned request.
+            identity_conflicts.append(f"{req_id}:foreign_side_turn:{explicit_identity}")
+            conflict_request_ids.add(req_id)
+        side_turn_id = (None if req_id in conflict_request_ids else
+                        context_side_turn or _side_turn_for_record(record, links))
+        if side_turn_id:
+            linked += 1
+        else:
+            unassigned += 1
         usage = record.get("usage") if isinstance(record.get("usage"), dict) else {}
         annotation = record.get("decision_annotation")
         if not isinstance(annotation, dict):
@@ -852,13 +1134,17 @@ def _import_requests(conn: sqlite3.Connection, game_id: str, records: list[dict[
         prompt_hash = (hashlib.sha256(prompt.encode("utf-8")).hexdigest() if prompt is not None
                        else record.get("prompt_hash"))
         conn.execute("""INSERT INTO model_requests
-          (request_id,game_id,side_turn_id,sequence,status,error_message,elapsed_ms,input_tokens,cached_input_tokens,output_tokens,
+          (request_id,game_id,side_turn_id,sequence,status,error_code,error_message,started_at,ended_at,elapsed_ms,input_tokens,cached_input_tokens,output_tokens,
            reasoning_tokens,prompt_bytes,response_bytes,prompt_blob,response_blob,prompt_hash,
            response_hash,payload_codec,reasoning_blob,reasoning_kind,reasoning_source,
           annotation_status,state_revision,prompt_layout_version,fixed_prefix_sha256,fixed_prefix_bytes,raw_usage_json,record_hash)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(request_id) DO NOTHING""",
-          (req_id, game_id, _side_turn_for_record(record, links), record.get("sequence", index + 1), record.get("status", "completed"),
-           record.get("error"), record.get("elapsed_ms"), usage.get("input_tokens"),
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(request_id) DO UPDATE SET
+           side_turn_id=CASE WHEN model_requests.side_turn_id IS NULL THEN excluded.side_turn_id ELSE model_requests.side_turn_id END,
+           status=excluded.status,error_code=excluded.error_code,error_message=excluded.error_message,
+           started_at=excluded.started_at,ended_at=excluded.ended_at,elapsed_ms=excluded.elapsed_ms""",
+          (req_id, game_id, side_turn_id, record.get("sequence", index + 1), record.get("status", "completed"),
+           record.get("error_code") or record.get("code"), record.get("error"), record.get("started_at"),
+           record.get("ended_at"), record.get("elapsed_ms"), usage.get("input_tokens"),
            usage.get("cached_input_tokens"), usage.get("output_tokens"),
            usage.get("reasoning_output_tokens"),
            record.get("prompt_bytes") or (len(prompt.encode()) if prompt else None),
@@ -872,16 +1158,25 @@ def _import_requests(conn: sqlite3.Connection, game_id: str, records: list[dict[
            record.get("fixed_prefix_sha256"), _number(record.get("fixed_prefix_bytes")),
            json.dumps(usage, sort_keys=True),
            digest({"request_id": req_id, "record": record})))
+    return {"seen": len(request_records), "linked": linked, "unassigned": unassigned,
+            "conflicts": sorted(set(identity_conflicts))}
 
 def _import_actions(conn: sqlite3.Connection, game_id: str, records: list[dict[str, Any]],
                     links: dict[str, str]) -> None:
     sequence = 0
+    known_requests = {row[0] for row in conn.execute(
+        "SELECT request_id FROM model_requests WHERE game_id=?", (game_id,))}
     for batch_index, record in enumerate(r for r in records if r.get("type") == "forwarded_orders"):
         orders = record.get("orders")
         if not isinstance(orders, list):
             continue
         batch_id = record.get("batch_id") or f"{game_id}:batch:{batch_index + 1}"
         request_id = record.get("request_id") if isinstance(record.get("request_id"), str) else None
+        if request_id is not None and request_id not in known_requests:
+            # `request_id` is an evidence link, not a free text label.  Keep a
+            # foreign or unknown identity from becoming a dangling cross-game
+            # attribution; the archived forwarded order remains importable.
+            request_id = None
         source = record.get("source") if isinstance(record.get("source"), str) else "model"
         conn.execute("""INSERT INTO action_batches
           (batch_id,game_id,side_turn_id,request_id,sequence,source,submitted_orders_json,status,
@@ -1063,6 +1358,25 @@ def _apply_usage_calls(conn: sqlite3.Connection, game_id: str,
             malformed.append(f"call:{record.call_id}:wrong_game:{record.game_id}")
     raw_records = [replace(r, game_id=game_id) for r in raw_records if r.game_id in accepted]
     deduped, conflicts = dedupe_calls(raw_records)
+    request_owners = {row[0]: row[1] for row in conn.execute(
+        "SELECT request_id,game_id FROM model_requests")}
+    for index, call in enumerate(deduped):
+        if call.request_id is None:
+            continue
+        owner = request_owners.get(call.request_id)
+        if owner == game_id:
+            continue
+        owner_label = owner if owner is not None else "unknown"
+        conflict = f"request_link:{call.request_id}:belongs_to:{owner_label}"
+        conflicts.setdefault((call.game_id, call.call_id), []).append(conflict)
+        evidence = call.linkage_evidence
+        if evidence:
+            evidence = f"{evidence};{conflict}"
+        else:
+            evidence = conflict
+        deduped[index] = replace(
+            call, request_id=None, linkage_evidence=evidence,
+            normalization_gaps=sorted(set(call.normalization_gaps) | {conflict}))
     request_layouts = {row[0]: row[1] for row in conn.execute(
         "SELECT request_id,prompt_layout_version FROM model_requests WHERE game_id=?", (game_id,))}
     for index, call in enumerate(deduped):
@@ -1102,11 +1416,25 @@ def _turn_links_from_db(conn: sqlite3.Connection, game_id: str) -> dict[str, str
     not recompute or touch `snapshots`/`side_turns` itself.
     """
     links: dict[str, str] = {}
+    ambiguous: set[str] = set()
+
+    def add_link(key: str, value: str) -> None:
+        if key in ambiguous:
+            return
+        previous = links.get(key)
+        if previous is None or previous == value:
+            links[key] = value
+        else:
+            links.pop(key, None)
+            ambiguous.add(key)
     for side_turn_id, start_revision, end_revision in conn.execute(
         "SELECT side_turn_id,start_revision,end_revision FROM side_turns WHERE game_id=?", (game_id,)):
-        for revision in (start_revision, end_revision):
-            if revision is not None:
-                links[f"revision:{revision}"] = side_turn_id
+        if start_revision is not None:
+            add_link(f"start_revision:{start_revision}", side_turn_id)
+            add_link(f"revision:{start_revision}", side_turn_id)
+        if end_revision is not None:
+            add_link(f"end_revision:{end_revision}", side_turn_id)
+            add_link(f"revision:{end_revision}", side_turn_id)
     return links
 
 

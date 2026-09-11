@@ -1,7 +1,9 @@
 import hashlib
 import json
 import os
+import shlex
 import sqlite3
+import subprocess
 import sys
 import zlib
 from contextlib import closing
@@ -725,6 +727,7 @@ class ModelCallUsageTests(unittest.TestCase):
             conn.close()
 
 
+ROOT = Path(__file__).resolve().parents[1]
 DRIVER = Path(os.environ.get("NORRUST_TEST_DRIVER", Path(__file__).resolve().parents[1]
                              / "norrust_core/target/debug/greedy_driver"))
 FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "norrust_core/tests/fixtures/s2_deterministic_duel"
@@ -784,6 +787,124 @@ class RealDriverUsageIntegrationTests(unittest.TestCase):
             self.assertEqual(verification["foreign_key_errors"], 0)
             self.assertEqual(verification["dangling_call_request_links"], 0)
             self.assertEqual(verification["cross_game_call_links"], 0)
+            conn.close()
+
+    def test_partial_completed_then_open_turn_provider_failure_is_fully_attributed(self):
+        """Real driver: two partials and a finished turn precede an open failure."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            backend = root / "partial_then_fail.py"
+            backend.write_text(
+                "import json, os, sys\n"
+                "from pathlib import Path\n"
+                "context = json.loads(Path(os.environ['NORRUST_REQUEST_CONTEXT_FILE']).read_text())\n"
+                "root = Path(context['game_log']).parent\n"
+                "counter = root / 'request_count'\n"
+                "step = int(counter.read_text()) + 1 if counter.is_file() else 1\n"
+                "counter.write_text(str(step))\n"
+                "sidecar = root / 'usage.ndjson'\n"
+                "call_id = context['conversation_id'] + ':physical:' + str(step)\n"
+                "base = {'game_id': context['conversation_id'], 'call_id': call_id,\n"
+                "        'request_id': context['harness_request_id'], 'provider': 'offline',\n"
+                "        'transport': 'real_driver_fixture', 'status': 'dispatched',\n"
+                "        'record_kind': 'dispatch'}\n"
+                "with sidecar.open('a', encoding='utf-8') as out:\n"
+                "    out.write(json.dumps(base) + '\\n')\n"
+                "    if step <= 3:\n"
+                "        final = dict(base, status='completed', record_kind='final',\n"
+                "                     input_tokens=100 + step, output_tokens=10,\n"
+                "                     reasoning_tokens=5, total_tokens=115 + step)\n"
+                "        out.write(json.dumps(final) + '\\n')\n"
+                "prompt = sys.stdin.read()\n"
+                "if step >= 4:\n"
+                "    print('request_unknown: simulated provider EOF', file=sys.stderr)\n"
+                "    raise SystemExit(9)\n"
+                "if step == 1:\n"
+                "    actions = [{'action': 'Recruit', 'def_id': 'Skeleton Archer', 'col': 2, 'row': 6}]\n"
+                "elif step == 2:\n"
+                "    board = prompt.split('BOARD_UNTRUSTED_DATA_BEGIN:\\n', 1)[1].split('\\nBOARD_UNTRUSTED_DATA_END', 1)[0]\n"
+                "    briefing = json.loads(board).get('briefing', '')\n"
+                "    recruited = next(line for line in briefing.splitlines()\n"
+                "                     if line.strip().startswith('id=') and 'pos=(2,6)' in line\n"
+                "                     and 'faction=0' in line)\n"
+                "    unit_id = int(recruited.split()[0].split('=')[1])\n"
+                "    actions = [{'action': 'Move', 'unit_id': unit_id, 'col': 2, 'row': 5}]\n"
+                "else:\n"
+                "    actions = [{'action': 'EndTurn'}]\n"
+                "reply = {'actions': actions, 'intent': 'fixture progress',\n"
+                "         'decisions': [{'orders': [0], 'rules': ['T0'],\n"
+                "                         'expected': 'fixture progress', 'risk': 'none'}]}\n"
+                "print(json.dumps({'text': json.dumps(reply)}))\n",
+                encoding="utf-8")
+            log = root / "match.ndjson"
+            command = shlex.join([sys.executable, str(backend)])
+            args = [sys.executable, "-m", "tools.llm_client", "--driver", str(DRIVER),
+                    "--model-command", command, "--scenario", "big_battle_6",
+                    "--faction0", "undead", "--faction1", "undead", "--gold", "14",
+                    "--seed", "42", "--llm-side", "0", "--max-turns", "3",
+                    "--incremental-turns", "--decision-mode", "focused", "--log", str(log),
+                    "--query-budget-seconds", "10", "--model-timeout", "10", "--turn-timeout", "30"]
+            result = subprocess.run(args, cwd=ROOT, capture_output=True, text=True, timeout=60)
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+            requests = [r for r in records if r.get("type") == "model_request"]
+            self.assertGreaterEqual(sum(
+                1 for r in records if r.get("type") == "driver"
+                and r.get("line", {}).get("turn_boundary") == "partial"), 2)
+            self.assertEqual(len([r for r in records if r.get("type") == "turn_boundary"]), 1)
+            self.assertEqual(len(requests), 4)
+            self.assertTrue(all(isinstance(r.get("side_turn_id"), str) for r in requests))
+            terminal = next(r for r in reversed(records)
+                            if r.get("type") in {"terminal", "model_error"})
+            self.assertEqual(terminal["terminal_class"], "infrastructure")
+            self.assertEqual(terminal["code"], "model_backend_failure")
+            self.assertIsInstance(terminal.get("state_revision"), int)
+            self.assertIsInstance(terminal.get("ended_at"), str)
+            self.assertGreater(terminal.get("wall_ms", 0), 0)
+
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, log, game_id=terminal["conversation_id"])
+            request_rows = conn.execute(
+                "SELECT count(*),count(side_turn_id) FROM model_requests WHERE game_id=?",
+                (game_id,)).fetchone()
+            call_rows = conn.execute(
+                "SELECT count(*),sum(input_tokens),sum(output_tokens),sum(reasoning_tokens),sum(total_tokens) "
+                "FROM model_calls WHERE game_id=?", (game_id,)).fetchone()
+            self.assertEqual(request_rows, (4, 4))
+            self.assertEqual(call_rows, (4, 306, 30, 15, 351))
+            self.assertEqual(conn.execute(
+                "SELECT status FROM side_turns WHERE game_id=? ORDER BY sequence", (game_id,)
+            ).fetchall(), [("ended",), ("open",)])
+            game = conn.execute(
+                "SELECT status,failure_code,ended_at,wall_ms,coverage_json FROM games WHERE game_id=?",
+                (game_id,)).fetchone()
+            self.assertEqual(game[:4], ("complete", "model_backend_failure", terminal["ended_at"], terminal["wall_ms"]))
+            coverage = json.loads(game[4])
+            self.assertEqual(coverage["terminal_class"], "infrastructure")
+            self.assertEqual(coverage["terminal_state_revision"], terminal["state_revision"])
+            self.assertEqual(coverage["linked_requests"], 4)
+            self.assertEqual(coverage["unassigned_requests"], 0)
+            self.assertEqual(coverage["usage_status"], "partial")
+            self.assertEqual(coverage["usage_measured"], "partial")
+            counts = {table: conn.execute(
+                f"SELECT count(*) FROM {table} WHERE game_id=?", (game_id,)).fetchone()[0]
+                      for table in ("snapshots", "events", "model_requests", "model_calls", "side_turns")}
+            usage = conn.execute(
+                "SELECT call_id,status,input_tokens FROM model_calls WHERE game_id=? ORDER BY call_id",
+                (game_id,)).fetchall()
+            import_game(conn, log, game_id=game_id)
+            import_game(conn, log, game_id=game_id)
+            self.assertEqual({table: conn.execute(
+                f"SELECT count(*) FROM {table} WHERE game_id=?", (game_id,)).fetchone()[0]
+                              for table in counts}, counts)
+            self.assertEqual(conn.execute(
+                "SELECT call_id,status,input_tokens FROM model_calls WHERE game_id=? ORDER BY call_id",
+                (game_id,)).fetchall(), usage)
+            verification = verify_history(root / "history.sqlite")
+            self.assertEqual(verification["integrity"], "ok")
+            self.assertEqual(verification["dangling_call_request_links"], 0)
+            self.assertEqual(verification["dangling_event_side_turn_links"], 0)
+            self.assertEqual(verification["foreign_key_errors"], 0)
             conn.close()
 
 
@@ -984,6 +1105,190 @@ class OpenSideTurnTests(unittest.TestCase):
             conn.close()
             bundle = json.loads(Path(build_bundle(str(db), game_id, Path(td) / "b.json")).read_text())
             self.assertEqual(len(bundle["frames"]), frames_expected)
+
+
+class IncrementalAttributionTests(unittest.TestCase):
+    """Stack 3 acceptance: explicit context identity owns partial/open work."""
+
+    def _archive(self, root: Path, *, conflicting: bool = False) -> Path:
+        archive = root / "archive"
+        (archive / "provider" / "requests" / "one").mkdir(parents=True)
+        (archive / "provider" / "requests" / "two").mkdir(parents=True)
+        state0 = {"type": "state", "turn": 1, "active_faction": 0,
+                  "cols": 2, "rows": 2, "terrain": [], "units": [],
+                  "state_revision": 0}
+        state1 = dict(state0, state_revision=1, turn_boundary="partial")
+        state2 = dict(state0, state_revision=2, active_faction=1)
+        rows = [
+            {"type": "metadata", "conversation_id": "incremental",
+             "faction0": "undead", "faction1": "undead", "seed": 7,
+             "llm_side": 0},
+            {"type": "driver", "line": state0},
+            {"type": "side_turn_started", "side_turn_id": "incremental:side_turn:1",
+             "side": 0, "round": 1, "start_revision": 0},
+            {"type": "model_request", "request_id": "incremental:request:1",
+             "status": "completed", "state_revision": 0, "sequence": 1},
+            {"type": "driver", "line": state1},
+            {"type": "model_request", "request_id": "incremental:request:2",
+             "status": "completed", "state_revision": 1, "sequence": 2},
+            {"type": "turn_boundary", "accepted": True,
+             "side_turn_id": "incremental:side_turn:1", "side": 0,
+             "start_revision": 0, "state_revision": 2,
+             "authored_finish_kind": "explicit_done"},
+            {"type": "driver", "line": state2},
+            {"type": "side_turn_started", "side_turn_id": "incremental:side_turn:2",
+             "side": 0, "round": 2, "start_revision": 2},
+            {"type": "model_request", "request_id": "incremental:request:3",
+             "status": "failed", "state_revision": 2, "sequence": 3,
+             "error_code": "model_request_uncertain"},
+            {"type": "model_error", "terminal_class": "infrastructure",
+             "reason": "infrastructure_failure", "code": "model_backend_failure",
+             "ended_at": "2026-01-01T00:00:03Z", "wall_ms": 3000,
+             "state_revision": 2},
+        ]
+        (archive / "match.ndjson").write_text(
+            "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+        contexts = [
+            ("one", "incremental:request:1", "incremental:side_turn:1", 0),
+            ("two", "incremental:request:2", "incremental:side_turn:1", 1),
+            ("bad", "incremental:request:3",
+             "foreign:side_turn:9" if conflicting else "incremental:side_turn:2", 2),
+        ]
+        for name, request_id, side_turn_id, revision in contexts:
+            directory = archive / "provider" / "requests" / name
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "request_context.json").write_text(json.dumps({
+                "harness_request_id": request_id, "conversation_id": "incremental",
+                "side": 0, "side_turn_id": side_turn_id,
+                "state_revision": revision}), encoding="utf-8")
+        (archive / "usage.ndjson").write_text(json.dumps({
+            "game_id": "incremental", "call_id": "call-1", "request_id": "incremental:request:3",
+            "provider": "offline", "transport": "fixture", "status": "failed",
+            "error_code": "timeout", "record_kind": "final"}) + "\n", encoding="utf-8")
+        return archive
+
+    def test_contexts_link_intermediate_and_open_requests_and_reimport(self):
+        with tempfile.TemporaryDirectory() as td:
+            archive = self._archive(Path(td))
+            db = Path(td) / "history.sqlite"
+            conn = open_history(db)
+            game_id = import_game(conn, archive, game_id="incremental-game")
+            self.assertEqual(conn.execute(
+                "SELECT count(*),count(side_turn_id) FROM model_requests WHERE game_id=?",
+                (game_id,)).fetchone(), (3, 3))
+            self.assertEqual(conn.execute(
+                "SELECT status,ended_at,failure_code FROM games WHERE game_id=?", (game_id,)
+            ).fetchone(), ("complete", "2026-01-01T00:00:03Z", "model_backend_failure"))
+            coverage = json.loads(conn.execute(
+                "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+            self.assertEqual(coverage["linked_requests"], 3)
+            self.assertEqual(coverage["unassigned_requests"], 0)
+            self.assertEqual(coverage["usage_status"], "partial")
+            before = conn.execute(
+                "SELECT request_id,side_turn_id FROM model_requests ORDER BY sequence").fetchall()
+            import_game(conn, archive, game_id=game_id)
+            self.assertEqual(conn.execute("SELECT count(*) FROM model_requests").fetchone()[0], 3)
+            self.assertEqual(conn.execute(
+                "SELECT request_id,side_turn_id FROM model_requests ORDER BY sequence").fetchall(), before)
+            conn.close()
+
+    def test_foreign_context_identity_stays_unassigned(self):
+        with tempfile.TemporaryDirectory() as td:
+            archive = self._archive(Path(td), conflicting=True)
+            conn = open_history(Path(td) / "history.sqlite")
+            game_id = import_game(conn, archive, game_id="incremental-conflict")
+            row = conn.execute(
+                "SELECT side_turn_id FROM model_requests WHERE request_id='incremental:request:3'"
+            ).fetchone()
+            self.assertIsNone(row[0])
+            coverage = json.loads(conn.execute(
+                "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+            self.assertEqual(coverage["unassigned_requests"], 1)
+            self.assertTrue(any("foreign_side_turn" in gap for gap in coverage["gaps"]))
+            conn.close()
+
+
+class ForeignIdentitySafetyTests(unittest.TestCase):
+    """Foreign request identities remain visible but never become links."""
+
+    @staticmethod
+    def _archive(root: Path, conversation: str, request_id: str) -> Path:
+        archive = root / conversation
+        archive.mkdir()
+        rows = [
+            {"type": "metadata", "conversation_id": conversation, "llm_side": 0},
+            {"type": "driver", "line": {"type": "state", "state_revision": 0,
+             "turn": 1, "active_faction": 0}},
+            {"type": "model_request", "request_id": request_id,
+             "state_revision": 0, "status": "completed"},
+            {"type": "terminal", "reason": "max_turns"},
+        ]
+        (archive / "match.ndjson").write_text(
+            "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+        return archive
+
+    def test_foreign_request_is_unassigned_and_foreign_call_is_counted_unlinked(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            first = self._archive(root, "first", "shared-request")
+            second = self._archive(root, "second", "shared-request")
+            (second / "usage.ndjson").write_text(json.dumps(_sidecar_row(
+                game_id="second", call_id="call-2", request_id="shared-request",
+                status="completed", input_tokens=7, output_tokens=3)) + "\n",
+                encoding="utf-8")
+            conn = open_history(root / "history.sqlite")
+            import_game(conn, first, game_id="first-game")
+            game_id = import_game(conn, second, game_id="second-game")
+            request_coverage = json.loads(conn.execute(
+                "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+            self.assertEqual((request_coverage["request_count"],
+                              request_coverage["linked_requests"],
+                              request_coverage["unassigned_requests"]), (1, 0, 1))
+            self.assertTrue(any("belongs_to:first-game" in gap
+                                for gap in request_coverage["gaps"]))
+            call = conn.execute(
+                "SELECT request_id,input_tokens,output_tokens,linkage_evidence,"
+                "normalization_gaps_json FROM model_calls WHERE game_id=?", (game_id,)
+            ).fetchone()
+            self.assertIsNone(call[0])
+            self.assertEqual(call[1:3], (7, 3))
+            self.assertIn("request_link:shared-request:belongs_to:first-game", call[3])
+            self.assertIn("request_link:shared-request:belongs_to:first-game", call[4])
+            self.assertTrue(any("usage_conflict" in conflict
+                                and "shared-request" in conflict
+                                for conflict in request_coverage["conflicts"]))
+            verification = verify_history(root / "history.sqlite")
+            self.assertEqual(verification["dangling_call_request_links"], 0)
+            self.assertEqual(verification["cross_game_call_links"], 0)
+            conn.close()
+
+    def test_explicit_foreign_side_turn_has_conflict_evidence(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "archive"
+            root.mkdir()
+            rows = [
+                {"type": "metadata", "conversation_id": "foreign-turn", "llm_side": 0},
+                {"type": "driver", "line": {"type": "state", "state_revision": 0,
+                 "turn": 1, "active_faction": 0}},
+                {"type": "side_turn_started", "side_turn_id": "known-turn",
+                 "side": 0, "start_revision": 0},
+                {"type": "model_request", "request_id": "foreign-request",
+                 "side_turn_id": "foreign-turn:9", "state_revision": 0},
+                {"type": "terminal", "reason": "max_turns"},
+            ]
+            (root / "match.ndjson").write_text(
+                "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+            conn = open_history(Path(td) / "history.sqlite")
+            game_id = import_game(conn, root, game_id="foreign-turn-game")
+            self.assertIsNone(conn.execute(
+                "SELECT side_turn_id FROM model_requests WHERE request_id='foreign-request'"
+            ).fetchone()[0])
+            coverage = json.loads(conn.execute(
+                "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+            self.assertEqual(coverage["unassigned_requests"], 1)
+            self.assertTrue(any("foreign_side_turn:foreign-turn:9" in gap
+                                for gap in coverage["gaps"]))
+            conn.close()
 
 
 FIREWORKS_FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "backfill_fireworks_ok" / "requests"
