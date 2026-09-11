@@ -103,7 +103,7 @@ def _reply_for(prompt: str, choices_mode: bool = False) -> dict:
                 handle = _tool_handle(prompt, (2, 5))
                 if handle:
                     return {"choices": [handle], "intent": "opening move by handle"}
-                return {"tool": "inspect_unit", "unit_id": recruited["id"]}
+                return {"tool": "inspect_units", "unit_ids": [recruited["id"]]}
             return emit({"action": "Move", "unit_id": recruited["id"], "col": 2, "row": 5},
                         "move", unit_id=recruited["id"], col=2, row=5)
         return {"actions": [{"action": "EndTurn"}], "intent": "opening complete"}
@@ -119,7 +119,7 @@ def _reply_for(prompt: str, choices_mode: bool = False) -> dict:
                 handle = _tool_handle(prompt, (2, 4))
                 if handle:
                     return {"choices": [handle], "intent": "village move by handle"}
-                return {"tool": "inspect_unit", "unit_id": scout["id"]}
+                return {"tool": "inspect_units", "unit_ids": [scout["id"]]}
             return emit({"action": "Move", "unit_id": scout["id"], "col": dest[0], "row": dest[1]},
                         "move", unit_id=scout["id"], col=dest[0], row=dest[1])
         return {"actions": [{"action": "EndTurn"}], "intent": "village captured"}
@@ -139,7 +139,7 @@ def _reply_for(prompt: str, choices_mode: bool = False) -> dict:
             if inspected:
                 return {"actions": [inspected], "intent": "answer recruiter threat"}
             if "TOOL_RESULT_UNTRUSTED_DATA_BEGIN" not in prompt and "CHOICES " not in prompt:
-                return {"tool": "inspect_unit", "unit_id": attacker}
+                return {"tool": "inspect_units", "unit_ids": [attacker]}
             # The inspection result has already established the live threat;
             # submit the same factual attack once rather than re-inspecting.
         return emit({"action": "Attack", "attacker_id": attacker, "defender_id": target}, "attack",

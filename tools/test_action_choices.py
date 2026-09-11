@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from typing import Any
 
 from . import action_choices as ac
 
@@ -201,6 +202,204 @@ class ActionChoicesTests(unittest.TestCase):
         all_choices = ac.extract_available_choices(state, "g1", 1)
         # 1 recruit + 1 standing attack + 2 advancement choices (both index and def_id)
         self.assertEqual(len(all_choices), 4)
+
+
+class InspectUnitsRequestValidationTests(unittest.TestCase):
+    """Stack 4: structural validation of the `inspect_units` friendly batch tool."""
+
+    def test_single_id_accepted(self):
+        self.assertEqual(
+            ac.validate_inspect_units_request({"tool": "inspect_units", "unit_ids": [12]}),
+            [12],
+        )
+
+    def test_eight_ids_accepted(self):
+        ids = list(range(1, 9))
+        self.assertEqual(
+            ac.validate_inspect_units_request({"tool": "inspect_units", "unit_ids": ids}),
+            ids,
+        )
+
+    def test_wrong_tool_name_rejected(self):
+        with self.assertRaises(ValueError):
+            ac.validate_inspect_units_request({"tool": "inspect_unit", "unit_ids": [1]})
+
+    def test_extra_field_rejected(self):
+        with self.assertRaises(ValueError):
+            ac.validate_inspect_units_request({"tool": "inspect_units", "unit_ids": [1], "extra": True})
+
+    def test_empty_list_rejected(self):
+        with self.assertRaises(ValueError) as ctx:
+            ac.validate_inspect_units_request({"tool": "inspect_units", "unit_ids": []})
+        self.assertIn("1 to 8", str(ctx.exception))
+
+    def test_nine_ids_rejected(self):
+        with self.assertRaises(ValueError) as ctx:
+            ac.validate_inspect_units_request({"tool": "inspect_units", "unit_ids": list(range(9))})
+        self.assertIn("1 to 8", str(ctx.exception))
+
+    def test_duplicate_ids_rejected(self):
+        with self.assertRaises(ValueError) as ctx:
+            ac.validate_inspect_units_request({"tool": "inspect_units", "unit_ids": [12, 12]})
+        self.assertIn("unique", str(ctx.exception))
+
+    def test_malformed_ids_rejected(self):
+        for bad in ([1, "2"], [1, True], [1, -1], [1, 2**32], [1, None], "not-a-list"):
+            with self.assertRaises(ValueError):
+                ac.validate_inspect_units_request({"tool": "inspect_units", "unit_ids": bad})
+
+    def test_not_a_list_rejected(self):
+        with self.assertRaises(ValueError):
+            ac.validate_inspect_units_request({"tool": "inspect_units", "unit_ids": 12})
+
+
+class _ScriptedExchange:
+    """A fake driver `exchange` callable that replays scripted responses by unit_id.
+
+    Response bodies mirror the exact shapes greedy_driver.rs's `inspect_unit`
+    query produces, so tests here exercise the real driver contract without
+    spawning a subprocess.
+    """
+
+    def __init__(self, by_unit_id: dict[int, dict[str, Any]], calls: list[int] | None = None) -> None:
+        self.by_unit_id = by_unit_id
+        self.calls = calls if calls is not None else []
+
+    def __call__(self, request: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append(request["unit_id"])
+        return self.by_unit_id[request["unit_id"]]
+
+
+def _ok_inspection(unit_id: int, revision: int) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "state_revision": revision,
+        "body": {
+            "unit_id": unit_id,
+            "origins": [
+                {"col": 1, "row": 1, "current": True, "movable": False, "engagements": []},
+                {"col": 2, "row": 1, "current": False, "movable": True, "engagements": []},
+            ],
+        },
+    }
+
+
+def _dead_inspection(unit_id: int) -> dict[str, Any]:
+    return {"ok": False, "code": "UnitNotFound", "message": "unit is unavailable"}
+
+
+def _enemy_inspection() -> dict[str, Any]:
+    return {"ok": False, "code": "unauthorized_unit",
+            "message": "only model-side units may be inspected"}
+
+
+def _stale_inspection() -> dict[str, Any]:
+    return {"ok": False, "code": "stale_state",
+            "message": "requested state revision is no longer current", "state_revision": 999}
+
+
+class QueryInspectUnitsFanOutTests(unittest.TestCase):
+    """Stack 4: bounded Python fan-out over the existing single-unit driver query."""
+
+    def test_eight_units_one_query_per_unit_in_order(self):
+        ids = list(range(1, 9))
+        exchange = _ScriptedExchange({uid: _ok_inspection(uid, 5) for uid in ids})
+        results = ac.query_inspect_units(exchange, ids, 5)
+        self.assertEqual(exchange.calls, ids)
+        self.assertEqual([r["unit_id"] for r in results], ids)
+
+    def test_single_id_works_through_same_interface(self):
+        exchange = _ScriptedExchange({12: _ok_inspection(12, 5)})
+        results = ac.query_inspect_units(exchange, [12], 5)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["unit_id"], 12)
+
+    def test_dead_unit_aborts_whole_request(self):
+        exchange = _ScriptedExchange({
+            12: _ok_inspection(12, 5),
+            13: _dead_inspection(13),
+        })
+        with self.assertRaises(ValueError) as ctx:
+            ac.query_inspect_units(exchange, [12, 13], 5)
+        self.assertIn("13", str(ctx.exception))
+        self.assertIn("unit is unavailable", str(ctx.exception))
+
+    def test_enemy_unit_aborts_whole_request(self):
+        exchange = _ScriptedExchange({
+            12: _ok_inspection(12, 5),
+            24: _enemy_inspection(),
+        })
+        with self.assertRaises(ValueError) as ctx:
+            ac.query_inspect_units(exchange, [12, 24], 5)
+        self.assertIn("24", str(ctx.exception))
+        self.assertIn("only model-side units may be inspected", str(ctx.exception))
+
+    def test_stale_revision_aborts_whole_request(self):
+        exchange = _ScriptedExchange({12: _stale_inspection()})
+        with self.assertRaises(RuntimeError) as ctx:
+            ac.query_inspect_units(exchange, [12], 338)
+        self.assertIn("no longer current", str(ctx.exception))
+
+    def test_successful_reply_with_wrong_revision_aborts_whole_request(self):
+        exchange = _ScriptedExchange({12: _ok_inspection(12, 6)})
+        with self.assertRaises(RuntimeError) as ctx:
+            ac.query_inspect_units(exchange, [12], 5)
+        self.assertIn("revision mismatch", str(ctx.exception))
+
+    def test_no_calls_for_ids_after_a_hard_failure(self):
+        # Enemy id 24 is queried second; id 30 must never be queried because the
+        # whole request is aborted -- no partial success dressed up as a full result.
+        calls: list[int] = []
+        exchange = _ScriptedExchange({12: _ok_inspection(12, 5), 24: _enemy_inspection(),
+                                       30: _ok_inspection(30, 5)}, calls=calls)
+        with self.assertRaises(ValueError):
+            ac.query_inspect_units(exchange, [12, 24, 30], 5)
+        self.assertEqual(calls, [12, 24])
+
+    def test_member_preflight_rejects_enemy_and_dead_before_query(self):
+        state = {"units": [
+            {"id": 12, "faction": 0, "hp": 20},
+            {"id": 24, "faction": 1, "hp": 20},
+            {"id": 13, "faction": 0, "hp": 0},
+        ]}
+        calls: list[int] = []
+        exchange = _ScriptedExchange({}, calls=calls)
+        for bad_id in (24, 13):
+            with self.subTest(bad_id=bad_id), self.assertRaises(ValueError):
+                ac.validate_friendly_inspect_units([12, bad_id], state, 0)
+            self.assertEqual(calls, [])
+
+
+class ExtractUnitsInspectionChoicesTests(unittest.TestCase):
+    """Stack 4: union choice handles from a grouped inspection, deduplicated by handle."""
+
+    def test_choices_from_multiple_units_are_grouped_and_unioned(self):
+        results = [
+            {"unit_id": 12, "origins": [{"col": 2, "row": 6, "current": False, "movable": True, "engagements": []}]},
+            {"unit_id": 13, "origins": [{"col": 3, "row": 6, "current": False, "movable": True, "engagements": []}]},
+        ]
+        choices = ac.extract_units_inspection_choices(results, "g1", 5)
+        self.assertEqual(len(choices), 2)
+        self.assertEqual({c.metadata["unit_id"] for c in choices}, {12, 13})
+        for choice in choices:
+            self.assertEqual(ac.parse_handle(choice.handle)[0], 5)
+
+    def test_unavailable_unit_contributes_no_choices(self):
+        results = [
+            {"available": False, "unit_id": 13, "reason": "unit is unavailable"},
+            {"unit_id": 12, "origins": [{"col": 2, "row": 6, "current": False, "movable": True, "engagements": []}]},
+        ]
+        choices = ac.extract_units_inspection_choices(results, "g1", 5)
+        self.assertEqual(len(choices), 1)
+        self.assertEqual(choices[0].metadata["unit_id"], 12)
+
+    def test_duplicate_handles_across_units_are_deduplicated(self):
+        # Two identical per-unit inspection bodies for the same unit_id would
+        # otherwise produce the same canonical key/handle; the union must not
+        # register it twice.
+        unit_body = {"unit_id": 12, "origins": [{"col": 2, "row": 6, "current": False, "movable": True, "engagements": []}]}
+        choices = ac.extract_units_inspection_choices([unit_body, dict(unit_body)], "g1", 5)
+        self.assertEqual(len(choices), 1)
 
 
 if __name__ == "__main__":

@@ -73,7 +73,7 @@ class ActionChoicesIntegrationTests(unittest.TestCase):
                 "    for line in briefing.splitlines():\n"
                 "        if 'pos=(2,6)' in line and 'faction=0' in line:\n"
                 "            new_uid = int(line.split()[0].split('=')[1])\n"
-                "    response = {'tool': 'inspect_unit', 'unit_id': new_uid}\n"
+                "    response = {'tool': 'inspect_units', 'unit_ids': [new_uid]}\n"
                 "elif step == 3:\n"
                 "    # Tool followup contains CHOICES in prompt tool result\n"
                 "    lines = prompt.splitlines()\n"
@@ -154,7 +154,7 @@ class ActionChoicesIntegrationTests(unittest.TestCase):
                 "    response = {'choices': [atk['handle']], 'decisions': [{'orders': [0], 'rules': ['T2'], 'expected': 'standing attack', 'risk': 'none'}]}\n"
                 "elif step == 2:\n"
                 "    # Inspect U17 for move-attack\n"
-                "    response = {'tool': 'inspect_unit', 'unit_id': 17}\n"
+                "    response = {'tool': 'inspect_units', 'unit_ids': [17]}\n"
                 "elif step == 3:\n"
                 "    lines = prompt.splitlines()\n"
                 "    choices_line = next(l for l in lines if l.startswith('CHOICES '))\n"
@@ -300,9 +300,9 @@ class ActionChoicesIntegrationTests(unittest.TestCase):
                 "    f.write(json.dumps({'prompt': prompt}) + '\\n')\n"
                 "step = sum(1 for _ in open(capture, encoding='utf-8'))\n"
                 "if step == 1:\n"
-                "    response = {'tool': 'inspect_unit', 'unit_id': 8}\n"
+                "    response = {'tool': 'inspect_units', 'unit_ids': [8, 3]}\n"
                 "elif step == 2:\n"
-                "    response = {'tool': 'inspect_unit', 'unit_id': 3}\n"
+                "    response = {'tool': 'inspect_units', 'unit_ids': [8, 3]}\n"
                 "elif step == 3:\n"
                 "    lines = prompt.splitlines()\n"
                 "    choices_lines = [l for l in lines if l.startswith('CHOICES ')]\n"
@@ -349,6 +349,97 @@ class ActionChoicesIntegrationTests(unittest.TestCase):
             # Verify the repaired batch was forwarded and accepted
             repairs = [r for r in records if r.get("type") == "action_repair"]
             self.assertEqual(len(repairs), 1)
+
+    def test_inspect_units_group_in_one_response(self):
+        """6. (Stack 4) Inspect eight friendly units in one tool call, then submit a
+        legal partial move batch built from the returned grouped options.
+
+        This exercises the player-facing group tool through the real driver.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            ckpt = _prepare_checkpoint(REVISION_338_FIXTURE, root)
+            backend = root / "backend.py"
+            captures = root / "captures.ndjson"
+            friendly_ids = [1, 3, 4, 5, 6, 7, 8, 10]
+            backend.write_text(
+                "import json, sys\n"
+                "capture = sys.argv[1]\n"
+                "prompt = sys.stdin.read()\n"
+                "with open(capture, 'a', encoding='utf-8') as f:\n"
+                "    f.write(json.dumps({'prompt': prompt}) + '\\n')\n"
+                "step = sum(1 for _ in open(capture, encoding='utf-8'))\n"
+                f"friendly_ids = {friendly_ids!r}\n"
+                "if step == 1:\n"
+                "    response = {'tool': 'inspect_units', 'unit_ids': friendly_ids}\n"
+                "elif step == 2:\n"
+                "    lines = prompt.splitlines()\n"
+                "    choices_lines = [l for l in lines if l.startswith('CHOICES ')]\n"
+                "    move_item = None\n"
+                "    for cl in choices_lines:\n"
+                "        for item in cl.split('CHOICES ', 1)[1].split('; '):\n"
+                "            if ': Move U' in item and ' and attack' not in item:\n"
+                "                move_item = item\n"
+                "                break\n"
+                "        if move_item:\n"
+                "            break\n"
+                "    with open(capture + '.coords_meta', 'w') as sf:\n"
+                "        sf.write(json.dumps({'choices_line_count': len(choices_lines)}))\n"
+                "    if move_item is not None:\n"
+                "        handle = move_item.split(':', 1)[0].strip()\n"
+                "        response = {'choices': [handle], 'decisions': [{'orders': [0], 'rules': ['T0'], 'expected': 'move', 'risk': 'none'}]}\n"
+                "    else:\n"
+                "        response = {'actions': [{'action': 'DoneWithImportantMoves'}], 'decisions': [{'orders': [0], 'rules': ['T7'], 'expected': 'done', 'risk': 'none'}]}\n"
+                "else:\n"
+                "    response = {'actions': [{'action': 'DoneWithImportantMoves'}], 'decisions': [{'orders': [0], 'rules': ['T7'], 'expected': 'done', 'risk': 'none'}]}\n"
+                "print(json.dumps({'text': json.dumps(response)}))\n",
+                encoding="utf-8",
+            )
+            log = root / "match_inspect_units.ndjson"
+            cmd = [
+                sys.executable, "-m", "tools.llm_client",
+                "--driver", str(DRIVER),
+                "--model-command", shlex.join([sys.executable, str(backend), str(captures)]),
+                "--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
+                "--gold", "300", "--seed", "2002", "--llm-side", "0", "--max-turns", "15",
+                "--incremental-turns",
+                "--decision-mode", "focused",
+                "--action-encoding", "choices",
+                "--resume-checkpoint", str(ckpt),
+                "--log", str(log),
+            ]
+            res = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT))
+            self.assertEqual(res.returncode, 0, f"inspect_units test failed: {res.stderr}\n{res.stdout}")
+
+            meta = json.loads((captures.with_suffix(captures.suffix + ".coords_meta")).read_text(encoding="utf-8"))
+            # Grouped by unit: more than one unit's CHOICES line appeared from a
+            # single inspect_units tool call covering all eight friendly ids.
+            self.assertGreater(meta["choices_line_count"], 1)
+
+            records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+            forwarded = [r for r in records if r.get("type") == "forwarded_orders"]
+            self.assertEqual(len(forwarded), 2)
+            self.assertEqual(forwarded[0]["orders"][0]["action"], "Move")
+            self.assertIn(forwarded[0]["orders"][0]["unit_id"], friendly_ids)
+            self.assertEqual(forwarded[1]["orders"][0]["action"], "DoneWithImportantMoves")
+
+            terminal = next(r for r in records if r.get("type") == "terminal")
+            # Exactly one player tool allowance was spent inspecting all eight units.
+            self.assertEqual(terminal.get("tool_calls_by_name", {}).get("inspect_units"), 1)
+            self.assertNotIn("inspect_unit", terminal.get("tool_calls_by_name", {}))
+
+            # Pin the accounting asymmetry: one tool allowance, but eight real
+            # underlying driver queries (bounded Python fan-out over the
+            # existing single-unit query, not a new batched Rust query). A
+            # player planning against a tight query budget must not assume
+            # one tool call is one unit of driver work -- see the query-budget
+            # note on the repair-loop equivalent of this test.
+            inspect_unit_queries = [
+                r for r in records if r.get("type") == "query"
+                and isinstance(r.get("line", {}).get("body"), dict)
+                and "destination_threats" in r["line"]["body"]
+            ]
+            self.assertEqual(len(inspect_unit_queries), len(friendly_ids))
 
     def test_catalog_import_and_idempotence(self):
         """5. Reimport of choices game into SQLite catalog is idempotent."""

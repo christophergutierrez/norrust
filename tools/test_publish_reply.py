@@ -48,7 +48,7 @@ class PublishReplyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             directory = Path(raw)
             request_id = _make_request(directory)
-            text = json.dumps({"tool": "inspect_unit", "unit_id": 12})
+            text = json.dumps({"tool": "inspect_units", "unit_ids": [12]})
             pending = _pending(directory, text)
             publish_reply(pending, directory, request_id)
             self.assertEqual((directory / f"reply_{request_id}.txt").read_text(encoding="utf-8"), text)

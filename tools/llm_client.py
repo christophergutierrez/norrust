@@ -28,18 +28,31 @@ try:
     from .response_parsing import parse_action_response, ResponseParseError
     from .model_identity import classify_model_identity
     from .game_token_budget import measured_game_budget
-    from .action_choices import ChoiceRegistry, extract_available_choices, extract_inspection_choices, Choice
+    from .action_choices import (ChoiceRegistry, extract_available_choices,
+                                 validate_inspect_units_request, validate_friendly_inspect_units,
+                                 query_inspect_units,
+                                 extract_units_inspection_choices)
 except ImportError:  # pragma: no cover - direct script compatibility
-    from turn_agenda import agenda_from_response, compact_agenda, annotate_agenda_unit_status
-    from decision_annotations import annotation_for_response, inapplicable_annotation
-    from request_journal import append_request_milestone
-    from request_recovery import recoverable_answer
-    from output_limits import (INITIAL_OUTPUT_LIMIT, MAX_OUTPUT_LIMIT, OutputLimitExceeded,
-                               OutputLimitPolicy, combined_usage)
-    from response_parsing import parse_action_response, ResponseParseError
-    from model_identity import classify_model_identity
-    from game_token_budget import measured_game_budget
-    from action_choices import ChoiceRegistry, extract_available_choices, extract_inspection_choices, Choice
+    # Running `python tools/llm_client.py` puts only the tools directory on
+    # sys.path. Import the package modules from the repository root so their
+    # own relative imports keep working; importing each file as a top-level
+    # module would fail in turn_agenda, output_limits, and their dependencies.
+    _repo_root = str(Path(__file__).resolve().parents[1])
+    if _repo_root not in sys.path:
+        sys.path.insert(0, _repo_root)
+    from tools.turn_agenda import agenda_from_response, compact_agenda, annotate_agenda_unit_status
+    from tools.decision_annotations import annotation_for_response, inapplicable_annotation
+    from tools.request_journal import append_request_milestone
+    from tools.request_recovery import recoverable_answer
+    from tools.output_limits import (INITIAL_OUTPUT_LIMIT, MAX_OUTPUT_LIMIT, OutputLimitExceeded,
+                                     OutputLimitPolicy, combined_usage)
+    from tools.response_parsing import parse_action_response, ResponseParseError
+    from tools.model_identity import classify_model_identity
+    from tools.game_token_budget import measured_game_budget
+    from tools.action_choices import (ChoiceRegistry, extract_available_choices,
+                                      validate_inspect_units_request, validate_friendly_inspect_units,
+                                      query_inspect_units,
+                                      extract_units_inspection_choices)
 
 ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "Engage", "EndTurn", "Advance", "Resign",
            "DoneWithImportantMoves", "FinishWithGreedy"}
@@ -896,26 +909,6 @@ def query_bounded_comparison(exchange, candidates: list[list[dict[str, Any]]],
     return body
 
 
-def validate_inspect_unit_request(request: dict[str, Any]) -> int:
-    if set(request) != {"tool", "unit_id"} or request.get("tool") != "inspect_unit":
-        raise ValueError("inspect_unit request must contain only tool and unit_id")
-    unit_id = request.get("unit_id")
-    if not isinstance(unit_id, int) or isinstance(unit_id, bool) or not 0 <= unit_id <= 2**32 - 1:
-        raise ValueError("inspect_unit unit_id must be a uint32")
-    return unit_id
-
-
-def query_inspect_unit(exchange, unit_id: int, state_revision: int) -> dict[str, Any]:
-    response = exchange({"action": "Query", "what": "inspect_unit",
-                         "state_revision": state_revision, "unit_id": unit_id})
-    if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
-        message = response.get("message", "inspection query failed") if isinstance(response, dict) else "invalid inspection response"
-        if isinstance(message, str) and "unavailable" in message.lower():
-            return {"available": False, "unit_id": unit_id, "reason": message}
-        raise RuntimeError(f"query_error: inspect_unit: {message}")
-    return response["body"]
-
-
 def compact_unit_inspection(unit: dict[str, Any], choices: Optional[list[Any]] = None) -> str:
     if unit.get("available") is False:
         return "INSPECT_UNIT unavailable unit=%s reason=%s" % (
@@ -1000,6 +993,23 @@ def query_inspect_targets(exchange, unit_ids: list[int], state_revision: int) ->
     if not isinstance(body, dict) or not isinstance(body.get("targets"), list):
         raise RuntimeError("query_error: inspect_targets: invalid target list")
     return body["targets"]
+
+
+def compact_units_inspection(units: list[dict[str, Any]], choices: Optional[list[Any]] = None) -> str:
+    """Render a whole inspected group, grouped by unit.
+
+    One model response per unit was the cost that made a player hand-derive
+    paths instead: the diagnosed game reconstructed 22 moves by hand and failed
+    preflight. Formatting reuses the single-unit renderer so the group view and
+    the individual view cannot drift apart.
+    """
+    per_unit: dict[Any, list[Any]] = {}
+    for choice in (choices or []):
+        unit_id = choice.metadata.get("unit_id") if hasattr(choice, "metadata") else None
+        per_unit.setdefault(unit_id, []).append(choice)
+    blocks = [compact_unit_inspection(unit, choices=per_unit.get(unit.get("unit_id")))
+              for unit in units]
+    return "INSPECT_UNITS n=%d\n" % len(units) + "\n---\n".join(blocks)
 
 
 def compact_targets_inspection(targets: list[dict[str, Any]]) -> str:
@@ -1310,7 +1320,7 @@ def compact_tactical_surface(surface: dict[str, Any]) -> str:
         target_text = ",".join("U%s" % target_id for target_id in sorted(target_ids)) or "-"
         fields.extend(("move_n=%s" % move_count, "targets=%s" % target_text,
                        "current_attacks=%s" % ("|".join(current_attacks) or "-"),
-                       "inspect=inspect_unit"))
+                       "inspect=inspect_units"))
         lines.append(" ".join(fields))
     coverage = tactical_attack_coverage(surface)
     available = ",".join("U%s" % unit_id for unit_id in sorted(coverage["available"])) or "-"
@@ -2007,7 +2017,9 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "- OPEN_THREAT removes unit blockers that could move or die: a conservative geometry bound, not an executable batch. "
         "EXPOSURE gives the same direct/open facts for friendly units. RESCUE is a bounded priority list of recruiter then "
         "directly threatened wounded units. E income projects current ownership; E vacate lists legal off-castle destinations, not recommendations.\n"
-        "- Request detailed friendly origins and DESTINATION_DANGER with {\"tool\":\"inspect_unit\",\"unit_id\":N}; "
+        "- Request detailed friendly origins and DESTINATION_DANGER, grouped by unit, with "
+        "{\"tool\":\"inspect_units\",\"unit_ids\":[N,...]} (one to eight unique friendly living ids; "
+        "a one-element list inspects one unit, and the whole group costs a single tool call); "
         "enemy attack coverage with {\"tool\":\"inspect_target\",\"unit_id\":N} or "
         "{\"tool\":\"inspect_targets\",\"unit_ids\":[N,...]} (at most eight); hex coverage with "
         "{\"tool\":\"inspect_hex\",\"col\":C,\"row\":R,\"phase\":\"current|next_opponent_turn\"}.\n"
@@ -3953,6 +3965,13 @@ def run(args: argparse.Namespace) -> int:
                             tool = decoded.get("tool")
                             if tool_calls_this_turn >= metadata["max_tool_calls_per_turn"]:
                                 raise ValueError("tool call budget exhausted")
+                            # Charge the player's tool request before running
+                            # its validation/query. Failed requests consume the
+                            # same allowance as successful ones; the underlying
+                            # driver query count remains separately measured.
+                            tool_calls_this_turn += 1
+                            tool_name = tool if isinstance(tool, str) else str(tool)
+                            metadata["tool_calls_by_name"][tool_name] = metadata["tool_calls_by_name"].get(tool_name, 0) + 1
                             if tool == "preview_batch":
                                 if preview_candidates is not None:
                                     raise ValueError("preview_batch may be requested only once per turn")
@@ -3978,19 +3997,6 @@ def run(args: argparse.Namespace) -> int:
                                         "candidate_count": len(preview_candidates),
                                         "result_bytes": len(rendered.encode()),
                                         "candidates": preview_candidates, "body": result})
-                            elif tool == "inspect_unit":
-                                unit_id = validate_inspect_unit_request(decoded)
-                                result = query_inspect_unit(
-                                    exchange, unit_id, int(state.get("state_revision", 0)))
-                                insp_choices = []
-                                if getattr(args, "action_encoding", "coordinates") == "choices":
-                                    insp_choices = extract_inspection_choices(
-                                        result, metadata.get("conversation_id"), int(state.get("state_revision", 0)))
-                                    choice_registry.register_all(insp_choices)
-                                rendered = compact_unit_inspection(result, choices=insp_choices)
-                                record({"type": "tool_result", "tool": tool,
-                                        "request": decoded, "result_bytes": len(rendered.encode()),
-                                        "body": result})
                             elif tool == "inspect_target":
                                 unit_id = validate_inspect_target_request(decoded)
                                 result = query_inspect_target(
@@ -3999,6 +4005,22 @@ def run(args: argparse.Namespace) -> int:
                                 record({"type": "tool_result", "tool": tool,
                                         "request": decoded, "result_bytes": len(rendered.encode()),
                                         "body": result})
+                            elif tool == "inspect_units":
+                                unit_ids = validate_inspect_units_request(decoded)
+                                validate_friendly_inspect_units(
+                                    unit_ids, state, args.llm_side)
+                                result = query_inspect_units(
+                                    exchange, unit_ids, int(state.get("state_revision", 0)))
+                                insp_choices = []
+                                if getattr(args, "action_encoding", "coordinates") == "choices":
+                                    insp_choices = extract_units_inspection_choices(
+                                        result, metadata.get("conversation_id"),
+                                        int(state.get("state_revision", 0)))
+                                    choice_registry.register_all(insp_choices)
+                                rendered = compact_units_inspection(result, choices=insp_choices)
+                                record({"type": "tool_result", "tool": tool,
+                                        "request": decoded, "result_bytes": len(rendered.encode()),
+                                        "body": {"units": result}})
                             elif tool == "inspect_targets":
                                 unit_ids = validate_inspect_targets_request(decoded)
                                 result = query_inspect_targets(
@@ -4017,8 +4039,6 @@ def run(args: argparse.Namespace) -> int:
                                         "body": result})
                             else:
                                 raise ValueError("unknown tool request")
-                            tool_calls_this_turn += 1
-                            metadata["tool_calls_by_name"][tool] = metadata["tool_calls_by_name"].get(tool, 0) + 1
                             tool_context += ("\nMODEL_TOOL_REQUEST_UNTRUSTED_DATA_BEGIN:\n" +
                                              current_reply.text +
                                              "\nMODEL_TOOL_REQUEST_UNTRUSTED_DATA_END\n" +
@@ -4402,19 +4422,32 @@ def run(args: argparse.Namespace) -> int:
                                     "engine_error": rejected_error})
                             decoded_repair = parse_action_response(repaired.text)
                             if isinstance(decoded_repair, dict) and decoded_repair.get("tool") in {
-                                "inspect_unit", "inspect_target", "inspect_targets", "inspect_hex"
+                                "inspect_units", "inspect_target", "inspect_targets", "inspect_hex"
                             }:
                                 tool = decoded_repair["tool"]
-                                if tool == "inspect_unit":
-                                    unit_id = validate_inspect_unit_request(decoded_repair)
-                                    result = query_inspect_unit(
-                                        exchange, unit_id, int(state.get("state_revision", 0)))
-                                    rendered = compact_unit_inspection(result)
-                                elif tool == "inspect_target":
+                                if tool_calls_this_turn >= metadata["max_tool_calls_per_turn"]:
+                                    raise ValueError("tool call budget exhausted")
+                                tool_calls_this_turn += 1
+                                tool_name = tool if isinstance(tool, str) else str(tool)
+                                metadata["tool_calls_by_name"][tool_name] = metadata["tool_calls_by_name"].get(tool_name, 0) + 1
+                                if tool == "inspect_target":
                                     unit_id = validate_inspect_target_request(decoded_repair)
                                     result = query_inspect_target(
                                         exchange, unit_id, int(state.get("state_revision", 0)))
                                     rendered = compact_target_inspection(result)
+                                elif tool == "inspect_units":
+                                    unit_ids = validate_inspect_units_request(decoded_repair)
+                                    validate_friendly_inspect_units(
+                                        unit_ids, state, args.llm_side)
+                                    result = query_inspect_units(
+                                        exchange, unit_ids, int(state.get("state_revision", 0)))
+                                    insp_choices = []
+                                    if getattr(args, "action_encoding", "coordinates") == "choices":
+                                        insp_choices = extract_units_inspection_choices(
+                                            result, metadata.get("conversation_id"),
+                                            int(state.get("state_revision", 0)))
+                                        choice_registry.register_all(insp_choices)
+                                    rendered = compact_units_inspection(result, choices=insp_choices)
                                 elif tool == "inspect_targets":
                                     unit_ids = validate_inspect_targets_request(decoded_repair)
                                     result = query_inspect_targets(
@@ -4426,8 +4459,6 @@ def run(args: argparse.Namespace) -> int:
                                         exchange, col, row, phase,
                                         int(state.get("state_revision", 0)))
                                     rendered = compact_hex_inspection(result)
-                                tool_calls_this_turn += 1
-                                metadata["tool_calls_by_name"][tool] = metadata["tool_calls_by_name"].get(tool, 0) + 1
                                 repair_tool_context += (
                                     "\nMODEL_REPAIR_TOOL_REQUEST_UNTRUSTED_DATA_BEGIN:\n" +
                                     repaired.text +

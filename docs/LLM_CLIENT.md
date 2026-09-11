@@ -710,7 +710,7 @@ by the authoritative live-state reminder. Simulated rosters, gold, casualties,
 villages, and winners are hypothetical and do not
 replace the live observation. It never mutates live state or claims that one
 sampled branch is a probability or a best move. Queries themselves execute no
-actions. The model may also inspect one friendly unit at a time:
+actions. The model may inspect a small friendly group in one read-only request:
 
 If the driver rejects a preview candidate with one of the supported candidate
 codes (`parse`, `batch_too_large`, `action_limit`, `partial_limit`,
@@ -720,11 +720,16 @@ from the unchanged live revision. Transport, protocol, checkpoint, and unknown
 codes remain infrastructure errors; they are never treated as a valid preview.
 
 ```json
-{"tool":"inspect_unit","unit_id":12}
+{"tool":"inspect_units","unit_ids":[12,13]}
 ```
 
-That result contains the unit's legal destinations and legal targets from each
-origin with exact exchange forecasts. It also includes `destination_threats`,
+The request accepts one to eight unique, living, friendly IDs. A one-element
+list inspects one unit through the same contract. The complete request is
+validated before the driver is queried; a dead, enemy, malformed, or stale ID
+fails the whole request and yields no partial result. Every successful member
+is read at the same live revision. The result contains each unit's legal
+destinations and legal targets from each origin with exact exchange forecasts.
+It also includes `destination_threats`,
 the next-turn threat summary for each legal position; these are facts, not
 ranked move recommendations. Two other factual inspections are
 available:
@@ -737,8 +742,8 @@ available:
 `inspect_target` lists friendly attackers and origins for one enemy.
 
 `inspect_targets` accepts `unit_ids` with one to eight unique visible enemy IDs
-and returns the same inspections in one read-only query. It is a batching
-optimization only; singular inspection remains supported.
+and returns the same inspections in one read-only query. It is separate from
+the friendly `inspect_units` contract.
 `inspect_hex` lists attack coverage for one hex either now or after the
 deterministic next `EndTurn`; empty hexes have no invented combat forecast.
 Tool calls are read-only and revision pinned. `--max-tool-calls-per-turn` bounds
@@ -750,10 +755,11 @@ retains all prior tool results and requires final actions. A second
 `preview_batch` request is still not accepted.
 
 The normal card summarizes each unit with its current hex, legal move count,
-attackable target IDs, and attacks available from its current hex. Inspect a unit when a
-specific decision needs detailed origins; do not inspect every mover by
-default. Movable origins and their target combinations are returned by
-`inspect_unit`; `--diagnostic` retains the complete JSON surface.
+attackable target IDs, and attacks available from its current hex. Inspect the
+active-task units together when a specific decision needs detailed origins; do
+not inspect the whole army by default. Movable origins and their target
+combinations are returned by `inspect_units`; `--diagnostic` retains the
+complete JSON surface.
 The default `EVENTS` block is an `EVENT_DIGEST`: compact grouped movement,
 recruitment, attack, gold, village, and turn-boundary facts. Diagnostic mode
 retains the raw event objects.

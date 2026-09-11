@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from . import llm_client
+from . import action_choices as ac
 from .llm_client import (
     ENGINE_RULES,
     TERMINAL_EXIT_CODES, TERMINAL_GAMEPLAY, TERMINAL_INFRASTRUCTURE,
@@ -22,11 +23,11 @@ from .llm_client import (
     select_event_window,
     query_tactical_surface, query_validate_batch, query_preview_batch, query_bounded_comparison,
     CandidateQueryError, CANDIDATE_QUERY_ERROR_CLASSES,
-    query_inspect_unit, query_inspect_target, query_inspect_targets, query_inspect_hex, run,
+    query_inspect_target, query_inspect_targets, query_inspect_hex, run,
     response_intent, compact_strategic_briefing,
     checkpoint_dir_for_log, validate_checkpoint_reference, select_resume_checkpoint,
     load_resume_checkpoint,
-    validate_inspect_unit_request, validate_inspect_target_request, validate_inspect_targets_request,
+    validate_inspect_target_request, validate_inspect_targets_request,
     validate_inspect_hex_request, validate_orders, validate_preview_request,
     timeout_finish_orders,
 )
@@ -584,19 +585,21 @@ class ClientValidationTests(unittest.TestCase):
              "col": 4, "row": 7, "phase": "current"},
         ])
 
-    def test_inspect_unit_request_is_exact_and_revision_pinned(self):
-        self.assertEqual(validate_inspect_unit_request({"tool": "inspect_unit", "unit_id": 7}), 7)
+    def test_inspect_units_request_is_exact_and_revision_pinned(self):
+        self.assertEqual(ac.validate_inspect_units_request(
+            {"tool": "inspect_units", "unit_ids": [7]}), [7])
         for request in (
-            {"tool": "inspect_unit", "unit_id": True},
-            {"tool": "inspect_unit", "unit_id": -1},
-            {"tool": "inspect_unit", "unit_id": 7, "extra": 1},
+            {"tool": "inspect_units", "unit_ids": [True]},
+            {"tool": "inspect_units", "unit_ids": [-1]},
+            {"tool": "inspect_units", "unit_ids": [7], "extra": 1},
         ):
             with self.assertRaises(ValueError):
-                validate_inspect_unit_request(request)
+                ac.validate_inspect_units_request(request)
         requests = []
         body = {"unit_id": 7, "origins": []}
-        self.assertEqual(query_inspect_unit(lambda request: requests.append(request) or
-                                            {"ok": True, "body": body}, 7, 19), body)
+        self.assertEqual(ac.query_inspect_units(
+            lambda request: requests.append(request) or
+            {"ok": True, "state_revision": 19, "body": body}, [7], 19), [body])
         self.assertEqual(requests, [{"action": "Query", "what": "inspect_unit",
                                     "state_revision": 19, "unit_id": 7}])
 
@@ -610,10 +613,10 @@ class ClientValidationTests(unittest.TestCase):
     def test_tool_budget_repair_preserves_all_tool_context(self):
         repaired = tool_budget_repair_prompt(
             "ORIGINAL", "\nTOOL_RESULT unit=7: target=9", "tool call budget exhausted",
-            '{"tool":"inspect_unit","unit_id":7}')
+            '{"tool":"inspect_units","unit_ids":[7]}')
         self.assertIn("ORIGINAL", repaired)
         self.assertIn("target=9", repaired)
-        self.assertIn('"unit_id":7', repaired)
+        self.assertIn('"unit_ids":[7]', repaired)
         self.assertIn("MODEL_RESPONSE_UNTRUSTED_DATA_BEGIN", repaired)
         self.assertIn("tool call budget exhausted", repaired)
         self.assertIn("do not request another tool", repaired.lower())
@@ -787,9 +790,9 @@ class ClientValidationTests(unittest.TestCase):
     def test_unavailable_unit_inspection_is_a_factual_gap(self):
         def exchange(_request):
             return {"ok": False, "message": "unit is unavailable"}
-        body = llm_client.query_inspect_unit(exchange, 5, 42)
-        self.assertEqual(body["available"], False)
-        self.assertIn("unavailable", llm_client.compact_unit_inspection(body))
+        with self.assertRaises(RuntimeError) as ctx:
+            ac.query_inspect_units(exchange, [5], 42)
+        self.assertIn("unavailable", str(ctx.exception))
 
     def test_compact_batch_preview_uses_recruiter_aggregate_not_origins(self):
         rendered = compact_batch_preview({"sampling": False, "state_revision": 17, "candidates": [{
@@ -1090,7 +1093,7 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("U5 at=2,7 move_n=1 targets=U9,U10", rendered)
         self.assertIn("current_attacks=T9", rendered)
         self.assertNotIn("3,7>T10", rendered)
-        self.assertIn("inspect=inspect_unit", rendered)
+        self.assertIn("inspect=inspect_units", rendered)
 
     def test_compact_tactical_surface_renders_threat_and_economy_facts(self):
         rendered = compact_tactical_surface({
@@ -1415,7 +1418,7 @@ class ClientValidationTests(unittest.TestCase):
                                                     "next_round_time_of_day": "Night",
                                                     "next_opponent_time_of_day": "Dusk"}}, [], compact=True)
         for text in (
-                "COORDS=col,row", '"tool":"inspect_unit"', "Move destination", "compact R `open`",
+                "COORDS=col,row", '"tool":"inspect_units"', "Move destination", "compact R `open`",
                 "RecruitBatch", "explain deliberate saving"):
             with self.subTest(text=text):
                 self.assertIn(text, prompt)
@@ -1930,7 +1933,7 @@ class ClientValidationTests(unittest.TestCase):
     def test_action_repair_tool_request_gets_one_bounded_action_followup(self):
         invalid = json.dumps([{"action": "Attack", "attacker_id": 1, "defender_id": 9},
                               {"action": "EndTurn"}])
-        tool = json.dumps({"tool": "inspect_unit", "unit_id": 1})
+        tool = json.dumps({"tool": "inspect_units", "unit_ids": [1]})
         corrected = json.dumps([{"action": "EndTurn"}])
         failure = {"type": "status", "ok": True,
                    "results": [{"ok": False, "code": "NotAdjacent",
@@ -1951,7 +1954,7 @@ class ClientValidationTests(unittest.TestCase):
         first = [{"action": "EndTurn"}]
         second = [{"action": "Move", "unit_id": 1, "col": 2, "row": 3},
                   {"action": "EndTurn"}]
-        inspect_request = json.dumps({"tool": "inspect_unit", "unit_id": 1})
+        inspect_request = json.dumps({"tool": "inspect_units", "unit_ids": [1]})
         preview_request = json.dumps({"tool": "preview_batch", "candidates": [first, second]})
         with tempfile.TemporaryDirectory() as directory:
             orders_path = directory + "/orders.jsonl"
@@ -1961,9 +1964,10 @@ class ClientValidationTests(unittest.TestCase):
                 orders_file.write(json.dumps({"text": preview_request}) + "\n")
                 orders_file.write(json.dumps({"text": json.dumps(second)}) + "\n")
             process = FakeDriverProcess([
-                {"type": "state", "active_faction": 0, "state_revision": 7},
+                {"type": "state", "active_faction": 0, "state_revision": 7,
+                 "units": [{"id": 1, "faction": 0, "hp": 20}]},
                 {"type": "status", "ok": True, "what": "tactical_surface", "body": {"units": []}},
-                {"type": "status", "ok": True, "what": "inspect_unit", "body": {
+                {"type": "status", "ok": True, "what": "inspect_unit", "state_revision": 7, "body": {
                     "unit_id": 1, "origins": []}},
                 {"type": "status", "ok": True, "what": "preview_batch", "body": {
                     "mode": "bounded_rollout", "sampling": True, "candidates": [
@@ -2032,13 +2036,14 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual(terminal["code"], "action_validation_invalid")
 
     def test_tool_budget_exhaustion_repairs_with_context(self):
-        request = json.dumps({"tool": "inspect_unit", "unit_id": 1})
+        request = json.dumps({"tool": "inspect_units", "unit_ids": [1]})
         end_turn = json.dumps([{"action": "EndTurn"}])
         code, terminal = self.run_with_orders(
             [request, request, end_turn],
-            [{"type": "state", "active_faction": 0, "state_revision": 1},
+            [{"type": "state", "active_faction": 0, "state_revision": 1,
+              "units": [{"id": 1, "faction": 0, "hp": 20}]},
              {"type": "status", "ok": True, "what": "tactical_surface", "body": {"units": []}},
-             {"type": "status", "ok": True, "what": "inspect_unit",
+             {"type": "status", "ok": True, "what": "inspect_unit", "state_revision": 1,
               "body": {"unit_id": 1, "origins": []}},
              {"type": "game_end", "reason": "max_turns", "winner": None}],
             max_model_calls_per_turn=4,
@@ -2049,7 +2054,7 @@ class ClientValidationTests(unittest.TestCase):
 
     def test_critical_draft_can_be_confirmed_after_preview(self):
         end_turn = json.dumps([{"action": "EndTurn"}])
-        review_tool = json.dumps({"tool": "inspect_unit", "unit_id": 1})
+        review_tool = json.dumps({"tool": "inspect_units", "unit_ids": [1]})
         code, terminal = self.run_with_orders(
             [end_turn, review_tool, end_turn],
             [{"type": "state", "active_faction": 0, "state_revision": 0,

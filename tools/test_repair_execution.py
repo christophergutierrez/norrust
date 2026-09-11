@@ -136,6 +136,110 @@ class RepairExecutionIntegrationTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_engine_validation_repair_can_inspect_units_before_corrected_batch(self):
+        """(Stack 4) The pre-submission engine-validation repair loop can use
+        `inspect_units` -- the same friendly group-inspection tool the normal
+        path uses -- without resetting budgets or silently ending play.
+
+        This exercises the player-facing group tool inside the
+        `validate_before_submit` repair loop.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            checkpoint = _checkpoint(root)
+            # Schema-valid but engine-illegal: U18 (12,8) and U44 (15,4) are not adjacent.
+            not_adjacent = json.dumps({
+                "actions": [
+                    {"action": "Attack", "attacker_id": 18, "defender_id": 44},
+                    {"action": "FinishWithGreedy", "groups": [], "holds": []},
+                ],
+                "decisions": [{"orders": [0, 1], "rules": ["T3.3", "T7"],
+                               "expected": "Attack a distant enemy and finish without delegation.",
+                               "risk": "The attacker is not adjacent; this is expected to be rejected."}],
+            })
+            inspect_units_request = json.dumps({"tool": "inspect_units", "unit_ids": [1, 3, 4, 5, 6, 7, 8, 10]})
+            corrected = json.dumps({
+                "actions": [
+                    {"action": "Attack", "attacker_id": 7, "defender_id": 24},
+                    {"action": "FinishWithGreedy", "groups": [], "holds": []},
+                ],
+                "decisions": [{"orders": [0, 1], "rules": ["T3.3", "T7"],
+                               "expected": "Attack the supplied adjacent target, then finish without delegation.",
+                               "risk": "The attack may leave U7 exposed to retaliation."}],
+            })
+            captures = root / "requests.ndjson"
+            backend = root / "backend.py"
+            backend.write_text(
+                "import json, sys\n"
+                "capture = sys.argv[1]\n"
+                "prompt = sys.stdin.read()\n"
+                "with open(capture, 'a', encoding='utf-8') as f:\n"
+                "    f.write(json.dumps({'prompt': prompt}) + '\\n')\n"
+                "count = sum(1 for _ in open(capture, encoding='utf-8'))\n"
+                f"if count == 1:\n"
+                f"    resp = {not_adjacent!r}\n"
+                f"elif count == 2:\n"
+                f"    resp = {inspect_units_request!r}\n"
+                f"else:\n"
+                f"    resp = {corrected!r}\n"
+                "print(json.dumps({'text': resp}))\n",
+                encoding="utf-8",
+            )
+            log = root / "match.ndjson"
+            command = [sys.executable, "-m", "tools.llm_client", "--driver", str(DRIVER),
+                       "--model-command", shlex.join([sys.executable, str(backend), str(captures)]),
+                       "--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
+                       "--gold", "300", "--seed", "2002", "--llm-side", "0", "--max-turns", "15",
+                       "--log", str(log), "--resume-checkpoint", str(checkpoint),
+                       # Fanning out eight `inspect_unit` driver queries on this
+                       # 28-unit board costs several seconds each; the query
+                       # budget and turn timeout must both be raised well above
+                       # a single-inspection turn's defaults, or the driver
+                       # subprocess is killed for exceeding --turn-timeout
+                       # mid-fan-out (a broken pipe, not a validation failure).
+                       "--query-budget-seconds", "60", "--model-timeout", "10", "--turn-timeout", "120"]
+            result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=150)
+            self.assertEqual(result.returncode, 0, result.stderr[-3000:] + log.read_text()[-3000:])
+
+            records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+
+            # The first (engine-illegal) submission was rejected, never forwarded.
+            validations = [r for r in records if r.get("type") == "batch_validation"]
+            self.assertTrue(any(v.get("valid") is False for v in validations))
+            self.assertTrue(any(v.get("valid") is True for v in validations))
+
+            # Exactly one player tool allowance was spent inspecting all eight
+            # units, from inside the repair loop -- the same accounting as the
+            # normal path, no separate/reset budget.
+            terminal = next(r for r in records if r.get("type") == "terminal")
+            self.assertEqual(terminal.get("tool_calls_by_name", {}).get("inspect_units"), 1)
+
+            # Pin the accounting asymmetry: fanning out to eight units costs
+            # eight underlying driver queries (real query time, each one on
+            # this 28-unit board expensive enough to need the widened budget
+            # above) even though it only ever charges the ONE player tool
+            # allowance asserted above. A player planning against a tight
+            # turn/query budget must not assume one tool call is one unit of
+            # driver work.
+            inspect_unit_queries = [
+                r for r in records if r.get("type") == "query"
+                and isinstance(r.get("line", {}).get("body"), dict)
+                and "destination_threats" in r["line"]["body"]
+            ]
+            self.assertEqual(len(inspect_unit_queries), 8)
+
+            # The repair loop kept running (it did not silently end play) and
+            # the corrected batch is what actually committed.
+            repairs = [r for r in records if r.get("type") == "action_repair"]
+            self.assertGreaterEqual(len(repairs), 2)
+            forwarded = next(r for r in records if r.get("type") == "forwarded_orders")
+            self.assertEqual(forwarded["orders"], json.loads(corrected)["actions"])
+            events = [e for r in records if r.get("type") == "driver"
+                      for e in r.get("line", {}).get("events", [])]
+            self.assertTrue(any(e.get("kind") == "attack" and e.get("attacker", {}).get("unit") == 7
+                                and e.get("defender", {}).get("unit") == 24 for e in events))
+            self.assertFalse(any(e.get("attacker", {}).get("unit") == 18 for e in events))
+
     def test_revision_286_invalid_preview_draft_is_repaired_and_executes(self):
         """The archived dead-U21 preview is model-invalid feedback, not infra."""
         with tempfile.TemporaryDirectory() as td:

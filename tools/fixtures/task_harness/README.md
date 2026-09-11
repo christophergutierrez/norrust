@@ -26,8 +26,9 @@ The responder performs these factual operations from the live board card:
   U58 by U6 and U59 by reserve U49, both at one HP.
 
 Arms A and B submit coordinate envelopes. Arm C selects opaque choices handles,
-including a tool inspection when a newly recruited unit's move choices are not
-in the initial card. Each cell has its own log, checkpoint directory, request
+including a friendly `inspect_units` request when a newly recruited unit's move
+choices are not in the initial card. The same one-element group form covers a
+single unit. Each cell has its own log, checkpoint directory, request
 context, and usage sidecar. The offline sidecar records fixed measured usage of
 100 input, 20 output, and 120 total tokens per physical call with transport
 `offline_fixture`.

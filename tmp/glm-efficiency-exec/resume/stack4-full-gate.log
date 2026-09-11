@@ -1,0 +1,527 @@
+$ cargo test --lib --manifest-path norrust_core/Cargo.toml
+warning: `panic` setting is ignored for `test` profile
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+     Running unittests src/lib.rs (norrust_core/target/debug/deps/norrust_core-96400446f02b3bcc)
+
+running 174 tests
+test ai::tests::greedy_transaction_discards_callback_mutations_and_events_on_failure ... ok
+test ai::tests::test_eval_leader_safety ... ok
+test ai::tests::test_expected_damage_40pct_defense ... ok
+test ai::tests::test_expected_damage_no_defense ... ok
+test ai::tests::test_bounded_opponent_response_applies_enemy_attack ... ok
+test ai::tests::test_eval_hp_advantage ... ok
+test ai::tests::test_eval_symmetric ... ok
+test ai::tests::test_eval_terminal_loss ... ok
+test ai::tests::greedy_transaction_preserves_action_errors_and_state_on_failure ... ok
+test ai::tests::test_2ply_leader_catches_oscillation ... ok
+test ai::tests::test_eval_terminal_win ... ok
+test ai::tests::test_eval_village_control ... ok
+test ai::tests::test_greedy_leader_stays_on_keep ... ok
+test ai::tests::test_greedy_leader_stays_on_keep_without_gold ... ok
+test ai::tests::test_leader_attacks_when_no_gold ... ok
+test ai::tests::test_leader_stays_on_keep_when_can_recruit ... ok
+test ai::tests::test_no_recruit_when_broke ... ok
+test ai::tests::test_lookahead_leader_stays_on_keep_without_gold ... ok
+test ai::tests::test_recruit_first_fills_castle ... ok
+test ai::tests::test_leader_moves_to_keep_when_off_keep ... ok
+test ai::tests::selected_greedy_respects_allowlist_and_spent_action_combinations ... ok
+test ai::tests::test_score_prefers_kill ... ok
+test ai::tests::toward_hex_selects_deterministic_strictly_closer_destination ... ok
+test ai::tests::test_ranged_prefers_distance ... ok
+test board::tests::test_board_1x1 ... ok
+test ai::tests::toward_hex_skips_occupied_destination_and_spent_units ... ok
+test board::tests::test_board_contains_origin ... ok
+test board::tests::test_board_excludes_beyond_size ... ok
+test board::tests::test_board_excludes_negative_offset ... ok
+test board::tests::test_terrain_set_and_get ... ok
+test campaign::tests::test_build_veteran_info ... ok
+test campaign::tests::test_calculate_carry_gold ... ok
+test ai::tests::test_lookahead_prefers_kill_for_victory ... ok
+test campaign::tests::test_campaign_state_new ... ok
+test campaign::tests::test_count_available_slots ... ok
+test campaign::tests::test_find_keep_and_castles_faction_0 ... ok
+test campaign::tests::test_campaign_lifecycle ... ok
+test campaign::tests::test_find_keep_and_castles_no_keep ... ok
+test campaign::tests::test_generate_uuid ... ok
+test campaign::tests::test_find_keep_and_castles_faction_1 ... ok
+test campaign::tests::test_get_survivors ... ok
+test campaign::tests::test_populate_initial_roster ... ok
+test campaign::tests::test_roster_add_and_get_living ... ok
+test ai::tests::test_lookahead_moves_without_attack ... ok
+test campaign::tests::test_roster_sync_marks_dead ... ok
+test combat::tests::exact_damage_sequence_accumulates_independent_volleys ... ok
+test combat::tests::exact_damage_sequence_handles_guaranteed_and_empty_attacks ... ok
+test combat::tests::test_exact_exchange_has_expected_immediate_outcomes ... ok
+test ai::tests::test_wounded_still_attacks_for_kill ... ok
+test ai::tests::greedy_planner_skips_spent_recruit_but_plans_existing_unit ... ok
+test combat::tests::test_tod_damage_chaotic_night ... ok
+test campaign::tests::test_load_campaign_toml ... ok
+test combat::tests::test_simulate_combat_distribution ... ok
+test combat::tests::test_hit_rate_matches_defense ... ok
+test board::tests::test_board_includes_last_cell ... ok
+test dialogue::tests::test_load_dialogue ... ok
+test dialogue::tests::test_leader_attacked_trigger ... ok
+test dialogue::tests::test_get_pending_filters ... ok
+test dialogue::tests::test_hex_entry_filter ... ok
+test ai::tests::test_focus_fire_wounded ... ok
+test ai::tests::test_lookahead_considers_attack_positions ... ok
+test ai::tests::test_wounded_retreats_to_village ... ok
+test game_state::tests::test_advancement_pending_triggers_at_threshold ... ok
+test game_state::tests::test_attack_kills_defender ... ok
+test game_state::tests::test_attack_not_adjacent_returns_error ... ok
+test game_state::tests::test_attacker_gains_kill_bonus_xp ... ok
+test game_state::tests::test_attacker_gains_xp_on_hit ... ok
+test game_state::tests::test_both_recruiters_lost_does_not_choose_by_faction_order ... ok
+test game_state::tests::test_backstab_doubles_when_flanked ... ok
+test game_state::tests::test_charge_doubles_damage ... ok
+test game_state::tests::test_defender_gains_xp_from_retaliation ... ok
+test game_state::tests::test_documented_rule_attack_reach_is_one_for_melee_and_two_for_ranged ... ok
+test game_state::tests::test_documented_rule_round_advances_only_after_both_sides_end_turn ... ok
+test game_state::tests::test_documented_rule_path_may_cross_occupied_hex_but_not_end_on_one ... ok
+test game_state::tests::test_documented_rule_no_upkeep_or_base_income_beyond_village_gold ... ok
+test game_state::tests::test_documented_rule_two_gold_per_owned_village_on_activation ... ok
+test game_state::tests::test_documented_rule_starting_inside_zoc_does_not_prevent_leaving ... ok
+test game_state::tests::test_documented_rule_fresh_recruit_can_act_immediately ... ok
+test game_state::tests::test_documented_rule_skirmisher_ability_does_not_yet_bypass_zoc ... ok
+test dialogue::tests::test_reset ... ok
+test dialogue::tests::test_one_shot ... ok
+test game_state::tests::test_documented_rule_village_captures_on_end_turn_not_entry ... ok
+test game_state::tests::test_drain_heals_attacker ... ok
+test game_state::tests::test_end_turn_captures_village ... ok
+test game_state::tests::test_end_turn_resets_flags_and_flips_faction ... ok
+test game_state::tests::test_gamestate_unit_placement ... ok
+test game_state::tests::test_leadership_boosts_adjacent_lower_level ... ok
+test game_state::tests::test_level_on_snapshot ... ok
+test game_state::tests::test_move_out_of_bounds_returns_error ... ok
+test game_state::tests::test_documented_rule_village_ownership_persists_after_unit_leaves ... ok
+test game_state::tests::test_poison_applies_on_hit ... ok
+test game_state::tests::test_poison_cured_at_village ... ok
+test game_state::tests::test_poison_damage_on_endturn ... ok
+test game_state::tests::test_move_unreachable_returns_error ... ok
+test game_state::tests::test_ranged_attacker_gets_no_retaliation_from_melee_only_defender ... ok
+test game_state::tests::test_recruiter_loss_wins_without_eliminating_army ... ok
+test game_state::tests::test_regenerates_cures_poison ... ok
+test game_state::tests::test_regenerates_heals_per_turn ... ok
+test game_state::tests::test_slow_cleared_on_turn_start ... ok
+test game_state::tests::test_slow_halves_damage ... ok
+test game_state::tests::test_documented_rule_entering_zoc_stops_movement ... ok
+test game_state::tests::test_steadfast_doubles_resistance ... ok
+test game_state::tests::test_steadfast_no_effect_on_weakness ... ok
+test game_state::tests::test_turn_advances_after_both_sides_regardless_of_starter ... ok
+test game_state::tests::test_slow_halves_movement ... ok
+test game_state::tests::test_tile_defense_used_in_combat ... ok
+test game_state::tests::test_valid_move_updates_position ... ok
+test game_state::tests::test_village_income_adds_gold ... ok
+test hex::tests::test_add_subtract_inverse ... ok
+test game_state::tests::test_village_changes_owner_on_capture ... ok
+test hex::tests::test_distance_symmetric ... ok
+test hex::tests::test_distance_two ... ok
+test hex::tests::test_distance_zero ... ok
+test hex::tests::test_neighbors_are_distinct ... ok
+test hex::tests::test_neighbors_count_and_invariant ... ok
+test hex::tests::test_offset_roundtrip ... ok
+test pathfinding::tests::test_skirmisher_bypasses_zoc ... ok
+test pathfinding::tests::test_reachable_hexes_respects_budget ... ok
+test pathfinding::tests::test_terrain_cost_accumulation ... ok
+test pathfinding::tests::test_zoc_blocks_path_beyond ... ok
+test loader::tests::test_recruit_group_registry_loads ... ok
+test loader::tests::test_faction_registry_loads ... ok
+test save::tests::test_save_state_build ... ok
+test save::tests::test_save_unit_preserves_status_effects ... ok
+test snapshot::tests::test_action_request_attack ... ok
+test snapshot::tests::test_action_request_end_turn ... ok
+test loader::tests::test_terrain_registry_loads ... ok
+test snapshot::tests::test_action_request_invalid_returns_error ... ok
+test snapshot::tests::test_action_request_move ... ok
+test snapshot::tests::test_fow_snapshot_includes_visible_enemies ... ok
+test save::tests::test_save_load_round_trip ... ok
+test snapshot::tests::test_fow_snapshot_hides_invisible_enemies ... ok
+test save::tests::test_save_state_serde_round_trip ... ok
+test scenario::tests::test_load_board_tile_count_mismatch ... ok
+test snapshot::tests::test_state_snapshot_fields ... ok
+test snapshot::tests::test_state_snapshot_serializes_to_json ... ok
+test snapshot::tests::test_snapshot_xp_fields_serialize ... ok
+test snapshot::tests::test_tile_snapshot_includes_color ... ok
+test snapshot::tests::test_unit_terrain_defense_fallback ... ok
+test snapshot::tests::test_tile_snapshot_includes_terrain_stats ... ok
+test snapshot::tests::test_unit_snapshot_includes_movement_attacks_abilities ... ok
+test snapshot::tests::test_tile_snapshot_owner_field ... ok
+test tactics::tests::economy_facts_report_income_and_only_movable_non_recruiters ... ok
+test save::tests::test_save_unit_from_unit ... ok
+test tactics::tests::focus_fire_bounds_are_exact_and_respect_moved_origin_conflicts ... ok
+test tactics::tests::focus_fire_preserves_real_conflicts_and_distinct_attackers ... ok
+test tactics::tests::open_board_threat_finds_route_hidden_by_a_screen ... ok
+test ai::tests::test_turn_planner_returns_actions ... ok
+test tactics::tests::standing_origin_is_not_movable ... ok
+test tactics::tests::target_and_hex_inspections_reuse_legal_origins ... ok
+test tactics::tests::threat_summary_uses_distinct_attacker_maxima ... ok
+test tactics::tests::recruiter_threat_includes_exact_origin_and_forecast ... ok
+test tactics::tests::crowded_focus_forecast_keeps_all_origins_within_budget ... ok
+test unit::tests::test_advance_unit_updates_stats_and_resets_xp ... ok
+test unit::tests::test_recruiter_flag_survives_advancement ... ok
+test visibility::tests::test_basic_visibility ... ok
+test visibility::tests::test_enemy_not_counted ... ok
+test visibility::tests::test_multiple_units_union ... ok
+test visibility::tests::test_vision_range_fallback_to_movement ... ok
+test tactics::tests::unit_threat_surface_includes_all_friendly_units ... ok
+test tactics::tests::grouped_focus_matches_exhaustive_origin_subsets ... ok
+test ai::tests::test_recruit_first_leader_stays ... ok
+test tactics::tests::unit_destination_threats_cover_non_recruiters ... ok
+test ai::tests::test_recruit_move_recruit_cycle ... ok
+test tactics::tests::recruiter_destination_threats_match_independent_move_projections ... ok
+test loader::tests::test_get_nonexistent_returns_none ... ok
+test loader::tests::test_faction_recruit_expansion_and_level_filter ... ok
+test loader::tests::test_unit_registry_loads ... ok
+test ai::tests::test_bounded_lookahead_is_deterministic ... ok
+test ai::tests::test_2ply_all_units_performance ... ok
+test tactics::tests::recruiter_focus_uses_alternative_origins_for_three_attackers ... ok
+test ai::tests::test_turn_planner_multiple_orderings ... ok
+test ai::tests::test_2ply_leader_performance ... ok
+test tactics::tests::crowded_board_recruiter_forecast_stays_within_budget ... ok
+
+test result: ok. 174 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.83s
+
+$ cargo test --bin greedy_driver --manifest-path norrust_core/Cargo.toml
+warning: `panic` setting is ignored for `test` profile
+   Compiling norrust_core v0.1.0 (/mnt/storage/git_home/norrust-glm-inspection/norrust_core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.71s
+     Running unittests src/bin/greedy_driver.rs (norrust_core/target/debug/deps/greedy_driver-edb61619f9a4f94e)
+
+running 10 tests
+test protocol_tests::completed_partial_batch_has_no_finish_kind_and_never_panics ... ok
+test protocol_tests::validate_model_boundary_respects_custom_max_partial_batches ... ok
+test tests::authorize_model_batch_rejects_wrong_active_side_including_end_turn ... ok
+test tests::preview_contract_rejects_malformed_batches_before_execution ... ok
+test tests::resignation_requires_the_active_model_side ... ok
+test tests::checkpoint_is_digest_named_and_round_trips_atomically ... ok
+test protocol_tests::failed_batch_attempt_does_not_commit_castle_vacate_or_accounting ... ok
+test tests::engage_executes_a_legal_move_and_attack_step ... ok
+test protocol_tests::greedy_planner_failure_rolls_back_real_recruitment_and_accounting ... ok
+test tests::preview_captures_pre_end_threats_without_mutating_source_rng ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+$ cargo test --bin self-play --manifest-path norrust_core/Cargo.toml
+warning: `panic` setting is ignored for `test` profile
+   Compiling norrust_core v0.1.0 (/mnt/storage/git_home/norrust-glm-inspection/norrust_core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+     Running unittests src/bin/self_play.rs (norrust_core/target/debug/deps/self_play-1ccbb060a7b186da)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+$ cargo test --test campaign --manifest-path norrust_core/Cargo.toml
+warning: `panic` setting is ignored for `test` profile
+   Compiling norrust_core v0.1.0 (/mnt/storage/git_home/norrust-glm-inspection/norrust_core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.05s
+     Running tests/campaign.rs (norrust_core/target/debug/deps/campaign-5c7d564933295afb)
+
+running 8 tests
+test test_calculate_carry_gold ... ok
+test test_calculate_carry_gold_caps_at_100_percent ... ok
+test test_get_survivors ... ok
+test test_load_campaign_toml ... ok
+test test_campaign_scenario_sequence ... ok
+test test_load_campaign_via_ffi ... ok
+test test_veteran_placement_via_ffi ... ok
+test test_survivors_and_carry_gold_via_ffi ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+$ cargo test --test dialogue --manifest-path norrust_core/Cargo.toml
+warning: `panic` setting is ignored for `test` profile
+   Compiling norrust_core v0.1.0 (/mnt/storage/git_home/norrust-glm-inspection/norrust_core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.32s
+     Running tests/dialogue.rs (norrust_core/target/debug/deps/dialogue-52222135d78f37fb)
+
+running 3 tests
+test test_dialogue_ffi_no_dialogue_loaded ... ok
+test test_dialogue_ffi_one_shot ... ok
+test test_dialogue_ffi_round_trip ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+$ cargo test --test driver_protocol --manifest-path norrust_core/Cargo.toml
+warning: `panic` setting is ignored for `test` profile
+   Compiling norrust_core v0.1.0 (/mnt/storage/git_home/norrust-glm-inspection/norrust_core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running tests/driver_protocol.rs (norrust_core/target/debug/deps/driver_protocol-7e9588cba80e9378)
+
+running 33 tests
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 100 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+test invalid_setup_is_reported_as_game_end ... ok
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+test finish_with_greedy_rejects_duplicate_or_foreign_ids_before_mutation ... ok
+test every_terminal_reason_carries_a_state_revision ... ok
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+test max_turns_caps_successful_side_turns ... ok
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+test greedy_failure_is_typed_terminal_without_boundary_events_or_accounting_mutation ... ok
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+test malformed_requests_get_one_typed_status_each ... ok
+test bounded_preview_reports_isolated_finish_and_opponent_coverage ... ok
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 100 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+test malformed_resignation_never_commits_other_orders ... ok
+test done_after_recruit_sweeps_the_new_unit_without_delegated_recruitment ... ok
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 100 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+test final_nonsampling_preview_is_pre_finish_and_does_not_claim_a_sweep ... ok
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 100 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+test initial_greedy_failure_for_llm_side_one_is_typed_terminal ... ok
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+test incremental_validation_and_submission_share_the_partial_batch_limit ... ok
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+test finish_with_greedy_accepts_empty_groups_and_keeps_selective_telemetry ... ok
+test partial_preview_accepts_prefix_and_labels_unavailable_sweep ... ok
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+test a_terminal_ending_never_prints_a_trailing_state_boundary_line ... ok
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 15 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+test model_end_turn_runs_greedy_recruit_and_action_then_returns_to_model_side ... ok
+test next_opponent_time_of_day_matches_current_phase_on_first_half_of_round ... ok
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+test model_rejects_foreign_unit_reference_at_model_boundary ... ok
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+test finish_with_greedy_is_terminal_allowlisted_and_provenanced ... ok
+test recruit_options_reports_canonical_active_faction_placements_and_enabled_batch_macro ... ok
+test recruit_options_reports_disabled_batch_macro ... ok
+test unavailable_target_inspection_is_factual_and_nonfatal ... ok
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+test resignation_is_allowed_after_the_partial_batch_limit ... ok
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 100 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+test rust_action_shape_rejects_wrong_scalars_and_batch_count_overflow ... ok
+test resignation_validation_is_read_only_and_tactical_previews_reject_it ... ok
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+test recruit_batch_reports_actual_partial_progress_and_rejects_unknown_type ... ok
+test unit_type_profiles_preserve_signed_resistance_values ... ok
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 100 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 100 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+test unit_type_profiles_preserve_attack_specials ... ok
+[INIT] Scenario: big_battle_6, Seed: 42, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+test resignation_concedes_either_side_without_advancing_or_running_opponent ... ok
+test undead_recruitment_is_roster_gated_and_valid_recruitment_still_works ... ok
+test done_with_important_moves_matches_implicit_end_turn_behavior ... ok
+test resume_from_a_postbatch_checkpoint_runs_the_pending_opponent_turn_exactly_once ... ok
+test next_opponent_time_of_day_matches_next_round_on_second_half_of_round ... ok
+
+test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.28s
+
+$ cargo test --test scenario_validation --manifest-path norrust_core/Cargo.toml
+warning: `panic` setting is ignored for `test` profile
+   Compiling norrust_core v0.1.0 (/mnt/storage/git_home/norrust-glm-inspection/norrust_core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.16s
+     Running tests/scenario_validation.rs (norrust_core/target/debug/deps/scenario_validation-4fc5850ed77940af)
+
+running 4 tests
+test big_battle_6_has_hex_180_symmetry_and_six_villages ... ok
+test test_ffi_all_symbols_exercised ... ok
+test test_all_scenarios_valid ... ok
+test test_all_scenarios_ffi_smoke ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 56.07s
+
+$ cargo test --test simulation --manifest-path norrust_core/Cargo.toml
+warning: `panic` setting is ignored for `test` profile
+   Compiling norrust_core v0.1.0 (/mnt/storage/git_home/norrust-glm-inspection/norrust_core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running tests/simulation.rs (norrust_core/target/debug/deps/simulation-c2ecf4a901d1f72f)
+
+running 23 tests
+test test_elimination_still_works ... ok
+test test_generate_map ... ok
+test test_headless_advancement_scenario ... ok
+test test_fighter_advancement_with_real_stats ... ok
+test test_objective_hex_win ... ok
+test test_headless_match_scenario ... ok
+test test_recruit_fails_leader_not_on_keep ... ok
+test test_recruit_fails_non_leader_on_keep ... ok
+test test_recruit_deducts_gold ... ok
+test test_recruit_fails_not_castle_hex ... ok
+test test_recruit_fails_not_enough_gold ... ok
+test test_terrain_wiring ... ok
+test test_trigger_faction_filter ... ok
+test test_trigger_skips_occupied_hex ... ok
+test test_turn_limit_loss ... ok
+test test_ai_marches_toward_enemy_when_no_attack ... ok
+test test_trigger_zone_spawns_units ... ok
+test test_trigger_fires_only_once ... ok
+test test_load_board_from_file ... ok
+test test_faction_def_starting_gold_loads ... ok
+test test_load_units_from_file ... ok
+test test_wesnoth_units_load ... ok
+test test_ai_vs_ai_terminates ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.67s
+
+$ cargo test --test test_ffi --manifest-path norrust_core/Cargo.toml
+warning: `panic` setting is ignored for `test` profile
+   Compiling norrust_core v0.1.0 (/mnt/storage/git_home/norrust-glm-inspection/norrust_core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running tests/test_ffi.rs (norrust_core/target/debug/deps/test_ffi-24a809348b57709d)
+
+running 1 test
+test test_ffi_full_game_cycle ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+$ cargo build --lib --bin greedy_driver --bin self-play --bin dump_checkpoint --manifest-path norrust_core/Cargo.toml --message-format=json
+warning: `panic` setting is ignored for `test` profile
+   Compiling norrust_core v0.1.0 (/mnt/storage/git_home/norrust-glm-inspection/norrust_core)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.86s
+$ /usr/bin/python3 -m unittest discover -s tools -t .
+............................/usr/lib/python3.14/json/decoder.py:361: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f2cbde95120>
+  obj, end = self.scan_once(s, idx)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+........................................................................$ cargo test --lib --manifest-path norrust_core/Cargo.toml
+$ cargo test --bin greedy_driver --manifest-path norrust_core/Cargo.toml
+$ cargo test --bin self-play --manifest-path norrust_core/Cargo.toml
+$ cargo test --test campaign --manifest-path norrust_core/Cargo.toml
+$ cargo test --test dialogue --manifest-path norrust_core/Cargo.toml
+$ cargo test --test driver_protocol --manifest-path norrust_core/Cargo.toml
+$ cargo test --test scenario_validation --manifest-path norrust_core/Cargo.toml
+$ cargo test --test simulation --manifest-path norrust_core/Cargo.toml
+$ cargo test --test test_ffi --manifest-path norrust_core/Cargo.toml
+$ cargo build --lib --bin greedy_driver --bin self-play --bin dump_checkpoint --manifest-path norrust_core/Cargo.toml --message-format=json
+$ /usr/bin/python3 -m unittest discover -s tools -t .
+$ /test/luajit norrust_love/test_llm_bridge.lua
+$ /test/luajit norrust_love/test_replay.lua
+$ /test/luajit norrust_love/test_recorded_games.lua
+$ git diff --check
+NOTE: interactive GUI acceptance is separate from this headless gate
+.$ cargo test --lib --manifest-path norrust_core/Cargo.toml
+...................../usr/lib/python3.14/tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 500: 'server error'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+...............................................................................warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+....warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+.warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+..warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+..warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+.warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+.warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+..warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+.warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+....................................warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+.....warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+.warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+...warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+..........warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+.warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+....warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+.warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+.warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+.warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+.warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+.....warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+.warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+.warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+..warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+...warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+.warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+.warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+....warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+.............[INIT] Scenario: big_battle_6, Seed: 2001, Factions: undead vs undead, Gold: 300 each
+[INIT] Keep 0 at (2,7), Keep 1 at (21,6)
+..warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+...warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+.warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+.warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+.warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+.warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+...warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+.....warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+...warning: no model identity recorded for the LLM side; this game will import as an unnamed player. Pass --player-model <id> when the backend cannot report the host's model (for example tools/file_backend.py).
+..........................................................................................................................................................................................................................................................
+----------------------------------------------------------------------
+Ran 580 tests in 291.282s
+
+OK
+{"attempted": 1, "execute": false, "failed": [], "imported": [{"calls_after": 2, "calls_before": 0, "conflicts": {}, "diagnostics": [], "dry_run": true, "game_id": "cli-g1", "linked_by_prompt_hash": 0, "measured": {"cache_write_input_tokens": {"fully_measured": false, "known_calls": 0, "sum": null, "unknown_calls": 2}, "cached_input_tokens": {"fully_measured": true, "known_calls": 2, "sum": 0, "unknown_calls": 0}, "call_count": 2, "input_tokens": {"fully_measured": true, "known_calls": 2, "sum": 300, "unknown_calls": 0}, "output_tokens": {"fully_measured": true, "known_calls": 2, "sum": 95, "unknown_calls": 0}, "reasoning_tokens": {"fully_measured": true, "known_calls": 2, "sum": 25, "unknown_calls": 0}, "statuses": ["completed"], "total_tokens": {"fully_measured": true, "known_calls": 2, "sum": 395, "unknown_calls": 0}}, "new_calls_found": 2, "status": "imported"}], "unavailable": []}
+{"attempted": 1, "execute": true, "failed": [], "imported": [{"calls_after": 2, "calls_before": 0, "conflicts": {}, "diagnostics": [], "dry_run": false, "game_id": "cli-g1", "linked_by_prompt_hash": 0, "measured": {"cache_write_input_tokens": {"fully_measured": false, "known_calls": 0, "sum": null, "unknown_calls": 2}, "cached_input_tokens": {"fully_measured": true, "known_calls": 2, "sum": 0, "unknown_calls": 0}, "call_count": 2, "input_tokens": {"fully_measured": true, "known_calls": 2, "sum": 300, "unknown_calls": 0}, "output_tokens": {"fully_measured": true, "known_calls": 2, "sum": 95, "unknown_calls": 0}, "reasoning_tokens": {"fully_measured": true, "known_calls": 2, "sum": 25, "unknown_calls": 0}, "statuses": ["completed"], "total_tokens": {"fully_measured": true, "known_calls": 2, "sum": 395, "unknown_calls": 0}}, "new_calls_found": 2, "status": "imported"}], "unavailable": []}
+{"attempted": 2, "execute": true, "failed": [], "imported": [{"calls_after": 2, "calls_before": 0, "conflicts": {}, "diagnostics": [], "dry_run": false, "game_id": "cli-g2", "linked_by_prompt_hash": 0, "measured": {"cache_write_input_tokens": {"fully_measured": false, "known_calls": 0, "sum": null, "unknown_calls": 2}, "cached_input_tokens": {"fully_measured": true, "known_calls": 2, "sum": 0, "unknown_calls": 0}, "call_count": 2, "input_tokens": {"fully_measured": true, "known_calls": 2, "sum": 300, "unknown_calls": 0}, "output_tokens": {"fully_measured": true, "known_calls": 2, "sum": 95, "unknown_calls": 0}, "reasoning_tokens": {"fully_measured": true, "known_calls": 2, "sum": 25, "unknown_calls": 0}, "statuses": ["completed"], "total_tokens": {"fully_measured": true, "known_calls": 2, "sum": 395, "unknown_calls": 0}}, "new_calls_found": 2, "status": "imported"}], "unavailable": [{"game_id": "never-catalogued", "reason": "not_in_manifest"}]}
+{"attempted": 1, "execute": true, "failed": [], "imported": [{"calls_after": 2, "calls_before": 0, "conflicts": {}, "diagnostics": [], "dry_run": false, "game_id": "cli-g3", "linked_by_prompt_hash": 0, "measured": {"cache_write_input_tokens": {"fully_measured": false, "known_calls": 0, "sum": null, "unknown_calls": 2}, "cached_input_tokens": {"fully_measured": true, "known_calls": 2, "sum": 0, "unknown_calls": 0}, "call_count": 2, "input_tokens": {"fully_measured": true, "known_calls": 2, "sum": 300, "unknown_calls": 0}, "output_tokens": {"fully_measured": true, "known_calls": 2, "sum": 95, "unknown_calls": 0}, "reasoning_tokens": {"fully_measured": true, "known_calls": 2, "sum": 25, "unknown_calls": 0}, "statuses": ["completed"], "total_tokens": {"fully_measured": true, "known_calls": 2, "sum": 395, "unknown_calls": 0}}, "new_calls_found": 2, "status": "imported"}], "unavailable": []}
+$ /usr/bin/luajit norrust_love/test_llm_bridge.lua
+LLM bridge smoke: OK
+$ /usr/bin/luajit norrust_love/test_replay.lua
+replay turn-navigation and layout tests passed
+replay tests passed
+$ /usr/bin/luajit norrust_love/test_recorded_games.lua
+recorded games regression tests passed
+$ git diff --check
+NOTE: interactive GUI acceptance is separate from this headless gate

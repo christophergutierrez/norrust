@@ -29,7 +29,7 @@ class DecisionAnnotationTests(unittest.TestCase):
                     "expected": too_long, "risk": "x"}]}
         self.assertEqual(annotation_for_response(json.dumps(response), action_count=1)["status"], "invalid")
         self.assertEqual(annotation_for_response(json.dumps(actions))["status"], "missing")
-        self.assertEqual(annotation_for_response('{"tool":"inspect_unit"}')["status"], "not_applicable")
+        self.assertEqual(annotation_for_response('{"tool":"inspect_units"}')["status"], "not_applicable")
 
     def test_rejects_group_and_reference_bounds(self):
         group = {"orders": [], "rules": ["S1"], "expected": "x", "risk": "y"}

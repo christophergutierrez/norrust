@@ -289,6 +289,117 @@ def extract_inspection_choices(
     return choices
 
 
+def validate_inspect_units_request(request: dict[str, Any]) -> list[int]:
+    """Validate the player-facing `inspect_units` friendly group-inspection request.
+
+    Mirrors `validate_inspect_targets_request`'s shape (one to eight unique
+    uint32 ids) but for the friendly-side batch tool. Structural validity
+    (count, type, uniqueness) is checked here, before any driver query is
+    issued, so a malformed request never triggers a partial fan-out.
+    """
+    if not isinstance(request, dict) or set(request) != {"tool", "unit_ids"} or request.get("tool") != "inspect_units":
+        raise ValueError("inspect_units request must contain only tool and unit_ids")
+    unit_ids = request.get("unit_ids")
+    if not isinstance(unit_ids, list) or not 1 <= len(unit_ids) <= 8:
+        raise ValueError("inspect_units unit_ids must contain 1 to 8 ids")
+    if any(not isinstance(unit_id, int) or isinstance(unit_id, bool) or not 0 <= unit_id <= 2**32 - 1
+           for unit_id in unit_ids) or len(set(unit_ids)) != len(unit_ids):
+        raise ValueError("inspect_units unit_ids must be unique uint32 values")
+    return unit_ids
+
+
+def validate_friendly_inspect_units(
+    unit_ids: list[int], state: dict[str, Any], side: int,
+) -> None:
+    """Reject dead, missing, or enemy members before issuing any driver query.
+
+    The live state roster is authoritative for membership and liveness. This
+    preflight is deliberately separate from structural request validation so a
+    group with one invalid member cannot fan out to earlier valid IDs first.
+    """
+    roster = state.get("units") if isinstance(state, dict) else None
+    by_id = {
+        unit.get("id", unit.get("unit_id")): unit
+        for unit in (roster if isinstance(roster, list) else [])
+        if isinstance(unit, dict)
+    }
+    for unit_id in unit_ids:
+        unit = by_id.get(unit_id)
+        if not isinstance(unit, dict):
+            raise ValueError(f"tool_error: inspect_units: unit {unit_id}: UnitNotFound: unit is unavailable")
+        if unit.get("faction") != side:
+            raise ValueError(
+                f"tool_error: inspect_units: unit {unit_id}: unauthorized_unit: only model-side units may be inspected")
+        hp = unit.get("hp")
+        if isinstance(hp, int) and hp <= 0:
+            raise ValueError(f"tool_error: inspect_units: unit {unit_id}: UnitNotFound: unit is unavailable")
+
+
+def query_inspect_units(exchange, unit_ids: list[int], state_revision: int) -> list[dict[str, Any]]:
+    """Bounded Python fan-out over the existing single-unit `inspect_unit` driver query.
+
+    Every id is queried at the same `state_revision`, in submitted order, using
+    the driver's existing authoritative per-unit primitive -- no new Rust query
+    and no second movement representation. Any driver error for any id,
+    including a dead/missing unit or an enemy, aborts the whole request
+    immediately, so an invalid member of the group never yields a partial
+    result dressed up as a full one. Successful replies must echo the
+    requested revision, preventing a mixed-revision result from being shown as
+    one coherent inspection.
+    """
+    if not isinstance(unit_ids, list) or not 1 <= len(unit_ids) <= 8:
+        raise ValueError("inspect_units unit_ids must contain 1 to 8 ids")
+    if any(not isinstance(unit_id, int) or isinstance(unit_id, bool) or not 0 <= unit_id <= 2**32 - 1
+           for unit_id in unit_ids) or len(set(unit_ids)) != len(unit_ids):
+        raise ValueError("inspect_units unit_ids must be unique uint32 values")
+    results: list[dict[str, Any]] = []
+    for unit_id in unit_ids:
+        response = exchange({"action": "Query", "what": "inspect_unit",
+                             "state_revision": state_revision, "unit_id": unit_id})
+        if not isinstance(response, dict):
+            raise RuntimeError(f"query_error: inspect_units: unit {unit_id}: invalid inspection response")
+        if response.get("ok") is not True or "body" not in response:
+            message = response.get("message", "inspection query failed")
+            code = response.get("code", "query_failed")
+            # A dead or enemy ID is a rejected model tool request. Raising
+            # ValueError routes it through the existing bounded correction
+            # prompt; it must not terminate a match as infrastructure failure.
+            if code in {"UnitNotFound", "unauthorized_unit", "parse"}:
+                raise ValueError(f"tool_error: inspect_units: unit {unit_id}: {code}: {message}")
+            raise RuntimeError(f"query_error: inspect_units: unit {unit_id}: {code}: {message}")
+        response_revision = response.get("state_revision")
+        if response_revision != state_revision:
+            raise RuntimeError(
+                f"query_error: inspect_units: unit {unit_id}: revision mismatch "
+                f"(requested {state_revision}, returned {response_revision})")
+        body = response["body"]
+        if not isinstance(body, dict) or body.get("unit_id") != unit_id:
+            raise RuntimeError(f"query_error: inspect_units: unit {unit_id}: invalid inspection body")
+        results.append(body)
+    return results
+
+
+def extract_units_inspection_choices(
+    results: list[dict[str, Any]],
+    game_id: str | None,
+    revision: int,
+) -> list[Choice]:
+    """Union each inspected unit's choice handles, deduplicated by handle.
+
+    Reuses `extract_inspection_choices` per unit -- the existing revision-bound
+    identity rules -- rather than inventing a second movement representation
+    or a group-level ranking.
+    """
+    seen_handles: set[str] = set()
+    union: list[Choice] = []
+    for unit in results:
+        for choice in extract_inspection_choices(unit, game_id, revision):
+            if choice.handle not in seen_handles:
+                seen_handles.add(choice.handle)
+                union.append(choice)
+    return union
+
+
 def extract_tactical_surface_choices(
     surface: dict[str, Any],
     game_id: str | None,
