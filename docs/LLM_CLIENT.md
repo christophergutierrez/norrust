@@ -150,6 +150,13 @@ an accepted partial is acknowledged when `--log` is supplied.
   calls, and 64 tool calls per turn. The model pursues at most one active task
   at a time, and decision annotations may cover only consequential actions.
   Exhausted tool calls do not force a premature `EndTurn` while `final_only` is False.
+  The two tiers choose one small objective, inspect its target or preferably at
+  most four relevant units, then request one useful operation using context
+  pinned to the inspection revision. Accepted partial actions invalidate that
+  local context; the global board, recruiter, economy, and opponent danger stay
+  visible. Intent and agenda retain origin request, turn, and revision
+  internally when available, and remain provisional rationale rather than rules
+  or permanent garrisons.
 
 `--action-encoding {coordinates,choices}` selects how actions are represented
 (default `coordinates`).
@@ -510,6 +517,10 @@ request has `game_token_limit_enforced: false`; this is not a guaranteed spend
 cap for that player. Hard call/time bounds still apply. Players must not estimate
 or self-report tokens to fill those gaps. Budget stops are recorded interruptions,
 not gameplay losses, and their open side-turn usage remains attributable.
+Each dispatched request also receives a volatile budget snapshot with measured
+spend, remaining allowance, and unknown sidecar calls or gaps. Unknown usage is
+reported as a bounded upper allowance; output-limit retries reuse the same
+snapshot and prompt bytes, while the next logical request refreshes it.
 
 For matched task experiments, see [MODEL_BAKEOFF.md](MODEL_BAKEOFF.md). The launcher
 still follows this document's usage-accounting procedure, including host binding,

@@ -1421,6 +1421,68 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("MoveGroupToward([U3,U4]->10,7)", summary)
         self.assertIn("moved=U3 skipped=U4:spent", summary)
 
+    def test_continuity_omits_unacknowledged_forwarded_batch(self):
+        records = [{
+            "type": "forwarded_orders", "batch_id": "game:batch:1",
+            "orders": [{"action": "Move", "unit_id": 1, "col": 2, "row": 2}],
+            "state_revision": 7,
+        }]
+        self.assertEqual(llm_client.replay_committed_continuity(records), [])
+
+    def test_continuity_omits_rejected_forwarded_batch(self):
+        records = [{
+            "type": "forwarded_orders", "batch_id": "game:batch:1",
+            "orders": [{"action": "Move", "unit_id": 1, "col": 2, "row": 2}],
+            "state_revision": 7,
+        }, {
+            "type": "action_failure", "batch_id": "game:batch:1",
+        }]
+        self.assertEqual(llm_client.replay_committed_continuity(records), [])
+
+    def test_continuity_accepts_successful_batch_status(self):
+        records = [{
+            "type": "forwarded_orders", "batch_id": "game:batch:1",
+            "orders": [{"action": "Move", "unit_id": 1, "col": 2, "row": 2}],
+            "state_revision": 7,
+        }, {
+            "type": "driver", "line": {
+                "type": "status", "ok": True,
+                "results": [{"ok": True}], "state_revision": 8,
+            },
+        }]
+        continuity = llm_client.replay_committed_continuity(records)
+        self.assertEqual(len(continuity), 1)
+        self.assertIn("committed: Move(U1->2,2) | rev=7->8", continuity[0])
+
+    def test_continuity_accepts_explicit_checkpoint_or_batch_commit(self):
+        for proof in (
+            {"type": "checkpoint_ref", "batch_id": "game:batch:1",
+             "state_revision": 8},
+            {"type": "batch_committed", "batch_id": "game:batch:1",
+             "state_revision": 8},
+        ):
+            with self.subTest(proof=proof["type"]):
+                records = [{
+                    "type": "forwarded_orders", "batch_id": "game:batch:1",
+                    "orders": [{"action": "Move", "unit_id": 1, "col": 2, "row": 2}],
+                    "state_revision": 7,
+                }, proof]
+                continuity = llm_client.replay_committed_continuity(records)
+                self.assertEqual(len(continuity), 1)
+                self.assertIn("rev=7->8", continuity[0])
+
+    def test_continuity_requires_batch_identity_for_checkpoint_or_commit(self):
+        for proof_type in ("checkpoint_ref", "batch_committed"):
+            with self.subTest(proof=proof_type):
+                records = [{
+                    "type": "forwarded_orders",
+                    "orders": [{"action": "Move", "unit_id": 1, "col": 2, "row": 2}],
+                    "state_revision": 7,
+                }, {
+                    "type": proof_type, "state_revision": 8,
+                }]
+                self.assertEqual(llm_client.replay_committed_continuity(records), [])
+
     def test_missing_final_end_turn_rejected(self):
         with self.assertRaises(ValueError):
             validate_orders('[{"action":"Move","unit_id":1,"col":1,"row":1}]')

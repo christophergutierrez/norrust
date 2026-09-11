@@ -44,7 +44,22 @@ scope. The presentation ceiling is 18,500 bytes, below the allowed 18,975-byte
 maximum; the final largest measured small fixture is 18,176 bytes. Historical
 cache-prefix comparisons and runtime prompt-byte limits remain intact.
 
-Stacks 3–4 are pending integration. Gate logs and worker handoffs live under
+Stack 3 passed the full cumulative gate (671 Python tests plus supported
+Rust/Lua suites). Existing inspections now produce revision-pinned local
+contexts with live weapon facts; global state stays available. Provisional
+memory carries its origin and resumes only with acceptance evidence, including
+a checkpoint saved before acknowledgment. Rejected and open proposals cannot
+become committed context.
+
+The game-budget suffix reports measured spend and uncertainty. Real-driver
+tests prove that physical usage changes between output-limit attempts while
+the retry prompt remains byte-identical, and the next logical request refreshes
+its budget. The final byte cap and telemetry include all appended context on
+main, tool, and repair dispatches; exact-cap and one-byte-under tests pass.
+An independent review found and corrected both the suffix-cap bypass and an
+unproven-continuity bug before this gate.
+
+Stack 4 is pending integration. Gate logs and worker handoffs live under
 `tmp/glm-mechanics-exec/`.
 
 ## Paid retest

@@ -248,6 +248,15 @@ The client enforces a 120-character maximum for each hold reason and requires
 held and delegated IDs to be disjoint; this count is in characters rather than
 UTF-8 bytes.
 
+Focused mode has two tiers: select one small objective, inspect its target or
+preferably at most four relevant units, then request one useful operation from
+the inspection's revision-pinned local context. An accepted partial revision
+invalidates that context. Intent and agenda origin request/turn/revision data is
+internal provenance for provisional rationale; it never creates rules or
+permanent garrisons. Every model dispatch carries a volatile measured token
+snapshot; unknown sidecar usage remains explicitly bounded, and output-limit
+retries keep the same snapshot and prompt bytes.
+
 Handoff summaries distinguish explicit selective instructions from automatic
 finish eligibility. Derive held/delegated IDs from actions, omitted IDs from
 the current friendly roster, and delegated recruiters from observed recruiter

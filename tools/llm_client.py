@@ -291,6 +291,7 @@ class ModelReply:
     cache: Optional[dict[str, Any]] = None
     request_id: Optional[str] = None
     prompt_hash: Optional[str] = None
+    prompt_bytes: Optional[int] = None
     decision_annotation: Optional[dict[str, Any]] = None
 
 
@@ -840,6 +841,10 @@ class ModelCallBudgetExhausted(RuntimeError):
     """The configured per-turn model-call budget forbids another dispatch."""
 
 
+class PromptTooLarge(RuntimeError):
+    """The fully assembled prompt cannot be sent under the configured cap."""
+
+
 def _raise_preview_query_error(response: Any, query: str) -> None:
     """Raise a typed model error for known candidate failures.
 
@@ -1129,6 +1134,91 @@ def compact_units_inspection(units: list[dict[str, Any]], choices: Optional[list
     return "INSPECT_UNITS n=%d\n" % len(units) + "\n---\n".join(blocks)
 
 
+def enrich_inspected_units(units: list[dict[str, Any]], state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Join already-observed type/weapon facts into local inspection cards.
+
+    The driver query remains the raw source in the audit record; this copy is
+    presentation-only and avoids another query when a selected unit's exact
+    profile is already on the live board/tactical surface.
+    """
+    live = {unit.get("id", unit.get("unit_id")): unit for unit in state.get("units", [])
+            if isinstance(unit, dict)}
+    surface = state.get("tactical_surface") if isinstance(state, dict) else None
+    profiles = {profile.get("def_id"): profile for profile in (surface.get("unit_types", [])
+                if isinstance(surface, dict) else []) if isinstance(profile, dict)}
+    enriched = []
+    for unit in units:
+        if not isinstance(unit, dict):
+            continue
+        item = dict(unit)
+        observed = live.get(item.get("unit_id"), {})
+        for key in ("def_id", "hp", "max_hp"):
+            if key not in item and key in observed:
+                item[key] = observed[key]
+        profile = profiles.get(item.get("def_id"))
+        if (isinstance(profile, dict) and "attacks" in profile
+                and "weapons" not in item and "attacks" not in item):
+            item["weapons"] = profile["attacks"]
+        origins = []
+        for origin in item.get("origins", []):
+            if not isinstance(origin, dict):
+                continue
+            origin_copy = dict(origin)
+            engagements = []
+            for engagement in origin.get("engagements", []):
+                if not isinstance(engagement, dict):
+                    continue
+                engagement_copy = dict(engagement)
+                defender = live.get(engagement.get("defender_id"), {})
+                if "defender_def_id" not in engagement_copy and "def_id" in defender:
+                    engagement_copy["defender_def_id"] = defender["def_id"]
+                defender_profile = profiles.get(defender.get("def_id"))
+                if (isinstance(defender_profile, dict) and "attacks" in defender_profile
+                        and "defender_weapons" not in engagement_copy):
+                    engagement_copy["defender_weapons"] = defender_profile["attacks"]
+                engagements.append(engagement_copy)
+            if "engagements" in origin_copy:
+                origin_copy["engagements"] = engagements
+            origins.append(origin_copy)
+        if "origins" in item:
+            item["origins"] = origins
+        enriched.append(item)
+    return enriched
+
+
+def enrich_target_inspection(target: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+    """Add known live type/weapon facts beside target-local attack options."""
+    if not isinstance(target, dict):
+        return target
+    live = {unit.get("id", unit.get("unit_id")): unit for unit in state.get("units", [])
+            if isinstance(unit, dict)}
+    surface = state.get("tactical_surface") if isinstance(state, dict) else None
+    profiles = {profile.get("def_id"): profile for profile in (surface.get("unit_types", [])
+                if isinstance(surface, dict) else []) if isinstance(profile, dict)}
+    result = dict(target)
+    target_live = live.get(target.get("target_id"), {})
+    for key in ("def_id", "hp", "max_hp"):
+        if key not in result and key in target_live:
+            result[key] = target_live[key]
+    attacks = []
+    for attack in target.get("attacks", []):
+        if not isinstance(attack, dict):
+            continue
+        item = dict(attack)
+        attacker = live.get(item.get("attacker_id"), {})
+        if "attacker_def_id" not in item and "def_id" in attacker:
+            item["attacker_def_id"] = attacker["def_id"]
+        profile = profiles.get(attacker.get("def_id"))
+        if isinstance(profile, dict) and "attacks" in profile and "attacker_weapons" not in item:
+            item["attacker_weapons"] = profile["attacks"]
+        attacks.append(item)
+    result["attacks"] = attacks
+    target_profile = profiles.get(result.get("def_id"))
+    if isinstance(target_profile, dict) and "attacks" in target_profile:
+        result["weapons"] = target_profile["attacks"]
+    return result
+
+
 def compact_targets_inspection(targets: list[dict[str, Any]]) -> str:
     return "TARGETS " + " ".join(compact_target_inspection(target) for target in targets)
 
@@ -1144,10 +1234,24 @@ def compact_target_inspection(target: dict[str, Any]) -> str:
         col, row = attack.get("origin_col", "?"), attack.get("origin_row", "?")
         action = "ENGAGE_STEP U%s via=%s,%s" % (attacker, col, row) \
             if attack.get("moved") else "ATTACK U%s" % attacker
-        attacks.append("%s %s" % (action, _readable_exchange(forecast)))
-    return "TARGET U%s hp=%s at=%s,%s terrain=%s attacks=%s" % (
+        facts = ""
+        if "attacker_def_id" in attack or "attacker_weapons" in attack:
+            weapons = attack.get("attacker_weapons", "unknown")
+            facts = " type=%s weapons=%s" % (
+                attack.get("attacker_def_id", "unknown"),
+                json.dumps(weapons, sort_keys=True, separators=(",", ":"))
+                if weapons != "unknown" else "unknown")
+        attacks.append("%s %s%s" % (action, _readable_exchange(forecast), facts))
+    target_facts = ""
+    if "def_id" in target or "weapons" in target:
+        weapons = target.get("weapons", "unknown")
+        target_facts = " target_facts=type:%s weapons:%s" % (
+            target.get("def_id", "unknown"),
+            json.dumps(weapons, sort_keys=True, separators=(",", ":"))
+            if weapons != "unknown" else "unknown")
+    return "TARGET U%s hp=%s at=%s,%s terrain=%s attacks=%s%s" % (
         target.get("target_id", "?"), target.get("hp", "?"), target.get("col", "?"),
-        target.get("row", "?"), target.get("terrain", "?"), "|".join(attacks) or "none")
+        target.get("row", "?"), target.get("terrain", "?"), "|".join(attacks) or "none", target_facts)
 
 
 def validate_inspect_hex_request(request: dict[str, Any]) -> tuple[int, int, str]:
@@ -1293,7 +1397,7 @@ def compact_batch_preview(preview: dict[str, Any], originating_revision: Any = N
                 unit.get("distinct_attacker_count", 0), _readable_whole_hp(unit.get("max_incoming_sum")),
                 _readable_focus(unit.get("focus_kill_bps")), _readable_focus(unit.get("focus_expected_damage_tenths"), damage=True),
                 unit.get("open_distinct_attacker_count", 0), _readable_whole_hp(unit.get("open_max_incoming_sum")),
-                unit.get("open_lethal_attackers_needed")))
+                _readable_optional_count(unit.get("open_lethal_attackers_needed"))))
     lines.append("SIMULATION — NOT EXECUTED END; preview queries execute no actions. "
                  "Candidate rosters, gold, casualties, villages, and threats are hypothetical.")
     return "\n".join(lines)
@@ -1323,10 +1427,17 @@ def compact_detailed_units(units: list[dict[str, Any]]) -> list[str]:
                 if not isinstance(engagement, dict):
                     continue
                 forecast = engagement.get("forecast", {})
+                defender_facts = ""
+                if "defender_def_id" in engagement or "defender_weapons" in engagement:
+                    weapons = engagement.get("defender_weapons", "unknown")
+                    defender_facts = " defender_facts=type:%s weapons:%s" % (
+                        engagement.get("defender_def_id", "unknown"),
+                        json.dumps(weapons, sort_keys=True, separators=(",", ":"))
+                        if weapons != "unknown" else "unknown")
                 attacks.append("%s>T%s %s" % (
                     prefix,
                     engagement.get("defender_id", "?"),
-                    _readable_exchange(forecast)))
+                    _readable_exchange(forecast)) + defender_facts)
         fields = ["U%s" % unit.get("unit_id", "?")]
         if any(key in unit for key in ("def_id", "type", "hp", "max_hp", "weapons", "attacks")):
             type_name = unit.get("def_id", unit.get("type", "unknown"))
@@ -2223,9 +2334,13 @@ def shared_response_rules(boundary_guidance: str, decision_mode: str = "batch") 
         + " A request requiring final actions accepts no inspection and no partial-only reply.\n"
         + annotation_guidance
         + annotation_schema
-        + ("- Focused mode keeps one active task and committed intent prominent; completing that operation does not end the turn.\n"
+        + ("- Focused mode uses two tiers: choose one small objective, inspect its target or preferably at most four relevant units, "
+           "then use the revision-pinned local context to request one useful operation; completing that operation does not end the turn. "
+           "the global board, recruiter, economy, and opponent danger remain visible and authoritative.\n"
            if decision_mode == "focused" else "")
         + "- Optional intent is memory under 512 UTF-8 bytes: it is how a conclusion survives to your next request.\n"
+        "- Intent and agenda are provisional rationale: they explain a current objective and may change when live facts change. "
+        "They are not rules, permanent garrisons, or executable holds; the engine and current board decide legality.\n"
         "- Optional agenda replaces prior bookkeeping: exactly tasks and holds; max 8 tasks/4096 compact UTF-8 bytes. "
         "Tasks use exactly id, goal, units, status; IDs unique/nonempty, goal <=160 UTF-8 bytes; units/holds are integer friendly-ID arrays; "
         "status pending|active|done|deferred, at most one active. Invalid agenda is rejected; prior stands, actions execute, reason reaches next request.\n"
@@ -2238,8 +2353,10 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
                recruit_batch_enabled: bool = True,
                compact: bool = False,
                intent: Optional[str] = None,
+               intent_origin: Optional[dict[str, Any]] = None,
                continuity: Optional[str] = None,
                agenda: Optional[dict[str, Any]] = None,
+               agenda_origin: Optional[dict[str, Any]] = None,
                sweep: Optional[str] = None,
                trend: Optional[str] = None,
                playbook: Optional[str] = None,
@@ -2422,11 +2539,13 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         body["recruit_options"] = recruit_options
     if intent:
         body["previous_intent"] = intent
+        body["intent_provenance"] = memory_provenance(intent_origin, state)
     if continuity:
         body["conversation_continuity"] = continuity
     if agenda:
         body["agenda"] = agenda
         if isinstance(agenda, dict):
+            body["agenda_provenance"] = memory_provenance(agenda_origin, state)
             annotated_agenda = annotate_agenda_unit_status(agenda, state)
             active_task = next((t for t in (annotated_agenda.get("tasks", []) if annotated_agenda else [])
                                 if isinstance(t, dict) and t.get("status") == "active"), None)
@@ -2441,16 +2560,21 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         option_payloads["choices"] = [c.to_display_dict() if hasattr(c, "to_display_dict") else c for c in choices]
     event_payload = events if not compact else compact_events(events)
     memory_payload = {key: body.pop(key) for key in
-                      ("previous_intent", "conversation_continuity", "agenda",
+                      ("previous_intent", "intent_provenance", "conversation_continuity", "agenda",
+                       "agenda_provenance",
                        "whole_army_sweep", "recent_trend") if key in body}
     if decision_mode == "focused":
         # Keep the settled objective and its reason together in the dynamic
         # section. The full board, force, economy, and recruiter danger remain
         # present; this simply makes the next operation easy to find.
         memory_payload["focused_context"] = {
+            "level": "objective_then_local_operation",
             "active_task": body.get("active_task"),
             "committed_intent": intent,
-            "instruction": "continue this task until completion, block, or changed facts; finishing the task is distinct from ending the turn",
+            "intent_provenance": memory_provenance(intent_origin, state),
+            "agenda_provenance": memory_provenance(agenda_origin, state),
+            "instruction": "Choose one small objective, inspect its target or preferably at most four relevant units, then use the revision-pinned local facts for one useful operation. Completing the operation is distinct from ending the turn.",
+            "global_facts": "The global board, recruiter, economy, and opponent danger remain authoritative while this local context is active.",
         }
     fixed_context = fixed_prompt_context(state)
     profiles = [p for p in (state.get("tactical_surface", {}).get("unit_types", [])
@@ -2581,6 +2705,9 @@ def replay_committed_continuity(records: list[dict[str, Any]]) -> list[str]:
             batch_results: Optional[list[dict[str, Any]]] = None
             end_rev = None
             failed = False
+            accepted = False
+            batch_id = rec.get("batch_id")
+            has_batch_id = isinstance(batch_id, str) and bool(batch_id)
             j = i + 1
             while j < n:
                 next_rec = records[j]
@@ -2595,6 +2722,13 @@ def replay_committed_continuity(records: list[dict[str, Any]]) -> list[str]:
                         if line.get("type") == "events" and isinstance(line.get("events"), list):
                             batch_events.extend(line["events"])
                         elif line.get("type") == "status":
+                            # A forwarded proposal is only continuity-worthy
+                            # after the action status proves that the whole
+                            # batch was accepted.  Query/status records without
+                            # an explicit successful action response do not
+                            # establish that proof.
+                            if line.get("ok") is True and status_failure(line) is None:
+                                accepted = True
                             if isinstance(line.get("state_revision"), int):
                                 end_rev = line["state_revision"]
                             if isinstance(line.get("results"), list):
@@ -2602,15 +2736,33 @@ def replay_committed_continuity(records: list[dict[str, Any]]) -> list[str]:
                         elif line.get("type") == "state" and isinstance(line.get("state_revision"), int) and end_rev is None:
                             end_rev = line["state_revision"]
                 elif next_rec.get("type") == "turn_boundary":
+                    # The client writes this durable record only after an
+                    # accepted action status, so it is an independent proof
+                    # for logs where the status record is absent.
+                    accepted = True
                     if isinstance(next_rec.get("state_revision"), int):
                         end_rev = next_rec["state_revision"]
                     if next_rec.get("executed_finish_kind"):
                         finish_kind = next_rec["executed_finish_kind"]
                 elif next_rec.get("type") == "batch_committed":
-                    if isinstance(next_rec.get("state_revision"), int):
+                    matching_batch = (has_batch_id
+                                      and next_rec.get("batch_id") == batch_id)
+                    if matching_batch:
+                        accepted = True
+                    if (matching_batch
+                            and isinstance(next_rec.get("state_revision"), int)):
                         end_rev = next_rec["state_revision"]
+                elif next_rec.get("type") == "checkpoint_ref":
+                    # A checkpoint carries the engine's committed snapshot;
+                    # accept it only when it explicitly names this batch.
+                    if (has_batch_id and next_rec.get("batch_id") == batch_id
+                            and isinstance(next_rec.get("batch_id"), str)
+                            and bool(next_rec.get("batch_id"))):
+                        accepted = True
+                        if isinstance(next_rec.get("state_revision"), int):
+                            end_rev = next_rec["state_revision"]
                 j += 1
-            if not failed:
+            if accepted and not failed:
                 entries.append(
                     format_committed_action_summary(
                         orders, batch_events, start_rev, end_rev, repair=repair,
@@ -3063,6 +3215,123 @@ def prompt_regions(prompt: str) -> dict[str, Any]:
             "tool_result_bytes": len((options + tool_result).encode()) if options in after_board else 0}
 
 
+def game_budget_context(args: Any, metadata: dict[str, Any]) -> str:
+    """Render volatile measured game-token accounting for one logical request.
+
+    Usage may be incomplete when an adapter does not expose a sidecar record;
+    that uncertainty is explicit and the remaining allowance is an upper
+    bound.  Callers append this after the canonical prompt so output-limit
+    retries can reuse the exact delivered bytes.
+    """
+    ceiling = getattr(args, "max_game_total_tokens", None)
+    spent = metadata.get("cumulative_game_total_tokens", 0)
+    spent = spent if isinstance(spent, int) and not isinstance(spent, bool) else 0
+    unknown_calls = metadata.get("game_token_usage_unknown_calls", 0)
+    gaps = metadata.get("game_token_usage_gaps", 0)
+    unknown_calls = unknown_calls if isinstance(unknown_calls, int) else 0
+    gaps = gaps if isinstance(gaps, int) else 0
+    uncertain = (unknown_calls > 0 or gaps > 0 or metadata.get("usage_measured") is False
+                 or (ceiling is not None and metadata.get("game_token_limit_enforced") is not True))
+    if ceiling is None:
+        remaining = "unbounded"
+    elif uncertain:
+        remaining = str(max(0, ceiling - spent)) + " (upper_bound; usage_unknown)"
+    else:
+        remaining = str(max(0, ceiling - spent))
+    coverage = "bounded_unknown" if uncertain else "measured"
+    return (
+        "GAME_BUDGET_CONTEXT_BEGIN\n"
+        "configured_ceiling=%s known_measured_spend=%s remaining_allowance=%s "
+        "coverage=%s unknown_calls=%s sidecar_gaps=%s\n"
+        "GAME_BUDGET_CONTEXT_END\n"
+        % (ceiling if ceiling is not None else "unbounded", spent, remaining,
+           coverage, unknown_calls, gaps)
+    )
+
+
+def memory_provenance(origin: Any, state: dict[str, Any]) -> dict[str, Any]:
+    """Describe where optional intent/agenda memory came from.
+
+    Missing fields stay unknown so old logs never acquire an invented origin.
+    A revision mismatch makes the rationale stale; live engine facts remain
+    authoritative for all action legality.
+    """
+    if not isinstance(origin, dict):
+        return {"status": "unknown", "origin_turn": "unknown",
+                "origin_revision": "unknown", "origin_request_id": "unknown"}
+    origin_revision = origin.get("origin_revision")
+    current_revision = state.get("state_revision") if isinstance(state, dict) else None
+    if isinstance(origin_revision, int) and isinstance(current_revision, int):
+        status = "current_revision" if origin_revision == current_revision else "stale_revision"
+    else:
+        status = "unknown"
+    return {"status": status,
+            "origin_turn": origin.get("origin_turn", "unknown"),
+            "origin_revision": origin_revision if origin_revision is not None else "unknown",
+            "origin_side_turn_id": origin.get("origin_side_turn_id", "unknown"),
+            "origin_request_id": origin.get("origin_request_id", "unknown")}
+
+
+def recover_optional_memory(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Recover only accepted intent/agenda updates from a resumable log.
+
+    Forwarded orders are proposals until ``batch_committed`` (or the later
+    intent/agenda update) proves acceptance. This keeps rejected plans from
+    becoming durable model memory and keeps text paired with its origin.
+    """
+    forwarded = {record.get("batch_id") for record in records
+                 if record.get("type") == "forwarded_orders"
+                 and isinstance(record.get("batch_id"), str)
+                 and record.get("batch_id")}
+    committed = {record.get("batch_id") for record in records
+                 if record.get("type") == "batch_committed"
+                 and isinstance(record.get("batch_id"), str)
+                 and record.get("batch_id")}
+    checkpoint_proven = {record.get("batch_id") for record in records
+                         if record.get("type") == "checkpoint_ref"
+                         and isinstance(record.get("batch_id"), str)
+                         and record.get("batch_id") in forwarded}
+    def committed_batch(batch_id: Any) -> bool:
+        return isinstance(batch_id, str) and bool(batch_id) and batch_id in committed
+    def checkpoint_accepted_batch(batch_id: Any) -> bool:
+        # A checkpoint is written after the request is forwarded and before
+        # its acknowledgement. It is durable engine evidence even if a crash
+        # leaves no subsequent batch_committed record.
+        return isinstance(batch_id, str) and bool(batch_id) and batch_id in checkpoint_proven
+    intent = ""
+    intent_origin = None
+    agenda = None
+    agenda_origin = None
+    for record in records:
+        kind = record.get("type")
+        if kind == "intent_update" and isinstance(record.get("intent"), str):
+            intent = record["intent"]
+            intent_origin = dict(record["origin"]) if isinstance(record.get("origin"), dict) else None
+        elif kind == "forwarded_orders" and isinstance(record.get("intent"), str):
+            if (committed_batch(record.get("batch_id")) or
+                    checkpoint_accepted_batch(record.get("batch_id"))):
+                intent = record["intent"]
+                intent_origin = (dict(record["intent_origin"])
+                                 if isinstance(record.get("intent_origin"), dict) else None)
+        elif kind == "agenda_update" and isinstance(record.get("agenda"), dict):
+            agenda = dict(record["agenda"])
+            agenda_origin = (dict(record["origin"])
+                              if isinstance(record.get("origin"), dict) else None)
+        elif kind == "checkpoint_ref" and (
+                committed_batch(record.get("batch_id")) or
+                checkpoint_accepted_batch(record.get("batch_id"))):
+            if isinstance(record.get("intent"), str):
+                intent = record["intent"]
+                intent_origin = (dict(record["intent_origin"])
+                                 if isinstance(record.get("intent_origin"), dict) else None)
+            if isinstance(record.get("agenda"), dict):
+                agenda = dict(record["agenda"])
+                agenda_origin = (dict(record["agenda_origin"])
+                                 if isinstance(record.get("agenda_origin"), dict) else None)
+    return {"intent": intent, "intent_origin": intent_origin,
+            "agenda": agenda, "agenda_origin": agenda_origin}
+
+
 def status_failure(line: dict[str, Any]) -> Optional[dict[str, Any]]:
     """Return the failed status item, if a driver status reports a failure."""
     if line.get("ok") is False:
@@ -3339,9 +3608,13 @@ def run(args: argparse.Namespace) -> int:
     active_review_id: Optional[str] = None
     forced_finish = False
     intent_memory = ""
+    intent_origin: Optional[dict[str, Any]] = None
     pending_intent: Optional[str] = None
+    pending_intent_origin: Optional[dict[str, Any]] = None
     agenda_memory: Optional[dict[str, Any]] = None
+    agenda_origin: Optional[dict[str, Any]] = None
     pending_agenda: Optional[dict[str, Any]] = None
+    pending_agenda_origin: Optional[dict[str, Any]] = None
     # Set when a response's decision annotation is invalid. Delivered once,
     # as short factual context, on the next request that was already going
     # to be sent; never triggers a retry or extra model call on its own.
@@ -3411,6 +3684,8 @@ def run(args: argparse.Namespace) -> int:
                 "prompt_cache_reported_tokens": None, "usage_measured": True,
                 "tool_calls_by_name": {}, "max_observed_prompt_bytes": 0,
                 "agenda": None,
+                "agenda_origin": None,
+                "intent_origin": None,
                 "agenda_observations": 0,
                 "turns_with_lethal_danger_before": 0, "turns_with_lethal_danger_after": 0,
                 "turns_with_affordable_recruitment_left": 0,
@@ -3469,17 +3744,17 @@ def run(args: argparse.Namespace) -> int:
                 metadata["tool_calls_by_name"] = dict(previous_tools)
         if isinstance(previous_metadata.get("agenda"), dict):
             agenda_memory = previous_metadata["agenda"]
+            if isinstance(previous_metadata.get("agenda_origin"), dict):
+                agenda_origin = dict(previous_metadata["agenda_origin"])
+        recovered_memory = recover_optional_memory(parent_records)
+        if recovered_memory["intent"]:
+            intent_memory = recovered_memory["intent"]
+            intent_origin = recovered_memory["intent_origin"]
+        if recovered_memory["agenda"] is not None:
+            agenda_memory = recovered_memory["agenda"]
+            agenda_origin = recovered_memory["agenda_origin"]
         for record in parent_records:
-            if record.get("type") == "intent_update" and isinstance(record.get("intent"), str):
-                intent_memory = record["intent"]
-            elif record.get("type") == "forwarded_orders" and isinstance(record.get("intent"), str):
-                # A post-batch checkpoint can precede the intent_update emitted
-                # after the driver's successful status. Preserve it regardless.
-                intent_memory = record["intent"]
-            elif record.get("type") == "agenda_update" and isinstance(record.get("agenda"), dict):
-                agenda_memory = dict(record["agenda"])
-                pending_agenda_feedback = None
-            elif record.get("type") == "agenda_error":
+            if record.get("type") == "agenda_error":
                 # Undelivered at interruption: the resumed side still owes the
                 # player this explanation, so replay it rather than dropping it.
                 pending_agenda_feedback = {
@@ -3506,6 +3781,8 @@ def run(args: argparse.Namespace) -> int:
                 # The resumed side continues the turn the parent log left open,
                 # rather than opening a second identity for the same turn.
                 metadata["current_side_turn_id"] = record.get("side_turn_id")
+        metadata["agenda_origin"] = agenda_origin
+        metadata["intent_origin"] = intent_origin
         continuity_entries = replay_committed_continuity(parent_records)
         if resume_log:
             if events:
@@ -3636,10 +3913,26 @@ def run(args: argparse.Namespace) -> int:
             # that finalize_model_prompt adds; the playbook and response
             # contract are unchanged.
             model_prompt = model_prompt.rstrip() + "\n" + notice
+        # This suffix is part of one logical request's canonical prompt.  It
+        # is computed once before finalize_model_prompt; output-limit retries
+        # reuse delivered_prompt byte-for-byte, while the next logical request
+        # refreshes the sidecar measurement.
+        refresh_game_budget()
+        model_prompt = model_prompt.rstrip() + "\n" + game_budget_context(args, metadata)
         delivered_prompt = finalize_model_prompt(
             model_prompt, state if isinstance(state, dict) else {},
             allow_tools=allow_tools)
+        delivered_bytes = len(delivered_prompt.encode())
         delivered_regions = prompt_regions(delivered_prompt)
+        metadata["max_observed_prompt_bytes"] = max(
+            metadata["max_observed_prompt_bytes"], delivered_bytes)
+        if delivered_bytes > args.max_prompt_bytes:
+            # This is the final prompt, including volatile accounting and any
+            # repair/tool context. Check it at the single dispatch boundary so
+            # no path can send bytes that its telemetry did not measure.
+            raise PromptTooLarge(
+                "model_prompt_error: assembled prompt exceeds max_prompt_bytes "
+                f"({delivered_bytes}>{args.max_prompt_bytes})")
         request_sequence += 1
         request_id = f"{metadata.get('conversation_id', 'match')}:request:{request_sequence}"
         # Durable request context, written BEFORE dispatch so a call that never
@@ -3753,6 +4046,7 @@ def run(args: argparse.Namespace) -> int:
             apply_backend_settings(reply.cache, metadata, args)
             reply.request_id = request_id
             reply.prompt_hash = hashlib.sha256(delivered_prompt.encode()).hexdigest()
+            reply.prompt_bytes = delivered_bytes
             backend_cache = reply.cache if isinstance(reply.cache, dict) else {}
             request_state_path = backend_cache.get("request_state_path")
             if isinstance(request_state_path, str) and request_state_path:
@@ -3896,25 +4190,26 @@ def run(args: argparse.Namespace) -> int:
         elif tool == "inspect_target":
             unit_id = validate_inspect_target_request(decoded)
             result = query_inspect_target(exchange, unit_id, int(state.get("state_revision", 0)))
-            rendered = compact_target_inspection(result)
+            rendered = compact_target_inspection(enrich_target_inspection(result, state))
             record({"type": "tool_result", "tool": tool, "request": decoded,
                     "result_bytes": len(rendered.encode()), "body": result})
         elif tool == "inspect_units":
             unit_ids = validate_inspect_units_request(decoded)
             validate_friendly_inspect_units(unit_ids, state, args.llm_side)
             result = query_inspect_units(exchange, unit_ids, int(state.get("state_revision", 0)))
+            presentation_units = enrich_inspected_units(result, state)
             insp_choices = []
             if getattr(args, "action_encoding", "coordinates") == "choices":
                 insp_choices = extract_units_inspection_choices(
-                    result, metadata.get("conversation_id"), int(state.get("state_revision", 0)))
+                    presentation_units, metadata.get("conversation_id"), int(state.get("state_revision", 0)))
                 choice_registry.register_all(insp_choices)
-            rendered = compact_units_inspection(result, choices=insp_choices)
+            rendered = compact_units_inspection(presentation_units, choices=insp_choices)
             record({"type": "tool_result", "tool": tool, "request": decoded,
                     "result_bytes": len(rendered.encode()), "body": {"units": result}})
         elif tool == "inspect_targets":
             unit_ids = validate_inspect_targets_request(decoded)
             result = query_inspect_targets(exchange, unit_ids, int(state.get("state_revision", 0)))
-            rendered = compact_targets_inspection(result)
+            rendered = compact_targets_inspection([enrich_target_inspection(target, state) for target in result])
             record({"type": "tool_result", "tool": tool, "request": decoded,
                     "result_bytes": len(rendered.encode()), "body": {"targets": result}})
         else:
@@ -3928,6 +4223,24 @@ def run(args: argparse.Namespace) -> int:
             "\nMODEL_TOOL_REQUEST_UNTRUSTED_DATA_END\n" +
             "TOOL_RESULT_UNTRUSTED_DATA_BEGIN tool=" + tool + "\n" +
             rendered + "\nTOOL_RESULT_UNTRUSTED_DATA_END\n")
+        if (getattr(args, "decision_mode", "batch") == "focused"
+                and tool in {"inspect_units", "inspect_target", "inspect_targets", "inspect_hex"}):
+            # The selected inspection and its facts form a short-lived local
+            # execution context. It is pinned to this revision and is carried
+            # only through follow-ups until an accepted action changes it.
+            if tool in {"inspect_units", "inspect_targets"}:
+                selected = decoded.get("unit_ids")
+            elif tool == "inspect_target":
+                selected = [decoded.get("unit_id")]
+            else:
+                selected = {key: decoded.get(key) for key in ("col", "row", "phase")}
+            tool_context += (
+                "FOCUSED_LOCAL_CONTEXT_BEGIN revision=%s tool=%s selected=%s\n"
+                "Use these exact inspected options for one useful operation; "
+                "global board, recruiter, economy, and opponent danger remain authoritative.\n"
+                "The preceding TOOL_RESULT block is the complete local fact set.\n"
+                "FOCUSED_LOCAL_CONTEXT_END\n" %
+                (state.get("state_revision", "unknown"), tool, selected))
         return tool_context, preview_candidates, tool
 
     def complete_tool_followup(prompt: str, tool_context: str, tool: str,
@@ -3946,25 +4259,30 @@ def run(args: argparse.Namespace) -> int:
             final_only=bool(isinstance(state, dict) and state.get("final_only")),
             remaining_partials=state.get("remaining_partial_batches") if isinstance(state, dict) else None)
         allow_tools = remaining_tools > 0 and remaining_model_calls > 1
-        delivered_followup = finalize_model_prompt(
-            followup_prompt, state, allow_tools=allow_tools)
-        followup_bytes = len(delivered_followup.encode())
-        if followup_bytes > args.max_prompt_bytes:
-            raise RuntimeError("model_prompt_error: tool results exceed max_prompt_bytes")
-        metadata["max_observed_prompt_bytes"] = max(metadata["max_observed_prompt_bytes"], followup_bytes)
         model_calls_this_turn += 1
         metadata["model_calls"] += 1
         reply = complete_model(followup_prompt, allow_tools=allow_tools)
         enforce_usage(reply, args)
         record({"type": "tool_followup", "tool": tool, "call": metadata["model_calls"],
-                "prompt_hash": reply.prompt_hash, "prompt_bytes": followup_bytes,
+                "prompt_hash": reply.prompt_hash, "prompt_bytes": reply.prompt_bytes,
                 "raw_output": reply.text, "usage": reply.usage})
         if reply.usage is None:
             metadata["usage_measured"] = False
         return reply
+
+    def emit_prompt_too_large(error: PromptTooLarge) -> int:
+        """Classify a final-prompt cap failure before any backend dispatch."""
+        set_terminal(metadata, TERMINAL_INFRASTRUCTURE,
+                     winner=None, reason="infrastructure_failure",
+                     code="prompt_too_large", message=str(error))
+        durable({"type": "preflight_error", **metadata,
+                 "bytes": metadata.get("max_observed_prompt_bytes"),
+                 "limit": args.max_prompt_bytes})
+        return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
+
     def capture_agenda(text: str, request_id: Optional[str] = None) -> None:
         """Stage a model agenda; commit it only after its action batch succeeds."""
-        nonlocal pending_agenda
+        nonlocal pending_agenda, pending_agenda_origin
         if not agenda_enabled:
             return
         # Called only for the final submitted response, never a discarded
@@ -3972,6 +4290,7 @@ def run(args: argparse.Namespace) -> int:
         # publish a replacement; committed memory remains unchanged.
         nonlocal pending_agenda_feedback
         pending_agenda = None
+        pending_agenda_origin = None
         candidate, error, changed = agenda_from_response(text, agenda_memory)
         if error:
             # The actions in this response still execute; only the optional
@@ -3991,6 +4310,12 @@ def run(args: argparse.Namespace) -> int:
             return
         if changed:
             pending_agenda = candidate
+            pending_agenda_origin = {
+                "origin_request_id": request_id or "unknown",
+                "origin_turn": state.get("turn") if isinstance(state, dict) else "unknown",
+                "origin_revision": state.get("state_revision") if isinstance(state, dict) else "unknown",
+                "origin_side_turn_id": metadata.get("current_side_turn_id", "unknown"),
+            }
             record({"type": "agenda_proposed", "agenda": candidate})
     refresh_game_budget()
     record({"type": "metadata", **metadata, "driver_command": cmd,
@@ -4055,6 +4380,9 @@ def run(args: argparse.Namespace) -> int:
                             ("path", "digest", "state_revision", "side_turns",
                              "boundary", "pending_opponent_turn") if key in line},
                          "intent": pending_intent or intent_memory}
+                checkpoint_record["intent_origin"] = pending_intent_origin or intent_origin
+                checkpoint_record["agenda"] = pending_agenda or agenda_memory
+                checkpoint_record["agenda_origin"] = pending_agenda_origin or agenda_origin
                 # The driver publishes this checkpoint before acknowledging
                 # the action batch. Link and fsync the evidence before reading
                 # the status response, closing the lost-acknowledgement gap.
@@ -4089,13 +4417,21 @@ def run(args: argparse.Namespace) -> int:
                     last_forwarded_results = line["results"]
                 if failure is None and pending_action and pending_intent is not None:
                     intent_memory = pending_intent
-                    record({"type": "intent_update", "intent": intent_memory})
+                    intent_origin = dict(pending_intent_origin) if isinstance(pending_intent_origin, dict) else None
+                    metadata["intent_origin"] = intent_origin
+                    record({"type": "intent_update", "intent": intent_memory,
+                            "origin": intent_origin})
                     pending_intent = None
+                    pending_intent_origin = None
                 if failure is None and pending_action and pending_agenda is not None:
                     agenda_memory = dict(pending_agenda)
                     metadata["agenda"] = agenda_memory
-                    record({"type": "agenda_update", "agenda": agenda_memory})
+                    agenda_origin = dict(pending_agenda_origin) if isinstance(pending_agenda_origin, dict) else None
+                    metadata["agenda_origin"] = agenda_origin
+                    record({"type": "agenda_update", "agenda": agenda_memory,
+                            "origin": agenda_origin})
                     pending_agenda = None
+                    pending_agenda_origin = None
                     # A valid replacement supersedes any outstanding complaint.
                     pending_agenda_feedback = None
                 if failure is None and pending_action and pending_finish_kind is not None:
@@ -4150,9 +4486,11 @@ def run(args: argparse.Namespace) -> int:
                 if failure is not None:
                     # A rejected batch cannot publish its client-only agenda.
                     pending_agenda = None
+                    pending_agenda_origin = None
                     # The rejected batch must not leave its intent queued for
                     # the repair's eventual status response.
                     pending_intent = None
+                    pending_intent_origin = None
                     # The proposal's intent explains an uncommitted batch. Do
                     # not carry it into a repair that omits a replacement;
                     # an already committed intent remains in intent_memory.
@@ -4178,6 +4516,7 @@ def run(args: argparse.Namespace) -> int:
                             enforce_usage(repaired, args)
                             record({"type": "action_repair", "call": metadata["model_calls"],
                                     "prompt_hash": repaired.prompt_hash,
+                                    "prompt_bytes": repaired.prompt_bytes,
                                     "raw_output": repaired.text, "usage": repaired.usage,
                                     "engine_error": failure})
                             if repaired.usage is None:
@@ -4212,6 +4551,7 @@ def run(args: argparse.Namespace) -> int:
                                 record({"type": "action_repair_followup",
                                         "call": metadata["model_calls"],
                                         "prompt_hash": followup.prompt_hash,
+                                        "prompt_bytes": followup.prompt_bytes,
                                         "raw_output": followup.text, "usage": followup.usage,
                                         "rejected_tool": repaired.text})
                                 if followup.usage is None:
@@ -4225,6 +4565,8 @@ def run(args: argparse.Namespace) -> int:
                         except (RuntimeError, ValueError) as repair_error:
                             if isinstance(repair_error, RuntimeError) and "max_game_total_tokens_exhausted" in str(repair_error):
                                 return emit_budget_interrupted("max_game_total_tokens_exhausted", str(repair_error))
+                            if isinstance(repair_error, PromptTooLarge):
+                                return emit_prompt_too_large(repair_error)
                             # ValueError comes from validate_orders: the model's
                             # repaired output was still not a legal batch.
                             # RuntimeError comes from the backend or usage
@@ -4258,6 +4600,12 @@ def run(args: argparse.Namespace) -> int:
                                 "decision_annotation": final_reply.decision_annotation,
                                 "prompt_hash": final_reply.prompt_hash,
                                 "repair": True, "intent": turn_intent,
+                                "intent_origin": ({
+                                    "origin_request_id": final_reply.request_id if final_reply is not None else "unknown",
+                                    "origin_turn": state.get("turn", "unknown"),
+                                    "origin_revision": state.get("state_revision", "unknown"),
+                                    "origin_side_turn_id": metadata.get("current_side_turn_id", "unknown"),
+                                } if turn_intent is not None else None),
                                 "authored_finish_kind": pending_finish_kind,
                                 "handoff_audit": final_audit,
                                 "action_encoding": "choices" if (authored_choices is not None) else "coordinates",
@@ -4285,6 +4633,12 @@ def run(args: argparse.Namespace) -> int:
                             durable({"type": "terminal", **metadata})
                             return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
                         pending_intent = turn_intent
+                        pending_intent_origin = ({
+                            "origin_request_id": final_reply.request_id if final_reply is not None else "unknown",
+                            "origin_turn": state.get("turn", "unknown"),
+                            "origin_revision": state.get("state_revision", "unknown"),
+                            "origin_side_turn_id": metadata.get("current_side_turn_id", "unknown"),
+                        } if turn_intent is not None else None)
                         continue
                     metadata["rejected_batches"] += 1
                     metadata["rejected_action_items"] += sum(
@@ -4460,19 +4814,16 @@ def run(args: argparse.Namespace) -> int:
                                     recruit_batch_enabled=not args.no_recruit_macro,
                                     compact=not getattr(args, "diagnostic", False),
                                     intent=intent_memory,
+                                    intent_origin=intent_origin,
                                     continuity=continuity,
                                     agenda=agenda_memory if agenda_enabled else None,
+                                    agenda_origin=agenda_origin,
                                     sweep=sweep,
                                     trend=compact_trend(trend_states), playbook=playbook,
                                     action_encoding=encoding,
                                     choices=prompt_choices,
                                     decision_mode=getattr(args, "decision_mode", "batch"))
-                delivered_prompt = finalize_model_prompt(prompt, state)
-                prompt_bytes = delivered_prompt.encode()
-                prompt_hash = hashlib.sha256(prompt_bytes).hexdigest()
                 regions = prompt_regions(prompt)
-                metadata["max_observed_prompt_bytes"] = max(
-                    metadata["max_observed_prompt_bytes"], len(prompt_bytes))
                 danger_before = any(
                     isinstance(recruiter, dict) and
                     (_positive_lethal(recruiter.get("lethal_attackers_needed")) or
@@ -4480,17 +4831,6 @@ def run(args: argparse.Namespace) -> int:
                     for recruiter in state.get("tactical_surface", {}).get("threats", {}).get("recruiters", []))
                 if danger_before:
                     metadata["turns_with_lethal_danger_before"] += 1
-                if len(prompt_bytes) > args.max_prompt_bytes:
-                    # A configuration/harness fault: the client built a prompt it
-                    # was told not to send. Not the model's failure -- the model
-                    # never saw it.
-                    set_terminal(metadata, TERMINAL_INFRASTRUCTURE,
-                                 winner=None, reason="infrastructure_failure",
-                                 code="prompt_too_large",
-                                 message="assembled prompt exceeds max_prompt_bytes")
-                    durable({"type": "preflight_error", **metadata,
-                             "bytes": len(prompt_bytes), "limit": args.max_prompt_bytes})
-                    return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
                 if model_calls_this_turn >= metadata["max_model_calls_per_turn"]:
                     return emit_budget_interrupted(
                         "model_calls_budget_exhausted",
@@ -4506,8 +4846,8 @@ def run(args: argparse.Namespace) -> int:
                     final_reply = reply
                     enforce_usage(reply, args)
                     record({"type": "model", "call": metadata["model_calls"],
-                            "prompt_hash": reply.prompt_hash, "prompt_bytes": len(prompt_bytes),
-                            "legacy_prompt_bytes": len(prompt_bytes),
+                            "prompt_hash": reply.prompt_hash, "prompt_bytes": reply.prompt_bytes,
+                            "legacy_prompt_bytes": reply.prompt_bytes,
                             **regions,
                             "raw_output": reply.text, "usage": reply.usage,
                             "cache": reply.cache})
@@ -4630,6 +4970,7 @@ def run(args: argparse.Namespace) -> int:
                         enforce_usage(repaired, args)
                         record({"type": "repair", "call": metadata["model_calls"],
                                 "prompt_hash": repaired.prompt_hash,
+                                "prompt_bytes": repaired.prompt_bytes,
                                 "raw_output": repaired.text, "usage": repaired.usage,
                                 "validation_error": str(first)})
                         if repaired.usage is None:
@@ -4674,6 +5015,8 @@ def run(args: argparse.Namespace) -> int:
                         return emit_budget_interrupted("max_game_total_tokens_exhausted", str(first))
                     if isinstance(first, ModelCallBudgetExhausted):
                         return emit_budget_interrupted("model_calls_budget_exhausted", str(first))
+                    if isinstance(first, PromptTooLarge):
+                        return emit_prompt_too_large(first)
                     # Same split: a ValueError here means the model failed
                     # validation twice (initial plus repair).
                     if (isinstance(first, RuntimeError)
@@ -4748,7 +5091,7 @@ def run(args: argparse.Namespace) -> int:
                                                 "review_id": active_review_id,
                                                 "original_candidate_digest": original_digest,
                                                 "prompt_hash": reviewed.prompt_hash,
-                                                "prompt_bytes": len(finalize_model_prompt(review_prompt, state, allow_tools=False).encode()),
+                                                "prompt_bytes": reviewed.prompt_bytes,
                                                 "raw_output": reviewed.text, "body": draft_preview,
                                                 "handoff_audit": audit})
                                         try:
@@ -4771,7 +5114,7 @@ def run(args: argparse.Namespace) -> int:
                                             enforce_usage(repaired_review, args)
                                             record({"type": "draft_review_repair", "call": metadata["model_calls"],
                                                     "prompt_hash": repaired_review.prompt_hash,
-                                                    "prompt_bytes": len(finalize_model_prompt(repair_prompt, state, allow_tools=False).encode()),
+                                                    "prompt_bytes": repaired_review.prompt_bytes,
                                                     "raw_output": repaired_review.text,
                                                     "validation_error": str(review_validation_error)})
                                             revised_orders = validate_model_orders(repaired_review.text)
@@ -4779,6 +5122,8 @@ def run(args: argparse.Namespace) -> int:
                                     except RuntimeError as review_runtime_error:
                                         if "max_game_total_tokens_exhausted" in str(review_runtime_error):
                                             return emit_budget_interrupted("max_game_total_tokens_exhausted", str(review_runtime_error))
+                                        if isinstance(review_runtime_error, PromptTooLarge):
+                                            return emit_prompt_too_large(review_runtime_error)
                                         raise
                                     draft_orders = orders
                                     if revised_orders == draft_orders:
@@ -4844,7 +5189,7 @@ def run(args: argparse.Namespace) -> int:
                                     "review_id": active_review_id,
                                     "original_candidate_digest": original_digest,
                                     "prompt_hash": repaired_review.prompt_hash,
-                                    "prompt_bytes": len(finalize_model_prompt(repair_prompt, state, allow_tools=False).encode()),
+                                    "prompt_bytes": repaired_review.prompt_bytes,
                                     "raw_output": repaired_review.text,
                                     "candidate_error": review_error.as_dict()})
                             revised_orders = validate_model_orders(repaired_review.text)
@@ -4859,6 +5204,8 @@ def run(args: argparse.Namespace) -> int:
                         except RuntimeError as repair_error:
                             if "max_game_total_tokens_exhausted" in str(repair_error):
                                 return emit_budget_interrupted("max_game_total_tokens_exhausted", str(repair_error))
+                            if isinstance(repair_error, PromptTooLarge):
+                                return emit_prompt_too_large(repair_error)
                             set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
                                          reason="infrastructure_failure",
                                          code="model_backend_failure",
@@ -4993,6 +5340,7 @@ def run(args: argparse.Namespace) -> int:
                             record({"type": "action_repair", "call": metadata["model_calls"],
                                     "attempt": model_calls_this_turn,
                                     "prompt_hash": repaired.prompt_hash,
+                                    "prompt_bytes": repaired.prompt_bytes,
                                     "raw_output": repaired.text, "usage": repaired.usage,
                                     "engine_error": rejected_error})
                             decoded_repair = parse_action_response(repaired.text)
@@ -5009,25 +5357,27 @@ def run(args: argparse.Namespace) -> int:
                                     unit_id = validate_inspect_target_request(decoded_repair)
                                     result = query_inspect_target(
                                         exchange, unit_id, int(state.get("state_revision", 0)))
-                                    rendered = compact_target_inspection(result)
+                                    rendered = compact_target_inspection(enrich_target_inspection(result, state))
                                 elif tool == "inspect_units":
                                     unit_ids = validate_inspect_units_request(decoded_repair)
                                     validate_friendly_inspect_units(
                                         unit_ids, state, args.llm_side)
                                     result = query_inspect_units(
                                         exchange, unit_ids, int(state.get("state_revision", 0)))
+                                    presentation_units = enrich_inspected_units(result, state)
                                     insp_choices = []
                                     if getattr(args, "action_encoding", "coordinates") == "choices":
                                         insp_choices = extract_units_inspection_choices(
-                                            result, metadata.get("conversation_id"),
+                                            presentation_units, metadata.get("conversation_id"),
                                             int(state.get("state_revision", 0)))
                                         choice_registry.register_all(insp_choices)
-                                    rendered = compact_units_inspection(result, choices=insp_choices)
+                                    rendered = compact_units_inspection(presentation_units, choices=insp_choices)
                                 elif tool == "inspect_targets":
                                     unit_ids = validate_inspect_targets_request(decoded_repair)
                                     result = query_inspect_targets(
                                         exchange, unit_ids, int(state.get("state_revision", 0)))
-                                    rendered = compact_targets_inspection(result)
+                                    rendered = compact_targets_inspection(
+                                        [enrich_target_inspection(target, state) for target in result])
                                 else:
                                     col, row, phase = validate_inspect_hex_request(decoded_repair)
                                     result = query_inspect_hex(
@@ -5040,6 +5390,15 @@ def run(args: argparse.Namespace) -> int:
                                     "\nMODEL_REPAIR_TOOL_REQUEST_UNTRUSTED_DATA_END\n" +
                                     "TOOL_RESULT_UNTRUSTED_DATA_BEGIN tool=" + tool + ":\n" +
                                     rendered + "\nTOOL_RESULT_UNTRUSTED_DATA_END\n")
+                                if getattr(args, "decision_mode", "batch") == "focused":
+                                    selected = (decoded_repair.get("unit_ids") if tool in {"inspect_units", "inspect_targets"}
+                                                else [decoded_repair.get("unit_id")] if tool == "inspect_target" else
+                                                {key: decoded_repair.get(key) for key in ("col", "row", "phase")})
+                                    repair_tool_context += (
+                                        "FOCUSED_LOCAL_CONTEXT_BEGIN revision=%s tool=%s selected=%s\n"
+                                        "Use the preceding repair TOOL_RESULT as the exact local fact set; global board, recruiter, economy, "
+                                        "and opponent danger remain authoritative.\nFOCUSED_LOCAL_CONTEXT_END\n" %
+                                        (state.get("state_revision", "unknown"), tool, selected))
                                 continue
                             orders = validate_model_orders(repaired.text)
                             repaired_intent = response_intent(repaired.text)
@@ -5059,6 +5418,8 @@ def run(args: argparse.Namespace) -> int:
                         except RuntimeError as repair_error:
                             if "max_game_total_tokens_exhausted" in str(repair_error):
                                 return emit_budget_interrupted("max_game_total_tokens_exhausted", str(repair_error))
+                            if isinstance(repair_error, PromptTooLarge):
+                                return emit_prompt_too_large(repair_error)
                             set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
                                          reason="infrastructure_failure",
                                          code="validate_batch_error",
@@ -5153,6 +5514,12 @@ def run(args: argparse.Namespace) -> int:
                              else inapplicable_annotation(playbook),
                          "prompt_hash": final_reply.prompt_hash if final_reply is not None else None,
                          "intent": turn_intent,
+                         "intent_origin": ({
+                             "origin_request_id": final_reply.request_id if final_reply is not None else "unknown",
+                             "origin_turn": state.get("turn", "unknown"),
+                             "origin_revision": state.get("state_revision", "unknown"),
+                             "origin_side_turn_id": metadata.get("current_side_turn_id", "unknown"),
+                         } if turn_intent is not None else None),
                          "authored_finish_kind": pending_finish_kind,
                          "review_id": active_review_id,
                          "handoff_audit": final_audit,
@@ -5183,6 +5550,12 @@ def run(args: argparse.Namespace) -> int:
                     return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
                 pending_action = True
                 pending_intent = turn_intent
+                pending_intent_origin = ({
+                    "origin_request_id": final_reply.request_id if final_reply is not None else "unknown",
+                    "origin_turn": state.get("turn", "unknown"),
+                    "origin_revision": state.get("state_revision", "unknown"),
+                    "origin_side_turn_id": metadata.get("current_side_turn_id", "unknown"),
+                } if turn_intent is not None else None)
                 event_intervals.append(event_window)
                 event_window = []
             elif line.get("type") == "events":
