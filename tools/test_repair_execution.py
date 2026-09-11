@@ -134,14 +134,14 @@ class RepairExecutionIntegrationTests(unittest.TestCase):
             reviews = [r for r in records if r.get("type") == "draft_review"]
             self.assertEqual(len(requests), 2, "draft plus exactly one client review call")
             self.assertEqual(len(reviews), 1)
-            self.assertIn("SAMPLED_TRANSITION candidate_index=1 originating_revision=338 status=known",
+            self.assertIn("SAMPLED_TRANSITION candidate_index=1 friendly_side=0 originating_revision=338 interval=own_finish_to_opponent_response status=known",
                           requests[1]["prompt"])
             review_body = reviews[0]["body"]
             self.assertEqual(review_body["state_revision"], 338)
             self.assertTrue(review_body["candidates"][1]["valid"])
             self.assertIsNone(review_body["candidates"][1]["exposure"])
             self.assertNotEqual(review_body["candidates"][1]["post_sweep"]["stages"]["post_finish"]["state_revision"], 338)
-            self.assertIn("SAMPLED_OPPONENT_CASUALTIES status=known casualty_ids=U19", requests[1]["prompt"])
+            self.assertIn("SAMPLED_FRIENDLY_CASUALTIES side=0 candidate_index=1 originating_revision=338 interval=own_finish_to_opponent_response status=known casualty_ids=U19", requests[1]["prompt"])
             self.assertEqual(reviews[0]["handoff_audit"].get("trigger_reasons"), [])
             self.assertIn("SIMULATION", requests[1]["prompt"])
             forwarded = [r for r in records if r.get("type") == "forwarded_orders"]

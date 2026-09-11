@@ -90,6 +90,96 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual(result["state_revision"], 137)
         self.assertNotIn("state_revision", body)
 
+    def test_preview_accepts_each_complete_finish_kind_once(self):
+        for finish in ("DoneWithImportantMoves", "EndTurn", "FinishWithGreedy"):
+            action = {"action": finish}
+            if finish == "FinishWithGreedy":
+                action.update(groups=[], holds=[])
+            request = json.dumps({"tool": "preview_batch", "candidates": [[action]]})
+            self.assertEqual(llm_client.validate_preview_request(request), [[action]])
+        with self.assertRaisesRegex(ValueError, "exactly one final turn boundary"):
+            llm_client.validate_preview_request(
+                '{"tool":"preview_batch","candidates":[[{"action":"MoveGroupToward","unit_ids":[1],"col":1,"row":1}]]}')
+
+    def test_draft_rationale_is_bounded_and_marks_absence(self):
+        absent = llm_client.draft_rationale_block()
+        self.assertIn("DRAFT_RATIONALE_UNTRUSTED_DATA_BEGIN", absent)
+        self.assertIn('"intent":"absent"', absent)
+        self.assertIn('"status":"absent"', absent)
+        annotation = {"status": "valid", "guide_version": "tactics-v1",
+                      "decisions": [{"orders": [0], "rules": ["T7"],
+                                      "expected": "x" * 240, "risk": "y" * 240}]
+                      }
+        rendered = llm_client.draft_rationale_block("focus", annotation)
+        self.assertLessEqual(len(rendered.encode()), 16 * 1024)
+        self.assertIn('"intent":"focus"', rendered)
+        malformed = llm_client.draft_rationale_block(
+            "é" * 5000, {"status": "s" * 100000, "error": "e" * 100000})
+        self.assertLessEqual(len(malformed.encode()), 16 * 1024)
+        self.assertIn('"truncated":true', malformed)
+        dense = {"status": "valid", "guide_version": "tactics-v1",
+                 "guide_hash": "h" * 64,
+                 "decisions": [{"orders": [index], "rules": ["T7"],
+                                 "expected": "é" * 120, "risk": "ß" * 120}
+                                for index in range(16)]}
+        dense_rendered = llm_client.draft_rationale_block("é" * 256, dense)
+        self.assertLessEqual(len(dense_rendered.encode()), 16 * 1024)
+        self.assertIn('"status":"valid"', dense_rendered)
+        self.assertIn('"expected":"ééé', dense_rendered)
+        self.assertNotIn('"truncated":true', dense_rendered)
+
+    def test_preview_renders_sampled_identity_for_each_candidate(self):
+        candidates = [
+            [{"action": "Move", "unit_id": 3, "col": 1, "row": 1},
+             {"action": "EndTurn"}],
+            [{"action": "Move", "unit_id": 4, "col": 2, "row": 1},
+             {"action": "FinishWithGreedy", "groups": [], "holds": []}],
+        ]
+        preview = {"state_revision": 77, "sampling": True, "candidates": [
+            {"valid": True, "post_sweep": {"sampling": True,
+             "coverage": {"own_finish": True, "opponent_response": True}, "stages": {
+                 "post_finish": {"units_detail": [{"unit_id": 3, "side": 0,
+                     "position": {"col": 1, "row": 1}}]},
+                 "post_opponent": {"units_detail": []}}}},
+            {"valid": True, "post_sweep": {"sampling": True,
+             "coverage": {"own_finish": True, "opponent_response": True}, "stages": {
+                 "post_finish": {"units_detail": [{"unit_id": 4, "side": 0,
+                     "position": {"col": 2, "row": 1}}]},
+                 "post_opponent": {"units_detail": []}}}},
+        ]}
+        rendered = llm_client.compact_batch_preview(
+            preview, state={"active_faction": 0, "units": [
+                {"id": 3, "faction": 0, "col": 1, "row": 1},
+                {"id": 4, "faction": 0, "col": 2, "row": 1}]},
+            friendly_side=0, candidate_orders=candidates,
+            candidate_roles=["candidate", "candidate"])
+        self.assertIn("C0 identity=", rendered)
+        self.assertIn("C1 identity=", rendered)
+        self.assertEqual(rendered.count("role=candidate"), 2)
+        self.assertNotIn("role=baseline", rendered)
+        self.assertIn("C0 SAMPLED_FRIENDLY_CASUALTIES side=0 candidate_index=0", rendered)
+        self.assertIn("C1 SAMPLED_FRIENDLY_CASUALTIES side=0 candidate_index=1", rendered)
+        self.assertIn("casualty_ids=U3", rendered)
+        self.assertIn("casualty_ids=U4", rendered)
+
+    def test_continuity_qualifies_controlled_opponent_and_unknown_casualties(self):
+        event = lambda source, unit: {
+            "kind": "attack", "source": source,
+            "attacker": {"unit": unit, "killed": False},
+            "defender": {"unit": unit + 100, "killed": True},
+        }
+        summary = llm_client.format_committed_action_summary(
+            [{"action": "EndTurn"}],
+            [event("llm", 1), event("delegated_greedy", 2),
+             event("greedy", 3), event("future", 4)], 7, 8)
+        self.assertIn("controlled_casualties=U101,U102 interval=controlled_action", summary)
+        self.assertIn("opponent_response_casualties=U103 interval=opponent_response", summary)
+        self.assertIn("unknown_source_casualties=U104 interval=unknown", summary)
+        self.assertIn("sources=delegated_greedy,llm", summary)
+        self.assertIn("sources=greedy", summary)
+        self.assertIn("sources=future", summary)
+        self.assertNotIn("casualties=U101,U102,U103,U104", summary)
+
     def test_resolved_driver_hash_is_exact_executable_digest(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "driver"
@@ -164,6 +254,18 @@ class ClientValidationTests(unittest.TestCase):
                                         and r.get("review_id") == draft_record.get("review_id"))
                         self.assertEqual(decision.get("request_id"), requests[-1]["request_id"])
                         self.assertEqual(decision.get("side_turn_id"), draft_record.get("side_turn_id"))
+
+    def test_review_prompt_carries_only_bounded_draft_rationale(self):
+        draft = self.annotated_orders("draft objective")
+        final = self.annotated_orders("confirmed objective")
+        records, requests, _ = self.run_annotation_path([draft, final], review=True)
+        review_request = requests[-1]
+        self.assertIn("DRAFT_ACTIONS_UNTRUSTED_DATA_BEGIN", review_request["prompt"])
+        self.assertIn("DRAFT_RATIONALE_UNTRUSTED_DATA_BEGIN", review_request["prompt"])
+        self.assertIn('"intent":"draft objective"', review_request["prompt"])
+        self.assertIn('"status":"valid"', review_request["prompt"])
+        self.assertNotIn("hidden reasoning", review_request["prompt"])
+        self.assertEqual(len(review_request["prompt"].encode()), review_request["prompt_bytes"])
 
     def test_review_omitting_agenda_discards_draft_stage(self):
         draft = json.dumps({
@@ -272,6 +374,12 @@ class ClientValidationTests(unittest.TestCase):
             [r["intent"] for r in records if r["type"] == "intent_update"],
             ["committed intent"],
         )
+        repair_request = [r for r in records if r["type"] == "model_request"][-1]
+        self.assertIn("DRAFT_ACTIONS_UNTRUSTED_DATA_BEGIN", repair_request["prompt"])
+        self.assertIn('"action":"Attack"', repair_request["prompt"])
+        self.assertIn("DRAFT_RATIONALE_UNTRUSTED_DATA_BEGIN", repair_request["prompt"])
+        self.assertIn('"intent":"rejected intent"', repair_request["prompt"])
+        self.assertIn('"status":"valid"', repair_request["prompt"])
 
     def test_engine_repair_can_commit_its_own_intent(self):
         rejected = self.annotated_orders(
@@ -337,6 +445,11 @@ class ClientValidationTests(unittest.TestCase):
             [r["intent"] for r in records if r["type"] == "intent_update"],
             ["committed intent", "repaired intent"],
         )
+        repair_request = [r for r in records if r["type"] == "model_request"][-1]
+        self.assertIn("DRAFT_ACTIONS_UNTRUSTED_DATA_BEGIN", repair_request["prompt"])
+        self.assertIn("DRAFT_RATIONALE_UNTRUSTED_DATA_BEGIN", repair_request["prompt"])
+        self.assertIn('"intent":"rejected intent"', repair_request["prompt"])
+        self.assertIn('"status":"valid"', repair_request["prompt"])
 
     def test_rejected_review_repair_does_not_commit_draft_intent(self):
         old = self.annotated_orders("committed intent")
@@ -1147,7 +1260,8 @@ class ClientValidationTests(unittest.TestCase):
         simulation, after = simulation.split("SIMULATION — NOT EXECUTED END", 1)
         self.assertIn("originating_revision=130 sampling=True", simulation)
         self.assertIn('POST_OPPONENT [{"recruiters":0,"side":0}]', simulation)
-        self.assertIn("POST_OPPONENT_UNITS []", simulation)
+        self.assertNotIn("POST_OPPONENT_UNITS", simulation)
+        self.assertNotIn("POST_FINISH_UNITS", simulation)
         self.assertNotIn("AUTHORITATIVE_LIVE_STATE_BEGIN", simulation)
         self.assertIn("Candidate rosters, gold, casualties, villages, and threats are hypothetical", after)
         live_reminder = after.split("AUTHORITATIVE_LIVE_STATE_BEGIN", 1)[1]
@@ -1942,7 +2056,7 @@ class ClientValidationTests(unittest.TestCase):
                 "COORDS=col,row", '"tool":"inspect_units"', "Move destination", "compact R `open`",
                 "RecruitBatch", "MoveGroupToward", "nonfinal", "moved/skipped", "explain deliberate saving",
                 "For an uncertain attack origin, inspect the", "before retreat or deployment, inspect the specific unit",
-                "Read-only inspection supplies facts", "Engage failures retain the engine code/message",
+                "Read-only inspection supplies facts", "Engage current hex is stationary, no Move",
                 '"tool":"inspect_target"', '"tool":"inspect_units"'):
             with self.subTest(text=text):
                 self.assertIn(text, prompt)
@@ -1962,6 +2076,17 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn('"choices": ["<handle>", ...]', choices_prompt)
         self.assertIn('"actions": [...', choices_prompt)
         self.assertIn("MoveGroupToward", choices_prompt)
+
+    def test_incremental_prompt_describes_batch_observation_and_nested_indices(self):
+        prompt = prompt_for(
+            {"incremental_turns": True, "tactical_surface": {"units": []}}, [])
+        self.assertIn("Observe after accepted batches only", prompt)
+        self.assertIn("no intermediate observation", prompt)
+        self.assertIn("Engage current hex is stationary, no Move", prompt)
+        self.assertIn("failed_index is authored top-level index", prompt)
+        self.assertIn("choice index differs", prompt)
+        self.assertIn("Nested failures keep step/subaction", prompt)
+        self.assertNotIn("Observe fresh state after each step", prompt)
 
     def test_focused_prompt_makes_bare_tools_and_incremental_intent_explicit(self):
         prompt = prompt_for(

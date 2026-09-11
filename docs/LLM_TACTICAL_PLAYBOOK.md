@@ -55,9 +55,9 @@ recruiter safety, contested combat, and irreversible losses.
   enables a named kill, objective, or necessary sacrifice; useful attrition
   need not guarantee a kill. Use favorable terrain, supported
   frontlines, and weapon matchups (melee avoids ranged retaliation). Rotate
-  wounded units behind healthy replacements toward verified
-  healing: name the healing hex or regeneration ability. Verify recovery
-  occurred; preserve veteran value. Once routine meets the objective at
+  wounded units behind healthy replacements; survival can precede healing.
+  When healing matters, name the verified healing hex or regeneration ability
+  and check recovery; preserve veteran value. Once routine meets the objective at
   acceptable risk, stop; consequential combat still warrants one legal
   alternative.
 - **T5.** Compare both alignments and the next enemy turn's time of day.
@@ -79,15 +79,16 @@ recruiter safety, contested combat, and irreversible losses.
   omissions. Distinguish remaining movement and attack flags from actual
   `attack_coverage`; an unused attack flag alone does not prove a legal target.
   Delegate routine healthy units; use selective finishing to retain scouts,
-  healing moves, and screens. Hold for a concrete purpose. Explain only
-  consequential idle units or deliberate saving.
+  healing moves, and screens. Hold for a concrete purpose with a condition for
+  revisiting or release; do not treat a hold as a permanent garrison. Explain
+  only consequential idle units or deliberate saving.
 - **T8 — Concede a clearly lost game.** Resign only when live facts leave no
   credible recovery or victory route; name why. A bad roll, deficit, or one
   simulated loss is insufficient.
 
 Have a useful action with established legality and acceptable risk? Submit it
-now. Inspect a specific missing fact when necessary. Reconsider only when new
-evidence changes the decision; do not restart the whole plan. Routine
+now. Inspect a specific missing fact when necessary. Reconsider on new evidence
+or a mistaken/stale assumption; do not restart the plan. Routine
 explanations stay brief but satisfy the contract; never trade legality for
 speed or call all combat simple. Forecasts remain uncertain; simulation is
 not live state.

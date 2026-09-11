@@ -776,7 +776,9 @@ or one read-only preview request containing one or two complete candidate arrays
 {"tool":"preview_batch","candidates":[[{"action":"EndTurn"}],[{"action":"Move","unit_id":12,"col":4,"row":7},{"action":"EndTurn"}]]}
 ```
 
-Each candidate follows the same action-batch rules as a final response. The
+Each candidate follows the same action-batch rules as a final response and
+must end with exactly one of `DoneWithImportantMoves`, `EndTurn`, or
+`FinishWithGreedy`; a candidate without a complete finish is rejected. The
 preview does not submit actions or mutate the live state. A player-requested
 preview uses `mode=bounded_rollout`, giving a labeled sampled comparison of one
 or two candidates through the candidate finish and at most one Greedy opponent
@@ -793,9 +795,11 @@ villages, and winners are hypothetical and do not
 replace the live observation. It never mutates live state or claims that one
 sampled branch is a probability or a best move. Queries themselves execute no
 actions. Automatic review also renders a compact sampled transition for the
-actual proposed candidate: movement through the own-finish stage and friendly
-casualty IDs between the post-finish and post-opponent stages. It includes the
-originating live revision and candidate index. A missing stage, side identity,
+actual proposed candidate: friendly movement through the own-finish stage and
+friendly casualty IDs between the post-finish and post-opponent stages. Each
+line identifies the friendly side, originating live revision, candidate index,
+and whether it covers the initial-to-own-finish or own-finish-to-opponent-
+response interval. A missing stage, side identity,
 invalid candidate, or false coverage remains unknown; an empty fully covered
 post-opponent roster means the sampled units were absent in that branch. These
 are simulation facts only and do not veto or mutate a legal draft. The model
@@ -848,7 +852,11 @@ model-call bound. Every tool follow-up reports the remaining budget. When no
 tool call remains, the follow-up requires final actions only. If the model requests
 another tool anyway, the client does not execute it; its correction prompt
 retains all prior tool results and requires final actions. A second
-`preview_batch` request is still not accepted.
+`preview_batch` request is still not accepted. Review and repair prompts carry
+the draft action list beside a bounded `DRAFT_RATIONALE_UNTRUSTED_DATA` block
+containing only validated intent and decision metadata; an absent marker is
+used when that rationale is unavailable. Rejected drafts are never committed
+as continuity memory.
 
 The normal card summarizes each unit with its current odd-r `(col,row)` hex,
 legal movement destinations, live moved/attacked flags, attackable target IDs,
@@ -933,7 +941,8 @@ be empty when every remaining unit is protected. Each hold reason is a string
 of at most 120 characters (the client counts characters, not UTF-8 bytes), and
 held IDs must be disjoint from delegated group IDs and from other held IDs.
 Explain consequential holds with the existing reason, expected, and risk
-fields.
+fields; give a concrete purpose and a condition for revisiting or releasing a
+hold. A hold is turn-local execution policy, not a permanent garrison.
 
 `MoveGroupToward` has integer `col` and `row`, plus a `unit_ids` array
 containing one to eight unique living friendly IDs. It is a nonfinal
@@ -955,6 +964,20 @@ provider/model/query failures are infrastructure-invalid results with a nonzero
 client exit, not gameplay losses or draws. A driver status rejection after
 forwarding an action is also recorded as infrastructure-invalid so the client
 cannot wait indefinitely for a new boundary.
+
+`Engage` may use an attacker already on a legal current attack hex: put that
+current coordinate in its step and do not add a `Move`. A driver validation
+`failed_index` identifies the submitted top-level action-array entry before
+`Engage` or `MoveGroupToward` expands internal steps. It is not a choices
+handle index when an `expansion_mapping` is present; nested failures retain
+their step/index and subaction context. In incremental mode, observe fresh
+state after each accepted batch. Primitive actions within one batch execute
+against its transactional observation without an intermediate model update.
+
+Committed continuity reports authored and delegated events separately from the
+automatic opponent response. Casualty IDs are qualified by `llm`,
+`delegated_greedy`, or `greedy`; an absent or unfamiliar source remains
+`unknown` rather than being attributed to the authored batch.
 
 ### Choices mode and action handles
 

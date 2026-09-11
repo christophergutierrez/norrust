@@ -1406,28 +1406,50 @@ def compact_hex_inspection(body: dict[str, Any]) -> str:
         body.get("visibility", "?"), inspection.get("occupant_id"), "|".join(attacks) or "none")
 
 
-def compact_batch_preview(preview: dict[str, Any], originating_revision: Any = None) -> str:
+def _candidate_order_digest(orders: Any) -> str | None:
+    if not isinstance(orders, list):
+        return None
+    try:
+        encoded = json.dumps(orders, sort_keys=True, separators=(",", ":")).encode()
+    except (TypeError, ValueError):
+        return None
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def compact_batch_preview(preview: dict[str, Any], originating_revision: Any = None,
+                          state: Optional[dict[str, Any]] = None,
+                          friendly_side: int | None = None,
+                          candidate_orders: Optional[list[list[dict[str, Any]]]] = None,
+                          candidate_roles: Optional[list[str]] = None) -> str:
     """Render candidate consequences without repeating detailed threat origins."""
     coverage = preview.get("coverage") or {}
     originating_revision = (preview.get("state_revision",
                                          preview.get("originating_state_revision", "unknown"))
                             if originating_revision is None else originating_revision)
+    side = friendly_side if friendly_side in (0, 1) else (
+        state.get("active_faction") if isinstance(state, dict) else None)
     lines = ["SIMULATION — NOT EXECUTED BEGIN phase=%s originating_revision=%s "
-             "forecast=%s coverage=%s sweep=%s sampling=%s" % (
+             "forecast=%s coverage=%s sweep=%s sampling=%s friendly_side=%s" % (
         preview.get("phase", "unknown"),
         originating_revision,
         coverage.get("forecast", "unknown"),
-        coverage.get("forecast", "unknown"),
+        coverage.get("overall", coverage.get("forecast", "unknown")),
         coverage.get("delegated_sweep", "unknown"),
-        preview.get("sampling", "?"))]
+        preview.get("sampling", "?"), side if side in (0, 1) else "unknown")]
     for index, candidate in enumerate(preview.get("candidates", [])):
         if not isinstance(candidate, dict):
             continue
         summary = candidate.get("summary", {})
-        lines.append("C%s valid=%s gold=%s>%s units=%s>%s" % (
-            index, candidate.get("valid", "?"), summary.get("gold_before", "?"),
-            summary.get("gold_after", "?"), summary.get("units_before", "?"),
-            summary.get("units_after", "?")))
+        order_digest = candidate.get("candidate_digest", candidate.get("digest"))
+        if not isinstance(order_digest, str) and isinstance(candidate_orders, list) and index < len(candidate_orders):
+            order_digest = _candidate_order_digest(candidate_orders[index])
+        identity = (order_digest[:16] if isinstance(order_digest, str) else "unknown")
+        role = (candidate_roles[index] if isinstance(candidate_roles, list) and index < len(candidate_roles)
+                else candidate.get("role", "unknown"))
+        lines.append("C%s identity=%s role=%s valid=%s gold=%s>%s units=%s>%s" % (
+            index, identity, role, candidate.get("valid", "?"),
+            summary.get("gold_before", "?"), summary.get("gold_after", "?"),
+            summary.get("units_before", "?"), summary.get("units_after", "?")))
         results = candidate.get("results", [])
         if isinstance(results, list):
             failure = next(((action_index, result) for action_index, result in enumerate(results)
@@ -1461,6 +1483,13 @@ def compact_batch_preview(preview: dict[str, Any], originating_revision: Any = N
                 if isinstance(stage, dict):
                     lines.append(" C%s %s=%s" % (
                         index, label.upper(), json.dumps(stage.get("sides", []), separators=(",", ":"))))
+            # The detailed stage rosters remain available in the raw query
+            # record. The follow-up receives only this bounded delta, with all
+            # identities needed to distinguish candidate branches and sampled
+            # own losses from the opponent's movement.
+            sampled_lines = compact_sampled_transition(
+                preview, state, side, index).splitlines()
+            lines.extend(" C%s %s" % (index, line) for line in sampled_lines)
         for attack in candidate.get("forecasts", []):
             forecast = attack.get("forecast", {}) if isinstance(attack, dict) else {}
             lines.append(" C%s A%s>T%s %s" % (
@@ -1941,11 +1970,65 @@ def tool_shape_repair_prompt(prompt: str, tool_context: str, error: str,
     )
 
 
+_DRAFT_RATIONALE_LIMIT = 16 * 1024
+
+
+def _clip_utf8(value: str, limit: int) -> str:
+    return value.encode("utf-8")[:limit].decode("utf-8", errors="ignore")
+
+
+def draft_rationale_block(intent: Optional[str] = None,
+                          decision_annotation: Optional[dict[str, Any]] = None) -> str:
+    """Render bounded, validated bookkeeping beside an untrusted draft.
+
+    The client carries only the parsed intent and normalized annotation. Raw
+    model output (including hidden reasoning) is deliberately excluded. The
+    explicit ``absent`` values make it possible for a reviewer to distinguish
+    missing rationale from a rationale that was rejected by validation.
+    """
+    annotation = (decision_annotation if isinstance(decision_annotation, dict)
+                  else {"status": "absent"})
+    intent_value = intent if isinstance(intent, str) else "absent"
+    # validate_orders bounds ordinary intent to 512 UTF-8 bytes. Keep this
+    # helper safe for legacy/direct callers too, without splitting a codepoint.
+    intent_value = _clip_utf8(intent_value, 512)
+    payload = {
+        "intent": intent_value,
+        "decision_annotation": annotation,
+    }
+    rendered = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    block = ("DRAFT_RATIONALE_UNTRUSTED_DATA_BEGIN:\n" + rendered +
+             "\nDRAFT_RATIONALE_UNTRUSTED_DATA_END\n")
+    if len(block.encode("utf-8")) > _DRAFT_RATIONALE_LIMIT:
+        # The annotation validator already bounds each field and the number of
+        # groups. This is a final defensive cap for malformed/legacy callers.
+        error = annotation.get("error", "unknown")
+        if not isinstance(error, str):
+            error = str(error)
+        status = annotation.get("status", "unknown")
+        if not isinstance(status, str):
+            status = str(status)
+        payload["decision_annotation"] = {"status": _clip_utf8(status, 64),
+                                           "error": _clip_utf8(error, 240),
+                                           "truncated": True}
+        rendered = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        block = ("DRAFT_RATIONALE_UNTRUSTED_DATA_BEGIN:\n" + rendered +
+                 "\nDRAFT_RATIONALE_UNTRUSTED_DATA_END\n")
+    if len(block.encode("utf-8")) > _DRAFT_RATIONALE_LIMIT:
+        # This branch is unreachable for the bounded fallback above, but keeps
+        # the serialized contract safe if its delimiters ever grow.
+        block = ("DRAFT_RATIONALE_UNTRUSTED_DATA_BEGIN:\n"
+                 '{"intent":"absent","decision_annotation":{"status":"truncated"}}\n'
+                 "DRAFT_RATIONALE_UNTRUSTED_DATA_END\n")
+    return block
+
+
 def candidate_repair_prompt(prompt: str, tool_context: str,
                             candidate: Optional[list[dict[str, Any]]],
                             error: CandidateQueryError,
                             preserve_tool: bool = True,
-                            candidate_set: Optional[list[list[dict[str, Any]]]] = None) -> str:
+                            candidate_set: Optional[list[list[dict[str, Any]]]] = None,
+                            rationale: Optional[str] = None) -> str:
     """Build the single bounded repair prompt for a rejected preview candidate."""
     repair_instruction = (
         "the live state and revision are unchanged. Return one corrected bare "
@@ -1975,6 +2058,7 @@ def candidate_repair_prompt(prompt: str, tool_context: str,
     return (
         prompt + tool_context +
         "\n" + draft_block + ambiguity_notice +
+        (rationale or draft_rationale_block()) +
         "ENGINE_CANDIDATE_ERROR_UNTRUSTED_DATA_BEGIN:\n" +
         json.dumps(error.as_dict(), sort_keys=True, separators=(",", ":")) +
         "\nENGINE_CANDIDATE_ERROR_UNTRUSTED_DATA_END\n" +
@@ -2114,6 +2198,22 @@ def rescue_priorities(exposure: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 _COMMITTED_CONTROLLED_EVENT_SOURCES = frozenset({"llm", "delegated_greedy"})
+
+
+def _window_events(line: dict[str, Any]) -> list[dict[str, Any]]:
+    """Copy event rows for prompt/continuity windows with envelope source."""
+    source = line.get("source")
+    result = []
+    for event in line.get("events", []):
+        if not isinstance(event, dict):
+            continue
+        if "source" in event or source is None:
+            result.append(event)
+        else:
+            item = dict(event)
+            item["source"] = source
+            result.append(item)
+    return result
 
 
 def update_committed_progress(moved: set[int], attacked: set[int],
@@ -2264,6 +2364,7 @@ def _unknown_sampled_transition(reason: str, revision: Any, candidate_index: int
         "status": "unknown", "reason": reason,
         "originating_revision": revision, "candidate_index": candidate_index,
         "friendly_side": friendly_side,
+        "interval": "own_finish_to_opponent_response",
         "own_finish_movement": {"status": "unknown", "moved": None},
         "opponent_movement": {"status": "unknown", "moved": None},
         "opponent_casualties": {"status": "unknown", "unit_ids": None},
@@ -2330,6 +2431,7 @@ def sampled_transition(preview: dict[str, Any], state: dict[str, Any] | None = N
         "originating_revision": preview.get("state_revision", "unknown"),
         "candidate_index": candidate_index,
         "friendly_side": side,
+        "interval": "own_finish_to_opponent_response",
         "own_finish_movement": {"status": own_status, "moved": own_movement},
         "opponent_movement": {"status": "unknown" if post_finish is None or post_opponent is None else "known",
                               "moved": opponent_movement},
@@ -2341,29 +2443,44 @@ def compact_sampled_transition(preview: dict[str, Any], state: dict[str, Any] | 
                                friendly_side: int | None = None, candidate_index: int = 0) -> str:
     """Render sampled movement/casualty deltas without presenting them as live."""
     transition = sampled_transition(preview, state, friendly_side, candidate_index)
-    lines = ["SAMPLED_TRANSITION candidate_index=%s originating_revision=%s status=%s" % (
+    lines = ["SAMPLED_TRANSITION candidate_index=%s friendly_side=%s originating_revision=%s interval=%s status=%s" % (
         transition.get("candidate_index", candidate_index),
-        transition.get("originating_revision", "unknown"), transition.get("status", "unknown"))]
+        transition.get("friendly_side", "unknown"),
+        transition.get("originating_revision", "unknown"),
+        transition.get("interval", "own_finish_to_opponent_response"),
+        transition.get("status", "unknown"))]
     own = transition.get("own_finish_movement", {})
     if own.get("status") == "known":
         changes = ",".join("U%s:%s->%s" % (item["unit_id"], item["from"], item["to"])
                            for item in own.get("moved", [])) or "-"
-        lines.append("SAMPLED_OWN_FINISH_MOVEMENT scope=full_proposed_batch_through_own_finish status=known moved=%s" % changes)
+        lines.append("SAMPLED_FRIENDLY_MOVEMENT side=%s candidate_index=%s originating_revision=%s interval=initial_to_own_finish scope=full_proposed_batch_through_own_finish status=known moved=%s" % (
+            transition.get("friendly_side", "unknown"), transition.get("candidate_index", candidate_index),
+            transition.get("originating_revision", "unknown"), changes))
     else:
-        lines.append("SAMPLED_OWN_FINISH_MOVEMENT status=unknown")
+        lines.append("SAMPLED_FRIENDLY_MOVEMENT side=%s candidate_index=%s originating_revision=%s interval=initial_to_own_finish status=unknown" % (
+            transition.get("friendly_side", "unknown"), transition.get("candidate_index", candidate_index),
+            transition.get("originating_revision", "unknown")))
     opponent = transition.get("opponent_movement", {})
     if opponent.get("status") == "known":
         changes = ",".join("U%s:%s->%s" % (item["unit_id"], item["from"], item["to"])
                            for item in opponent.get("moved", [])) or "-"
-        lines.append("SAMPLED_OPPONENT_MOVEMENT status=known moved=%s" % changes)
+        lines.append("SAMPLED_FRIENDLY_MOVEMENT side=%s candidate_index=%s originating_revision=%s interval=own_finish_to_opponent_response status=known moved=%s" % (
+            transition.get("friendly_side", "unknown"), transition.get("candidate_index", candidate_index),
+            transition.get("originating_revision", "unknown"), changes))
     else:
-        lines.append("SAMPLED_OPPONENT_MOVEMENT status=unknown")
+        lines.append("SAMPLED_FRIENDLY_MOVEMENT side=%s candidate_index=%s originating_revision=%s interval=own_finish_to_opponent_response status=unknown" % (
+            transition.get("friendly_side", "unknown"), transition.get("candidate_index", candidate_index),
+            transition.get("originating_revision", "unknown")))
     casualties = transition.get("opponent_casualties", {})
     if casualties.get("status") == "known":
         ids = ",".join("U%s" % unit_id for unit_id in casualties.get("unit_ids", [])) or "-"
-        lines.append("SAMPLED_OPPONENT_CASUALTIES status=known casualty_ids=%s" % ids)
+        lines.append("SAMPLED_FRIENDLY_CASUALTIES side=%s candidate_index=%s originating_revision=%s interval=own_finish_to_opponent_response status=known casualty_ids=%s" % (
+            transition.get("friendly_side", "unknown"), transition.get("candidate_index", candidate_index),
+            transition.get("originating_revision", "unknown"), ids))
     else:
-        lines.append("SAMPLED_OPPONENT_CASUALTIES status=unknown")
+        lines.append("SAMPLED_FRIENDLY_CASUALTIES side=%s candidate_index=%s originating_revision=%s interval=own_finish_to_opponent_response status=unknown" % (
+            transition.get("friendly_side", "unknown"), transition.get("candidate_index", candidate_index),
+            transition.get("originating_revision", "unknown")))
     return "\n".join(lines)
 
 
@@ -2403,7 +2520,8 @@ def compact_draft_review(preview: dict[str, Any], danger_before: bool,
                          draft_index: int = 0,
                          audit: Optional[dict[str, Any]] = None,
                          state: Optional[dict[str, Any]] = None,
-                         friendly_side: int | None = None) -> tuple[str, Optional[bool]]:
+                         friendly_side: int | None = None,
+                         candidate_orders: Optional[list[list[dict[str, Any]]]] = None) -> tuple[str, Optional[bool]]:
     candidates = preview.get("candidates", [{}])
     candidate = candidates[draft_index] if draft_index < len(candidates) else {}
     threats = candidate.get("recruiter_threats") if isinstance(candidate, dict) else None
@@ -2416,6 +2534,11 @@ def compact_draft_review(preview: dict[str, Any], danger_before: bool,
         for recruiter in recruiters)
     danger_text = "unknown" if lethal_after is None else str(lethal_after)
     lines = ["DRAFT_RESULT danger_before=%s danger_after=%s" % (danger_before, danger_text)]
+    draft_digest = (_candidate_order_digest(candidate_orders[draft_index])
+                    if isinstance(candidate_orders, list) and 0 <= draft_index < len(candidate_orders)
+                    else _candidate_order_digest(orders))
+    lines.append("DRAFT_IDENTITY role=draft candidate_index=%s order_sha256=%s" % (
+        draft_index, draft_digest or "unknown"))
     if lethal_after is None:
         lines.append("DANGER_AFTER_UNAVAILABLE reason=recruiter_threats_missing")
     if audit is not None:
@@ -2505,12 +2628,6 @@ def compact_draft_review(preview: dict[str, Any], danger_before: bool,
             if isinstance(stage, dict):
                 sides = stage.get("sides", [])
                 lines.append("%s %s" % (label, json.dumps(sides, sort_keys=True, separators=(",", ":"))))
-                detail = stage.get("units_detail")
-                if isinstance(detail, list):
-                    lines.append("%s_UNITS %s" % (label, json.dumps(detail, sort_keys=True, separators=(",", ":"))))
-                villages = stage.get("villages")
-                if isinstance(villages, list):
-                    lines.append("%s_VILLAGES %s" % (label, json.dumps(villages, sort_keys=True, separators=(",", ":"))))
         if post_sweep.get("opponent_error"):
             lines.append("DELEGATION_ERROR %s" % str(post_sweep["opponent_error"]).replace("\n", " ")[:240])
         lines.append(compact_sampled_transition(preview, state, friendly_side, draft_index))
@@ -2519,6 +2636,11 @@ def compact_draft_review(preview: dict[str, Any], danger_before: bool,
     if len(candidates) > 1 and isinstance(candidates[0], dict):
         baseline_index = 1 - draft_index if draft_index in (0, 1) else 0
         baseline = candidates[baseline_index] if isinstance(candidates[baseline_index], dict) else {}
+        baseline_digest = (_candidate_order_digest(candidate_orders[baseline_index])
+                           if isinstance(candidate_orders, list) and 0 <= baseline_index < len(candidate_orders)
+                           else None)
+        lines.append("BASELINE_IDENTITY role=baseline candidate_index=%s order_sha256=%s" % (
+            baseline_index, baseline_digest or "unknown"))
         base_summary = baseline.get("summary", {})
         draft_summary = candidate.get("summary", {})
         lines.append("RECRUIT baseline=%s draft=%s" % (
@@ -2690,7 +2812,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
     schemas = [
         'Move: {"action":"Move","unit_id": integer,"col": integer,"row": integer}',
         'Attack: {"action":"Attack","attacker_id": integer,"defender_id": integer}',
-        'Engage: {"action":"Engage","target_id": integer,"steps":[{"attacker_id": integer,"col": integer,"row": integer}]}; ordered move then attack; illegal steps reject batch',
+        'Engage: {"action":"Engage","target_id": integer,"steps":[{"attacker_id": integer,"col": integer,"row": integer}]}; ordered move then attack; a current-hex step is stationary (do not add Move); illegal steps reject batch',
         'Recruit: {"action":"Recruit","def_id": string,"col": integer,"row": integer}',
         'Advance: {"action":"Advance","unit_id": integer,"target_index": integer} or {"action":"Advance","unit_id": integer,"def_id": string}; exactly one of integer target_index or string def_id',
         'DoneWithImportantMoves: {"action":"DoneWithImportantMoves"}',
@@ -2700,16 +2822,15 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
     ]
     recruitment_guidance = ""
     if recruit_batch_enabled:
-        schemas.insert(3, 'RecruitBatch: {"action":"RecruitBatch","def_id": string,"count": positive integer}; optional driver-assisted placement')
+        schemas.insert(3, 'RecruitBatch: {"action":"RecruitBatch","def_id": string,"count": positive integer}')
         recruitment_guidance = (
-            "\n- RecruitBatch auto-vacates eligible castle occupants, enabling recruits beyond initial empty spaces, including beyond six, "
-            "within gold and capacity; vacating spends movement and may disrupt screens. Recruit gives exact placement (T0)."
+            "\n- RecruitBatch auto-vacates beyond six within gold and capacity; movement is spent."
         )
     tactical_guidance = (
         "\n## Tactical data and read-only tools\n"
         "- Use tactical_surface exactly. COORDS=col,row; `at` is current. The base card gives move/target counts, current-position attacks, "
         "and target-centric COVERAGE. TYPE profiles give authoritative alignment, attacks, modifiers: +40 more damage, -60 less; missing unknown.\n"
-        "- Engage failures retain the engine code/message, step_index, subaction, attacker_id, and target_id; repair cause.\n"
+        "- Engage current hex is stationary, no Move. failed_index is authored top-level index before macro expansion; choice index differs. Nested failures keep step/subaction.\n"
         "- THREAT describes attacks if you EndTurn in the imminent opponent phase, including enemy movement to legal origins under blockers/ZOC. "
         "maximum_incoming is maximum whole-HP volleys ignoring origin conflicts; lethal_attackers_needed is minimum attackers under maximum hits; "
         "Focus/expected values give the best volleys of one to three distinct attackers across all supplied legal origins. "
@@ -2724,9 +2845,8 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "one tool call, one driver query per ID); friendly attack coverage against one enemy target with {\"tool\":\"inspect_target\",\"unit_id\":N} or "
         "{\"tool\":\"inspect_targets\",\"unit_ids\":[N,...]} (at most eight); inspect_target supplies legal origins against that target; hex coverage with "
         "{\"tool\":\"inspect_hex\",\"col\":C,\"row\":R,\"phase\":\"current|next_opponent_turn\"}.\n"
-        "- One preview request per turn: {\"tool\":\"preview_batch\",\"candidates\":[[actions...]]}, at most two candidates ending EndTurn. "
-        "Tools do not act; simulations are hypothetical. Use LIVE_STATE for the current revision; revised/rolled-back drafts start there. "
-        "Follow-ups give budgets; final-action requests accept no query.\n"
+        "- One preview per turn: {\"tool\":\"preview_batch\",\"candidates\":[[actions...]]}; 1-2 candidates ending "
+        "DoneWithImportantMoves, EndTurn, or FinishWithGreedy; no Resign. Use LIVE_STATE; revised drafts start there.\n"
         if isinstance(state.get("tactical_surface"), dict) else
         "\n## Legal options\n"
         "- turn_options lists each unit's attack origins and reachable target IDs; "
@@ -2736,10 +2856,10 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "\n- MoveGroupToward: {\"action\":\"MoveGroupToward\",\"unit_ids\":[int,...],\"col\":int,\"row\":int}; "
         "nonfinal; 1-8 unique living IDs; in-bounds occupied rally; listed order; moved/skipped; "
         "one ordinary move per listed ID; it may land on the rally point when legal and free; "
-        "no attack/recruit/promote/sweep/end/opponent; progress is not safety."
+        "no attack/recruit/promote/sweep/end/opponent; it reduces distance, but does not guarantee castle evacuation or safety."
     )
     boundary_guidance = (
-        " Observe fresh state after each step."
+        " Observe after accepted batches only; no intermediate observation."
         if state.get("incremental_turns") is True else "")
     rules = (
         (load_tactical_playbook() if playbook is None else playbook) + "\n"
@@ -3020,26 +3140,54 @@ def format_committed_action_summary(
         action_text = ", ".join(summaries) or "none"
 
     new_units: list[str] = []
-    casualties: list[str] = []
+    controlled_casualties: list[str] = []
+    opponent_casualties: list[str] = []
+    unknown_casualties: list[str] = []
+    controlled_sources: set[str] = set()
+    opponent_sources: set[str] = set()
+    unknown_sources: set[str] = set()
     for event in events:
         if not isinstance(event, dict):
             continue
+        source = event.get("source")
+        if source in _COMMITTED_CONTROLLED_EVENT_SOURCES:
+            controlled_sources.add(str(source))
+            casualty_bucket = controlled_casualties
+        elif source == "greedy":
+            opponent_sources.add(source)
+            casualty_bucket = opponent_casualties
+        else:
+            unknown_sources.add(str(source) if source is not None else "unknown")
+            casualty_bucket = unknown_casualties
         if event.get("kind") == "recruit" and isinstance(event.get("unit"), int):
             new_units.append(f"U{event['unit']}")
         elif event.get("kind") == "attack":
             for role in ("defender", "attacker"):
                 u = event.get(role)
                 if isinstance(u, dict) and u.get("killed") and isinstance(u.get("unit"), int):
-                    casualties.append(f"U{u['unit']}")
+                    casualty_bucket.append(f"U{u['unit']}")
     new_units = list(dict.fromkeys(new_units))
-    casualties = list(dict.fromkeys(casualties))
+    controlled_casualties = list(dict.fromkeys(controlled_casualties))
+    opponent_casualties = list(dict.fromkeys(opponent_casualties))
+    unknown_casualties = list(dict.fromkeys(unknown_casualties))
 
     prefix = "committed (repaired)" if repair else "committed"
     rev_text = f"rev={start_revision}->{end_revision}" if start_revision is not None and end_revision is not None else f"rev={end_revision}"
     boundary_text = f"finish={finish_kind}" if finish_kind else "boundary=partial"
-    cas_text = f"casualties={','.join(casualties) or 'none'}"
+    # Event sources are part of the continuity contract. In particular, an
+    # enemy response that follows a model batch must not look like a loss
+    # caused by the authored orders, and an absent source remains unknown.
+    controlled_text = (f"controlled_casualties={','.join(controlled_casualties) or 'none'}"
+                       f" interval=controlled_action"
+                       f" sources={','.join(sorted(controlled_sources)) or 'none'}")
+    opponent_text = (f"opponent_response_casualties={','.join(opponent_casualties) or 'none'}"
+                     f" interval=opponent_response"
+                     f" sources={','.join(sorted(opponent_sources)) or 'none'}")
+    unknown_text = (f"unknown_source_casualties={','.join(unknown_casualties) or 'none'}"
+                   f" interval=unknown"
+                   f" sources={','.join(sorted(unknown_sources)) or 'none'}")
     units_text = f"new_units={','.join(new_units) or 'none'}"
-    return f"{prefix}: {action_text} | {rev_text} | {cas_text} | {units_text} | {boundary_text}"
+    return f"{prefix}: {action_text} | {rev_text} | {controlled_text} | {opponent_text} | {unknown_text} | {units_text} | {boundary_text}"
 
 
 def replay_committed_continuity(records: list[dict[str, Any]]) -> list[str]:
@@ -3073,7 +3221,7 @@ def replay_committed_continuity(records: list[dict[str, Any]]) -> list[str]:
                     line = next_rec.get("line")
                     if isinstance(line, dict):
                         if line.get("type") == "events" and isinstance(line.get("events"), list):
-                            batch_events.extend(line["events"])
+                            batch_events.extend(_window_events(line))
                         elif line.get("type") == "status":
                             # A forwarded proposal is only continuity-worthy
                             # after the action status proves that the whole
@@ -4301,6 +4449,7 @@ def run(args: argparse.Namespace) -> int:
         if recovered_memory["agenda"] is not None:
             agenda_memory = recovered_memory["agenda"]
             agenda_origin = recovered_memory["agenda_origin"]
+        resume_event_line: Optional[dict[str, Any]] = None
         for record in parent_records:
             if record.get("type") == "agenda_error":
                 # Undelivered at interruption: the resumed side still owes the
@@ -4318,6 +4467,7 @@ def run(args: argparse.Namespace) -> int:
                 line = record.get("line")
                 if isinstance(line, dict) and line.get("type") == "events":
                     events = line.get("events", []) if isinstance(line.get("events"), list) else []
+                    resume_event_line = line
                 if (isinstance(line, dict) and line.get("type") == "state"
                         and line.get("turn_boundary") != "partial"
                         and isinstance(line.get("state_revision"), int)):
@@ -4333,8 +4483,8 @@ def run(args: argparse.Namespace) -> int:
         metadata["intent_origin"] = intent_origin
         continuity_entries = replay_committed_continuity(parent_records)
         if resume_log:
-            if events:
-                event_window.extend(events)
+            if resume_event_line is not None:
+                event_window.extend(_window_events(resume_event_line))
             turn_progress_moved, turn_progress_attacked = replay_accepted_progress(
                 parent_records, args.llm_side)
             last_open_idx = -1
@@ -4731,7 +4881,10 @@ def run(args: argparse.Namespace) -> int:
                 candidate_error.tool_context = tool_context
                 candidate_error.preview_candidates = preview_candidates
                 raise
-            rendered = compact_batch_preview(result, int(state.get("state_revision", 0)))
+            rendered = compact_batch_preview(
+                result, int(state.get("state_revision", 0)), state, args.llm_side,
+                candidate_orders=preview_candidates,
+                candidate_roles=["candidate" for _ in preview_candidates])
             record({"type": "batch_preview", "tool": tool,
                     "candidate_count": len(preview_candidates),
                     "result_bytes": len(rendered.encode()),
@@ -5066,6 +5219,10 @@ def run(args: argparse.Namespace) -> int:
                     active_review_id = None
                     forced_finish = False
                 if failure is not None:
+                    rejected_rationale = draft_rationale_block(
+                        turn_intent,
+                        (final_reply.decision_annotation
+                         if final_reply is not None else None))
                     # A rejected batch cannot publish its client-only agenda.
                     pending_agenda = None
                     pending_agenda_origin = None
@@ -5082,13 +5239,19 @@ def run(args: argparse.Namespace) -> int:
                             # Leave one additional decision slot for the common
                             # case where a repair asks for one more engine fact.
                             and model_calls_this_turn < metadata["max_model_calls_per_turn"] - 1):
-                        repair_prompt = prompt + "\nENGINE_ACTION_ERROR: " + json.dumps(
-                            failure, sort_keys=True, separators=(",", ":")
-                        ) + "\nROLLBACK_NOTICE: the entire preceding action batch was rejected "
-                        "transactionally; no prefix action committed. Re-plan from the "
-                        "unchanged observation, omit the invalid action, and use only "
-                        "authoritative positions/targets from the prompt. Return one "
-                        "corrected JSON action envelope; follow the shared annotation contract."
+                        repair_rationale = rejected_rationale
+                        repair_prompt = (
+                            prompt + "\nDRAFT_ACTIONS_UNTRUSTED_DATA_BEGIN:\n" + json.dumps(
+                                orders, sort_keys=True, separators=(",", ":")) +
+                            "\nDRAFT_ACTIONS_UNTRUSTED_DATA_END\n" + repair_rationale +
+                            "ENGINE_ACTION_ERROR: " + json.dumps(
+                                failure, sort_keys=True, separators=(",", ":")
+                            ) + "\nROLLBACK_NOTICE: the entire preceding action batch was rejected "
+                            "transactionally; no prefix action committed. Re-plan from the "
+                            "unchanged observation, omit the invalid action, and use only "
+                            "authoritative positions/targets from the prompt. Return one "
+                            "corrected JSON action envelope; follow the shared annotation contract."
+                        )
                         action_repair_attempted = True
                         model_calls_this_turn += 1
                         metadata["model_calls"] += 1
@@ -5100,7 +5263,8 @@ def run(args: argparse.Namespace) -> int:
                                     "prompt_hash": repaired.prompt_hash,
                                     "prompt_bytes": repaired.prompt_bytes,
                                     "raw_output": repaired.text, "usage": repaired.usage,
-                                    "engine_error": failure})
+                                    "engine_error": failure,
+                                    "draft_rationale": repair_rationale})
                             if repaired.usage is None:
                                 metadata["usage_measured"] = False
                             try:
@@ -5660,18 +5824,23 @@ def run(args: argparse.Namespace) -> int:
                         if isinstance(candidate, dict) and candidate.get("valid") is True:
                             review_text, danger_after = compact_draft_review(
                                 draft_preview, danger_before, coverage, orders, draft_index, audit,
-                                state, args.llm_side)
+                                state, args.llm_side, preview_candidates)
                             if draft_review_needed(draft_preview, coverage, orders, danger_before, audit,
                                                    draft_index, state, args.llm_side):
                                 handoff_review_used = True
                                 handoff_outcome = "skipped"
                                 metadata["draft_reviews"] += 1
                                 if model_calls_this_turn < metadata["max_model_calls_per_turn"]:
+                                    draft_rationale = draft_rationale_block(
+                                        turn_intent,
+                                        (final_reply.decision_annotation
+                                         if final_reply is not None else None))
                                     review_prompt = (
                                         prompt + tool_context +
                                         "\nDRAFT_ACTIONS_UNTRUSTED_DATA_BEGIN:\n" +
                                         json.dumps(orders, sort_keys=True, separators=(",", ":")) +
-                                        "\nDRAFT_ACTIONS_UNTRUSTED_DATA_END\n" + review_text + (
+                                        "\nDRAFT_ACTIONS_UNTRUSTED_DATA_END\n" +
+                                        draft_rationale + review_text + (
                                         "\nReturn the final JSON action envelope, following the shared annotation contract. Record any relevant "
                                         "difference in an intent or decision expected/risk field; repeat the draft only if the live facts support it, "
                                         "or revise it if they warrant a different choice."))
@@ -5689,6 +5858,7 @@ def run(args: argparse.Namespace) -> int:
                                                 "prompt_hash": reviewed.prompt_hash,
                                                 "prompt_bytes": reviewed.prompt_bytes,
                                                 "raw_output": reviewed.text, "body": draft_preview,
+                                                "draft_rationale": draft_rationale,
                                                 "handoff_audit": audit})
                                         try:
                                             revised_orders = validate_model_orders(reviewed.text)
@@ -5715,7 +5885,8 @@ def run(args: argparse.Namespace) -> int:
                                                     "prompt_hash": repaired_review.prompt_hash,
                                                     "prompt_bytes": repaired_review.prompt_bytes,
                                                     "raw_output": repaired_review.text,
-                                                    "validation_error": str(review_validation_error)})
+                                                    "validation_error": str(review_validation_error),
+                                                    "draft_rationale": draft_rationale})
                                             revised_orders = validate_model_orders(repaired_review.text)
                                             reviewed_intent = response_intent(repaired_review.text)
                                     except RuntimeError as review_runtime_error:
@@ -5758,6 +5929,10 @@ def run(args: argparse.Namespace) -> int:
                         # The draft was never accepted by the review. Its
                         # intent must not become committed memory if the repair
                         # omits a replacement.
+                        rejected_rationale = draft_rationale_block(
+                            turn_intent,
+                            (final_reply.decision_annotation
+                             if final_reply is not None else None))
                         turn_intent = None
                         handoff_review_used = True
                         handoff_outcome = "invalid_candidate"
@@ -5777,7 +5952,8 @@ def run(args: argparse.Namespace) -> int:
                             return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
                         repair_prompt = candidate_repair_prompt(
                             prompt, tool_context, orders, review_error,
-                            preserve_tool=False)
+                            preserve_tool=False,
+                            rationale=rejected_rationale)
                         model_calls_this_turn += 1
                         metadata["model_calls"] += 1
                         try:
@@ -5794,6 +5970,7 @@ def run(args: argparse.Namespace) -> int:
                                     "prompt_hash": repaired_review.prompt_hash,
                                     "prompt_bytes": repaired_review.prompt_bytes,
                                     "raw_output": repaired_review.text,
+                                    "draft_rationale": rejected_rationale,
                                     "candidate_error": review_error.as_dict()})
                             revised_orders = validate_model_orders(repaired_review.text)
                             reviewed_intent = response_intent(repaired_review.text)
@@ -5874,6 +6051,10 @@ def run(args: argparse.Namespace) -> int:
                         # Only a later repaired response may supply a new
                         # intent; preserving the rejected one would publish
                         # speculative memory after a bare repair.
+                        rejected_rationale = draft_rationale_block(
+                            turn_intent,
+                            (final_reply.decision_annotation
+                             if final_reply is not None else None))
                         turn_intent = None
                         if validation.get("error_code") == "partial_limit":
                             # The engine has committed the maximum number of
@@ -5933,6 +6114,7 @@ def run(args: argparse.Namespace) -> int:
                         repair_prompt = (
                             prompt
                             + candidate_block
+                            + rejected_rationale
                             + error_block
                             + "ROLLBACK_NOTICE: the batch was rejected before submission; the state and revision is unchanged. Return one corrected JSON action envelope, following the shared annotation contract."
                             + repair_tool_context
@@ -6198,7 +6380,7 @@ def run(args: argparse.Namespace) -> int:
             elif line.get("type") == "events":
                 new_events = line.get("events", [])
                 events.extend(new_events)
-                event_window.extend(new_events)
+                event_window.extend(_window_events(line))
                 update_committed_progress(turn_progress_moved, turn_progress_attacked, line)
             elif line.get("type") == "game_start":
                 # The opening, before either side acts. Recorded as an
