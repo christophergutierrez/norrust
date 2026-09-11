@@ -1543,13 +1543,13 @@ def tool_followup_instruction(remaining_tools: int, remaining_model_calls: int,
     if remaining_tools <= 0 or remaining_model_calls <= 1:
         return (
             budgets +
-            f"TOOL_BUDGET remaining=0; return the {envelope} with decisions now. "
+            f"TOOL_BUDGET remaining=0; return the {envelope} now and follow the shared annotation contract. "
             "Do not request another tool."
         )
     return (
         budgets +
-        f"TOOL_BUDGET remaining={remaining_tools}; return another allowed tool request or the {envelope} "
-        "with decisions."
+        f"TOOL_BUDGET remaining={remaining_tools}; return another allowed tool request or the {envelope}; "
+        "follow the shared annotation contract."
     )
 
 
@@ -1563,7 +1563,7 @@ def tool_budget_repair_prompt(prompt: str, tool_context: str, error: str,
     return (
         prompt + tool_context + attempted + "\nTOOL_ERROR: " + error + "\n" +
         budget_line(remaining_model_calls, 0, remaining_partials) +
-        "Return one corrected JSON action envelope with decisions; do not request another tool."
+        "Return one corrected JSON action envelope; follow the shared annotation contract and do not request another tool."
     )
 
 
@@ -1618,7 +1618,7 @@ def candidate_repair_prompt(prompt: str, tool_context: str,
         "other candidate and repair the rejected candidate; do not add decisions, "
         "intent, agenda, actions, or choices."
         if preserve_tool else
-        "the live state and revision are unchanged. Return one corrected JSON action envelope with decisions."
+        "the live state and revision are unchanged. Return one corrected JSON action envelope; follow the shared annotation contract."
     )
     if candidate is None and candidate_set is not None:
         draft_block = (
@@ -2109,33 +2109,31 @@ def shared_response_rules(boundary_guidance: str, decision_mode: str = "batch") 
     `boundary_guidance` is the only part that varies with match configuration
     rather than with encoding.
     """
+    annotation_schema = (
+        "- Each decision group has exactly orders, rules, expected, risk. orders are zero-based indices of authored entries "
+        "(choices/actions, before macro expansion), each referenced entry appears exactly once; rules: 1-4 unique guide IDs; expected/risk "
+        "are nonempty and at most 240 UTF-8 bytes each; at most 16 groups and 256 references. An empty orders group explains "
+        "a consequential omission.\n"
+    )
     if decision_mode == "focused":
         annotation_guidance = (
-            "- Decisions are optional in focused mode. When supplied, annotate only consequential authored "
-            "entries (choices or actions, before macro expansion); each covered entry appears exactly once, "
-            "and an empty orders group may explain a consequential omission.\n"
+            "- Focused decisions are optional; annotate consequential authored entries once.\n"
         )
     else:
-        annotation_guidance = (
-            "- Each decision group has exactly orders, rules, expected, risk. orders holds the zero-based indices of the "
-            "entries you authored in THIS response (choices or actions, before macro expansion), covering each exactly "
-            "once, related entries grouped. rules: 1-4 unique guide IDs. expected and risk: nonempty, at most 240 UTF-8 "
-            "bytes each. At most 16 groups and 256 references. An empty orders group explains a consequential omission.\n"
-        )
+        annotation_guidance = "- In batch mode, decisions should cover every authored entry.\n"
     return (
         ("- Partial progress: a non-empty response may omit the finishing boundary."
          if boundary_guidance else "- Complete the turn with one final boundary.") + boundary_guidance
         + " A request requiring final actions accepts no inspection and no partial-only reply.\n"
         + annotation_guidance
-        + ("- Focused mode keeps one active task and its committed intent prominent: take the next useful operation, "
-           "observe its result, and reassess remaining units in the same turn; completing that operation does not end the turn.\n"
+        + annotation_schema
+        + ("- Focused mode keeps one active task and committed intent prominent; completing that operation does not end the turn.\n"
            if decision_mode == "focused" else "")
         + "- Optional intent is memory under 512 UTF-8 bytes: it is how a conclusion survives to your next request.\n"
         "- Optional agenda replaces prior bookkeeping: exactly tasks and holds; max 8 tasks/4096 compact UTF-8 bytes. "
-        "Each task has only id, goal, units, status; id unique/nonempty, goal max 160 UTF-8 bytes; units/holds are friendly "
-        "integer IDs; status pending|active|done|deferred, at most one active. Invalid agenda is rejected; prior agenda "
-        "stands, actions execute, reason reaches next request.\n"
-        "- Bare tools use only their documented keys and carry no action metadata (actions, choices, intent, agenda, decisions).\n"
+        "Tasks use exactly id, goal, units, status; IDs unique/nonempty, goal <=160 UTF-8 bytes; units/holds are integer friendly-ID arrays; "
+        "status pending|active|done|deferred, at most one active. Invalid agenda is rejected; prior stands, actions execute, reason reaches next request.\n"
+        "- Bare tools: documented keys only; no action metadata (actions/choices/intent/agenda/decisions).\n"
     )
 
 
@@ -2172,26 +2170,26 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         )
     tactical_guidance = (
         "\n## Tactical data and read-only tools\n"
-        "- Use tactical_surface exactly. COORDS=col,row; `at` is current. The base card gives move/target counts, current-position "
-        "attacks, and target-centric COVERAGE. TYPE profiles give attacks and incoming-damage modifiers (+40 takes 40% more, "
-        "-60 takes 60% less); missing values are unknown.\n"
-        "- Engage failures retain the engine code/message plus step_index, subaction, attacker_id, and target_id; repair the reported cause.\n"
+        "- Use tactical_surface exactly. COORDS=col,row; `at` is current. The base card gives move/target counts, current-position attacks, "
+        "and target-centric COVERAGE index. TYPE profiles give attacks and incoming-damage modifiers: +40 takes 40% more damage, "
+        "-60 takes 60% less; missing is unknown.\n"
+        "- Engage failures retain the engine code/message, step_index, subaction, attacker_id, and target_id; repair cause.\n"
         "- THREAT describes attacks if you EndTurn now. attackers counts enemies; max_sum is maximum volleys ignoring origin conflicts; "
         "lethal_n counts volleys to reach HP; detail lists attacker:max-damage. "
         "focus_p=[p1,p2,p3] and focus_e give kill probabilities and expected damage for the best origin-compatible "
         "volleys of one to three distinct attackers across all supplied legal origins, breaking equal kill odds by expected damage. "
         "Each attacker delivers its full volley; retaliation and subsequent board changes are ignored. "
         "Zero can mean no compatible sequence of that size, not safety against more attackers or newly opened routes.\n"
-        "- OPEN_THREAT removes blockers that could move or die: a conservative geometry bound, not an executable batch. EXPOSURE "
-        "gives the same direct/open facts for friendlies. RESCUE prioritizes recruiter then threatened wounded units. E income "
-        "projects ownership; E vacate lists legal off-castle destinations, not recommendations.\n"
+        "- OPEN_THREAT removes unit blockers that could move or die: a conservative geometry bound, not an executable batch. EXPOSURE gives "
+        "direct/open facts for friendly units. RESCUE prioritizes recruiter then threatened wounded units. E income projects ownership; "
+        "E vacate lists legal off-castle destinations.\n"
         "- Per-unit origins and DESTINATION_DANGER: {\"tool\":\"inspect_units\",\"unit_ids\":[N,...]} (1-8 unique living friendly IDs; "
         "one tool call, one driver query per ID); enemy attack coverage with {\"tool\":\"inspect_target\",\"unit_id\":N} or "
         "{\"tool\":\"inspect_targets\",\"unit_ids\":[N,...]} (at most eight); hex coverage with "
         "{\"tool\":\"inspect_hex\",\"col\":C,\"row\":R,\"phase\":\"current|next_opponent_turn\"}.\n"
-        "- One preview request per turn: {\"tool\":\"preview_batch\",\"candidates\":[[actions...]]}, at most two complete candidates ending EndTurn. "
-        "Tools do not act live; simulations are hypothetical. Use LIVE_STATE for the current revision; revised/rolled-back drafts start there. "
-        "Follow-ups give remaining budgets; final-action requests accept no query.\n"
+        "- One preview request per turn: {\"tool\":\"preview_batch\",\"candidates\":[[actions...]]}, at most two candidates ending EndTurn. "
+        "Tools do not act; simulations are hypothetical. Use LIVE_STATE for the current revision; revised/rolled-back drafts start there. "
+        "Follow-ups give budgets; final-action requests accept no query.\n"
         if isinstance(state.get("tactical_surface"), dict) else
         "\n## Legal options\n"
         "- turn_options lists each unit's attack origins and reachable target IDs; "
@@ -2225,10 +2223,8 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
             # agenda was rejected for having two active tasks by a validator
             # whose one-active limit the choices contract never mentioned.
             "\n## Response contract (choices mode)\n"
-            "- Return one JSON envelope for action responses. You may select displayed handles with `{\"choices\": [\"<handle>\", ...], ...}` "
-            "or provide coordinate actions with `{\"actions\": [...], ...}` (for finish, resignation, or coordinate fallback). "
-            "choices/actions are mutually exclusive; provide one.\n"
-            "- To finish the side turn, use the actions envelope: `{\"actions\": [{\"action\": \"DoneWithImportantMoves\"}], ...}` or `{\"actions\": [{\"action\": \"EndTurn\"}], ...}`.\n"
+            "- Return a JSON envelope using displayed handles `{\"choices\": [\"<handle>\", ...], ...}` or coordinate actions `{\"actions\": [...], ...}`; choices/actions are mutually exclusive.\n"
+            "- Finish with actions: `{\"actions\": [{\"action\": \"DoneWithImportantMoves\"}], ...}` or `{\"actions\": [{\"action\": \"EndTurn\"}], ...}`.\n"
             if action_encoding == "choices" else
             "\n## Response contract\n"
             "- Return one JSON actions envelope for action responses, including review, repair, finish, and resignation. "
@@ -2250,12 +2246,12 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "groups and holds; Omitted units are not swept by this selective finish. Holds have reasons at most 120 characters. "
         "Agenda and annotation prose create no normal engine holds. Only FinishWithGreedy's explicit holds encode executable holds.\n"
         "\n## Complete response examples\n"
-        "Routine finish with optional agenda (illustrative IDs). Use this exact valid shape: "
-        "{\"actions\":[{\"action\":\"DoneWithImportantMoves\"}],\"decisions\":[{\"orders\":[0],\"rules\":[\"T7\"],\"expected\":\"Delegate routine units.\",\"risk\":\"Routine positions may change.\"}],\"agenda\":{\"tasks\":[{\"id\":\"recruit\",\"goal\":\"deploy reinforcements\",\"units\":[1],\"status\":\"active\"}],\"holds\":[]}}\n"
-        "Selective finish: "
-        "`{\"actions\":[{\"action\":\"FinishWithGreedy\",\"groups\":[{\"mode\":\"greedy\",\"unit_ids\":[12]}],\"holds\":[{\"unit_id\":14,\"reason\":\"screen recruiter until ranged threat is removed\"}]}],\"decisions\":[{\"orders\":[0],\"rules\":[\"T7\"],\"expected\":\"U12 advances; U14 blocks recruiter access.\",\"risk\":\"U14 forgoes an attack.\"}]}`\n"
-        "Concession: "
-        "`{\"actions\":[{\"action\":\"Resign\"}],\"decisions\":[{\"orders\":[0],\"rules\":[\"T8\"],\"expected\":\"Concede: recruiter trapped, no defenders or recruits.\",\"risk\":\"Ends the match as a loss.\"}]}`\n"
+        "Routine: Use this exact valid shape: "
+        "{\"actions\":[{\"action\":\"DoneWithImportantMoves\"}],\"decisions\":[{\"orders\":[0],\"rules\":[\"T7\"],\"expected\":\"Idle units advance.\",\"risk\":\"Positions change.\"}],\"agenda\":{\"tasks\":[{\"id\":\"recruit\",\"goal\":\"deploy\",\"units\":[1],\"status\":\"active\"}],\"holds\":[]}}\n"
+        "Selective: "
+        "`{\"actions\":[{\"action\":\"FinishWithGreedy\",\"groups\":[{\"mode\":\"greedy\",\"unit_ids\":[12]}],\"holds\":[{\"unit_id\":14,\"reason\":\"screen\"}]}],\"decisions\":[{\"orders\":[0],\"rules\":[\"T7\"],\"expected\":\"U12 advances.\",\"risk\":\"U14 forgoes attack.\"}]}`\n"
+        "Resign: "
+        "`{\"actions\":[{\"action\":\"Resign\"}],\"decisions\":[{\"orders\":[0],\"rules\":[\"T8\"],\"expected\":\"Recruiter trapped; concede.\",\"risk\":\"Loss.\"}]}`\n"
         + tactical_guidance
         + movement_guidance
     )
@@ -2505,7 +2501,7 @@ def replay_committed_continuity(records: list[dict[str, Any]]) -> list[str]:
     return entries[-4:]
 
 
-def authoritative_live_state_reminder(state: dict[str, Any]) -> str:
+def authoritative_live_state_reminder(state: dict[str, Any], *, allow_tools: bool = True) -> str:
     """Render compact live facts from the latest engine observation only."""
     units = [unit for unit in state.get("units", []) if isinstance(unit, dict)]
     totals = []
@@ -2529,23 +2525,30 @@ def authoritative_live_state_reminder(state: dict[str, Any]) -> str:
     gold_text = ("F0=%s F1=%s" % (gold[0], gold[1])
                  if isinstance(gold, list) and len(gold) >= 2
                  else "F0=unknown F1=unknown")
-    return (
+    if isinstance(state, dict) and state.get("final_only"):
+        allow_tools = False
+    response_instruction = (
+        "Respond now with exactly one allowed JSON action envelope or one allowed "
+        "read-only inspection request. Queries execute no actions."
+        if allow_tools else
+        "Respond now with exactly one allowed JSON action envelope. Do not request "
+        "a read-only inspection."
+    )
+    return ((
         "AUTHORITATIVE_LIVE_STATE_BEGIN\n"
         "revision=%s controlled_side=%s gold=%s %s friendly_ids=%s recruiters=%s\n"
         "AUTHORITATIVE_LIVE_STATE_END\n"
-        "MODEL_RESPONSE_INSTRUCTION_BEGIN\n"
-        "Respond now with exactly one allowed JSON action envelope or one allowed "
-        "read-only inspection request. Queries execute no actions. A revised complete "
+        "MODEL_RESPONSE_INSTRUCTION_BEGIN\n" + response_instruction + " A revised complete "
         "batch replaces the draft and must start from this live revision. Preview-created "
         "units and preview casualties are hypothetical. If resigning, distinguish live "
         "facts from projected threats; one bad sampled continuation does not prove every "
         "alternative fails.\n"
-        "MODEL_RESPONSE_INSTRUCTION_END" % (
+        "MODEL_RESPONSE_INSTRUCTION_END") % (
             state.get("state_revision", "unknown"), friendly_side, gold_text,
             " ".join(totals), friendly_ids, ";".join(recruiters) or "none"))
 
 
-def finalize_model_prompt(prompt: str, state: dict[str, Any]) -> str:
+def finalize_model_prompt(prompt: str, state: dict[str, Any], *, allow_tools: bool = True) -> str:
     """Place the live-state anchor after all context and before response guidance."""
     value = prompt.rstrip()
     # Remove only a footer that this helper previously appended.  Searching
@@ -2565,7 +2568,7 @@ def finalize_model_prompt(prompt: str, state: dict[str, Any]) -> str:
     end = value.find(instruction_end, start) if start >= 0 else -1
     if start >= 0 and end >= 0 and "AUTHORITATIVE_LIVE_STATE_END\nMODEL_RESPONSE_INSTRUCTION_BEGIN" in value[start:end]:
         value = (value[:start].rstrip() + value[end + len(instruction_end):]).rstrip()
-    return value + "\n" + authoritative_live_state_reminder(state)
+    return value + "\n" + authoritative_live_state_reminder(state, allow_tools=allow_tools)
 
 
 def build_completion_audit_data(state: dict[str, Any], agenda: Optional[dict[str, Any]] = None) -> dict[str, Any]:
@@ -3485,7 +3488,7 @@ def run(args: argparse.Namespace) -> int:
                  "side": args.llm_side, "round": round_number,
                  "start_revision": start_revision,
                  "started_at": datetime.now(timezone.utc).isoformat()})
-    def complete_model(model_prompt: str) -> ModelReply:
+    def complete_model(model_prompt: str, *, allow_tools: bool = True) -> ModelReply:
         nonlocal request_sequence, pending_annotation_notice, pending_agenda_feedback
         # The agenda complaint is NOT popped here: it is retained until a valid
         # agenda commits or the side turn ends, because a player that keeps
@@ -3512,7 +3515,8 @@ def run(args: argparse.Namespace) -> int:
             # contract are unchanged.
             model_prompt = model_prompt.rstrip() + "\n" + notice
         delivered_prompt = finalize_model_prompt(
-            model_prompt, state if isinstance(state, dict) else {})
+            model_prompt, state if isinstance(state, dict) else {},
+            allow_tools=allow_tools)
         delivered_regions = prompt_regions(delivered_prompt)
         request_sequence += 1
         request_id = f"{metadata.get('conversation_id', 'match')}:request:{request_sequence}"
@@ -3811,20 +3815,24 @@ def run(args: argparse.Namespace) -> int:
         if model_calls_this_turn >= metadata["max_model_calls_per_turn"]:
             raise ModelCallBudgetExhausted(
                 "model call budget exhausted before tool followup")
+        remaining_tools = metadata["max_tool_calls_per_turn"] - tool_calls_this_turn
+        remaining_model_calls = metadata["max_model_calls_per_turn"] - model_calls_this_turn
         followup_prompt = prompt + tool_context + "\n" + tool_followup_instruction(
-            metadata["max_tool_calls_per_turn"] - tool_calls_this_turn,
-            metadata["max_model_calls_per_turn"] - model_calls_this_turn,
+            remaining_tools,
+            remaining_model_calls,
             incremental=getattr(args, "incremental_turns", False),
             final_only=bool(isinstance(state, dict) and state.get("final_only")),
             remaining_partials=state.get("remaining_partial_batches") if isinstance(state, dict) else None)
-        delivered_followup = finalize_model_prompt(followup_prompt, state)
+        allow_tools = remaining_tools > 0 and remaining_model_calls > 1
+        delivered_followup = finalize_model_prompt(
+            followup_prompt, state, allow_tools=allow_tools)
         followup_bytes = len(delivered_followup.encode())
         if followup_bytes > args.max_prompt_bytes:
             raise RuntimeError("model_prompt_error: tool results exceed max_prompt_bytes")
         metadata["max_observed_prompt_bytes"] = max(metadata["max_observed_prompt_bytes"], followup_bytes)
         model_calls_this_turn += 1
         metadata["model_calls"] += 1
-        reply = complete_model(followup_prompt)
+        reply = complete_model(followup_prompt, allow_tools=allow_tools)
         enforce_usage(reply, args)
         record({"type": "tool_followup", "tool": tool, "call": metadata["model_calls"],
                 "prompt_hash": reply.prompt_hash, "prompt_bytes": followup_bytes,
@@ -4038,12 +4046,12 @@ def run(args: argparse.Namespace) -> int:
                         "transactionally; no prefix action committed. Re-plan from the "
                         "unchanged observation, omit the invalid action, and use only "
                         "authoritative positions/targets from the prompt. Return one "
-                        "corrected JSON action envelope with decisions."
+                        "corrected JSON action envelope; follow the shared annotation contract."
                         action_repair_attempted = True
                         model_calls_this_turn += 1
                         metadata["model_calls"] += 1
                         try:
-                            repaired = complete_model(repair_prompt)
+                            repaired = complete_model(repair_prompt, allow_tools=False)
                             final_reply = repaired
                             enforce_usage(repaired, args)
                             record({"type": "action_repair", "call": metadata["model_calls"],
@@ -4073,10 +4081,10 @@ def run(args: argparse.Namespace) -> int:
                                 forced_prompt = (repair_prompt +
                                                   "\nYour repair response requested a tool. "
                                                   "That lookup is unavailable in this repair step. "
-                                                  "Return a corrected JSON action envelope with decisions now, using "
+                                                  "Return a corrected JSON action envelope now, following the shared annotation contract and using "
                                                   "only the current authoritative observation and "
                                                   "the engine error above.")
-                                followup = complete_model(forced_prompt)
+                                followup = complete_model(forced_prompt, allow_tools=False)
                                 final_reply = followup
                                 enforce_usage(followup, args)
                                 record({"type": "action_repair_followup",
@@ -4370,7 +4378,9 @@ def run(args: argparse.Namespace) -> int:
                 timeout_fallback = False
                 final_reply = None
                 try:
-                    reply = complete_model(prompt)
+                    reply = complete_model(
+                        prompt,
+                        allow_tools=not bool(isinstance(state, dict) and state.get("final_only")))
                     final_reply = reply
                     enforce_usage(reply, args)
                     record({"type": "model", "call": metadata["model_calls"],
@@ -4427,6 +4437,10 @@ def run(args: argparse.Namespace) -> int:
                                 "tool call budget exhausted",
                                 "preview_batch may be requested only once per turn",
                                 "final-only response cannot request a tool"))
+                        tool_retry_available = (
+                            not bool(isinstance(state, dict) and state.get("final_only"))
+                            and tool_calls_this_turn < metadata["max_tool_calls_per_turn"]
+                            and (metadata["max_model_calls_per_turn"] - model_calls_this_turn) > 1)
                         if (malformed_tool and tool_repair_attempted
                                 and not isinstance(first, CandidateQueryError)
                                 and not cannot_retry_tool):
@@ -4446,10 +4460,18 @@ def run(args: argparse.Namespace) -> int:
                                                         model_calls_this_turn),
                                 remaining_partials=(state.get("remaining_partial_batches")
                                                     if isinstance(state, dict) else None))
-                        elif malformed_tool and not isinstance(first, CandidateQueryError):
+                        elif (malformed_tool and not isinstance(first, CandidateQueryError)
+                              and tool_retry_available):
                             repair_prompt = tool_shape_repair_prompt(
                                 prompt, tool_context, str(first), current_reply.text,
                                 malformed_tool)
+                        elif malformed_tool and not isinstance(first, CandidateQueryError):
+                            repair_prompt = tool_budget_repair_prompt(
+                                prompt, tool_context, str(first), current_reply.text,
+                                remaining_model_calls=(metadata["max_model_calls_per_turn"] -
+                                                        model_calls_this_turn),
+                                remaining_partials=(state.get("remaining_partial_batches")
+                                                    if isinstance(state, dict) else None))
                         elif isinstance(first, CandidateQueryError):
                             candidate_index = first.candidate_index
                             candidate_known = (
@@ -4458,8 +4480,10 @@ def run(args: argparse.Namespace) -> int:
                                 and 0 <= candidate_index < len(preview_candidates))
                             rejected_candidate = (preview_candidates[candidate_index]
                                                    if candidate_known else None)
+                            candidate_retry_allowed = tool_retry_available
                             repair_prompt = candidate_repair_prompt(
                                 prompt, tool_context, rejected_candidate, first,
+                                preserve_tool=candidate_retry_allowed,
                                 candidate_set=(None if candidate_known else preview_candidates))
                         else:
                             repair_prompt = tool_budget_repair_prompt(
@@ -4467,13 +4491,19 @@ def run(args: argparse.Namespace) -> int:
                                 if tool_context else prompt + "\nVALIDATION_ERROR: " + str(first) + \
                                 "\nMODEL_RESPONSE_UNTRUSTED_DATA_BEGIN:\n" + current_reply.text + \
                                 "\nMODEL_RESPONSE_UNTRUSTED_DATA_END" + \
-                                "\nReturn one corrected JSON action envelope with decisions."
+                                "\nReturn one corrected JSON action envelope, following the shared annotation contract."
+                        repair_allows_tools = (
+                            (isinstance(first, CandidateQueryError)
+                             or (malformed_tool is not None
+                                 and not cannot_retry_tool))
+                            and tool_retry_available)
                         if model_calls_this_turn >= metadata["max_model_calls_per_turn"]:
                             raise ModelCallBudgetExhausted(
                                 "model call budget exhausted before tool repair")
                         model_calls_this_turn += 1
                         metadata["model_calls"] += 1
-                        repaired = complete_model(repair_prompt)
+                        repaired = complete_model(
+                            repair_prompt, allow_tools=repair_allows_tools)
                         final_reply = repaired
                         enforce_usage(repaired, args)
                         record({"type": "repair", "call": metadata["model_calls"],
@@ -4583,20 +4613,20 @@ def run(args: argparse.Namespace) -> int:
                                         "\nDRAFT_ACTIONS_UNTRUSTED_DATA_BEGIN:\n" +
                                         json.dumps(orders, sort_keys=True, separators=(",", ":")) +
                                         "\nDRAFT_ACTIONS_UNTRUSTED_DATA_END\n" + review_text + (
-                                        "\nReturn the final JSON action envelope with decisions. State the relevant difference "
-                                        "between the shown branches; repeat the draft only if the live facts still support it, "
+                                        "\nReturn the final JSON action envelope, following the shared annotation contract. Record any relevant "
+                                        "difference in an intent or decision expected/risk field; repeat the draft only if the live facts support it, "
                                         "or revise it if they warrant a different choice."))
                                     try:
                                         model_calls_this_turn += 1
                                         metadata["model_calls"] += 1
-                                        reviewed = complete_model(review_prompt)
+                                        reviewed = complete_model(review_prompt, allow_tools=False)
                                         final_reply = reviewed
                                         enforce_usage(reviewed, args)
                                         record({"type": "draft_review", "call": metadata["model_calls"],
                                                 "review_id": active_review_id,
                                                 "original_candidate_digest": original_digest,
                                                 "prompt_hash": reviewed.prompt_hash,
-                                                "prompt_bytes": len(finalize_model_prompt(review_prompt, state).encode()),
+                                                "prompt_bytes": len(finalize_model_prompt(review_prompt, state, allow_tools=False).encode()),
                                                 "raw_output": reviewed.text, "body": draft_preview,
                                                 "handoff_audit": audit})
                                         try:
@@ -4609,17 +4639,17 @@ def run(args: argparse.Namespace) -> int:
                                                 review_prompt +
                                                 "\nREVIEW_RESPONSE_UNTRUSTED_DATA_BEGIN:\n" + reviewed.text +
                                                 "\nREVIEW_RESPONSE_UNTRUSTED_DATA_END\nMODEL_RESPONSE_ERROR: " + str(review_validation_error) + (
-                                                "\nReturn one final JSON action envelope with decisions. Do not request another tool.")
+                                                "\nReturn one final JSON action envelope, following the shared annotation contract. Do not request another tool.")
                                             )
                                             model_calls_this_turn += 1
                                             metadata["model_calls"] += 1
                                             metadata["draft_review_repairs"] += 1
-                                            repaired_review = complete_model(repair_prompt)
+                                            repaired_review = complete_model(repair_prompt, allow_tools=False)
                                             final_reply = repaired_review
                                             enforce_usage(repaired_review, args)
                                             record({"type": "draft_review_repair", "call": metadata["model_calls"],
                                                     "prompt_hash": repaired_review.prompt_hash,
-                                                    "prompt_bytes": len(finalize_model_prompt(repair_prompt, state).encode()),
+                                                    "prompt_bytes": len(finalize_model_prompt(repair_prompt, state, allow_tools=False).encode()),
                                                     "raw_output": repaired_review.text,
                                                     "validation_error": str(review_validation_error)})
                                             revised_orders = validate_model_orders(repaired_review.text)
@@ -4683,7 +4713,7 @@ def run(args: argparse.Namespace) -> int:
                         model_calls_this_turn += 1
                         metadata["model_calls"] += 1
                         try:
-                            repaired_review = complete_model(repair_prompt)
+                            repaired_review = complete_model(repair_prompt, allow_tools=False)
                             final_reply = repaired_review
                             enforce_usage(repaired_review, args)
                             metadata["draft_review_repairs"] += 1
@@ -4692,7 +4722,7 @@ def run(args: argparse.Namespace) -> int:
                                     "review_id": active_review_id,
                                     "original_candidate_digest": original_digest,
                                     "prompt_hash": repaired_review.prompt_hash,
-                                    "prompt_bytes": len(finalize_model_prompt(repair_prompt, state).encode()),
+                                    "prompt_bytes": len(finalize_model_prompt(repair_prompt, state, allow_tools=False).encode()),
                                     "raw_output": repaired_review.text,
                                     "candidate_error": review_error.as_dict()})
                             revised_orders = validate_model_orders(repaired_review.text)
@@ -4828,7 +4858,7 @@ def run(args: argparse.Namespace) -> int:
                             prompt
                             + candidate_block
                             + error_block
-                            + "ROLLBACK_NOTICE: the batch was rejected before submission; the state and revision is unchanged. Return one corrected JSON action envelope with decisions."
+                            + "ROLLBACK_NOTICE: the batch was rejected before submission; the state and revision is unchanged. Return one corrected JSON action envelope, following the shared annotation contract."
                             + repair_tool_context
                         )
                         action_repair_attempted = True

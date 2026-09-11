@@ -11,6 +11,7 @@ from unittest import mock
 
 from . import llm_client
 from . import action_choices as ac
+from .decision_annotations import annotation_for_response, validate_decisions
 from .llm_client import (
     ENGINE_RULES,
     TERMINAL_EXIT_CODES, TERMINAL_GAMEPLAY, TERMINAL_INFRASTRUCTURE,
@@ -1644,6 +1645,15 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("revision=23", prompt)
         self.assertNotIn("revision=999", prompt[prompt.rfind("AUTHORITATIVE_LIVE_STATE_BEGIN"):])
 
+    def test_final_live_reminder_can_be_action_only(self):
+        state = {"state_revision": 4, "active_faction": 0, "final_only": True}
+        final_only = finalize_model_prompt("review", state)
+        explicit = finalize_model_prompt("repair", dict(state, final_only=False), allow_tools=False)
+        for prompt in (final_only, explicit):
+            self.assertIn("exactly one allowed JSON action envelope", prompt)
+            self.assertIn("Do not request a read-only inspection", prompt)
+            self.assertNotIn("or one allowed read-only inspection request", prompt)
+
     def test_compaction_preserves_move_legality_flags(self):
         """D-136-3: the contract tells the model that `current` entries are attack
         origins, not Move destinations. If compaction strips the flags the
@@ -1701,11 +1711,70 @@ class ClientValidationTests(unittest.TestCase):
             agenda={"tasks": [{"id": "finish", "goal": "Finish wounded target",
                                 "units": [7], "status": "active"}], "holds": []},
             action_encoding="choices", decision_mode="focused")
-        self.assertIn("Decisions are optional in focused mode", prompt)
-        self.assertIn("Bare tools use only their documented keys", prompt)
+        self.assertIn("Focused decisions are optional", prompt)
+        self.assertIn("Bare tools: documented keys only", prompt)
         self.assertIn("focused_context", prompt)
         self.assertIn("finish the wounded target before ending the turn", prompt)
         self.assertIn("completing that operation does not end the turn", prompt)
+
+    def test_annotation_contract_is_shared_and_matches_utf8_validator(self):
+        for mode in ("batch", "focused"):
+            for encoding in ("coordinates", "choices"):
+                with self.subTest(mode=mode, encoding=encoding):
+                    prompt = prompt_for({"incremental_turns": True}, [],
+                                    decision_mode=mode,
+                                    action_encoding=encoding)
+                    self.assertEqual(prompt.count("Each decision group has exactly"), 1)
+                    for text in ("exactly orders, rules, expected, risk",
+                                 "1-4 unique guide IDs", "240 UTF-8 bytes",
+                                 "16 groups and 256 references",
+                                 "Tasks use exactly id, goal, units, status",
+                             "units/holds are integer friendly-ID arrays"):
+                        self.assertIn(text, prompt)
+
+                    response = json.dumps({
+                        "actions": [{"action": "EndTurn"}, {"action": "EndTurn"}],
+                        "decisions": [{"orders": [1], "rules": ["T7"],
+                                       "expected": "é" * 120,
+                                       "risk": "🙂" * 60}],
+                    })
+                    result = annotation_for_response(
+                        response, action_count=2,
+                        require_full_coverage=(mode == "batch"))
+                    self.assertEqual(result["status"],
+                                     "valid" if mode == "focused" else "invalid")
+                    self.assertEqual(validate_decisions(
+                        [{"orders": [0], "rules": ["T7"],
+                          "expected": "é" * 120, "risk": "🙂" * 60}],
+                        1, require_full_coverage=True)[0]["orders"], [0])
+                    too_long = dict(json.loads(response))
+                    too_long["decisions"][0]["expected"] = "é" * 121
+                    self.assertEqual(annotation_for_response(
+                        json.dumps(too_long), action_count=2,
+                        require_full_coverage=False)["status"], "invalid")
+
+    def test_repair_and_followup_instructions_use_shared_annotation_contract(self):
+        candidate_error = CandidateQueryError("preview_batch", "parse", "bad candidate")
+        instructions = (
+            tool_followup_instruction(1, 2),
+            tool_budget_repair_prompt("PROMPT", "", "budget"),
+            llm_client.candidate_repair_prompt(
+                "PROMPT", "", [{"action": "EndTurn"}], candidate_error,
+                preserve_tool=False),
+        )
+        for instruction in instructions:
+            self.assertIn("shared annotation contract", instruction)
+            self.assertNotIn("with decisions", instruction)
+
+    def test_review_prompt_keeps_branch_difference_inside_json_fields(self):
+        draft = self.annotated_orders("draft")
+        final = self.annotated_orders("final")
+        records, _, _ = self.run_annotation_path([draft, final], review=True)
+        review_prompt = next(
+            record["prompt"] for record in records
+            if record["type"] == "model_request" and record["sequence"] == 2)
+        self.assertIn("intent or decision expected/risk field", review_prompt)
+        self.assertNotIn("State the relevant difference between the shown branches", review_prompt)
 
     def test_final_only_rejects_well_shaped_tool_before_engine_query(self):
         request = json.dumps({"tool": "inspect_hex", "col": 3, "row": 4,
@@ -2419,6 +2488,50 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID])
         self.assertEqual(records[-1]["reason"], "budget_interrupted")
         self.assertEqual(records[-1]["code"], "model_calls_budget_exhausted")
+
+    def test_malformed_tool_with_only_last_model_call_gets_action_repair(self):
+        malformed = json.dumps({"tool": "inspect_units", "unit_ids": [1],
+                                "actions": []})
+        end_turn = json.dumps([{"action": "EndTurn"}])
+        code, records = self.run_with_orders(
+            [malformed, end_turn],
+            [{"type": "state", "active_faction": 0, "state_revision": 1,
+              "units": [{"id": 1, "faction": 0, "hp": 20}]},
+             {"type": "status", "ok": True, "what": "tactical_surface",
+              "body": {"units": []}},
+             {"type": "game_end", "reason": "max_turns", "winner": None}],
+            max_model_calls_per_turn=2, return_records=True)
+        self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_GAMEPLAY])
+        repair_prompt = [r["prompt"] for r in records
+                         if r["type"] == "model_request"][-1]
+        self.assertIn("Return one corrected JSON action envelope", repair_prompt)
+        self.assertIn("Do not request a read-only inspection", repair_prompt)
+        self.assertNotIn("TOOL_REPAIR_INSTRUCTION", repair_prompt)
+        self.assertFalse([r for r in records if r["type"] == "tool_result"])
+
+    def test_preview_candidate_with_only_last_model_call_gets_action_repair(self):
+        preview = json.dumps({"tool": "preview_batch", "candidates": [
+            [{"action": "EndTurn"}],
+            [{"action": "FinishWithGreedy", "groups": [], "holds": []}],
+        ]})
+        corrected = self.annotated_orders("corrected")
+        code, records = self.run_with_orders(
+            [preview, corrected],
+            [{"type": "state", "active_faction": 0, "state_revision": 286,
+              "units": []},
+             {"type": "status", "ok": True, "what": "tactical_surface", "body": {"units": []}},
+             {"type": "status", "ok": False, "what": "preview_batch",
+              "code": "unauthorized_unit", "candidate_index": 1,
+              "message": "FinishWithGreedy may reference only living model-side units"},
+             {"type": "game_end", "reason": "max_turns", "winner": None}],
+            max_model_calls_per_turn=2, return_records=True)
+        self.assertEqual(code, 0)
+        repair_prompt = next(record["prompt"] for record in records
+                             if record["type"] == "model_request" and record["sequence"] == 2)
+        self.assertIn("Return one corrected JSON action envelope", repair_prompt)
+        self.assertIn("Do not request a read-only inspection", repair_prompt)
+        self.assertNotIn("TOOL_REPAIR_INSTRUCTION", repair_prompt)
+        self.assertFalse([r for r in records if r["type"] == "tool_result"])
 
     def test_critical_draft_can_be_confirmed_after_preview(self):
         end_turn = json.dumps([{"action": "EndTurn"}])
