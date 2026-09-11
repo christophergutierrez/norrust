@@ -57,6 +57,73 @@ def _backend(path: Path, invalid: str, captures: Path) -> None:
 
 @unittest.skipUnless(DRIVER.is_file(), "build greedy_driver before running real-driver tests")
 class RepairExecutionIntegrationTests(unittest.TestCase):
+    def test_real_driver_repairs_bare_preview_then_executes_partial_combat(self):
+        """Tool metadata errors keep the comparison alive through its result."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            checkpoint = _checkpoint(root)
+            captures = root / "requests.ndjson"
+            backend = root / "backend.py"
+            malformed = json.dumps({
+                "tool": "preview_batch",
+                "candidates": [[{"action": "Attack", "attacker_id": 7, "defender_id": 24},
+                                {"action": "EndTurn"}]],
+                "decisions": [], "intent": "compare before acting",
+            })
+            corrected = json.dumps({
+                "tool": "preview_batch",
+                "candidates": [[{"action": "Attack", "attacker_id": 7, "defender_id": 24},
+                                {"action": "EndTurn"}]],
+            })
+            partial = json.dumps({
+                "actions": [{"action": "Attack", "attacker_id": 7, "defender_id": 24}],
+                "decisions": [{"orders": [0], "rules": ["T3.3"],
+                               "expected": "Commit the inspected attack.",
+                               "risk": "The target may survive retaliation."}],
+            })
+            finish = json.dumps({
+                "actions": [{"action": "DoneWithImportantMoves"}],
+                "decisions": [{"orders": [0], "rules": ["T7"],
+                               "expected": "Finish after the engagement result.",
+                               "risk": "Routine units may reposition."}],
+            })
+            backend.write_text(
+                "import json,sys\n"
+                f"capture={str(captures)!r}\n"
+                "prompt=sys.stdin.read()\n"
+                "with open(capture,'a',encoding='utf-8') as f: f.write(json.dumps({'prompt':prompt})+'\\n')\n"
+                "n=sum(1 for _ in open(capture,encoding='utf-8'))\n"
+                f"reply={malformed!r} if n==1 else ({corrected!r} if n==2 else ({partial!r} if n==3 else {finish!r}))\n"
+                "print(json.dumps({'text':reply}))\n",
+                encoding="utf-8")
+            log = root / "match.ndjson"
+            command = [sys.executable, "-m", "tools.llm_client",
+                       "--driver", str(DRIVER),
+                       "--model-command", shlex.join([sys.executable, str(backend)]),
+                       "--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
+                       "--gold", "300", "--seed", "2002", "--llm-side", "0", "--max-turns", "15",
+                       "--incremental-turns", "--decision-mode", "focused", "--log", str(log),
+                       "--resume-checkpoint", str(checkpoint), "--query-budget-seconds", "10",
+                       "--model-timeout", "10", "--turn-timeout", "30"]
+            result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr[-4000:] + log.read_text()[-4000:])
+            records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+            requests = [r for r in records if r.get("type") == "model_request"]
+            self.assertEqual([r["raw_output"] for r in requests[:4]], [malformed, corrected, partial, finish])
+            self.assertIn("unknown key(s): decisions", requests[1]["prompt"])
+            self.assertIn("bare JSON tool request", requests[1]["prompt"])
+            self.assertIn('"tool":"preview_batch"', requests[2]["prompt"])
+            previews = [r for r in records if r.get("type") == "batch_preview"]
+            self.assertEqual(len(previews), 1)
+            forwarded = [r for r in records if r.get("type") == "forwarded_orders"]
+            self.assertEqual(forwarded[0]["orders"], json.loads(partial)["actions"])
+            self.assertEqual(forwarded[-1]["orders"], json.loads(finish)["actions"])
+            events = [e for r in records if r.get("type") == "driver"
+                      for e in r.get("line", {}).get("events", [])]
+            self.assertTrue(any(e.get("kind") == "attack" and
+                                e.get("attacker", {}).get("unit") == 7 and
+                                e.get("defender", {}).get("unit") == 24 for e in events))
+
     def test_revision_338_repair_aggregates_errors_and_executes_corrected_batch(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

@@ -297,8 +297,14 @@ def validate_inspect_units_request(request: dict[str, Any]) -> list[int]:
     (count, type, uniqueness) is checked here, before any driver query is
     issued, so a malformed request never triggers a partial fan-out.
     """
-    if not isinstance(request, dict) or set(request) != {"tool", "unit_ids"} or request.get("tool") != "inspect_units":
-        raise ValueError("inspect_units request must contain only tool and unit_ids")
+    if not isinstance(request, dict) or request.get("tool") != "inspect_units":
+        raise ValueError("inspect_units request must contain tool=inspect_units")
+    extra = set(request) - {"tool", "unit_ids"}
+    if extra:
+        raise ValueError("inspect_units request has unknown key(s): %s; bare tool requests carry no action metadata" %
+                         ", ".join(sorted(str(name) for name in extra)))
+    if "unit_ids" not in request:
+        raise ValueError("inspect_units request is missing unit_ids")
     unit_ids = request.get("unit_ids")
     if not isinstance(unit_ids, list) or not 1 <= len(unit_ids) <= 8:
         raise ValueError("inspect_units unit_ids must contain 1 to 8 ids")

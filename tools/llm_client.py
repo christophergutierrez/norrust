@@ -539,7 +539,11 @@ def validate_orders(text: str, strict: bool = False, require_end_turn: bool = Tr
         orders = parse_action_response(text)
     except ValueError as exc:
         raise ValueError(f"invalid JSON: {exc}") from exc
-    if isinstance(orders, dict) and set(orders).issubset({"actions", "intent", "agenda", "decisions"}) and "actions" in orders:
+    if isinstance(orders, dict) and "actions" in orders:
+        extra = set(orders) - {"actions", "intent", "agenda", "decisions"}
+        if extra:
+            names = ", ".join(sorted(str(name) for name in extra))
+            raise ValueError(f"action envelope has unknown key(s): {names}")
         if "intent" in orders and (not isinstance(orders["intent"], str)
                                     or len(orders["intent"].encode()) > 512):
             raise ValueError("intent must be a string of at most 512 UTF-8 bytes")
@@ -832,6 +836,10 @@ class CandidateQueryError(ValueError):
                 f"{self.error_message}")
 
 
+class ModelCallBudgetExhausted(RuntimeError):
+    """The configured per-turn model-call budget forbids another dispatch."""
+
+
 def _raise_preview_query_error(response: Any, query: str) -> None:
     """Raise a typed model error for known candidate failures.
 
@@ -871,11 +879,20 @@ def query_validate_batch(exchange, orders: list[dict[str, Any]], state_revision:
 
 def validate_preview_request(text: str, strict: bool = False) -> list[list[dict[str, Any]]]:
     try:
-        request = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"invalid JSON: {exc.msg}") from exc
-    if not isinstance(request, dict) or set(request) != {"tool", "candidates"} or request.get("tool") != "preview_batch":
-        raise ValueError("preview request must contain tool=preview_batch and candidates")
+        request = parse_action_response(text)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid JSON: {exc}") from exc
+    if not isinstance(request, dict):
+        raise ValueError("preview_batch request must be a JSON object")
+    if request.get("tool") != "preview_batch":
+        raise ValueError("preview_batch request must contain tool=preview_batch")
+    extra = set(request) - {"tool", "candidates"}
+    if extra:
+        names = ", ".join(sorted(str(name) for name in extra))
+        raise ValueError(
+            f"preview_batch request has unknown key(s): {names}; bare tool requests contain only tool and candidates")
+    if "candidates" not in request:
+        raise ValueError("preview_batch request is missing candidates")
     candidates = request["candidates"]
     if not isinstance(candidates, list) or not 1 <= len(candidates) <= 2:
         raise ValueError("preview_batch accepts one or two candidates")
@@ -960,8 +977,14 @@ def compact_unit_inspection(unit: dict[str, Any], choices: Optional[list[Any]] =
 
 
 def validate_inspect_target_request(request: dict[str, Any]) -> int:
-    if set(request) != {"tool", "unit_id"} or request.get("tool") != "inspect_target":
-        raise ValueError("inspect_target request must contain only tool and unit_id")
+    if not isinstance(request, dict) or request.get("tool") != "inspect_target":
+        raise ValueError("inspect_target request must contain tool=inspect_target")
+    extra = set(request) - {"tool", "unit_id"}
+    if extra:
+        raise ValueError("inspect_target request has unknown key(s): %s; bare tool requests carry no action metadata" %
+                         ", ".join(sorted(str(name) for name in extra)))
+    if "unit_id" not in request:
+        raise ValueError("inspect_target request is missing unit_id")
     unit_id = request.get("unit_id")
     if not isinstance(unit_id, int) or isinstance(unit_id, bool) or not 0 <= unit_id <= 2**32 - 1:
         raise ValueError("inspect_target unit_id must be a uint32")
@@ -980,8 +1003,14 @@ def query_inspect_target(exchange, unit_id: int, state_revision: int) -> dict[st
 
 
 def validate_inspect_targets_request(request: dict[str, Any]) -> list[int]:
-    if set(request) != {"tool", "unit_ids"} or request.get("tool") != "inspect_targets":
-        raise ValueError("inspect_targets request must contain only tool and unit_ids")
+    if not isinstance(request, dict) or request.get("tool") != "inspect_targets":
+        raise ValueError("inspect_targets request must contain tool=inspect_targets")
+    extra = set(request) - {"tool", "unit_ids"}
+    if extra:
+        raise ValueError("inspect_targets request has unknown key(s): %s; bare tool requests carry no action metadata" %
+                         ", ".join(sorted(str(name) for name in extra)))
+    if "unit_ids" not in request:
+        raise ValueError("inspect_targets request is missing unit_ids")
     unit_ids = request.get("unit_ids")
     if not isinstance(unit_ids, list) or not 1 <= len(unit_ids) <= 8:
         raise ValueError("inspect_targets unit_ids must contain 1 to 8 ids")
@@ -1047,8 +1076,16 @@ def compact_target_inspection(target: dict[str, Any]) -> str:
 
 
 def validate_inspect_hex_request(request: dict[str, Any]) -> tuple[int, int, str]:
-    if set(request) != {"tool", "col", "row", "phase"} or request.get("tool") != "inspect_hex":
-        raise ValueError("inspect_hex request must contain only tool, col, row, and phase")
+    if not isinstance(request, dict) or request.get("tool") != "inspect_hex":
+        raise ValueError("inspect_hex request must contain tool=inspect_hex")
+    extra = set(request) - {"tool", "col", "row", "phase"}
+    if extra:
+        raise ValueError("inspect_hex request has unknown key(s): %s; bare tool requests carry no action metadata" %
+                         ", ".join(sorted(str(name) for name in extra)))
+    missing = {"col", "row", "phase"} - set(request)
+    if missing:
+        raise ValueError("inspect_hex request is missing %s" %
+                         ", ".join(sorted(str(name) for name in missing)))
     col, row, phase = request.get("col"), request.get("row"), request.get("phase")
     if any(not isinstance(value, int) or isinstance(value, bool) or not -(2**31) <= value <= 2**31 - 1
            for value in (col, row)):
@@ -1512,21 +1549,83 @@ def tool_budget_repair_prompt(prompt: str, tool_context: str, error: str,
     )
 
 
-def candidate_repair_prompt(prompt: str, tool_context: str,
-                            candidate: list[dict[str, Any]],
-                            error: CandidateQueryError) -> str:
-    """Build the single bounded repair prompt for a rejected preview candidate."""
+def tool_request_name(value: Any) -> Optional[str]:
+    """Return a recognized bare-tool name from a parsed model response."""
+    if not isinstance(value, dict) or "tool" not in value:
+        return None
+    name = value.get("tool")
+    return (name if isinstance(name, str) and name in
+            {"preview_batch", "inspect_units", "inspect_target",
+             "inspect_targets", "inspect_hex"} else None)
+
+
+def tool_shape_repair_prompt(prompt: str, tool_context: str, error: str,
+                             model_output: str, tool: str) -> str:
+    """Repair a malformed tool request while preserving the requested operation.
+
+    Bare tools intentionally have a different envelope from actions.  In
+    particular, a model that followed the old ``decisions on every response``
+    wording must be told to remove those fields and retry the same lookup;
+    sending it back to action planning throws away a useful pending decision.
+    """
+    schemas = {
+        "preview_batch": '{"tool":"preview_batch","candidates":[[actions...]]}',
+        "inspect_units": '{"tool":"inspect_units","unit_ids":[N,...]}',
+        "inspect_target": '{"tool":"inspect_target","unit_id":N}',
+        "inspect_targets": '{"tool":"inspect_targets","unit_ids":[N,...]}',
+        "inspect_hex": '{"tool":"inspect_hex","col":C,"row":R,"phase":"current|next_opponent_turn"}',
+    }
     return (
         prompt + tool_context +
-        "\nDRAFT_ACTIONS_UNTRUSTED_DATA_BEGIN:\n" +
-        json.dumps(candidate, sort_keys=True, separators=(",", ":")) +
-        "\nDRAFT_ACTIONS_UNTRUSTED_DATA_END\n" +
+        "\nMODEL_TOOL_REQUEST_UNTRUSTED_DATA_BEGIN:\n" + model_output +
+        "\nMODEL_TOOL_REQUEST_UNTRUSTED_DATA_END\n" +
+        "TOOL_REQUEST_ERROR: " + error + "\n" +
+        "TOOL_REPAIR_INSTRUCTION: preserve the pending " + tool +
+        " operation and return exactly one bare JSON tool request using this shape: " +
+        schemas.get(tool, '{"tool":"..."}') +
+        ". Bare tool requests contain only their documented keys; remove actions, choices, intent, agenda, and decisions. "
+        "Do not return an action envelope until the tool result is supplied.\n"
+    )
+
+
+def candidate_repair_prompt(prompt: str, tool_context: str,
+                            candidate: Optional[list[dict[str, Any]]],
+                            error: CandidateQueryError,
+                            preserve_tool: bool = True,
+                            candidate_set: Optional[list[list[dict[str, Any]]]] = None) -> str:
+    """Build the single bounded repair prompt for a rejected preview candidate."""
+    repair_instruction = (
+        "the live state and revision are unchanged. Return one corrected bare "
+        "preview_batch request containing only tool and candidates. Preserve the "
+        "other candidate and repair the rejected candidate; do not add decisions, "
+        "intent, agenda, actions, or choices."
+        if preserve_tool else
+        "the live state and revision are unchanged. Return one corrected JSON action envelope with decisions."
+    )
+    if candidate is None and candidate_set is not None:
+        draft_block = (
+            "DRAFT_CANDIDATES_UNTRUSTED_DATA_BEGIN:\n" +
+            json.dumps(candidate_set, sort_keys=True, separators=(",", ":")) +
+            "\nDRAFT_CANDIDATES_UNTRUSTED_DATA_END\n"
+        )
+        ambiguity_notice = (
+            "The driver did not identify a usable candidate index. Preserve every candidate in its authored order; "
+            "do not guess which position failed or silently drop a candidate. Repair only the fact identified by the error.\n"
+        )
+    else:
+        draft_block = (
+            "DRAFT_ACTIONS_UNTRUSTED_DATA_BEGIN:\n" +
+            json.dumps(candidate or [], sort_keys=True, separators=(",", ":")) +
+            "\nDRAFT_ACTIONS_UNTRUSTED_DATA_END\n"
+        )
+        ambiguity_notice = ""
+    return (
+        prompt + tool_context +
+        "\n" + draft_block + ambiguity_notice +
         "ENGINE_CANDIDATE_ERROR_UNTRUSTED_DATA_BEGIN:\n" +
         json.dumps(error.as_dict(), sort_keys=True, separators=(",", ":")) +
         "\nENGINE_CANDIDATE_ERROR_UNTRUSTED_DATA_END\n" +
-        "ROLLBACK_NOTICE: the preview candidate was rejected before execution; "
-        "the live state and revision are unchanged. Return one corrected JSON "
-        "action envelope with decisions. Do not request another preview."
+        "ROLLBACK_NOTICE: the preview candidate was rejected before execution; " + repair_instruction
     )
 
 
@@ -1958,7 +2057,7 @@ def draft_needs_preview(state: dict[str, Any], orders: list[dict[str, Any]],
     return danger_before or any(order.get("action") != "EndTurn" for order in orders)
 
 
-def shared_response_rules(boundary_guidance: str) -> str:
+def shared_response_rules(boundary_guidance: str, decision_mode: str = "batch") -> str:
     """Response semantics that are identical under every action encoding.
 
     The executor and the validators do not care which encoding produced a
@@ -1971,19 +2070,32 @@ def shared_response_rules(boundary_guidance: str) -> str:
     `boundary_guidance` is the only part that varies with match configuration
     rather than with encoding.
     """
+    if decision_mode == "focused":
+        annotation_guidance = (
+            "- Decisions are optional in focused mode. When supplied, annotate only consequential authored "
+            "entries (choices or actions, before macro expansion); each covered entry appears exactly once, "
+            "and an empty orders group may explain a consequential omission.\n"
+        )
+    else:
+        annotation_guidance = (
+            "- Each decision group has exactly orders, rules, expected, risk. orders holds the zero-based indices of the "
+            "entries you authored in THIS response (choices or actions, before macro expansion), covering each exactly "
+            "once, related entries grouped. rules: 1-4 unique guide IDs. expected and risk: nonempty, at most 240 UTF-8 "
+            "bytes each. At most 16 groups and 256 references. An empty orders group explains a consequential omission.\n"
+        )
     return (
         "- Partial progress: a non-empty response may omit the finishing boundary." + boundary_guidance
         + " A request requiring final actions accepts no inspection and no partial-only reply.\n"
-        "- Each decision group has exactly orders, rules, expected, risk. orders holds the zero-based indices of the "
-        "entries you authored in THIS response (choices or actions, before macro expansion), covering each exactly "
-        "once, related entries grouped. rules: 1-4 unique guide IDs. expected and risk: nonempty, at most 240 UTF-8 "
-        "bytes each. At most 16 groups and 256 references. An empty orders group explains a consequential omission.\n"
-        "- Optional intent is memory under 512 UTF-8 bytes: it is how a conclusion survives to your next request.\n"
+        + annotation_guidance
+        + ("- Focused mode keeps one active task and its committed intent prominent: take the next useful operation, "
+           "observe its result, and reassess remaining units in the same turn; completing that operation does not end the turn.\n"
+           if decision_mode == "focused" else "")
+        + "- Optional intent is memory under 512 UTF-8 bytes: it is how a conclusion survives to your next request.\n"
         "- Optional agenda replaces prior bookkeeping wholesale: exactly tasks and holds, at most eight tasks, at most "
         "4096 UTF-8 bytes compact. Each task has exactly id, goal, units, status; id unique and nonempty, goal at most "
-        "160 UTF-8 bytes, units and holds integer friendly IDs; status pending, active, done or deferred, with AT MOST "
-        "ONE ACTIVE. A breach rejects the agenda whole: your previous agenda stands, your actions still execute, and "
-        "the reason reaches your next request.\n"
+        "160 UTF-8 bytes; units and holds integer friendly IDs; status pending, active, done or deferred, with AT MOST ONE ACTIVE. "
+        "A breach rejects the agenda: your previous agenda stands, actions still execute, and the reason reaches your next request.\n"
+        "- Bare tools use only their documented keys and carry no action metadata (actions, choices, intent, agenda, decisions).\n"
     )
 
 
@@ -1998,17 +2110,18 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
                trend: Optional[str] = None,
                playbook: Optional[str] = None,
                action_encoding: str = "coordinates",
-               choices: Optional[list[Any]] = None) -> str:
+               choices: Optional[list[Any]] = None,
+               decision_mode: str = "batch") -> str:
     schemas = [
         'Move: {"action":"Move","unit_id": integer,"col": integer,"row": integer}',
         'Attack: {"action":"Attack","attacker_id": integer,"defender_id": integer}',
-        'Engage: {"action":"Engage","target_id": integer,"steps":[{"attacker_id": integer,"col": integer,"row": integer}]}; ordered move-and-attack steps, skipping remaining steps when the target dies; other illegal steps reject the batch',
+        'Engage: {"action":"Engage","target_id": integer,"steps":[{"attacker_id": integer,"col": integer,"row": integer}]}; ordered move-and-attack steps; target death skips remaining steps; illegal steps reject the batch',
         'Recruit: {"action":"Recruit","def_id": string,"col": integer,"row": integer}',
         'Advance: {"action":"Advance","unit_id": integer,"target_index": integer} or {"action":"Advance","unit_id": integer,"def_id": string}; exactly one of integer target_index or string def_id',
         'DoneWithImportantMoves: {"action":"DoneWithImportantMoves"}',
         'EndTurn: {"action":"EndTurn"}',
-        'Resign: {"action":"Resign"}; standalone, immediately ends the match with an opponent win and no turn advancement; cite T8, no preview or confirmation needed',
-        'FinishWithGreedy: {"action":"FinishWithGreedy","groups":[{"mode":"greedy"|"toward_hex","unit_ids":[integer,...],"col":integer,"row":integer}],"holds":[{"unit_id":integer,"reason":string}]}; col/row appear only in toward_hex groups and are required there (movement-only)',
+        'Resign: {"action":"Resign"}; standalone immediate opponent win with no turn advancement; cite T8, no preview or confirmation',
+        'FinishWithGreedy: {"action":"FinishWithGreedy","groups":[{"mode":"greedy"|"toward_hex","unit_ids":[integer,...],"col":integer,"row":integer}],"holds":[{"unit_id":integer,"reason":string}]}; toward_hex requires col/row and is movement-only',
     ]
     recruitment_guidance = ""
     if recruit_batch_enabled:
@@ -2020,28 +2133,24 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         )
     tactical_guidance = (
         "\n## Tactical data and read-only tools\n"
-        "- Use tactical_surface exactly. COORDS=col,row; `at` is current. The base card gives move/target counts, "
-        "current-position attacks, and a target-centric COVERAGE index. TYPE profiles give attacks and incoming-damage "
-        "modifiers: +40 takes 40% more damage, -60 takes 60% less; missing values are unknown.\n"
-        "- THREAT describes attacks if you EndTurn now. attackers counts distinct enemies; max_sum adds their maximum "
-        "volleys ignoring origin conflicts; lethal_n counts the largest volleys needed to reach HP; detail lists attacker:max-damage. "
+        "- Use tactical_surface exactly. COORDS=col,row; `at` is current. The base card gives move/target counts, current-position "
+        "attacks, and target-centric COVERAGE. TYPE profiles give attacks and incoming-damage modifiers (+40 takes 40% more, "
+        "-60 takes 60% less); missing values are unknown.\n"
+        "- THREAT describes attacks if you EndTurn now. attackers counts enemies; max_sum is maximum volleys ignoring origin conflicts; "
+        "lethal_n counts volleys to reach HP; detail lists attacker:max-damage. "
         "focus_p=[p1,p2,p3] and focus_e give kill probabilities and expected damage for the best origin-compatible "
         "volleys of one to three distinct attackers across all supplied legal origins, breaking equal kill odds by expected damage. "
-        "Each attacker is assumed to deliver its full volley; retaliation and subsequent board changes are ignored. "
+        "Each attacker delivers its full volley; retaliation and subsequent board changes are ignored. "
         "Zero can mean no compatible sequence of that size, not safety against more attackers or newly opened routes.\n"
-        "- OPEN_THREAT removes unit blockers that could move or die: a conservative geometry bound, not an executable batch. "
-        "EXPOSURE gives the same direct/open facts for friendly units. RESCUE is a bounded priority list of recruiter then "
-        "directly threatened wounded units. E income projects current ownership; E vacate lists legal off-castle destinations, not recommendations.\n"
-        "- Per-unit origins and DESTINATION_DANGER: "
-        "{\"tool\":\"inspect_units\",\"unit_ids\":[N,...]} (1-8 unique living friendly IDs; "
-        "one tool call, one driver query per ID); "
-        "enemy attack coverage with {\"tool\":\"inspect_target\",\"unit_id\":N} or "
+        "- OPEN_THREAT removes blockers that could move or die: a conservative geometry bound, not an executable batch. EXPOSURE "
+        "gives the same direct/open facts for friendlies. RESCUE prioritizes recruiter then threatened wounded units. E income "
+        "projects ownership; E vacate lists legal off-castle destinations, not recommendations.\n"
+        "- Per-unit origins and DESTINATION_DANGER: {\"tool\":\"inspect_units\",\"unit_ids\":[N,...]} (1-8 unique living friendly IDs; "
+        "one tool call, one driver query per ID); enemy attack coverage with {\"tool\":\"inspect_target\",\"unit_id\":N} or "
         "{\"tool\":\"inspect_targets\",\"unit_ids\":[N,...]} (at most eight); hex coverage with "
         "{\"tool\":\"inspect_hex\",\"col\":C,\"row\":R,\"phase\":\"current|next_opponent_turn\"}.\n"
-        "- One preview request per turn: {\"tool\":\"preview_batch\",\"candidates\":[[actions...]]}, "
-        "at most two complete candidates each ending EndTurn. Tools execute no live actions. "
-        "SIMULATION — NOT EXECUTED results are hypothetical; a sampled outcome is not a guaranteed result. "
-        "Use LIVE_STATE for the current revision; revised or rolled-back drafts start there. "
+        "- One preview request per turn: {\"tool\":\"preview_batch\",\"candidates\":[[actions...]]}, at most two complete candidates ending EndTurn. "
+        "Tools execute no live actions; simulations are hypothetical. Use LIVE_STATE for the current revision; revised/rolled-back drafts start there. "
         "Follow-ups give remaining call budgets; a request requiring final actions accepts no further query.\n"
         if isinstance(state.get("tactical_surface"), dict) else
         "\n## Legal options\n"
@@ -2050,7 +2159,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
     )
     movement_guidance = (
         "\n- MoveGroupToward: {\"action\":\"MoveGroupToward\",\"unit_ids\":[int,...],\"col\":int,\"row\":int}; "
-        "nonfinal; 1-8 unique living friendly IDs; in-bounds rally (occupied OK); move in listed order; moved/skipped (spent or no closer hex); "
+        "nonfinal; 1-8 unique living IDs; in-bounds occupied rally; listed order; moved/skipped; "
         "no attack/recruit/promote/sweep/end/opponent; progress is not safety."
     )
     boundary_guidance = (
@@ -2064,7 +2173,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "- Play only the configured model-controlled side; the driver automatically executes the opponent. "
         "The headless driver disables scenario objective and scenario turn-limit conditions. A side wins by recruiter loss: "
         "exactly one side that previously had a recruiter now has none; elimination follows. "
-        "--max-turns is a side-turn safety cap: each completed model or opponent turn counts once, distinct from an engine round.\n"
+        "--max-turns is a side-turn safety cap: each completed model/opponent turn counts once, distinct from an engine round.\n"
         "- Recruitment needs a suitable keep; leaving it prevents recruitment until the recruiter returns.\n"
         "- Forecast p[defender-killed,both-survive,attacker-killed] and focus_p use basis points (6400 = 64%); "
         "e[damage-to-defender,damage-to-attacker] and focus_e use tenths of HP (24 = 2.4 HP). "
@@ -2077,32 +2186,29 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
             # agenda was rejected for having two active tasks by a validator
             # whose one-active limit the choices contract never mentioned.
             "\n## Response contract (choices mode)\n"
-            "- Return one JSON envelope with decisions on every response. You may select displayed handles with `{\"choices\": [\"<handle>\", ...], ...}` "
+            "- Return one JSON envelope for action responses. You may select displayed handles with `{\"choices\": [\"<handle>\", ...], ...}` "
             "or provide coordinate actions with `{\"actions\": [...], ...}` (for finish, resignation, or coordinate fallback). "
             "choices and actions are strictly mutually exclusive: do not provide both in one response.\n"
             "- To finish the side turn, use the actions envelope: `{\"actions\": [{\"action\": \"DoneWithImportantMoves\"}], ...}` or `{\"actions\": [{\"action\": \"EndTurn\"}], ...}`.\n"
             if action_encoding == "choices" else
             "\n## Response contract\n"
-            "- Return one JSON actions envelope with decisions on every action response, including review, repair, finish, and resignation. "
+            "- Return one JSON actions envelope for action responses, including review, repair, finish, and resignation. "
             "actions is a non-empty JSON array of at most 256 objects executing sequentially. Except for standalone Resign, "
             "normal mode requires exactly one final DoneWithImportantMoves, EndTurn, or FinishWithGreedy boundary.\n"
         )
-        + shared_response_rules(boundary_guidance)
+        + shared_response_rules(boundary_guidance, decision_mode)
         + "\n## Action schemas\n- " + "\n- ".join(schemas) + "\n"
-        "- Fields must match the schemas; engine responses remain authoritative. Only entries with \"movable\":true are Move destinations. "
-        "Moving onto your own hex causes DestinationOccupied and rolls back the batch. "
-        "Advance requires advancement_pending=true (compact pending=True); target_index indexes the unit's advances_to list "
-        "in supplied zero-based order. advances_to=missing means unknown; advances_to=[] offers no choice. "
-        "recruit_options supplies faction-legal definitions, costs, affordability, and placement hexes (compact R `open`)."
+        "- Fields match schemas; engine responses remain authoritative. Only entries with \"movable\":true are Move destinations; "
+        "own hex causes DestinationOccupied and rolls back. Advance requires advancement_pending=true (compact pending=True); "
+        "target_index indexes the unit's advances_to list; advances_to=missing is unknown; advances_to=[] offers no choice. recruit_options supplies faction-legal "
+        "definitions, costs, affordability, and placement hexes (compact R `open`)."
         + recruitment_guidance + "\n"
         "\n## Finishing a side turn\n"
-        "- DoneWithImportantMoves runs the automatic greedy sweep then ends the turn. EndTurn runs the same sweep and records "
-        "an implicit completion. Automatic eligibility excludes recruiters, critically wounded units, and spent units; "
-        "it does not establish tactical safety. The sweep never recruits.\n"
-        "- FinishWithGreedy delegates only listed group IDs, optionally including the recruiter. "
-        "Omitted units are not swept by this selective finish. Unit IDs must be unique across groups and holds; holds have reasons "
-        "of at most 120 characters. Holds preserve position for the remaining handoff, "
-        "not against earlier actions, recruitment auto-vacating, or enemy attacks. "
+        "- DoneWithImportantMoves runs the automatic greedy sweep then ends the turn; EndTurn runs the same sweep and records "
+        "implicit completion. Automatic eligibility excludes recruiters, critically wounded units, and spent units; it does not "
+        "establish tactical safety. The sweep never recruits.\n"
+        "- FinishWithGreedy delegates only listed group IDs, optionally including the recruiter. Unit IDs must be unique across "
+        "groups and holds; Omitted units are not swept by this selective finish. Holds have reasons at most 120 characters. "
         "Agenda and annotation prose create no normal engine holds. Only FinishWithGreedy's explicit holds encode executable holds.\n"
         "\n## Complete response examples\n"
         "Routine finish with optional agenda (illustrative IDs). Use this exact valid shape: "
@@ -2180,6 +2286,15 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
     memory_payload = {key: body.pop(key) for key in
                       ("previous_intent", "conversation_continuity", "agenda",
                        "whole_army_sweep", "recent_trend") if key in body}
+    if decision_mode == "focused":
+        # Keep the settled objective and its reason together in the dynamic
+        # section. The full board, force, economy, and recruiter danger remain
+        # present; this simply makes the next operation easy to find.
+        memory_payload["focused_context"] = {
+            "active_task": body.get("active_task"),
+            "committed_intent": intent,
+            "instruction": "continue this task until completion, block, or changed facts; finishing the task is distinct from ending the turn",
+        }
     fixed_context = fixed_prompt_context(state)
     profiles = [p for p in (state.get("tactical_surface", {}).get("unit_types", [])
                             if isinstance(state.get("tactical_surface"), dict) else [])
@@ -2439,13 +2554,16 @@ def build_completion_audit_data(state: dict[str, Any], agenda: Optional[dict[str
                           if isinstance(recruitment.get("placement_hexes"), list) else None)
     vacatable_castle_units = (len(economy["vacatable_castles"])
                               if isinstance(economy.get("vacatable_castles"), list) else None)
-    ready_units = []
+    movement_remaining = []
+    attack_remaining = []
     promotions = []
     for u in state.get("units", []):
         if isinstance(u, dict) and u.get("faction") == active_faction:
             uid = u.get("id")
-            if uid is not None and (not u.get("moved") or not u.get("attacked")):
-                ready_units.append(uid)
+            if uid is not None and not u.get("moved"):
+                movement_remaining.append(uid)
+            if uid is not None and not u.get("attacked"):
+                attack_remaining.append(uid)
             if uid is not None and u.get("advancement_pending"):
                 promotions.append(uid)
     holds = list((agenda or {}).get("holds", []))
@@ -2454,7 +2572,9 @@ def build_completion_audit_data(state: dict[str, Any], agenda: Optional[dict[str
         "affordable_recruits": sorted(affordable),
         "open_recruit_hexes": open_recruit_hexes,
         "vacatable_castle_units": vacatable_castle_units,
-        "ready_units": sorted(ready_units),
+        "movement_remaining": sorted(movement_remaining),
+        "attack_remaining": sorted(attack_remaining),
+        "attack_coverage": sorted(tactical_attack_coverage(surface).get("available", set())),
         "promotions": sorted(promotions),
         "holds": sorted(holds),
     }
@@ -2463,13 +2583,16 @@ def build_completion_audit_data(state: dict[str, Any], agenda: Optional[dict[str
 def completion_audit_text(state: dict[str, Any], agenda: Optional[dict[str, Any]] = None) -> str:
     data = build_completion_audit_data(state, agenda)
     aff_str = ",".join(data["affordable_recruits"]) or "none"
-    ready_str = ",".join(f"U{uid}" for uid in data["ready_units"]) or "none"
+    movement_str = ",".join(f"U{uid}" for uid in data["movement_remaining"]) or "none"
+    attack_str = ",".join(f"U{uid}" for uid in data["attack_remaining"]) or "none"
+    coverage_str = ",".join(f"U{uid}" for uid in data["attack_coverage"]) or "none"
     promo_str = ",".join(f"U{uid}" for uid in data["promotions"]) or "none"
     holds_str = ",".join(f"U{uid}" for uid in data["holds"]) or "none"
     return (
         f"COMPLETION_AUDIT gold={data['gold']} affordable={aff_str} "
         f"open_recruit_hexes={_known(data['open_recruit_hexes'])} "
-        f"vacatable_castle_units={_known(data['vacatable_castle_units'])} ready={ready_str} "
+        f"vacatable_castle_units={_known(data['vacatable_castle_units'])} "
+        f"movement_remaining={movement_str} attack_remaining={attack_str} attack_coverage={coverage_str} "
         f"promo={promo_str} holds={holds_str}"
     )
 
@@ -2921,6 +3044,10 @@ def run(args: argparse.Namespace) -> int:
             raise ValueError("response must contain actions or choices")
 
         if has_choices:
+            extra = set(decoded) - {"choices", "intent", "agenda", "decisions"}
+            if extra:
+                raise ValueError("choices envelope has unknown key(s): %s" %
+                                 ", ".join(sorted(str(name) for name in extra)))
             if getattr(args, "action_encoding", "coordinates") != "choices":
                 raise ValueError("choices envelope is only permitted when action_encoding is choices")
             handles = decoded.get("choices")
@@ -3176,7 +3303,8 @@ def run(args: argparse.Namespace) -> int:
                 if not any(r.get("type") == "turn_boundary" for r in open_records):
                     model_calls_this_turn = sum(
                         1 for r in open_records
-                        if r.get("type") in {"model", "repair", "draft_review", "draft_review_repair", "action_repair"}
+                        if r.get("type") in {"model", "repair", "draft_review", "draft_review_repair",
+                                              "action_repair", "action_repair_followup", "tool_followup"}
                     )
                     tool_calls_this_turn = sum(
                         1 for r in open_records
@@ -3467,6 +3595,112 @@ def run(args: argparse.Namespace) -> int:
                 for cause in getattr(backend, "retry_causes", [])[before:after]:
                     durable({"type": "model_transport_retry", "cause": cause,
                              "retry_number": metadata["transport_retries"]})
+
+    def dispatch_tool_request(decoded: dict[str, Any], raw_text: str, exchange,
+                              tool_context: str, preview_candidates):
+        """Validate and execute one bare tool request for every response path."""
+        nonlocal tool_calls_this_turn
+        tool = tool_request_name(decoded)
+        if tool is None:
+            raise ValueError("unknown tool request")
+        if isinstance(state, dict) and state.get("final_only"):
+            raise ValueError("final-only response cannot request a tool; return actions now")
+        if tool_calls_this_turn >= metadata["max_tool_calls_per_turn"]:
+            raise ValueError("tool call budget exhausted")
+        tool_calls_this_turn += 1
+        metadata["tool_calls_by_name"][tool] = metadata["tool_calls_by_name"].get(tool, 0) + 1
+        if tool == "preview_batch":
+            if preview_candidates is not None:
+                raise ValueError("preview_batch may be requested only once per turn")
+            preview_candidates = validate_preview_request(raw_text, args.no_recruit_macro)
+            try:
+                result = query_bounded_comparison(
+                    exchange, preview_candidates, int(state.get("state_revision", 0)))
+            except CandidateQueryError as candidate_error:
+                tool_context += (
+                    "\nMODEL_TOOL_REQUEST_UNTRUSTED_DATA_BEGIN:\n" + raw_text +
+                    "\nMODEL_TOOL_REQUEST_UNTRUSTED_DATA_END\n" +
+                    "TOOL_ERROR_UNTRUSTED_DATA_BEGIN tool=preview_batch:\n" +
+                    json.dumps(candidate_error.as_dict(), sort_keys=True) +
+                    "\nTOOL_ERROR_UNTRUSTED_DATA_END\n")
+                # The helper owns the evolving context, so carry the rejected
+                # request and candidate list through the bounded repair path.
+                # Without this, the repair prompt would lose candidate IDs and
+                # the original tool result context when the exception crosses
+                # the helper boundary.
+                candidate_error.tool_context = tool_context
+                candidate_error.preview_candidates = preview_candidates
+                raise
+            rendered = compact_batch_preview(result, int(state.get("state_revision", 0)))
+            record({"type": "batch_preview", "tool": tool,
+                    "candidate_count": len(preview_candidates),
+                    "result_bytes": len(rendered.encode()),
+                    "candidates": preview_candidates, "body": result})
+        elif tool == "inspect_target":
+            unit_id = validate_inspect_target_request(decoded)
+            result = query_inspect_target(exchange, unit_id, int(state.get("state_revision", 0)))
+            rendered = compact_target_inspection(result)
+            record({"type": "tool_result", "tool": tool, "request": decoded,
+                    "result_bytes": len(rendered.encode()), "body": result})
+        elif tool == "inspect_units":
+            unit_ids = validate_inspect_units_request(decoded)
+            validate_friendly_inspect_units(unit_ids, state, args.llm_side)
+            result = query_inspect_units(exchange, unit_ids, int(state.get("state_revision", 0)))
+            insp_choices = []
+            if getattr(args, "action_encoding", "coordinates") == "choices":
+                insp_choices = extract_units_inspection_choices(
+                    result, metadata.get("conversation_id"), int(state.get("state_revision", 0)))
+                choice_registry.register_all(insp_choices)
+            rendered = compact_units_inspection(result, choices=insp_choices)
+            record({"type": "tool_result", "tool": tool, "request": decoded,
+                    "result_bytes": len(rendered.encode()), "body": {"units": result}})
+        elif tool == "inspect_targets":
+            unit_ids = validate_inspect_targets_request(decoded)
+            result = query_inspect_targets(exchange, unit_ids, int(state.get("state_revision", 0)))
+            rendered = compact_targets_inspection(result)
+            record({"type": "tool_result", "tool": tool, "request": decoded,
+                    "result_bytes": len(rendered.encode()), "body": {"targets": result}})
+        else:
+            col, row, phase = validate_inspect_hex_request(decoded)
+            result = query_inspect_hex(exchange, col, row, phase, int(state.get("state_revision", 0)))
+            rendered = compact_hex_inspection(result)
+            record({"type": "tool_result", "tool": tool, "request": decoded,
+                    "result_bytes": len(rendered.encode()), "body": result})
+        tool_context += (
+            "\nMODEL_TOOL_REQUEST_UNTRUSTED_DATA_BEGIN:\n" + raw_text +
+            "\nMODEL_TOOL_REQUEST_UNTRUSTED_DATA_END\n" +
+            "TOOL_RESULT_UNTRUSTED_DATA_BEGIN tool=" + tool + "\n" +
+            rendered + "\nTOOL_RESULT_UNTRUSTED_DATA_END\n")
+        return tool_context, preview_candidates, tool
+
+    def complete_tool_followup(prompt: str, tool_context: str, tool: str,
+                               exchange) -> ModelReply:
+        """Request the next model response after one tool result."""
+        nonlocal model_calls_this_turn
+        if model_calls_this_turn >= metadata["max_model_calls_per_turn"]:
+            raise ModelCallBudgetExhausted(
+                "model call budget exhausted before tool followup")
+        followup_prompt = prompt + tool_context + "\n" + tool_followup_instruction(
+            metadata["max_tool_calls_per_turn"] - tool_calls_this_turn,
+            metadata["max_model_calls_per_turn"] - model_calls_this_turn,
+            incremental=getattr(args, "incremental_turns", False),
+            final_only=bool(isinstance(state, dict) and state.get("final_only")),
+            remaining_partials=state.get("remaining_partial_batches") if isinstance(state, dict) else None)
+        delivered_followup = finalize_model_prompt(followup_prompt, state)
+        followup_bytes = len(delivered_followup.encode())
+        if followup_bytes > args.max_prompt_bytes:
+            raise RuntimeError("model_prompt_error: tool results exceed max_prompt_bytes")
+        metadata["max_observed_prompt_bytes"] = max(metadata["max_observed_prompt_bytes"], followup_bytes)
+        model_calls_this_turn += 1
+        metadata["model_calls"] += 1
+        reply = complete_model(followup_prompt)
+        enforce_usage(reply, args)
+        record({"type": "tool_followup", "tool": tool, "call": metadata["model_calls"],
+                "prompt_hash": reply.prompt_hash, "prompt_bytes": followup_bytes,
+                "raw_output": reply.text, "usage": reply.usage})
+        if reply.usage is None:
+            metadata["usage_measured"] = False
+        return reply
     def capture_agenda(text: str, request_id: Optional[str] = None) -> None:
         """Stage a model agenda; commit it only after its action batch succeeds."""
         nonlocal pending_agenda
@@ -3655,6 +3889,13 @@ def run(args: argparse.Namespace) -> int:
                 if failure is not None:
                     # A rejected batch cannot publish its client-only agenda.
                     pending_agenda = None
+                    # The rejected batch must not leave its intent queued for
+                    # the repair's eventual status response.
+                    pending_intent = None
+                    # The proposal's intent explains an uncommitted batch. Do
+                    # not carry it into a repair that omits a replacement;
+                    # an already committed intent remains in intent_memory.
+                    turn_intent = None
                     if (line.get("ok") is True and pending_action
                             and not action_repair_attempted
                             # Leave one additional decision slot for the common
@@ -3782,6 +4023,7 @@ def run(args: argparse.Namespace) -> int:
                                          last_event_count=len(events), stderr_tail=list(stderr_tail))
                             durable({"type": "terminal", **metadata})
                             return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
+                        pending_intent = turn_intent
                         continue
                     metadata["rejected_batches"] += 1
                     metadata["rejected_action_items"] += sum(
@@ -3956,7 +4198,8 @@ def run(args: argparse.Namespace) -> int:
                                     sweep=sweep,
                                     trend=compact_trend(trend_states), playbook=playbook,
                                     action_encoding=encoding,
-                                    choices=prompt_choices)
+                                    choices=prompt_choices,
+                                    decision_mode=getattr(args, "decision_mode", "batch"))
                 delivered_prompt = finalize_model_prompt(prompt, state)
                 prompt_bytes = delivered_prompt.encode()
                 prompt_hash = hashlib.sha256(prompt_bytes).hexdigest()
@@ -4009,6 +4252,7 @@ def run(args: argparse.Namespace) -> int:
                         current_reply = reply
                         tool_context = ""
                         preview_candidates = None
+                        tool_repair_attempted = False
                         while True:
                             decoded = parse_action_response(current_reply.text)
                             if not isinstance(decoded, dict):
@@ -4019,130 +4263,67 @@ def run(args: argparse.Namespace) -> int:
                                 orders = validate_model_orders(current_reply.text)
                                 turn_intent = response_intent(current_reply.text)
                                 break
-                            tool = decoded.get("tool")
-                            if tool_calls_this_turn >= metadata["max_tool_calls_per_turn"]:
-                                raise ValueError("tool call budget exhausted")
-                            # Charge the player's tool request before running
-                            # its validation/query. Failed requests consume the
-                            # same allowance as successful ones; the underlying
-                            # driver query count remains separately measured.
-                            tool_calls_this_turn += 1
-                            tool_name = tool if isinstance(tool, str) else str(tool)
-                            metadata["tool_calls_by_name"][tool_name] = metadata["tool_calls_by_name"].get(tool_name, 0) + 1
-                            if tool == "preview_batch":
-                                if preview_candidates is not None:
-                                    raise ValueError("preview_batch may be requested only once per turn")
-                                preview_candidates = validate_preview_request(
-                                    current_reply.text, args.no_recruit_macro)
-                                try:
-                                    result = query_bounded_comparison(
-                                        exchange, preview_candidates, int(state.get("state_revision", 0)))
-                                except CandidateQueryError as candidate_error:
-                                    # Preserve the exact request and structured
-                                    # driver error for the bounded repair below.
-                                    tool_context += (
-                                        "\nMODEL_TOOL_REQUEST_UNTRUSTED_DATA_BEGIN:\n" +
-                                        current_reply.text +
-                                        "\nMODEL_TOOL_REQUEST_UNTRUSTED_DATA_END\n" +
-                                        "TOOL_ERROR_UNTRUSTED_DATA_BEGIN tool=preview_batch:\n" +
-                                        json.dumps(candidate_error.as_dict(), sort_keys=True) +
-                                        "\nTOOL_ERROR_UNTRUSTED_DATA_END\n")
-                                    raise
-                                rendered = compact_batch_preview(
-                                    result, int(state.get("state_revision", 0)))
-                                record({"type": "batch_preview", "tool": tool,
-                                        "candidate_count": len(preview_candidates),
-                                        "result_bytes": len(rendered.encode()),
-                                        "candidates": preview_candidates, "body": result})
-                            elif tool == "inspect_target":
-                                unit_id = validate_inspect_target_request(decoded)
-                                result = query_inspect_target(
-                                    exchange, unit_id, int(state.get("state_revision", 0)))
-                                rendered = compact_target_inspection(result)
-                                record({"type": "tool_result", "tool": tool,
-                                        "request": decoded, "result_bytes": len(rendered.encode()),
-                                        "body": result})
-                            elif tool == "inspect_units":
-                                unit_ids = validate_inspect_units_request(decoded)
-                                validate_friendly_inspect_units(
-                                    unit_ids, state, args.llm_side)
-                                result = query_inspect_units(
-                                    exchange, unit_ids, int(state.get("state_revision", 0)))
-                                insp_choices = []
-                                if getattr(args, "action_encoding", "coordinates") == "choices":
-                                    insp_choices = extract_units_inspection_choices(
-                                        result, metadata.get("conversation_id"),
-                                        int(state.get("state_revision", 0)))
-                                    choice_registry.register_all(insp_choices)
-                                rendered = compact_units_inspection(result, choices=insp_choices)
-                                record({"type": "tool_result", "tool": tool,
-                                        "request": decoded, "result_bytes": len(rendered.encode()),
-                                        "body": {"units": result}})
-                            elif tool == "inspect_targets":
-                                unit_ids = validate_inspect_targets_request(decoded)
-                                result = query_inspect_targets(
-                                    exchange, unit_ids, int(state.get("state_revision", 0)))
-                                rendered = compact_targets_inspection(result)
-                                record({"type": "tool_result", "tool": tool,
-                                        "request": decoded, "result_bytes": len(rendered.encode()),
-                                        "body": {"targets": result}})
-                            elif tool == "inspect_hex":
-                                col, row, phase = validate_inspect_hex_request(decoded)
-                                result = query_inspect_hex(
-                                    exchange, col, row, phase, int(state.get("state_revision", 0)))
-                                rendered = compact_hex_inspection(result)
-                                record({"type": "tool_result", "tool": tool,
-                                        "request": decoded, "result_bytes": len(rendered.encode()),
-                                        "body": result})
-                            else:
-                                raise ValueError("unknown tool request")
-                            tool_context += ("\nMODEL_TOOL_REQUEST_UNTRUSTED_DATA_BEGIN:\n" +
-                                             current_reply.text +
-                                             "\nMODEL_TOOL_REQUEST_UNTRUSTED_DATA_END\n" +
-                                             "TOOL_RESULT_UNTRUSTED_DATA_BEGIN tool=" + tool + ":\n" +
-                                             rendered + "\nTOOL_RESULT_UNTRUSTED_DATA_END\n")
-                            followup_prompt = prompt + tool_context + "\n" + tool_followup_instruction(
-                                metadata["max_tool_calls_per_turn"] - tool_calls_this_turn,
-                                metadata["max_model_calls_per_turn"] - model_calls_this_turn,
-                                incremental=getattr(args, "incremental_turns", False),
-                                final_only=bool(isinstance(state, dict) and state.get("final_only")),
-                            )
-                            delivered_followup = finalize_model_prompt(followup_prompt, state)
-                            followup_bytes = len(delivered_followup.encode())
-                            if followup_bytes > args.max_prompt_bytes:
-                                raise RuntimeError("model_prompt_error: tool results exceed max_prompt_bytes")
-                            metadata["max_observed_prompt_bytes"] = max(
-                                metadata["max_observed_prompt_bytes"], followup_bytes)
-                            # Tool followups are engine-fact lookups, not extra
-                            # decision or repair calls. Keep their separate cap
-                            # without spending the turn's decision budget.
-                            metadata["model_calls"] += 1
-                            current_reply = complete_model(followup_prompt)
+                            tool_context, preview_candidates, tool = dispatch_tool_request(
+                                decoded, current_reply.text, exchange,
+                                tool_context, preview_candidates)
+                            current_reply = complete_tool_followup(
+                                prompt, tool_context, tool, exchange)
                             final_reply = current_reply
-                            enforce_usage(current_reply, args)
-                            record({"type": "tool_followup", "tool": tool,
-                                    "call": metadata["model_calls"],
-                                    "prompt_hash": current_reply.prompt_hash,
-                                    "prompt_bytes": followup_bytes,
-                                    "raw_output": current_reply.text, "usage": current_reply.usage})
-                            if current_reply.usage is None:
-                                metadata["usage_measured"] = False
                         if preview_candidates is not None:
                             record({"type": "preview_selection",
                                     "matched_candidate": next((index for index, candidate in enumerate(preview_candidates)
                                                                if candidate == orders), None)})
                     except ValueError as first:
+                        # A tool request has its own small, bare contract. If
+                        # the model accidentally adds action metadata (the
+                        # observed preview failure), repair that same request
+                        # once before asking for actions. This keeps the
+                        # pending inspection/comparison and its IDs intact.
+                        parsed_tool = None
+                        try:
+                            parsed_tool = parse_action_response(current_reply.text)
+                        except (TypeError, ValueError):
+                            pass
+                        malformed_tool = tool_request_name(parsed_tool)
+                        cannot_retry_tool = malformed_tool and any(
+                            marker in str(first) for marker in (
+                                "tool call budget exhausted",
+                                "preview_batch may be requested only once per turn",
+                                "final-only response cannot request a tool"))
+                        if (malformed_tool and tool_repair_attempted
+                                and not isinstance(first, CandidateQueryError)
+                                and not cannot_retry_tool):
+                            raise ValueError(
+                                f"{malformed_tool} tool repair was malformed; one tool-shape repair is allowed")
+                        if isinstance(first, CandidateQueryError) and tool_repair_attempted:
+                            raise ValueError(
+                                "preview_batch candidate repair was rejected again; one tool repair is allowed")
                         if isinstance(first, CandidateQueryError):
+                            tool_context = getattr(first, "tool_context", tool_context)
+                            preview_candidates = getattr(
+                                first, "preview_candidates", preview_candidates)
+                        if cannot_retry_tool:
+                            repair_prompt = tool_budget_repair_prompt(
+                                prompt, tool_context, str(first), current_reply.text,
+                                remaining_model_calls=(metadata["max_model_calls_per_turn"] -
+                                                        model_calls_this_turn),
+                                remaining_partials=(state.get("remaining_partial_batches")
+                                                    if isinstance(state, dict) else None))
+                        elif malformed_tool and not isinstance(first, CandidateQueryError):
+                            repair_prompt = tool_shape_repair_prompt(
+                                prompt, tool_context, str(first), current_reply.text,
+                                malformed_tool)
+                        elif isinstance(first, CandidateQueryError):
                             candidate_index = first.candidate_index
-                            if (not isinstance(candidate_index, int)
-                                    or not preview_candidates
-                                    or candidate_index < 0
-                                    or candidate_index >= len(preview_candidates)):
-                                candidate_index = len(preview_candidates or []) - 1
+                            candidate_known = (
+                                isinstance(candidate_index, int)
+                                and bool(preview_candidates)
+                                and 0 <= candidate_index < len(preview_candidates))
                             rejected_candidate = (preview_candidates[candidate_index]
-                                                   if preview_candidates else [])
+                                                   if candidate_known else None)
                             repair_prompt = candidate_repair_prompt(
-                                prompt, tool_context, rejected_candidate, first)
+                                prompt, tool_context, rejected_candidate, first,
+                                candidate_set=(None if candidate_known else preview_candidates))
                         else:
                             repair_prompt = tool_budget_repair_prompt(
                                 prompt, tool_context, str(first), current_reply.text) \
@@ -4150,6 +4331,9 @@ def run(args: argparse.Namespace) -> int:
                                 "\nMODEL_RESPONSE_UNTRUSTED_DATA_BEGIN:\n" + current_reply.text + \
                                 "\nMODEL_RESPONSE_UNTRUSTED_DATA_END" + \
                                 "\nReturn one corrected JSON action envelope with decisions."
+                        if model_calls_this_turn >= metadata["max_model_calls_per_turn"]:
+                            raise ModelCallBudgetExhausted(
+                                "model call budget exhausted before tool repair")
                         model_calls_this_turn += 1
                         metadata["model_calls"] += 1
                         repaired = complete_model(repair_prompt)
@@ -4161,11 +4345,46 @@ def run(args: argparse.Namespace) -> int:
                                 "validation_error": str(first)})
                         if repaired.usage is None:
                             metadata["usage_measured"] = False
-                        orders = validate_model_orders(repaired.text)
-                        turn_intent = response_intent(repaired.text)
+                        repaired_decoded = parse_action_response(repaired.text)
+                        repaired_tool = tool_request_name(repaired_decoded)
+                        if repaired_tool:
+                            # The repair handler is outside the tool-loop's
+                            # lexical scope. Process the corrected request here
+                            # and then obtain the ordinary action follow-up;
+                            # dropping it would leave the driver waiting for a
+                            # state boundary that cannot arrive.
+                            tool_repair_attempted = True
+                            tool_context, preview_candidates, tool = dispatch_tool_request(
+                                repaired_decoded, repaired.text, exchange,
+                                tool_context, preview_candidates)
+                            current_reply = complete_tool_followup(
+                                prompt, tool_context, tool, exchange)
+                            final_reply = current_reply
+                            # A corrected tool request may legitimately be
+                            # followed by another inspection. Reuse the same
+                            # parser, dispatch, budgets, logging, and preview
+                            # guard until the model finally returns actions.
+                            while True:
+                                repaired_decoded = parse_action_response(current_reply.text)
+                                next_tool = tool_request_name(repaired_decoded)
+                                if not next_tool:
+                                    orders = validate_model_orders(current_reply.text)
+                                    turn_intent = response_intent(current_reply.text)
+                                    break
+                                tool_context, preview_candidates, tool = dispatch_tool_request(
+                                    repaired_decoded, current_reply.text, exchange,
+                                    tool_context, preview_candidates)
+                                current_reply = complete_tool_followup(
+                                    prompt, tool_context, tool, exchange)
+                                final_reply = current_reply
+                        if not repaired_tool:
+                            orders = validate_model_orders(repaired.text)
+                            turn_intent = response_intent(repaired.text)
                 except (RuntimeError, ValueError) as first:
                     if isinstance(first, RuntimeError) and "max_game_total_tokens_exhausted" in str(first):
                         return emit_budget_interrupted("max_game_total_tokens_exhausted", str(first))
+                    if isinstance(first, ModelCallBudgetExhausted):
+                        return emit_budget_interrupted("model_calls_budget_exhausted", str(first))
                     # Same split: a ValueError here means the model failed
                     # validation twice (initial plus repair).
                     if (isinstance(first, RuntimeError)
@@ -4301,6 +4520,10 @@ def run(args: argparse.Namespace) -> int:
                         # preview service. Repair once from the unchanged live
                         # state and keep this review slot consumed so a repaired
                         # draft cannot start another unlimited review cycle.
+                        # The draft was never accepted by the review. Its
+                        # intent must not become committed memory if the repair
+                        # omits a replacement.
+                        turn_intent = None
                         handoff_review_used = True
                         handoff_outcome = "invalid_candidate"
                         metadata["draft_reviews"] += 1
@@ -4318,7 +4541,8 @@ def run(args: argparse.Namespace) -> int:
                             durable({"type": "model_error", **metadata})
                             return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
                         repair_prompt = candidate_repair_prompt(
-                            prompt, tool_context, orders, review_error)
+                            prompt, tool_context, orders, review_error,
+                            preserve_tool=False)
                         model_calls_this_turn += 1
                         metadata["model_calls"] += 1
                         try:
@@ -4403,6 +4627,11 @@ def run(args: argparse.Namespace) -> int:
                     rejected_error = dict(validation)
                     rejected_raw_text = None
                     while validation.get("valid") is not True:
+                        # Validation rejected this proposal before execution.
+                        # Only a later repaired response may supply a new
+                        # intent; preserving the rejected one would publish
+                        # speculative memory after a bare repair.
+                        turn_intent = None
                         if validation.get("error_code") == "partial_limit":
                             # The engine has committed the maximum number of
                             # prefixes. A nonterminal repair cannot succeed at

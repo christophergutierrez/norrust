@@ -260,7 +260,8 @@ class PromptCacheAcceptanceTests(unittest.TestCase):
         # Re-rendered for the intentional stack 1/4/5 contract changes.
         # Stored cases, historical prefix ratchet, layout checks, and growth
         # budget are preserved; see docs/experiments/glm-decision-efficiency.md.
-        self.assertEqual(baseline["source_commit"], '342d1b5+glm-stack1+glm-stack4+glm-stack5')
+        self.assertEqual(baseline["source_commit"],
+                         '342d1b5+glm-stack1+glm-stack4+glm-stack5+glm-followup-stack1-advances-to')
         for compact in (True, False):
             prompts = [render(case, compact=compact).encode() for case in matrix()]
             old = [p.encode() for p in baseline["prompts"][str(compact)]]

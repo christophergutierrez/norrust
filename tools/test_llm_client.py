@@ -183,6 +183,135 @@ class ClientValidationTests(unittest.TestCase):
             validations=[{"valid": False, "error_code": "partial_limit"}, {"valid": True}])
         self.assertEqual(len(requests), 1)
         self.assertIsNone(batches[0]["request_id"])
+
+    def test_engine_repair_does_not_commit_rejected_intent(self):
+        first = self.annotated_orders("committed intent")
+        rejected = self.annotated_orders(
+            "rejected intent",
+            [{"action": "Attack", "attacker_id": 1, "defender_id": 9},
+             {"action": "EndTurn"}],
+        )
+        repaired = json.dumps([{"action": "EndTurn"}])
+        lines = [
+            {"type": "state", "active_faction": 0, "state_revision": 1,
+             "units": []},
+            {"type": "status", "ok": True, "results": [{"ok": True}]},
+            {"type": "state", "active_faction": 0, "state_revision": 2,
+             "units": [{"id": 1, "faction": 0}]},
+            {"type": "status", "ok": True,
+             "results": [{"ok": False, "code": "NotAdjacent", "message": "bad"}]},
+            {"type": "status", "ok": True, "results": [{"ok": True}]},
+            {"type": "game_end", "reason": "max_turns"},
+        ]
+        with mock.patch.object(llm_client, "query_tactical_surface", return_value={}), \
+                mock.patch.object(llm_client, "draft_needs_preview", return_value=False):
+            code, records = self.run_with_orders(
+                [first, rejected, repaired], lines, return_records=True)
+        self.assertEqual(code, 0)
+        forwarded = [r for r in records if r["type"] == "forwarded_orders"]
+        self.assertEqual([r["intent"] for r in forwarded],
+                         ["committed intent", "rejected intent", None])
+        self.assertEqual(
+            [r["intent"] for r in records if r["type"] == "intent_update"],
+            ["committed intent"],
+        )
+
+    def test_engine_repair_can_commit_its_own_intent(self):
+        rejected = self.annotated_orders(
+            "rejected intent",
+            [{"action": "Attack", "attacker_id": 1, "defender_id": 9},
+             {"action": "EndTurn"}],
+        )
+        repaired = self.annotated_orders("repaired intent")
+        lines = [
+            {"type": "state", "active_faction": 0, "state_revision": 1,
+             "units": [{"id": 1, "faction": 0}]},
+            {"type": "status", "ok": True,
+             "results": [{"ok": False, "code": "NotAdjacent", "message": "bad"}]},
+            {"type": "status", "ok": True, "results": [{"ok": True}]},
+            {"type": "game_end", "reason": "max_turns"},
+        ]
+        with mock.patch.object(llm_client, "query_tactical_surface", return_value={}), \
+                mock.patch.object(llm_client, "draft_needs_preview", return_value=False):
+            code, records = self.run_with_orders(
+                [rejected, repaired], lines, return_records=True)
+        self.assertEqual(code, 0)
+        forwarded = [r for r in records if r["type"] == "forwarded_orders"]
+        self.assertEqual([r["intent"] for r in forwarded],
+                         ["rejected intent", "repaired intent"])
+        self.assertEqual(
+            [r["intent"] for r in records if r["type"] == "intent_update"],
+            ["repaired intent"],
+        )
+
+    def test_pre_submit_repair_does_not_commit_rejected_intent(self):
+        old = self.annotated_orders("committed intent")
+        rejected = self.annotated_orders("rejected intent")
+        repaired = self.annotated_orders("repaired intent")
+        lines = [
+            {"type": "state", "active_faction": 0, "state_revision": 1,
+             "units": []},
+            {"type": "status", "ok": True, "results": [{"ok": True}]},
+            {"type": "state", "active_faction": 0, "state_revision": 2,
+             "units": []},
+            {"type": "status", "ok": True, "results": [{"ok": True}]},
+            {"type": "game_end", "reason": "max_turns"},
+        ]
+        with mock.patch.object(llm_client, "query_tactical_surface", return_value={}), \
+                mock.patch.object(llm_client, "draft_needs_preview", return_value=False), \
+                mock.patch.object(
+                    llm_client,
+                    "query_validate_batch",
+                    side_effect=[
+                        {"valid": True, "failed_index": None, "results": [{"ok": True}]},
+                        {"valid": False, "failed_index": 0, "results": [],
+                         "error_code": "NotAdjacent", "error_message": "bad"},
+                        {"valid": True, "failed_index": None, "results": [{"ok": True}]},
+                    ],
+                ):
+            code, records = self.run_with_orders(
+                [old, rejected, repaired], lines,
+                validate_before_submit=True, return_records=True)
+        self.assertEqual(code, 0)
+        forwarded = [r for r in records if r["type"] == "forwarded_orders"]
+        self.assertEqual([r["intent"] for r in forwarded],
+                         ["committed intent", "repaired intent"])
+        self.assertEqual(
+            [r["intent"] for r in records if r["type"] == "intent_update"],
+            ["committed intent", "repaired intent"],
+        )
+
+    def test_rejected_review_repair_does_not_commit_draft_intent(self):
+        old = self.annotated_orders("committed intent")
+        draft = self.annotated_orders("rejected draft intent")
+        repaired = self.annotated_orders("repaired intent")
+        candidate_error = CandidateQueryError(
+            "preview_batch", "unauthorized_unit", "dead candidate", 0)
+        lines = [
+            {"type": "state", "active_faction": 0, "state_revision": 1,
+             "units": []},
+            {"type": "status", "ok": True, "results": [{"ok": True}]},
+            {"type": "state", "active_faction": 0, "state_revision": 2,
+             "units": []},
+            {"type": "status", "ok": True, "results": [{"ok": True}]},
+            {"type": "game_end", "reason": "max_turns"},
+        ]
+        with mock.patch.object(llm_client, "query_tactical_surface", return_value={}), \
+                mock.patch.object(llm_client, "draft_needs_preview",
+                                  side_effect=[False, True]), \
+                mock.patch.object(llm_client, "query_preview_batch",
+                                  side_effect=candidate_error), \
+                mock.patch.object(llm_client, "draft_review_needed", return_value=True):
+            code, records = self.run_with_orders(
+                [old, draft, repaired], lines, return_records=True)
+        self.assertEqual(code, 0)
+        forwarded = [r for r in records if r["type"] == "forwarded_orders"]
+        self.assertEqual([r["intent"] for r in forwarded],
+                         ["committed intent", "repaired intent"])
+        self.assertEqual(
+            [r["intent"] for r in records if r["type"] == "intent_update"],
+            ["committed intent", "repaired intent"],
+        )
         # A timeout after receiving a draft must not attach that draft to fallback.
         with mock.patch.object(llm_client.OrdersBackend, "complete", side_effect=[
                 ModelReply("not JSON"), RuntimeError("model_timeout")]):
@@ -610,6 +739,11 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("Do not request another tool", tool_followup_instruction(2, 1))
         self.assertIn("another allowed tool", tool_followup_instruction(1, 2))
 
+    def test_tool_request_name_rejects_non_string_tool_values(self):
+        for value in ({}, [], 7, True, None):
+            with self.subTest(value=value):
+                self.assertIsNone(llm_client.tool_request_name({"tool": value}))
+
     def test_tool_budget_repair_preserves_all_tool_context(self):
         repaired = tool_budget_repair_prompt(
             "ORIGINAL", "\nTOOL_RESULT unit=7: target=9", "tool call budget exhausted",
@@ -875,9 +1009,35 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("ENGINE_CANDIDATE_ERROR_UNTRUSTED_DATA_BEGIN", repair_prompt)
         self.assertIn("unauthorized_unit", repair_prompt)
         self.assertIn("revision=286", repair_prompt)
+        self.assertIn("corrected bare preview_batch request", repair_prompt)
+        self.assertIn('"action":"EndTurn"', repair_prompt)
         forwarded = next(record for record in records if record["type"] == "forwarded_orders")
         self.assertEqual(forwarded["orders"], json.loads(corrected)["actions"])
         self.assertFalse(any(record.get("type") == "events" for record in records))
+
+    def test_preview_repair_preserves_all_candidates_when_index_is_ambiguous(self):
+        preview = json.dumps({"tool": "preview_batch", "candidates": [
+            [{"action": "EndTurn"}],
+            [{"action": "DoneWithImportantMoves"}],
+        ]})
+        corrected = self.annotated_orders("corrected")
+        lines = [
+            {"type": "state", "active_faction": 0, "state_revision": 286, "units": []},
+            {"type": "status", "ok": True, "what": "tactical_surface", "body": {"units": []}},
+            {"type": "status", "ok": False, "what": "preview_batch",
+             "code": "parse", "message": "candidate validation failed"},
+            {"type": "game_end", "reason": "max_turns", "winner": None},
+        ]
+        code, records = self.run_with_orders([preview, corrected], lines,
+                                              max_model_calls_per_turn=4,
+                                              return_records=True)
+        self.assertEqual(code, 0)
+        repair_prompt = next(r["prompt"] for r in records
+                             if r["type"] == "model_request" and r["sequence"] == 2)
+        self.assertIn("DRAFT_CANDIDATES_UNTRUSTED_DATA_BEGIN", repair_prompt)
+        self.assertIn("do not guess which position failed", repair_prompt)
+        self.assertIn('"DoneWithImportantMoves"', repair_prompt)
+        self.assertNotIn("DRAFT_ACTIONS_UNTRUSTED_DATA_BEGIN", repair_prompt)
 
     def test_invalid_automatic_review_candidate_gets_one_repair_without_second_review(self):
         draft = self.annotated_orders("draft", [{"action": "FinishWithGreedy",
@@ -1464,6 +1624,77 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn('"choices": ["<handle>", ...]', choices_prompt)
         self.assertIn('"actions": [...', choices_prompt)
         self.assertIn("MoveGroupToward", choices_prompt)
+
+    def test_focused_prompt_makes_bare_tools_and_incremental_intent_explicit(self):
+        prompt = prompt_for(
+            {"incremental_turns": True, "tactical_surface": {"units": []}}, [],
+            intent="finish the wounded target before ending the turn",
+            agenda={"tasks": [{"id": "finish", "goal": "Finish wounded target",
+                                "units": [7], "status": "active"}], "holds": []},
+            action_encoding="choices", decision_mode="focused")
+        self.assertIn("Decisions are optional in focused mode", prompt)
+        self.assertIn("Bare tools use only their documented keys", prompt)
+        self.assertIn("focused_context", prompt)
+        self.assertIn("finish the wounded target before ending the turn", prompt)
+        self.assertIn("completing that operation does not end the turn", prompt)
+
+    def test_final_only_rejects_well_shaped_tool_before_engine_query(self):
+        request = json.dumps({"tool": "inspect_hex", "col": 3, "row": 4,
+                              "phase": "current"})
+        lines = [{"type": "state", "active_faction": 0, "state_revision": 7,
+                  "final_only": True, "units": []},
+                 {"type": "status", "ok": True,
+                  "results": [{"ok": True}]},
+                 {"type": "game_end", "reason": "max_turns"}]
+        with mock.patch.object(llm_client, "query_tactical_surface", return_value={}), \
+                mock.patch.object(llm_client, "query_inspect_hex") as inspect_hex:
+            code, records = self.run_with_orders(
+                [request, '[{"action":"DoneWithImportantMoves"}]'], lines,
+                return_records=True)
+        self.assertEqual(code, 0)
+        inspect_hex.assert_not_called()
+        self.assertFalse([r for r in records if r["type"] == "tool_result"])
+        repair_request = [r for r in records if r["type"] == "model_request"][-1]
+        self.assertIn("final-only response cannot request a tool", repair_request["prompt"])
+
+    def test_repaired_tool_can_be_followed_by_another_bare_tool(self):
+        malformed = json.dumps({"tool": "inspect_hex", "col": 3, "row": 4,
+                                 "phase": "current", "decisions": []})
+        corrected = json.dumps({"tool": "inspect_hex", "col": 3, "row": 4,
+                                "phase": "current"})
+        second = json.dumps({"tool": "inspect_units", "unit_ids": [7]})
+        lines = [{"type": "state", "active_faction": 0, "state_revision": 7,
+                  "units": [{"id": 7, "faction": 0}]},
+                 {"type": "status", "ok": True,
+                  "results": [{"ok": True}]},
+                 {"type": "game_end", "reason": "max_turns"}]
+        with mock.patch.object(llm_client, "query_tactical_surface", return_value={}), \
+                mock.patch.object(llm_client, "query_inspect_hex", return_value={"terrain": "open"}) as inspect_hex, \
+                mock.patch.object(llm_client, "query_inspect_units", return_value=[]) as inspect_units:
+            code, records = self.run_with_orders(
+                [malformed, corrected, second,
+                 '[{"action":"DoneWithImportantMoves"}]'], lines,
+                return_records=True, max_model_calls_per_turn=5)
+        self.assertEqual(code, 0)
+        self.assertEqual(inspect_hex.call_count, 1)
+        self.assertEqual(inspect_units.call_count, 1)
+        self.assertEqual([r["tool"] for r in records if r["type"] == "tool_result"],
+                         ["inspect_hex", "inspect_units"])
+        self.assertTrue([r for r in records if r["type"] == "forwarded_orders"])
+
+    def test_completion_audit_separates_flags_from_actual_attack_coverage(self):
+        rendered = compact_observation({
+            "active_faction": 0, "units": [
+                {"id": 1, "faction": 0, "moved": True, "attacked": False},
+                {"id": 2, "faction": 0, "moved": False, "attacked": True},
+            ], "tactical_surface": {"units": [{"unit_id": 2, "origins": [
+                {"current": True, "engagements": [{"defender_id": 9}]}
+            ]}]}
+        })
+        self.assertIn("movement_remaining=U2", rendered)
+        self.assertIn("attack_remaining=U1", rendered)
+        self.assertIn("attack_coverage=U2", rendered)
+        self.assertNotIn("ready=", rendered)
 
     def test_compact_observation_uses_col_row_coordinates(self):
         state = {"units": [{"id": 1, "faction": 0, "def_id": "leader",
@@ -2070,7 +2301,7 @@ class ClientValidationTests(unittest.TestCase):
     def test_tool_budget_exhaustion_repairs_with_context(self):
         request = json.dumps({"tool": "inspect_units", "unit_ids": [1]})
         end_turn = json.dumps([{"action": "EndTurn"}])
-        code, terminal = self.run_with_orders(
+        code, records = self.run_with_orders(
             [request, request, end_turn],
             [{"type": "state", "active_faction": 0, "state_revision": 1,
               "units": [{"id": 1, "faction": 0, "hp": 20}]},
@@ -2080,9 +2311,45 @@ class ClientValidationTests(unittest.TestCase):
              {"type": "game_end", "reason": "max_turns", "winner": None}],
             max_model_calls_per_turn=4,
             max_tool_calls_per_turn=1,
+            return_records=True,
         )
+        terminal = records[-1]
         self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_GAMEPLAY])
         self.assertEqual(terminal["reason"], "max_turns")
+        repair_prompt = [r["prompt"] for r in records if r["type"] == "model_request"][-1]
+        self.assertIn("Return one corrected JSON action envelope", repair_prompt)
+        self.assertIn("do not request another tool", repair_prompt.lower())
+
+    def test_tool_followup_budget_emits_budget_interrupted(self):
+        request = json.dumps({"tool": "inspect_units", "unit_ids": [1]})
+        code, records = self.run_with_orders(
+            [request],
+            [{"type": "state", "active_faction": 0, "state_revision": 1,
+              "units": [{"id": 1, "faction": 0, "hp": 20}]},
+             {"type": "status", "ok": True, "what": "tactical_surface",
+              "body": {"units": []}},
+             {"type": "status", "ok": True, "what": "inspect_unit",
+              "state_revision": 1, "body": {"unit_id": 1, "origins": []}}],
+            max_model_calls_per_turn=1, return_records=True)
+        self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID])
+        self.assertEqual(records[-1]["type"], "terminal")
+        self.assertEqual(records[-1]["reason"], "budget_interrupted")
+        self.assertEqual(records[-1]["code"], "model_calls_budget_exhausted")
+        self.assertEqual(records[-1]["model_calls"], 1)
+
+    def test_tool_repair_budget_emits_budget_interrupted(self):
+        malformed = json.dumps({"tool": "inspect_units", "unit_ids": [1],
+                                "actions": []})
+        code, records = self.run_with_orders(
+            [malformed],
+            [{"type": "state", "active_faction": 0, "state_revision": 1,
+              "units": [{"id": 1, "faction": 0, "hp": 20}]},
+             {"type": "status", "ok": True, "what": "tactical_surface",
+              "body": {"units": []}}],
+            max_model_calls_per_turn=1, return_records=True)
+        self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID])
+        self.assertEqual(records[-1]["reason"], "budget_interrupted")
+        self.assertEqual(records[-1]["code"], "model_calls_budget_exhausted")
 
     def test_critical_draft_can_be_confirmed_after_preview(self):
         end_turn = json.dumps([{"action": "EndTurn"}])

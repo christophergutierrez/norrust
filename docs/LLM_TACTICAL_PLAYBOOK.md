@@ -62,15 +62,19 @@ recruiter safety, contested combat, and irreversible losses.
   Shared alignment gives no automatic relative advantage; neutral ignores
   time of day. Use forecasts rather than an automatic fight/wait rule.
 - **T6.** Keep later actions legal after earlier moves, recruits, and kills.
-  Reserve distinct destinations unless freed earlier. `Engage` stops when its
-  target dies. Attacking does not spend unused movement: consider attack then
-  retreat; verify live movement flags and legal destinations. Refresh after
-  consequential results; batch known-dependency work.
+  Reserve distinct destinations unless freed earlier. `Engage` may use a
+  stationary attacker at its current hex and stops when its target dies;
+  completing one engagement does not end the turn. Attacking does not spend
+  unused movement: consider attack then retreat; verify live movement flags and
+  legal destinations. Refresh after consequential results; batch
+  known-dependency work.
 - **T7.** Before finishing: affordable recruits, unfinished assignments,
   useful idle units, exposed recruiter? Resolve or explain consequential
-  omissions. Delegate routine healthy units; use selective finishing to
-  retain scouts, healing moves, and screens. Hold for a concrete purpose.
-  Explain only consequential idle units or deliberate saving.
+  omissions. Distinguish remaining movement and attack flags from actual
+  `attack_coverage`; an unused attack flag alone does not prove a legal target.
+  Delegate routine healthy units; use selective finishing to retain scouts,
+  healing moves, and screens. Hold for a concrete purpose. Explain only
+  consequential idle units or deliberate saving.
 - **T8 — Concede a clearly lost game.** Resign only when live facts leave no
   credible recovery or victory route; name why. A bad roll, deficit, or one
   simulated loss is insufficient.

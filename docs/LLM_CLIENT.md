@@ -55,8 +55,9 @@ the archived guide hash identifies the exact text used by a game.
 
 ### Decision annotations
 
-The prompt requests `{"actions":[...],"decisions":[...]}` on every action response. The actions
-remain the ordinary action contract. Decision groups cite one to four stable
+Action responses may carry `{"actions":[...],"decisions":[...]}`. In batch mode,
+decision groups should cover every authored action; focused mode may annotate
+only consequential authored actions. The actions remain the ordinary action contract. Decision groups cite one to four stable
 playbook IDs and provide expected effect and risk text; their zero-based order
 indices cover each authored action exactly once. The client validates this
 metadata and never sends annotation fields to the Rust driver. Missing or
@@ -529,10 +530,12 @@ prompt on **stdin** and must write **one JSON object** to **stdout**:
 {"text": "[{\"action\":\"EndTurn\"}]"}
 ```
 
-`text` is the model's raw reply: an annotated action envelope or an allowed
-inspection request, as described below. The client also accepts bare action arrays
-and records their annotations as missing. After inspection, return final actions
-with decisions or request another permitted inspection within the tool budget.
+`text` is the model's raw reply: an action envelope or an allowed inspection
+request, as described below. The client also accepts bare action arrays and
+records their annotations as missing. Read-only tools are bare objects with only
+their documented keys and carry no actions, choices, intent, agenda, or decisions.
+After a tool result, return final actions or request another permitted inspection
+within the tool budget.
 The command-backend envelope remains unchanged for these calls:
 `{"text":"..."}`. Optionally include `usage`
 (`{"input_tokens":N,"output_tokens":N}`); when absent, token budgets are recorded
@@ -854,7 +857,9 @@ annotation indices.
 
 The client rejects malformed JSON, unknown fields, missing fields, non-integer
 numeric fields, non-positive batch counts, and invalid batch structure before
-forwarding it. A validation failure may receive one repair call from the model;
+forwarding it. A malformed bare tool receives one type-preserving repair request;
+its tool and candidates/IDs remain pending until corrected. A malformed action
+validation failure may receive one repair call from the model;
 if the driver rejects a submitted batch, the entire batch was rolled back. The
 repair prompt reports that no prefix action committed and requires replanning
 from the unchanged observation using authoritative options.
