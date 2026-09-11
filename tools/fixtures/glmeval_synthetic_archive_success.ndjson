@@ -1,0 +1,16 @@
+{"type": "protocol", "timestamp": 1000.0}
+{"type": "metadata", "tool_calls_by_name": {"inspect_unit": 1}}
+{"type": "driver", "timestamp": 1000.5, "line": {"type": "game_start", "state": {"units": [{"id": 1, "faction": 0, "hp": 20, "max_hp": 20, "can_recruit": true, "col": 1, "row": 1}, {"id": 38, "faction": 1, "hp": 1, "max_hp": 10, "can_recruit": false, "col": 3, "row": 6}], "terrain": [{"col": 2, "row": 4, "owner": null}]}}}
+{"type": "model", "call": 1, "timestamp": 1001.0}
+{"type": "agenda_proposed", "agenda": {"active_task": "kill U38"}}
+{"type": "forwarded_orders", "request_id": "req-1", "orders": [{"action": "Attack", "attacker_id": 1, "defender_id": 38}], "accepted": true}
+{"type": "batch_validation", "orders": [{"action": "Attack", "attacker_id": 1, "defender_id": 38}], "valid": true, "timestamp": 1002.0}
+{"type": "driver", "timestamp": 1002.5, "line": {"type": "events", "source": "llm", "events": [{"kind": "attack", "source": "llm", "attacker": {"unit": 1}, "defender": {"unit": 38, "killed": true}}]}}
+{"type": "query", "line": {"type": "status", "ok": true, "what": "inspect_unit", "state_revision": 1, "body": {}}, "timestamp": 1003.0}
+{"type": "model", "call": 2, "timestamp": 1004.0}
+{"type": "agenda_error", "message": "multiple active tasks", "timestamp": 1004.5}
+{"type": "batch_validation", "orders": [], "valid": false, "timestamp": 1005.0}
+{"type": "driver", "timestamp": 1006.0, "line": {"type": "events", "events": [{"kind": "end_turn", "source": "delegated_greedy"}]}}
+{"type": "driver", "timestamp": 1007.0, "line": {"type": "state", "side_turns": 18, "units": [{"id": 1, "faction": 0, "hp": 20, "max_hp": 20, "can_recruit": true, "col": 1, "row": 1}], "terrain": [{"col": 2, "row": 4, "owner": 0}]}}
+{"type": "driver", "timestamp": 1008.0, "line": {"type": "game_end", "side_turns": 18, "turns": 9}}
+{"type": "terminal", "reason": "max_turns", "winner": null, "tool_calls_by_name": {"inspect_unit": 1}, "timestamp": 1008.5}

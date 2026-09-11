@@ -1,0 +1,10 @@
+{"type": "protocol", "timestamp": 2000.0}
+{"type": "driver", "timestamp": 2000.5, "line": {"type": "game_start", "state": {"units": [{"id": 1, "faction": 0, "hp": 20, "max_hp": 20, "can_recruit": true, "col": 1, "row": 1}, {"id": 38, "faction": 1, "hp": 1, "max_hp": 10, "can_recruit": false, "col": 3, "row": 6}], "terrain": [{"col": 2, "row": 4, "owner": null}]}}}
+{"type": "model", "call": 1, "timestamp": 2001.0}
+{"type": "batch_validation", "orders": [{"action": "Move"}], "valid": false, "timestamp": 2002.0}
+{"type": "model", "call": 2, "timestamp": 2003.0}
+{"type": "batch_validation", "orders": [{"action": "Resign"}], "valid": true, "timestamp": 2004.0}
+{"type": "driver", "timestamp": 2005.0, "line": {"type": "events", "events": [{"kind": "end_turn", "source": "llm"}]}}
+{"type": "driver", "timestamp": 2006.0, "line": {"type": "state", "side_turns": 3, "units": [{"id": 38, "faction": 1, "hp": 1, "max_hp": 10, "can_recruit": false, "col": 3, "row": 6}], "terrain": [{"col": 2, "row": 4, "owner": null}]}}
+{"type": "driver", "timestamp": 2007.0, "line": {"type": "game_end", "side_turns": 3, "turns": 2}}
+{"type": "terminal", "reason": "resignation", "winner": 1, "resigned_side": 0, "timestamp": 2007.5}
