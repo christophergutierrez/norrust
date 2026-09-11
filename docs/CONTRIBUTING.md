@@ -85,19 +85,19 @@ swamp_water = 3
 village = 1
 
 [defense]
-castle = 40
-cave = 60
-flat = 60
+castle = 60
+cave = 40
+flat = 40
 forest = 50
-frozen = 80
+frozen = 20
 fungus = 50
 hills = 50
-mountains = 40
-reef = 70
-sand = 70
-shallow_water = 80
-swamp_water = 80
-village = 40
+mountains = 60
+reef = 30
+sand = 30
+shallow_water = 20
+swamp_water = 20
+village = 60
 ```
 
 ### Required Fields
@@ -113,7 +113,7 @@ village = 40
 | `attacks` | array | At least one attack (see below) |
 | `resistances` | table | Damage modifiers: negative values resist (less damage), positive values are weaknesses (more damage) |
 | `movement_costs` | table | Movement cost per terrain type |
-| `defense` | table | Chance to be hit per terrain (lower = better defense) |
+| `defense` | table | Avoidance per terrain (higher = safer; hit chance is `100 - avoidance`) |
 
 ### Optional Fields
 
@@ -357,6 +357,12 @@ members = ["Spearman", "Bowman", "Cavalryman", "Mage", "Heavy Infantryman", "Ser
 
 Terrain files live in `data/terrain/<id>.toml` alongside an optional `<id>.png` tile image.
 
+`defense` and `default_defense` are avoidance percentages. Imported Wesnoth
+values are chance-to-be-hit percentages and are converted with
+`avoidance = 100 - chance`. A negative Wesnoth defense is a mixed-terrain cap
+marker; Norrust terrain IDs are indivisible, so only its bounded magnitude is
+represented and mixed-terrain cap behavior is unsupported.
+
 ```toml
 id = "forest"
 name = "Forest"
@@ -371,7 +377,7 @@ color = "#2d5a1e"
 |-------|-------------|
 | `id` | Terrain identifier (used in board tiles arrays) |
 | `name` | Display name |
-| `default_defense` | Base chance to be hit (%) when unit has no terrain-specific defense |
+| `default_defense` | Base avoidance (%) when unit has no terrain-specific entry; hit chance is `100 - avoidance` |
 | `default_movement_cost` | Base movement cost when unit has no terrain-specific cost |
 | `healing` | HP healed per turn (villages typically use 8) |
 | `color` | Hex color for fallback rendering |

@@ -130,7 +130,7 @@ Hex game, **odd-r** offset (`col`, `row`). Distance 1 = adjacent (six neighbors,
 
 **Attack:** melee if hex distance is 1 and the unit has a melee weapon. Ranged if distance is 2 and it has a ranged weapon. Defender **retaliates** with a weapon of the **same range** (melee vs melee, ranged vs ranged). No retaliation if you shoot from range 2 and they have no ranged weapon.
 
-**Hit chance** = `100 − defender's terrain defense` (percent). Forest/hills/village ~50%, castle/keep/mountains ~60%, flat ~30%. **Marksman** = 60% always. **Magical** = 70% always.
+**Hit chance** = `100 − defender's terrain avoidance` (percent). Stored avoidance is forest/hills ~50%, village/castle/keep/mountains ~60%, flat 40%. **Marksman** = 60% always. **Magical** = 70% always.
 
 Each weapon: `damage` per hit × `strikes` swings. ToD then scales damage:
 

@@ -31,8 +31,8 @@ use norrust_core::combat::{
 };
 use norrust_core::events::GameEvent;
 use norrust_core::game_state::{
-    apply_action, apply_advance, apply_recruit, recruit_from_def, Action, AdvanceTarget, GameState,
-    PendingSpawn, TriggerZone,
+    apply_action, apply_advance, apply_recruit, eligible_recruiter_keep, legal_recruitment_placements,
+    recruit_from_def, Action, AdvanceTarget, GameState, PendingSpawn, TriggerZone,
 };
 use norrust_core::game_state::{legal_moves, legal_targets};
 use norrust_core::hex::Hex;
@@ -406,34 +406,9 @@ fn recruit_internal(
         if limit.is_some_and(|l| recruited >= l) {
             break;
         }
-        let mut keep_candidates: Vec<(i32, i32, u32, Hex)> = state
-            .positions
-            .iter()
-            .filter_map(|(&id, &h)| {
-                let u = state.units.get(&id)?;
-                (u.faction == side
-                    && u.can_recruit
-                    && state
-                        .board
-                        .tile_at(h)
-                        .is_some_and(|tile| tile.terrain_id == "keep"))
-                .then(|| {
-                    let (col, row) = h.to_offset();
-                    (row, col, id, h)
-                })
-            })
-            .collect();
-        keep_candidates.sort_unstable_by_key(|candidate| (candidate.0, candidate.1, candidate.2));
-        let keep = keep_candidates.first().map(|candidate| candidate.3);
+        let keep = eligible_recruiter_keep(state, side);
         let Some(keep) = keep else { break };
-        let mut dest = keep.neighbors().iter().copied().find(|h| {
-            state
-                .board
-                .tile_at(*h)
-                .map(|t| t.terrain_id == "castle")
-                .unwrap_or(false)
-                && !state.hex_to_unit.contains_key(h)
-        });
+        let mut dest = legal_recruitment_placements(state, side).into_iter().next();
         if dest.is_none() {
             let occupied_castle = keep.neighbors().iter().copied().find(|h| {
                 let Some(id) = state.hex_to_unit.get(h) else {
@@ -3067,42 +3042,19 @@ fn interactive_protocol_game(mut c: Config) {
                             Ok(tactical_units) => {
                                 let side = state.active_faction as usize;
                                 let faction = &factions[side];
-                                let placement_hexes: Vec<Value> = state
-                                    .units
-                                    .iter()
-                                    .filter(|(_, unit)| {
-                                        unit.faction == state.active_faction && unit.can_recruit
-                                    })
-                                    .filter_map(|(id, _)| state.positions.get(id))
-                                    .filter(|hex| {
-                                        state
-                                            .board
-                                            .tile_at(**hex)
-                                            .is_some_and(|tile| tile.terrain_id == "keep")
-                                    })
-                                    .flat_map(|hex| hex.neighbors())
-                                    .filter(|hex| {
-                                        state
-                                            .board
-                                            .tile_at(*hex)
-                                            .is_some_and(|tile| tile.terrain_id == "castle")
-                                            && !state.hex_to_unit.contains_key(hex)
-                                    })
+                                let placement_hexes: Vec<Value> = legal_recruitment_placements(
+                                    &state,
+                                    state.active_faction,
+                                )
+                                    .into_iter()
                                     .map(|hex| {
                                         let (col, row) = hex.to_offset();
                                         json!({"col":col,"row":row})
                                     })
                                     .collect();
                                 let options: Vec<Value> = faction.recruits.iter().filter_map(|id| units.get(id).map(|def| json!({"def_id":id,"cost":def.cost,"affordable":state.gold[side] >= def.cost}))).collect();
-                                let recruiter_on_keep = state.units.iter().any(|(id, unit)| {
-                                    unit.faction == state.active_faction
-                                        && unit.can_recruit
-                                        && state
-                                            .positions
-                                            .get(id)
-                                            .and_then(|hex| state.board.tile_at(*hex))
-                                            .is_some_and(|tile| tile.terrain_id == "keep")
-                                });
+                                let recruiter_on_keep =
+                                    eligible_recruiter_keep(&state, state.active_faction).is_some();
                                 let affordable = faction.recruits.iter().any(|id| {
                                     units
                                         .get(id)

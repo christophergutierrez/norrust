@@ -48,7 +48,7 @@
         "Walking Corpse"
       ]
     ],
-    "rng_state": 9577558265540325631,
+    "rng_state": 2,
     "sides_acted_this_round": 0,
     "state_revision": 383,
     "trigger_zones_fired": [],
@@ -443,6 +443,6 @@
   "seed": 2003,
   "side_turns": 16,
   "starting_gold": 300,
-  "task_harness_fixture_note": "Named one-HP recruiter threat at (3,6) is adjacent to recruiter U1 at (2,7); defending unit is adjacent at (3,7).",
+  "task_harness_fixture_note": "Named one-HP recruiter threat at (3,6) is adjacent to recruiter U1 at (2,7); defending unit is adjacent at (3,7). RNG state 2 makes U13's two-strike melee attack retain a deterministic hit under corrected 60% castle avoidance (the prior state produced rolls 66 and 44, both misses at 40% hit chance).",
   "version": 1
 }

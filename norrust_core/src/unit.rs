@@ -40,9 +40,9 @@ pub struct Unit {
     pub alignment: Alignment,
     /// Attack definitions available to this unit (copied from UnitDef at spawn).
     pub attacks: Vec<AttackDef>,
-    /// Terrain-specific defense percentages (terrain_id → pct).
+    /// Terrain-specific avoidance percentages (terrain_id → pct; higher is safer).
     pub defense: HashMap<String, u32>,
-    /// Fallback defense when no terrain-specific entry exists.
+    /// Fallback avoidance when no terrain-specific entry exists.
     pub default_defense: u32,
     /// Movement budget in movement points (0 = unconstrained, skip pathfinding check).
     pub movement: u32,

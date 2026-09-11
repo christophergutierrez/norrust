@@ -200,10 +200,10 @@ Global state: `turn`, `active_faction`, `gold[0]`, `gold[1]`.
 Each attack has `damage` (per hit) and `strikes` (number of swings). Hit probability:
 
 ```
-base_chance = 100 - defender_terrain_defense
+hit_chance = 100 - defender_terrain_avoidance
 ```
 
-Terrain defense varies: flat=30%, forest=50%, hills=50%, mountains=60%, castle=60%, village=50%.
+Stored terrain values are avoidance percentages: flat=40%, forest=50%, hills=50%, mountains=60%, castle=60%, village=60%. Hit chance is `100 - avoidance`.
 
 **Time of Day modifiers:**
 - Lawful units: +25% damage at Day, -25% at Night
@@ -232,20 +232,20 @@ Terrain defense varies: flat=30%, forest=50%, hills=50%, mountains=60%, castle=6
 
 ## Terrain Reference
 
-| Terrain | Move Cost | Defense | Healing | Notes |
+| Terrain | Move Cost | Avoidance | Healing | Notes |
 |---------|-----------|---------|---------|-------|
-| flat/grassland | 1 | 30% | 0 | Open ground |
+| flat/grassland | 1 | 40% | 0 | Open ground |
 | forest | 2 | 50% | 0 | Good defense, slow |
 | hills | 2 | 50% | 0 | Good defense, slow |
 | mountains | 3 | 60% | 0 | Best defense, very slow |
 | shallow_water | 3 | 20% | 0 | Avoid if possible |
-| swamp_water | 3 | 30% | 0 | Poor terrain |
+| swamp_water | 3 | 20% | 0 | Poor terrain |
 | sand | 2 | 30% | 0 | Open, slow |
 | castle | 1 | 60% | 0 | High defense, recruitment hex |
-| keep | 1 | 60% | 0 | Leader stands here to recruit |
-| village | 1 | 50% | 8 | Heals units each turn |
+| keep | 1 | 40% | 0 | Leader stands here to recruit |
+| village | 1 | 60% | 8 | Heals units each turn |
 | cave | 2 | 40% | 0 | Underground |
-| frozen | 2 | 30% | 0 | Slippery |
+| frozen | 2 | 20% | 0 | Slippery |
 | reef | 3 | 30% | 0 | Coastal |
 | fungus | 2 | 40% | 0 | Underground |
 

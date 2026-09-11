@@ -1,6 +1,8 @@
 id = "grassland"
 name = "Grassland"
 symbol = "g"
+# Local terrain ID without a smallfoot WML entry; retain its authored
+# 40%-avoidance fallback rather than treating the value as raw WML chance.
 default_defense = 40
 default_movement_cost = 1
 healing = 2

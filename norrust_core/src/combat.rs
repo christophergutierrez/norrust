@@ -19,7 +19,7 @@ pub struct DamageSequenceForecast {
 ///
 /// This is a pure, engine-owned description shared by previews, tactical
 /// analysis, and AI policy code. Damage values include all live combat
-/// modifiers; hit percentages include the opposing terrain defense.
+/// modifiers; hit percentages are derived from opposing terrain avoidance.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct CombatParameters {
     pub attacker_attack_id: String,
@@ -284,7 +284,7 @@ impl Rng {
 
 /// Simulate `strikes` attack strikes and return total damage dealt.
 ///
-/// Each strike hits with probability `(100 - terrain_defense_pct)%`.
+/// Each strike hits with probability `(100 - terrain_avoidance_pct)%`.
 /// On a hit, `base_damage` is scaled by `(100 + tod_modifier) / 100` using
 /// integer arithmetic (minimum 0 damage per strike).
 pub fn resolve_attack(
@@ -816,7 +816,7 @@ mod tests {
         let mut rng = Rng::new(1);
         let mut hits = 0u32;
         for _ in 0..10_000 {
-            // 60% terrain defense → 40% hit rate; 1 damage, no ToD modifier
+            // 60% terrain avoidance → 40% hit rate; 1 damage, no ToD modifier
             let dmg = resolve_attack(&mut rng, 1, 1, 60, 0);
             if dmg > 0 {
                 hits += 1;
@@ -827,6 +827,75 @@ mod tests {
             "expected ~4000 hits (40% rate), got {}",
             hits
         );
+    }
+
+    #[test]
+    fn imported_orcishfoot_avoidance_reaches_live_combat_parameters() {
+        use std::collections::HashMap;
+
+        let mut board = crate::board::Board::new(6, 3);
+        let attacker_hex = Hex::from_offset(1, 1);
+        let defender_hex = Hex::from_offset(2, 1);
+        for (terrain, avoidance) in [("flat", 40), ("forest", 50), ("castle", 60), ("swamp_water", 30)] {
+            board.set_tile(
+                defender_hex,
+                crate::board::Tile {
+                    terrain_id: terrain.to_string(),
+                    movement_cost: 1,
+                    defense: avoidance,
+                    healing: 0,
+                    color: String::new(),
+                },
+            );
+            let mut state = GameState::new(board.clone());
+            let mut attacker = Unit::new(1, "attacker", 30, 0);
+            attacker.attacks.push(AttackDef {
+                id: "blade".into(),
+                name: "blade".into(),
+                damage: 5,
+                strikes: 1,
+                range: "melee".into(),
+                ..Default::default()
+            });
+            let mut defender = Unit::new(2, "orcishfoot", 30, 1);
+            defender.attacks.push(AttackDef {
+                id: "blade".into(),
+                name: "blade".into(),
+                damage: 5,
+                strikes: 1,
+                range: "melee".into(),
+                ..Default::default()
+            });
+            defender.defense = HashMap::from([
+                ("flat".into(), 40),
+                ("forest".into(), 50),
+                ("castle".into(), 60),
+                ("swamp_water".into(), 30),
+            ]);
+            state.units.insert(1, attacker);
+            state.units.insert(2, defender);
+            state.positions.insert(1, attacker_hex);
+            state.positions.insert(2, defender_hex);
+            state.hex_to_unit.insert(attacker_hex, 1);
+            state.hex_to_unit.insert(defender_hex, 2);
+
+            let params = combat_parameters(&state, 1, 2, attacker_hex).unwrap();
+            assert_eq!(params.defender_terrain_defense, avoidance);
+            assert_eq!(params.attacker_hit_pct, 100 - avoidance);
+            let forecast = simulate_combat(
+                &state.units[&1],
+                &state.units[&2],
+                40,
+                avoidance,
+                1,
+                128,
+                "melee",
+                false,
+                0,
+                0,
+            );
+            assert_eq!(forecast.attacker_hit_pct, 100 - avoidance);
+        }
     }
 
     #[test]
@@ -907,7 +976,7 @@ mod tests {
         };
         let preview = simulate_combat(&attacker, &defender, 40, 50, 1, 1000, "melee", false, 0, 0);
 
-        // Hit percentages match terrain defense
+        // Hit percentages are the complement of terrain avoidance
         assert_eq!(preview.attacker_hit_pct, 50); // 100 - 50 defender defense
         assert_eq!(preview.defender_hit_pct, 60); // 100 - 40 attacker defense
 
@@ -929,7 +998,7 @@ mod tests {
         assert_eq!(preview.attacker_hp, 38);
         assert_eq!(preview.defender_hp, 36);
 
-        // Terrain defense values passed through
+        // Terrain avoidance values passed through
         assert_eq!(preview.attacker_terrain_defense, 40);
         assert_eq!(preview.defender_terrain_defense, 50);
     }

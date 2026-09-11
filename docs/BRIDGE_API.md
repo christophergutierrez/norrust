@@ -56,7 +56,7 @@ All functions take an opaque `NorRustEngine*` pointer as their first argument (e
 | `norrust_remove_unit_at` | `(*engine, col, row) -> i32` | 1=ok | Remove unit at hex |
 | `norrust_get_next_unit_id` | `(*engine) -> i32` | Next ID | Get the next available unit ID |
 | `norrust_get_unit_at` | `(*engine, col, row) -> i32` | Unit ID or -1 | Query unit at hex position |
-| `norrust_get_unit_terrain_info` | `(*engine, unit_id) -> *char` | JSON | Get unit's terrain defense/movement info |
+| `norrust_get_unit_terrain_info` | `(*engine, unit_id) -> *char` | JSON | Get unit's terrain avoidance/movement info |
 | `norrust_set_display_name` | `(*engine, unit_id, *name)` | void | Override a unit's display name |
 | `norrust_set_unit_combat_state` | `(*engine, unit_id, moved, attacked)` | void | Set unit's moved/attacked flags |
 

@@ -1988,13 +1988,22 @@ mod tests {
 
     #[test]
     fn test_expected_damage_40pct_defense() {
-        // 7 × 3 × 0.6 = 12.6
+        // 40% avoidance means 60% hit chance: 7 × 3 × 0.6 = 12.6.
         let result = expected_outgoing_damage(7, 3, 40, 0, 0);
         assert!(
             (result - 12.6).abs() < 0.01,
             "expected ~12.6, got {}",
             result
         );
+    }
+
+    #[test]
+    fn imported_defense_values_have_the_same_meaning_in_ai_forecasts() {
+        let expected = [(40, 21.0 * 0.6), (50, 21.0 * 0.5), (60, 21.0 * 0.4), (30, 21.0 * 0.7)];
+        for (avoidance, damage) in expected {
+            let result = expected_outgoing_damage(7, 3, avoidance, 0, 0);
+            assert!((result - damage).abs() < 0.01, "avoidance {avoidance}: {result}");
+        }
     }
 
     #[test]

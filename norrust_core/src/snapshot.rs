@@ -16,7 +16,7 @@ pub struct TileSnapshot {
     pub color: String,
     /// Owning faction (0 or 1), or -1 if unowned / not a village.
     pub owner: i32,
-    /// Base defense % for this terrain (e.g. 60 for forest).
+    /// Base avoidance % for this terrain (higher is safer).
     pub defense: u32,
     /// Base movement cost for this terrain (e.g. 2 for forest).
     pub movement_cost: u32,
@@ -659,7 +659,7 @@ mod tests {
         let board = Board::new(4, 3);
         let mut state = GameState::new(board);
 
-        // Forest tile with 60% default defense
+        // Forest tile with 60% default avoidance
         state.board.set_tile(
             Hex::from_offset(0, 0),
             Tile {
@@ -671,7 +671,7 @@ mod tests {
             },
         );
 
-        // Unit with custom forest defense of 50%
+        // Unit with custom forest avoidance of 50%
         let mut unit = Unit::new(1, "swordsman", 55, 0);
         unit.defense = HashMap::from([("forest".to_string(), 50)]);
         unit.default_defense = 40;
@@ -687,7 +687,7 @@ mod tests {
             .unwrap_or(tile.defense);
         assert_eq!(
             effective, 50,
-            "unit.defense[forest] = 50 should override tile.defense = 60"
+            "unit.defense[forest] = 50 should override tile avoidance = 60"
         );
 
         // On a terrain not in unit.defense map, falls back to tile.defense
@@ -710,7 +710,7 @@ mod tests {
             .unwrap_or(tile_hills.defense);
         assert_eq!(
             effective_hills, 50,
-            "no unit entry for hills → tile.defense = 50"
+            "no unit entry for hills → tile avoidance = 50"
         );
     }
 

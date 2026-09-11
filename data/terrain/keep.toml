@@ -1,7 +1,10 @@
 id = "keep"
 name = "Keep"
 symbol = "k"
-default_defense = 40
+# Keep is the local castle-equivalent recruitment terrain; its avoidance
+# matches the imported castle value. The scraper fallback remains 40 avoidance
+# for source terrain IDs absent from the Wesnoth table.
+default_defense = 60
 default_movement_cost = 1
 healing = 0
 color = "#c8a030"

@@ -30,7 +30,7 @@ mountains = 3
 shallow_water = 99
 
 [defense]
-flat = 40
-forest = 60
-mountains = 60
-shallow_water = 30
+flat = 60
+forest = 40
+mountains = 40
+shallow_water = 70

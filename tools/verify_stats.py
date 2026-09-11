@@ -3,6 +3,8 @@
 verify_stats.py — Compare norrust unit TOMLs against Wesnoth WML source data.
 
 Reports stat discrepancies between our TOML files and the authoritative WML.
+Defense values are compared after converting Wesnoth chance-to-be-hit into
+Norrust avoidance (`100 - abs(value)` for indivisible terrain IDs).
 Skips: abilities, advances_to, name (intentional overrides).
 """
 
@@ -133,7 +135,8 @@ def compare_units(toml_path: Path, toml_unit: dict, wml_unit: dict) -> list:
                 if we != te:
                     diffs.append((f"attacks[{i}].{afield}", we, te))
 
-    # Compare dict sections
+    # Compare dict sections. `parse_movetypes` has already converted defense
+    # from WML chance-to-be-hit to the runtime avoidance convention.
     for section in DICT_SECTIONS:
         wml_dict = wml_unit.get(section, {})
         toml_dict = toml_unit.get(section, {})

@@ -28,5 +28,6 @@ cave = 1
 fungus = 2
 
 [defense]
-cave = 40
-fungus = 40
+cave = 60
+fungus = 60
+village = 50

@@ -41,7 +41,7 @@ pub struct UnitDef {
     pub resistances: HashMap<String, i32>,
     /// terrain_id -> movement point cost (99 = impassable)
     pub movement_costs: HashMap<String, u32>,
-    /// terrain_id -> defense percentage
+    /// terrain_id -> avoidance percentage (higher means safer)
     pub defense: HashMap<String, u32>,
     /// Unit tier — 1 = base, 2 = advanced, etc.
     #[serde(default = "default_level")]
@@ -151,7 +151,7 @@ pub struct TerrainDef {
     pub name: String,
     /// Single character used in ASCII map representations (e.g., "g", "f")
     pub symbol: String,
-    /// Fallback defense % for units with no terrain-specific entry
+    /// Fallback avoidance % for units with no terrain-specific entry
     pub default_defense: u32,
     /// Fallback movement cost for units with no terrain-specific entry
     pub default_movement_cost: u32,

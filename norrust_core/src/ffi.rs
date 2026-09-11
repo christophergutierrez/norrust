@@ -2678,9 +2678,9 @@ pub unsafe extern "C" fn norrust_set_unit_combat_state(
 
 // ── Terrain query ────────────────────────────────────────────────────────────
 
-/// Returns JSON with a unit's effective defense and movement cost on a specific hex.
+/// Returns JSON with a unit's effective terrain avoidance and movement cost on a specific hex.
 ///
-/// Fallback chain for defense: unit.defense\[terrain_id\] → tile.defense → unit.default_defense
+/// Fallback chain for avoidance: unit.defense\[terrain_id\] → tile.defense → unit.default_defense
 /// Fallback chain for movement: unit.movement_costs\[terrain_id\] → tile.movement_cost
 ///
 /// Returns empty string on invalid unit_id or hex.
@@ -2708,7 +2708,7 @@ pub unsafe extern "C" fn norrust_get_unit_terrain_info(
 
     let terrain_id = &tile.terrain_id;
 
-    // Defense fallback: unit.defense[terrain_id] → tile.defense → unit.default_defense
+    // Avoidance fallback: unit.defense[terrain_id] → tile.defense → unit.default_defense
     let effective_defense = unit
         .defense
         .get(terrain_id)
@@ -2768,7 +2768,7 @@ pub unsafe extern "C" fn norrust_simulate_combat(
         return preview_error_json(PreviewError::UnitNotFound);
     };
 
-    // Attacker terrain defense at ghost position
+    // Attacker terrain avoidance at ghost position
     let atk_hex = Hex::from_offset(attacker_col, attacker_row);
     if num_sims < 1 || num_sims > 1000 {
         return preview_error_json(PreviewError::InvalidNSims);
@@ -2790,7 +2790,7 @@ pub unsafe extern "C" fn norrust_simulate_combat(
         attacker.default_defense
     };
 
-    // Defender terrain defense at current position
+    // Defender terrain avoidance at current position
     let def_pos = match state.positions.get(&def_uid) {
         Some(p) => *p,
         None => return preview_error_json(PreviewError::UnitNotFound),

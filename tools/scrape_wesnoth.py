@@ -56,6 +56,21 @@ def toml_str_list(lst: list) -> str:
 def convert_resistance(wesnoth_val: int) -> int:
     return wesnoth_val - 100
 
+
+def convert_defense(wesnoth_val: int) -> int:
+    """Convert Wesnoth chance-to-be-hit to Norrust avoidance.
+
+    Wesnoth uses a negative value as a cap marker for mixed terrain.  Norrust
+    has one indivisible terrain id per tile, so the magnitude is the only
+    supported part of that representation; the cap metadata is deliberately
+    discarded and documented as unsupported.  Keep the conversion bounded so
+    malformed source data cannot create an invalid percentage.
+    """
+    chance_to_be_hit = abs(wesnoth_val)
+    if chance_to_be_hit > 100:
+        raise ValueError(f"defense chance exceeds 100%: {wesnoth_val}")
+    return 100 - chance_to_be_hit
+
 # ── Step 1: Parse movement types from units.cfg ────────────────────────────────
 def parse_movetypes(path: Path) -> dict:
     """
@@ -116,11 +131,11 @@ def parse_movetypes(path: Path) -> dict:
                         pass
                 elif section == "defense":
                     try:
-                        # Wesnoth sometimes writes negative defense (cap indicator)
-                        # Store absolute value — defense % can't be negative
-                        current["defense"][key] = abs(int(val))
-                    except ValueError:
-                        pass
+                        current["defense"][key] = convert_defense(int(val))
+                    except ValueError as exc:
+                        raise ValueError(
+                            f"invalid defense value {key}={val!r} in {path}"
+                        ) from exc
                 elif section == "resistance":
                     try:
                         current["resistance"][key] = convert_resistance(int(val))
@@ -143,6 +158,7 @@ def parse_units_from_file(path: Path, movetypes: dict) -> list:
     unit_depth = 0    # nesting depth inside [unit_type]
     atk = None        # current [attack] being built
     in_resistance = False   # unit-level [resistance] block
+    in_defense = False      # unit-level [defense] block
 
     with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -160,10 +176,12 @@ def parse_units_from_file(path: Path, movetypes: dict) -> list:
                     "movement_type": "",
                     "attacks": [],
                     "resistance_overrides": {},  # unit-level overrides
+                    "defense_overrides": {},  # unit-level WML overrides
                 }
                 unit_depth = 0
                 atk = None
                 in_resistance = False
+                in_defense = False
                 continue
 
             if stripped == "[/unit_type]":
@@ -173,6 +191,7 @@ def parse_units_from_file(path: Path, movetypes: dict) -> list:
                 unit_depth = 0
                 atk = None
                 in_resistance = False
+                in_defense = False
                 continue
 
             if u is None:
@@ -198,6 +217,16 @@ def parse_units_from_file(path: Path, movetypes: dict) -> list:
 
             if stripped == "[/resistance]" and unit_depth == 1 and in_resistance:
                 in_resistance = False
+                unit_depth = 0
+                continue
+
+            if stripped == "[defense]" and unit_depth == 0:
+                in_defense = True
+                unit_depth = 1
+                continue
+
+            if stripped == "[/defense]" and unit_depth == 1 and in_defense:
+                in_defense = False
                 unit_depth = 0
                 continue
 
@@ -250,6 +279,17 @@ def parse_units_from_file(path: Path, movetypes: dict) -> list:
                     u["resistance_overrides"][key] = convert_resistance(int(val))
                 except ValueError:
                     pass
+                continue
+
+            # Inside unit-level defense override. WML stores chance-to-be-hit;
+            # resolve_unit merges this converted value over the movetype table.
+            if in_defense and unit_depth == 1:
+                try:
+                    u["defense_overrides"][key] = convert_defense(int(val))
+                except ValueError as exc:
+                    raise ValueError(
+                        f"invalid unit defense value {key}={val!r} in {path}"
+                    ) from exc
                 continue
 
             # Unit-level fields (depth == 0)
@@ -330,6 +370,9 @@ def resolve_unit(u: dict, movetypes: dict) -> dict | None:
     resistances = dict(mt["resistance"])
     resistances.update(u["resistance_overrides"])
 
+    defense = dict(mt["defense"])
+    defense.update(u["defense_overrides"])
+
     # Ensure attack names are filled (fallback to id if description missing)
     for atk in u["attacks"]:
         if not atk["name"]:
@@ -351,7 +394,7 @@ def resolve_unit(u: dict, movetypes: dict) -> dict | None:
         "attacks": u["attacks"],
         "resistances": resistances,
         "movement_costs": dict(mt["movement_costs"]),
-        "defense": dict(mt["defense"]),
+        "defense": defense,
     }
 
 
@@ -436,7 +479,10 @@ def write_terrain_tomls(movetypes: dict):
 
         name = TERRAIN_NAMES.get(terrain_id, terrain_id.replace("_", " ").title())
         symbol = terrain_id[0]
-        defense = smallfoot["defense"].get(terrain_id, 60)
+        # parse_movetypes already converts Wesnoth chance-to-be-hit values to
+        # the runtime's avoidance convention.  A missing source entry uses
+        # the same 60% source chance as the historical importer fallback.
+        defense = smallfoot["defense"].get(terrain_id, convert_defense(60))
         cost = smallfoot["movement_costs"].get(terrain_id, 1)
 
         content = (

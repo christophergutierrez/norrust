@@ -975,6 +975,25 @@ fn tactical_surface_exposes_phase_modifiers_and_known_faction_pools() {
     assert_eq!(factions[1]["name"], "Loyalists");
     assert!(factions[0]["recruit_ids"].as_array().unwrap().len() > 1);
     assert!(factions[1]["recruit_ids"].as_array().unwrap().len() > 1);
+
+    // The real driver loads the maintained unit and terrain TOMLs. These
+    // values are stored avoidance; combat forecasts use their complement for
+    // hit chance (the same contract tested directly by combat_parameters).
+    let initial = run_driver(
+        &["--scenario", "big_battle_6", "--faction0", "northerners", "--faction1", "loyalists"],
+        "{\"action\":\"Query\",\"what\":\"tactical_surface\"}\n",
+    );
+    let leader = initial
+        .iter()
+        .find(|line| line["type"] == "state")
+        .expect("initial driver state")["units"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|unit| unit["id"] == 1)
+        .expect("active leader in tactical surface");
+    assert_eq!(leader["defense"]["flat"], 40);
+    assert_eq!(leader["defense"]["castle"], 60);
 }
 
 // `next_opponent_time_of_day` must reuse the same post-EndTurn projection as

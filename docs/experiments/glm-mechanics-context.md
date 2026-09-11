@@ -1,0 +1,48 @@
+# Mechanics and focused-context corrections: execution record
+
+Implementation in progress. The user authorized the
+[plan](../plans/glm-mechanics-context.md), Luna High implementation, and one
+fresh observed GLM 5.3 Flash game after completion. No new paid game has launched.
+
+## Baseline and preserved evidence
+
+Baseline code: `90fb2a8`; plan committed before workers: `15fe57f`.
+The preceding code gate passed 649 Python tests plus the full supported Rust/Lua
+gate; the plan commit changes documentation only. Three Luna High workers use
+isolated worktrees for mechanics, context, and provenance. The parent reviews,
+integrates and gates each cumulative stack before committing it.
+
+Previous game `ee269ac3ee0a761f8dcd433feb9476e6` stopped at revision 315 with
+seven controlled turns completed, no winner, and 1,036,415 measured tokens.
+All 27 paid calls returned normally. Input 374,141, cached input 163,840,
+output 662,274, reasoning 647,757; cache-write unknown. Known estimated cost was
+$0.367597. A 28th logical request was blocked locally before dispatch.
+
+The prior catalog was inspected before raw evidence. Baseline hashes of 465 files
+across that archive and `tmp/quick-play-glm-efficiency-xbsjhb82/` are recorded in
+`tmp/glm-mechanics-exec/historical-hashes.json`. Historical recovery uses a new
+scratch catalog referencing the original canonical paths; original records and
+catalogs must not change. The earlier game's confirmed direct action/batch turn
+gaps and raw-versus-normalized review gaps are acceptance cases, not speculative
+new database rows.
+
+## Stack results
+
+Stack 1 passed the full cumulative gate: 653 Python tests, 179 Rust library
+tests, driver and supported integration suites, and all Lua headless checks.
+Defense conversion includes unit overrides; shared recruiting uses the same
+selected keep. The independent data audit found no non-defense stat changes.
+The maintained recruiter-defense fixture needed a deterministic RNG adjustment:
+its old rolls 66/44 both miss against corrected 60% castle avoidance. State 2
+restores the intended hit without changing the objective predicates; all 24
+matrix cells pass. Historical evidence remains byte-identical.
+
+Stacks 2–4 are pending integration. Gate logs and worker handoffs live under
+`tmp/glm-mechanics-exec/`.
+
+## Paid retest
+
+Pending all code stacks and their commits. Preserve the previous scenario, seed,
+factions, gold, model defaults and caps, using the maintained streaming adapter.
+Corrected terrain data changes the game mechanics, so pre-fix runs will be
+descriptive context, not a controlled prompt-only comparison.

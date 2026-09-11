@@ -15,7 +15,7 @@ pub struct Tile {
     pub terrain_id: String,
     /// Default movement cost for units with no entry for this terrain (from TerrainDef).
     pub movement_cost: u32,
-    /// Default defense % for units with no entry for this terrain (from TerrainDef).
+    /// Default avoidance % for units with no entry for this terrain (from TerrainDef).
     pub defense: u32,
     /// HP healed to active-faction units at the start of their turn (0 = no healing).
     pub healing: u32,

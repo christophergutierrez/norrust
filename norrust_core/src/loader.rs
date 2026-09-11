@@ -221,7 +221,7 @@ mod tests {
         );
 
         let flat = registry.get("flat").expect("flat not found");
-        assert_eq!(flat.default_defense, 60);
+        assert_eq!(flat.default_defense, 40);
         assert_eq!(flat.default_movement_cost, 1);
         assert_eq!(
             flat.color, "#4a7c4e",
@@ -229,12 +229,12 @@ mod tests {
         );
 
         let forest = registry.get("forest").expect("forest not found");
-        assert_eq!(forest.default_defense, 60);
+        assert_eq!(forest.default_defense, 50);
         assert_eq!(forest.default_movement_cost, 2);
 
         let village = registry.get("village").expect("village not found");
         assert_eq!(village.healing, 8);
-        assert_eq!(village.default_defense, 40);
+        assert_eq!(village.default_defense, 60);
     }
 
     #[test]

@@ -52,15 +52,15 @@ swamp_water = 4
 village = 1
 
 [defense]
-castle = 60
-cave = 80
-flat = 60
-forest = 70
-frozen = 70
-fungus = 80
-hills = 60
-reef = 70
-sand = 70
-shallow_water = 80
-swamp_water = 80
-village = 60
+castle = 40
+cave = 20
+flat = 40
+forest = 30
+frozen = 30
+fungus = 20
+hills = 40
+reef = 30
+sand = 30
+shallow_water = 20
+swamp_water = 20
+village = 40

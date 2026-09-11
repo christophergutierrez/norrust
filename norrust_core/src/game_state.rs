@@ -1147,6 +1147,56 @@ pub fn apply_recruit(
     result
 }
 
+/// Return the deterministic eligible keep used by manual recruitment.
+///
+/// Both the `leader` ability and the carried `can_recruit` flag are valid
+/// recruiter capabilities. The first keep is selected by row, column, then
+/// unit id so callers advertise exactly the slots that `Recruit` accepts.
+pub fn eligible_recruiter_keep(state: &GameState, side: u8) -> Option<Hex> {
+    let mut keep_candidates: Vec<(i32, i32, u32, Hex)> = state
+        .positions
+        .iter()
+        .filter_map(|(&uid, &hex)| {
+            let unit = state.units.get(&uid)?;
+            (unit.faction == side
+                && (unit.can_recruit || unit.abilities.iter().any(|ability| ability == "leader"))
+                && state
+                    .board
+                    .tile_at(hex)
+                    .is_some_and(|tile| tile.terrain_id == "keep"))
+            .then(|| {
+                let (col, row) = hex.to_offset();
+                (row, col, uid, hex)
+            })
+        })
+        .collect();
+    keep_candidates.sort_unstable_by_key(|candidate| (candidate.0, candidate.1, candidate.2));
+    keep_candidates.first().map(|candidate| candidate.3)
+}
+
+/// Return free castle neighbors accepted by manual recruitment for `side`.
+pub fn legal_recruitment_placements(state: &GameState, side: u8) -> Vec<Hex> {
+    let Some(keep) = eligible_recruiter_keep(state, side) else {
+        return Vec::new();
+    };
+    let placements: Vec<Hex> = keep
+        .neighbors()
+        .iter()
+        .copied()
+        .filter(|hex| {
+            state.board.contains(*hex)
+                && state
+                    .board
+                    .tile_at(*hex)
+                    .is_some_and(|tile| tile.terrain_id == "castle")
+                && !state.hex_to_unit.contains_key(hex)
+        })
+        .collect();
+    // Preserve Hex::neighbors order so the shared helper does not change the
+    // established deterministic placement choice for a selected keep.
+    placements
+}
+
 fn apply_recruit_inner(
     state: &mut GameState,
     unit: Unit,
@@ -1161,26 +1211,7 @@ fn apply_recruit_inner(
     if unit.faction != active {
         return Err(ActionError::NotYourTurn);
     }
-    let mut keep_candidates: Vec<(i32, i32, u32, Hex)> = state
-        .positions
-        .iter()
-        .filter_map(|(&uid, &hex)| {
-            let unit = state.units.get(&uid)?;
-            (unit.faction == active
-                && (unit.can_recruit || unit.abilities.iter().any(|ability| ability == "leader"))
-                && state
-                    .board
-                    .tile_at(hex)
-                    .is_some_and(|tile| tile.terrain_id == "keep"))
-            .then(|| {
-                let (col, row) = hex.to_offset();
-                (row, col, uid, hex)
-            })
-        })
-        .collect();
-    keep_candidates.sort_unstable_by_key(|candidate| (candidate.0, candidate.1, candidate.2));
-    let keep_hex = keep_candidates.first().map(|candidate| candidate.3);
-    let keep_hex = keep_hex.ok_or(ActionError::LeaderNotOnKeep)?;
+    let keep_hex = eligible_recruiter_keep(state, active).ok_or(ActionError::LeaderNotOnKeep)?;
     // Destination must be a castle tile adjacent to the keep.
     match state.board.tile_at(destination) {
         Some(tile) if tile.terrain_id == "castle" => {}
@@ -1251,6 +1282,63 @@ mod tests {
         state.place_unit(unit, origin);
         assert!(state.units.contains_key(&1));
         assert_eq!(state.positions[&1], origin);
+    }
+
+    #[test]
+    fn recruitment_surface_and_manual_recruit_share_first_keep_and_leader_rule() {
+        let first_keep = Hex::from_offset(2, 2);
+        let second_keep = Hex::from_offset(7, 2);
+        let mut board = Board::new(10, 6);
+        for keep in [first_keep, second_keep] {
+            board.set_tile(keep, crate::board::Tile::new("keep"));
+            for castle in keep.neighbors() {
+                if board.contains(castle) {
+                    board.set_tile(castle, crate::board::Tile::new("castle"));
+                }
+            }
+        }
+        let first_slot = first_keep.neighbors()[0];
+        let mut state = GameState::new(board);
+        state.gold = [100, 0];
+
+        let mut leader = Unit::new(10, "leader", 30, 0);
+        leader.abilities = vec!["leader".into()];
+        state.place_unit(leader, first_keep);
+        let mut second_recruiter = Unit::new(2, "commander", 30, 0);
+        second_recruiter.can_recruit = true;
+        state.place_unit(second_recruiter, second_keep);
+        state.place_unit(Unit::new(11, "guard", 30, 0), first_slot);
+
+        assert_eq!(eligible_recruiter_keep(&state, 0), Some(first_keep));
+        let placements = legal_recruitment_placements(&state, 0);
+        assert!(!placements.contains(&first_slot));
+        assert!(placements.iter().all(|hex| first_keep.distance(*hex) == 1));
+        assert!(placements.iter().all(|hex| {
+            state
+                .board
+                .tile_at(*hex)
+                .is_some_and(|tile| tile.terrain_id == "castle")
+        }));
+        assert!(placements.iter().all(|hex| *hex != second_keep.neighbors()[0]));
+
+        let recruit_hex = placements[0];
+        apply_recruit(&mut state, Unit::new(12, "fighter", 30, 0), recruit_hex, 10)
+            .expect("manual Recruit accepts the advertised slot");
+        assert!(legal_recruitment_placements(&state, 1).is_empty());
+
+        let mut no_recruiter = GameState::new(Board::new(4, 4));
+        assert!(legal_recruitment_placements(&no_recruiter, 0).is_empty());
+        assert_eq!(eligible_recruiter_keep(&no_recruiter, 0), None);
+        no_recruiter.gold = [100, 0];
+        assert_eq!(
+            apply_recruit(
+                &mut no_recruiter,
+                Unit::new(1, "fighter", 30, 0),
+                Hex::from_offset(1, 1),
+                10,
+            ),
+            Err(ActionError::LeaderNotOnKeep)
+        );
     }
 
     #[test]

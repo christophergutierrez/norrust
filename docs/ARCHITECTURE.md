@@ -165,7 +165,7 @@ The boundary between Love2D (Lua) and Rust. This layer translates Lua calls into
 
 ### 3. Simulation Core (`norrust_core`)
 The authoritative brain of the game, written in pure Rust. It operates entirely headlessly and can be compiled as a standard library (`rlib`) for unit testing or as a dynamic library (`cdylib`) for loading via LuaJIT FFI.
-- **GameState & Board:** `Board` stores a `HashMap<Hex, Tile>` where each `Tile` carries terrain properties (movement cost, defense, healing, color). `GameState` owns the unit registry (`HashMap<u32, Unit>`) and position map (`HashMap<u32, Hex>`) separately.
+- **GameState & Board:** `Board` stores a `HashMap<Hex, Tile>` where each `Tile` carries terrain properties (movement cost, avoidance, healing, color). `GameState` owns the unit registry (`HashMap<u32, Unit>`) and position map (`HashMap<u32, Hex>`) separately.
 - **Game Rules:** Enforces movement costs, Zone of Control (ZOC), combat resolution (RNG, damage calculation, resistances, Time of Day modifiers, combat specials), and XP/advancement logic.
 - **Pathfinding:** Implements flood-fill reachability and A* shortest-path for movement and ZOC calculations.
 - **Visibility:** `compute_visibility()` calculates visible hexes for a faction based on unit vision ranges. Returns `HashSet<Hex>` used by the FOW-filtered state query.
@@ -176,7 +176,7 @@ The authoritative brain of the game, written in pure Rust. It operates entirely 
 NorRust is heavily data-driven. Hardcoding stats is strictly avoided.
 - **Registry Pattern:** On startup, the bridge reads the `data/` directory and loads all `.toml` files into a generic `Registry<T>`, keyed by the item's `id` field.
 - **Unit Definitions:** Stats for all 112 units (HP, movement, attacks, resistances, alignment, advancement chains) are defined here. When a unit is spawned via `place_unit_at()`, it copies its properties from the registry into a standalone `Unit` struct.
-- **Terrain Definitions:** Each terrain type (defense, movement cost, healing, color) is defined here. When a tile is placed via `set_terrain_at()` or `generate_map()`, a `Tile` struct is initialised from the matching `TerrainDef`.
+- **Terrain Definitions:** Each terrain type (avoidance, movement cost, healing, color) is defined here. When a tile is placed via `set_terrain_at()` or `generate_map()`, a `Tile` struct is initialised from the matching `TerrainDef`.
 - **Faction Definitions:** Each faction specifies a leader unit type, recruit groups, and starting gold. Four factions: Loyalists, Rebels, Northerners, Undead.
 
 ---

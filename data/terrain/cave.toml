@@ -1,7 +1,7 @@
 id = "cave"
 name = "Cave"
 symbol = "c"
-default_defense = 60
+default_defense = 40
 default_movement_cost = 2
 healing = 0
 color = "#4a4a4a"
