@@ -1290,6 +1290,251 @@ class ForeignIdentitySafetyTests(unittest.TestCase):
                                 for gap in coverage["gaps"]))
             conn.close()
 
+    def test_actions_backfill_from_request_identity_and_reject_conflicts(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            rows = [
+                {"type": "metadata", "conversation_id": "link-game", "llm_side": 0},
+                {"type": "driver", "line": {"type": "state", "state_revision": 0,
+                 "turn": 1, "active_faction": 0}},
+                {"type": "side_turn_started", "side_turn_id": "turn-a",
+                 "side": 0, "start_revision": 0},
+                {"type": "side_turn_started", "side_turn_id": "turn-b",
+                 "side": 0, "start_revision": 0},
+                {"type": "model_request", "request_id": "req-a",
+                 "side_turn_id": "turn-a", "state_revision": 0},
+                {"type": "forwarded_orders", "request_id": "req-a", "batch_id": "batch-a",
+                 "state_revision": 0, "orders": [{"action": "EndTurn"}]},
+                {"type": "forwarded_orders", "request_id": "req-a", "batch_id": "batch-b",
+                 "side_turn_id": "foreign-turn", "state_revision": 0,
+                 "orders": [{"action": "EndTurn"}]},
+                {"type": "forwarded_orders", "request_id": "foreign-request", "batch_id": "batch-c",
+                 "side_turn_id": "turn-a", "state_revision": 0,
+                 "orders": [{"action": "EndTurn"}]},
+                {"type": "terminal", "reason": "max_turns"},
+            ]
+            (root / "match.ndjson").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root, game_id="link-game")
+            self.assertEqual(conn.execute(
+                "SELECT side_turn_id FROM action_batches WHERE batch_id='batch-a'" ).fetchone()[0], "turn-a")
+            self.assertEqual(conn.execute(
+                "SELECT side_turn_id FROM actions WHERE action_id='batch-a:action:0'" ).fetchone()[0], "turn-a")
+            self.assertIsNone(conn.execute(
+                "SELECT side_turn_id FROM action_batches WHERE batch_id='batch-b'" ).fetchone()[0])
+            self.assertIsNone(conn.execute(
+                "SELECT side_turn_id FROM action_batches WHERE batch_id='batch-c'" ).fetchone()[0])
+            coverage = json.loads(conn.execute(
+                "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+            self.assertTrue(any("foreign_or_invalid_side_turn" in value
+                                for value in coverage["conflicts"]))
+            self.assertTrue(any("foreign_or_unknown_request" in value
+                                for value in coverage["conflicts"]))
+            before = conn.execute("SELECT side_turn_id FROM actions ORDER BY action_id").fetchall()
+            import_game(conn, root, game_id=game_id)
+            self.assertEqual(before, conn.execute(
+                "SELECT side_turn_id FROM actions ORDER BY action_id").fetchall())
+            conn.close()
+
+    def test_review_coverage_retains_raw_draft_identity_without_fabrication(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            review_id = "draft-only"
+            rows = [
+                {"type": "metadata"},
+                {"type": "draft_review", "review_id": review_id, "call": 2,
+                 "original_candidate_digest": "a" * 64, "prompt_hash": "b" * 64},
+                {"type": "draft_review_decision", "review_id": review_id,
+                 "outcome": "confirmed", "revision": 0},
+                {"type": "terminal", "reason": "max_turns"},
+            ]
+            (root / "match.ndjson").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root)
+            coverage = json.loads(conn.execute(
+                "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+            reviews = coverage["review_coverage"]
+            self.assertEqual(reviews["raw"], 1)
+            self.assertEqual([entry["review_id"] for entry in reviews["raw_reviews"]], [review_id])
+            self.assertEqual([entry["review_id"] for entry in reviews["raw_decisions"]], [review_id])
+            self.assertEqual(reviews["imported"], 1)
+            self.assertEqual(reviews["linked"], 0)
+            self.assertEqual(reviews["missing"], [review_id])
+            self.assertEqual(reviews["not_normalized"], [review_id])
+            conn.close()
+
+    def test_driver_sidecar_requires_source_and_archive_identity(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            log = root / "match.ndjson"
+            log.write_text(json.dumps({"type": "metadata", "source_commit": "commit-a"}) + "\n" +
+                           json.dumps({"type": "terminal", "reason": "max_turns"}) + "\n")
+            digest = "a" * 64
+            (root / "launch.json").write_text(json.dumps({
+                "source_commit": "commit-a", "argv": ["--log", str(log)],
+                "driver_sha256": digest}))
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root, game_id="provenance")
+            self.assertEqual(conn.execute(
+                "SELECT driver_hash FROM games WHERE game_id=?", (game_id,)).fetchone()[0], digest)
+            log.write_text(json.dumps({"type": "metadata", "source_commit": "commit-b"}) + "\n" +
+                           json.dumps({"type": "terminal", "reason": "max_turns"}) + "\n")
+            import_game(conn, root, game_id=game_id)
+            coverage = json.loads(conn.execute(
+                "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+            self.assertTrue(any("source_commit_mismatch" in gap for gap in coverage["gaps"]))
+            self.assertEqual(conn.execute(
+                "SELECT driver_hash FROM games WHERE game_id=?", (game_id,)).fetchone()[0], digest)
+            conn.close()
+
+    def test_driver_hash_conflicts_remain_visible_and_known_hash_is_retained(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); log = root / "match.ndjson"
+            log.write_text(json.dumps({"type": "metadata", "source_commit": "commit-a",
+                                       "driver_hash": "b" * 64}) + "\n" +
+                           json.dumps({"type": "terminal", "reason": "max_turns"}) + "\n")
+            (root / "launch.json").write_text(json.dumps({
+                "source_commit": "commit-a", "argv": ["--log", str(log)],
+                "driver_sha256": "c" * 64}))
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root, game_id="hash-conflict")
+            self.assertEqual(conn.execute(
+                "SELECT driver_hash FROM games WHERE game_id=?", (game_id,)).fetchone()[0], "b" * 64)
+            coverage = json.loads(conn.execute(
+                "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+            self.assertTrue(any("hash_conflict" in gap for gap in coverage["gaps"]))
+            conn.close()
+
+    def test_reimport_refreshes_provenance_source_when_hash_was_initially_unknown(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); log = root / "match.ndjson"
+            log.write_text(json.dumps({"type": "metadata", "source_commit": "commit-a"}) + "\n" +
+                           json.dumps({"type": "terminal", "reason": "max_turns"}) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root, game_id="late-provenance")
+            self.assertIsNone(conn.execute(
+                "SELECT driver_hash FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+            digest = "d" * 64
+            (root / "launch.json").write_text(json.dumps({
+                "source_commit": "commit-a", "argv": ["--log", str(log)],
+                "driver_sha256": digest}))
+            import_game(conn, root, game_id=game_id)
+            value = conn.execute(
+                "SELECT driver_hash,provenance_json FROM games WHERE game_id=?", (game_id,)).fetchone()
+            self.assertEqual(value[0], digest)
+            self.assertEqual(json.loads(value[1])["driver_hash_source"], "launch_sidecar")
+            conn.close()
+
+    def test_driver_sidecar_without_archive_source_is_unknown(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); log = root / "match.ndjson"
+            log.write_text(json.dumps({"type": "metadata"}) + "\n" +
+                           json.dumps({"type": "terminal", "reason": "max_turns"}) + "\n")
+            (root / "launch.json").write_text(json.dumps({
+                "source_commit": "commit-a", "argv": ["--log", str(log)],
+                "driver_sha256": "e" * 64}))
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root, game_id="unknown-source")
+            self.assertIsNone(conn.execute(
+                "SELECT driver_hash FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+            coverage = json.loads(conn.execute(
+                "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+            self.assertTrue(any("source_commit_mismatch" in gap for gap in coverage["gaps"]))
+            conn.close()
+
+    def test_review_explicit_turn_must_match_validated_request_turn(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            prompt_hash = "f" * 64
+            rows = [
+                {"type": "metadata", "conversation_id": "review-game", "llm_side": 0},
+                {"type": "driver", "line": {"type": "state", "state_revision": 0,
+                 "turn": 1, "active_faction": 0}},
+                {"type": "side_turn_started", "side_turn_id": "turn-a",
+                 "side": 0, "start_revision": 0},
+                {"type": "model_request", "request_id": "req-review",
+                 "side_turn_id": "turn-a", "state_revision": 0,
+                 "prompt_hash": prompt_hash},
+                {"type": "draft_review", "review_id": "review-a",
+                 "request_id": "req-review", "side_turn_id": "foreign-turn",
+                 "prompt_hash": prompt_hash},
+                {"type": "draft_review_decision", "review_id": "review-a",
+                 "request_id": "req-review", "side_turn_id": "foreign-turn",
+                 "outcome": "confirmed"},
+                {"type": "terminal", "reason": "max_turns"},
+            ]
+            (root / "match.ndjson").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root, game_id="review-game")
+            coverage = json.loads(conn.execute(
+                "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+            reviews = coverage["review_coverage"]
+            self.assertEqual(reviews["linked"], 0)
+            self.assertEqual(reviews["missing"], ["review-a"])
+            self.assertEqual(reviews["raw_reviews"][0]["link_status"], "conflict")
+            conn.close()
+
+    def test_review_without_identity_is_imported_but_not_counted_linked(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            rows = [
+                {"type": "metadata"},
+                {"type": "draft_review", "prompt_hash": "a" * 64},
+                {"type": "draft_review_decision", "outcome": "confirmed"},
+                {"type": "terminal", "reason": "max_turns"},
+            ]
+            (root / "match.ndjson").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root)
+            reviews = json.loads(conn.execute(
+                "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])["review_coverage"]
+            self.assertEqual(reviews["imported"], 1)
+            self.assertEqual(reviews["linked"], 0)
+            self.assertEqual(reviews["missing_review_id_count"], 1)
+            self.assertEqual(reviews["raw_reviews"][0]["link_status"], "missing")
+            conn.close()
+
+    def test_repaired_review_decision_accepts_valid_repair_request_only(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            rows = [
+                {"type": "metadata", "conversation_id": "repair-game", "llm_side": 0},
+                {"type": "driver", "line": {"type": "state", "state_revision": 0,
+                 "turn": 1, "active_faction": 0}},
+                {"type": "side_turn_started", "side_turn_id": "turn-a",
+                 "side": 0, "start_revision": 0},
+                {"type": "model_request", "request_id": "req-draft",
+                 "side_turn_id": "turn-a", "state_revision": 0, "prompt_hash": "a" * 64},
+                {"type": "model_request", "request_id": "req-repair",
+                 "side_turn_id": "turn-a", "state_revision": 0, "prompt_hash": "b" * 64},
+                {"type": "draft_review", "review_id": "review-good",
+                 "request_id": "req-draft", "prompt_hash": "a" * 64},
+                {"type": "draft_review_repair", "review_id": "review-good",
+                 "request_id": "req-repair", "side_turn_id": "turn-a",
+                 "prompt_hash": "b" * 64},
+                {"type": "draft_review_decision", "review_id": "review-good",
+                 "request_id": "req-repair", "side_turn_id": "turn-a", "outcome": "repaired"},
+                {"type": "draft_review", "review_id": "review-bad",
+                 "request_id": "req-draft", "prompt_hash": "a" * 64},
+                {"type": "draft_review_repair", "review_id": "review-bad",
+                 "request_id": "foreign-request", "side_turn_id": "turn-a",
+                 "prompt_hash": "z" * 64},
+                {"type": "draft_review_decision", "review_id": "review-bad",
+                 "request_id": "foreign-request", "side_turn_id": "turn-a", "outcome": "repaired"},
+                {"type": "terminal", "reason": "max_turns"},
+            ]
+            (root / "match.ndjson").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root, game_id="repair-game")
+            reviews = json.loads(conn.execute(
+                "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])["review_coverage"]
+            self.assertEqual(reviews["linked"], 2)
+            decisions = {d["review_id"]: d["identity_status"] for d in reviews["raw_decisions"]}
+            self.assertEqual(decisions["review-good"], "linked")
+            self.assertEqual(decisions["review-bad"], "conflict")
+            self.assertEqual(reviews["decision_identity_conflicts"], ["review-bad"])
+            conn.close()
+
 
 FIREWORKS_FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "backfill_fireworks_ok" / "requests"
 

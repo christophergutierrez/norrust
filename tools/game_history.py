@@ -581,6 +581,224 @@ def _coverage_summary(snapshots: list[dict[str, Any]], terminal: dict[str, Any],
         "gaps": sorted(set(gaps)), "conflicts": sorted(set(conflicts)),
     }
 
+
+def _driver_provenance(root: Path, log: Path, metadata: dict[str, Any]) -> tuple[str | None, list[str], str]:
+    """Recover a driver digest only when its archive identity is provable.
+
+    New clients publish the digest in the metadata record. Older runs may have
+    a sibling launch sidecar; that sidecar must identify both this source
+    commit and this exact archive path before its digest is imported.
+    """
+    direct = metadata.get("driver_hash")
+    direct_valid = False
+    if isinstance(direct, str) and len(direct) == 64:
+        try:
+            int(direct, 16)
+            direct_valid = True
+        except ValueError:
+            pass
+    expected_commit = metadata.get("source_commit")
+    candidates = [root / "launch.json"] if root.is_dir() else [root.parent / "launch.json"]
+    gaps: list[str] = []
+    for sidecar in candidates:
+        if not sidecar.is_file():
+            continue
+        try:
+            launch = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            gaps.append("driver_sidecar_invalid")
+            continue
+        if not isinstance(launch, dict):
+            gaps.append("driver_sidecar_invalid")
+            continue
+        if (not isinstance(expected_commit, str) or not expected_commit
+                or launch.get("source_commit") != expected_commit):
+            gaps.append("driver_sidecar_source_commit_mismatch")
+            continue
+        argv = launch.get("argv")
+        recorded_log = None
+        if isinstance(argv, list):
+            for index, value in enumerate(argv[:-1]):
+                if value == "--log" and isinstance(argv[index + 1], str):
+                    recorded_log = argv[index + 1]
+                    break
+        if not isinstance(recorded_log, str) or Path(recorded_log).resolve() != log.resolve():
+            gaps.append("driver_sidecar_archive_mismatch")
+            continue
+        digest_value = launch.get("driver_sha256")
+        if not isinstance(digest_value, str) or len(digest_value) != 64:
+            gaps.append("driver_sidecar_hash_missing")
+            continue
+        try:
+            int(digest_value, 16)
+        except ValueError:
+            gaps.append("driver_sidecar_hash_invalid")
+            continue
+        if direct_valid and digest_value != direct:
+            gaps.append("driver_sidecar_hash_conflict")
+            return direct, gaps, "metadata_conflict"
+        return digest_value, gaps, "launch_sidecar"
+    if direct_valid:
+        return direct, gaps, "metadata"
+    return None, gaps, "unknown"
+
+
+def _review_coverage(records: list[dict[str, Any]], conn: sqlite3.Connection,
+                    game_id: str) -> dict[str, Any]:
+    """Describe raw automatic reviews separately from normalized handoffs."""
+    drafts = [r for r in records if r.get("type") == "draft_review"]
+    repairs = [r for r in records if r.get("type") == "draft_review_repair"]
+    decisions = [r for r in records if r.get("type") == "draft_review_decision"]
+
+    def identity(record: dict[str, Any]) -> dict[str, Any]:
+        # Keep stable identity and digest fields while excluding the potentially
+        # very large rendered body. The original archive remains canonical.
+        return {key: record.get(key) for key in (
+            "review_id", "request_id", "side_turn_id", "call", "call_id", "original_candidate_digest", "revised_candidate_digest",
+            "outcome", "revision", "prompt_hash", "prompt_bytes") if key in record}
+
+    request_rows: dict[str, tuple[str | None, str | None]] = {}
+    for request_id, side_turn_id, prompt_hash in conn.execute(
+            "SELECT request_id,side_turn_id,prompt_hash FROM model_requests WHERE game_id=?",
+            (game_id,)):
+        request_rows[request_id] = (side_turn_id, prompt_hash)
+    by_prompt: dict[str, list[str]] = {}
+    for request_id, (_, prompt_hash) in request_rows.items():
+        if isinstance(prompt_hash, str):
+            by_prompt.setdefault(prompt_hash, []).append(request_id)
+
+    raw_ids = [r.get("review_id") for r in drafts if isinstance(r.get("review_id"), str)]
+    decision_ids = [r.get("review_id") for r in decisions if isinstance(r.get("review_id"), str)]
+    raw_set, decision_set = set(raw_ids), set(decision_ids)
+    normalized_ids: list[str] = []
+    for (metrics,) in conn.execute("SELECT metrics_json FROM side_turns WHERE game_id=?", (game_id,)):
+        try:
+            value = json.loads(metrics)
+        except (TypeError, ValueError):
+            continue
+        review = value.get("handoff_review") if isinstance(value, dict) else None
+        review_id = review.get("review_id") if isinstance(review, dict) else None
+        if isinstance(review_id, str):
+            normalized_ids.append(review_id)
+    normalized_set = set(normalized_ids)
+    side_turn_ids = {row[0] for row in conn.execute(
+        "SELECT side_turn_id FROM side_turns WHERE game_id=?", (game_id,))}
+    def resolve_link(review: dict[str, Any]) -> tuple[str | None, str | None, str | None, str]:
+        explicit_request = review.get("request_id")
+        request_id = explicit_request if isinstance(explicit_request, str) else None
+        proof = None
+        status = "unknown"
+        explicit_turn = review.get("side_turn_id")
+        explicit_turn_present = explicit_turn is not None
+        if explicit_turn_present and (not isinstance(explicit_turn, str)
+                                      or explicit_turn not in side_turn_ids):
+            status = "conflict"
+        elif request_id is not None:
+            row = request_rows.get(request_id)
+            if row is not None and (review.get("prompt_hash") is None
+                                    or row[1] == review.get("prompt_hash")):
+                proof, status = "request_id", "linked"
+            else:
+                status = "conflict" if row is not None else "missing"
+        elif isinstance(review.get("prompt_hash"), str):
+            matches = by_prompt.get(review["prompt_hash"], [])
+            if len(matches) == 1:
+                request_id, proof, status = matches[0], "prompt_hash", "linked"
+            elif len(matches) > 1:
+                status = "ambiguous"
+            else:
+                status = "missing"
+        side_turn_id = request_rows[request_id][0] if status == "linked" else None
+        if status == "linked":
+            if side_turn_id is None:
+                status = "unresolved_turn"
+            elif explicit_turn_present and explicit_turn != side_turn_id:
+                status = "conflict"
+            elif explicit_turn_present:
+                proof = f"{proof}+side_turn_id"
+        if status != "linked":
+            side_turn_id = None
+        return request_id, side_turn_id, proof, status
+
+    enriched_reviews: list[dict[str, Any]] = []
+    unlinked_ids: list[str] = []
+    linked_count = 0
+    missing_identity_count = 0
+    for review in drafts:
+        descriptor = identity(review)
+        review_id = review.get("review_id")
+        request_id, side_turn_id, proof, status = resolve_link(review)
+        if status == "linked" and isinstance(review_id, str):
+            linked_count += 1
+        else:
+            if isinstance(review_id, str):
+                unlinked_ids.append(review_id)
+            else:
+                missing_identity_count += 1
+        descriptor.update({"request_id": request_id, "side_turn_id": side_turn_id,
+                           "link_proof": proof, "link_status": status})
+        enriched_reviews.append(descriptor)
+    repair_links: dict[str, list[dict[str, Any]]] = {}
+    for repair in repairs:
+        review_id = repair.get("review_id")
+        if not isinstance(review_id, str):
+            continue
+        request_id, side_turn_id, proof, status = resolve_link(repair)
+        repair_links.setdefault(review_id, []).append({
+            "request_id": request_id, "side_turn_id": side_turn_id,
+            "link_proof": proof, "link_status": status,
+            "prompt_hash": repair.get("prompt_hash")})
+    for descriptor in enriched_reviews:
+        descriptor["repair_links"] = repair_links.get(descriptor.get("review_id"), [])
+    review_identity = {
+        entry.get("review_id"): entry for entry in enriched_reviews
+        if isinstance(entry.get("review_id"), str)
+    }
+    enriched_decisions: list[dict[str, Any]] = []
+    decision_conflicts: list[str] = []
+    for decision in decisions:
+        descriptor = identity(decision)
+        review_id = decision.get("review_id")
+        expected = review_identity.get(review_id) if isinstance(review_id, str) else None
+        status = "unresolved"
+        if expected is not None and expected.get("link_status") == "linked":
+            status = "linked"
+            explicit_request = decision.get("request_id")
+            explicit_turn = decision.get("side_turn_id")
+            valid_requests = {expected.get("request_id")} | {
+                repair.get("request_id") for repair in expected.get("repair_links", [])
+                if repair.get("link_status") == "linked"}
+            if (explicit_request is not None
+                    and explicit_request not in valid_requests):
+                status = "conflict"
+            if (explicit_turn is not None
+                    and explicit_turn != expected.get("side_turn_id")):
+                status = "conflict"
+            if (explicit_turn is not None
+                    and (not isinstance(explicit_turn, str)
+                         or explicit_turn not in side_turn_ids)):
+                status = "conflict"
+        if status == "conflict" and isinstance(review_id, str):
+            decision_conflicts.append(review_id)
+        descriptor["identity_status"] = status
+        enriched_decisions.append(descriptor)
+    return {
+        "raw": len(drafts),
+        "imported": len(drafts),
+        "linked": linked_count,
+        "legacy_handoff": len(normalized_set),
+        "missing": sorted(set(unlinked_ids) | set(decision_conflicts) | (raw_set ^ decision_set)),
+        "missing_request_ids": sorted(set(unlinked_ids)),
+        "missing_review_id_count": missing_identity_count,
+        "not_normalized": sorted(raw_set - normalized_set),
+        "raw_reviews": enriched_reviews,
+        "raw_decisions": enriched_decisions,
+        "decision_identity_conflicts": sorted(set(decision_conflicts)),
+        "normalized_review_ids": sorted(normalized_set),
+        "decisionless_review_ids": sorted(raw_set - decision_set),
+        "orphan_decision_ids": sorted(decision_set - raw_set),
+    }
+
 def import_game(conn: sqlite3.Connection, archive: str | os.PathLike[str],
                 cohort_id: str | None = None, game_id: str | None = None) -> str:
     root = Path(archive).resolve()
@@ -590,6 +808,11 @@ def import_game(conn: sqlite3.Connection, archive: str | os.PathLike[str],
     lines = _driver(records)
     terminal = _terminal_record(records)
     game_id = game_id or digest({"archive": str(log), "metadata": metadata})[:32]
+    driver_hash, provenance_gaps, provenance_source = _driver_provenance(root, log, metadata)
+    prior = conn.execute("SELECT driver_hash FROM games WHERE game_id=?", (game_id,)).fetchone()
+    if (prior is not None and prior[0] and driver_hash and prior[0] != driver_hash):
+        provenance_gaps.append("driver_hash_catalog_conflict")
+        driver_hash = prior[0]
     config = {k: metadata.get(k) for k in ("scenario", "seed", "faction0", "faction1", "gold", "first_player", "max_turns", "driver_command", "turn_format")}
     status = "complete" if terminal else "incomplete"
     termination_reason = terminal.get("reason") or terminal.get("termination_reason")
@@ -604,19 +827,23 @@ def import_game(conn: sqlite3.Connection, archive: str | os.PathLike[str],
         conn.execute("""INSERT INTO games
           (game_id,cohort_id,lineage_root_id,seed,scenario,faction0,faction1,starting_gold,
           first_side,max_side_turns,started_at,ended_at,wall_ms,status,winner_side,
-           termination_reason,failure_code,source_commit,config_json,provenance_json,schema_version,
+           termination_reason,failure_code,source_commit,driver_hash,config_json,provenance_json,schema_version,
            artifact_path,coverage_json,importer_version)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
           ON CONFLICT(game_id) DO UPDATE SET status=excluded.status,
           winner_side=excluded.winner_side,termination_reason=excluded.termination_reason,
           ended_at=excluded.ended_at,wall_ms=excluded.wall_ms,failure_code=excluded.failure_code,
-          importer_version=excluded.importer_version""",
+          importer_version=excluded.importer_version,
+          driver_hash=CASE WHEN games.driver_hash IS NULL THEN excluded.driver_hash ELSE games.driver_hash END,
+          provenance_json=CASE WHEN games.driver_hash IS NULL AND excluded.driver_hash IS NOT NULL
+                               THEN excluded.provenance_json ELSE games.provenance_json END""",
           (game_id, cohort_id, game_id, metadata.get("seed"), metadata.get("scenario"),
            metadata.get("faction0"), metadata.get("faction1"), metadata.get("gold"),
            metadata.get("first_player"), metadata.get("max_turns"), metadata.get("started_at"),
            terminal.get("ended_at"), terminal.get("wall_ms"), status, terminal.get("winner"),
-           termination_reason, failure_code, metadata.get("source_commit"), json.dumps(config, sort_keys=True),
-           json.dumps({"archive": str(log)}, sort_keys=True), SCHEMA_VERSION, str(root), "{}",
+           termination_reason, failure_code, metadata.get("source_commit"), driver_hash,
+           json.dumps(config, sort_keys=True),
+           json.dumps({"archive": str(log), "driver_hash_source": provenance_source}, sort_keys=True), SCHEMA_VERSION, str(root), "{}",
            IMPORTER_VERSION))
         snapshots, checkpoint_gaps = _build_snapshots(log, lines)
         _mark_terminal(snapshots, terminal)
@@ -624,6 +851,9 @@ def import_game(conn: sqlite3.Connection, archive: str | os.PathLike[str],
         linkage = _import_turns(conn, game_id, records, snapshots)
         coverage = _coverage_summary(snapshots, terminal, linkage)
         coverage["gaps"] = sorted(set(coverage["gaps"]) | set(checkpoint_gaps))
+        if provenance_gaps:
+            coverage["gaps"] = sorted(set(coverage["gaps"]) |
+                                      {f"provenance:{gap}" for gap in provenance_gaps})
         conn.execute("UPDATE games SET coverage_json=? WHERE game_id=?",
                      (json.dumps(coverage, sort_keys=True), game_id))
         # Repair stale side_turn references left over from a prior import
@@ -657,7 +887,7 @@ def import_game(conn: sqlite3.Connection, archive: str | os.PathLike[str],
             root if root.is_dir() else root.parent,
             metadata=metadata, side_turn_bounds={row[0]: (row[1], row[2], row[3]) for row in conn.execute(
                 "SELECT side_turn_id,start_revision,end_revision,side FROM side_turns WHERE game_id=?", (game_id,))})
-        _import_actions(conn, game_id, records, linkage["record_links"])
+        action_result = _import_actions(conn, game_id, records, linkage["record_links"])
         event_result = _import_events(conn, game_id, records, linkage["record_links"])
         coverage = json.loads(conn.execute(
             "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
@@ -694,6 +924,16 @@ def import_game(conn: sqlite3.Connection, archive: str | os.PathLike[str],
         coverage["request_count"] = request_result["seen"]
         coverage["linked_requests"] = request_result["linked"]
         coverage["unassigned_requests"] = request_result["unassigned"]
+        coverage["action_batch_count"] = action_result["batches"]
+        coverage["action_count"] = action_result["actions"]
+        coverage["review_coverage"] = _review_coverage(records, conn, game_id)
+        if action_result["conflicts"]:
+            coverage["conflicts"] = sorted(set(coverage.get("conflicts", [])) |
+                                           {f"action_identity_conflict:{value}"
+                                            for value in action_result["conflicts"]})
+            coverage["gaps"] = sorted(set(coverage.get("gaps", [])) |
+                                        {f"action_identity_conflict:{value}"
+                                         for value in action_result["conflicts"]})
         all_identity_conflicts = (list(linkage.get("link_conflicts", []))
                                   + request_result["conflicts"])
         if all_identity_conflicts:
@@ -1162,40 +1402,90 @@ def _import_requests(conn: sqlite3.Connection, game_id: str, records: list[dict[
             "conflicts": sorted(set(identity_conflicts))}
 
 def _import_actions(conn: sqlite3.Connection, game_id: str, records: list[dict[str, Any]],
-                    links: dict[str, str]) -> None:
+                    links: dict[str, str]) -> dict[str, Any]:
+    """Import authored batches and actions with proof-based turn linkage.
+
+    A request's persisted ``side_turn_id`` is the strongest available link for
+    a forwarded order.  Revision lookup remains useful for old records that
+    predate request IDs, but it must never override a foreign or contradictory
+    explicit identity.  The upserts also repair an older import that left
+    these columns NULL without changing an already proven value.
+    """
     sequence = 0
     known_requests = {row[0] for row in conn.execute(
         "SELECT request_id FROM model_requests WHERE game_id=?", (game_id,))}
+    request_turns = {row[0]: row[1] for row in conn.execute(
+        "SELECT request_id,side_turn_id FROM model_requests WHERE game_id=?", (game_id,))}
+    conflicts: list[str] = []
+    imported_batches = imported_actions = 0
+
+    def link_for(record: dict[str, Any], request_id: str | None,
+                 request_was_supplied: bool) -> str | None:
+        explicit_present = any(record.get(key) is not None
+                               for key in ("side_turn_id", "side_turn"))
+        explicit = _side_turn_for_record(record, links) if explicit_present else None
+        if explicit_present and explicit is None:
+            conflicts.append(f"{request_id or 'unrequested'}:foreign_or_invalid_side_turn")
+            return None
+        request_turn = request_turns.get(request_id) if request_id is not None else None
+        if request_was_supplied and request_id is None:
+            # A foreign request cannot be rescued by a direct turn label.
+            return None
+        if request_was_supplied and request_turn is None:
+            conflicts.append(f"{request_id}:unresolved_request_side_turn")
+            return None
+        if request_turn is not None and explicit is not None and request_turn != explicit:
+            conflicts.append(f"{request_id}:explicit_side_turn:{explicit}!={request_turn}")
+            return None
+        if request_turn is not None or explicit is not None:
+            return request_turn or explicit
+        # A supplied request that was foreign or unresolved cannot be
+        # relabeled through a coincidental revision match.
+        if request_was_supplied:
+            return None
+        return _side_turn_for_record(record, links)
+
     for batch_index, record in enumerate(r for r in records if r.get("type") == "forwarded_orders"):
         orders = record.get("orders")
         if not isinstance(orders, list):
             continue
         batch_id = record.get("batch_id") or f"{game_id}:batch:{batch_index + 1}"
-        request_id = record.get("request_id") if isinstance(record.get("request_id"), str) else None
+        raw_request_id = record.get("request_id") if isinstance(record.get("request_id"), str) else None
+        request_id = raw_request_id
         if request_id is not None and request_id not in known_requests:
             # `request_id` is an evidence link, not a free text label.  Keep a
             # foreign or unknown identity from becoming a dangling cross-game
             # attribution; the archived forwarded order remains importable.
             request_id = None
+            conflicts.append(f"{raw_request_id}:foreign_or_unknown_request")
         source = record.get("source") if isinstance(record.get("source"), str) else "model"
+        side_turn_id = link_for(record, request_id, raw_request_id is not None)
         conn.execute("""INSERT INTO action_batches
           (batch_id,game_id,side_turn_id,request_id,sequence,source,submitted_orders_json,status,
            before_revision,record_hash)
-          VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(batch_id) DO NOTHING""",
-          (batch_id, game_id, _side_turn_for_record(record, links), request_id, batch_index + 1, source,
+          VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(batch_id) DO UPDATE SET
+           side_turn_id=CASE WHEN action_batches.side_turn_id IS NULL THEN excluded.side_turn_id ELSE action_batches.side_turn_id END,
+           request_id=CASE WHEN action_batches.request_id IS NULL THEN excluded.request_id ELSE action_batches.request_id END""",
+          (batch_id, game_id, side_turn_id, request_id, batch_index + 1, source,
            json.dumps(orders, sort_keys=True), "accepted_unknown",
            _number(record.get("before_revision", record.get("state_revision"))),
            digest({"batch_id": batch_id, "orders": orders, "request_id": request_id})))
+        imported_batches += 1
         for index, order in enumerate(orders):
             sequence += 1
             action_id = f"{batch_id}:action:{index}"
             conn.execute("""INSERT INTO actions
-              (action_id,game_id,batch_id,sequence,authored_order_index,source,action_type,
-              action_json,status,request_id,record_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?)
-              ON CONFLICT(action_id) DO NOTHING""",
-              (action_id, game_id, batch_id, sequence, index, source, order.get("action"),
+              (action_id,game_id,side_turn_id,batch_id,sequence,authored_order_index,source,action_type,
+              action_json,status,request_id,record_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+              ON CONFLICT(action_id) DO UPDATE SET
+               side_turn_id=CASE WHEN actions.side_turn_id IS NULL THEN excluded.side_turn_id ELSE actions.side_turn_id END,
+               request_id=CASE WHEN actions.request_id IS NULL THEN excluded.request_id ELSE actions.request_id END""",
+              (action_id, game_id, side_turn_id, batch_id, sequence, index, source, order.get("action"),
                json.dumps(order, sort_keys=True), "accepted_unknown", request_id,
                digest({"action_id": action_id, "order": order})))
+            imported_actions += 1
+    return {"batches": imported_batches, "actions": imported_actions,
+            "conflicts": sorted(set(conflicts))}
 
 def _import_events(conn: sqlite3.Connection, game_id: str, records: list[dict[str, Any]],
                    links: dict[str, str], *, strict: bool = False) -> dict[str, Any]:

@@ -1,6 +1,6 @@
 # Mechanics and focused-context corrections: execution record
 
-Implementation in progress. The user authorized the
+Implementation complete; paid diagnostic pending. The user authorized the
 [plan](../plans/glm-mechanics-context.md), Luna High implementation, and one
 fresh observed GLM 5.3 Flash game after completion. No new paid game has launched.
 
@@ -59,12 +59,22 @@ main, tool, and repair dispatches; exact-cap and one-byte-under tests pass.
 An independent review found and corrected both the suffix-cap bypass and an
 unproven-continuity bug before this gate.
 
-Stack 4 is pending integration. Gate logs and worker handoffs live under
+Stack 4 passed the full cumulative gate (682 Python tests plus supported
+Rust/Lua suites). Fresh records retain driver hashes and request/turn identity;
+preview origin revisions survive rendering. A separate scratch catalog recovered
+all 68 historical action links, 19 batch links, and four actual reviews while
+retaining the two legacy handoffs as a distinct count. All 27 paid calls remain
+linked, with 1,036,415 tokens, no aggregate-only requests, and zero unassigned
+calls. Reimport produces an identical logical SQLite dump; integrity checks
+pass and all 465 historical files remain byte-identical.
+
+Gate logs and worker handoffs live under
 `tmp/glm-mechanics-exec/`.
 
 ## Paid retest
 
-Pending all code stacks and their commits. Preserve the previous scenario, seed,
+All four code stacks passed their cumulative gates. The authorized single
+fresh diagnostic is next. Preserve the previous scenario, seed,
 factions, gold, model defaults and caps, using the maintained streaming adapter.
 Corrected terrain data changes the game mechanics, so pre-fix runs will be
 descriptive context, not a controlled prompt-only comparison.

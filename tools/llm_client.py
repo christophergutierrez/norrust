@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -293,6 +294,7 @@ class ModelReply:
     prompt_hash: Optional[str] = None
     prompt_bytes: Optional[int] = None
     decision_annotation: Optional[dict[str, Any]] = None
+    side_turn_id: Optional[str] = None
 
 
 def apply_backend_settings(cache: Any, metadata: dict[str, Any], args: argparse.Namespace) -> None:
@@ -417,6 +419,22 @@ def source_metadata() -> dict[str, Any]:
         "source_commit": commit,
         "dirty_patch_hash": hashlib.sha256(dirty.encode()).hexdigest() if dirty else None,
     }
+
+
+def resolved_driver_hash(driver: str | os.PathLike[str]) -> str | None:
+    """Hash the exact driver executable selected for a fresh match."""
+    path = Path(driver)
+    if not path.is_file():
+        located = shutil.which(str(driver))
+        path = Path(located) if located else path
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
 
 
 _FINISH_VALIDATION_ERROR_LIMIT = 32
@@ -923,7 +941,17 @@ def query_preview_batch(exchange, candidates: list[list[dict[str, Any]]], state_
                          "candidates": candidates})
     if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
         _raise_preview_query_error(response, "preview_batch")
-    return response["body"]
+    body = response["body"]
+    if not isinstance(body, dict):
+        raise RuntimeError("query_error: preview_batch: driver body must be an object")
+    # The envelope is the authoritative query origin. Keep it in the returned
+    # body so compact_draft_review cannot render a known query as unknown when
+    # a driver puts state_revision only beside its body.
+    result = dict(body)
+    origin = response.get("state_revision", state_revision)
+    if isinstance(origin, int) and not isinstance(origin, bool):
+        result["state_revision"] = origin
+    return result
 
 
 def query_bounded_comparison(exchange, candidates: list[list[dict[str, Any]]],
@@ -3711,6 +3739,7 @@ def run(args: argparse.Namespace) -> int:
                 "state_revision": None, "current_turn": None,
                 "infrastructure_invalid": False, "gameplay_valid": False,
                 **source_metadata(),
+                "driver_hash": resolved_driver_hash(args.driver),
                 "started_at": datetime.now(timezone.utc).isoformat(),
                 "ended_at": None, "wall_ms": None}
     if parent_records:
@@ -4045,6 +4074,7 @@ def run(args: argparse.Namespace) -> int:
                         write_request_context(context_path, request_context)
             apply_backend_settings(reply.cache, metadata, args)
             reply.request_id = request_id
+            reply.side_turn_id = request_side_turn_id
             reply.prompt_hash = hashlib.sha256(delivered_prompt.encode()).hexdigest()
             reply.prompt_bytes = delivered_bytes
             backend_cache = reply.cache if isinstance(reply.cache, dict) else {}
@@ -4596,6 +4626,7 @@ def run(args: argparse.Namespace) -> int:
                                 "batch_id": f"{metadata.get('conversation_id', 'match')}:batch:{batch_sequence}",
                                 "request_sequence": request_sequence,
                                 "request_id": final_reply.request_id if final_reply is not None else None,
+                                "side_turn_id": final_reply.side_turn_id if final_reply is not None else None,
                                 "state_revision": state.get("state_revision"),
                                 "decision_annotation": final_reply.decision_annotation,
                                 "prompt_hash": final_reply.prompt_hash,
@@ -5089,6 +5120,8 @@ def run(args: argparse.Namespace) -> int:
                                         enforce_usage(reviewed, args)
                                         record({"type": "draft_review", "call": metadata["model_calls"],
                                                 "review_id": active_review_id,
+                                                "request_id": reviewed.request_id,
+                                                "side_turn_id": reviewed.side_turn_id,
                                                 "original_candidate_digest": original_digest,
                                                 "prompt_hash": reviewed.prompt_hash,
                                                 "prompt_bytes": reviewed.prompt_bytes,
@@ -5113,6 +5146,9 @@ def run(args: argparse.Namespace) -> int:
                                             final_reply = repaired_review
                                             enforce_usage(repaired_review, args)
                                             record({"type": "draft_review_repair", "call": metadata["model_calls"],
+                                                    "review_id": active_review_id,
+                                                    "request_id": repaired_review.request_id,
+                                                    "side_turn_id": repaired_review.side_turn_id,
                                                     "prompt_hash": repaired_review.prompt_hash,
                                                     "prompt_bytes": repaired_review.prompt_bytes,
                                                     "raw_output": repaired_review.text,
@@ -5135,6 +5171,8 @@ def run(args: argparse.Namespace) -> int:
                                     revised_digest = hashlib.sha256(json.dumps(
                                         revised_orders, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
                                     record({"type": "draft_review_decision", "review_id": active_review_id,
+                                            "request_id": final_reply.request_id if final_reply is not None else None,
+                                            "side_turn_id": final_reply.side_turn_id if final_reply is not None else None,
                                             "original_candidate_digest": original_digest,
                                             "revised_candidate_digest": revised_digest,
                                             "revision": int(revised_orders != draft_orders),
@@ -5187,6 +5225,8 @@ def run(args: argparse.Namespace) -> int:
                             record({"type": "draft_review_repair",
                                     "call": metadata["model_calls"],
                                     "review_id": active_review_id,
+                                    "request_id": repaired_review.request_id,
+                                    "side_turn_id": repaired_review.side_turn_id,
                                     "original_candidate_digest": original_digest,
                                     "prompt_hash": repaired_review.prompt_hash,
                                     "prompt_bytes": repaired_review.prompt_bytes,
@@ -5219,6 +5259,8 @@ def run(args: argparse.Namespace) -> int:
                         revised_digest = hashlib.sha256(json.dumps(
                             revised_orders, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
                         record({"type": "draft_review_decision", "review_id": active_review_id,
+                                "request_id": final_reply.request_id if final_reply is not None else None,
+                                "side_turn_id": final_reply.side_turn_id if final_reply is not None else None,
                                 "original_candidate_digest": original_digest,
                                 "revised_candidate_digest": revised_digest,
                                 "revision": int(revised_orders != draft_orders),
@@ -5238,6 +5280,8 @@ def run(args: argparse.Namespace) -> int:
                 if audit.get("trigger_reasons"):
                     record({"type": "handoff_review", "version": 1,
                             "review_id": active_review_id,
+                            "request_id": final_reply.request_id if final_reply is not None else None,
+                            "side_turn_id": final_reply.side_turn_id if final_reply is not None else metadata.get("current_side_turn_id"),
                             "state_revision": state.get("state_revision"),
                             "side_turn": state.get("side_turns", state.get("turn")),
                             "candidate_digest": original_digest,
@@ -5508,6 +5552,7 @@ def run(args: argparse.Namespace) -> int:
                          "batch_id": batch_id,
                          "request_sequence": request_sequence,
                          "request_id": final_reply.request_id if final_reply is not None else None,
+                         "side_turn_id": final_reply.side_turn_id if final_reply is not None else None,
                          "source": "model" if final_reply is not None else "generated_greedy",
                          "state_revision": state.get("state_revision"),
                          "decision_annotation": final_reply.decision_annotation if final_reply is not None

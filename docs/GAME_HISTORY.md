@@ -47,7 +47,22 @@ is proven, so an interrupted open turn retains all of its request and call
 spending.
 Review IDs, candidate digests, forced partial-limit finishes, and review outcomes
 remain in the archived log/metrics JSON for ad hoc analysis and training-data
-selection.
+selection. `games.coverage_json.review_coverage` keeps the raw draft review and
+decision identities, their `request_id`/`side_turn_id` proof (when available),
+and separate `raw`, `imported`, `linked`, `legacy_handoff`, `not_normalized`,
+and `missing` counts. A historical draft is linked only by an explicit request
+identity or an exact unique prompt hash matching `model_requests`; call order
+and nearest revisions are never used. The two legacy `handoff_review` rows are
+reported as `legacy_handoff` and do not hide raw-only reviews.
+`linked` counts only reviews with a nonempty review ID and a validated request
+and side-turn identity; a review with a missing ID or conflicting turn remains
+in `raw_reviews` with an explicit unresolved status.
+
+Fresh metadata records the SHA-256 `driver_hash` of the resolved executable.
+For an older archive, a sibling `launch.json` contributes `driver_sha256` only
+when its source commit and recorded `--log` path match the imported archive.
+Missing, ambiguous, or conflicting provenance remains an explicit coverage gap;
+reimport never overwrites an already proven catalog hash.
 
 Each accepted `turn_boundary` record carries the side, round, and both an
 explicit `start_revision` (the state revision at which that side's turn

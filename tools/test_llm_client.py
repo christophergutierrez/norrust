@@ -25,6 +25,7 @@ from .llm_client import (
     select_event_window,
     query_tactical_surface, query_validate_batch, query_preview_batch, query_bounded_comparison,
     CandidateQueryError, CANDIDATE_QUERY_ERROR_CLASSES,
+    resolved_driver_hash,
     query_inspect_target, query_inspect_targets, query_inspect_hex, run,
     response_intent, compact_strategic_briefing,
     checkpoint_dir_for_log, validate_checkpoint_reference, select_resume_checkpoint,
@@ -51,6 +52,20 @@ class FakeDriverProcess:
 
 
 class ClientValidationTests(unittest.TestCase):
+
+    def test_preview_preserves_envelope_origin_revision_for_draft_rendering(self):
+        body = {"candidates": [{"valid": True}]}
+        result = query_preview_batch(
+            lambda request: {"ok": True, "state_revision": 137, "body": body},
+            [[{"action": "EndTurn"}]], 137)
+        self.assertEqual(result["state_revision"], 137)
+        self.assertNotIn("state_revision", body)
+
+    def test_resolved_driver_hash_is_exact_executable_digest(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "driver"
+            path.write_bytes(b"driver fixture\n")
+            self.assertEqual(resolved_driver_hash(path), hashlib.sha256(path.read_bytes()).hexdigest())
 
     @staticmethod
     def annotated_orders(label, orders=None):
@@ -109,6 +124,17 @@ class ClientValidationTests(unittest.TestCase):
                     self.assertEqual(requests[-1]["raw_output"], final)
                     if final.startswith('['):
                         self.assertEqual(batches[0]["decision_annotation"]["status"], "missing")
+                    draft_records = [r for r in records if r.get("type") == "draft_review"]
+                    if draft_records:
+                        draft_record = draft_records[-1]
+                        request_ids = {r["request_id"] for r in requests}
+                        self.assertIn(draft_record.get("request_id"), request_ids)
+                        self.assertIsInstance(draft_record.get("side_turn_id"), str)
+                        decision = next(r for r in records
+                                        if r.get("type") == "draft_review_decision"
+                                        and r.get("review_id") == draft_record.get("review_id"))
+                        self.assertEqual(decision.get("request_id"), requests[-1]["request_id"])
+                        self.assertEqual(decision.get("side_turn_id"), draft_record.get("side_turn_id"))
 
     def test_review_omitting_agenda_discards_draft_stage(self):
         draft = json.dumps({

@@ -768,6 +768,13 @@ replace the live observation. It never mutates live state or claims that one
 sampled branch is a probability or a best move. Queries themselves execute no
 actions. The model may inspect a small friendly group in one read-only request:
 
+The preview result retains the query envelope's authoritative `state_revision`
+at its top level. Automatic `draft_review`, `draft_review_repair`, and
+`draft_review_decision` records carry the generated `review_id` plus the exact
+request and `side_turn_id` that produced them. This makes an automatic review
+auditable without assigning it by call position; missing executor danger data
+continues to render as unknown.
+
 If the driver rejects a preview candidate with one of the supported candidate
 codes (`parse`, `batch_too_large`, `action_limit`, `partial_limit`,
 `unauthorized_unit`, or `UnitNotFound`), the client records the code, message,
