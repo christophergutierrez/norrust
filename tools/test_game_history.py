@@ -1536,6 +1536,108 @@ class ForeignIdentitySafetyTests(unittest.TestCase):
             conn.close()
 
 
+class StackCHistoryTests(unittest.TestCase):
+    def test_type_only_budget_stop_is_imported_as_budget_without_winner(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "match.ndjson").write_text(json.dumps({
+                "type": "budget_interrupted", "winner": 1,
+            }) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root, game_id="budget-type-only")
+            row = conn.execute(
+                "SELECT status,winner_side,termination_reason,failure_code,coverage_json "
+                "FROM games WHERE game_id=?", (game_id,)).fetchone()
+            self.assertEqual(row[:4], ("complete", None, None, None))
+            self.assertEqual(json.loads(row[4])["terminal_class"], "budget_interrupted")
+            conn.close()
+
+    def test_budget_stop_is_derived_without_rewriting_raw_terminal_or_winner(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            rows = [
+                {"type": "metadata"},
+                {"type": "driver", "line": {"type": "state", "state_revision": 0,
+                 "turn": 1, "active_faction": 0}},
+                {"type": "side_turn_started", "side_turn_id": "turn-1", "side": 0,
+                 "start_revision": 0},
+                {"type": "turn_boundary", "accepted": True, "side_turn_id": "turn-1",
+                 "side": 0, "start_revision": 0, "state_revision": 0},
+                {"type": "side_turn_started", "side_turn_id": "turn-2", "side": 0,
+                 "start_revision": 0},
+                {"type": "budget_interrupted", "terminal_class": "model_invalid",
+                 "reason": "budget_interrupted", "code": "max_game_total_tokens_exhausted",
+                 "winner": 0},
+            ]
+            (root / "match.ndjson").write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root, game_id="budget-history")
+            coverage = json.loads(conn.execute(
+                "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+            self.assertEqual(coverage["terminal_class"], "budget_interrupted")
+            self.assertIsNone(conn.execute(
+                "SELECT winner_side FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+            self.assertEqual(json.loads((root / "match.ndjson").read_text().splitlines()[-1])["terminal_class"],
+                             "model_invalid")
+            conn.close()
+
+    def test_usage_turn_groups_include_empty_completed_and_open_turns(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            rows = [
+                {"type": "metadata"},
+                {"type": "driver", "line": {"type": "state", "state_revision": 0,
+                 "turn": 1, "active_faction": 0}},
+                {"type": "side_turn_started", "side_turn_id": "turn-1", "side": 0,
+                 "start_revision": 0},
+                {"type": "turn_boundary", "accepted": True, "side_turn_id": "turn-1",
+                 "side": 0, "start_revision": 0, "state_revision": 0},
+                {"type": "side_turn_started", "side_turn_id": "turn-2", "side": 0,
+                 "start_revision": 0},
+                {"type": "terminal", "reason": "budget_interrupted",
+                 "code": "model_calls_budget_exhausted"},
+            ]
+            (root / "match.ndjson").write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root, game_id="empty-turns")
+            report = query_usage(conn, game_id, "turn")
+            entries = report["completed_turns"] + report["open_turns"]
+            self.assertEqual([(entry["side_turn_id"], entry["status"], entry["call_ids"],
+                               entry["detail"]["call_count"]) for entry in entries],
+                             [("turn-1", "terminal", [], 0), ("turn-2", "open", [], 0)])
+            self.assertEqual(report["attribution_coverage"]["total_calls"], 0)
+            self.assertIsNone(report["attribution_coverage"]["linked_fraction"])
+            conn.close()
+
+    def test_identity_supported_review_without_handoff_has_explicit_reason(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            rows = [
+                {"type": "metadata"},
+                {"type": "driver", "line": {"type": "state", "state_revision": 0,
+                 "turn": 1, "active_faction": 0}},
+                {"type": "side_turn_started", "side_turn_id": "turn-a", "side": 0,
+                 "start_revision": 0},
+                {"type": "model_request", "request_id": "req-a", "side_turn_id": "turn-a",
+                 "state_revision": 0, "prompt_hash": "a" * 64},
+                {"type": "draft_review", "review_id": "review-a", "request_id": "req-a",
+                 "side_turn_id": "turn-a", "prompt_hash": "a" * 64},
+                {"type": "draft_review_decision", "review_id": "review-a",
+                 "request_id": "req-a", "side_turn_id": "turn-a", "outcome": "confirmed"},
+                {"type": "terminal", "reason": "max_turns"},
+            ]
+            (root / "match.ndjson").write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root, game_id="identity-review")
+            reviews = json.loads(conn.execute(
+                "SELECT coverage_json FROM games WHERE game_id=?", (game_id,)).fetchone()[0])["review_coverage"]
+            self.assertEqual(reviews["normalized_review_ids"], ["review-a"])
+            self.assertEqual(reviews["not_normalized"], [])
+            self.assertEqual(reviews["normalized_reviews"][0]["status"], "identity_only")
+            self.assertEqual(reviews["normalized_reviews"][0]["reason"], "no_handoff_record")
+            conn.close()
+
+
 FIREWORKS_FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "backfill_fireworks_ok" / "requests"
 
 

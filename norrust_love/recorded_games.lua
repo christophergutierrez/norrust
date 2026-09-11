@@ -4,7 +4,11 @@ local M = {}
 -- Completion status is not a game outcome. Use only explicit ending evidence.
 function M.result_label(game)
     local reason = game.termination_reason
-    if game.terminal_class == "infrastructure" or reason == "infrastructure_failure" then
+    local budget_code = game.failure_code == "max_game_total_tokens_exhausted" or
+        game.failure_code == "model_calls_budget_exhausted"
+    if game.terminal_class == "budget_interrupted" or reason == "budget_interrupted" or budget_code then
+        return "Budget interrupted"
+    elseif game.terminal_class == "infrastructure" or reason == "infrastructure_failure" then
         return "Infrastructure error"
     elseif game.terminal_class == "model_invalid" or reason == "model_invalid" then
         return "Model error"

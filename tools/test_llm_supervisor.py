@@ -88,6 +88,40 @@ class SupervisorTests(unittest.TestCase):
                 self.assertEqual(run(["client", "--log", str(log)], log, 3), 2)
             self.assertEqual(process.call_count, 1)
 
+    def test_budget_stop_is_reported_and_not_restarted(self):
+        for record_type in ("budget_interrupted", "model_error"):
+            for returncode in (3, -9):
+                with self.subTest(record_type=record_type, returncode=returncode), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    log = root / "match.ndjson"
+                    request = root / "request"; request.mkdir()
+                    (request / "answer.json").write_text("{}")
+                    state = request / "state.json"
+                    state.write_text(json.dumps({
+                        "request_id": "r1", "state": "completed", "answer_path": "answer.json",
+                        "metadata": {},
+                    }))
+                    checkpoint_dir = log.with_suffix(".ckpt")
+                    checkpoint_dir.mkdir()
+                    (checkpoint_dir / "state.json").write_text("{}")
+
+                    def child(*_args, **_kwargs):
+                        record = {"type": record_type, "terminal_class": "model_invalid"}
+                        if record_type == "model_error":
+                            record.update(reason="budget_interrupted",
+                                          code="max_game_total_tokens_exhausted")
+                        with log.open("a") as stream:
+                            stream.write(json.dumps(record) + "\n")
+                        return mock.Mock(returncode=returncode)
+
+                    with mock.patch("subprocess.run", side_effect=child) as process:
+                        self.assertEqual(run(["client", "--log", str(log)], log, 3, state), returncode)
+                    self.assertEqual(process.call_count, 1)
+                    outcome = next(json.loads(line) for line in log.read_text().splitlines()
+                                   if json.loads(line).get("type") == "supervisor_attempt_outcome")
+                    self.assertEqual(outcome["terminal_class"], "budget_interrupted")
+                    self.assertEqual(outcome["recovery_decision"], "stop")
+
     def test_restart_limit_is_bounded(self):
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "match.ndjson"

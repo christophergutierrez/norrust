@@ -15,6 +15,7 @@ from .decision_annotations import annotation_for_response, validate_decisions
 from .llm_client import (
     ENGINE_RULES,
     TERMINAL_EXIT_CODES, TERMINAL_GAMEPLAY, TERMINAL_INFRASTRUCTURE,
+    TERMINAL_BUDGET_INTERRUPTED,
     TERMINAL_MODEL_INVALID, ModelReply, classify_terminal, enforce_usage,
     compact_batch_preview, compact_hex_inspection, compact_observation,
     compact_target_inspection, compact_tactical_surface, compact_spatial_map, prompt_for, query_options,
@@ -2627,9 +2628,10 @@ class ClientValidationTests(unittest.TestCase):
         for reason in ("setup_error", "timeout", "eof", "infrastructure_failure",
                        "mystery", None):
             self.assertEqual(classify_terminal(reason), TERMINAL_INFRASTRUCTURE)
+        self.assertEqual(classify_terminal("budget_interrupted"), TERMINAL_BUDGET_INTERRUPTED)
         self.assertEqual(
-            sorted(TERMINAL_EXIT_CODES.values()), [0, 1, 2],
-            "the three classes must be distinguishable by exit code alone")
+            sorted(TERMINAL_EXIT_CODES.values()), [0, 1, 2, 3],
+            "all four terminal classes must be distinguishable by exit code alone")
 
     def test_nested_failure_with_repair_exhausted_is_model_invalid(self):
         """The batch is rolled back and the model had its repair. That is a model
@@ -2853,7 +2855,7 @@ class ClientValidationTests(unittest.TestCase):
              {"type": "status", "ok": True, "what": "inspect_unit",
               "state_revision": 1, "body": {"unit_id": 1, "origins": []}}],
             max_model_calls_per_turn=1, return_records=True)
-        self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID])
+        self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_BUDGET_INTERRUPTED])
         self.assertEqual(records[-1]["type"], "terminal")
         self.assertEqual(records[-1]["reason"], "budget_interrupted")
         self.assertEqual(records[-1]["code"], "model_calls_budget_exhausted")
@@ -2869,7 +2871,7 @@ class ClientValidationTests(unittest.TestCase):
              {"type": "status", "ok": True, "what": "tactical_surface",
               "body": {"units": []}}],
             max_model_calls_per_turn=1, return_records=True)
-        self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID])
+        self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_BUDGET_INTERRUPTED])
         self.assertEqual(records[-1]["reason"], "budget_interrupted")
         self.assertEqual(records[-1]["code"], "model_calls_budget_exhausted")
 

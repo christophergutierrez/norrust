@@ -49,11 +49,16 @@ Review IDs, candidate digests, forced partial-limit finishes, and review outcome
 remain in the archived log/metrics JSON for ad hoc analysis and training-data
 selection. `games.coverage_json.review_coverage` keeps the raw draft review and
 decision identities, their `request_id`/`side_turn_id` proof (when available),
-and separate `raw`, `imported`, `linked`, `legacy_handoff`, `not_normalized`,
-and `missing` counts. A historical draft is linked only by an explicit request
+and separate `raw`, `imported`, `linked`, `normalized`, `identity_only`,
+`legacy_handoff`, `not_normalized`, and `missing` counts. A historical draft is linked only by an explicit request
 identity or an exact unique prompt hash matching `model_requests`; call order
-and nearest revisions are never used. The two legacy `handoff_review` rows are
-reported as `legacy_handoff` and do not hide raw-only reviews.
+and nearest revisions are never used. Legacy `handoff_review` rows are reported
+as `legacy_handoff` and do not hide raw-only reviews.
+Identity-supported raw reviews without a legacy handoff summary remain in
+`normalized_reviews` with `status: "identity_only"` and an explicit reason
+(`no_handoff_record`). Reviews whose request or side-turn identity is missing,
+ambiguous, or conflicting remain in `unresolved_reviews` beside their raw ID;
+the importer never substitutes a neighboring batch.
 `linked` counts only reviews with a nonempty review ID and a validated request
 and side-turn identity; a review with a missing ID or conflicting turn remains
 in `raw_reviews` with an explicit unresolved status.
@@ -74,8 +79,11 @@ leaving `start_revision` unresolved on every turn. A game's terminal record
 older maintained clients (`model_error`, `budget_interrupted`, `query_error`,
 `checkpoint_error`, `preflight_error`), retains the ending time, elapsed wall
 time, reason and failure code. Its `terminal_class` distinguishes
-infrastructure/model-invalid outcomes from a gameplay result; a failure never
-becomes a loss and `winner_side` remains NULL. When available, its exact
+infrastructure, model-invalid, and explicit budget-interrupted outcomes from
+a gameplay result; a failure never becomes a loss and `winner_side` remains
+NULL. Historical budget records stamped `model_invalid` are classified from
+their explicit budget reason/code in derived catalog/report fields while the
+raw archive stays unchanged. When available, its exact
 `state_revision` identifies the final proven snapshot; otherwise the final
 logged state is used as the terminal evidence. This applies whatever ended the
 match — a model or Greedy win, the turn cap, a timeout, an infrastructure
@@ -219,8 +227,9 @@ Browser boundary counts currently count imported model boundaries, not total
 completed side turns. They must not be interpreted as game duration. The browser's
 Gold/Turns column reads the engine ending from the selected page's archives;
 missing ending evidence remains unknown (see [counting conventions](REPLAY.md)). Outcome
-classification and complete recording coverage remain pending browser work;
-see [the browser review](experiments/recorded-game-browser-review.md).
+classification and complete recording coverage remain pending browser work; the
+browser labels explicit budget interruptions as `Budget interrupted` with
+neutral side colors. See [the browser review](experiments/recorded-game-browser-review.md).
 
 A model concession is stored with termination reason `resignation` and the
 opponent as winner. The `Resign` action remains attributed to the model; it does
@@ -379,7 +388,8 @@ the call itself: a call reaches a turn only when its request carries a
 `model_requests.side_turn_id`, which is set from the request's canonical
 pre-dispatch identity or from independently validated archived context. A
 revision match is used only when no conflicting identity exists. It reports
-`completed_turns` and `open_turns` as separate lists -- averaging an
+`completed_turns` and `open_turns` as separate lists, including known turns
+whose `call_ids` is empty and whose detail has `call_count: 0` -- averaging an
 interrupted, still-open turn's usage into completed-turn figures would
 distort both -- plus one `unassigned` group holding every call whose request
 has no proven turn link, including a call with no `request_id` at all; an

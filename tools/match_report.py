@@ -8,6 +8,36 @@ from pathlib import Path
 from typing import Any
 
 
+_TYPED_TERMINAL_TYPES = {"model_error", "budget_interrupted", "query_error",
+                         "checkpoint_error", "preflight_error", "action_failure"}
+_BUDGET_CODES = {"max_game_total_tokens_exhausted", "model_calls_budget_exhausted"}
+
+
+def terminal_record(records: list[dict[str, Any]]) -> dict[str, Any]:
+    for item in reversed(records):
+        if item.get("type") == "terminal":
+            return item
+        if item.get("type") in _TYPED_TERMINAL_TYPES and (
+                item.get("type") == "budget_interrupted"
+                or isinstance(item.get("terminal_class"), str)
+                or item.get("type") == "model_error"):
+            return item
+    return {}
+
+
+def terminal_class(record: dict[str, Any]) -> str | None:
+    if record.get("type") == "budget_interrupted":
+        return "budget_interrupted"
+    reason = record.get("reason") or record.get("termination_reason")
+    code = record.get("code") or record.get("failure_code") or record.get("error_code")
+    # Older clients wrote budget stops as model_invalid.  This is a derived
+    # report correction from explicit budget evidence; raw records stay intact.
+    if reason == "budget_interrupted" or code in _BUDGET_CODES:
+        return "budget_interrupted"
+    value = record.get("terminal_class")
+    return value if isinstance(value, str) else None
+
+
 def load_records(path: str | Path) -> list[dict[str, Any]]:
     records = []
     for raw in Path(path).read_text().splitlines():
@@ -91,7 +121,7 @@ def _forced_partial_limit_boundaries(records: list[dict[str, Any]], boundaries: 
 
 def classify(records: list[dict[str, Any]],
              publication_records: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    terminal = next((item for item in reversed(records) if item.get("type") == "terminal"), {})
+    terminal = terminal_record(records)
     metadata = next((item for item in records if item.get("type") == "metadata"), {})
     events = [item.get("line", {}) for item in records if item.get("type") == "driver"]
     accepted = [item for item in events if item.get("type") == "events"]
@@ -226,7 +256,7 @@ def classify(records: list[dict[str, Any]],
                 faction = unit.get("faction") if isinstance(unit, dict) else event.get("faction", "unknown")
                 deaths[str(faction)] += 1
     resolved_side_turns = None
-    terminal_reason = terminal.get("reason")
+    terminal_reason = terminal.get("reason") or terminal.get("termination_reason")
     if driver_side_turns:
         resolved_side_turns = driver_side_turns[-1]
     elif generated_end_turns:
@@ -249,15 +279,15 @@ def classify(records: list[dict[str, Any]],
             and terminal_reason != "winner"):
         mismatch_reasons.append("accepted_boundaries_vs_generated_end_turns")
     failure = next((item for item in reversed(records) if item.get("type") == "model_error"), {})
-    terminal_class = terminal.get("terminal_class") or failure.get("terminal_class")
-    if not terminal_class and failure:
-        terminal_class = "model_invalid"
-    if not terminal_class:
+    classified_class = terminal_class(terminal) or terminal_class(failure)
+    if not classified_class and failure:
+        classified_class = "model_invalid"
+    if not classified_class:
         reason = terminal.get("reason")
-        terminal_class = "gameplay" if reason in {"winner", "loss", "max_turns", "turn_limit", "resignation"} else "unfinished_recoverable"
+        classified_class = "gameplay" if reason in {"winner", "loss", "max_turns", "turn_limit", "resignation"} else "unfinished_recoverable"
     report = {
-        "terminal_class": terminal_class,
-        "winner": terminal.get("winner"),
+        "terminal_class": classified_class,
+        "winner": terminal.get("winner") if classified_class == "gameplay" else None,
         "reason": terminal.get("reason"),
         "resigned_side": terminal.get("resigned_side"),
         "completed_side_turns": completed_side_turns,

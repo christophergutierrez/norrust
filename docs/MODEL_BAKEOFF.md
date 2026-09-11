@@ -49,8 +49,10 @@ event with the model source must exist. A Greedy sweep alone cannot satisfy a
 model-authored useful-action predicate. Success predicates are conjunctions of
 factual final-state requirements: named units alive/absent/at coordinates, named
 village ownership, recruiter survival, and completed side-turn count. Missing
-facts remain unknown. Budget interruptions, invalid model responses,
-infrastructure failures, caps, and gameplay results are separate outcomes.
+facts remain unknown. Budget interruptions (`terminal_class: budget_interrupted`,
+client exit 3), invalid model responses, infrastructure failures, caps, and
+gameplay results are separate outcomes. Budget stops preserve no winner and are
+never automatically resumed.
 
 Token totals and their per-field coverage come from SQLite `model_calls`, never
 from summing request aggregates with retry attempts. First-useful token metrics

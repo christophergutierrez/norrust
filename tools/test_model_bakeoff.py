@@ -261,6 +261,23 @@ class AggregationFixtureTests(unittest.TestCase):
         self.assertEqual(bucket["model_invalid"], 1)
         self.assertEqual(bucket["infrastructure_invalid"], 0)
 
+    def test_budget_interrupted_cell_is_distinct_from_model_invalid(self):
+        cell = _base_cell("budget-cell")
+        records = [{"type": "metadata"},
+                   {"type": "terminal", "terminal_class": "model_invalid",
+                    "reason": "budget_interrupted",
+                    "code": "max_game_total_tokens_exhausted", "winner": 0}]
+        cell_dir = self._write_log("budget-cell", records)
+        res = _cell_result("budget-cell", cell_dir, status="failed")
+        entry = bakeoff.aggregate_cell(res, cell)
+        self.assertEqual(entry["terminal_class"], "budget_interrupted")
+        self.assertIsNone(entry["winner"])
+        self.assertFalse(bakeoff._is_infrastructure_failure(entry))
+        resolved = bakeoff.resolve_manifest(_small_manifest(cells=[cell]))
+        report = bakeoff.build_report(resolved, [res])
+        self.assertEqual(report["totals"]["budget_interrupted"], 1)
+        self.assertEqual(report["totals"]["model_invalid"], 0)
+
     def test_infrastructure_failure_process_crash(self):
         cell = _base_cell("crash-cell")
         cell_dir = bakeoff.cell_dir_for(self.run_dir, "crash-cell")

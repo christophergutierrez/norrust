@@ -1080,6 +1080,11 @@ Terminal reasons `winner`, `max_turns`, and `resignation` are gameplay-valid. A 
 after its repair is `model_invalid` (exit 2), a completed evaluation that is
 neither gameplay nor harness failure. Its counters are `rejected_batches` (one
 per rolled-back batch) and `rejected_action_items` (failed result items).
+An explicit `budget_interrupted` stop is a separate non-gameplay, non-model-fault
+outcome (exit 3). It preserves no winner and is not eligible for automatic
+resume; a fresh game or explicitly prepared checkpoint branch must choose a new
+budget. The client uses it for the game token ceiling and model/tool call budget
+stops, including a stop reached while repairing a response.
 Terminal reasons `setup_error`,
 `timeout`, `eof`, `infrastructure_failure`, and unknown or malformed terminal
 reasons are infrastructure-invalid; the client records

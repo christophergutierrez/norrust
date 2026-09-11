@@ -34,6 +34,7 @@ TERMINAL_FAILURE_TYPES = {
     "model_error", "budget_interrupted", "query_error", "checkpoint_error",
     "preflight_error", "action_failure",
 }
+BUDGET_CODES = frozenset({"max_game_total_tokens_exhausted", "model_calls_budget_exhausted"})
 SCHEMA = """
 PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS games (
@@ -275,10 +276,29 @@ def _terminal_record(records: list[dict[str, Any]]) -> dict[str, Any]:
         if kind == "terminal":
             return record
         if kind in TERMINAL_FAILURE_TYPES and (
-                isinstance(record.get("terminal_class"), str)
+                kind == "budget_interrupted"
+                or isinstance(record.get("terminal_class"), str)
                 or kind == "model_error"):
             return record
     return {}
+
+
+def _terminal_class(record: dict[str, Any]) -> str | None:
+    """Return the catalog classification without rewriting raw evidence.
+
+    Early clients stamped budget stops as ``model_invalid`` (and some only
+    emitted the typed budget record).  The reason/code is explicit enough to
+    correct that derived classification, while ordinary invalid-action and
+    infrastructure records retain their recorded classes.
+    """
+    if record.get("type") == "budget_interrupted":
+        return "budget_interrupted"
+    reason = record.get("reason") or record.get("termination_reason")
+    code = record.get("code") or record.get("failure_code") or record.get("error_code")
+    if reason == "budget_interrupted" or code in BUDGET_CODES:
+        return "budget_interrupted"
+    value = record.get("terminal_class")
+    return value if isinstance(value, str) else None
 
 def _state_payload(state: dict[str, Any] | None) -> tuple[bytes | None, str | None, str | None]:
     if not state:
@@ -670,7 +690,11 @@ def _review_coverage(records: list[dict[str, Any]], conn: sqlite3.Connection,
     raw_ids = [r.get("review_id") for r in drafts if isinstance(r.get("review_id"), str)]
     decision_ids = [r.get("review_id") for r in decisions if isinstance(r.get("review_id"), str)]
     raw_set, decision_set = set(raw_ids), set(decision_ids)
-    normalized_ids: list[str] = []
+    # ``handoff_review`` is a compact legacy summary emitted only when a
+    # review had a handoff trigger.  It is useful evidence, but it is not the
+    # identity of the review itself and must not be used to fill gaps by
+    # borrowing a nearby batch.
+    legacy_handoff_ids: set[str] = set()
     for (metrics,) in conn.execute("SELECT metrics_json FROM side_turns WHERE game_id=?", (game_id,)):
         try:
             value = json.loads(metrics)
@@ -679,8 +703,7 @@ def _review_coverage(records: list[dict[str, Any]], conn: sqlite3.Connection,
         review = value.get("handoff_review") if isinstance(value, dict) else None
         review_id = review.get("review_id") if isinstance(review, dict) else None
         if isinstance(review_id, str):
-            normalized_ids.append(review_id)
-    normalized_set = set(normalized_ids)
+            legacy_handoff_ids.add(review_id)
     side_turn_ids = {row[0] for row in conn.execute(
         "SELECT side_turn_id FROM side_turns WHERE game_id=?", (game_id,))}
     def resolve_link(review: dict[str, Any]) -> tuple[str | None, str | None, str | None, str]:
@@ -782,15 +805,43 @@ def _review_coverage(records: list[dict[str, Any]], conn: sqlite3.Connection,
             decision_conflicts.append(review_id)
         descriptor["identity_status"] = status
         enriched_decisions.append(descriptor)
+    normalized_reviews: list[dict[str, Any]] = []
+    unresolved_reviews: list[dict[str, Any]] = []
+    for descriptor in enriched_reviews:
+        review_id = descriptor.get("review_id")
+        if not isinstance(review_id, str):
+            continue
+        if descriptor.get("link_status") == "linked":
+            has_handoff = review_id in legacy_handoff_ids
+            normalized_reviews.append({
+                "review_id": review_id,
+                "request_id": descriptor.get("request_id"),
+                "side_turn_id": descriptor.get("side_turn_id"),
+                "status": "handoff" if has_handoff else "identity_only",
+                "reason": None if has_handoff else "no_handoff_record",
+                "link_proof": descriptor.get("link_proof"),
+            })
+        else:
+            unresolved_reviews.append({
+                "review_id": review_id,
+                "request_id": descriptor.get("request_id"),
+                "side_turn_id": descriptor.get("side_turn_id"),
+                "reason": f"identity_{descriptor.get('link_status') or 'unknown'}",
+            })
+    normalized_set = {entry["review_id"] for entry in normalized_reviews}
     return {
         "raw": len(drafts),
         "imported": len(drafts),
         "linked": linked_count,
-        "legacy_handoff": len(normalized_set),
+        "legacy_handoff": len(legacy_handoff_ids),
+        "normalized": len(normalized_reviews),
+        "identity_only": sum(entry["status"] == "identity_only" for entry in normalized_reviews),
         "missing": sorted(set(unlinked_ids) | set(decision_conflicts) | (raw_set ^ decision_set)),
         "missing_request_ids": sorted(set(unlinked_ids)),
         "missing_review_id_count": missing_identity_count,
         "not_normalized": sorted(raw_set - normalized_set),
+        "normalized_reviews": normalized_reviews,
+        "unresolved_reviews": unresolved_reviews,
         "raw_reviews": enriched_reviews,
         "raw_decisions": enriched_decisions,
         "decision_identity_conflicts": sorted(set(decision_conflicts)),
@@ -818,6 +869,9 @@ def import_game(conn: sqlite3.Connection, archive: str | os.PathLike[str],
     termination_reason = terminal.get("reason") or terminal.get("termination_reason")
     failure_code = (terminal.get("failure_code") or terminal.get("code")
                     or terminal.get("error_code"))
+    terminal_class = _terminal_class(terminal)
+    winner = (terminal.get("winner")
+              if terminal_class in (None, "gameplay") else None)
     with conn:
         # Transactionally rebuild this game's derived timeline (snapshots and
         # side_turns) from the source archive on every import. Requests,
@@ -840,7 +894,7 @@ def import_game(conn: sqlite3.Connection, archive: str | os.PathLike[str],
           (game_id, cohort_id, game_id, metadata.get("seed"), metadata.get("scenario"),
            metadata.get("faction0"), metadata.get("faction1"), metadata.get("gold"),
            metadata.get("first_player"), metadata.get("max_turns"), metadata.get("started_at"),
-           terminal.get("ended_at"), terminal.get("wall_ms"), status, terminal.get("winner"),
+           terminal.get("ended_at"), terminal.get("wall_ms"), status, winner,
            termination_reason, failure_code, metadata.get("source_commit"), driver_hash,
            json.dumps(config, sort_keys=True),
            json.dumps({"archive": str(log), "driver_hash_source": provenance_source}, sort_keys=True), SCHEMA_VERSION, str(root), "{}",
@@ -915,7 +969,7 @@ def import_game(conn: sqlite3.Connection, archive: str | os.PathLike[str],
                                            {f"usage_conflict:{k}:{v}" for k, vs in usage_result["conflicts"].items() for v in vs})
         terminal_snapshot = next((snapshot for snapshot in snapshots
                                   if snapshot["boundary_kind"] == "terminal"), None)
-        coverage["terminal_class"] = terminal.get("terminal_class")
+        coverage["terminal_class"] = terminal_class
         coverage["terminal_state_revision"] = (
             _record_revision(terminal) if _record_revision(terminal) is not None
             else terminal_snapshot.get("revision") if terminal_snapshot else None)
@@ -1831,12 +1885,22 @@ def _usage_by_turn(conn: sqlite3.Connection, game_id: str,
         side_turn_id = turn_of_request.get(call.request_id) if call.request_id else None
         (grouped.setdefault(side_turn_id, []) if side_turn_id else unassigned).append(call)
     turns = []
-    for side_turn_id, members in sorted(grouped.items()):
-        turns.append({"side_turn_id": side_turn_id,
-                      "status": turn_status.get(side_turn_id, "unknown"),
-                      "call_ids": sorted(c.call_id for c in members),
+    # Start from the authoritative side-turn rows, so a known turn with no
+    # model dispatch remains visible as an empty, zero-call group.  Calls that
+    # refer to a missing/unknown turn remain unassigned below.
+    for side_turn_id, sequence, round_number, side, status in conn.execute(
+            "SELECT side_turn_id,sequence,round_number,side,status FROM side_turns "
+            "WHERE game_id=? ORDER BY sequence", (game_id,)):
+        members = grouped.pop(side_turn_id, [])
+        turns.append({"side_turn_id": side_turn_id, "sequence": sequence,
+                      "round_number": round_number, "side": side,
+                      "status": status, "call_ids": sorted(c.call_id for c in members),
                       "detail": aggregate_calls(members)})
-    linked = sum(len(m) for m in grouped.values())
+    linked = sum(len(entry["call_ids"]) for entry in turns)
+    # A call linked to an obsolete or foreign turn is not silently assigned to
+    # a nearby row. Preserve it as unassigned for attribution accounting.
+    for side_turn_id, members in sorted(grouped.items()):
+        unassigned.extend(members)
     return {"game_id": game_id, "group_by": "turn",
             "completed_turns": [t for t in turns if t["status"] not in ("open", "unknown")],
             "open_turns": [t for t in turns if t["status"] == "open"],
@@ -1943,8 +2007,16 @@ def _format_usage_report(value: dict[str, Any]) -> str:
                     lines.append(field_line(field, entry["detail"][field]))
             if "request_aggregate" in entry:
                 lines.append(f"  request_aggregate (reconciliation only): "
-                            f"{entry['request_aggregate']['tokens']}")
+                             f"{entry['request_aggregate']['tokens']}")
                 lines.append(f"  note: {entry['note']}")
+    elif value["group_by"] == "turn":
+        for entry in value["completed_turns"] + value["open_turns"]:
+            lines.append(f"turn {entry['sequence']} {entry['side_turn_id']}: "
+                         f"status={entry['status']} calls={entry['call_ids']}")
+            for field in TOKEN_FIELDS:
+                lines.append(field_line(field, entry["detail"][field]))
+        if value["unassigned"]["call_ids"]:
+            lines.append(f"unassigned calls: {value['unassigned']['call_ids']}")
     else:
         for field in TOKEN_FIELDS:
             lines.append(field_line(field, value["measured"][field]))

@@ -8,6 +8,21 @@ from .recorded_games import _played_turns, _sidecar, list_games
 
 
 class RecordedGamesTests(unittest.TestCase):
+    def test_list_passes_terminal_class_and_failure_code_to_replay_rows(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); db = root / "history.sqlite"; archive = root / "budget"; archive.mkdir()
+            conn = open_history(db)
+            with conn:
+                conn.execute("INSERT INTO games(game_id,status,config_json,provenance_json,schema_version,artifact_path,termination_reason,failure_code,coverage_json) VALUES(?,?,?,?,?,?,?,?,?)",
+                             ("budget", "complete", "{}", "{}", 2, str(archive),
+                              "budget_interrupted", "max_game_total_tokens_exhausted",
+                              json.dumps({"terminal_class": "budget_interrupted"})))
+            conn.close()
+            game = list_games(db)["games"][0]
+            self.assertEqual(game["termination_reason"], "budget_interrupted")
+            self.assertEqual(game["failure_code"], "max_game_total_tokens_exhausted")
+            self.assertEqual(game["terminal_class"], "budget_interrupted")
+
     def test_played_turns_uses_engine_ending_not_model_boundaries(self):
         with tempfile.TemporaryDirectory() as td:
             log = Path(td) / "match.ndjson"

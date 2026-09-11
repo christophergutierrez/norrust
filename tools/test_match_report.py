@@ -25,6 +25,18 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(report["terminal_class"], "model_invalid")
         self.assertEqual(report["model_calls"], 8)
 
+    def test_historical_budget_stop_is_not_a_model_fault_or_winner(self):
+        report = classify([{"type": "terminal", "terminal_class": "model_invalid",
+                            "reason": "budget_interrupted",
+                            "code": "max_game_total_tokens_exhausted", "winner": 0}])
+        self.assertEqual(report["terminal_class"], "budget_interrupted")
+        self.assertIsNone(report["winner"])
+
+    def test_type_only_budget_stop_is_not_unfinished_or_a_winner(self):
+        report = classify([{"type": "budget_interrupted", "winner": 1}])
+        self.assertEqual(report["terminal_class"], "budget_interrupted")
+        self.assertIsNone(report["winner"])
+
     def test_accepted_attack_death_uses_unit_ownership(self):
         report = classify([
             {"type": "driver", "line": {"type": "state", "units": [

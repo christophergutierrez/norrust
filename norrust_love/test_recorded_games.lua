@@ -18,6 +18,9 @@ for _, case in ipairs({
     {{termination_reason = "winner", winner_side = 0, terminal_class = "infrastructure"}, "Infrastructure error"},
     {{termination_reason = "max_turns", failure_code = "bad_response"}, "Execution error"},
     {{termination_reason = "winner", winner_side = 1, terminal_class = "model_invalid"}, "Model error"},
+    {{termination_reason = "budget_interrupted", failure_code = "max_game_total_tokens_exhausted", terminal_class = "budget_interrupted"}, "Budget interrupted"},
+    {{termination_reason = "budget_interrupted", failure_code = "model_calls_budget_exhausted", terminal_class = "model_invalid"}, "Budget interrupted"},
+    {{failure_code = "max_game_total_tokens_exhausted"}, "Budget interrupted"},
     {{termination_reason = "max_turns", winner_side = 1}, "Outcome unknown"},
     {{termination_reason = "winner", winner_side = 2}, "Outcome unknown"},
 }) do
@@ -39,6 +42,9 @@ for winner = 0, 1 do
     game.terminal_class = "model_invalid"
     r, g = recorded.side_color(game, winner)
     assert(r == g, "failed execution must stay neutral")
+    game.terminal_class = "budget_interrupted"
+    r, g = recorded.side_color(game, winner)
+    assert(r == g, "budget interruption must stay neutral")
 end
 
 -- Rows convey outcomes by side colors; details retain the written outcome.

@@ -221,7 +221,7 @@ def _count_inspections(records: list[dict[str, Any]]) -> int | None:
     is updated for both successful and repair paths; absent or malformed
     counters remain unknown.
     """
-    terminal = next((item for item in reversed(records) if item.get("type") == "terminal"), None)
+    terminal = match_report.terminal_record(records)
     if terminal is None:
         return None
     counter = terminal.get("tool_calls_by_name")

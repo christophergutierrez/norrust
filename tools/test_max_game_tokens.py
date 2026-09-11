@@ -95,7 +95,7 @@ class MaxGameTotalTokensTests(unittest.TestCase):
     def test_at_most_one_call_overshoot(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td); result,terminal=self.run_client(root,'normal')
-            self.assertEqual(result.returncode,2,result.stderr)
+            self.assertEqual(result.returncode,3,result.stderr)
             self.assertEqual(terminal['code'],'max_game_total_tokens_exhausted')
             self.assertEqual(terminal['cumulative_game_total_tokens'],600)
             self.assertTrue(terminal['game_token_limit_enforced'])
@@ -104,7 +104,7 @@ class MaxGameTotalTokensTests(unittest.TestCase):
     def test_output_limit_retry_is_counted_once_and_stops(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td); result,terminal=self.run_client(root,'exhausted',cap=500)
-            self.assertEqual(result.returncode,2,result.stderr)
+            self.assertEqual(result.returncode,3,result.stderr)
             self.assertEqual(terminal['code'],'max_game_total_tokens_exhausted')
             self.assertEqual(terminal['cumulative_game_total_tokens'],600)
             self.assertEqual((root/'calls.txt').read_text(),'2')
@@ -122,7 +122,7 @@ class MaxGameTotalTokensTests(unittest.TestCase):
             self.assertNotEqual(result.returncode,0)
             self.assertEqual(terminal['cumulative_game_total_tokens'],600)
             result,terminal=self.run_client(root,'normal',resume=True)
-            self.assertEqual(result.returncode,2,result.stderr)
+            self.assertEqual(result.returncode,3,result.stderr)
             self.assertEqual(terminal['code'],'max_game_total_tokens_exhausted')
             self.assertEqual(terminal['cumulative_game_total_tokens'],600)
             self.assertEqual((root/'calls.txt').read_text(),'2')

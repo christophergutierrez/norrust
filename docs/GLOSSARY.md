@@ -5,6 +5,7 @@
 - **Side-turn safety cap**: An external maximum number of completed faction turns accepted by the headless driver. It is distinct from the engine's displayed round number and scenario turn-limit win condition, which the headless `greedy_driver` disables.
 - **Model prompt contract**: The complete instructions and data delivered to a memoryless model for one decision. It must be sufficient to encode legal actions without consulting repository documentation.
 - **Infrastructure-invalid terminal**: `setup_error`, `timeout`, `eof`, `infrastructure_failure`, or an unknown/malformed terminal reason. The client exits nonzero; it is never recorded as a draw, loss, winner, or completed side turn.
+- **Budget-interrupted terminal**: `budget_interrupted`, emitted when an explicit model/tool call or game-token budget stops the client. It has exit code 3, no winner, and no automatic resume.
 - **Gameplay-valid terminal**: `winner`, `max_turns`, or `resignation`. These are valid match outcomes; `max_turns` is the external completed-side-turn safety cap.
 - **Resignation**: A model-authored concession using the standalone `Resign` action. It awards the opponent the win immediately, without executing a sweep or opponent turn or incrementing the completed-side-turn count.
 - **Infrastructure failure**: A driver, client, query, or opponent-execution failure that invalidates a match result. It is never recorded as a draw, loss, or completed side turn.

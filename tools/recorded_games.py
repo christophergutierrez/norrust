@@ -21,12 +21,12 @@ def _catalog_rows(db: Path) -> list[dict[str, Any]]:
 def _read_catalog_rows(conn, db: Path) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT game_id,started_at,ended_at,scenario,faction0,faction1,seed,starting_gold,max_side_turns,status,"
-        "winner_side,termination_reason,artifact_path,source_commit,coverage_json FROM games"
+        "winner_side,termination_reason,failure_code,artifact_path,source_commit,coverage_json FROM games"
     ).fetchall()
     result = []
     for row in rows:
         (game_id, started, ended, scenario, faction0, faction1, seed, gold, cap, status, winner, reason,
-         artifact, commit, coverage_json) = row
+         failure_code, artifact, commit, coverage_json) = row
         try:
             coverage = json.loads(coverage_json) if coverage_json else {}
         except ValueError:
@@ -51,7 +51,9 @@ def _read_catalog_rows(conn, db: Path) -> list[dict[str, Any]]:
         result.append({"game_id": game_id, "catalog": str(db), "started_at": started, "ended_at": ended,
                        "scenario": scenario, "seed": seed, "starting_gold": gold,
                        "max_side_turns": cap, "status": status, "winner_side": winner,
-                       "termination_reason": reason, "artifact_path": artifact,
+                       "termination_reason": reason, "failure_code": failure_code,
+                       "terminal_class": coverage.get("terminal_class"),
+                       "artifact_path": artifact,
                        "source_commit": commit, "indexed_boundaries": turns, "players": sides,
                        # Coverage separates the recorded engine result from how much of
                        # the timeline can actually be replayed; never a guessed ratio.

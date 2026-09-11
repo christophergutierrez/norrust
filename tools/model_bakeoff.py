@@ -609,7 +609,7 @@ def aggregate_cell(result: CellRunResult, cell: dict[str, Any], *,
     publication_records = _load_publication_records(result.cell_dir)
     classified = match_report.classify(records, publication_records)
     metadata = next((r for r in records if r.get("type") == "metadata"), {})
-    terminal = next((r for r in reversed(records) if r.get("type") == "terminal"), {})
+    terminal = match_report.terminal_record(records)
     trial = bakeoff_metrics.evaluate_trial_actions(
         records, useful_spec=cell.get("useful_action") if isinstance(cell.get("useful_action"), dict) else None)
     entry["first_legal_action"] = trial["first_legal_action"]
@@ -687,8 +687,6 @@ def aggregate_cell(result: CellRunResult, cell: dict[str, Any], *,
         "recruiter_status": recruiter_status(records),
         "resignation": resignation_rationale(records, terminal),
     })
-    if classified.get("reason") == "budget_interrupted":
-        entry["terminal_class"] = "budget_interrupted"
     if usage is not None:
         entry["known_cost"] = usage.get("known_cost")
         entry["physical_calls"] = usage.get("physical_calls")

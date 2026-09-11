@@ -81,7 +81,7 @@ The headless driver explicitly disables `objective_hex` and scenario turn-limit 
 
 `--max-turns` is an external completed-side-turn safety cap, distinct from the engine round counter and scenario rules. Each completed model side-turn and completed greedy side-turn increments it once. A failed greedy turn adds no opponent side-turn and is terminal; the preceding completed model side-turn remains counted.
 
-For the headless client, terminal reasons `winner` and `max_turns` are gameplay-valid. `setup_error`, `timeout`, `eof`, `infrastructure_failure`, and unknown or malformed terminal reasons are infrastructure-invalid; the client exits nonzero and records `infrastructure_invalid: true`.
+For the headless client, terminal reasons `winner` and `max_turns` are gameplay-valid. `budget_interrupted` is a separate non-gameplay budget stop (exit 3) with no winner and no automatic resume. `setup_error`, `timeout`, `eof`, `infrastructure_failure`, and unknown or malformed terminal reasons are infrastructure-invalid; the client exits nonzero and records `infrastructure_invalid: true`.
 
 ## How to play
 

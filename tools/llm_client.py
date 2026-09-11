@@ -4389,22 +4389,25 @@ def status_failure(line: dict[str, Any]) -> Optional[dict[str, Any]]:
     return None
 
 
-# Terminal taxonomy. Three outcomes, not two: a model that cannot produce a
+# Terminal taxonomy. Four outcomes, not two: a model that cannot produce a
 # legal turn is a completed evaluation, not a broken harness. Collapsing it into
 # INFRASTRUCTURE voids a match the model actually lost, and that escalation can
 # only ever void the model's match and never greedy's.
 TERMINAL_GAMEPLAY = "gameplay"          # winner / max_turns / resignation: a real result
 TERMINAL_MODEL_INVALID = "model_invalid"  # model could not emit a legal turn
 TERMINAL_INFRASTRUCTURE = "infrastructure"  # the harness or driver broke
+TERMINAL_BUDGET_INTERRUPTED = "budget_interrupted"  # an explicit non-gameplay budget stop
 
 GAMEPLAY_REASONS = ("winner", "max_turns", "resignation")
 
-# Exit codes are distinct so a caller can tell the three apart without parsing
-# the log. 0 = usable gameplay result, 1 = harness fault, 2 = model fault.
+# Exit codes are distinct so a caller can tell the outcomes apart without
+# parsing the log. 0 = usable gameplay result, 1 = harness fault, 2 = model
+# fault, 3 = an explicit budget stop.
 TERMINAL_EXIT_CODES = {
     TERMINAL_GAMEPLAY: 0,
     TERMINAL_INFRASTRUCTURE: 1,
     TERMINAL_MODEL_INVALID: 2,
+    TERMINAL_BUDGET_INTERRUPTED: 3,
 }
 
 # These records are terminal outcomes in maintained and historical logs.  An
@@ -4436,9 +4439,11 @@ def terminal_record(records: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 
 def classify_terminal(reason: Optional[str]) -> str:
-    """Map a terminal reason to one of the three terminal classes."""
+    """Map a terminal reason to its gameplay, fault, or budget class."""
     if reason in GAMEPLAY_REASONS:
         return TERMINAL_GAMEPLAY
+    if reason == TERMINAL_BUDGET_INTERRUPTED:
+        return TERMINAL_BUDGET_INTERRUPTED
     if reason == TERMINAL_MODEL_INVALID:
         return TERMINAL_MODEL_INVALID
     return TERMINAL_INFRASTRUCTURE
@@ -4466,7 +4471,8 @@ def set_terminal(metadata: dict[str, Any], terminal_class: str,
 
     `infrastructure_invalid` is retained as a derived boolean so existing log
     consumers keep working; `terminal_class` is the authoritative field. A
-    model_invalid run is neither infrastructure-invalid nor gameplay-valid.
+    model-invalid or budget-interrupted run is neither infrastructure-invalid
+    nor gameplay-valid.
     """
     metadata.update(fields)
     metadata["terminal_class"] = terminal_class
@@ -4512,8 +4518,11 @@ def run(args: argparse.Namespace) -> int:
         terminal = terminal_record(parent_records)
         if isinstance(terminal, dict):
             terminal_class = terminal.get("terminal_class")
-            if terminal.get("type") == "budget_interrupted" and terminal_class is None:
-                terminal_class = TERMINAL_MODEL_INVALID
+            if (terminal.get("reason") == "budget_interrupted"
+                    or terminal.get("code") in {"max_game_total_tokens_exhausted",
+                                                  "model_calls_budget_exhausted"}
+                    or terminal.get("type") == "budget_interrupted"):
+                terminal_class = TERMINAL_BUDGET_INTERRUPTED
         else:
             terminal_class = None
         if isinstance(terminal, dict) and terminal_class != TERMINAL_INFRASTRUCTURE:
@@ -4895,7 +4904,7 @@ def run(args: argparse.Namespace) -> int:
                 f"({metadata['cumulative_game_total_tokens']} measured tokens spent)")
 
     def emit_budget_interrupted(code: str, message: str) -> int:
-        set_terminal(metadata, TERMINAL_MODEL_INVALID,
+        set_terminal(metadata, TERMINAL_BUDGET_INTERRUPTED,
                      winner=None,
                      reason="budget_interrupted",
                      code=code,
@@ -4906,7 +4915,7 @@ def run(args: argparse.Namespace) -> int:
                  "tool_calls_this_turn": tool_calls_this_turn,
                  **metadata})
         durable({"type": "terminal", **metadata})
-        return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
+        return TERMINAL_EXIT_CODES[TERMINAL_BUDGET_INTERRUPTED]
     # An in-place resume retains its conversation ID, so its IDs must continue
     # past every archived attempt, including failed requests/uncommitted batches.
     def previous_sequence(kind: str) -> int:

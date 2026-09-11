@@ -34,27 +34,58 @@ def _records(path: Path) -> list[dict]:
     return result
 
 
+def _terminal_class(record: dict | None) -> str | None:
+    """Classify explicit budget evidence for supervisor reporting.
+
+    Older clients stamped a budget stop as model-invalid. The supervisor must
+    preserve the stop and report its corrected class; it must never turn it
+    into a recoverable infrastructure restart.
+    """
+    if not isinstance(record, dict):
+        return None
+    if record.get("type") == "budget_interrupted":
+        return "budget_interrupted"
+    reason = record.get("reason") or record.get("termination_reason")
+    code = record.get("code") or record.get("failure_code") or record.get("error_code")
+    if reason == "budget_interrupted" or code in {"max_game_total_tokens_exhausted",
+                                                  "model_calls_budget_exhausted"}:
+        return "budget_interrupted"
+    value = record.get("terminal_class")
+    return value if isinstance(value, str) else None
+
+
 def _has_checkpoint(log: Path) -> bool:
     directory = log.with_suffix(".ckpt")
     return any(path.is_file() and path.suffix == ".json" for path in directory.glob("*.json"))
 
 
 def _last_terminal(log: Path) -> dict | None:
-    records = _records(log)
+    return _terminal_record(_records(log))
+
+
+def _terminal_record(records: list[dict]) -> dict | None:
+    """Return the newest maintained or legacy terminal evidence.
+
+    Current clients normally pair a typed budget/model failure with a
+    ``terminal`` record, but older and interrupted paths can leave only the
+    typed failure.  Letting that record fall through as ``terminal is None``
+    would authorize reconciliation and a resume when the outcome is already
+    final.
+    """
     terminal = next((record for record in reversed(records)
-                     if record.get("type") == "terminal"), None)
-    if terminal is not None:
-        return terminal
-    # Older client failure paths durably wrote model_error without a separate
-    # terminal record. Treat only the latest such record as terminal evidence;
-    # ordinary model/driver records must never trigger a resume.
-    failure = next((record for record in reversed(records)
-                    if record.get("type") in {"model_error", "checkpoint_error"}), None)
-    if failure is None:
-        return None
-    return {"terminal_class": failure.get("terminal_class") or
-            ("infrastructure" if failure.get("type") == "checkpoint_error" else None),
-            "type": "derived_terminal", "source_type": failure.get("type")}
+                     if record.get("type") in {
+                         "terminal", "budget_interrupted", "model_error", "checkpoint_error",
+                     }), None)
+    if terminal is not None and terminal.get("type") in {"model_error", "checkpoint_error"}:
+        # Older client failure paths durably wrote model_error without a
+        # separate terminal record. Treat only the latest such record as
+        # terminal evidence; ordinary model/driver records must never trigger
+        # a resume.
+        return {"terminal_class": _terminal_class(terminal) or
+                ("infrastructure" if terminal.get("type") == "checkpoint_error" else None),
+                "type": "derived_terminal", "source_type": terminal.get("type"),
+                "reason": terminal.get("reason"), "code": terminal.get("code")}
+    return terminal
 
 
 def _append(log: Path, value: dict) -> None:
@@ -142,11 +173,12 @@ def run(command: list[str], log: Path, max_restarts: int,
             invocation = command if attempt == 1 else command + ["--resume-log", str(log)]
             completed = subprocess.run(invocation)
             new_records = _attempt_records(log, start + 1)
-            terminal = next((record for record in reversed(new_records)
-                             if record.get("type") == "terminal"), None)
-            terminal_class = terminal.get("terminal_class") if terminal else None
-            recoverable_exit = (completed.returncode < 0 or
-                                terminal_class == "infrastructure" or terminal is None)
+            terminal = _terminal_record(new_records)
+            terminal_class = _terminal_class(terminal)
+            budget_stop = terminal_class == "budget_interrupted"
+            recoverable_exit = (not budget_stop and
+                                (completed.returncode < 0 or
+                                 terminal_class == "infrastructure" or terminal is None))
             discovered_state = discovered_state or _journal_state_from_environment()
             reconciliation = None
             if recoverable_exit:
