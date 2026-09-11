@@ -1234,9 +1234,171 @@ def compact_units_inspection(units: list[dict[str, Any]], choices: Optional[list
     for choice in (choices or []):
         unit_id = choice.metadata.get("unit_id") if hasattr(choice, "metadata") else None
         per_unit.setdefault(unit_id, []).append(choice)
-    blocks = [compact_unit_inspection(unit, choices=per_unit.get(unit.get("unit_id")))
-              for unit in units]
-    return "INSPECT_UNITS n=%d\n" % len(units) + "\n---\n".join(blocks)
+    # Group inspections commonly repeat the same defender profile and the
+    # same exchange forecast for every legal origin.  Define those values once
+    # and reference them from each option.  The option rows themselves remain
+    # complete: no destination, origin, forecast, or choice handle is omitted.
+    weapon_counts: dict[str, int] = {}
+    forecast_counts: dict[str, int] = {}
+    danger_counts: dict[str, int] = {}
+    for unit in units:
+        if not isinstance(unit, dict):
+            continue
+        for key in ("weapons", "attacks"):
+            value = unit.get(key)
+            if value is not None:
+                weapon_counts[_compact_fact_key(value)] = weapon_counts.get(_compact_fact_key(value), 0) + 1
+        for origin in unit.get("origins", []):
+            if not isinstance(origin, dict):
+                continue
+            for engagement in origin.get("engagements", []):
+                if not isinstance(engagement, dict):
+                    continue
+                value = engagement.get("defender_weapons")
+                if value is not None:
+                    weapon_counts[_compact_fact_key(value)] = weapon_counts.get(_compact_fact_key(value), 0) + 1
+                forecast = engagement.get("forecast")
+                if isinstance(forecast, dict):
+                    key = _compact_fact_key(forecast)
+                    forecast_counts[key] = forecast_counts.get(key, 0) + 1
+        destinations = unit.get("destination_threats", unit.get("recruiter_destinations", []))
+        for destination in destinations if isinstance(destinations, list) else []:
+            if isinstance(destination, dict):
+                key = _compact_fact_key(_destination_danger_values(destination))
+                danger_counts[key] = danger_counts.get(key, 0) + 1
+    profile_refs = {key: "P%d" % index for index, key in enumerate(
+        sorted(key for key, count in weapon_counts.items() if count > 1), 1)}
+    forecast_refs = {key: "X%d" % index for index, key in enumerate(
+        sorted(key for key, count in forecast_counts.items() if count > 1), 1)}
+    danger_refs = {key: "D%d" % index for index, key in enumerate(
+        sorted(key for key, count in danger_counts.items() if count > 1), 1)}
+    definitions = []
+    for key, ref in profile_refs.items():
+        definitions.append("PROFILE %s weapons=%s" % (ref, key))
+    for key, ref in forecast_refs.items():
+        definitions.append("FORECAST %s %s" % (ref, _readable_exchange(json.loads(key))))
+    for key, ref in danger_refs.items():
+        definitions.append("DANGER %s %s" % (ref, _compact_danger_text(json.loads(key))))
+    blocks = [_compact_unit_inspection_factored(
+        unit, per_unit.get(unit.get("unit_id")), profile_refs, forecast_refs, danger_refs)
+              for unit in units if isinstance(unit, dict)]
+    header = "INSPECT_UNITS n=%d\n" % len(blocks)
+    if definitions:
+        header += "LOCAL_FACTS_BEGIN\n" + "\n".join(definitions) + "\nLOCAL_FACTS_END\n"
+    return header + "\n---\n".join(blocks)
+
+
+def _compact_fact_key(value: Any) -> str:
+    """Canonical compact key for lossless local fact references."""
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _destination_danger_values(destination: dict[str, Any]) -> dict[str, Any]:
+    """Extract every rendered danger value, excluding its destination hex."""
+    values = {key: destination.get(key, "unknown") for key in (
+        "distinct_attacker_count", "max_incoming_sum", "lethal_attackers_needed",
+        "origins_conflict", "focus_kill_bps", "focus_expected_damage_tenths",
+        "open_distinct_attacker_count", "open_max_incoming_sum",
+        "open_lethal_attackers_needed", "open_origins_conflict")}
+    # Absent optional OPEN fields remain absent so unknown and unavailable are
+    # not silently conflated with a supplied null/value.
+    return {key: value for key, value in values.items()
+            if key in destination or not key.startswith("open_")}
+
+
+def _compact_danger_text(values: dict[str, Any]) -> str:
+    """Render a shared destination danger signature exactly once."""
+    text = "direct_attackers=%s direct_max=%s lethal_attackers_needed=%s origins_conflict=%s focus_kills=(%s) focus_expected=(%s)" % (
+        _readable_threat_count(values, "distinct_attacker_count"),
+        _readable_whole_hp(values.get("max_incoming_sum")),
+        _readable_lethal_attackers(values), values.get("origins_conflict", "?"),
+        _readable_focus(values.get("focus_kill_bps")),
+        _readable_focus(values.get("focus_expected_damage_tenths"), damage=True))
+    if "open_distinct_attacker_count" in values:
+        text += " open_direct_attackers=%s open_direct_max=%s open_lethal_attackers_needed=%s open_origins_conflict=%s" % (
+            _readable_threat_count(values, "open_distinct_attacker_count"),
+            _readable_whole_hp(values.get("open_max_incoming_sum")),
+            _readable_lethal_attackers(values, "open_lethal_attackers_needed"),
+            values.get("open_origins_conflict", "?"))
+    return text
+
+
+def _compact_unit_inspection_factored(
+        unit: dict[str, Any], choices: Optional[list[Any]],
+        profile_refs: dict[str, str], forecast_refs: dict[str, str],
+        danger_refs: dict[str, str]) -> str:
+    """Render one unit while sharing repeated profiles and forecasts."""
+    if unit.get("available") is False:
+        return "INSPECT_UNIT unavailable unit=%s reason=%s" % (
+            unit.get("unit_id", "?"), unit.get("reason", "unknown"))
+    current = None
+    moves = []
+    attacks = []
+    destinations = []
+    for origin in unit.get("origins", []):
+        if not isinstance(origin, dict):
+            continue
+        coordinate = "%s,%s" % (origin.get("col", "?"), origin.get("row", "?"))
+        if origin.get("current"):
+            current = coordinate
+            prefix = "@"
+        elif origin.get("movable"):
+            moves.append(coordinate)
+            prefix = coordinate
+        else:
+            continue
+        for engagement in origin.get("engagements", []):
+            if not isinstance(engagement, dict):
+                continue
+            forecast = engagement.get("forecast", {})
+            forecast_ref = forecast_refs.get(_compact_fact_key(forecast)) if isinstance(forecast, dict) else None
+            exchange = ("exchange=" + forecast_ref) if forecast_ref else _readable_exchange(forecast)
+            defender = ""
+            if "defender_def_id" in engagement or "defender_weapons" in engagement:
+                weapons = engagement.get("defender_weapons", "unknown")
+                profile_ref = profile_refs.get(_compact_fact_key(weapons)) if weapons != "unknown" else None
+                defender = " defender_facts=type:%s %s" % (
+                    engagement.get("defender_def_id", "unknown"),
+                    "profile=%s" % profile_ref if profile_ref else
+                    "weapons:%s" % (json.dumps(weapons, sort_keys=True, separators=(",", ":"))
+                                     if weapons != "unknown" else "unknown"))
+            attacks.append("%s>T%s %s%s" % (
+                prefix, engagement.get("defender_id", "?"), exchange, defender))
+    fields = ["U%s" % unit.get("unit_id", "?")]
+    if any(key in unit for key in ("def_id", "type", "hp", "max_hp", "weapons", "attacks")):
+        type_name = unit.get("def_id", unit.get("type", "unknown"))
+        weapons = unit.get("weapons", unit.get("attacks"))
+        profile_ref = profile_refs.get(_compact_fact_key(weapons)) if weapons is not None else None
+        fields.append("facts=type:%s hp:%s/%s %s" % (
+            type_name, unit.get("hp", "unknown"), unit.get("max_hp", "unknown"),
+            "profile=%s" % profile_ref if profile_ref else
+            "weapons:%s" % (json.dumps(weapons, sort_keys=True, separators=(",", ":"))
+                             if weapons is not None else "weapons=unknown")))
+    if current is not None:
+        fields.append("at=%s" % current)
+    fields.append("move_destinations=%s" % ("|".join(moves) if moves else "none"))
+    fields.append("attack_options=%s" % ("|".join(attacks) if attacks else "none (no legal attack from listed origins)"))
+    destinations = unit.get("destination_threats", unit.get("recruiter_destinations", []))
+    if isinstance(destinations, list) and destinations:
+        rendered = []
+        for destination in destinations:
+            if not isinstance(destination, dict):
+                continue
+            marker = "@" if destination.get("current") else "->"
+            danger_values = _destination_danger_values(destination)
+            danger_ref = danger_refs.get(_compact_fact_key(danger_values))
+            rendered.append("%s%s,%s %s" % (
+                marker, destination.get("col", "?"), destination.get("row", "?"),
+                "danger=%s" % danger_ref if danger_ref else _compact_danger_text(danger_values)))
+        if rendered:
+            fields.append("DESTINATION_DANGER " + " ".join(rendered))
+    choice_line = None
+    if choices:
+        choice_line = "CHOICES " + "; ".join(
+            "%s: %s" % (getattr(c, "handle", None) or (c.get("handle") if isinstance(c, dict) else str(c)),
+                         getattr(c, "description", None) or (c.get("description") if isinstance(c, dict) else ""))
+            for c in choices)
+    return " ".join(fields) + ("\n" + choice_line if choice_line else "")
 
 
 def enrich_inspected_units(units: list[dict[str, Any]], state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1324,39 +1486,91 @@ def enrich_target_inspection(target: dict[str, Any], state: dict[str, Any]) -> d
     return result
 
 
+def _target_factoring(targets: list[dict[str, Any]]) -> tuple[dict[str, str], dict[str, str], list[str]]:
+    """Build shared profile and forecast definitions for target renderers."""
+    weapon_counts: dict[str, int] = {}
+    forecast_counts: dict[str, int] = {}
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        for attack in target.get("attacks", []):
+            if not isinstance(attack, dict):
+                continue
+            weapons = attack.get("attacker_weapons")
+            if weapons is not None:
+                key = _compact_fact_key(weapons)
+                weapon_counts[key] = weapon_counts.get(key, 0) + 1
+            forecast = attack.get("forecast")
+            if isinstance(forecast, dict):
+                key = _compact_fact_key(forecast)
+                forecast_counts[key] = forecast_counts.get(key, 0) + 1
+    profile_refs = {key: "P%d" % index for index, key in enumerate(
+        sorted(key for key, count in weapon_counts.items() if count > 1), 1)}
+    forecast_refs = {key: "X%d" % index for index, key in enumerate(
+        sorted(key for key, count in forecast_counts.items() if count > 1), 1)}
+    definitions = (["PROFILE %s weapons=%s" % (ref, key)
+                    for key, ref in profile_refs.items()] +
+                   ["FORECAST %s %s" % (ref, _readable_exchange(json.loads(key)))
+                    for key, ref in forecast_refs.items()])
+    return profile_refs, forecast_refs, definitions
+
+
 def compact_targets_inspection(targets: list[dict[str, Any]]) -> str:
-    return "TARGETS " + " ".join(compact_target_inspection(target) for target in targets)
+    profile_refs, forecast_refs, definitions = _target_factoring(targets)
+    prefix = "TARGETS "
+    if definitions:
+        prefix += "LOCAL_FACTS_BEGIN " + " ".join(definitions) + " LOCAL_FACTS_END "
+    return prefix + " ".join(_compact_target_inspection_factored(target, profile_refs, forecast_refs)
+                              for target in targets)
 
 
-def compact_target_inspection(target: dict[str, Any]) -> str:
+def _compact_target_inspection_factored(target: dict[str, Any],
+                                        profile_refs: dict[str, str],
+                                        forecast_refs: dict[str, str]) -> str:
     if target.get("available") is False:
         return "TARGET unavailable unit=%s reason=%s" % (
             target.get("target_id", "?"), target.get("reason", "unknown"))
     attacks = []
     for attack in target.get("attacks", []):
-        forecast = attack.get("forecast", {}) if isinstance(attack, dict) else {}
+        if not isinstance(attack, dict):
+            continue
+        forecast = attack.get("forecast", {})
+        exchange_ref = forecast_refs.get(_compact_fact_key(forecast)) if isinstance(forecast, dict) else None
+        exchange = ("exchange=" + exchange_ref) if exchange_ref else _readable_exchange(forecast)
         attacker = attack.get("attacker_id", "?")
-        col, row = attack.get("origin_col", "?"), attack.get("origin_row", "?")
-        action = "ENGAGE_STEP U%s via=%s,%s" % (attacker, col, row) \
-            if attack.get("moved") else "ATTACK U%s" % attacker
+        origin = "%s,%s" % (attack.get("origin_col", "?"), attack.get("origin_row", "?"))
+        action = "ENGAGE_STEP U%s via=%s" % (attacker, origin) if attack.get("moved") else "ATTACK U%s" % attacker
         facts = ""
         if "attacker_def_id" in attack or "attacker_weapons" in attack:
             weapons = attack.get("attacker_weapons", "unknown")
-            facts = " type=%s weapons=%s" % (
+            profile = profile_refs.get(_compact_fact_key(weapons)) if weapons != "unknown" else None
+            facts = " type=%s %s" % (
                 attack.get("attacker_def_id", "unknown"),
-                json.dumps(weapons, sort_keys=True, separators=(",", ":"))
-                if weapons != "unknown" else "unknown")
-        attacks.append("%s %s%s" % (action, _readable_exchange(forecast), facts))
+                "profile=%s" % profile if profile else
+                "weapons:%s" % (json.dumps(weapons, sort_keys=True, separators=(",", ":"))
+                                 if weapons != "unknown" else "unknown"))
+        attacks.append("%s %s%s" % (action, exchange, facts))
     target_facts = ""
     if "def_id" in target or "weapons" in target:
         weapons = target.get("weapons", "unknown")
-        target_facts = " target_facts=type:%s weapons:%s" % (
+        profile = profile_refs.get(_compact_fact_key(weapons)) if weapons != "unknown" else None
+        target_facts = " target_facts=type:%s %s" % (
             target.get("def_id", "unknown"),
-            json.dumps(weapons, sort_keys=True, separators=(",", ":"))
-            if weapons != "unknown" else "unknown")
+            "profile=%s" % profile if profile else
+            "weapons:%s" % (json.dumps(weapons, sort_keys=True, separators=(",", ":"))
+                             if weapons != "unknown" else "unknown"))
     return "TARGET U%s hp=%s at=%s,%s terrain=%s attacks=%s%s" % (
         target.get("target_id", "?"), target.get("hp", "?"), target.get("col", "?"),
         target.get("row", "?"), target.get("terrain", "?"), "|".join(attacks) or "none", target_facts)
+
+
+def compact_target_inspection(target: dict[str, Any]) -> str:
+    profile_refs, forecast_refs, definitions = _target_factoring([target])
+    rendered = _compact_target_inspection_factored(target, profile_refs, forecast_refs)
+    if definitions:
+        return "LOCAL_FACTS_BEGIN\n" + "\n".join(definitions) + \
+            "\nLOCAL_FACTS_END\n" + rendered
+    return rendered
 
 
 def validate_inspect_hex_request(request: dict[str, Any]) -> tuple[int, int, str]:
@@ -2779,9 +2993,11 @@ def shared_response_rules(boundary_guidance: str, decision_mode: str = "batch") 
         + annotation_guidance
         + annotation_schema
         + ("- Focused mode uses two tiers: choose one small objective; when a missing route, target, or weapon fact matters, request a permitted inspection "
-           "of its target or preferably at most four relevant units, then use the revision-pinned local context to request one useful operation. "
-           "Inspection is optional when supplied legal actions already establish the objective; completing an operation does not end the turn. "
-           "After inspection, local options replace unrelated tactical rows; recruiter, economy, and danger guardrails remain visible. Accepted progress refreshes the objective.\n"
+           "of the target for an uncertain attack or the specific unit for an uncertain retreat, preferably at most four relevant units. "
+           "Then use the revision-pinned local context: its selected operation is central, exact referenced live rows and all legal choices are preserved, "
+           "and a matching assigned task is preferred over an unrelated task (otherwise the match is stated as none). Inspection is optional when supplied "
+           "legal actions already establish the objective; completing an operation does not end the turn. After inspection, local options replace unrelated tactical rows; "
+           "recruiter, economy, village, promotion, and danger guardrails remain visible. Accepted progress refreshes the objective.\n"
            if decision_mode == "focused" else "")
         + "- Optional intent is memory under 512 UTF-8 bytes: it is how a conclusion survives to your next request.\n"
         "- Intent and agenda are provisional rationale: they explain a current objective and may change when live facts change. "
@@ -3016,6 +3232,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
                 "tool": local_context.get("tool", "unknown"),
                 "selected": local_context.get("selected", "unknown"),
                 "request": local_context.get("operation", {}).get("request", {}),
+                "entity_ids": local_context.get("operation", {}).get("entity_ids", []),
             }
         }
     else:
@@ -3817,6 +4034,124 @@ def compact_local_guardrails(state: dict[str, Any],
         _local_guardrail_data(state, agenda), sort_keys=True, separators=(",", ":"))
 
 
+_INSPECTION_ENTITY_ID_KEYS = {
+    "unit_id", "attacker_id", "defender_id", "target_id", "recruiter_id",
+    "occupant_id",
+}
+_MATCHING_TASK_STATUSES = {"pending", "active", "deferred"}
+
+
+def _structured_entity_ids(value: Any) -> set[int]:
+    """Collect only documented entity references from an inspection body."""
+    found: set[int] = set()
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key in _INSPECTION_ENTITY_ID_KEYS and isinstance(child, int) and not isinstance(child, bool):
+                found.add(child)
+            else:
+                found.update(_structured_entity_ids(child))
+    elif isinstance(value, list):
+        for child in value:
+            found.update(_structured_entity_ids(child))
+    return found
+
+
+def _inspection_entity_ids(request: dict[str, Any], tool: str, result: Any,
+                           state: dict[str, Any], agenda: Optional[dict[str, Any]]) -> list[int]:
+    """Select local rows from structured inspection references and assignments.
+
+    Every ID comes from a request/result field whose name identifies an entity,
+    or from an agenda task that actually includes one of those entities.  This
+    deliberately does not search intent or task prose for numbers.
+    """
+    ids: set[int] = set()
+    selected = request.get("unit_ids") if tool in {"inspect_units", "inspect_targets"} else request.get("unit_id")
+    if isinstance(selected, list):
+        ids.update(value for value in selected if isinstance(value, int) and not isinstance(value, bool))
+    elif isinstance(selected, int) and not isinstance(selected, bool):
+        ids.add(selected)
+
+    ids.update(_structured_entity_ids(result))
+
+    state_units = state.get("units")
+    live = {unit.get("id", unit.get("unit_id")): unit for unit in (state_units if isinstance(state_units, list) else [])
+            if isinstance(unit, dict) and isinstance(unit.get("id", unit.get("unit_id")), int)}
+    selected_or_referenced_friendly = {
+        unit_id for unit_id in ids
+        if isinstance(live.get(unit_id), dict)
+        and live[unit_id].get("faction") == state.get("active_faction")
+    }
+    # Recruiter status is a local guardrail even when it was not part of the
+    # selected inspection.  It is bounded by the number of live recruiters.
+    for unit_id, unit in live.items():
+        if unit.get("faction") == state.get("active_faction") and unit.get("can_recruit") is True:
+            ids.add(unit_id)
+
+    tasks = agenda.get("tasks", []) if isinstance(agenda, dict) else []
+    if isinstance(tasks, list):
+        for task in tasks:
+            if (not isinstance(task, dict) or task.get("status") not in _MATCHING_TASK_STATUSES
+                    or not isinstance(task.get("units"), list)):
+                continue
+            task_units = {value for value in task["units"]
+                          if isinstance(value, int) and not isinstance(value, bool)}
+            if task_units & selected_or_referenced_friendly:
+                ids.update(task_units)
+
+    # Keep an unavailable referenced entity visible as an explicit unknown row;
+    # otherwise a missing unit could be mistaken for an unreferenced unit.
+    return sorted(ids)
+
+
+def _local_live_rows(state: dict[str, Any], entity_ids: list[int]) -> list[dict[str, Any]]:
+    """Project current unit facts at one revision, retaining missing fields."""
+    live = {unit.get("id", unit.get("unit_id")): unit for unit in state.get("units", [])
+            if isinstance(unit, dict)} if isinstance(state.get("units"), list) else {}
+    surface = state.get("tactical_surface") if isinstance(state, dict) else None
+    profiles = {profile.get("def_id"): profile for profile in (surface.get("unit_types", [])
+                if isinstance(surface, dict) else []) if isinstance(profile, dict)}
+    rows = []
+    for unit_id in entity_ids:
+        unit = live.get(unit_id)
+        if not isinstance(unit, dict):
+            rows.append({"id": unit_id, "side": "unknown", "type": "unknown",
+                         "position": "unknown", "hp": "unknown", "max_hp": "unknown",
+                         "moved": "unknown", "attacked": "unknown", "poisoned": "unknown",
+                         "slowed": "unknown", "promotion": "unknown", "profile_ref": "unknown"})
+            continue
+        def pair(col: str, row: str) -> list[Any] | str:
+            return [unit[col], unit[row]] if col in unit and row in unit else "unknown"
+        promotion = (unit.get("advances_to", "missing") if unit.get("advancement_pending") is True
+                     else unit.get("advancement_pending", "unknown"))
+        rows.append({
+            "id": unit_id,
+            "side": unit.get("faction", "unknown"),
+            "type": unit.get("def_id", unit.get("type", "unknown")),
+            "position": pair("col", "row"),
+            "hp": unit.get("hp", "unknown"),
+            "max_hp": unit.get("max_hp", "unknown"),
+            "moved": unit.get("moved", "unknown"),
+            "attacked": unit.get("attacked", "unknown"),
+            "poisoned": unit.get("poisoned", "unknown"),
+            "slowed": unit.get("slowed", "unknown"),
+            "promotion": promotion,
+            # The fixed prompt contains the exact canonical definition.  The
+            # reference avoids repeating weapon rows for every attack origin.
+            "profile_ref": (unit.get("def_id", "unknown")
+                            if unit.get("def_id") in profiles else "unknown"),
+        })
+    return rows
+
+
+def _local_village_rows(state: dict[str, Any]) -> list[dict[str, Any]] | str:
+    terrain = state.get("terrain")
+    if not isinstance(terrain, list):
+        return "unknown"
+    return [{"position": [tile.get("col", "unknown"), tile.get("row", "unknown")],
+             "owner": tile.get("owner", "unknown")}
+            for tile in terrain if isinstance(tile, dict) and tile.get("terrain_id") == "village"]
+
+
 def build_local_execution_context(
         state: dict[str, Any], request: dict[str, Any], tool: str,
         result: Any, rendered: str, *, intent: Optional[str] = None,
@@ -3852,31 +4187,54 @@ def build_local_execution_context(
     agenda_tasks = agenda.get("tasks") if isinstance(agenda, dict) else []
     if not isinstance(agenda_tasks, list):
         agenda_tasks = []
-    active_task = next((task for task in agenda_tasks
-                        if isinstance(task, dict) and task.get("status") == "active"), None)
+    selected_entities = set()
+    requested = request.get("unit_ids") if isinstance(request, dict) else None
+    if isinstance(requested, list):
+        selected_entities.update(value for value in requested
+                                 if isinstance(value, int) and not isinstance(value, bool))
+    elif isinstance(requested, int) and not isinstance(requested, bool):
+        selected_entities.add(requested)
+    elif isinstance(request.get("unit_id"), int) and not isinstance(request.get("unit_id"), bool):
+        selected_entities.add(request["unit_id"])
+    selected_entities.update(_structured_entity_ids(result))
+    matching_task = next((task for task in agenda_tasks
+                        if isinstance(task, dict) and task.get("status") in _MATCHING_TASK_STATUSES
+                        and isinstance(task.get("units"), list)
+                        and selected_entities.intersection(task["units"])), None)
+    entity_ids = _inspection_entity_ids(request, tool, result, state, agenda)
     return {
         "revision": state.get("state_revision", "unknown"),
         "tool": tool,
         "selected": selected,
         "objective": {"intent": intent or "", "intent_provenance": memory_provenance(intent_origin, state),
-                       "active_task": active_task,
+                       "matching_task": matching_task,
                        "agenda_provenance": memory_provenance(agenda_origin, state)},
         "guardrails": _local_guardrail_data(state, agenda),
-        "operation": {"request": dict(request), "options": rendered},
+        "live_rows": _local_live_rows(state, entity_ids),
+        "villages": _local_village_rows(state),
+        "operation": {"request": dict(request), "options": rendered,
+                       "entity_ids": entity_ids},
     }
 
 
 def local_execution_projection(state: dict[str, Any], local_context: dict[str, Any]) -> str:
     """Render the latest local phase with exact options and no old board rows."""
     return ("FOCUSED_LOCAL_CONTEXT_BEGIN revision=%s tool=%s selected=%s\n"
+            "LOCAL_LIVE_ROWS_UNTRUSTED_DATA_BEGIN:\n%s\n"
+            "LOCAL_LIVE_ROWS_UNTRUSTED_DATA_END\n"
+            "LOCAL_VILLAGES_UNTRUSTED_DATA_BEGIN:\n%s\n"
+            "LOCAL_VILLAGES_UNTRUSTED_DATA_END\n"
             "LOCAL_OPERATION_OPTIONS_UNTRUSTED_DATA_BEGIN:\n%s\n"
             "LOCAL_OPERATION_OPTIONS_UNTRUSTED_DATA_END\n"
-            "Use the exact inspected options for one useful permitted operation."
+            "The selected inspection is the central operation view. Use exact live rows and inspected options for one useful permitted operation."
+            " For an uncertain attack, inspect its target; for an uncertain retreat, inspect that unit."
             " Reconsider if these facts or the guardrails no longer support the objective.\n"
             "Omit agenda to retain unshown tasks; an agenda response replaces the whole object.\n"
             "FOCUSED_LOCAL_CONTEXT_END" % (
                 local_context.get("revision", "unknown"), local_context.get("tool", "unknown"),
                 local_context.get("selected", "unknown"),
+                json.dumps(local_context.get("live_rows", "unknown"), sort_keys=True, separators=(",", ":")),
+                json.dumps(local_context.get("villages", "unknown"), sort_keys=True, separators=(",", ":")),
                 local_context.get("operation", {}).get("options", "unknown")))
 
 
@@ -6146,7 +6504,8 @@ def run(args: argparse.Namespace) -> int:
                                     unit_id = validate_inspect_target_request(decoded_repair)
                                     result = query_inspect_target(
                                         exchange, unit_id, int(state.get("state_revision", 0)))
-                                    rendered = compact_target_inspection(enrich_target_inspection(result, state))
+                                    rendered = compact_target_inspection(
+                                        enrich_target_inspection(result, state))
                                 elif tool == "inspect_units":
                                     unit_ids = validate_inspect_units_request(decoded_repair)
                                     validate_friendly_inspect_units(

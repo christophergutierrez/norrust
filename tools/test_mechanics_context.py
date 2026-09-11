@@ -5,6 +5,8 @@ from .llm_client import (
     compact_batch_preview,
     compact_local_recruiter_danger,
     compact_target_inspection,
+    compact_targets_inspection,
+    compact_units_inspection,
     compact_tactical_surface,
     compact_unit_inspection,
     build_local_execution_context,
@@ -16,7 +18,9 @@ from .llm_client import (
     memory_provenance,
     prompt_for,
     recover_optional_memory,
+    local_execution_projection,
 )
+from .action_choices import Choice
 
 
 class ReadableMechanicsTests(unittest.TestCase):
@@ -302,6 +306,185 @@ class ReadableMechanicsTests(unittest.TestCase):
         target_rendered = compact_target_inspection(target)
         self.assertIn("target_facts=type:EnemyBowman", target_rendered)
         self.assertIn('"range":1', target_rendered)
+
+    def test_local_context_projects_referenced_targets_and_matching_support(self):
+        state = {
+            "state_revision": 135, "active_faction": 0,
+            "units": [
+                {"id": 6, "faction": 0, "def_id": "Grunt", "col": 6, "row": 6,
+                 "hp": 18, "max_hp": 38, "moved": False, "attacked": False,
+                 "poisoned": True, "slowed": False, "advancement_pending": False},
+                {"id": 9, "faction": 0, "def_id": "Troll", "col": 5, "row": 6,
+                 "hp": 30, "max_hp": 42, "moved": True, "attacked": False,
+                 "poisoned": False, "slowed": True, "advancement_pending": False},
+                {"id": 25, "faction": 1, "def_id": "Bowman", "col": 11, "row": 7,
+                 "hp": 33, "max_hp": 33, "moved": False, "attacked": False,
+                 "poisoned": False, "slowed": False, "advancement_pending": False},
+                {"id": 46, "faction": 0, "def_id": "Wolf Rider", "col": 2, "row": 6,
+                 "hp": 20, "max_hp": 32, "moved": False, "attacked": False,
+                 "poisoned": False, "slowed": False, "advancement_pending": True,
+                 "advances_to": ["Goblin Knight"]},
+            ],
+            "terrain": [{"terrain_id": "village", "col": 3, "row": 2, "owner": 0},
+                        {"terrain_id": "village", "col": 11, "row": 8}],
+            "tactical_surface": {"threats": {"recruiters": []}},
+        }
+        result = {"units": [{"unit_id": 6, "origins": [{
+            "current": True, "col": 6, "row": 6,
+            "engagements": [{"defender_id": 25, "forecast": {
+                "outcome_bps": [1000, 8000, 1000],
+                "expected_damage_tenths": [20, 10]}}]}]}]}
+        context = build_local_execution_context(
+            state, {"tool": "inspect_units", "unit_ids": [6]}, "inspect_units",
+            result, "INSPECT_UNITS n=1", agenda={"tasks": [
+                {"id": "support", "goal": "screen", "units": [6, 9], "status": "active"},
+                {"id": "unrelated", "goal": "elsewhere", "units": [46], "status": "pending"}],
+                "holds": []})
+        self.assertIsNotNone(context)
+        rows = {row["id"]: row for row in context["live_rows"]}
+        self.assertEqual(rows[25]["position"], [11, 7])
+        self.assertEqual(rows[25]["hp"], 33)
+        self.assertEqual(rows[25]["side"], 1)
+        self.assertEqual(rows[6]["promotion"], False)
+        self.assertEqual(rows[9]["position"], [5, 6])
+        self.assertNotIn(46, rows)
+        self.assertEqual(context["objective"]["matching_task"]["id"], "support")
+        self.assertEqual(context["objective"]["matching_task"]["status"], "active")
+        self.assertEqual(context["villages"][1]["owner"], "unknown")
+        projection = local_execution_projection(state, context)
+        self.assertIn('"id":25', projection)
+        self.assertIn('"poisoned":true', projection)
+
+    def test_group_inspection_factors_repeated_profiles_and_forecasts_losslessly(self):
+        forecast = {"outcome_bps": [1000, 8000, 1000],
+                    "expected_damage_tenths": [20, 10]}
+        units = []
+        for unit_id in (6, 7):
+            units.append({"unit_id": unit_id, "def_id": "Grunt", "hp": 38, "max_hp": 38,
+                          "weapons": [{"name": "sword", "damage": 8, "strikes": 2}],
+                          "origins": [{"col": 1, "row": unit_id, "current": True,
+                                       "engagements": [{"defender_id": 25,
+                                                        "defender_def_id": "Bowman",
+                                                        "defender_weapons": [{"name": "bow"}],
+                                                        "forecast": forecast}]}]})
+        rendered = compact_units_inspection(units)
+        self.assertIn("PROFILE P1", rendered)
+        self.assertIn("FORECAST X1", rendered)
+        self.assertEqual(rendered.count("defender_killed="), 1)
+        self.assertEqual(rendered.count("T25"), 2)
+        self.assertIn("move_destinations=none", rendered)
+        self.assertIn("attack_options=@>T25 exchange=X1", rendered)
+
+    def test_group_factor_keeps_heterogeneous_origins_choices_and_dangers(self):
+        repeated = {"outcome_bps": [1000, 8000, 1000],
+                     "expected_damage_tenths": [20, 10]}
+        distinct = {"outcome_bps": [0, 9000, 1000],
+                    "expected_damage_tenths": [35, 5]}
+        same_danger = {"col": 1, "row": 1, "distinct_attacker_count": 1,
+                       "max_incoming_sum": 12, "lethal_attackers_needed": 2,
+                       "origins_conflict": False, "focus_kill_bps": [0, 0],
+                       "focus_expected_damage_tenths": [20, 30]}
+        different_danger = dict(same_danger, col=2, row=1, max_incoming_sum=24,
+                                lethal_attackers_needed=1,
+                                focus_kill_bps=[1000, 3000],
+                                focus_expected_damage_tenths=[40, 50])
+        unit = {"unit_id": 6, "def_id": "Grunt", "hp": 20, "max_hp": 38,
+                "weapons": [{"name": "sword", "damage": 8}],
+                "origins": [
+                    {"col": 3, "row": 3, "current": True,
+                     "engagements": [{"defender_id": 25, "defender_def_id": "Bowman",
+                                       "defender_weapons": [{"name": "bow"}],
+                                       "forecast": repeated}]},
+                    {"col": 4, "row": 3, "movable": True,
+                     "engagements": [{"defender_id": 25, "defender_def_id": "Bowman",
+                                       "defender_weapons": [{"name": "bow"}],
+                                       "forecast": repeated},
+                                      {"defender_id": 26, "defender_def_id": "Mage",
+                                       "defender_weapons": [{"name": "staff"}],
+                                       "forecast": distinct}]},
+                ],
+                "destination_threats": [same_danger, dict(same_danger, col=5), different_danger]}
+        choices = [
+            Choice("c_4_move", "Move U6 to (4,3)", [], "move", {"unit_id": 6}),
+            Choice("c_4_attack", "Attack U25 with U6", [], "attack", {"unit_id": 6}),
+            Choice("c_4_other", "Move U6 to (4,3) and attack U26", [], "move_attack", {"unit_id": 6}),
+        ]
+        rendered = compact_units_inspection([unit], choices)
+        # Every legal origin and target remains present; repeated and distinct
+        # numeric facts are either references or inline values.
+        for coordinate in ("at=3,3", "4,3", "->1,1", "->2,1", "->5,1"):
+            self.assertIn(coordinate, rendered)
+        self.assertIn("@>T25 exchange=", rendered)
+        self.assertIn("4,3>T25 exchange=", rendered)
+        self.assertIn("4,3>T26 exchange=", rendered)
+        self.assertIn("defender_killed=10%", rendered)
+        self.assertIn("defender_killed=0%", rendered)
+        self.assertIn("to_defender=3.5HP", rendered)
+        self.assertIn("PROFILE", rendered)
+        for choice in choices:
+            self.assertEqual(rendered.count(choice.handle), 1)
+        self.assertLessEqual(rendered.count("defender_killed=10%"), 1)
+
+    def test_single_target_renderer_factors_repeated_origin_forecasts(self):
+        forecast = {"outcome_bps": [6400, 3600, 0],
+                    "expected_damage_tenths": [24, 7]}
+        target = {"target_id": 25, "hp": 33, "col": 8, "row": 4,
+                  "attacks": [
+                      {"attacker_id": 6, "origin_col": 7, "origin_row": 4,
+                       "forecast": forecast, "attacker_weapons": [{"name": "axe"}], "moved": True},
+                      {"attacker_id": 6, "origin_col": 7, "origin_row": 5,
+                       "forecast": forecast, "attacker_weapons": [{"name": "axe"}], "moved": True},
+                  ]}
+        rendered = compact_target_inspection(target)
+        self.assertIn("LOCAL_FACTS_BEGIN", rendered)
+        self.assertIn("FORECAST X1", rendered)
+        self.assertIn("ENGAGE_STEP U6 via=7,4 exchange=X1", rendered)
+        self.assertIn("ENGAGE_STEP U6 via=7,5 exchange=X1", rendered)
+        self.assertEqual(rendered.count("defender_killed=64%"), 1)
+
+    def test_local_rows_include_pending_matching_support_and_missing_reference(self):
+        state = {"state_revision": 9, "active_faction": 0,
+                 "units": [{"id": 6, "faction": 0, "def_id": "Grunt", "col": 3, "row": 3,
+                            "hp": 12, "max_hp": 38},
+                           {"id": 46, "faction": 0, "def_id": "Wolf Rider", "col": 2, "row": 6,
+                            "hp": 20, "max_hp": 32, "advancement_pending": True,
+                            "advances_to": ["Goblin Knight", "Direwolf"]}],
+                 "terrain": [], "tactical_surface": {"unit_types": []}}
+        result = {"units": [{"unit_id": 6, "origins": [{"current": True,
+                    "engagements": [{"defender_id": 999, "forecast": {}}]}]}]}
+        agenda = {"tasks": [
+            {"id": "unrelated", "goal": "old", "units": [46], "status": "active"},
+            {"id": "matching", "goal": "screen", "units": [6, 46], "status": "pending"}],
+            "holds": []}
+        context = build_local_execution_context(
+            state, {"tool": "inspect_units", "unit_ids": [6]}, "inspect_units",
+            result, "INSPECT_UNITS n=1", agenda=agenda)
+        rows = {row["id"]: row for row in context["live_rows"]}
+        self.assertEqual(rows[46]["promotion"], ["Goblin Knight", "Direwolf"])
+        self.assertEqual(rows[46]["position"], [2, 6])
+        self.assertEqual(rows[999]["type"], "unknown")
+        self.assertEqual(rows[999]["position"], "unknown")
+        self.assertEqual(context["objective"]["matching_task"]["id"], "matching")
+        self.assertEqual(context["objective"]["matching_task"]["status"], "pending")
+        projection = local_execution_projection(state, context)
+        self.assertNotIn("LOCAL_PROVISIONAL_OBJECTIVE", projection)
+        delivered = prompt_for(state, [], compact=True, decision_mode="focused",
+                               agenda=agenda, local_context=context)
+        self.assertIn('"matching_task":{"goal":"screen","id":"matching","status":"pending"', delivered)
+
+    def test_factored_danger_retains_null_and_missing_distinctions(self):
+        base = {"unit_id": 4, "origins": [], "destination_threats": [
+            {"col": 1, "row": 1, "distinct_attacker_count": 0,
+             "max_incoming_sum": 0, "lethal_attackers_needed": None,
+             "origins_conflict": False},
+            {"col": 2, "row": 1, "distinct_attacker_count": 0,
+             "max_incoming_sum": 0, "origins_conflict": False},
+        ]}
+        rendered = compact_units_inspection([base])
+        self.assertIn("lethal_attackers_needed=null (unreachable under supplied maximum volleys)", rendered)
+        self.assertIn("lethal_attackers_needed=unknown", rendered)
+        self.assertIn("->1,1 direct_attackers=", rendered)
+        self.assertIn("->2,1 direct_attackers=", rendered)
 
 
 if __name__ == "__main__":

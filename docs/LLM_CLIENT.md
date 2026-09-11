@@ -155,12 +155,15 @@ an accepted partial is acknowledged when `--log` is supplied.
   Exhausted tool calls do not force a premature `EndTurn` while `final_only` is False.
   The two tiers choose one small objective, inspect its target or preferably at
   most four relevant units when a missing fact matters, then enter a local
-  execution phase. Inspection is optional when the supplied legal actions
-  already establish the objective. The next
-  request replaces the full tactical option rows with the exact inspected
-  options in an explicit untrusted-data block plus compact live guardrails (side/phase, recruiter danger,
-  economy/villages, army IDs, and pending promotions), all pinned to the
-  inspection revision. A fresh inspection replaces that local task. Accepted
+  execution phase. Inspect the target for an uncertain attack or the specific
+  unit for an uncertain retreat; inspection is optional when the supplied legal
+  actions already establish the objective. The next request replaces the full
+  tactical option rows with the exact inspected options in an explicit
+  untrusted-data block plus compact revision-pinned live rows for referenced
+  targets and matching support, named village ownership, and guardrails (side,
+  phase, recruiter danger, economy, army IDs, and pending promotions). A
+  matching assigned task is preferred; an unrelated task is reported as no
+  match. A fresh inspection replaces that local task. Accepted
   partial actions invalidate the local context; an engine validation rollback
   keeps it for repair and another permitted inspection. Legal action envelopes
   remain accepted without an inspection. Intent and agenda retain origin
