@@ -15,9 +15,11 @@ from pathlib import Path
 try:
     from .request_recovery import reconcile_request, reconcile_journal
     from .request_journal import _safe_session_name
+    from .run_watchdog import RunWatchdog
 except ImportError:  # Direct ``python tools/llm_supervisor.py`` invocation.
     from request_recovery import reconcile_request, reconcile_journal
     from request_journal import _safe_session_name
+    from run_watchdog import RunWatchdog
 
 
 def _records(path: Path) -> list[dict]:
@@ -135,7 +137,8 @@ def _attempt_records(log: Path, start: int) -> list[dict]:
 
 
 def run(command: list[str], log: Path, max_restarts: int,
-        request_state: Path | None = None) -> int:
+        request_state: Path | None = None, *, watchdog: RunWatchdog | None = None,
+        poll_interval: float = 0.1) -> int:
     log.parent.mkdir(parents=True, exist_ok=True)
     lock_path = log.with_suffix(".supervisor.lock")
     lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
@@ -147,6 +150,7 @@ def run(command: list[str], log: Path, max_restarts: int,
                       "message": str(exc)})
         return 1
     state_path = _supervisor_state_path(log)
+    watchdog = watchdog or RunWatchdog(log)
     try:
         try:
             supervisor_state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -171,7 +175,36 @@ def run(command: list[str], log: Path, max_restarts: int,
                           "attempt_id": attempt_id, "log_offset": start})
             os.environ["NORRUST_CODEX_ATTEMPT_ID"] = attempt_id
             invocation = command if attempt == 1 else command + ["--resume-log", str(log)]
-            completed = subprocess.run(invocation)
+            # Popen keeps the supervisor responsive while a provider call is
+            # open. The watchdog itself throttles evidence reads to its
+            # configured five-second cadence; polling process state more
+            # often keeps hard completion/recovery behavior unchanged.
+            environment = os.environ.copy()
+            # These paths belong to this run. Inherited host/session values
+            # must not redirect evidence to another game's directory.
+            environment["NORRUST_WATCHDOG_RUN_ID"] = watchdog.run_id
+            environment["NORRUST_WATCHDOG_DIR"] = str(watchdog.run_directory)
+            environment["NORRUST_EVIDENCE_DIR"] = str(watchdog.evidence_dir)
+            environment["NORRUST_REQUEST_CONTEXT_FILE"] = str(log.parent / "request_context.json")
+            try:
+                watchdog.poll(force=True)
+            except Exception as exc:
+                _append(log, {"type": "supervisor_watchdog_error", "message": str(exc)})
+            try:
+                child = subprocess.Popen(invocation, env=environment)
+            except OSError:
+                raise
+            while child.poll() is None:
+                try:
+                    watchdog.poll()
+                except Exception as exc:
+                    _append(log, {"type": "supervisor_watchdog_error", "message": str(exc)})
+                time.sleep(max(0.01, min(float(poll_interval), 1.0)))
+            completed = child
+            try:
+                watchdog.poll(force=True)
+            except Exception as exc:
+                _append(log, {"type": "supervisor_watchdog_error", "message": str(exc)})
             new_records = _attempt_records(log, start + 1)
             terminal = _terminal_record(new_records)
             terminal_class = _terminal_class(terminal)

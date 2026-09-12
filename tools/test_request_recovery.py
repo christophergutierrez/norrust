@@ -12,6 +12,14 @@ from .request_recovery import (
 from .llm_supervisor import run as supervisor_run
 
 
+class FinishedProcess:
+    def __init__(self, returncode):
+        self.returncode = returncode
+
+    def poll(self):
+        return self.returncode
+
+
 class ReconcileTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -100,7 +108,7 @@ class ReconcileTests(unittest.TestCase):
         state_path = self.request / "state.json"
         state_path.write_text(json.dumps({"request_id": "r1", "state": "completed",
                                            "answer_path": "answer.json"}), encoding="utf-8")
-        with mock.patch("subprocess.run", side_effect=[mock.Mock(returncode=2), mock.Mock(returncode=0)]) as process:
+        with mock.patch("subprocess.Popen", side_effect=[FinishedProcess(2), FinishedProcess(0)]) as process:
             self.assertEqual(0, supervisor_run(["client", "--log", str(log)], log, 1, state_path))
         self.assertEqual(2, process.call_count)
 
@@ -114,7 +122,7 @@ class ReconcileTests(unittest.TestCase):
         state_path.write_text(json.dumps({"request_id": "r1", "state": "completed",
                                            "answer_path": "answer.json"}), encoding="utf-8")
         log.write_text(log.read_text() + json.dumps({"type": "reply_consumed", "request_id": "r1"}) + "\n")
-        with mock.patch("subprocess.run", return_value=mock.Mock(returncode=2)) as process:
+        with mock.patch("subprocess.Popen", return_value=FinishedProcess(2)) as process:
             self.assertEqual(2, supervisor_run(["client", "--log", str(log)], log, 1, state_path))
         self.assertEqual(1, process.call_count)
 

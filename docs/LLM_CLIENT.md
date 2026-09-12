@@ -1212,3 +1212,28 @@ cohort and must not be resumed as a clean comparison.
 
 Balance tests are explicitly excluded from this client milestone and must not be
 run.
+
+
+## Automatic progress recording
+
+`tools.llm_supervisor` records progress during open provider requests without
+calling another model. It creates `<log stem>.watchdog/` beside the game log
+and supplies run-owned request-context and streaming-evidence paths to the client.
+Each run receives a persisted unique watchdog ID; it is separate from the
+player conversation and the SQLite game ID. Use a separate directory per game.
+
+```bash
+python3 -m tools.llm_supervisor --log /absolute/run/match.ndjson -- \
+  python3 -m tools.llm_client --log /absolute/run/match.ndjson \
+  --model-command 'python3 -m tools.fireworks_backend --stream'
+python3 -m tools.run_watchdog status /absolute/run/match.watchdog
+python3 -m tools.run_watchdog read /absolute/run/match.watchdog EVIDENCE_ID --limit 2048
+```
+
+Status reads return the last published packet without becoming a second recorder.
+The packet separates confirmed live progress, proposed orders, request activity,
+and received stream bytes. Evidence reads validate the recorded source range;
+stream references expose decoded content with raw provenance. Available provider
+receipts supply usage; missing or dispatched-only receipts remain unknown. The
+raw archive is preserved for one later review. The `watch` command is for an
+unsupervised/offline log only; do not run a second recorder alongside a supervisor.

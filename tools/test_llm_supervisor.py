@@ -8,9 +8,46 @@ from pathlib import Path
 from unittest import mock
 
 from .llm_supervisor import run
+from .run_watchdog import RunWatchdog
+
+
+class FinishedProcess:
+    def __init__(self, returncode):
+        self.returncode = returncode
+
+    def poll(self):
+        return self.returncode
+
+
+class ProgressProcess:
+    def __init__(self, log):
+        self.log = log
+        self.calls = 0
+        self.returncode = None
+
+    def poll(self):
+        self.calls += 1
+        if self.calls == 2:
+            with self.log.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps({"type": "driver", "line": {
+                    "type": "state", "state_revision": 7, "turn": 3}}) + "\n")
+        if self.calls >= 3:
+            self.returncode = 0
+        return self.returncode
 
 
 class SupervisorTests(unittest.TestCase):
+    def test_open_child_is_polled_and_watchdog_observes_progress(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "match.ndjson"
+            watchdog = RunWatchdog(log, "long", poll_interval=0)
+            child = ProgressProcess(log)
+            with mock.patch("subprocess.Popen", return_value=child):
+                self.assertEqual(run(["client", "--log", str(log)], log, 0,
+                                     watchdog=watchdog, poll_interval=0.01), 0)
+            self.assertEqual(watchdog.status()["revision"], 7)
+            self.assertGreaterEqual(child.calls, 3)
+
     def test_real_subprocess_signal_restarts_without_duplicate_progress(self):
         """Exercise the restart loop with a real child and durable progress file."""
         with tempfile.TemporaryDirectory() as directory:
@@ -55,11 +92,11 @@ class SupervisorTests(unittest.TestCase):
             (checkpoint_dir / "0-0-model-valid.json").write_text("{}")
             def result(*_args, **_kwargs):
                 if process.call_count == 1:
-                    return mock.Mock(returncode=-9)
+                    return FinishedProcess(-9)
                 with log.open("a") as stream:
                     stream.write(json.dumps({"type":"terminal","terminal_class":"gameplay"})+"\n")
-                return mock.Mock(returncode=0)
-            with mock.patch("subprocess.run", side_effect=result) as process:
+                return FinishedProcess(0)
+            with mock.patch("subprocess.Popen", side_effect=result) as process:
                 self.assertEqual(run(["client", "--log", str(log)], log, 3, state), 0)
             self.assertEqual(process.call_count, 2)
             self.assertIn("--resume-log", process.call_args_list[1].args[0])
@@ -73,7 +110,7 @@ class SupervisorTests(unittest.TestCase):
             state = request / "state.json"
             state.write_text(json.dumps({"request_id":"r1","state":"completed","answer_path":"answer.json","metadata":{}}))
             log.write_text(json.dumps({"type": "terminal", "terminal_class": "model_invalid"}) + "\n")
-            with mock.patch("subprocess.run", return_value=mock.Mock(returncode=2)) as process:
+            with mock.patch("subprocess.Popen", return_value=FinishedProcess(2)) as process:
                 self.assertEqual(run(["client", "--log", str(log)], log, 3), 2)
             self.assertEqual(process.call_count, 1)
 
@@ -84,7 +121,7 @@ class SupervisorTests(unittest.TestCase):
                 "type": "model_error",
                 "terminal_class": "model_invalid",
             }) + "\n")
-            with mock.patch("subprocess.run", return_value=mock.Mock(returncode=2)) as process:
+            with mock.patch("subprocess.Popen", return_value=FinishedProcess(2)) as process:
                 self.assertEqual(run(["client", "--log", str(log)], log, 3), 2)
             self.assertEqual(process.call_count, 1)
 
@@ -112,9 +149,9 @@ class SupervisorTests(unittest.TestCase):
                                           code="max_game_total_tokens_exhausted")
                         with log.open("a") as stream:
                             stream.write(json.dumps(record) + "\n")
-                        return mock.Mock(returncode=returncode)
+                        return FinishedProcess(returncode)
 
-                    with mock.patch("subprocess.run", side_effect=child) as process:
+                    with mock.patch("subprocess.Popen", side_effect=child) as process:
                         self.assertEqual(run(["client", "--log", str(log)], log, 3, state), returncode)
                     self.assertEqual(process.call_count, 1)
                     outcome = next(json.loads(line) for line in log.read_text().splitlines()
@@ -132,7 +169,7 @@ class SupervisorTests(unittest.TestCase):
             (request / "answer.json").write_text("{}")
             state = request / "state.json"
             state.write_text(json.dumps({"request_id":"r1","state":"completed","answer_path":"answer.json","metadata":{}}))
-            with mock.patch("subprocess.run", return_value=mock.Mock(returncode=-9)) as process:
+            with mock.patch("subprocess.Popen", return_value=FinishedProcess(-9)) as process:
                 self.assertEqual(run(["client", "--log", str(log)], log, 2, state), -9)
             self.assertEqual(process.call_count, 3)
 
