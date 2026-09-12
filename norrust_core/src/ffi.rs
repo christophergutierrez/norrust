@@ -2680,8 +2680,11 @@ pub unsafe extern "C" fn norrust_set_unit_combat_state(
 
 /// Returns JSON with a unit's effective terrain avoidance and movement cost on a specific hex.
 ///
-/// Fallback chain for avoidance: unit.defense\[terrain_id\] → tile.defense → unit.default_defense
-/// Fallback chain for movement: unit.movement_costs\[terrain_id\] → tile.movement_cost
+/// Fallback chain for avoidance: unit.defense\[terrain_id\] → tile.defense
+/// Fallback chain for movement: unit.movement_costs\[terrain_id\] → 1 (a flat
+/// default, NOT tile.movement_cost -- this matches what pathfinding actually
+/// charges; `base_movement_cost` in the returned JSON is the tile's own
+/// value, kept as board data only, distinct from the effective cost).
 ///
 /// Returns empty string on invalid unit_id or hex.
 #[no_mangle]
@@ -2708,20 +2711,18 @@ pub unsafe extern "C" fn norrust_get_unit_terrain_info(
 
     let terrain_id = &tile.terrain_id;
 
-    // Avoidance fallback: unit.defense[terrain_id] → tile.defense → unit.default_defense
-    let effective_defense = unit
-        .defense
-        .get(terrain_id)
-        .copied()
-        .unwrap_or(tile.defense);
-    // Note: if neither unit.defense nor tile.defense exist, tile.defense is always present (from Tile struct)
-
-    // Movement cost fallback: unit.movement_costs[terrain_id] → tile.movement_cost
-    let effective_move_cost = unit
-        .movement_costs
-        .get(terrain_id)
-        .copied()
-        .unwrap_or(tile.movement_cost);
+    // Avoidance fallback: unit.defense[terrain_id] -> tile.defense (tile.defense
+    // is always present on a loaded Tile, so this always resolves to a real
+    // number). Movement cost fallback: unit.movement_costs[terrain_id] -> 1
+    // (a flat default, matching what pathfinding::reachable_hexes/find_path
+    // actually charge -- every real caller passes default_movement_cost: 1,
+    // NOT the tile's own movement_cost). Both fallbacks are implemented once
+    // in schema.rs so this FFI query and the prompt-facing unit type profile
+    // cannot drift from what movement legality actually charges.
+    let effective_defense =
+        crate::schema::effective_defense(&unit.defense, terrain_id, tile.defense);
+    let effective_move_cost =
+        crate::schema::effective_movement_cost(&unit.movement_costs, terrain_id);
 
     let info = TerrainInfoJson {
         terrain_id,

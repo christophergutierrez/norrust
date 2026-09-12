@@ -73,6 +73,36 @@ pub struct UnitDef {
     pub vision_range: u32,
 }
 
+/// Effective movement point cost to enter `terrain_id`, in the engine's real
+/// fallback order: the mover's own per-terrain override
+/// (`UnitDef.movement_costs` or the runtime `Unit`'s copy of it), else a
+/// flat cost of 1. 99 = impassable.
+///
+/// The fallback is a hardcoded 1, NOT the board tile's own `movement_cost` --
+/// every real caller of `pathfinding::reachable_hexes`/`find_path`
+/// (game_state.rs, ffi.rs, ai.rs, greedy_driver.rs, self_play.rs) passes
+/// `default_movement_cost: 1`, so a terrain id absent from the unit's own
+/// map is charged 1 movement point regardless of the tile's own cost. This
+/// is the single source of truth that `norrust_get_unit_terrain_info` and
+/// the prompt-facing unit type profile must both agree with -- both take a
+/// plain `&HashMap` so this works for either the static `UnitDef` or the
+/// spawned `Unit`.
+pub fn effective_movement_cost(movement_costs: &HashMap<String, u32>, terrain_id: &str) -> u32 {
+    movement_costs.get(terrain_id).copied().unwrap_or(1)
+}
+
+/// Effective avoidance percentage on `terrain_id` (higher = safer), in the
+/// engine's real fallback order: the mover's own override, else the board
+/// tile's own defense. See `effective_movement_cost` for why this takes a
+/// plain map.
+pub fn effective_defense(
+    defense: &HashMap<String, u32>,
+    terrain_id: &str,
+    tile_defense: u32,
+) -> u32 {
+    defense.get(terrain_id).copied().unwrap_or(tile_defense)
+}
+
 /// Unit placement entry for scenario unit files.
 #[derive(Debug, Clone, Deserialize)]
 pub struct UnitPlacement {

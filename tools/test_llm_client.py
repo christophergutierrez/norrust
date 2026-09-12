@@ -2002,6 +2002,59 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("resist=blade: unchanged damage", rendered)
         self.assertIn("resist=unknown", rendered)
 
+    def test_compact_type_profile_extends_type_line_with_terrain_costs_and_defense(self):
+        rendered = compact_tactical_surface({"unit_types": [
+            {"def_id": "Naga Fighter", "cost": 14, "max_hp": 33, "movement": 7,
+             "movement_costs": {"hills": 3, "flat": 2, "mountains": 5},
+             "defense": {"hills": 40, "flat": 30}},
+            {"def_id": "Empty Overrides", "movement_costs": {}, "defense": {}},
+            {"def_id": "Missing Terrain Fields"},
+        ], "units": []})
+        # A single TYPE line -- no second card -- carries the new facts.
+        naga_line = next(line for line in rendered.splitlines() if line.startswith("TYPE Naga Fighter"))
+        self.assertIn("move_costs=flat:2,hills:3,mountains:5", naga_line)
+        self.assertIn("99=impassable", naga_line)
+        # The movement fallback is the engine's real flat default (1 point),
+        # never the board tile's own movement_cost -- pathfinding's real
+        # callers all pass default_movement_cost=1, so stating a tile-based
+        # fallback here would misdescribe what is actually charged.
+        self.assertIn("costs 1 movement point, the engine's flat default", naga_line)
+        self.assertNotIn("board tile's own movement_cost", naga_line)
+        self.assertIn("defense=flat:30,hills:40", naga_line)
+        self.assertIn("board tile's own defense", naga_line)
+        # No overrides at all: an explicit "none", not a fabricated number,
+        # and the fallback is still named (movement uses the flat default;
+        # defense uses the tile).
+        self.assertIn("move_costs=none (99=impassable", rendered)
+        self.assertIn("defense=none (terrain not listed", rendered)
+        # The field is entirely absent from the profile: unknown, not "none".
+        self.assertIn("move_costs=unknown", rendered)
+        self.assertIn("defense=unknown", rendered)
+
+    def test_rejected_unit_destinations_block_marks_unavailable_or_renders_facts(self):
+        no_unit = llm_client.rejected_unit_destinations_block(None, None, 338)
+        self.assertIn("REJECTED_UNIT_LEGAL_DESTINATIONS unavailable reason=no_unit_identified_in_rejection", no_unit)
+
+        no_data = llm_client.rejected_unit_destinations_block(11, None, 314)
+        self.assertIn("REJECTED_UNIT_LEGAL_DESTINATIONS unavailable unit=11 "
+                      "reason=no_inspection_result_in_scope", no_data)
+
+        rendered = llm_client.rejected_unit_destinations_block(11, [
+            {"col": 4, "row": 4, "current": False, "distinct_attacker_count": 0,
+             "max_incoming_sum": 0, "open_distinct_attacker_count": 4, "open_max_incoming_sum": 84},
+            {"col": 6, "row": 11, "current": True, "distinct_attacker_count": 2,
+             "max_incoming_sum": 30, "open_distinct_attacker_count": 3, "open_max_incoming_sum": 50},
+        ], 314)
+        self.assertIn("REJECTED_UNIT_LEGAL_DESTINATIONS unit=11 state_revision=314", rendered)
+        self.assertIn("zero_direct_attackers_is_not_a_safety_guarantee", rendered)
+        self.assertIn("open_bound_removes_blockers_and_zoc", rendered)
+        self.assertIn("->4,4 direct_attackers=0 direct_max=0HP open_attackers=4 open_max=84HP", rendered)
+        self.assertIn("@6,11 direct_attackers=2 direct_max=30HP open_attackers=3 open_max=50HP", rendered)
+        # A zero-direct destination is still shown alongside its open bound;
+        # it is never singled out or labeled safe, ranked, or truncated.
+        self.assertNotIn("safest", rendered.lower())
+        self.assertNotIn("rank", rendered.lower())
+
     def test_final_live_reminder_uses_only_conflicting_live_observation(self):
         state = {"state_revision": 23, "active_faction": 0, "gold": [91, 77],
                  "units": [
