@@ -1163,10 +1163,30 @@ def compact_unit_inspection(unit: dict[str, Any], choices: Optional[list[Any]] =
     return "\n".join(lines)
 
 
+_PURPOSE_MAX_CHARS = 120
+
+
+def _validate_purpose(request: dict[str, Any], tool: str) -> Optional[str]:
+    """Validate the one optional provisional-purpose field, shared by every
+
+    inspection request. Length is counted in characters, matching the
+    existing FinishWithGreedy hold-reason convention. A present-but-invalid
+    purpose is rejected explicitly rather than silently dropped or truncated.
+    """
+    if "purpose" not in request:
+        return None
+    purpose = request["purpose"]
+    if not isinstance(purpose, str):
+        raise ValueError(f"{tool} purpose must be a string")
+    if len(purpose) > _PURPOSE_MAX_CHARS:
+        raise ValueError(f"{tool} purpose is {len(purpose)} characters; maximum {_PURPOSE_MAX_CHARS}")
+    return purpose
+
+
 def validate_inspect_target_request(request: dict[str, Any]) -> int:
     if not isinstance(request, dict) or request.get("tool") != "inspect_target":
         raise ValueError("inspect_target request must contain tool=inspect_target")
-    extra = set(request) - {"tool", "unit_id"}
+    extra = set(request) - {"tool", "unit_id", "purpose"}
     if extra:
         raise ValueError("inspect_target request has unknown key(s): %s; bare tool requests carry no action metadata" %
                          ", ".join(sorted(str(name) for name in extra)))
@@ -1175,6 +1195,7 @@ def validate_inspect_target_request(request: dict[str, Any]) -> int:
     unit_id = request.get("unit_id")
     if not isinstance(unit_id, int) or isinstance(unit_id, bool) or not 0 <= unit_id <= 2**32 - 1:
         raise ValueError("inspect_target unit_id must be a uint32")
+    _validate_purpose(request, "inspect_target")
     return unit_id
 
 
@@ -1192,7 +1213,7 @@ def query_inspect_target(exchange, unit_id: int, state_revision: int) -> dict[st
 def validate_inspect_targets_request(request: dict[str, Any]) -> list[int]:
     if not isinstance(request, dict) or request.get("tool") != "inspect_targets":
         raise ValueError("inspect_targets request must contain tool=inspect_targets")
-    extra = set(request) - {"tool", "unit_ids"}
+    extra = set(request) - {"tool", "unit_ids", "purpose"}
     if extra:
         raise ValueError("inspect_targets request has unknown key(s): %s; bare tool requests carry no action metadata" %
                          ", ".join(sorted(str(name) for name in extra)))
@@ -1204,6 +1225,7 @@ def validate_inspect_targets_request(request: dict[str, Any]) -> list[int]:
     if any(not isinstance(unit_id, int) or isinstance(unit_id, bool) or not 0 <= unit_id <= 2**32 - 1
            for unit_id in unit_ids) or len(set(unit_ids)) != len(unit_ids):
         raise ValueError("inspect_targets unit_ids must be unique uint32 values")
+    _validate_purpose(request, "inspect_targets")
     return unit_ids
 
 
@@ -1576,7 +1598,7 @@ def compact_target_inspection(target: dict[str, Any]) -> str:
 def validate_inspect_hex_request(request: dict[str, Any]) -> tuple[int, int, str]:
     if not isinstance(request, dict) or request.get("tool") != "inspect_hex":
         raise ValueError("inspect_hex request must contain tool=inspect_hex")
-    extra = set(request) - {"tool", "col", "row", "phase"}
+    extra = set(request) - {"tool", "col", "row", "phase", "purpose"}
     if extra:
         raise ValueError("inspect_hex request has unknown key(s): %s; bare tool requests carry no action metadata" %
                          ", ".join(sorted(str(name) for name in extra)))
@@ -1590,6 +1612,7 @@ def validate_inspect_hex_request(request: dict[str, Any]) -> tuple[int, int, str
         raise ValueError("inspect_hex coordinates must be int32")
     if phase not in {"current", "next_opponent_turn"}:
         raise ValueError("inspect_hex phase must be current or next_opponent_turn")
+    _validate_purpose(request, "inspect_hex")
     return col, row, phase
 
 
@@ -2193,9 +2216,9 @@ def tool_shape_repair_prompt(prompt: str, tool_context: str, error: str,
     schemas = {
         "preview_batch": '{"tool":"preview_batch","candidates":[[actions...]]}',
         "inspect_units": '{"tool":"inspect_units","unit_ids":[N,...]}',
-        "inspect_target": '{"tool":"inspect_target","unit_id":N}',
-        "inspect_targets": '{"tool":"inspect_targets","unit_ids":[N,...]}',
-        "inspect_hex": '{"tool":"inspect_hex","col":C,"row":R,"phase":"current|next_opponent_turn"}',
+        "inspect_target": '{"tool":"inspect_target","unit_id":N,"purpose":"optional string, at most 120 characters"}',
+        "inspect_targets": '{"tool":"inspect_targets","unit_ids":[N,...],"purpose":"optional string, at most 120 characters"}',
+        "inspect_hex": '{"tool":"inspect_hex","col":C,"row":R,"phase":"current|next_opponent_turn","purpose":"optional string, at most 120 characters"}',
     }
     return (
         prompt + tool_context +
@@ -3122,11 +3145,10 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "not an executable batch or safety certificate. Explicit zero covers only the supplied scope and attacker count; missing "
         "values remain unknown. EXPOSURE gives direct/open facts for friendly units. RESCUE prioritizes recruiter then threatened wounded units. "
         "ECONOMY gives own gold and projected village income; vacatable_castles lists legal off-castle destinations.\n"
-        "- Per-unit origins and DESTINATION_DANGER: {\"tool\":\"inspect_units\",\"unit_ids\":[N,...]} (1-8 unique living friendly IDs; "
-        "prefer at most four relevant units when choosing a focused local task; "
-        "one tool call, one driver query per ID); friendly attack coverage against one enemy target with {\"tool\":\"inspect_target\",\"unit_id\":N} or "
-        "{\"tool\":\"inspect_targets\",\"unit_ids\":[N,...]} (at most eight); inspect_target supplies legal origins against that target; hex coverage with "
-        "{\"tool\":\"inspect_hex\",\"col\":C,\"row\":R,\"phase\":\"current|next_opponent_turn\"}.\n"
+        "- Per-unit origins and DESTINATION_DANGER: {\"tool\":\"inspect_units\",\"unit_ids\":[N,...]} (1-8 unique living friendly "
+        "IDs, prefer <=4; one query per ID); friendly attack coverage with {\"tool\":\"inspect_target\",\"unit_id\":N} or "
+        "{\"tool\":\"inspect_targets\",\"unit_ids\":[N,...]} (<=8; supplies legal origins); hex coverage with "
+        "{\"tool\":\"inspect_hex\",\"col\":C,\"row\":R,\"phase\":\"current|next_opponent_turn\"}. Last three take optional purpose (<=120 chars).\n"
         "- One preview per turn: {\"tool\":\"preview_batch\",\"candidates\":[[actions...]]}; 1-2 candidates ending "
         "DoneWithImportantMoves, EndTurn, or FinishWithGreedy; no Resign. Use LIVE_STATE; revised drafts start there.\n"
         if isinstance(state.get("tactical_surface"), dict) else
@@ -4013,6 +4035,18 @@ def _local_guardrail_data(state: dict[str, Any],
     """
     active = state.get("active_faction", "unknown")
     tactical = state.get("tactical_surface")
+    # Two genuinely different future phases, matching `compact_observation`
+    # exactly: `next_round_time_of_day` is the phase after this round ends;
+    # `next_opponent_time_of_day` is the driver's own post-EndTurn projection
+    # for the opponent's imminent phase THIS round, which can differ. A stale
+    # local guardrail card is exactly what let R24 guess the wrong modifier
+    # from old intent instead of R23's already-supplied opponent Day/round Dusk.
+    if isinstance(tactical, dict):
+        next_round_phase = tactical.get("next_round_time_of_day",
+                                        tactical.get("next_time_of_day", "?"))
+        next_opponent_phase = tactical.get("next_opponent_time_of_day", "?")
+    else:
+        next_round_phase = next_opponent_phase = "?"
     threats = tactical.get("threats", {}) if isinstance(tactical, dict) else {}
     danger_available = isinstance(threats, dict) and "recruiters" in threats
     danger = compact_local_recruiter_danger(state)
@@ -4071,6 +4105,8 @@ def _local_guardrail_data(state: dict[str, Any],
         "turn": state.get("turn", "unknown"),
         "active_faction": active,
         "phase": state.get("time_of_day", "unknown"),
+        "next_opponent_phase": next_opponent_phase,
+        "next_round_phase": next_round_phase,
         "recruiters": own_recruiters if units_available else "unknown",
         "recruiter_danger": danger if danger_available else "unknown",
         "economy": {
@@ -4268,6 +4304,15 @@ def build_local_execution_context(
                         and isinstance(task.get("units"), list)
                         and selected_entities.intersection(task["units"])), None)
     entity_ids = _inspection_entity_ids(request, tool, result, state, agenda)
+    # The requester's stated purpose is provisional operation state, not
+    # committed memory: it lives only in `operation`, alongside this one
+    # inspection's request/options, and is replaced or cleared with it. It
+    # never reaches `objective` (intent/agenda) and is never copied into
+    # durable memory. Raw text is capped defensively even though the
+    # validators already enforce the same bound.
+    raw_purpose = request.get("purpose") if isinstance(request, dict) else None
+    purpose = (raw_purpose[:_PURPOSE_MAX_CHARS]
+               if isinstance(raw_purpose, str) and raw_purpose.strip() else None)
     return {
         "revision": state.get("state_revision", "unknown"),
         "tool": tool,
@@ -4279,12 +4324,13 @@ def build_local_execution_context(
         "live_rows": _local_live_rows(state, entity_ids),
         "villages": _local_village_rows(state),
         "operation": {"request": dict(request), "options": rendered,
-                       "entity_ids": entity_ids},
+                       "entity_ids": entity_ids, "purpose": purpose},
     }
 
 
 def local_execution_projection(state: dict[str, Any], local_context: dict[str, Any]) -> str:
     """Render the latest local phase with exact options and no old board rows."""
+    purpose = local_context.get("operation", {}).get("purpose")
     return ("FOCUSED_LOCAL_CONTEXT_BEGIN revision=%s tool=%s selected=%s\n"
             "LOCAL_LIVE_ROWS_UNTRUSTED_DATA_BEGIN:\n%s\n"
             "LOCAL_LIVE_ROWS_UNTRUSTED_DATA_END\n"
@@ -4292,16 +4338,25 @@ def local_execution_projection(state: dict[str, Any], local_context: dict[str, A
             "LOCAL_VILLAGES_UNTRUSTED_DATA_END\n"
             "LOCAL_OPERATION_OPTIONS_UNTRUSTED_DATA_BEGIN:\n%s\n"
             "LOCAL_OPERATION_OPTIONS_UNTRUSTED_DATA_END\n"
+            "LOCAL_OPERATION_PURPOSE_UNTRUSTED_DATA_BEGIN:\n%s\n"
+            "LOCAL_OPERATION_PURPOSE_UNTRUSTED_DATA_END\n"
+            "The purpose above, when present, is the requester's own provisional and unverified statement of why this "
+            "inspection was requested. It is not a committed intent, rule, hold, or garrison, was not checked against "
+            "live facts, and by itself justifies no action; when absent, none was supplied.\n"
             "The selected inspection is the central operation view. Use exact live rows and inspected options for one useful permitted operation."
             " For an uncertain attack, inspect its target; for an uncertain retreat, inspect that unit."
             " Reconsider if these facts or the guardrails no longer support the objective.\n"
+            "This local view is scoped to only the entities and options named above and the guardrails below; it omits the "
+            "rest of the board, other units, and wider strategy. A plan that reaches beyond this scope is not supported by "
+            "this view alone -- inspect further or return to the objective phase before committing to it.\n"
             "Omit agenda to retain unshown tasks; an agenda response replaces the whole object.\n"
             "FOCUSED_LOCAL_CONTEXT_END" % (
                 local_context.get("revision", "unknown"), local_context.get("tool", "unknown"),
                 local_context.get("selected", "unknown"),
                 json.dumps(local_context.get("live_rows", "unknown"), sort_keys=True, separators=(",", ":")),
                 json.dumps(local_context.get("villages", "unknown"), sort_keys=True, separators=(",", ":")),
-                local_context.get("operation", {}).get("options", "unknown")))
+                local_context.get("operation", {}).get("options", "unknown"),
+                purpose if purpose else "none supplied"))
 
 
 def prompt_regions(prompt: str) -> dict[str, Any]:

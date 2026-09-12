@@ -57,6 +57,131 @@ class ReadableMechanicsTests(unittest.TestCase):
                                    local_context=target_context)
         self.assertIn("attacker_retaliation=2.4HP", target_prompt)
 
+    def test_local_context_carries_provisional_purpose_with_untrusted_framing(self):
+        state = {"state_revision": 40, "active_faction": 0, "units": [],
+                 "terrain": [], "tactical_surface": {"unit_types": []}}
+        with_purpose = build_local_execution_context(
+            state, {"tool": "inspect_target", "unit_id": 9, "purpose": "check retreat safety"},
+            "inspect_target", {"target_id": 9, "available": True},
+            "TARGET U9 hp=20 at=1,1 terrain=flat attacks=none")
+        self.assertEqual(with_purpose["operation"]["purpose"], "check retreat safety")
+        projection = local_execution_projection(state, with_purpose)
+        self.assertIn("LOCAL_OPERATION_PURPOSE_UNTRUSTED_DATA_BEGIN:", projection)
+        self.assertIn("check retreat safety", projection)
+        self.assertIn("LOCAL_OPERATION_PURPOSE_UNTRUSTED_DATA_END", projection)
+        self.assertIn("provisional and unverified statement", projection)
+        self.assertIn("not a committed intent, rule, hold, or garrison", projection)
+        # Item 5: the local view must state its own scope explicitly.
+        self.assertIn("scoped to only the entities and options", projection)
+
+        without_purpose = build_local_execution_context(
+            state, {"tool": "inspect_target", "unit_id": 9}, "inspect_target",
+            {"target_id": 9, "available": True},
+            "TARGET U9 hp=20 at=1,1 terrain=flat attacks=none")
+        self.assertIsNone(without_purpose["operation"]["purpose"])
+        no_purpose_projection = local_execution_projection(state, without_purpose)
+        self.assertIn("none supplied", no_purpose_projection)
+
+    def test_purpose_lifecycle_across_reinspection_repair_and_unavailability(self):
+        state = {"state_revision": 50, "active_faction": 0,
+                 "units": [{"id": 6, "faction": 0, "hp": 10}],
+                 "terrain": [], "tactical_surface": {"unit_types": []}}
+        # Reinspection replacement: a fresh inspection with a new (or absent)
+        # purpose fully replaces the prior one -- nothing carries over.
+        first = build_local_execution_context(
+            state, {"tool": "inspect_target", "unit_id": 9, "purpose": "first look"},
+            "inspect_target", {"target_id": 9, "available": True}, "TARGET U9 x")
+        second = build_local_execution_context(
+            state, {"tool": "inspect_target", "unit_id": 9},
+            "inspect_target", {"target_id": 9, "available": True}, "TARGET U9 x")
+        self.assertEqual(first["operation"]["purpose"], "first look")
+        self.assertIsNone(second["operation"]["purpose"])
+
+        # Repair retention: rebuilding the identical operation/request (as the
+        # repair path does when it does not re-inspect) keeps the same purpose,
+        # since the client simply keeps reusing the existing local_context
+        # object rather than rebuilding it -- proven here by rebuilding from
+        # the same request and asserting the purpose is unchanged.
+        repaired = build_local_execution_context(
+            state, {"tool": "inspect_target", "unit_id": 9, "purpose": "first look"},
+            "inspect_target", {"target_id": 9, "available": True}, "TARGET U9 x")
+        self.assertEqual(repaired["operation"]["purpose"], "first look")
+
+        # Unavailable result: build_local_execution_context returns None, so
+        # any previously carried purpose has nothing left to attach to.
+        unavailable = build_local_execution_context(
+            state, {"tool": "inspect_target", "unit_id": 9, "purpose": "first look"},
+            "inspect_target", {"available": False}, "TARGET unavailable")
+        self.assertIsNone(unavailable)
+
+        # Accepted-partial invalidation and the side-turn boundary are enforced
+        # by run()'s `local_active` revision check in prompt_for: a stale
+        # local_context whose revision no longer matches the live state is not
+        # rendered at all, so its purpose cannot leak into a new revision.
+        prompt = prompt_for(dict(state, state_revision=51), [], decision_mode="focused",
+                            local_context=first)
+        self.assertNotIn("first look", prompt)
+        self.assertNotIn("FOCUSED_LOCAL_CONTEXT_BEGIN", prompt)
+
+        # Rejected draft: the purpose lives only in operation/local_context and
+        # is never copied into intent or agenda memory, so a rejected draft
+        # (which never updates those) cannot promote it into committed memory.
+        self.assertNotIn("purpose", first["objective"])
+
+    def test_local_guardrails_carry_both_next_phase_facts_with_unknown_handling(self):
+        both_known = compact_local_guardrails({
+            "state_revision": 23, "active_faction": 0, "time_of_day": "Day",
+            "tactical_surface": {"next_opponent_time_of_day": "Day",
+                                 "next_round_time_of_day": "Dusk",
+                                 "threats": {"recruiters": []}},
+        })
+        self.assertIn('"phase":"Day"', both_known)
+        self.assertIn('"next_opponent_phase":"Day"', both_known)
+        self.assertIn('"next_round_phase":"Dusk"', both_known)
+
+        # Historical archives predate the two-key surface and only carried
+        # the old singular `next_time_of_day`; the round phase falls back to
+        # it exactly like `compact_observation` does, while the opponent
+        # phase (which never existed under the old key) stays unknown.
+        legacy = compact_local_guardrails({
+            "state_revision": 23, "active_faction": 0,
+            "tactical_surface": {"next_time_of_day": "Night", "threats": {"recruiters": []}},
+        })
+        self.assertIn('"next_round_phase":"Night"', legacy)
+        self.assertIn('"next_opponent_phase":"?"', legacy)
+
+        missing_surface = compact_local_guardrails({"state_revision": 23, "active_faction": 0})
+        self.assertIn('"next_opponent_phase":"?"', missing_surface)
+        self.assertIn('"next_round_phase":"?"', missing_surface)
+
+    def test_focused_local_prompt_stays_smaller_than_equivalent_full_followup(self):
+        # A sizable board: enough units/attacks that the full tactical surface
+        # dwarfs one inspection's local rows and options.
+        many_units = [
+            {"unit_id": n, "moved": False, "attacked": False,
+             "origins": [{"col": n, "row": n, "current": True,
+                          "engagements": [{"defender_id": 900 + n, "forecast": {
+                              "outcome_bps": [1000, 8000, 1000],
+                              "expected_damage_tenths": [20, 10]}}]}]}
+            for n in range(1, 21)
+        ]
+        live_units = [{"id": n, "faction": 0, "def_id": "Grunt", "col": n, "row": n,
+                       "hp": 30, "max_hp": 38} for n in range(1, 21)]
+        state = {
+            "state_revision": 60, "active_faction": 0, "turn": 4,
+            "units": live_units, "terrain": [],
+            "tactical_surface": {"unit_types": [], "units": many_units,
+                                 "threats": {"recruiters": []}},
+        }
+        full_prompt = prompt_for(state, [], compact=True, decision_mode="batch")
+        context = build_local_execution_context(
+            state, {"tool": "inspect_target", "unit_id": 901, "purpose": "check retreat safety"},
+            "inspect_target", {"target_id": 901, "available": True},
+            "TARGET U901 hp=20 at=1,1 terrain=flat attacks=none")
+        local_prompt = prompt_for(state, [], compact=True, decision_mode="focused",
+                                  local_context=context)
+        self.assertLess(len(local_prompt.encode()), len(full_prompt.encode()))
+
     def test_local_guardrails_do_not_fabricate_missing_global_data(self):
         rendered = compact_local_guardrails({"state_revision": 8, "active_faction": 0})
         self.assertIn('"army":"unknown"', rendered)

@@ -451,6 +451,80 @@ class FocusedTests(unittest.TestCase):
             self.assertEqual(model_requests[0]["fixed_prefix_bytes"], model_requests[1]["fixed_prefix_bytes"])
             self.assertNotEqual(model_requests[0]["prompt_hash"], model_requests[1]["prompt_hash"])
 
+    def test_inspection_purpose_survives_followup_and_repair_then_clears_on_accepted_partial(self):
+        """9. Stack B: a provisional inspection purpose reaches the local follow-up
+        prompt, survives an engine repair of the same operation, and is cleared once
+        the engine accepts a partial batch that advances the revision."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            backend = root / "backend.py"
+            captures = root / "captures.ndjson"
+            backend.write_text(
+                "import json, sys\n"
+                "capture = sys.argv[1]\n"
+                "prompt = sys.stdin.read()\n"
+                "with open(capture, 'a', encoding='utf-8') as f:\n"
+                "    f.write(json.dumps({'prompt': prompt}) + '\\n')\n"
+                "step = sum(1 for _ in open(capture, encoding='utf-8'))\n"
+                "PURPOSE = 'check retreat safety before committing U1'\n"
+                "if step == 1:\n"
+                "    board_json = prompt.split('BOARD_UNTRUSTED_DATA_BEGIN:\\n', 1)[1].split('\\nBOARD_UNTRUSTED_DATA_END', 1)[0]\n"
+                "    briefing = json.loads(board_json).get('briefing', '')\n"
+                "    enemy_id = None\n"
+                "    for line in briefing.splitlines():\n"
+                "        line = line.strip()\n"
+                "        if line.startswith('id=') and 'faction=1' in line:\n"
+                "            enemy_id = int(line.split()[0].split('=')[1])\n"
+                "            break\n"
+                "    assert enemy_id is not None, 'no enemy unit found in briefing'\n"
+                "    response = {'tool': 'inspect_target', 'unit_id': enemy_id, 'purpose': PURPOSE}\n"
+                "elif step == 2:\n"
+                "    # Local follow-up: purpose must be visible with untrusted framing.\n"
+                "    assert 'LOCAL_OPERATION_PURPOSE_UNTRUSTED_DATA_BEGIN' in prompt\n"
+                "    assert PURPOSE in prompt\n"
+                "    assert 'provisional and unverified statement' in prompt\n"
+                "    assert 'not a committed intent, rule, hold, or garrison' in prompt\n"
+                "    response = {'actions': [{'action': 'Move', 'unit_id': 1, 'col': 99, 'row': 99}],\n"
+                "                'decisions': [{'orders': [0], 'rules': ['T0'], 'expected': 'x', 'risk': 'none'}]}\n"
+                "elif step == 3:\n"
+                "    # Engine repair of the SAME operation: purpose must be retained.\n"
+                "    assert ('ROLLBACK_NOTICE' in prompt or 'VALIDATION_ERROR' in prompt\n"
+                "            or 'ENGINE_ACTION_ERROR' in prompt), 'expected a repair prompt'\n"
+                "    assert 'LOCAL_OPERATION_PURPOSE_UNTRUSTED_DATA_BEGIN' in prompt\n"
+                "    assert PURPOSE in prompt\n"
+                "    response = {'actions': [{'action': 'Move', 'unit_id': 1, 'col': 2, 'row': 6}],\n"
+                "                'decisions': [{'orders': [0], 'rules': ['T0'], 'expected': 'x', 'risk': 'none'}]}\n"
+                "elif step == 4:\n"
+                "    # Accepted partial batch: the local context and its purpose are cleared.\n"
+                "    assert 'LOCAL_OPERATION_PURPOSE_UNTRUSTED_DATA_BEGIN' not in prompt\n"
+                "    assert PURPOSE not in prompt\n"
+                "    assert 'FOCUSED_LOCAL_CONTEXT_BEGIN' not in prompt\n"
+                "    response = {'actions': [{'action': 'EndTurn'}],\n"
+                "                'decisions': [{'orders': [0], 'rules': ['T0'], 'expected': 'x', 'risk': 'none'}]}\n"
+                "else:\n"
+                "    response = {'actions': [{'action': 'EndTurn'}]}\n"
+                "print(json.dumps({'text': json.dumps(response)}))\n",
+                encoding="utf-8",
+            )
+            log = root / "match.ndjson"
+            cmd = [
+                sys.executable, "-m", "tools.llm_client",
+                "--driver", str(DRIVER),
+                "--model-command", shlex.join([sys.executable, str(backend), str(captures)]),
+                "--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
+                "--gold", "300", "--seed", "42", "--llm-side", "0", "--max-turns", "1",
+                "--decision-mode", "focused",
+                "--log", str(log),
+                "--query-budget-seconds", "10", "--model-timeout", "10", "--turn-timeout", "30"
+            ]
+            res = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=60)
+            self.assertEqual(res.returncode, 0, res.stderr + "\n" + (log.read_text() if log.exists() else ""))
+            records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+            self.assertTrue(any(r.get("type") == "tool_result" and r.get("tool") == "inspect_target"
+                                for r in records))
+            self.assertTrue(any(r.get("type") == "action_repair" for r in records))
+            self.assertEqual(len([r for r in records if r.get("type") == "turn_boundary"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

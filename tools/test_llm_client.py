@@ -35,7 +35,7 @@ from .llm_client import (
     validate_inspect_hex_request, validate_orders, validate_preview_request,
     timeout_finish_orders,
 )
-from .response_parsing import recover_bare_tool_prefix
+from .response_parsing import recover_bare_tool_prefix, parse_action_response, ResponseParseError
 
 
 class FakeDriverProcess:
@@ -965,6 +965,68 @@ class ClientValidationTests(unittest.TestCase):
             {"action": "Query", "what": "inspect_hex", "state_revision": 3,
              "col": 4, "row": 7, "phase": "current"},
         ])
+
+    def test_inspection_requests_accept_one_bounded_optional_purpose(self):
+        # Accepted: a short provisional purpose alongside the documented keys.
+        self.assertEqual(validate_inspect_target_request(
+            {"tool": "inspect_target", "unit_id": 9, "purpose": "retreat check"}), 9)
+        self.assertEqual(validate_inspect_targets_request(
+            {"tool": "inspect_targets", "unit_ids": [9, 10], "purpose": "focus fire plan"}), [9, 10])
+        self.assertEqual(validate_inspect_hex_request(
+            {"tool": "inspect_hex", "col": 4, "row": 7, "phase": "current",
+             "purpose": "check ambush hex"}), (4, 7, "current"))
+        # Omitted purpose remains legal, exactly as before.
+        validate_inspect_target_request({"tool": "inspect_target", "unit_id": 9})
+        validate_inspect_targets_request({"tool": "inspect_targets", "unit_ids": [9]})
+        validate_inspect_hex_request({"tool": "inspect_hex", "col": 1, "row": 1, "phase": "current"})
+
+        # Rejected: over-length purpose, counted in characters like hold reasons.
+        over_length = "x" * 121
+        for request in (
+            {"tool": "inspect_target", "unit_id": 9, "purpose": over_length},
+            {"tool": "inspect_targets", "unit_ids": [9], "purpose": over_length},
+            {"tool": "inspect_hex", "col": 1, "row": 1, "phase": "current", "purpose": over_length},
+        ):
+            with self.assertRaises(ValueError):
+                (validate_inspect_target_request if request["tool"] == "inspect_target" else
+                 validate_inspect_targets_request if request["tool"] == "inspect_targets" else
+                 validate_inspect_hex_request)(request)
+        # Exactly 120 characters remains legal.
+        validate_inspect_target_request({"tool": "inspect_target", "unit_id": 9, "purpose": "x" * 120})
+
+        # Rejected: non-string purpose.
+        with self.assertRaises(ValueError):
+            validate_inspect_target_request({"tool": "inspect_target", "unit_id": 9, "purpose": 5})
+        with self.assertRaises(ValueError):
+            validate_inspect_targets_request({"tool": "inspect_targets", "unit_ids": [9], "purpose": ["a"]})
+        with self.assertRaises(ValueError):
+            validate_inspect_hex_request(
+                {"tool": "inspect_hex", "col": 1, "row": 1, "phase": "current", "purpose": None})
+
+        # Every other unknown key is still rejected with today's exact message.
+        for request, validator in (
+            ({"tool": "inspect_target", "unit_id": 9, "intent": "x"}, validate_inspect_target_request),
+            ({"tool": "inspect_targets", "unit_ids": [9], "hold": "x"}, validate_inspect_targets_request),
+            ({"tool": "inspect_hex", "col": 1, "row": 1, "phase": "current", "reason": "x"},
+             validate_inspect_hex_request),
+        ):
+            with self.assertRaisesRegex(ValueError, "bare tool requests carry no action metadata"):
+                validator(request)
+
+    def test_duplicate_json_object_keys_are_rejected(self):
+        # A duplicated "purpose" (or any other key) must not silently resolve
+        # to json.loads's last-value-wins behavior; the whole response is
+        # rejected instead of hiding which value the model actually intended.
+        raw = '{"tool":"inspect_target","unit_id":9,"purpose":"a","purpose":"b"}'
+        with self.assertRaises(ResponseParseError):
+            parse_action_response(raw)
+        fenced = "```json\n" + raw + "\n```"
+        with self.assertRaises(ResponseParseError):
+            parse_action_response(fenced)
+        # Sanity: the non-duplicated equivalent still parses.
+        self.assertEqual(
+            parse_action_response('{"tool":"inspect_target","unit_id":9,"purpose":"a"}'),
+            {"tool": "inspect_target", "unit_id": 9, "purpose": "a"})
 
     def test_inspect_units_request_is_exact_and_revision_pinned(self):
         self.assertEqual(ac.validate_inspect_units_request(
