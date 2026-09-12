@@ -94,6 +94,65 @@ def _fake_response(payload: dict[str, Any], calls: list[int]) -> dict[str, Any]:
     return _decision()
 
 
+VERDICT_EVENTS = ("verdict", "investigation_verdict")
+FAILURE_EVENTS = ("verdict_error", "investigation_error", "preflight_error")
+
+
+def _call_outcomes(journal_path: Path) -> dict[str, Any]:
+    """Separate observed model judgments from calls that never returned one.
+
+    A dispatched call proves only that a request left the controller. Without
+    this split a run whose every call failed is indistinguishable from a model
+    that judged every case and declined to stop.
+    """
+    verdicts = 0
+    judgments = 0
+    failures = 0
+    reasons: dict[str, int] = {}
+    if journal_path.exists():
+        try:
+            lines = journal_path.read_text(encoding="utf-8").splitlines()[:4096]
+        except (OSError, UnicodeError):
+            lines = []
+            failures += 1
+            reasons["journal_unavailable"] = 1
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                # A torn trailing write must not be scored as a judgment.
+                failures += 1
+                reasons["unreadable_journal_entry"] = reasons.get("unreadable_journal_entry", 0) + 1
+                continue
+            if not isinstance(event, dict):
+                failures += 1
+                reasons["journal_record_not_object"] = reasons.get("journal_record_not_object", 0) + 1
+                continue
+            kind = event.get("type")
+            decision = event.get("decision")
+            # An inspect is only an intermediate request. It becomes a usable
+            # judgment when its required investigation returns a verdict.
+            if kind in VERDICT_EVENTS:
+                verdicts += 1
+            if kind == "investigation_verdict" or (kind == "verdict" and decision != "inspect"):
+                judgments += 1
+            elif kind in FAILURE_EVENTS:
+                failures += 1
+                reason = event.get("error") or kind
+                reasons[str(reason)] = reasons.get(str(reason), 0) + 1
+    return {"observer_verdicts": verdicts, "usable_judgments": judgments,
+            "observer_failures": failures,
+            "observer_failure_reasons": reasons, "judgment_observed": judgments > 0}
+
+
+def _merge_reasons(target: dict[str, int], source: Any) -> None:
+    if isinstance(source, dict):
+        for reason, count in source.items():
+            target[str(reason)] = target.get(str(reason), 0) + int(count)
+
+
 def _drain(controller: ObserverController,
            timeout: float = REQUEST_TIMEOUT_SECONDS + 1.0) -> bool:
     deadline = time.monotonic() + timeout
@@ -225,15 +284,22 @@ def replay_case(case: dict[str, Any], output_dir: str | Path, *, fake: bool = Tr
         raw_stop = isinstance(last_verdict, dict) and last_verdict.get("decision") == "stop"
         observed_stop = bool(stopped)
         expected = case.get("expected")
+        outcomes = _call_outcomes(observer_state.with_suffix(".journal.ndjson"))
+        validated = any(item["valid"] for item in validations)
+        # A case the model never actually judged is unscored, not passed. Only
+        # a validated stop is self-evidencing: it cannot occur without a verdict.
+        scored = outcomes["judgment_observed"] or validated
         metric = {
             "case_id": case.get("case_id"), "expected": expected,
             "observed_stop": observed_stop,
             "controller_stop_recommendation": observed_stop,
             "raw_stop_recommendation": raw_stop,
-            "validated_would_stop": any(item["valid"] for item in validations),
+            "validated_would_stop": validated,
             "stop_validation": validations[-1] if validations else None,
-            "false_stop": any(item["valid"] for item in validations) and expected in {"continue", "inspect"},
-            "missed_loop": expected == "stop" and not any(item["valid"] for item in validations),
+            "scored": scored,
+            "false_stop": (validated and expected in {"continue", "inspect"}) if scored else None,
+            "missed_loop": (expected == "stop" and not validated) if scored else None,
+            **outcomes,
             "first_alert_at_seconds": first_alert_at,
             "stop_verdict_at_seconds": stop_verdict_at,
             "detection_delay_seconds": (None if first_alert_at is None or stop_verdict_at is None
@@ -242,10 +308,24 @@ def replay_case(case: dict[str, Any], output_dir: str | Path, *, fake: bool = Tr
             "usage_coverage": final.get("usage_coverage"),
             "alerts": len(final.get("alerts", [])),
         }
+        if fake:
+            case_evaluation = {"status": "not_run", "network_calls": 0}
+        elif not scored:
+            case_evaluation = {"status": "failed", "network_calls": dispatched,
+                               "verdicts": outcomes["observer_verdicts"],
+                               "failures": outcomes["observer_failures"],
+                               "failure_reasons": outcomes["observer_failure_reasons"]}
+        elif outcomes["observer_failures"]:
+            case_evaluation = {"status": "partial", "network_calls": dispatched,
+                               "verdicts": outcomes["observer_verdicts"],
+                               "failures": outcomes["observer_failures"],
+                               "failure_reasons": outcomes["observer_failure_reasons"]}
+        else:
+            case_evaluation = {"status": "completed", "network_calls": dispatched,
+                               "verdicts": outcomes["observer_verdicts"], "failures": 0}
         report = {"case": case.get("case_id"), "status": final,
                   "metrics": metric, "observer_state": controller.state,
-                  "model_evaluation": ({"status": "not_run", "network_calls": 0}
-                                        if fake else {"status": "requested", "network_calls": dispatched})}
+                  "model_evaluation": case_evaluation}
         (root / "report.json").write_text(json.dumps(report, sort_keys=True) + "\n", encoding="utf-8")
         return report
     finally:
@@ -257,16 +337,47 @@ def replay_cases(cases: list[dict[str, Any]], output_dir: str | Path, *, fake: b
                  model: str | None = None) -> dict[str, Any]:
     results = [replay_case(case, output_dir, fake=fake, model=model) for case in cases]
     metrics = [result["metrics"] for result in results]
-    return {"schema_version": 1, "mode": "fake" if fake else "model",
-            "model_evaluation": ({"status": "not_run", "network_calls": 0} if fake else
-                                  {"status": "requested", "network_calls": sum(item["observer_calls"] for item in metrics)}),
-            "metrics": {"cases": len(metrics),
-                        "false_stops": sum(item["false_stop"] for item in metrics),
-                        "missed_loops": sum(item["missed_loop"] for item in metrics),
+    scored = [item for item in metrics if item["scored"]]
+    verdicts = sum(item["observer_verdicts"] for item in metrics)
+    failures = sum(item["observer_failures"] for item in metrics)
+    reasons: dict[str, int] = {}
+    for item in metrics:
+        _merge_reasons(reasons, item["observer_failure_reasons"])
+    if fake:
+        # No provider was contacted, so there is no model judgment to report.
+        evaluation: dict[str, Any] = {"status": "not_run", "network_calls": 0}
+    else:
+        if not scored:
+            status = "failed"
+        elif failures or len(scored) != len(metrics):
+            status = "partial"
+        else:
+            status = "completed"
+        evaluation = {"status": status,
+                      "network_calls": sum(item["observer_calls"] for item in metrics),
+                      "verdicts": verdicts, "failures": failures,
+                      "failure_reasons": reasons,
+                      "cases_scored": len(scored),
+                      "cases_without_judgment": len(metrics) - len(scored)}
+    aggregate = {"schema_version": 1, "mode": "fake" if fake else "model",
+            "model_evaluation": evaluation,
+            # Detection rates are reported over scored cases only; with nothing
+            # scored they are unknown rather than a clean zero.
+            "metrics": {"cases": len(metrics), "cases_scored": len(scored),
+                        "cases_without_judgment": len(metrics) - len(scored),
+                        "false_stops": sum(item["false_stop"] for item in scored) if scored else None,
+                        "missed_loops": sum(item["missed_loop"] for item in scored) if scored else None,
                         "detection_delays_seconds": [item["detection_delay_seconds"] for item in metrics if item["detection_delay_seconds"] is not None],
                         "observer_calls": sum(item["observer_calls"] for item in metrics),
+                        "observer_verdicts": verdicts, "observer_failures": failures,
+                        "observer_failure_reasons": reasons,
                         "usage_coverage": [item["usage_coverage"] for item in metrics]},
             "cases": results}
+    # Keep a durable aggregate beside the case directories. It is the same
+    # object emitted by the CLI and gives review tooling one bounded artifact.
+    aggregate_path = Path(output_dir).resolve() / "report.json"
+    aggregate_path.write_text(json.dumps(aggregate, sort_keys=True) + "\n", encoding="utf-8")
+    return aggregate
 
 
 def main(argv: list[str] | None = None) -> int:

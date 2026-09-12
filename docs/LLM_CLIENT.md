@@ -1350,3 +1350,14 @@ supervisor-validated stops, and caps each case at three observer calls. The
 manifest records the separately launchable model evaluation's dated ceiling;
 that evaluation has not been run. Start with recording or `observe` mode until
 candidate stop quality has been evaluated.
+
+Detection rates are reported only over cases the model actually judged. A
+dispatched call that never returned a verdict -- a transport error, an
+exhausted credit balance, a preflight failure -- leaves its case unscored:
+`scored` is false and that case's `false_stop`/`missed_loop` are null rather
+than false. `model_evaluation.status` is `not_run` for `--fake`, `failed` when
+no case was scored, `partial` when any call failed or any case went unscored,
+and `completed` only when every case produced a verdict with no failures;
+`failure_reasons` counts the failures by cause. When no case is scored the
+aggregate `false_stops` and `missed_loops` are null, so a run that never
+reached the provider cannot be read as a clean zero-false-stop result.

@@ -4,7 +4,10 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from . import watchdog_replay
+from .watchdog_observer import FakeObserverBackend, ObserverTransportError
 from .watchdog_replay import replay_cases
 from .watchdog_review import review
 
@@ -102,6 +105,47 @@ class WatchdogReplayTests(unittest.TestCase):
             report = next(item for item in result["cases"] if item["case"] == "failure_reasoning_loop")
             self.assertEqual(report["metrics"]["first_alert_at_seconds"], 1.0)
             self.assertEqual(report["metrics"]["detection_delay_seconds"], 300.0)
+
+    def test_total_transport_failure_is_not_reported_as_a_clean_evaluation(self):
+        # Reproduces an exhausted-credit run: every observer call raises, so no
+        # model judgment exists. Zero validated stops must not read as zero
+        # false stops, and a persistent case must not read as a missed loop.
+        def explode(_payload):
+            raise ObserverTransportError("observer transport failed: Too Many Requests")
+
+        with tempfile.TemporaryDirectory() as output:
+            with mock.patch.object(watchdog_replay, "OpenAIObserverBackend",
+                                   lambda **_kwargs: FakeObserverBackend(explode)):
+                result = replay_cases(self.cases, output, fake=False, model="gpt-5.4-nano")
+            evaluation = result["model_evaluation"]
+            self.assertEqual(evaluation["status"], "failed")
+            self.assertEqual(evaluation["verdicts"], 0)
+            self.assertGreater(evaluation["failures"], 0)
+            self.assertEqual(evaluation["cases_without_judgment"], 12)
+            self.assertIn("ObserverTransportError", evaluation["failure_reasons"])
+            metrics = result["metrics"]
+            self.assertEqual(metrics["cases_scored"], 0)
+            self.assertIsNone(metrics["false_stops"])
+            self.assertIsNone(metrics["missed_loops"])
+            self.assertEqual(metrics["observer_verdicts"], 0)
+            persistent = next(item["metrics"] for item in result["cases"]
+                              if item["case"] == "failure_reasoning_loop")
+            self.assertFalse(persistent["scored"])
+            self.assertIsNone(persistent["missed_loop"])
+            self.assertIsNone(persistent["false_stop"])
+            self.assertEqual(persistent["observer_verdicts"], 0)
+
+    def test_fake_run_scores_every_case_and_keeps_integer_rates(self):
+        with tempfile.TemporaryDirectory() as output:
+            result = replay_cases(self.cases, output, fake=True)
+            metrics = result["metrics"]
+            self.assertEqual(metrics["cases_scored"], 12)
+            self.assertEqual(metrics["cases_without_judgment"], 0)
+            self.assertEqual(metrics["false_stops"], 0)
+            self.assertEqual(metrics["missed_loops"], 1)
+            self.assertEqual(metrics["observer_failures"], 0)
+            self.assertEqual(metrics["observer_verdicts"], metrics["observer_calls"])
+            self.assertTrue(all(item["metrics"]["scored"] for item in result["cases"]))
 
     def test_manifest_records_dated_price_ceiling_without_authorizing_paid_calls(self):
         manifest = json.loads((FIXTURES / "manifest.json").read_text())
