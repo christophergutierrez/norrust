@@ -6,6 +6,7 @@ from pathlib import Path
 from .model_usage import ModelCall
 from .llm_supervisor import _game_end_terminal
 from .watchdog_review import review
+from .watchdog_outcomes import read_observer_outcomes
 
 HAS_ROLES = "call_role" in ModelCall.__dataclass_fields__
 
@@ -125,6 +126,31 @@ class WatchdogReviewTests(unittest.TestCase):
             (state_root / "observer-state.json").write_text(json.dumps(
                 {"run_id": "run-uuid", "mode": "observe", "dispatched_calls": 0}))
             self.assertEqual(review(log)["model_evaluation"]["status"], "not_run")
+
+    def test_failed_real_receipt_is_not_recorded_as_a_successful_evaluation(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            log, state_root = self._run_files(root)
+            failed = ModelCall(game_id="catalog-game", call_id="observer-1",
+                               call_role="observer", provider="fireworks",
+                               status="failed", error_code="insufficient_credit")
+            (root / "usage.ndjson").write_text(
+                json.dumps(dict(failed.to_row(), record_kind="final")) + "\n")
+            (state_root / "observer-state.json").write_text(json.dumps(
+                {"run_id": "run-uuid", "dispatched_calls": 1}))
+            packet = review(log)
+            self.assertEqual(packet["model_evaluation"]["status"], "failed")
+            self.assertEqual(packet["model_evaluation"]["network_calls"], 1)
+
+    def test_pending_inspect_and_malformed_journal_are_coverage_gaps(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "observer.journal.ndjson"
+            path.write_text('{"type":"dispatch"}\n{"type":"verdict","decision":"inspect"}\n'
+                            '42\n{"type":"investigation_error","error":"timeout"}\n')
+            outcomes = read_observer_outcomes(path)
+            self.assertFalse(outcomes["judgment_observed"])
+            self.assertEqual(outcomes["last_outcome"], "failure")
+            self.assertGreaterEqual(outcomes["observer_failures"], 2)
 
 
 if __name__ == "__main__":
