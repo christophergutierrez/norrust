@@ -1,6 +1,11 @@
 # Complete decision context and accurate evaluation reporting
 
-Status: planned, 2026-09-11.
+Status: complete, 2026-09-11.
+Implementation commits: `b778f7e`, `a63ee0b`, `0bc1a8e`.
+Cumulative gates: 714 / 720 / 729 Python tests plus Rust and Lua.
+[Retest, accounting, and remaining findings](../experiments/glm-decision-context.md).
+The single retest ended on its token budget; newly discovered follow-ups are
+recorded in the report and were not silently changed during the frozen run.
 Baseline: `c4ba434`.
 Evidence: [local-execution diagnostic](../experiments/glm-local-execution.md),
 game `6979fd492a285b394e9c0c052c39f1b9`. Read its catalog before raw archives.
