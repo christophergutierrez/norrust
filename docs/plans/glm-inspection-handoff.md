@@ -1,7 +1,30 @@
 # Effective profiles, carried purpose, bounded review inspection, and effort control
 
-Status: in progress, started 2026-09-11.
+Status: in progress, started 2026-09-11. Implementation complete 2026-09-12;
+Stack D (the observed retest) has NOT run and no paid game has been launched.
 Baseline: `b46dced`; prior tested gameplay source `0bc1a8e`.
+
+| Stack | Integration commit | Python tests | Result |
+|---|---|---:|---|
+| A | `2d88e5b` | 732 | Effective terrain profiles, rejected-unit repair facts, movement-fallback correction |
+| B | `bafd14d` (merged) | 739 | Bounded inspection purpose, next-phase local facts |
+| C | `7087076` (merged) | 752 | Bounded review inspection, preview revision provenance, effort pass-through |
+| Integration | `a70fea7` | 754 | `inspect_units` purpose via one shared validator |
+
+Each cumulative gate ran `python3 -m tools.fast_check` (Rust, Python, LuaJIT)
+and passed with exit 0 before its commit. Gate logs are under
+`tmp/glm-inspection-exec/`. No interactive GUI acceptance is claimed, and no
+balance or unfiltered Cargo suite was run.
+
+During integration the parent found that Stack A's first profile stated the
+wrong movement fallback: `norrust_get_unit_terrain_info` fell back to the
+tile's `movement_cost`, but every real `find_path`/`reachable_hexes` caller
+passes `default_movement_cost = 1`, so the engine charges 1. This was
+reachable on the retest board -- `mountains` has tile cost 3 and 15 types in
+the Northerners/Loyalists roster closure list no `mountains` entry -- so the
+new fact would have been confidently wrong for those units. The reported
+cost now matches what pathfinding charges, with a regression test pinning
+the two together. Defense was already correct and is unchanged.
 Evidence: [GLM decision-context retest](../experiments/glm-decision-context.md),
 game `e27040476dcb31dd0c5c9a88d9230c74`, archive `tmp/quick-play-glm-decision-k41byol0`.
 Read that catalog before raw archives.
