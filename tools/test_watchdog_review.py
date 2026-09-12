@@ -108,6 +108,23 @@ class WatchdogReviewTests(unittest.TestCase):
             self.assertIsNone(packet["source"]["conversation_id"])
             self.assertEqual(packet["usage"]["observer"]["calls"], 0)
             self.assertIn("conversation_identity_unknown", packet["coverage"]["events"])
+            self.assertEqual(packet["model_evaluation"]["status"], "unknown")
+
+    def test_recorded_off_mode_proves_no_observer_run(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            log = root / "match.ndjson"
+            log.write_text(json.dumps({"type": "supervisor_attempt_start",
+                                       "watchdog_mode": "off"}) + "\n")
+            self.assertEqual(review(log)["model_evaluation"]["status"], "not_run")
+
+    def test_valid_observer_state_with_zero_calls_is_known_not_run(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            log, state_root = self._run_files(root)
+            (state_root / "observer-state.json").write_text(json.dumps(
+                {"run_id": "run-uuid", "mode": "observe", "dispatched_calls": 0}))
+            self.assertEqual(review(log)["model_evaluation"]["status"], "not_run")
 
 
 if __name__ == "__main__":

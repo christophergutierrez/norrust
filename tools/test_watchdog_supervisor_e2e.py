@@ -80,6 +80,10 @@ class WatchdogSupervisorE2ETests(unittest.TestCase):
             intent = read_stop(log)
             self.assertEqual(intent["status"], "resolved")
             self.assertEqual(intent["resolution"], "cancelled")
+            summary = json.loads((recorder.run_directory / "review.json").read_text())
+            self.assertEqual(summary["game_result"]["terminal_class"], "observer_interrupted")
+            self.assertIsNone(summary["game_result"]["winner"])
+            self.assertEqual(summary["model_evaluation"]["status"], "offline_fake")
             self.assertEqual(recorder.status()["usage_coverage"]["call_count"], 1)
             packets = [json.loads(line)["status"]
                        for line in recorder.journal_path.read_text().splitlines()
@@ -97,6 +101,9 @@ class WatchdogSupervisorE2ETests(unittest.TestCase):
             metadata = next(row for row in (json.loads(line) for line in log.read_text().splitlines())
                             if row.get("type") == "metadata")
             catalog_id = metadata["conversation_id"]
+            self.assertEqual(summary["source"]["conversation_id"], catalog_id)
+            from .watchdog_review import review
+            self.assertEqual(review(log)["usage"]["observer"]["calls"], 3)
             evidence = next(recorder.evidence_dir.glob("*/prompt.txt"))
             context = json.loads((evidence.parent / "request_context.json").read_text())
             self.assertEqual(hashlib.sha256(evidence.read_bytes()).hexdigest(),

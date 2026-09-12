@@ -2,6 +2,7 @@ import json
 import tempfile
 import os
 import stat
+import subprocess
 import sys
 import time
 import unittest
@@ -9,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from .llm_supervisor import _watchdog_validation, run
+from .game_history import import_game, open_history
 from .watchdog_stop import read_stop, stop_run
 from .run_watchdog import RunWatchdog
 from .watchdog_observer import FakeObserverBackend
@@ -222,6 +224,7 @@ class SupervisorTests(unittest.TestCase):
             script.write_text(
                 "import json,sys,time\nfrom pathlib import Path\n"
                 "log=Path(sys.argv[1]); marker=Path(sys.argv[2])\n"
+                "with log.open('a') as stream: stream.write(json.dumps({'type':'metadata', 'conversation_id':'catalog-game'})+'\\n')\n"
                 "with log.open('a') as stream: stream.write(json.dumps({'type':'driver', 'line': {'type':'game_end', 'winner': 1, 'reason': 'winner'}})+'\\n')\n"
                 "marker.write_text('ready')\n"
                 "time.sleep(0.4)\n", encoding="utf-8")
@@ -241,6 +244,21 @@ class SupervisorTests(unittest.TestCase):
             records = [json.loads(line) for line in log.read_text().splitlines()]
             self.assertFalse(any(r.get("type") == "observer_interrupted" for r in records))
             self.assertEqual(read_stop(log).get("resolution"), "natural_completion_wins")
+            review_path = root / "match.watchdog" / "review.json"
+            self.assertTrue(review_path.is_file())
+            review_packet = json.loads(review_path.read_text())
+            self.assertEqual(review_packet["source"]["conversation_id"], "catalog-game")
+            self.assertEqual(review_packet["game_result"]["terminal_class"], "gameplay")
+            self.assertEqual(review_packet["model_evaluation"]["status"], "not_run")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, log, game_id="catalog-game")
+            self.assertEqual(import_game(conn, log, game_id=game_id), game_id)
+            conn.close()
+            cli = subprocess.run([sys.executable, "-m", "tools.watchdog_review",
+                                  "--log", str(log)], capture_output=True, text=True, check=True)
+            cli_packet = json.loads(cli.stdout)
+            self.assertEqual(cli_packet["source"]["conversation_id"], "catalog-game")
+            self.assertEqual(cli_packet["game_result"]["terminal_class"], "gameplay")
 
     def test_open_child_is_polled_and_watchdog_observes_progress(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -252,6 +270,20 @@ class SupervisorTests(unittest.TestCase):
                                      watchdog=watchdog, poll_interval=0.01), 0)
             self.assertEqual(watchdog.status()["revision"], 7)
             self.assertGreaterEqual(child.calls, 3)
+
+    def test_review_failure_does_not_change_client_exit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "match.ndjson"
+            script = root / "child.py"
+            script.write_text("import sys; sys.exit(7)\n", encoding="utf-8")
+            with mock.patch("tools.llm_supervisor._write_review",
+                            side_effect=RuntimeError("review unavailable")):
+                result = run([sys.executable, str(script)], log, 0)
+            self.assertEqual(result, 7)
+            records = [json.loads(line) for line in log.read_text().splitlines()]
+            error = next(record for record in records if record.get("type") == "supervisor_review_error")
+            self.assertEqual(error["error"], "RuntimeError")
 
     def test_real_subprocess_signal_restarts_without_duplicate_progress(self):
         """Exercise the restart loop with a real child and durable progress file."""

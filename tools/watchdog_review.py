@@ -96,6 +96,26 @@ def _persisted_status(log: Path) -> dict[str, Any]:
     }
 
 
+def _recorded_watchdog_mode(path: Path) -> str | None:
+    """Return the latest supervisor-declared monitoring mode, if recorded."""
+    mode: str | None = None
+    try:
+        with path.open(encoding="utf-8") as stream:
+            for line in stream:
+                if len(line) > 1024 * 1024:
+                    continue
+                try:
+                    value = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(value, dict) and value.get("type") == "supervisor_attempt_start":
+                    candidate = value.get("watchdog_mode")
+                    mode = candidate if candidate in {"off", "observe", "enforce"} else "unknown"
+    except OSError:
+        return None
+    return mode
+
+
 def _usage_summary(path: Path, *, identities: set[str] | None = None,
                    rate_file: str | Path | None = None) -> dict[str, Any]:
     """Summarize bounded, lifecycle-deduplicated calls from one run.
@@ -155,13 +175,7 @@ def _usage_summary(path: Path, *, identities: set[str] | None = None,
 def _observer_state_path(log: Path, explicit: str | Path | None) -> Path | None:
     if explicit is not None:
         return Path(explicit)
-    # Actual attach_observer path, followed by the offline replay's maintained
-    # state filename for compatibility with committed fixture output.
-    owned = log.parent / f"{log.stem}.watchdog" / "observer-state.json"
-    if owned.is_file():
-        return owned
-    replay = log.parent / "observer.json"
-    return replay if replay.is_file() else owned
+    return log.parent / f"{log.stem}.watchdog" / "observer-state.json"
 
 
 def _bounded_ids(value: Any) -> list[str]:
@@ -178,6 +192,7 @@ def review(log_path: str | Path, *, run_id: str | None = None,
     persisted_run_id = status.get("run_id") if isinstance(status.get("run_id"), str) else None
     resolved_run_id = run_id if isinstance(run_id, str) and run_id else persisted_run_id
     metadata, terminal = _identity_and_terminal(log)
+    watchdog_mode = _recorded_watchdog_mode(log)
     conversation_id = metadata.get("conversation_id")
     if not isinstance(conversation_id, str) or not conversation_id:
         conversation_id = status.get("conversation_id") if isinstance(status.get("conversation_id"), str) else None
@@ -188,18 +203,35 @@ def review(log_path: str | Path, *, run_id: str | None = None,
     if not conversation_id:
         coverage_events.append("conversation_identity_unknown")
     observer_path = _observer_state_path(log, observer_state)
+    observer_state_exists = observer_path is not None and observer_path.is_file()
     observer = _json_file(observer_path) if observer_path is not None else {}
+    observer_state_invalid = False
     if resolved_run_id is None or observer.get("run_id") != resolved_run_id:
         if observer:
             coverage_events.append("observer_state_identity_mismatch")
+            observer_state_invalid = True
+        elif observer_state_exists:
+            coverage_events.append("observer_state_unavailable")
+            observer_state_invalid = True
         observer = {}
     verdict = observer.get("last_verdict") if isinstance(observer.get("last_verdict"), dict) else None
     observer_calls = observer.get("dispatched_calls")
     observer_calls = observer_calls if isinstance(observer_calls, int) and observer_calls >= 0 else None
     observed_calls = usage["observer"]["calls"]
     providers = set(usage["observer"].get("providers", []))
-    if observed_calls == 0 and not observer_calls:
+    valid_observer_mode = (observer_state_exists and not observer_state_invalid and
+                           observer.get("mode") in {"off", "observe", "enforce"}
+                           and observer_calls == 0)
+    if observer_state_invalid:
+        evaluation = {"status": "unknown", "network_calls": None,
+                      "observed_calls": observed_calls or observer_calls}
+    elif not observer_state_exists and observed_calls:
+        evaluation = {"status": "unknown", "network_calls": None,
+                      "observed_calls": observed_calls}
+    elif observed_calls == 0 and not observer_calls and (watchdog_mode == "off" or valid_observer_mode):
         evaluation = {"status": "not_run", "network_calls": 0}
+    elif observed_calls == 0 and not observer_calls:
+        evaluation = {"status": "unknown", "network_calls": None}
     elif observed_calls and providers and providers <= {"fake"}:
         evaluation = {"status": "offline_fake", "network_calls": None,
                       "observed_calls": observed_calls}

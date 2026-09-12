@@ -1,6 +1,6 @@
 # Bounded run watchdog and one post-run review
 
-Status: implementation in progress; paid evaluation and live games remain pending.
+Status: implementation complete; all four cumulative gates passed. Paid model evaluation and live games were not run.
 Planning baseline: `d1f6f6c`; execution baseline: `048a117` (clean tree).
 
 ## Outcome
@@ -327,3 +327,47 @@ Acceptance and commit:
 - Handoff distinguishes implementation complete, fake/offline tests passed, actual
   model evaluation pending/passed/failed, and live game not run/run. No hidden paid
   validation, no promise of perfect loop detection, and no unrelated gameplay work.
+
+
+## Execution results (2026-09-12)
+
+Astra integrated three Luna High workers in isolated worktrees. Each stack was
+frozen for `python3 -m tools.fast_check` and committed after passing.
+
+| Stack | Commit | Cumulative gate |
+| --- | --- | --- |
+| 1: automatic recording | `c9d6668` | Passed: 767 Python tests plus Rust/Lua checks |
+| 2: durable stop | `97c78c0` | Passed: 782 Python tests plus Rust/Lua checks |
+| 3: observer and accounting | `87c7f78` | Passed: 813 Python tests plus Rust/Lua checks |
+| 4: evaluation and automatic review | This implementation commit | Passed: 825 Python tests plus Rust/Lua checks |
+
+Stack 4 focused acceptance passed 32 tests. The real client/driver test uses
+fake streaming and observer transports, exercises continue → inspect → stop
+within three observer calls, verifies the canonical prompt hash, imports twice
+without duplicate calls, preserves no winner for interruption, and reads the
+automatically generated review. Earlier tests also cover two distinct runs with
+the same log basename, inherited-environment isolation and stale-stop rejection.
+
+The 12-case fake replay retains chronological inputs, status, receipts and
+verdicts. The integrated run recorded 32 observer calls and 16,051 fixture
+tokens, with three validated persistent-loop stops, zero false stops and one
+missed semantic-drift fixture. It is a control-path test, not an evaluation of GPT-5.4 nano. The
+semantic-drift label remains a known missed fixture; do not interpret fake
+results as having passed the model-quality gate or relax that label. Recording
+remains the default, and candidate monitoring should use observe mode until
+actual stop judgment is evaluated.
+
+The exact candidate evaluation manifest is
+`tools/fixtures/watchdog_stack4/manifest.json`: 12 cases, at most 36 calls,
+147,456 input and 18,432 output tokens, dated no-cache ceiling $0.0525312.
+No paid observer evaluation or live Fireworks game was launched. The fixture
+set is deliberately small and includes explicitly synthetic cases; it does not
+establish general detection accuracy.
+
+`docs/LLM_CLIENT.md` documents the supported launch/status/evidence/stop/review
+commands. The supervisor writes `<logstem>.watchdog/review.json` automatically.
+`docs/GAME_HISTORY.md` covers identity-filtered accounting and unknown coverage.
+The active ignored Claude handoff now uses automatic recording and one final
+review instead of continuous Sonnet polling. Historical game evidence remains
+unchanged. Exact gate logs, final replay metrics, source commits and limitations
+are retained in `tmp/watchdog-exec/HANDOFF.md`.

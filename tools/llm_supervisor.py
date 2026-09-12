@@ -536,6 +536,19 @@ def _write_state(path: Path, value: dict) -> None:
     os.replace(temporary, path)
 
 
+def _write_review(log: Path) -> None:
+    """Persist one bounded, read-only post-run packet without changing status."""
+    try:
+        from .watchdog_review import review
+    except ImportError:  # Direct ``python tools/llm_supervisor.py`` invocation.
+        from watchdog_review import review
+
+    packet = review(log)
+    state_dir = log.parent / f"{log.stem}.watchdog"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    _write_state(state_dir / "review.json", packet)
+
+
 def _attempt_records(log: Path, start: int) -> list[dict]:
     return _records(log)[start:]
 
@@ -614,7 +627,8 @@ def run(command: list[str], log: Path, max_restarts: int,
             attempt_id = f"attempt-{attempt}-{uuid.uuid4().hex[:12]}"
             start = len(_records(log))
             _append(log, {"type": "supervisor_attempt_start", "attempt": attempt,
-                          "attempt_id": attempt_id, "log_offset": start})
+                          "attempt_id": attempt_id, "log_offset": start,
+                          "watchdog_mode": watchdog_mode})
             os.environ["NORRUST_CODEX_ATTEMPT_ID"] = attempt_id
             invocation = command if attempt == 1 else command + ["--resume-log", str(log)]
             environment = os.environ.copy()
@@ -732,9 +746,25 @@ def run(command: list[str], log: Path, max_restarts: int,
                           "reason": reason, "failure_key": key})
             time.sleep(min(0.25, 0.05 * supervisor_state["restarts"]))
     finally:
-        close_observer()
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        os.close(lock_fd)
+        try:
+            close_observer()
+            # All normal return paths have completed their final recorder poll;
+            # review generation is best-effort and must never mask that exit.
+            _write_review(log)
+        except Exception as exc:
+            try:
+                _append(log, {"type": "supervisor_review_error",
+                              "error": type(exc).__name__, "message": str(exc)[:256]})
+            except Exception:
+                pass
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        try:
+            os.close(lock_fd)
+        except OSError:
+            pass
 
 
 def main(argv: list[str] | None = None) -> int:

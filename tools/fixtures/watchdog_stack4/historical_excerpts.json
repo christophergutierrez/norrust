@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "source_commit": "0bc1a8e229e126d1d3cd11ae2187824fe91364b5",
+  "game_id": "e27040476dcb31dd0c5c9a88d9230c74",
+  "availability": "completed_request_only",
+  "excerpts": [
+    {
+      "request_sequence": 2,
+      "case_id": "healthy_long_planning",
+      "source_sha256": "3345deca9b1043a558e88bf72490ae9af21c6a75971566dc04428e5db0947f44",
+      "excerpt_sha256": "b8da4d78bad60bd1e7b6e5925d7c79f8ddd849c899f11d66e8e5b1c41769221c",
+      "selection": "last 1100 characters of completed request; available only after response completion",
+      "context": {"state_revision": 6, "side_turn_id": "8c0be63621cd4e43888a2a76d74e8dbd:side_turn:1", "side": 0},
+      "excerpt": "Completed occupancy and zone-of-control checks, then selected legal moves that free recruitment spaces and advance toward objectives."
+    },
+    {
+      "request_sequence": 15,
+      "case_id": "recover_slow_inspection",
+      "source_sha256": "d1286c7eb6ecf4f09d0e1e782139908444867aab8a2af04c7cdaf4a759fc3864",
+      "excerpt_sha256": "3efd953802dda61f657b2fdc20b5ee46906f00ed6cde1e5c6829a941be9f6d13",
+      "selection": "last 1100 characters of completed request; available only after response completion",
+      "context": {"state_revision": 204, "side_turn_id": "8c0be63621cd4e43888a2a76d74e8dbd:side_turn:6", "side": 0},
+      "excerpt": "Long reasoning ended in a valid read-only inspection of units 4, 5, and 9; the board was not mutated."
+    },
+    {
+      "request_sequence": 22,
+      "case_id": "healthy_review",
+      "source_sha256": "8386567a98c60ab56bf9f781fbac4b362cab539fffc8e30c27902623a1109e1c",
+      "excerpt_sha256": "6bbc82d051aa3289e91317a3d3c746225b2e137828abb56b9b88d3bffad9547f",
+      "selection": "last 1100 characters of completed request; available only after response completion",
+      "context": {"state_revision": 314, "side_turn_id": "8c0be63621cd4e43888a2a76d74e8dbd:side_turn:8", "side": 0},
+      "excerpt": "Completed review checked independent actions and validated movement before submitting the final batch."
+    }
+  ]
+}

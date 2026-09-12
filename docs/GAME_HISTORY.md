@@ -538,6 +538,31 @@ catalog and any surviving backup after maintenance:
 The maintenance command rejects missing game IDs and ambiguous selectors. It
 removes dependent evaluation rows safely while preserving unrelated cohorts.
 
+## Watchdog review packets
+
+The supervisor writes `<logstem>.watchdog/review.json` automatically at exit.
+After importing or collecting late receipts, regenerate this bounded packet
+from the archive and its run-owned sidecars:
+
+```bash
+python3 -m tools.watchdog_review --log PATH/to/match.ndjson \
+  --rate-file PATH/to/dated-rates.json
+```
+
+The command is read-only and makes no provider calls. It reports the persisted
+watchdog run UUID, proven catalog conversation identity and source commit,
+progress, the authoritative terminal result, incident identities and bounded
+evidence references, stop effect, and player/observer/combined usage coverage.
+The default observer state is
+`<logstem>.watchdog/observer-state.json`; a mismatched state or missing
+conversation identity is an explicit coverage gap. Usage rows are lifecycle
+deduplicated by `(game_id, call_id)` and filtered to that proven conversation;
+foreign rows, malformed rows, missing token fields, and missing dated rates
+remain visible as unknown coverage. A fake observer receipt is reported as
+offline evidence, never as a paid model evaluation or a quality pass.
+Observed stop quality remains unknown until a separately authorized model
+evaluation is run and reported.
+
 
 ## Harness comparison reports
 

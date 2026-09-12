@@ -360,8 +360,8 @@ Unknown usage has no fabricated cost.  A semantic stop in enforce mode requires
 an `inspect` investigation and repeated non-progress evidence across two fresh
 observations with no recovery; a long request, poor tactics, or a negative
 material balance alone cannot stop a healthy game.  The observer's `run_id` is
-separate from the catalog `game_id`; launchers must pass the proven catalog ID
-when they want its sidecar imported.
+separate from the catalog `game_id`; the supervisor proves the canonical conversation identity before attaching
+the observer, so its sidecar joins the same catalog game on import.
 
 The maintained supervisor exposes the same opt-in channel for real runs:
 
@@ -370,6 +370,12 @@ python3 -m tools.llm_supervisor --log /absolute/run/match.ndjson \
   --watchdog-mode observe --watchdog-model gpt-5.4-nano -- \
   python3 -m tools.llm_client --log /absolute/run/match.ndjson ...
 ```
+
+`--watchdog-max-calls` sets a persisted ceiling from 1 to 20 physical calls,
+including investigations and failures. The default is 20. Regular checks are
+eligible every 300 seconds; new alerts have a 60-second cooldown. Each request
+is capped at 4,096 input tokens and 512 generated tokens, with a 30-second
+deadline. Two consecutive observer failures disable advisory checks.
 
 `--watchdog-mode` defaults to `off`; `enforce` is the only mode that can
 write a durable stop intent. The supervisor attaches lazily after the
@@ -1306,3 +1312,41 @@ stream references expose decoded content with raw provenance. Available provider
 receipts supply usage; missing or dispatched-only receipts remain unknown. The
 raw archive is preserved for one later review. The `watch` command is for an
 unsupervised/offline log only; do not run a second recorder alongside a supervisor.
+
+At supervisor exit, `<logstem>.watchdog/review.json` is written automatically
+without a model call. Complete the usage-accounting/import procedure above;
+regenerate the packet when late receipts or a dated rate file become available:
+
+```bash
+python3 -m tools.watchdog_review --log /absolute/run/match.ndjson \
+  --rate-file /absolute/run/dated-rates.json
+```
+
+The review uses `<logstem>.watchdog/observer-state.json`, filters receipts by
+proven conversation identity, and reports player, observer, unknown-role and
+combined usage separately. Omit `--rate-file` if rates are unavailable; cost is
+unknown without matching dated model rates. The rate file contains a `rates`
+array with `model`, `effective_date` (ISO date), `input_per_million`,
+`cached_input_per_million`, `output_per_million`, and
+`reasoning_included_in_output`; retain the pricing source alongside those fields.
+Rates apply per physical call, so mixed models never share an assumed price.
+
+A coding agent should review this packet once and open indexed evidence only
+when needed. Do not run a continuously polling coding observer. The optional API
+watchdog performs bounded checks; existing game limits remain active if it is
+unavailable. A fake observer test does not establish real model judgment.
+
+The prepared 12-case evaluation can run without a network connection:
+
+```bash
+python3 -m tools.watchdog_replay \
+  --manifest tools/fixtures/watchdog_stack4/manifest.json \
+  --output-dir /absolute/new/offline-evaluation --fake
+```
+
+Use a new output directory. The runner retains chronological status, request
+payloads, receipts and verdicts, distinguishes controller recommendations from
+supervisor-validated stops, and caps each case at three observer calls. The
+manifest records the separately launchable model evaluation's dated ceiling;
+that evaluation has not been run. Start with recording or `observe` mode until
+candidate stop quality has been evaluated.
