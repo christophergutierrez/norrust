@@ -1,7 +1,7 @@
 # Bounded run watchdog and one post-run review
 
-Status: planned; implementation and paid runs have not started.
-Planning baseline: `d1f6f6c` (recheck the working tree before implementation).
+Status: implementation in progress; paid evaluation and live games remain pending.
+Planning baseline: `d1f6f6c`; execution baseline: `048a117` (clean tree).
 
 ## Outcome
 
@@ -114,8 +114,8 @@ helpers presented as completion. Integrate in order, run the cumulative gate
 run balance tournaments or claim GUI checks. Record actual counts and commands;
 do not assume an earlier session's test count is current.
 
-For Opus/Sonnet execution: Opus owns shared-file integration and gates. Assign
-Sonnet workers bounded work in separate worktrees. Worker A owns progress and
+For this execution: Astra owns shared-file integration and gates. Assign
+Luna High workers bounded work in separate worktrees. Worker A owns progress and
 evidence modules; Worker B owns supervisor/client cancellation; Worker C owns
 observer backend and accounting. A leads stack 1, B stack 2, C stack 3. After the
 interfaces above are pinned, B and C may prepare isolated implementation and
@@ -126,8 +126,8 @@ integrates changes to `llm_client.py`, `game_history.py`, and shared docs.
 
 Keep short handoffs under `tmp/watchdog-exec/`: files owned, interfaces delivered,
 tests run, remaining issues. Do not repeatedly spawn observers or send live
-transcripts to the orchestrator. This document is a plan only; delegation starts
-when implementation is requested.
+transcripts to the orchestrator. Implementation was authorized by the user on 2026-09-12. No paid model
+evaluation or fresh game is included in that authorization.
 
 ## Stack 1 — Automatic recording, bounded status, and evidence reads
 
