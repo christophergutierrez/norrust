@@ -15,7 +15,7 @@ from .watchdog_observer import (
     ObserverResponseError,
     ObserverSchemaError,
     ObserverTimeout,
-    OpenAIObserverBackend,
+    FireworksObserverBackend,
     build_observer_request,
     conservative_token_count,
 )
@@ -39,8 +39,13 @@ class DecisionValidationTests(unittest.TestCase):
         payload, clipped, coverage = build_observer_request(
             {"stage": "active", "observation_sequence": 1, "alerts": []})
         self.assertNotIn("tools", payload)
-        self.assertEqual(payload["max_output_tokens"], 512)
-        self.assertEqual(payload["reasoning"]["effort"], "none")
+        self.assertEqual(payload["max_tokens"], 512)
+        self.assertEqual(payload["messages"][0]["role"], "system")
+        self.assertEqual(payload["messages"][1]["role"], "user")
+        self.assertIn("json_schema", payload["response_format"])
+        self.assertNotIn("text", payload)
+        self.assertEqual(set(payload), {"model", "messages", "max_tokens", "response_format"})
+        self.assertNotIn("reasoning", payload)
         self.assertLessEqual(conservative_token_count(json.dumps(payload)), MAX_INPUT_TOKENS)
         self.assertFalse(clipped)
         self.assertEqual(coverage, "complete")
@@ -72,10 +77,11 @@ class DecisionValidationTests(unittest.TestCase):
         self.assertEqual(coverage, "bounded")
         self.assertLessEqual(conservative_token_count(json.dumps(payload)), MAX_INPUT_TOKENS)
 
-    def test_openai_response_receipt_is_retained_when_decision_is_malformed(self):
-        backend = OpenAIObserverBackend(api_key="test", transport=lambda _payload, _timeout: {
-            "id": "resp-1", "model": "gpt-5.4-nano", "output_text": "{}",
-            "usage": {"input_tokens": 12, "output_tokens": 3, "total_tokens": 15}})
+    def test_fireworks_response_receipt_is_retained_when_decision_is_malformed(self):
+        backend = FireworksObserverBackend(api_key="test", transport=lambda _payload, _timeout: {
+            "id": "resp-1", "model": "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b",
+            "choices": [{"message": {"content": "{}"}}],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15}})
         with self.assertRaises(ObserverResponseError) as caught:
             backend.observe({"stage": "active", "observation_sequence": 1, "alerts": []},
                             call_id="c1", game_id="g")
@@ -83,11 +89,11 @@ class DecisionValidationTests(unittest.TestCase):
         self.assertEqual(caught.exception.call.input_tokens, 12)
         self.assertEqual(caught.exception.call.call_role, "observer")
 
-    def test_openai_transport_has_wall_deadline_for_trickling_or_hung_call(self):
+    def test_fireworks_transport_has_wall_deadline_for_trickling_or_hung_call(self):
         def hang(_payload, _timeout):
             time.sleep(.2)
             return {}
-        backend = OpenAIObserverBackend(api_key="test", timeout_seconds=.03, transport=hang)
+        backend = FireworksObserverBackend(api_key="test", timeout_seconds=.03, transport=hang)
         started = time.monotonic()
         with self.assertRaises(ObserverTimeout):
             backend.observe({"stage": "active", "observation_sequence": 1, "alerts": []},

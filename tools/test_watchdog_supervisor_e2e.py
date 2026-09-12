@@ -32,7 +32,7 @@ class WatchdogSupervisorE2ETests(unittest.TestCase):
             clock_state = {"alert_seen": False, "ticks": 0}
 
             def observe_fixture(payload):
-                packet = json.loads(payload["input"])["watchdog_packet"]
+                packet = json.loads(payload["messages"][-1]["content"])["watchdog_packet"]
                 alerts = packet.get("alerts", [])
                 if not alerts:
                     return {"decision": "continue", "reason_code": "healthy",

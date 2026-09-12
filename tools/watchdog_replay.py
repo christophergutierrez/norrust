@@ -11,8 +11,9 @@ from typing import Any
 
 from .llm_supervisor import _watchdog_validation
 from .run_watchdog import RunWatchdog
-from .watchdog_observer import (FakeObserverBackend, ObserverController,
-                                 OpenAIObserverBackend, REQUEST_TIMEOUT_SECONDS)
+from .watchdog_observer import (DEFAULT_MODEL, FakeObserverBackend, ObserverController,
+                                 FireworksObserverBackend, REQUEST_TIMEOUT_SECONDS)
+from .watchdog_outcomes import read_observer_outcomes
 
 
 class ReplayClock:
@@ -75,7 +76,9 @@ class RecordingBackend:
 def _fake_response(payload: dict[str, Any], calls: list[int]) -> dict[str, Any]:
     """Return recommendations from packet alerts only; expected labels stay out."""
     try:
-        packet = json.loads(payload.get("input", "{}")).get("watchdog_packet", {})
+        messages = payload.get("messages", [])
+        user = messages[-1].get("content", "") if isinstance(messages, list) and messages else ""
+        packet = json.loads(user).get("watchdog_packet", {})
     except (TypeError, ValueError, json.JSONDecodeError):
         packet = {}
     calls[0] += 1
@@ -92,59 +95,6 @@ def _fake_response(payload: dict[str, Any], calls: list[int]) -> dict[str, Any]:
         if calls[0] >= 3:
             return _decision("stop", "repeated_no_progress").copy() | {"evidence_ids": evidence_ids}
     return _decision()
-
-
-VERDICT_EVENTS = ("verdict", "investigation_verdict")
-FAILURE_EVENTS = ("verdict_error", "investigation_error", "preflight_error")
-
-
-def _call_outcomes(journal_path: Path) -> dict[str, Any]:
-    """Separate observed model judgments from calls that never returned one.
-
-    A dispatched call proves only that a request left the controller. Without
-    this split a run whose every call failed is indistinguishable from a model
-    that judged every case and declined to stop.
-    """
-    verdicts = 0
-    judgments = 0
-    failures = 0
-    reasons: dict[str, int] = {}
-    if journal_path.exists():
-        try:
-            lines = journal_path.read_text(encoding="utf-8").splitlines()[:4096]
-        except (OSError, UnicodeError):
-            lines = []
-            failures += 1
-            reasons["journal_unavailable"] = 1
-        for line in lines:
-            if not line.strip():
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                # A torn trailing write must not be scored as a judgment.
-                failures += 1
-                reasons["unreadable_journal_entry"] = reasons.get("unreadable_journal_entry", 0) + 1
-                continue
-            if not isinstance(event, dict):
-                failures += 1
-                reasons["journal_record_not_object"] = reasons.get("journal_record_not_object", 0) + 1
-                continue
-            kind = event.get("type")
-            decision = event.get("decision")
-            # An inspect is only an intermediate request. It becomes a usable
-            # judgment when its required investigation returns a verdict.
-            if kind in VERDICT_EVENTS:
-                verdicts += 1
-            if kind == "investigation_verdict" or (kind == "verdict" and decision != "inspect"):
-                judgments += 1
-            elif kind in FAILURE_EVENTS:
-                failures += 1
-                reason = event.get("error") or kind
-                reasons[str(reason)] = reasons.get(str(reason), 0) + 1
-    return {"observer_verdicts": verdicts, "usable_judgments": judgments,
-            "observer_failures": failures,
-            "observer_failure_reasons": reasons, "judgment_observed": judgments > 0}
 
 
 def _merge_reasons(target: dict[str, int], source: Any) -> None:
@@ -198,7 +148,7 @@ def replay_case(case: dict[str, Any], output_dir: str | Path, *, fake: bool = Tr
     observer_state = watchdog.run_directory / "observer-state.json"
     fake_calls = [0]
     base = (FakeObserverBackend(lambda payload: _fake_response(payload, fake_calls))
-            if fake else OpenAIObserverBackend(model=model or "gpt-5.4-nano"))
+            if fake else FireworksObserverBackend(model=model or DEFAULT_MODEL))
     payload_path = root / "observer_payloads.ndjson"
     receipt_path = root / "observer_receipts.ndjson"
     payload_path.touch()
@@ -284,7 +234,7 @@ def replay_case(case: dict[str, Any], output_dir: str | Path, *, fake: bool = Tr
         raw_stop = isinstance(last_verdict, dict) and last_verdict.get("decision") == "stop"
         observed_stop = bool(stopped)
         expected = case.get("expected")
-        outcomes = _call_outcomes(observer_state.with_suffix(".journal.ndjson"))
+        outcomes = read_observer_outcomes(observer_state.with_suffix(".journal.ndjson"))
         validated = any(item["valid"] for item in validations)
         # A case the model never actually judged is unscored, not passed. Only
         # a validated stop is self-evidencing: it cannot occur without a verdict.
@@ -298,7 +248,8 @@ def replay_case(case: dict[str, Any], output_dir: str | Path, *, fake: bool = Tr
             "stop_validation": validations[-1] if validations else None,
             "scored": scored,
             "false_stop": (validated and expected in {"continue", "inspect"}) if scored else None,
-            "missed_loop": (expected == "stop" and not validated) if scored else None,
+            "missed_loop": (expected == "stop" and not validated
+                            and outcomes.get("last_outcome") not in {"failure", "pending"}) if scored else None,
             **outcomes,
             "first_alert_at_seconds": first_alert_at,
             "stop_verdict_at_seconds": stop_verdict_at,
@@ -385,7 +336,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--fake", action="store_true", help="use FakeObserverBackend; no network calls")
-    parser.add_argument("--model", help="use OpenAI observer backend with this model")
+    parser.add_argument("--model", help="use Fireworks observer backend with this model")
     args = parser.parse_args(argv)
     if not args.fake and not args.model:
         parser.error("select --fake or --model")

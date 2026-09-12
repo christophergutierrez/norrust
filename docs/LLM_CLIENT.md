@@ -337,12 +337,14 @@ annotation error never requires having used this helper.
 
 The optional watchdog is a separate, tool-free observer channel.  It is
 disabled by default and may run in `observe` mode (recommendations recorded)
-or `enforce` mode (a validated durable stop may be submitted).  Its direct
-OpenAI Responses backend uses `NORRUST_OPENAI_API_KEY`, model
-`gpt-5.4-nano`, reasoning effort `none`, `max_output_tokens=512`, and a
-30-second request deadline.  These fields and the candidate model's Responses
-support are verified against the [official GPT-5.4 nano model documentation](https://developers.openai.com/api/docs/models/gpt-5.4-nano)
-and [Responses create reference](https://developers.openai.com/api/reference/cli/resources/responses/methods/create).
+or `enforce` mode (a validated durable stop may be submitted). Its direct
+Fireworks chat-completions backend uses `FIREWORKS_API_KEY`, model
+`accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b`, `max_tokens=512`,
+and a 30-second request deadline. Structured output uses the documented
+`response_format` JSON schema; reasoning controls are omitted because this
+candidate's Fireworks mapping is unverified. See the [structured response
+format](https://docs.fireworks.ai/structured-responses/structured-response-formatting)
+and [serverless pricing](https://docs.fireworks.ai/serverless/pricing).
 It sends a fresh bounded status packet on each
 check, never the player's canonical prompt or conversation history, and makes
 no automatic retries.  The controller reserves each physical call and its
@@ -367,7 +369,7 @@ The maintained supervisor exposes the same opt-in channel for real runs:
 
 ```bash
 python3 -m tools.llm_supervisor --log /absolute/run/match.ndjson \
-  --watchdog-mode observe --watchdog-model gpt-5.4-nano -- \
+  --watchdog-mode observe --watchdog-model accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b -- \
   python3 -m tools.llm_client --log /absolute/run/match.ndjson ...
 ```
 

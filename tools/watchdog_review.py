@@ -15,6 +15,7 @@ from typing import Any
 from .game_history import _read_usage_sidecar
 from .llm_client import TERMINAL_GAMEPLAY, classify_terminal
 from .model_usage import aggregate_calls, dedupe_calls
+from .watchdog_outcomes import read_observer_outcomes
 
 MAX_REVIEW_EVIDENCE = 2
 MAX_EVIDENCE_BYTES = 2048
@@ -172,6 +173,15 @@ def _usage_summary(path: Path, *, identities: set[str] | None = None,
     return summary
 
 
+def _observer_calls(path: Path, identities: set[str]) -> list[Any]:
+    """Return identity-filtered observer lifecycle calls for outcome review."""
+    calls, _malformed = _read_usage_sidecar(path)
+    calls = [call for call in calls
+             if call.call_role == "observer" and call.game_id in identities]
+    calls, _conflicts = dedupe_calls(calls)
+    return calls
+
+
 def _observer_state_path(log: Path, explicit: str | Path | None) -> Path | None:
     if explicit is not None:
         return Path(explicit)
@@ -219,6 +229,15 @@ def review(log_path: str | Path, *, run_id: str | None = None,
     observer_calls = observer_calls if isinstance(observer_calls, int) and observer_calls >= 0 else None
     observed_calls = usage["observer"]["calls"]
     providers = set(usage["observer"].get("providers", []))
+    journal_outcomes = read_observer_outcomes(
+        observer_path.with_suffix(".journal.ndjson")) if observer_path is not None else {
+            "judgment_observed": False, "observer_failures": 0,
+            "observer_verdicts": 0, "observer_failure_reasons": {},
+            "last_outcome": None}
+    observer_calls_detail = _observer_calls(log.with_name("usage.ndjson"),
+                                            {conversation_id} if conversation_id else set())
+    completed_calls = sum(call.status == "completed" for call in observer_calls_detail)
+    failed_calls = sum(call.status == "failed" for call in observer_calls_detail)
     valid_observer_mode = (observer_state_exists and not observer_state_invalid and
                            observer.get("mode") in {"off", "observe", "enforce"}
                            and observer_calls == 0)
@@ -239,11 +258,25 @@ def review(log_path: str | Path, *, run_id: str | None = None,
         provider_counts = usage["observer"].get("provider_counts", {})
         network_calls = sum(count for provider, count in provider_counts.items()
                             if provider != "fake")
-        evaluation = {"status": "recorded", "network_calls": network_calls,
-                      "observed_calls": observed_calls}
+        # A receipt proves dispatch and perhaps transport delivery. It is a
+        # successful evaluation only when a usable decision is also present.
+        if not journal_outcomes.get("judgment_observed"):
+            status = "failed" if failed_calls == observed_calls or completed_calls == 0 else "partial"
+        elif journal_outcomes.get("observer_failures") or failed_calls:
+            status = "partial"
+        else:
+            status = "completed"
+        evaluation = {"status": status, "network_calls": network_calls,
+                      "observed_calls": observed_calls,
+                      "verdicts": journal_outcomes.get("observer_verdicts", 0),
+                      "failures": journal_outcomes.get("observer_failures", 0) + failed_calls,
+                      "failure_reasons": journal_outcomes.get("observer_failure_reasons", {})}
     else:
         evaluation = {"status": "unknown", "network_calls": None,
                       "observed_calls": observer_calls}
+    if not isinstance(status, dict):
+        coverage_events.append("recorder_status_invalid")
+        status = {}
     evidence_ids = _bounded_ids(status.get("evidence_ids"))
     alerts = status.get("alerts") if isinstance(status.get("alerts"), list) else []
     incidents = [{"kind": alert.get("kind"), "identity": alert.get("identity"),

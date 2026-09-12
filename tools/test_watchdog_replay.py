@@ -114,9 +114,10 @@ class WatchdogReplayTests(unittest.TestCase):
             raise ObserverTransportError("observer transport failed: Too Many Requests")
 
         with tempfile.TemporaryDirectory() as output:
-            with mock.patch.object(watchdog_replay, "OpenAIObserverBackend",
+            with mock.patch.object(watchdog_replay, "FireworksObserverBackend",
                                    lambda **_kwargs: FakeObserverBackend(explode)):
-                result = replay_cases(self.cases, output, fake=False, model="gpt-5.4-nano")
+                result = replay_cases(self.cases, output, fake=False,
+                                      model="accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b")
             evaluation = result["model_evaluation"]
             self.assertEqual(evaluation["status"], "failed")
             self.assertEqual(evaluation["verdicts"], 0)
@@ -152,8 +153,8 @@ class WatchdogReplayTests(unittest.TestCase):
         evaluation = manifest["evaluation"]
         self.assertFalse(evaluation["paid_launch_authorized"])
         self.assertEqual(evaluation["rates"]["checked_date"], "2026-09-12")
-        self.assertEqual(evaluation["rates"]["source"], "https://developers.openai.com/api/docs/models/gpt-5.4-nano")
-        self.assertEqual(evaluation["worst_case_usd_no_cache"], 0.0525312)
+        self.assertEqual(evaluation["rates"]["source"], "https://docs.fireworks.ai/serverless/pricing")
+        self.assertEqual(evaluation["worst_case_usd_no_cache"], 0.0113664)
 
     def test_cli_is_offline_and_reports_detection_metrics(self):
         with tempfile.TemporaryDirectory() as output:

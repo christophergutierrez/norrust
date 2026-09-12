@@ -5,8 +5,7 @@ status packets, has no player prompt or engine tools, and can only return a
 validated recommendation.  ``ObserverController.poll`` is non-blocking; the
 one worker thread is joined by ``close`` when a run reaches a terminal state.
 
-The direct backend uses the OpenAI Responses API.  It is kept separate from
-the Fireworks player credential and usage stream.  Tests use
+The direct backend uses the Fireworks chat-completions API. Tests use
 ``FakeObserverBackend`` and therefore never make a paid request.
 """
 from __future__ import annotations
@@ -26,7 +25,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
-from .model_usage import ModelCall, OPENAI_RESPONSES_USAGE_MAP, build_call
+from .model_usage import FIREWORKS_USAGE_MAP, ModelCall, build_call
 
 MAX_CALLS = 20
 MAX_INPUT_TOKENS = 4096
@@ -34,8 +33,9 @@ MAX_OUTPUT_TOKENS = 512
 REQUEST_TIMEOUT_SECONDS = 30.0
 REGULAR_INTERVAL_SECONDS = 300.0
 ALERT_COOLDOWN_SECONDS = 60.0
-DEFAULT_MODEL = "gpt-5.4-nano"
-DEFAULT_EFFORT = "none"
+DEFAULT_MODEL = "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b"
+DEFAULT_EFFORT = None
+FIREWORKS_URL = "https://api.fireworks.ai/inference/v1/chat/completions"
 MAX_EVIDENCE_READS = 2
 MAX_EVIDENCE_BYTES = 2048
 ALLOWED_DECISIONS = frozenset({"continue", "inspect", "stop"})
@@ -85,7 +85,13 @@ class ObserverInputError(ObserverError):
 
 
 class ObserverTransportError(ObserverError):
-    pass
+    def __init__(self, message: str, *, status: int | None = None,
+                 provider_code: str | None = None,
+                 response: Mapping[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+        self.provider_code = provider_code
+        self.response = dict(response) if isinstance(response, Mapping) else None
 
 
 class ObserverTimeout(ObserverTransportError):
@@ -179,8 +185,8 @@ def _append_jsonl(path: Path, value: Mapping[str, Any]) -> None:
         os.fsync(handle.fileno())
 
 
-def _post_responses(payload: dict[str, Any], api_key: str, timeout: float,
-                    endpoint: str = "https://api.openai.com/v1/responses") -> dict[str, Any]:
+def _post_chat_completions(payload: dict[str, Any], api_key: str, timeout: float,
+                           endpoint: str = FIREWORKS_URL) -> dict[str, Any]:
     body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(endpoint, data=body, method="POST", headers={
         "Authorization": f"Bearer {api_key}", "Content-Type": "application/json",
@@ -190,26 +196,57 @@ def _post_responses(payload: dict[str, Any], api_key: str, timeout: float,
             raw = response.read()
     except TimeoutError as exc:
         raise ObserverTimeout("observer request timed out") from exc
+    except urllib.error.HTTPError as exc:
+        raw = exc.read(4096)
+        try:
+            value = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            value = {}
+        error = value.get("error") if isinstance(value, dict) else None
+        if not isinstance(error, dict):
+            error = {}
+        code = error.get("code") or error.get("type")
+        message = error.get("message")
+        if not isinstance(message, str):
+            message = raw.decode("utf-8", errors="replace")[:512] or exc.reason
+        bounded = {"error": {"code": str(code)[:128] if code is not None else None,
+                              "message": message[:512]}}
+        raise ObserverTransportError(
+            f"Fireworks HTTP {exc.code}: {message[:512]}", status=int(exc.code),
+            provider_code=str(code)[:128] if code is not None else None,
+            response=bounded) from exc
     except urllib.error.URLError as exc:
         if isinstance(exc.reason, TimeoutError):
             raise ObserverTimeout("observer request timed out") from exc
-        raise ObserverTransportError(f"observer transport failed: {exc.reason}") from exc
+        raise ObserverTransportError(f"Fireworks transport failed: {exc.reason}") from exc
     except OSError as exc:
-        raise ObserverTransportError(f"observer transport failed: {exc}") from exc
+        raise ObserverTransportError(f"Fireworks transport failed: {exc}") from exc
     try:
         value = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ObserverSchemaError("OpenAI response was not JSON") from exc
+        raise ObserverSchemaError("Fireworks response was not JSON") from exc
     if not isinstance(value, dict):
-        raise ObserverSchemaError("OpenAI response was not an object")
+        raise ObserverSchemaError("Fireworks response was not an object")
     if "error" in value:
         error = value["error"]
         code = error.get("code") if isinstance(error, dict) else None
-        raise ObserverTransportError(f"OpenAI observer error: {code or 'unknown'}")
+        message = error.get("message") if isinstance(error, dict) else None
+        message = message if isinstance(message, str) else "provider returned an error"
+        bounded = {"error": {"code": str(code)[:128] if code is not None else None,
+                              "message": message[:512]}}
+        raise ObserverTransportError(
+            f"Fireworks observer error: {message[:512]}",
+            provider_code=str(code)[:128] if code is not None else None,
+            response=bounded)
     return value
 
 
 def _response_text(response: Mapping[str, Any]) -> str:
+    choices = response.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        message = choices[0].get("message")
+        if isinstance(message, dict) and isinstance(message.get("content"), str):
+            return message["content"]
     text = response.get("output_text")
     if isinstance(text, str):
         return text
@@ -256,15 +293,7 @@ def build_observer_request(packet: Mapping[str, Any], *, model: str = DEFAULT_MO
     """Build a tool-free, schema-constrained request within the input bound."""
     if not isinstance(packet, Mapping):
         raise ObserverInputError("status packet must be an object")
-    base = {
-        "model": model,
-        "instructions": _INSTRUCTIONS,
-        "reasoning": {"effort": reasoning_effort},
-        "max_output_tokens": MAX_OUTPUT_TOKENS,
-        "store": False,
-        "text": {"format": {"type": "json_schema", "name": "watchdog_decision",
-                              "strict": True, "schema": _DECISION_SCHEMA}},
-    }
+    base = {"model": model}
     omitted: list[str] = []
     bounded = _shrink(dict(packet), omitted)
     evidence_values = list(evidence)
@@ -272,11 +301,19 @@ def build_observer_request(packet: Mapping[str, Any], *, model: str = DEFAULT_MO
                      for i, item in enumerate(evidence_values[:MAX_EVIDENCE_READS])]
     if len(evidence_values) > MAX_EVIDENCE_READS:
         omitted.append("evidence")
-    payload = dict(base, input=json.dumps({"watchdog_packet": bounded,
-                                           "evidence": evidence_list,
-                                           "coverage": {"input_clipped": bool(omitted),
-                                                        "omitted_fields": sorted(set(omitted))}},
-                                          sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+    user_content = json.dumps({"watchdog_packet": bounded, "evidence": evidence_list,
+                               "coverage": {"input_clipped": bool(omitted),
+                                            "omitted_fields": sorted(set(omitted))}},
+                              sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    payload = dict(base,
+                   messages=[{"role": "system", "content": _INSTRUCTIONS +
+                              " Schema: " + json.dumps(_DECISION_SCHEMA, sort_keys=True,
+                                                        separators=(",", ":"))},
+                             {"role": "user", "content": user_content}],
+                   max_tokens=MAX_OUTPUT_TOKENS,
+                   response_format={"type": "json_schema",
+                                    "json_schema": {"name": "watchdog_decision",
+                                                     "schema": _DECISION_SCHEMA}})
     # Escalate clipping only by dropping low-value excerpts.  Never silently
     # send an over-limit packet, since its absent evidence cannot support a
     # stop claim.
@@ -291,10 +328,11 @@ def build_observer_request(packet: Mapping[str, Any], *, model: str = DEFAULT_MO
                 break
         if not changed:
             raise ObserverInputError("observer request exceeds 4096-token conservative input bound")
-        payload["input"] = json.dumps({"watchdog_packet": bounded, "evidence": evidence_list,
-                                        "coverage": {"input_clipped": True,
-                                                     "omitted_fields": sorted(set(omitted))}},
-                                       sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        payload["messages"][1]["content"] = json.dumps(
+            {"watchdog_packet": bounded, "evidence": evidence_list,
+             "coverage": {"input_clipped": True,
+                          "omitted_fields": sorted(set(omitted))}},
+            sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     critical = {"packet.stage", "packet.observation_sequence", "packet.alerts",
                 "packet.coverage_events", "packet.degraded"}
     critical_omitted = any(item in critical or item.startswith("packet.alerts[") for item in omitted)
@@ -302,45 +340,45 @@ def build_observer_request(packet: Mapping[str, Any], *, model: str = DEFAULT_MO
     return payload, bool(omitted), coverage
 
 
-class OpenAIObserverBackend:
-    """Direct, one-shot Responses API observer with no tools or retries."""
+class FireworksObserverBackend:
+    """Direct, one-shot Fireworks chat-completions observer."""
 
-    provider = "openai"
-    transport_name = "openai_responses"
+    provider = "fireworks"
+    transport_name = "fireworks_chat_completions"
 
     def __init__(self, *, api_key: str | None = None, model: str = DEFAULT_MODEL,
-                 reasoning_effort: str = DEFAULT_EFFORT,
+                 reasoning_effort: str | None = DEFAULT_EFFORT,
                  timeout_seconds: float = REQUEST_TIMEOUT_SECONDS,
                  transport: Callable[[dict[str, Any], float], dict[str, Any]] | None = None,
-                 endpoint: str = "https://api.openai.com/v1/responses") -> None:
-        if reasoning_effort != DEFAULT_EFFORT:
-            raise ValueError("watchdog observer requires reasoning effort 'none'")
-        self.api_key = api_key if api_key is not None else os.environ.get("NORRUST_OPENAI_API_KEY")
+                 endpoint: str | None = None) -> None:
+        # Fireworks structured responses disable reasoning output. The account
+        # model's reasoning control is not assumed or silently translated.
+        if reasoning_effort is not None:
+            raise ValueError("Fireworks watchdog observer does not accept unverified reasoning_effort")
+        self.api_key = api_key if api_key is not None else os.environ.get("FIREWORKS_API_KEY")
         self.model = model
-        self.reasoning_effort = reasoning_effort
+        self.reasoning_effort = None
         self.timeout_seconds = min(float(timeout_seconds), REQUEST_TIMEOUT_SECONDS)
-        self.endpoint = endpoint
+        self.endpoint = endpoint or os.environ.get("NORRUST_FIREWORKS_URL", FIREWORKS_URL)
         self._default_transport = transport is None
         if transport is None:
-            self.transport = lambda payload, timeout: _post_responses(
+            self.transport = lambda payload, timeout: _post_chat_completions(
                 payload, self.api_key or "", timeout, self.endpoint)
         else:
             self.transport = transport
 
     def prepare(self, packet: Mapping[str, Any], evidence: Iterable[Mapping[str, Any]] = ()) -> tuple[dict[str, Any], bool, str]:
         if self.api_key is None and self._default_transport:
-            raise MissingObserverCredential("NORRUST_OPENAI_API_KEY is not configured")
-        return build_observer_request(packet, model=self.model,
-                                      reasoning_effort=self.reasoning_effort, evidence=evidence)
+            raise MissingObserverCredential("FIREWORKS_API_KEY is not configured")
+        return build_observer_request(packet, model=self.model, reasoning_effort=None, evidence=evidence)
 
     def make_dispatch_call(self, game_id: str, call_id: str,
                            request_id: str | None = None) -> ModelCall:
         return build_call(game_id=game_id, call_id=call_id, provider=self.provider,
                           transport=self.transport_name, raw_usage=None,
-                          usage_map=OPENAI_RESPONSES_USAGE_MAP, status="dispatched",
+                          usage_map=FIREWORKS_USAGE_MAP, status="dispatched",
                           call_role="observer", request_id=request_id,
-                          requested_model=self.model,
-                          requested_reasoning_effort=self.reasoning_effort,
+                          requested_model=self.model, requested_reasoning_effort=None,
                           output_limit=MAX_OUTPUT_TOKENS, started_at=str(time.time()))
 
     def observe(self, packet: Mapping[str, Any], *, call_id: str,
@@ -349,9 +387,6 @@ class OpenAIObserverBackend:
         payload, clipped, coverage = self.prepare(packet, evidence)
         started = time.time()
         try:
-            # urllib's timeout is per socket operation.  Put the whole
-            # transport behind a daemon worker so a trickling response cannot
-            # exceed the observer's 30-second wall deadline.
             box: dict[str, Any] = {}
             def invoke() -> None:
                 try:
@@ -367,7 +402,7 @@ class OpenAIObserverBackend:
                 raise box["error"]
             response = box.get("response")
             if not isinstance(response, dict):
-                raise ObserverSchemaError("OpenAI response was not an object")
+                raise ObserverSchemaError("Fireworks response was not an object")
             text = _response_text(response)
             try:
                 decision = ObserverDecision.parse(json.loads(text))
@@ -375,36 +410,46 @@ class OpenAIObserverBackend:
                 ended = time.time()
                 failed = build_call(game_id=game_id, call_id=call_id, provider=self.provider,
                                     transport=self.transport_name, raw_usage=response.get("usage"),
-                                    usage_map=OPENAI_RESPONSES_USAGE_MAP, status="failed",
+                                    usage_map=FIREWORKS_USAGE_MAP, status="failed",
                                     call_role="observer", request_id=request_id,
                                     requested_model=self.model, reported_model=response.get("model"),
-                                    provider_response_id=response.get("id"),
-                                    requested_reasoning_effort=self.reasoning_effort,
-                                    output_limit=MAX_OUTPUT_TOKENS, started_at=str(started),
-                                    ended_at=str(ended), elapsed_ms=round((ended - started) * 1000),
+                                    provider_response_id=response.get("id"), output_limit=MAX_OUTPUT_TOKENS,
+                                    started_at=str(started), ended_at=str(ended),
+                                    elapsed_ms=round((ended - started) * 1000),
                                     usage_source="provider_response" if response.get("usage") is not None else None,
                                     error_code="schema_error")
                 failed.raw_usage_json = response
-                raise ObserverResponseError(f"invalid observer decision: {exc}", call=failed,
+                raise ObserverResponseError(f"invalid Fireworks observer decision: {exc}", call=failed,
                                              response=response) from exc
             usage = response.get("usage")
             ended = time.time()
             final = build_call(game_id=game_id, call_id=call_id, provider=self.provider,
                                transport=self.transport_name, raw_usage=usage,
-                               usage_map=OPENAI_RESPONSES_USAGE_MAP, status="completed",
+                               usage_map=FIREWORKS_USAGE_MAP, status="completed",
                                call_role="observer", request_id=request_id,
                                requested_model=self.model, reported_model=response.get("model"),
-                               provider_response_id=response.get("id"),
-                               requested_reasoning_effort=self.reasoning_effort,
-                               reported_reasoning_effort=(response.get("reasoning", {}) or {}).get("effort")
-                               if isinstance(response.get("reasoning"), dict) else None,
-                               output_limit=MAX_OUTPUT_TOKENS, started_at=str(started),
-                               ended_at=str(ended), elapsed_ms=round((ended - started) * 1000),
+                               provider_response_id=response.get("id"), output_limit=MAX_OUTPUT_TOKENS,
+                               started_at=str(started), ended_at=str(ended),
+                               elapsed_ms=round((ended - started) * 1000),
                                usage_source="provider_response" if usage is not None else None)
-            # Keep the full provider receipt (including response identity and
-            # output) while normalized token fields come only from usage.
             final.raw_usage_json = response
             return ObserverResult(decision, final, response, clipped, coverage)
+        except ObserverTransportError as exc:
+            # Preserve bounded provider evidence on the lifecycle row. The
+            # exception never includes request headers or credentials.
+            ended = time.time()
+            code = exc.provider_code or (f"http_{exc.status}" if exc.status else type(exc).__name__)
+            failed = build_call(game_id=game_id, call_id=call_id, provider=self.provider,
+                                transport=self.transport_name, raw_usage=None,
+                                usage_map=FIREWORKS_USAGE_MAP, status="failed",
+                                call_role="observer", request_id=request_id,
+                                requested_model=self.model, output_limit=MAX_OUTPUT_TOKENS,
+                                started_at=str(started), ended_at=str(ended),
+                                elapsed_ms=round((ended - started) * 1000),
+                                error_code=str(code)[:128], usage_source=None)
+            failed.raw_usage_json = exc.response or {"error": {"message": str(exc)[:512]}}
+            exc.call = failed
+            raise
         except ObserverError:
             raise
         except Exception as exc:
@@ -432,10 +477,10 @@ class FakeObserverBackend:
                            request_id: str | None = None) -> ModelCall:
         return build_call(game_id=game_id, call_id=call_id, provider=self.provider,
                           transport=self.transport_name, raw_usage=None,
-                          usage_map=OPENAI_RESPONSES_USAGE_MAP, status="dispatched",
+                          usage_map=FIREWORKS_USAGE_MAP, status="dispatched",
                           call_role="observer", request_id=request_id,
                           requested_model=self.model,
-                          requested_reasoning_effort=DEFAULT_EFFORT,
+                          requested_reasoning_effort=None,
                           output_limit=MAX_OUTPUT_TOKENS, started_at=str(time.time()))
 
     def observe(self, packet: Mapping[str, Any], *, call_id: str,
@@ -443,6 +488,9 @@ class FakeObserverBackend:
                 request_id: str | None = None) -> ObserverResult:
         payload, clipped, coverage = self.prepare(packet, evidence)
         self.payloads.append(payload)
+        serialized_input = json.dumps(payload.get("messages", []), sort_keys=True,
+                                      separators=(",", ":"))
+        estimated_input = conservative_token_count(serialized_input)
         if self.delay:
             time.sleep(self.delay)
         if callable(self.responses):
@@ -454,24 +502,24 @@ class FakeObserverBackend:
         if isinstance(raw, ObserverDecision):
             decision = raw
             response = {"id": f"fake-{call_id}", "model": self.model,
-                        "usage": {"input_tokens": conservative_token_count(payload["input"]),
-                                   "output_tokens": 1, "total_tokens": conservative_token_count(payload["input"]) + 1}}
+                        "usage": {"prompt_tokens": estimated_input,
+                                   "completion_tokens": 1, "total_tokens": estimated_input + 1}}
         elif isinstance(raw, dict) and "response" in raw:
             response = raw["response"]
             decision = ObserverDecision.parse(raw.get("decision", raw.get("response")))
         else:
             decision = ObserverDecision.parse(raw)
             response = {"id": f"fake-{call_id}", "model": self.model,
-                        "usage": {"input_tokens": conservative_token_count(payload["input"]),
-                                   "output_tokens": 1, "total_tokens": conservative_token_count(payload["input"]) + 1}}
+                        "usage": {"prompt_tokens": estimated_input,
+                                   "completion_tokens": 1, "total_tokens": estimated_input + 1}}
         now = time.time()
         call = build_call(game_id=game_id, call_id=call_id, provider=self.provider,
                           transport=self.transport_name, raw_usage=response.get("usage"),
-                          usage_map=OPENAI_RESPONSES_USAGE_MAP, status="completed",
+                          usage_map=FIREWORKS_USAGE_MAP, status="completed",
                           call_role="observer", request_id=request_id,
                           requested_model=self.model, reported_model=response.get("model"),
                           provider_response_id=response.get("id"), output_limit=MAX_OUTPUT_TOKENS,
-                          requested_reasoning_effort=DEFAULT_EFFORT,
+                          requested_reasoning_effort=None,
                           started_at=str(now), ended_at=str(now), elapsed_ms=0,
                           usage_source="fixture")
         call.raw_usage_json = response
@@ -963,7 +1011,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     packet = json.loads(args.packet) if args.packet else None
     controller = ObserverController(args.run_id, args.state,
-                                    backend=OpenAIObserverBackend(model=args.model), mode=args.mode)
+                                    backend=FireworksObserverBackend(model=args.model), mode=args.mode)
     try:
         print(json.dumps({"scheduled": controller.poll(packet), "state": controller.state}, sort_keys=True))
         if controller.active:

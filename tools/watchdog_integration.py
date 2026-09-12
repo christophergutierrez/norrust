@@ -116,8 +116,8 @@ def attach_observer(run_watchdog: Any, log_path: str | Path, *, backend: Any | N
     observer_state = Path(state_path) if state_path else root / "observer-state.json"
     sidecar = Path(usage_sidecar) if usage_sidecar else log.parent / "usage.ndjson"
     if backend is None:
-        from .watchdog_observer import OpenAIObserverBackend
-        backend = OpenAIObserverBackend()
+        from .watchdog_observer import FireworksObserverBackend
+        backend = FireworksObserverBackend()
     read = getattr(run_watchdog, "read_evidence")
     kwargs = {
         "catalog_game_id": identity,
