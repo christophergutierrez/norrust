@@ -152,6 +152,56 @@ class WatchdogReviewTests(unittest.TestCase):
             self.assertEqual(outcomes["last_outcome"], "failure")
             self.assertGreaterEqual(outcomes["observer_failures"], 2)
 
+    def test_later_pending_window_overrides_earlier_judgment(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "observer.journal.ndjson"
+            path.write_text('{"type":"dispatch"}\n{"type":"verdict","decision":"continue"}\n'
+                            '{"type":"dispatch"}\n{"type":"verdict","decision":"inspect"}\n')
+            outcomes = read_observer_outcomes(path)
+            self.assertTrue(outcomes["judgment_observed"])
+            self.assertEqual(outcomes["last_outcome"], "pending")
+
+    def test_inspect_followup_failure_leaves_latest_window_unjudged(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "observer.journal.ndjson"
+            path.write_text('{"type":"verdict","decision":"continue"}\n'
+                            '{"type":"verdict","decision":"inspect"}\n'
+                            '{"type":"investigation_error","error":"transport"}\n')
+            outcomes = read_observer_outcomes(path)
+            self.assertEqual(outcomes["usable_judgments"], 1)
+            self.assertEqual(outcomes["last_outcome"], "failure")
+            self.assertEqual(outcomes["observer_failures"], 1)
+
+    def test_dispatch_after_judgment_is_pending_until_its_terminal_event(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "observer.journal.ndjson"
+            path.write_text('{"type":"verdict","decision":"continue"}\n'
+                            '{"type":"dispatch","call_id":"later"}\n')
+            outcomes = read_observer_outcomes(path)
+            self.assertTrue(outcomes["judgment_observed"])
+            self.assertEqual(outcomes["last_outcome"], "pending")
+
+    def test_missing_decision_is_a_failure_gap(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "observer.journal.ndjson"
+            path.write_text('{"type":"verdict"}\n')
+            outcomes = read_observer_outcomes(path)
+            self.assertFalse(outcomes["judgment_observed"])
+            self.assertEqual(outcomes["last_outcome"], "failure")
+            self.assertEqual(outcomes["observer_failure_reasons"]["invalid_verdict_decision"], 1)
+
+    def test_invalid_decision_and_truncated_tail_are_not_judgments(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "observer.journal.ndjson"
+            path.write_text('{"type":"verdict","decision":"continue"}\n' +
+                            '{"type":"verdict","decision":"wat"}\n' +
+                            '{}\n' * 4097)
+            outcomes = read_observer_outcomes(path)
+            self.assertTrue(outcomes["judgment_observed"])
+            self.assertEqual(outcomes["last_outcome"], "failure")
+            self.assertIn("invalid_verdict_decision", outcomes["observer_failure_reasons"])
+            self.assertIn("journal_truncated", outcomes["observer_failure_reasons"])
+
 
 if __name__ == "__main__":
     unittest.main()

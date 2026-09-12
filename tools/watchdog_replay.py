@@ -47,6 +47,11 @@ class RecordingBackend:
         self.provider = backend.provider
         self.transport_name = backend.transport_name
 
+    @property
+    def halted(self) -> bool:
+        """Expose evaluation-wide aborts without inventing a local failure."""
+        return bool(getattr(self.backend, "halted", False))
+
     def prepare(self, packet, evidence=()):
         result = self.backend.prepare(packet, evidence)
         self.payload_path.parent.mkdir(parents=True, exist_ok=True)
@@ -118,7 +123,7 @@ def _drain(controller: ObserverController,
 
 
 def replay_case(case: dict[str, Any], output_dir: str | Path, *, fake: bool = True,
-                model: str | None = None) -> dict[str, Any]:
+                model: str | None = None, backend: Any | None = None) -> dict[str, Any]:
     """Replay one case into a persistent per-case directory."""
     root = Path(output_dir).resolve() / str(case["case_id"])
     root.mkdir(parents=True, exist_ok=True)
@@ -147,8 +152,8 @@ def replay_case(case: dict[str, Any], output_dir: str | Path, *, fake: bool = Tr
     # the replay archive through its normal read-only path.
     observer_state = watchdog.run_directory / "observer-state.json"
     fake_calls = [0]
-    base = (FakeObserverBackend(lambda payload: _fake_response(payload, fake_calls))
-            if fake else FireworksObserverBackend(model=model or DEFAULT_MODEL))
+    base = backend or (FakeObserverBackend(lambda payload: _fake_response(payload, fake_calls))
+                       if fake else FireworksObserverBackend(model=model or DEFAULT_MODEL))
     payload_path = root / "observer_payloads.ndjson"
     receipt_path = root / "observer_receipts.ndjson"
     payload_path.touch()
@@ -199,7 +204,7 @@ def replay_case(case: dict[str, Any], output_dir: str | Path, *, fake: bool = Tr
             packet = watchdog.poll(force=True)
             if first_alert_at is None and packet.get("alerts"):
                 first_alert_at = clock.now
-            if int(controller.state.get("dispatched_calls", 0)) < 3:
+            if int(controller.state.get("dispatched_calls", 0)) < 3 and not backend.halted:
                 controller.poll(packet)
             _drain(controller)
             verdict = controller.state.get("last_verdict")
@@ -215,7 +220,7 @@ def replay_case(case: dict[str, Any], output_dir: str | Path, *, fake: bool = Tr
         # investigation before the archive closes.
         clock.now += 300.0
         final_packet = watchdog.poll(force=True)
-        if int(controller.state.get("dispatched_calls", 0)) < 3:
+        if int(controller.state.get("dispatched_calls", 0)) < 3 and not backend.halted:
             controller.poll(final_packet)
         drained = _drain(controller)
         with status_path.open("a", encoding="utf-8") as stream:
@@ -248,8 +253,11 @@ def replay_case(case: dict[str, Any], output_dir: str | Path, *, fake: bool = Tr
             "stop_validation": validations[-1] if validations else None,
             "scored": scored,
             "false_stop": (validated and expected in {"continue", "inspect"}) if scored else None,
-            "missed_loop": (expected == "stop" and not validated
-                            and outcomes.get("last_outcome") not in {"failure", "pending"}) if scored else None,
+            # A prior usable window can remain evidence for a false stop, but
+            # a later pending/failed window cannot be scored as a missed stop.
+            "missed_loop": ((expected == "stop" and not validated)
+                            if scored and outcomes.get("last_outcome") == "judgment"
+                            else None),
             **outcomes,
             "first_alert_at_seconds": first_alert_at,
             "stop_verdict_at_seconds": stop_verdict_at,
@@ -266,7 +274,8 @@ def replay_case(case: dict[str, Any], output_dir: str | Path, *, fake: bool = Tr
                                "verdicts": outcomes["observer_verdicts"],
                                "failures": outcomes["observer_failures"],
                                "failure_reasons": outcomes["observer_failure_reasons"]}
-        elif outcomes["observer_failures"]:
+        elif (outcomes["observer_failures"] or
+              outcomes.get("last_outcome") in {"pending", "failure"}):
             case_evaluation = {"status": "partial", "network_calls": dispatched,
                                "verdicts": outcomes["observer_verdicts"],
                                "failures": outcomes["observer_failures"],
@@ -285,8 +294,8 @@ def replay_case(case: dict[str, Any], output_dir: str | Path, *, fake: bool = Tr
 
 
 def replay_cases(cases: list[dict[str, Any]], output_dir: str | Path, *, fake: bool = True,
-                 model: str | None = None) -> dict[str, Any]:
-    results = [replay_case(case, output_dir, fake=fake, model=model) for case in cases]
+                 model: str | None = None, backend: Any | None = None) -> dict[str, Any]:
+    results = [replay_case(case, output_dir, fake=fake, model=model, backend=backend) for case in cases]
     metrics = [result["metrics"] for result in results]
     scored = [item for item in metrics if item["scored"]]
     verdicts = sum(item["observer_verdicts"] for item in metrics)
@@ -300,7 +309,9 @@ def replay_cases(cases: list[dict[str, Any]], output_dir: str | Path, *, fake: b
     else:
         if not scored:
             status = "failed"
-        elif failures or len(scored) != len(metrics):
+        elif (failures or len(scored) != len(metrics) or
+              any(item.get("model_evaluation", {}).get("status") in {"partial", "failed"}
+                  for item in results)):
             status = "partial"
         else:
             status = "completed"
@@ -310,6 +321,8 @@ def replay_cases(cases: list[dict[str, Any]], output_dir: str | Path, *, fake: b
                       "failure_reasons": reasons,
                       "cases_scored": len(scored),
                       "cases_without_judgment": len(metrics) - len(scored)}
+    scored_misses = [item["missed_loop"] for item in scored
+                     if item.get("missed_loop") is not None]
     aggregate = {"schema_version": 1, "mode": "fake" if fake else "model",
             "model_evaluation": evaluation,
             # Detection rates are reported over scored cases only; with nothing
@@ -317,7 +330,7 @@ def replay_cases(cases: list[dict[str, Any]], output_dir: str | Path, *, fake: b
             "metrics": {"cases": len(metrics), "cases_scored": len(scored),
                         "cases_without_judgment": len(metrics) - len(scored),
                         "false_stops": sum(item["false_stop"] for item in scored) if scored else None,
-                        "missed_loops": sum(item["missed_loop"] for item in scored) if scored else None,
+                        "missed_loops": sum(scored_misses) if scored_misses else None,
                         "detection_delays_seconds": [item["detection_delay_seconds"] for item in metrics if item["detection_delay_seconds"] is not None],
                         "observer_calls": sum(item["observer_calls"] for item in metrics),
                         "observer_verdicts": verdicts, "observer_failures": failures,
@@ -343,7 +356,15 @@ def main(argv: list[str] | None = None) -> int:
     payload = json.loads(args.manifest.read_text(encoding="utf-8"))
     cases_path = args.manifest.with_name(payload["cases_file"])
     cases = json.loads(cases_path.read_text(encoding="utf-8")).get("cases", [])
-    print(json.dumps(replay_cases(cases, args.output_dir, fake=args.fake, model=args.model), sort_keys=True))
+    if args.fake:
+        result = replay_cases(cases, args.output_dir, fake=True)
+    else:
+        # The maintained live entry point must use the one-call preflight,
+        # shared physical cap, and fail-fast accounting.  Keep this legacy
+        # module as a thin CLI alias for users of its documented command.
+        from .watchdog_evaluation import evaluate
+        result = evaluate(cases, args.output_dir, fake=False, model=args.model)
+    print(json.dumps(result, sort_keys=True))
     return 0
 
 

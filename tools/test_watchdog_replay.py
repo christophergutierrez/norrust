@@ -136,6 +136,33 @@ class WatchdogReplayTests(unittest.TestCase):
             self.assertIsNone(persistent["false_stop"])
             self.assertEqual(persistent["observer_verdicts"], 0)
 
+    def test_later_failed_inspection_is_partial_and_missed_loop_unknown(self):
+        responses = [
+            {"decision": "continue", "reason_code": "ok", "evidence_ids": [], "explanation": "fixture"},
+            {"decision": "inspect", "reason_code": "check", "evidence_ids": [], "explanation": "fixture"},
+            ObserverTransportError("transport failed"),
+        ]
+        case = {"case_id": "partial-inspection", "expected": "stop",
+                "timeline": [{"type": "status", "alerts": [{"identity": "same"}]},
+                             {"type": "status", "alerts": [{"identity": "same"}]}],
+                "stream_chunks": ["evidence"]}
+
+        def respond(_payload):
+            value = responses.pop(0)
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        backend = FakeObserverBackend(respond)
+        with tempfile.TemporaryDirectory() as output:
+            result = replay_cases([case], output, fake=False, backend=backend)
+            metrics = result["cases"][0]["metrics"]
+            self.assertTrue(metrics["judgment_observed"])
+            self.assertEqual(metrics["last_outcome"], "failure")
+            self.assertIsNone(metrics["missed_loop"])
+            self.assertEqual(result["model_evaluation"]["status"], "partial")
+            self.assertIsNone(result["metrics"]["missed_loops"])
+
     def test_fake_run_scores_every_case_and_keeps_integer_rates(self):
         with tempfile.TemporaryDirectory() as output:
             result = replay_cases(self.cases, output, fake=True)
@@ -148,10 +175,10 @@ class WatchdogReplayTests(unittest.TestCase):
             self.assertEqual(metrics["observer_verdicts"], metrics["observer_calls"])
             self.assertTrue(all(item["metrics"]["scored"] for item in result["cases"]))
 
-    def test_manifest_records_dated_price_ceiling_without_authorizing_paid_calls(self):
+    def test_manifest_records_dated_price_ceiling_without_legacy_authorization_flag(self):
         manifest = json.loads((FIXTURES / "manifest.json").read_text())
         evaluation = manifest["evaluation"]
-        self.assertFalse(evaluation["paid_launch_authorized"])
+        self.assertNotIn("paid_launch_authorized", evaluation)
         self.assertEqual(evaluation["rates"]["checked_date"], "2026-09-12")
         self.assertEqual(evaluation["rates"]["source"], "https://docs.fireworks.ai/serverless/pricing")
         self.assertEqual(evaluation["worst_case_usd_no_cache"], 0.0113664)
@@ -166,6 +193,17 @@ class WatchdogReplayTests(unittest.TestCase):
             self.assertIn("false_stops", payload["metrics"])
             self.assertEqual(payload["model_evaluation"]["status"], "not_run")
             self.assertTrue((Path(output) / "failure_reasoning_loop" / "report.json").is_file())
+
+    def test_model_cli_routes_through_bounded_evaluation_entrypoint(self):
+        with tempfile.TemporaryDirectory() as output:
+            with mock.patch("tools.watchdog_evaluation.evaluate",
+                            return_value={"model_evaluation": {"status": "failed"}}) as evaluate:
+                rc = watchdog_replay.main([
+                    "--model", "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b",
+                    "--manifest", str(FIXTURES / "manifest.json"),
+                    "--output-dir", output])
+            self.assertEqual(rc, 0)
+            evaluate.assert_called_once()
 
 
 if __name__ == "__main__":

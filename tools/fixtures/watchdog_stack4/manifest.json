@@ -9,9 +9,9 @@
   "selection_notes": "Labels were fixed from recorded evidence before any paid evaluation. Historical excerpts are exposed only as completed-request evidence; synthetic timelines are explicitly synthetic and do not establish model quality.",
   "evaluation": {
     "maximum_calls_per_case": 3,
-    "maximum_calls": 36,
-    "maximum_input_tokens": 147456,
-    "maximum_output_tokens": 18432,
+    "maximum_calls": 37,
+    "maximum_input_tokens": 151552,
+    "maximum_output_tokens": 18944,
     "status": "prepared_not_run",
     "rates": {
       "currency": "USD",
@@ -24,7 +24,8 @@
     "worst_case_usd_no_cache": 0.0113664,
     "notes": [
       "No caching discount assumed.",
-      "Output cap includes reasoning.",
+      "Reasoning controls are omitted; any provider reasoning usage remains unknown.",
+      "The 4096 input setting is a conservative local bytes/3 estimate, not a provider tokenizer measurement.",
       "This is a request-limit ceiling, not an invoice or observed usage.",
       "No Fireworks player requests are part of this offline evaluation."
     ],

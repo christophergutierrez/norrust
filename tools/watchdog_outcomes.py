@@ -75,6 +75,9 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
             reason = event.get("error") or kind
             reasons[str(reason)] = reasons.get(str(reason), 0) + 1
             last_outcome = "failure"
+    if truncated:
+        # A valid prefix cannot establish coverage for a torn/omitted tail.
+        last_outcome = "failure"
     return {
         "observer_verdicts": verdicts,
         "usable_judgments": judgments,
@@ -82,4 +85,6 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
         "observer_failure_reasons": reasons,
         "judgment_observed": judgments > 0,
         "last_outcome": last_outcome,
+        "journal_truncated": truncated,
+        "coverage_complete": not truncated and failures == 0,
     }

@@ -238,6 +238,13 @@ def review(log_path: str | Path, *, run_id: str | None = None,
                                             {conversation_id} if conversation_id else set())
     completed_calls = sum(call.status == "completed" for call in observer_calls_detail)
     failed_calls = sum(call.status == "failed" for call in observer_calls_detail)
+    journal_available = (observer_path is not None and
+                         observer_path.with_suffix(".journal.ndjson").is_file())
+    # An intact observer journal owns lifecycle failure counts. A missing
+    # journal falls back to failed receipts, avoiding double-counting the same
+    # physical failure from both sources.
+    failure_count = (journal_outcomes.get("observer_failures", 0)
+                     if journal_available else failed_calls)
     valid_observer_mode = (observer_state_exists and not observer_state_invalid and
                            observer.get("mode") in {"off", "observe", "enforce"}
                            and observer_calls == 0)
@@ -261,16 +268,20 @@ def review(log_path: str | Path, *, run_id: str | None = None,
         # A receipt proves dispatch and perhaps transport delivery. It is a
         # successful evaluation only when a usable decision is also present.
         if not journal_outcomes.get("judgment_observed"):
-            status = "failed" if failed_calls == observed_calls or completed_calls == 0 else "partial"
+            evaluation_status = "failed" if failed_calls == observed_calls or completed_calls == 0 else "partial"
+        elif journal_outcomes.get("last_outcome") in {"pending", "failure"}:
+            evaluation_status = "partial"
         elif journal_outcomes.get("observer_failures") or failed_calls:
-            status = "partial"
+            evaluation_status = "partial"
         else:
-            status = "completed"
-        evaluation = {"status": status, "network_calls": network_calls,
+            evaluation_status = "completed"
+        evaluation = {"status": evaluation_status, "network_calls": network_calls,
                       "observed_calls": observed_calls,
                       "verdicts": journal_outcomes.get("observer_verdicts", 0),
-                      "failures": journal_outcomes.get("observer_failures", 0) + failed_calls,
-                      "failure_reasons": journal_outcomes.get("observer_failure_reasons", {})}
+                      "failures": failure_count,
+                      "failure_reasons": journal_outcomes.get("observer_failure_reasons", {}),
+                      "coverage_complete": journal_outcomes.get("coverage_complete", False),
+                      "journal_truncated": journal_outcomes.get("journal_truncated", False)}
     else:
         evaluation = {"status": "unknown", "network_calls": None,
                       "observed_calls": observer_calls}

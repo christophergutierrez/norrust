@@ -4,6 +4,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from .watchdog_observer import (
     MAX_CALLS,
@@ -16,6 +17,7 @@ from .watchdog_observer import (
     ObserverSchemaError,
     ObserverTimeout,
     FireworksObserverBackend,
+    _post_chat_completions,
     build_observer_request,
     conservative_token_count,
 )
@@ -88,6 +90,33 @@ class DecisionValidationTests(unittest.TestCase):
         self.assertEqual(caught.exception.call.provider_response_id, "resp-1")
         self.assertEqual(caught.exception.call.input_tokens, 12)
         self.assertEqual(caught.exception.call.call_role, "observer")
+
+    def test_fireworks_does_not_accept_responses_api_output_fallback(self):
+        backend = FireworksObserverBackend(api_key="test", transport=lambda _payload, _timeout: {
+            "id": "resp-legacy", "output_text": json.dumps(decision()),
+            "usage": {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15}})
+        with self.assertRaises(ObserverResponseError):
+            backend.observe({"stage": "active", "observation_sequence": 1, "alerts": []},
+                            call_id="c-legacy", game_id="g")
+
+    def test_http_receipt_keeps_request_id_and_redacts_echoed_credential(self):
+        class Response:
+            headers = {"x-request-id": "provider-request-1"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps({"id": "resp-1", "choices": [],
+                                   "echo": "secret"}).encode()
+
+        with mock.patch("urllib.request.urlopen", return_value=Response()):
+            result = _post_chat_completions({}, "secret", 1.0)
+        self.assertEqual(result["_request_id"], "provider-request-1")
+        self.assertEqual(result["echo"], "[redacted]")
 
     def test_fireworks_transport_has_wall_deadline_for_trickling_or_hung_call(self):
         def hang(_payload, _timeout):

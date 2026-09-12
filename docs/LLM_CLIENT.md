@@ -1346,6 +1346,23 @@ python3 -m tools.watchdog_replay \
   --output-dir /absolute/new/offline-evaluation --fake
 ```
 
+The maintained model evaluation entry point performs exactly one validated
+Fireworks preflight before dispatching any labelled case. A failed preflight
+leaves every case explicitly unattempted; confirmed account-credit failures
+stop the whole run, while a generic rate-limit response remains a transport
+failure. The experiment is capped at 37 physical calls (one preflight plus
+three per case) and refuses to reuse an output directory:
+
+```bash
+python3 -m tools.watchdog_evaluation \
+  --manifest tools/fixtures/watchdog_stack4/manifest.json \
+  --output-dir /absolute/new/fireworks-evaluation
+```
+
+Add `--fake` for the offline fixture path; it skips preflight and makes zero
+provider calls. Preflight and aggregate reports retain measured provider usage
+when available and leave cache, reasoning, and final billing unknown otherwise.
+
 Use a new output directory. The runner retains chronological status, request
 payloads, receipts and verdicts, distinguishes controller recommendations from
 supervisor-validated stops, and caps each case at three observer calls. The

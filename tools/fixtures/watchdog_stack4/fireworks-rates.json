@@ -1,0 +1,13 @@
+{
+  "rates": [
+    {
+      "model": "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b",
+      "effective_date": "2026-09-12",
+      "input_per_million": 0.05,
+      "cached_input_per_million": 0.01,
+      "output_per_million": 0.2,
+      "reasoning_included_in_output": true,
+      "source": "https://docs.fireworks.ai/serverless/pricing"
+    }
+  ]
+}

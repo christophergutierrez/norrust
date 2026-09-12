@@ -102,6 +102,30 @@ class MissingObserverCredential(ObserverTransportError):
     pass
 
 
+def _sanitize_provider_text(value: Any, api_key: str | None = None) -> str:
+    """Bound provider text and remove credential-shaped values."""
+    text = str(value)
+    if api_key:
+        text = text.replace(api_key, "[redacted]")
+    import re
+    text = re.sub(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [redacted]", text)
+    return text[:512]
+
+
+def _redact_provider_value(value: Any, api_key: str | None) -> Any:
+    """Recursively redact a credential echoed in a provider response."""
+    if isinstance(value, str):
+        if api_key:
+            value = value.replace(api_key, "[redacted]")
+        import re
+        return re.sub(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [redacted]", value)
+    if isinstance(value, list):
+        return [_redact_provider_value(item, api_key) for item in value]
+    if isinstance(value, dict):
+        return {key: _redact_provider_value(item, api_key) for key, item in value.items()}
+    return value
+
+
 @dataclasses.dataclass(frozen=True)
 class ObserverDecision:
     decision: str
@@ -194,6 +218,11 @@ def _post_chat_completions(payload: dict[str, Any], api_key: str, timeout: float
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read()
+            headers = getattr(response, "headers", {})
+            request_id = next((headers.get(name) for name in
+                               ("x-request-id", "request-id", "fireworks-request-id")
+                               if headers.get(name)), None)
+        request_id = _sanitize_provider_text(request_id, api_key) if request_id else None
     except TimeoutError as exc:
         raise ObserverTimeout("observer request timed out") from exc
     except urllib.error.HTTPError as exc:
@@ -209,11 +238,15 @@ def _post_chat_completions(payload: dict[str, Any], api_key: str, timeout: float
         message = error.get("message")
         if not isinstance(message, str):
             message = raw.decode("utf-8", errors="replace")[:512] or exc.reason
-        bounded = {"error": {"code": str(code)[:128] if code is not None else None,
-                              "message": message[:512]}}
+        request_id = next((exc.headers.get(name) for name in
+                           ("x-request-id", "request-id", "fireworks-request-id")
+                           if exc.headers is not None and exc.headers.get(name)), None)
+        bounded = {"error": {"code": _sanitize_provider_text(code, api_key)[:128] if code is not None else None,
+                              "message": _sanitize_provider_text(message, api_key)},
+                   "_request_id": _sanitize_provider_text(request_id, api_key) if request_id else None}
         raise ObserverTransportError(
-            f"Fireworks HTTP {exc.code}: {message[:512]}", status=int(exc.code),
-            provider_code=str(code)[:128] if code is not None else None,
+            f"Fireworks HTTP {exc.code}: {_sanitize_provider_text(message, api_key)}", status=int(exc.code),
+            provider_code=_sanitize_provider_text(code, api_key)[:128] if code is not None else None,
             response=bounded) from exc
     except urllib.error.URLError as exc:
         if isinstance(exc.reason, TimeoutError):
@@ -227,17 +260,22 @@ def _post_chat_completions(payload: dict[str, Any], api_key: str, timeout: float
         raise ObserverSchemaError("Fireworks response was not JSON") from exc
     if not isinstance(value, dict):
         raise ObserverSchemaError("Fireworks response was not an object")
+    value = _redact_provider_value(value, api_key)
     if "error" in value:
         error = value["error"]
         code = error.get("code") if isinstance(error, dict) else None
         message = error.get("message") if isinstance(error, dict) else None
         message = message if isinstance(message, str) else "provider returned an error"
-        bounded = {"error": {"code": str(code)[:128] if code is not None else None,
-                              "message": message[:512]}}
+        bounded = {"error": {"code": _sanitize_provider_text(code, api_key)[:128] if code is not None else None,
+                              "message": _sanitize_provider_text(message, api_key)},
+                   "_request_id": request_id}
         raise ObserverTransportError(
-            f"Fireworks observer error: {message[:512]}",
-            provider_code=str(code)[:128] if code is not None else None,
+            f"Fireworks observer error: {_sanitize_provider_text(message, api_key)}",
+            provider_code=_sanitize_provider_text(code, api_key)[:128] if code is not None else None,
             response=bounded)
+    if request_id:
+        value = dict(value)
+        value["_request_id"] = request_id
     return value
 
 
@@ -247,23 +285,7 @@ def _response_text(response: Mapping[str, Any]) -> str:
         message = choices[0].get("message")
         if isinstance(message, dict) and isinstance(message.get("content"), str):
             return message["content"]
-    text = response.get("output_text")
-    if isinstance(text, str):
-        return text
-    chunks: list[str] = []
-    output = response.get("output")
-    if isinstance(output, list):
-        for item in output:
-            if not isinstance(item, dict) or item.get("type") != "message":
-                continue
-            content = item.get("content")
-            if not isinstance(content, list):
-                continue
-            for part in content:
-                if isinstance(part, dict) and part.get("type") in ("output_text", "text"):
-                    if isinstance(part.get("text"), str):
-                        chunks.append(part["text"])
-    return "".join(chunks)
+    return ""
 
 
 def _shrink(value: Any, omitted: list[str], path: str = "packet") -> Any:
@@ -413,7 +435,7 @@ class FireworksObserverBackend:
                                     usage_map=FIREWORKS_USAGE_MAP, status="failed",
                                     call_role="observer", request_id=request_id,
                                     requested_model=self.model, reported_model=response.get("model"),
-                                    provider_response_id=response.get("id"), output_limit=MAX_OUTPUT_TOKENS,
+                                    provider_response_id=response.get("id") or response.get("_request_id"), output_limit=MAX_OUTPUT_TOKENS,
                                     started_at=str(started), ended_at=str(ended),
                                     elapsed_ms=round((ended - started) * 1000),
                                     usage_source="provider_response" if response.get("usage") is not None else None,
@@ -428,7 +450,7 @@ class FireworksObserverBackend:
                                usage_map=FIREWORKS_USAGE_MAP, status="completed",
                                call_role="observer", request_id=request_id,
                                requested_model=self.model, reported_model=response.get("model"),
-                               provider_response_id=response.get("id"), output_limit=MAX_OUTPUT_TOKENS,
+                               provider_response_id=response.get("id") or response.get("_request_id"), output_limit=MAX_OUTPUT_TOKENS,
                                started_at=str(started), ended_at=str(ended),
                                elapsed_ms=round((ended - started) * 1000),
                                usage_source="provider_response" if usage is not None else None)
@@ -443,7 +465,10 @@ class FireworksObserverBackend:
                                 transport=self.transport_name, raw_usage=None,
                                 usage_map=FIREWORKS_USAGE_MAP, status="failed",
                                 call_role="observer", request_id=request_id,
-                                requested_model=self.model, output_limit=MAX_OUTPUT_TOKENS,
+                                requested_model=self.model,
+                                provider_response_id=((exc.response or {}).get("_request_id")
+                                                      if isinstance(exc.response, dict) else None),
+                                output_limit=MAX_OUTPUT_TOKENS,
                                 started_at=str(started), ended_at=str(ended),
                                 elapsed_ms=round((ended - started) * 1000),
                                 error_code=str(code)[:128], usage_source=None)
