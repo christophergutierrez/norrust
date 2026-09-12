@@ -77,7 +77,7 @@ both lets a completed turn bind to an exact snapshot on both ends instead of
 leaving `start_revision` unresolved on every turn. A game's terminal record
 (`type:"terminal"` in the log), or the typed terminal failure record used by
 older maintained clients (`model_error`, `budget_interrupted`, `query_error`,
-`checkpoint_error`, `preflight_error`), retains the ending time, elapsed wall
+`checkpoint_error`, `preflight_error`, `observer_interrupted`), retains the ending time, elapsed wall
 time, reason and failure code. Its `terminal_class` distinguishes
 infrastructure, model-invalid, and explicit budget-interrupted outcomes from
 a gameplay result; a failure never becomes a loss and `winner_side` remains

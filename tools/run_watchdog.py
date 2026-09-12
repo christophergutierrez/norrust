@@ -727,7 +727,7 @@ class RunWatchdog:
                 if isinstance(value, dict):
                     current_request = {key: value.get(key) for key in
                                        ("conversation_id", "harness_request_id", "request_sequence", "side_turn_id",
-                                        "side", "state_revision", "requested_model", "dispatched_at")
+                                        "side", "state_revision", "requested_model", "purpose", "dispatched_at")
                                       if value.get(key) is not None}
                     if value.get("harness_request_id") == self._latest.get("completed_request_id"):
                         current_request = None

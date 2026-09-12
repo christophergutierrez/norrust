@@ -32,7 +32,7 @@ IMPORTER_VERSION = "s1_snapshot_v1"
 # used the typed record itself as the final durable marker.
 TERMINAL_FAILURE_TYPES = {
     "model_error", "budget_interrupted", "query_error", "checkpoint_error",
-    "preflight_error", "action_failure",
+    "preflight_error", "action_failure", "observer_interrupted",
 }
 BUDGET_CODES = frozenset({"max_game_total_tokens_exhausted", "model_calls_budget_exhausted"})
 SCHEMA = """
@@ -970,6 +970,22 @@ def import_game(conn: sqlite3.Connection, archive: str | os.PathLike[str],
         terminal_snapshot = next((snapshot for snapshot in snapshots
                                   if snapshot["boundary_kind"] == "terminal"), None)
         coverage["terminal_class"] = terminal_class
+        if terminal_class == "observer_interrupted":
+            # Cancellation is a non-gameplay terminal. Preserve the stop
+            # identity and unknown provider outcome in derived catalog data so
+            # reports do not turn an interrupted request into a loss or a
+            # confirmed remote cancellation.
+            coverage["stop"] = {
+                "request_id": terminal.get("stop_request_id"),
+                "reason_code": terminal.get("stop_reason_code") or terminal.get("code"),
+                "evidence_ids": terminal.get("evidence_ids", []),
+                "observed_sequence": terminal.get("observed_sequence"),
+                "final_proven_checkpoint": terminal.get("final_proven_checkpoint"),
+                "action_boundary_status": terminal.get("action_boundary_status", "unknown"),
+                "cancellation_status": terminal.get("cancellation_status", "unknown"),
+                "remote_cancellation": terminal.get("remote_cancellation", "unknown"),
+                "coverage_status": terminal.get("coverage_status", "unknown"),
+            }
         coverage["terminal_state_revision"] = (
             _record_revision(terminal) if _record_revision(terminal) is not None
             else terminal_snapshot.get("revision") if terminal_snapshot else None)

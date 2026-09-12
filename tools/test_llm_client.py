@@ -17,6 +17,7 @@ from .llm_client import (
     TERMINAL_EXIT_CODES, TERMINAL_GAMEPLAY, TERMINAL_INFRASTRUCTURE,
     TERMINAL_BUDGET_INTERRUPTED,
     TERMINAL_MODEL_INVALID, ModelReply, classify_terminal, enforce_usage,
+    TERMINAL_OBSERVER_INTERRUPTED,
     compact_batch_preview, compact_hex_inspection, compact_observation,
     compact_target_inspection, compact_tactical_surface, compact_spatial_map, prompt_for, query_options,
     authoritative_live_state_reminder, finalize_model_prompt,
@@ -37,6 +38,7 @@ from .llm_client import (
     timeout_finish_orders,
 )
 from .response_parsing import recover_bare_tool_prefix, parse_action_response, ResponseParseError
+from .watchdog_stop import accept_stop, stop_run
 
 
 class FakeDriverProcess:
@@ -55,6 +57,80 @@ class FakeDriverProcess:
 
 
 class ClientValidationTests(unittest.TestCase):
+
+    def test_direct_resume_honors_accepted_stop_without_dispatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log_path = root / "client.ndjson"
+            checkpoint_dir = root / "client.ckpt"
+            checkpoint_dir.mkdir()
+            checkpoint = checkpoint_dir / "resume.json"
+            checkpoint.write_text('{"state_revision":0,"side_turns":0}')
+            digest = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+            log_path.write_text("\n".join([
+                json.dumps({"type": "metadata", "conversation_id": "resume-stop"}),
+                json.dumps({"type": "checkpoint_ref", "path": checkpoint.name,
+                            "digest": digest, "state_revision": 0, "side_turns": 0}),
+            ]) + "\n")
+            orders_path = root / "orders.jsonl"
+            orders_path.write_text('{"text":"[{\\"action\\":\\"EndTurn\\"}]"}\n')
+            stop_run(log_path, "manual_operator_stop", [], 0)
+            accept_stop(log_path)
+            args = argparse.Namespace(
+                driver="driver", scenario="scenario", faction0="a", faction1="b",
+                gold=1, seed=2, max_turns=3, llm_side=0, turn_timeout=4,
+                query_budget_seconds=5, max_queries_per_turn=6,
+                no_recruit_macro=False, interactive_model=False, orders_file=str(orders_path),
+                model_command=None, model_timeout=7, log=str(log_path),
+                resume_log=str(log_path),
+                max_prompt_bytes=16 * 1024 * 1024, token_input_limit=None,
+                token_output_limit=None, token_total_limit=None,
+            )
+            process = FakeDriverProcess([
+                {"type": "state", "active_faction": 0, "state_revision": 0},
+                {"type": "status", "ok": True, "what": "turn_options", "body": {}},
+            ])
+            with mock.patch("tools.llm_client.subprocess.Popen", return_value=process), \
+                    mock.patch("tools.llm_client.source_metadata", return_value={}), \
+                    mock.patch("tools.llm_client.os.fsync"):
+                code = run(args)
+            records = [json.loads(raw) for raw in log_path.read_text().splitlines()]
+            self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_OBSERVER_INTERRUPTED])
+            self.assertEqual(records[-1]["terminal_class"], TERMINAL_OBSERVER_INTERRUPTED)
+            self.assertFalse(any(item.get("type") == "model_request" for item in records))
+
+    def test_accepted_stop_fences_model_dispatch_and_is_terminal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log_path = root / "client.ndjson"
+            orders_path = root / "orders.jsonl"
+            orders_path.write_text('{"text":"[{\\"action\\":\\"EndTurn\\"}]"}\n')
+            stop_run(log_path, "manual_operator_stop", [], 0)
+            accept_stop(log_path)
+            args = argparse.Namespace(
+                driver="driver", scenario="scenario", faction0="a", faction1="b",
+                gold=1, seed=2, max_turns=3, llm_side=0, turn_timeout=4,
+                query_budget_seconds=5, max_queries_per_turn=6,
+                no_recruit_macro=False, interactive_model=False, orders_file=str(orders_path),
+                model_command=None, model_timeout=7, log=str(log_path),
+                max_prompt_bytes=16 * 1024 * 1024, token_input_limit=None,
+                token_output_limit=None, token_total_limit=None,
+            )
+            process = FakeDriverProcess([
+                {"type": "state", "active_faction": 0},
+                {"type": "status", "ok": True, "what": "turn_options", "body": {}},
+                {"type": "status", "ok": True, "what": "recruit_options", "body": {}},
+            ])
+            with mock.patch("tools.llm_client.subprocess.Popen", return_value=process), \
+                    mock.patch("tools.llm_client.source_metadata", return_value={}), \
+                    mock.patch("tools.llm_client.os.fsync"):
+                code = run(args)
+            records = [json.loads(raw) for raw in log_path.read_text().splitlines()]
+            self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_OBSERVER_INTERRUPTED])
+            self.assertEqual(records[-1]["type"], "terminal")
+            self.assertEqual(records[-1]["terminal_class"], TERMINAL_OBSERVER_INTERRUPTED)
+            self.assertFalse(any(item.get("type") == "model_request" for item in records))
+            self.assertFalse(any(item.get("type") == "forwarded_orders" for item in records))
 
     def test_recovery_classifies_only_a_leading_complete_tool_prefix(self):
         raw = '{"tool":"inspect_units","unit_ids":[12]} I inspected the unit.'
@@ -214,6 +290,7 @@ class ClientValidationTests(unittest.TestCase):
                                                 validate_before_submit=validations is not None, **kwargs)
         self.assertEqual(code, 0, records[-1])
         requests = {r["request_id"]: r for r in records if r["type"] == "model_request"}
+        self.assertEqual(next(iter(requests.values()))["purpose"], "decision")
         batches = [r for r in records if r["type"] == "forwarded_orders"]
         for batch in batches:
             self.assertEqual(batch["state_revision"], 7)
@@ -240,6 +317,7 @@ class ClientValidationTests(unittest.TestCase):
                     replies = [draft] + (["not JSON"] if malformed else []) + [final]
                     records, requests, batches = self.run_annotation_path(replies, review=True)
                     self.assertEqual(len(requests), len(replies))
+                    self.assertIn("review", {request["purpose"] for request in requests})
                     self.assertEqual(len(batches), 1)
                     self.assertEqual(batches[0]["request_id"], requests[-1]["request_id"])
                     self.assertEqual(requests[-1]["raw_output"], final)
@@ -256,6 +334,22 @@ class ClientValidationTests(unittest.TestCase):
                                         and r.get("review_id") == draft_record.get("review_id"))
                         self.assertEqual(decision.get("request_id"), requests[-1]["request_id"])
                         self.assertEqual(decision.get("side_turn_id"), draft_record.get("side_turn_id"))
+
+    def test_request_purpose_reaches_context_without_changing_canonical_prompt(self):
+        draft = self.annotated_orders("draft")
+        final = self.annotated_orders("final")
+        contexts = []
+        with mock.patch.object(llm_client, "write_request_context",
+                               side_effect=lambda _path, value: contexts.append(dict(value))):
+            records, requests, _ = self.run_annotation_path(
+                [draft, "not JSON", final], review=True)
+        self.assertEqual([request["purpose"] for request in requests],
+                         ["decision", "review", "repair"])
+        by_request = {context["harness_request_id"]: context for context in contexts}
+        for request in requests:
+            self.assertEqual(by_request[request["request_id"]]["purpose"], request["purpose"])
+            self.assertEqual(request["prompt_hash"], hashlib.sha256(
+                request["prompt"].encode()).hexdigest())
 
     def test_review_prompt_carries_only_bounded_draft_rationale(self):
         draft = self.annotated_orders("draft objective")
@@ -331,6 +425,8 @@ class ClientValidationTests(unittest.TestCase):
             with self.subTest(kwargs=kwargs, replies=replies):
                 records, requests, batches = self.run_annotation_path(replies, **kwargs)
                 self.assertEqual(len(requests), len(replies))
+                if kwargs.get("rejected") or kwargs.get("validations") is not None:
+                    self.assertIn("repair", {request["purpose"] for request in requests})
                 self.assertEqual(batches[-1]["request_id"], requests[-1]["request_id"])
                 self.assertEqual(batches[-1]["intent"], "final")
                 for request in requests:
@@ -2831,8 +2927,8 @@ class ClientValidationTests(unittest.TestCase):
             self.assertEqual(classify_terminal(reason), TERMINAL_INFRASTRUCTURE)
         self.assertEqual(classify_terminal("budget_interrupted"), TERMINAL_BUDGET_INTERRUPTED)
         self.assertEqual(
-            sorted(TERMINAL_EXIT_CODES.values()), [0, 1, 2, 3],
-            "all four terminal classes must be distinguishable by exit code alone")
+            sorted(TERMINAL_EXIT_CODES.values()), [0, 1, 2, 3, 4],
+            "all terminal classes must be distinguishable by exit code alone")
 
     def test_nested_failure_with_repair_exhausted_is_model_invalid(self):
         """The batch is rolled back and the model had its repair. That is a model

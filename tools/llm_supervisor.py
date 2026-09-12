@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -16,10 +18,331 @@ try:
     from .request_recovery import reconcile_request, reconcile_journal
     from .request_journal import _safe_session_name
     from .run_watchdog import RunWatchdog
+    from .watchdog_stop import accept_stop, read_stop, resolve_stop, validate_stop_request
 except ImportError:  # Direct ``python tools/llm_supervisor.py`` invocation.
     from request_recovery import reconcile_request, reconcile_journal
     from request_journal import _safe_session_name
     from run_watchdog import RunWatchdog
+    from watchdog_stop import accept_stop, read_stop, resolve_stop, validate_stop_request
+STOP_EXIT_CODE = 4
+STOP_GRACE_SECONDS = 5.0
+
+
+@dataclass
+class ProcessCleanup:
+    """Evidence about a supervisor-owned process-tree cleanup."""
+
+    attempted: bool
+    graceful: bool
+    forced: bool
+    remaining_pids: list[int]
+    elapsed_seconds: float
+
+
+def _descendants(root_pid: int) -> set[int]:
+    """Return descendants using Linux proc evidence, without shelling out."""
+    parents: dict[int, int] = {}
+    proc_root = Path("/proc")
+    try:
+        entries = list(proc_root.iterdir())
+    except OSError:
+        return set()
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw = (entry / "stat").read_text(encoding="utf-8")
+            # comm may contain spaces; fields before the final ')' are not
+            # safe to split. After it, field 0 is state and field 1 is ppid.
+            fields = raw[raw.rfind(")") + 2:].split()
+            parents[int(entry.name)] = int(fields[1])
+        except (OSError, ValueError, IndexError):
+            continue
+    result: set[int] = set()
+    frontier = [root_pid]
+    while frontier:
+        parent = frontier.pop()
+        children = [pid for pid, ppid in parents.items() if ppid == parent]
+        for child in children:
+            if child not in result:
+                result.add(child)
+                frontier.append(child)
+    return result
+
+
+def _proc_starttime(pid: int) -> str | None:
+    """Return Linux's PID identity component to avoid killing a reused PID."""
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        fields = raw[raw.rfind(")") + 2:].split()
+        if fields[0] == "Z":
+            # A zombie has no running process to cancel. Its PID can remain
+            # visible until the parent reaps it, so do not report it as a
+            # surviving owned process during bounded cleanup.
+            return None
+        return fields[19]
+    except (OSError, IndexError):
+        return None
+
+
+def terminate_process_tree(process: subprocess.Popen, grace_seconds: float = STOP_GRACE_SECONDS,
+                           poll_interval: float = 0.05) -> ProcessCleanup:
+    """Terminate only the child's session/process tree, then force it boundedly.
+
+    The supervisor starts the client with ``start_new_session=True``. The
+    process group catches ordinary nested shells and provider children; the
+    descendant pass also catches a child that deliberately calls ``setsid``.
+    """
+    started = time.monotonic()
+    root_pid = process.pid
+    try:
+        pgid = os.getpgid(root_pid)
+    except ProcessLookupError:
+        pgid = None
+    owned = {root_pid} | _descendants(root_pid)
+    identities = {pid: _proc_starttime(pid) for pid in owned}
+
+    def survivors() -> set[int]:
+        return {pid for pid, identity in identities.items()
+                if identity is not None and _proc_starttime(pid) == identity}
+
+    def reap_root() -> None:
+        if process.poll() is not None:
+            try:
+                process.wait(timeout=0)
+            except subprocess.TimeoutExpired:
+                pass
+
+    if pgid is not None and pgid > 1 and pgid != os.getpgrp():
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    for pid in sorted(owned):
+        if pid == process.pid:
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    deadline = started + max(0.0, float(grace_seconds))
+    while survivors() and time.monotonic() < deadline:
+        reap_root()
+        time.sleep(min(max(0.001, poll_interval), max(0.001, deadline - time.monotonic())))
+    graceful = not survivors()
+    forced = False
+    if survivors():
+        forced = True
+        try:
+            if pgid is not None and pgid > 1 and pgid != os.getpgrp():
+                os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        for pid in sorted(survivors()):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        # A parent may have exited while a detached child is still scheduled.
+        # Allow a small bounded margin for SIGKILL to become observable.
+        force_deadline = time.monotonic() + max(0.1, min(1.0, float(grace_seconds) + 0.1))
+        while survivors() and time.monotonic() < force_deadline:
+            reap_root()
+            time.sleep(min(max(0.001, poll_interval),
+                           max(0.001, force_deadline - time.monotonic())))
+    reap_root()
+    try:
+        process.wait(timeout=max(1.0, grace_seconds + 1.0))
+    except subprocess.TimeoutExpired:
+        # The caller records this as incomplete cleanup; never block forever.
+        pass
+    remaining = sorted(survivors())
+    return ProcessCleanup(True, graceful, forced, remaining, time.monotonic() - started)
+
+
+def _stop_effective(intent: dict | None) -> bool:
+    return isinstance(intent, dict) and (
+        intent.get("status") == "accepted" or
+        intent.get("resolution") in {"cancelled", "cancelled_by_client"})
+
+
+def _watchdog_validation(log: Path, intent: dict) -> tuple[bool, str]:
+    """Revalidate an intent against the latest persisted progress packet."""
+    watchdog = log.parent / f"{log.stem}.watchdog"
+    state_path = watchdog / "state.json"
+    journal_path = watchdog / "journal.ndjson"
+    state: dict = {}
+    try:
+        value = json.loads(state_path.read_text(encoding="utf-8"))
+        if isinstance(value, dict):
+            state = value
+    except (OSError, ValueError, json.JSONDecodeError):
+        state = {}
+    latest: dict = {}
+    try:
+        for raw in journal_path.read_text(encoding="utf-8").splitlines():
+            value = json.loads(raw)
+            if isinstance(value, dict) and value.get("type") == "status" and isinstance(value.get("status"), dict):
+                latest = value["status"]
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    terminal = _last_terminal(log)
+    if terminal is not None and _terminal_class(terminal) == "gameplay":
+        return False, "natural_completion_wins"
+    evidence_index = {item.get("evidence_id") for item in state.get("index", [])
+                      if isinstance(item, dict) and isinstance(item.get("evidence_id"), str)}
+    evidence = intent.get("evidence_ids") or []
+    reason = str(intent.get("reason_code", ""))
+    # Explicit operator stops may intentionally have no incident evidence.
+    if not evidence and not (reason.startswith("manual") or reason.startswith("operator")):
+        return False, "stale_evidence"
+    if any(item not in evidence_index for item in evidence):
+        return False, "stale_evidence"
+    current = latest.get("observation_sequence", state.get("observation_sequence"))
+    valid, why = validate_stop_request(
+        intent, run_id=state.get("run_id") or intent.get("run_id"), active=terminal is None,
+        current_sequence=current if isinstance(current, int) else None,
+        terminal=terminal,
+        evidence_validator=lambda item: item in evidence_index,
+        # A semantic recommendation is tied to the exact packet that supplied
+        # its evidence. A later packet can show that the suspected incident
+        # cleared even when the observation counter advanced normally.
+        require_current_sequence=bool(evidence))
+    if not valid:
+        return False, why
+    # An indexed slice must still be cited by the current packet. This catches
+    # an incident that was superseded or recovered before the signal arrived.
+    if evidence and latest:
+        packet_text = json.dumps(latest, sort_keys=True)
+        if not all(item in packet_text for item in evidence):
+            return False, "stale_incident"
+    if not latest and evidence:
+        return False, "watchdog_status_unavailable"
+    return True, "validated"
+
+
+def _run_attempt(command: list[str], log: Path, *, poll_interval: float = 0.1,
+                grace_seconds: float = STOP_GRACE_SECONDS,
+                watchdog: RunWatchdog | None = None,
+                environment: dict[str, str] | None = None) -> tuple[subprocess.CompletedProcess, dict | None, ProcessCleanup | None]:
+    """Run one attempt with a responsive stop poll and owned process session."""
+    intent = read_stop(log)
+    if isinstance(intent, dict) and intent.get("status") == "pending":
+        valid, why = _watchdog_validation(log, intent)
+        if valid:
+            intent = accept_stop(log, details={"validation": why})
+        else:
+            resolve_stop(log, why if why == "natural_completion_wins" else f"stale_{why}")
+            _append(log, {"type": "stop_ignored", "request_id": intent.get("request_id"),
+                          "reason": why})
+            intent = None
+    if _stop_effective(intent):
+        return subprocess.CompletedProcess(command, STOP_EXIT_CODE), intent, None
+    # Every supervised child gets its own session so cleanup covers shells and
+    # descendants. A watchdog is passed to the child through environment
+    # variables; polling remains recording-only and cannot accept a stop.
+    process = subprocess.Popen(command, start_new_session=True, env=environment)
+    while process.poll() is None:
+        if watchdog is not None:
+            try:
+                watchdog.poll()
+            except Exception as exc:
+                _append(log, {"type": "supervisor_watchdog_error", "message": str(exc)})
+        intent = read_stop(log)
+        if isinstance(intent, dict) and intent.get("status") == "pending":
+            valid, why = _watchdog_validation(log, intent)
+            if valid:
+                intent = accept_stop(log, details={"validation": why})
+            else:
+                resolve_stop(log, why if why == "natural_completion_wins" else f"stale_{why}")
+                _append(log, {"type": "stop_ignored", "request_id": intent.get("request_id"),
+                              "reason": why})
+                intent = None
+        if _stop_effective(intent):
+            cleanup = terminate_process_tree(process, grace_seconds, poll_interval / 2)
+            return subprocess.CompletedProcess(command, STOP_EXIT_CODE), intent, cleanup
+        time.sleep(max(0.01, poll_interval))
+    return subprocess.CompletedProcess(command, process.returncode), None, None
+
+
+def _checkpoint_evidence(log: Path) -> dict | None:
+    """Return only a checkpoint referenced and digest-validated by the log."""
+    directory = log.with_suffix(".ckpt").resolve()
+    if not directory.is_dir() or directory.is_symlink():
+        return None
+    for record in reversed(_records(log)):
+        if record.get("type") != "checkpoint_ref":
+            continue
+        relative = record.get("path")
+        expected = record.get("digest")
+        if not isinstance(relative, str) or not relative or Path(relative).is_absolute():
+            continue
+        path = (directory / relative).resolve()
+        try:
+            path.relative_to(directory)
+            payload = path.read_bytes()
+        except (OSError, ValueError):
+            continue
+        actual = __import__("hashlib").sha256(payload).hexdigest()
+        if not isinstance(expected, str) or actual != expected:
+            continue
+        return {"path": path.relative_to(directory).as_posix(), "sha256": actual,
+                "bytes": len(payload),
+                **{key: record[key] for key in
+                   ("state_revision", "side_turns", "boundary") if key in record}}
+    return None
+
+
+def _action_boundary_status(log: Path) -> str:
+    """Classify the last forwarded batch when the child is killed externally."""
+    records = _records(log)
+    forwarded = next((record for record in reversed(records)
+                     if record.get("type") == "forwarded_orders" and record.get("batch_id")), None)
+    if forwarded is None:
+        return "none"
+    batch_id = forwarded.get("batch_id")
+    if any(record.get("type") == "batch_committed" and record.get("batch_id") == batch_id
+           for record in records):
+        return "committed"
+    return "unknown"
+
+
+def _append_observer_terminal(log: Path, intent: dict, cleanup: ProcessCleanup | None) -> None:
+    """Record cancellation when the client was killed before its own fence."""
+    records = _records(log)
+    existing_terminal = _last_terminal(log)
+    if isinstance(existing_terminal, dict) and _terminal_class(existing_terminal) == "gameplay":
+        return
+    if isinstance(existing_terminal, dict) and _terminal_class(existing_terminal) == "observer_interrupted":
+        return
+    metadata = next((dict(record) for record in reversed(records)
+                     if record.get("type") == "metadata"), {})
+    context = {}
+    context_path = log.parent / "request_context.json"
+    try:
+        value = json.loads(context_path.read_text(encoding="utf-8"))
+        if isinstance(value, dict):
+            context = {key: value.get(key) for key in
+                       ("harness_request_id", "request_sequence", "state_revision",
+                        "native_request_id", "dispatched_at") if key in value}
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    details = {
+        "type": "observer_interrupted", "terminal_class": "observer_interrupted",
+        "infrastructure_invalid": False, "gameplay_valid": False,
+        "winner": None, "winner_side": None, "reason": "observer_interrupted",
+        "code": intent.get("reason_code"), "stop_request_id": intent.get("request_id"),
+        "stop_reason_code": intent.get("reason_code"),
+        "evidence_ids": intent.get("evidence_ids", []),
+        "observed_sequence": intent.get("observed_sequence"),
+        "final_proven_checkpoint": _checkpoint_evidence(log),
+        "action_boundary_status": _action_boundary_status(log),
+        "cancellation_status": ("complete" if cleanup and not cleanup.remaining_pids else "unknown"),
+        "remote_cancellation": "unknown", "coverage_status": "unknown",
+        "cleanup": (None if cleanup is None else cleanup.__dict__), **context}
+    metadata.update(details)
+    _append(log, details)
+    _append(log, {**metadata, "type": "terminal"})
 
 
 def _records(path: Path) -> list[dict]:
@@ -62,7 +385,25 @@ def _has_checkpoint(log: Path) -> bool:
 
 
 def _last_terminal(log: Path) -> dict | None:
-    return _terminal_record(_records(log))
+    records = _records(log)
+    terminal = _terminal_record(records)
+    natural = _game_end_terminal(records)
+    # A driver game_end is authoritative even if a SIGTERM lets the client
+    # append an infrastructure diagnostic before the supervisor observes the
+    # accepted stop. Preserve the engine result as the natural race winner.
+    if natural is not None and (terminal is None or
+                                _terminal_class(terminal) in {"infrastructure", None}):
+        return natural
+    return terminal
+
+
+def _game_end_terminal(records: list[dict]) -> dict | None:
+    for record in reversed(records):
+        line = record.get("line") if record.get("type") == "driver" else record
+        if isinstance(line, dict) and line.get("type") == "game_end":
+            return {"type": "derived_game_end", "terminal_class": "gameplay",
+                    "winner": line.get("winner"), "reason": line.get("reason", "winner")}
+    return None
 
 
 def _terminal_record(records: list[dict]) -> dict | None:
@@ -87,6 +428,8 @@ def _terminal_record(records: list[dict]) -> dict | None:
                 ("infrastructure" if terminal.get("type") == "checkpoint_error" else None),
                 "type": "derived_terminal", "source_type": terminal.get("type"),
                 "reason": terminal.get("reason"), "code": terminal.get("code")}
+    if terminal is not None:
+        return terminal
     return terminal
 
 
@@ -124,6 +467,23 @@ def _supervisor_state_path(log: Path) -> Path:
     return log.with_suffix(".supervisor.json")
 
 
+def _watchdog_for_log(log: Path) -> RunWatchdog:
+    """Open the recorder without replacing a progress worker's run UUID."""
+    state_path = log.parent / f"{log.stem}.watchdog" / "state.json"
+    run_id = None
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        if isinstance(state, dict) and isinstance(state.get("run_id"), str):
+            run_id = state["run_id"]
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    if run_id is None:
+        intent = read_stop(log)
+        if intent is not None:
+            run_id = intent["run_id"]
+    return RunWatchdog(log, run_id=run_id)
+
+
 def _write_state(path: Path, value: dict) -> None:
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     temporary.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
@@ -150,7 +510,7 @@ def run(command: list[str], log: Path, max_restarts: int,
                       "message": str(exc)})
         return 1
     state_path = _supervisor_state_path(log)
-    watchdog = watchdog or RunWatchdog(log)
+    watchdog = watchdog or _watchdog_for_log(log)
     try:
         try:
             supervisor_state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -175,10 +535,6 @@ def run(command: list[str], log: Path, max_restarts: int,
                           "attempt_id": attempt_id, "log_offset": start})
             os.environ["NORRUST_CODEX_ATTEMPT_ID"] = attempt_id
             invocation = command if attempt == 1 else command + ["--resume-log", str(log)]
-            # Popen keeps the supervisor responsive while a provider call is
-            # open. The watchdog itself throttles evidence reads to its
-            # configured five-second cadence; polling process state more
-            # often keeps hard completion/recovery behavior unchanged.
             environment = os.environ.copy()
             # These paths belong to this run. Inherited host/session values
             # must not redirect evidence to another game's directory.
@@ -190,21 +546,41 @@ def run(command: list[str], log: Path, max_restarts: int,
                 watchdog.poll(force=True)
             except Exception as exc:
                 _append(log, {"type": "supervisor_watchdog_error", "message": str(exc)})
-            try:
-                child = subprocess.Popen(invocation, env=environment)
-            except OSError:
-                raise
-            while child.poll() is None:
-                try:
-                    watchdog.poll()
-                except Exception as exc:
-                    _append(log, {"type": "supervisor_watchdog_error", "message": str(exc)})
-                time.sleep(max(0.01, min(float(poll_interval), 1.0)))
-            completed = child
+            completed, stop_intent, cleanup = _run_attempt(
+                invocation, log, watchdog=watchdog, environment=environment,
+                poll_interval=poll_interval)
             try:
                 watchdog.poll(force=True)
             except Exception as exc:
                 _append(log, {"type": "supervisor_watchdog_error", "message": str(exc)})
+            if stop_intent is None:
+                # The child can finish between its last poll and this return;
+                # preserve a natural winner even when the intent arrived in
+                # that narrow post-exit window.
+                late_intent = read_stop(log)
+                late_terminal = _last_terminal(log)
+                if isinstance(late_intent, dict) and isinstance(late_terminal, dict):
+                    late_reason = ("natural_completion_wins"
+                                   if _terminal_class(late_terminal) == "gameplay"
+                                   else "terminal_already_recorded")
+                    resolve_stop(log, late_reason)
+                    _append(log, {"type": "stop_ignored", "request_id": late_intent.get("request_id"),
+                                  "reason": late_reason})
+            if stop_intent is not None:
+                # A gameplay terminal established by the child wins a stop
+                # request that arrived at the same boundary. The intent stays
+                # recorded, with an explicit ignored resolution for audit.
+                terminal_after_cleanup = _last_terminal(log)
+                if isinstance(terminal_after_cleanup, dict) and _terminal_class(terminal_after_cleanup) == "gameplay":
+                    resolve_stop(log, "natural_completion_wins")
+                    _append(log, {"type": "stop_ignored", "request_id": stop_intent.get("request_id"),
+                                  "reason": "natural_completion_wins"})
+                    completed = subprocess.CompletedProcess(invocation, 0)
+                else:
+                    _append_observer_terminal(log, stop_intent, cleanup)
+                    resolve_stop(log, "cancelled", details={
+                        "cleanup": None if cleanup is None else cleanup.__dict__})
+                    return STOP_EXIT_CODE
             new_records = _attempt_records(log, start + 1)
             terminal = _terminal_record(new_records)
             terminal_class = _terminal_class(terminal)

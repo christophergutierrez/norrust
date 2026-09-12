@@ -34,6 +34,7 @@ try:
                                  validate_inspect_units_request, validate_friendly_inspect_units,
                                  query_inspect_units, validate_purpose, PURPOSE_MAX_CHARS,
                                  extract_units_inspection_choices)
+    from .watchdog_stop import read_stop, resolve_stop
 except ImportError:  # pragma: no cover - direct script compatibility
     # Running `python tools/llm_client.py` puts only the tools directory on
     # sys.path. Import the package modules from the repository root so their
@@ -56,6 +57,7 @@ except ImportError:  # pragma: no cover - direct script compatibility
                                       validate_inspect_units_request, validate_friendly_inspect_units,
                                       query_inspect_units, validate_purpose, PURPOSE_MAX_CHARS,
                                       extract_units_inspection_choices)
+    from tools.watchdog_stop import read_stop, resolve_stop
 
 ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "Engage", "EndTurn", "Advance", "Resign",
            "DoneWithImportantMoves", "FinishWithGreedy", "MoveGroupToward"}
@@ -4543,17 +4545,19 @@ TERMINAL_GAMEPLAY = "gameplay"          # winner / max_turns / resignation: a re
 TERMINAL_MODEL_INVALID = "model_invalid"  # model could not emit a legal turn
 TERMINAL_INFRASTRUCTURE = "infrastructure"  # the harness or driver broke
 TERMINAL_BUDGET_INTERRUPTED = "budget_interrupted"  # an explicit non-gameplay budget stop
+TERMINAL_OBSERVER_INTERRUPTED = "observer_interrupted"  # durable watchdog cancellation
 
 GAMEPLAY_REASONS = ("winner", "max_turns", "resignation")
 
 # Exit codes are distinct so a caller can tell the outcomes apart without
 # parsing the log. 0 = usable gameplay result, 1 = harness fault, 2 = model
-# fault, 3 = an explicit budget stop.
+# fault, 3 = an explicit budget stop, 4 = a durable watchdog cancellation.
 TERMINAL_EXIT_CODES = {
     TERMINAL_GAMEPLAY: 0,
     TERMINAL_INFRASTRUCTURE: 1,
     TERMINAL_MODEL_INVALID: 2,
     TERMINAL_BUDGET_INTERRUPTED: 3,
+    TERMINAL_OBSERVER_INTERRUPTED: 4,
 }
 
 # These records are terminal outcomes in maintained and historical logs.  An
@@ -4561,7 +4565,7 @@ TERMINAL_EXIT_CODES = {
 # was also used as a diagnostic; classified failures are authoritative.
 TYPED_TERMINAL_RECORD_TYPES = frozenset({
     "model_error", "budget_interrupted", "query_error", "checkpoint_error",
-    "preflight_error",
+    "preflight_error", "observer_interrupted",
 })
 
 
@@ -4592,7 +4596,18 @@ def classify_terminal(reason: Optional[str]) -> str:
         return TERMINAL_BUDGET_INTERRUPTED
     if reason == TERMINAL_MODEL_INVALID:
         return TERMINAL_MODEL_INVALID
+    if reason == TERMINAL_OBSERVER_INTERRUPTED:
+        return TERMINAL_OBSERVER_INTERRUPTED
     return TERMINAL_INFRASTRUCTURE
+
+
+class StopRequested(BaseException):
+    """Internal non-recoverable fence raised after a durable stop intent."""
+
+    def __init__(self, intent: dict[str, Any], phase: str):
+        self.intent = intent
+        self.phase = phase
+        super().__init__(f"watchdog stop requested during {phase}")
 
 
 def write_request_context(path: str | os.PathLike[str], context: dict[str, Any]) -> None:
@@ -5026,6 +5041,27 @@ def run(args: argparse.Namespace) -> int:
         record(obj)
         if log:
             os.fsync(log.fileno())
+
+    def check_stop_fence(phase: str) -> None:
+        """Raise before a provider dispatch or engine mutation after a stop."""
+        if not log_path:
+            return
+        intent = read_stop(log_path)
+        if isinstance(intent, dict) and (
+                intent.get("status") == "accepted" or
+                intent.get("resolution") in {"cancelled", "cancelled_by_client"}):
+            raise StopRequested(intent, phase)
+
+    def latest_proven_checkpoint() -> dict[str, Any] | None:
+        if not log_path:
+            return None
+        try:
+            selected, _ = select_resume_checkpoint(log_path)
+        except (OSError, ValueError):
+            return None
+        return {key: selected.get(key) for key in
+                ("path", "digest", "state_revision", "side_turns", "boundary")
+                if key in selected}
     expected_budget_requests = {
         r["request_id"] for r in parent_records
         if resume_log and r.get("type") == "model_request"
@@ -5063,6 +5099,55 @@ def run(args: argparse.Namespace) -> int:
                  **metadata})
         durable({"type": "terminal", **metadata})
         return TERMINAL_EXIT_CODES[TERMINAL_BUDGET_INTERRUPTED]
+
+    def emit_observer_interrupted(stop: StopRequested) -> int:
+        """Write a non-gameplay terminal with explicit cancellation coverage."""
+        # A client can observe an already-written gameplay terminal while a
+        # late stop races with the final driver line. Preserve that winner and
+        # make the stop's ignored resolution durable for future supervisors.
+        if log_path:
+            try:
+                existing = terminal_record(_read_log_records(Path(log_path)))
+            except (OSError, ValueError):
+                existing = None
+            if isinstance(existing, dict) and existing.get("terminal_class") == TERMINAL_GAMEPLAY:
+                resolve_stop(log_path, "natural_completion_wins")
+                return TERMINAL_EXIT_CODES[TERMINAL_GAMEPLAY]
+        intent = stop.intent
+        # A checkpoint may be durable while its acknowledgement and request
+        # journal milestone are still pending. Preserve that boundary as
+        # unknown so a resume/reconciler never assumes rollback or replay is
+        # safe. A fence before any batch exists has no action boundary.
+        action_boundary_status = "unknown" if pending_commit is not None else "none"
+        pending_boundary = ({key: pending_commit.get(key) for key in
+                             ("batch_id", "request_id", "backend_request_id", "source_revision")
+                             if pending_commit.get(key) is not None}
+                            if pending_commit is not None else None)
+        set_terminal(metadata, TERMINAL_OBSERVER_INTERRUPTED, winner=None,
+                     reason=TERMINAL_OBSERVER_INTERRUPTED,
+                     code=intent.get("reason_code"),
+                     stop_request_id=intent.get("request_id"),
+                     stop_reason_code=intent.get("reason_code"),
+                     evidence_ids=intent.get("evidence_ids", []),
+                     observed_sequence=intent.get("observed_sequence"),
+                     stop_phase=stop.phase,
+                     final_proven_checkpoint=latest_proven_checkpoint(),
+                     action_boundary_status=action_boundary_status,
+                     pending_action_boundary=pending_boundary,
+                     cancellation_status="local_process_cleanup_unknown",
+                     remote_cancellation="unknown",
+                     coverage_status="unknown",
+                     winner_side=None)
+        durable({"type": "observer_interrupted", **metadata})
+        durable({**metadata, "type": "terminal"})
+        try:
+            resolve_stop(log_path, "cancelled_by_client",
+                         details={"phase": stop.phase})
+        except (OSError, ValueError):
+            # The terminal is already durable; leave the unresolved intent for
+            # the supervisor to reconcile rather than hiding the stop.
+            pass
+        return TERMINAL_EXIT_CODES[TERMINAL_OBSERVER_INTERRUPTED]
     # An in-place resume retains its conversation ID, so its IDs must continue
     # past every archived attempt, including failed requests/uncommitted batches.
     def previous_sequence(kind: str) -> int:
@@ -5099,8 +5184,15 @@ def run(args: argparse.Namespace) -> int:
                  "side": args.llm_side, "round": round_number,
                  "start_revision": start_revision,
                  "started_at": datetime.now(timezone.utc).isoformat()})
-    def complete_model(model_prompt: str, *, allow_tools: bool = True) -> ModelReply:
+    def complete_model(model_prompt: str, *, allow_tools: bool = True,
+                       purpose: str = "decision") -> ModelReply:
+        if purpose not in {"decision", "inspection_followup", "review", "repair"}:
+            raise ValueError(f"unknown model request purpose: {purpose}")
         nonlocal request_sequence, pending_annotation_notice, pending_agenda_feedback
+        # This check precedes prompt assembly and request ID allocation. A
+        # stop therefore cannot spend a fresh provider call merely to discover
+        # that cancellation was requested.
+        check_stop_fence("before_model_dispatch")
         # The agenda complaint is NOT popped here: it is retained until a valid
         # agenda commits or the side turn ends, because a player that keeps
         # re-proposing the same rejected shape needs it on each attempt, not
@@ -5159,6 +5251,7 @@ def run(args: argparse.Namespace) -> int:
             try:
                 request_context = {
                     "harness_request_id": request_id,
+                    "purpose": purpose,
                     "request_sequence": request_sequence,
                     "conversation_id": metadata.get("conversation_id"),
                     "game_log": str(log_path) if log_path else None,
@@ -5213,6 +5306,7 @@ def run(args: argparse.Namespace) -> int:
                     check_game_budget()
                     try:
                         try:
+                            check_stop_fence("before_provider_dispatch")
                             attempt_dispatched = True
                             reply = backend.complete(delivered_prompt)
                         finally:
@@ -5293,6 +5387,7 @@ def run(args: argparse.Namespace) -> int:
                     pending_agenda_feedback["delivered"] = True
             record({"type": "model_request",
                     "request_id": request_id,
+                    "purpose": purpose,
                     "side_turn_id": request_side_turn_id,
                     "agenda_feedback_after": pending_agenda_feedback,
                     "sequence": request_sequence,
@@ -5332,6 +5427,7 @@ def run(args: argparse.Namespace) -> int:
                 failed_usage = None
             durable({"type": "model_request",
                     "request_id": request_id,
+                    "purpose": purpose,
                     "side_turn_id": request_side_turn_id,
                     "sequence": request_sequence,
                     "status": "failed",
@@ -5510,7 +5606,8 @@ def run(args: argparse.Namespace) -> int:
         allow_tools = remaining_tools > 0 and remaining_model_calls > 1
         model_calls_this_turn += 1
         metadata["model_calls"] += 1
-        reply = complete_model(followup_prompt, allow_tools=allow_tools)
+        reply = complete_model(followup_prompt, allow_tools=allow_tools,
+                               purpose="inspection_followup")
         enforce_usage(reply, args)
         record({"type": "tool_followup", "tool": tool, "call": metadata["model_calls"],
                 "prompt_hash": reply.prompt_hash, "prompt_bytes": reply.prompt_bytes,
@@ -5643,6 +5740,11 @@ def run(args: argparse.Namespace) -> int:
                                        "boundary", "pending_opponent_turn", "path", "digest")
                                       if key in checkpoint_record}
                     durable(checkpoint_record)
+                    # The checkpoint is now durable, but the acknowledgement
+                    # and request journal milestone have not necessarily been
+                    # published. A stop here must preserve this evidence and
+                    # report the action boundary as uncertain.
+                    check_stop_fence("after_checkpoint_before_batch_commit")
                     durable({"type": "batch_committed", **commit_details})
                     request_state_path = pending_commit.get("request_state_path")
                     if isinstance(request_state_path, str) and request_state_path:
@@ -5770,7 +5872,8 @@ def run(args: argparse.Namespace) -> int:
                         model_calls_this_turn += 1
                         metadata["model_calls"] += 1
                         try:
-                            repaired = complete_model(repair_prompt, allow_tools=False)
+                            repaired = complete_model(repair_prompt, allow_tools=False,
+                                                      purpose="repair")
                             final_reply = repaired
                             enforce_usage(repaired, args)
                             record({"type": "action_repair", "call": metadata["model_calls"],
@@ -5805,7 +5908,8 @@ def run(args: argparse.Namespace) -> int:
                                                   "Return a corrected JSON action envelope now, following the shared annotation contract and using "
                                                   "only the current authoritative observation and "
                                                   "the engine error above.")
-                                followup = complete_model(forced_prompt, allow_tools=False)
+                                followup = complete_model(forced_prompt, allow_tools=False,
+                                                          purpose="repair")
                                 final_reply = followup
                                 enforce_usage(followup, args)
                                 record({"type": "action_repair_followup",
@@ -5885,6 +5989,7 @@ def run(args: argparse.Namespace) -> int:
                         last_forwarded_repair = True
                         last_forwarded_finish_kind = pending_finish_kind
                         try:
+                            check_stop_fence("before_repaired_action_batch_dispatch")
                             proc.stdin.write(json.dumps(orders, separators=(",", ":")) + "\n")
                             proc.stdin.flush()
                         except (BrokenPipeError, OSError) as exc:
@@ -6105,7 +6210,8 @@ def run(args: argparse.Namespace) -> int:
                 try:
                     reply = complete_model(
                         prompt,
-                        allow_tools=not bool(isinstance(state, dict) and state.get("final_only")))
+                        allow_tools=not bool(isinstance(state, dict) and state.get("final_only")),
+                        purpose="decision")
                     final_reply = reply
                     enforce_usage(reply, args)
                     record({"type": "model", "call": metadata["model_calls"],
@@ -6235,7 +6341,8 @@ def run(args: argparse.Namespace) -> int:
                         model_calls_this_turn += 1
                         metadata["model_calls"] += 1
                         repaired = complete_model(
-                            repair_prompt, allow_tools=repair_allows_tools)
+                            repair_prompt, allow_tools=repair_allows_tools,
+                            purpose="repair")
                         final_reply = repaired
                         enforce_usage(repaired, args)
                         record({"type": "repair", "call": metadata["model_calls"],
@@ -6396,7 +6503,9 @@ def run(args: argparse.Namespace) -> int:
                                             model_calls_this_turn, metadata["max_model_calls_per_turn"])
                                         model_calls_this_turn += 1
                                         metadata["model_calls"] += 1
-                                        reviewed = complete_model(review_prompt, allow_tools=review_inspection_allowed)
+                                        reviewed = complete_model(
+                                            review_prompt, allow_tools=review_inspection_allowed,
+                                            purpose="review")
                                         enforce_usage(reviewed, args)
                                         review_call_request_id = reviewed.request_id
                                         review_call_side_turn_id = reviewed.side_turn_id
@@ -6474,7 +6583,9 @@ def run(args: argparse.Namespace) -> int:
                                                         "further inspection is available in this review.\n")
                                                     model_calls_this_turn += 1
                                                     metadata["model_calls"] += 1
-                                                    reviewed = complete_model(review_prompt, allow_tools=False)
+                                                    reviewed = complete_model(
+                                                        review_prompt, allow_tools=False,
+                                                        purpose="inspection_followup")
                                                     enforce_usage(reviewed, args)
                                         elif not review_inspection_allowed:
                                             record({**review_inspection_base, "granted": False, "tool": None,
@@ -6505,7 +6616,8 @@ def run(args: argparse.Namespace) -> int:
                                             model_calls_this_turn += 1
                                             metadata["model_calls"] += 1
                                             metadata["draft_review_repairs"] += 1
-                                            repaired_review = complete_model(repair_prompt, allow_tools=False)
+                                            repaired_review = complete_model(
+                                                repair_prompt, allow_tools=False, purpose="repair")
                                             final_reply = repaired_review
                                             enforce_usage(repaired_review, args)
                                             record({"type": "draft_review_repair", "call": metadata["model_calls"],
@@ -6587,7 +6699,8 @@ def run(args: argparse.Namespace) -> int:
                         model_calls_this_turn += 1
                         metadata["model_calls"] += 1
                         try:
-                            repaired_review = complete_model(repair_prompt, allow_tools=False)
+                            repaired_review = complete_model(
+                                repair_prompt, allow_tools=False, purpose="repair")
                             final_reply = repaired_review
                             enforce_usage(repaired_review, args)
                             metadata["draft_review_repairs"] += 1
@@ -6780,7 +6893,7 @@ def run(args: argparse.Namespace) -> int:
                         model_calls_this_turn += 1
                         metadata["model_calls"] += 1
                         try:
-                            repaired = complete_model(repair_prompt)
+                            repaired = complete_model(repair_prompt, purpose="repair")
                             final_reply = repaired
                             enforce_usage(repaired, args)
                             record({"type": "action_repair", "call": metadata["model_calls"],
@@ -7025,6 +7138,7 @@ def run(args: argparse.Namespace) -> int:
                 last_forwarded_repair = bool(action_repair_attempted)
                 last_forwarded_finish_kind = pending_finish_kind
                 try:
+                    check_stop_fence("before_action_batch_dispatch")
                     proc.stdin.write(json.dumps(orders, separators=(",", ":")) + "\n")
                     proc.stdin.flush()
                 except (BrokenPipeError, OSError) as exc:
@@ -7075,6 +7189,8 @@ def run(args: argparse.Namespace) -> int:
                     metadata, classify_terminal(line.get("reason")))
                 durable({"type": "terminal", **metadata})
                 return TERMINAL_EXIT_CODES[terminal_class]
+    except StopRequested as stop:
+        return emit_observer_interrupted(stop)
     finally:
         if log:
             log.close()

@@ -9,7 +9,8 @@ from typing import Any
 
 
 _TYPED_TERMINAL_TYPES = {"model_error", "budget_interrupted", "query_error",
-                         "checkpoint_error", "preflight_error", "action_failure"}
+                         "checkpoint_error", "preflight_error", "action_failure",
+                         "observer_interrupted"}
 _BUDGET_CODES = {"max_game_total_tokens_exhausted", "model_calls_budget_exhausted"}
 
 
@@ -289,6 +290,15 @@ def classify(records: list[dict[str, Any]],
         "terminal_class": classified_class,
         "winner": terminal.get("winner") if classified_class == "gameplay" else None,
         "reason": terminal.get("reason"),
+        "stop_request_id": terminal.get("stop_request_id"),
+        "stop_reason_code": terminal.get("stop_reason_code"),
+        "stop_evidence_ids": terminal.get("evidence_ids"),
+        "stop_observed_sequence": terminal.get("observed_sequence"),
+        "final_proven_checkpoint": terminal.get("final_proven_checkpoint"),
+        "action_boundary_status": terminal.get("action_boundary_status"),
+        "cancellation_status": terminal.get("cancellation_status"),
+        "remote_cancellation": terminal.get("remote_cancellation", "unknown")
+        if classified_class == "observer_interrupted" else None,
         "resigned_side": terminal.get("resigned_side"),
         "completed_side_turns": completed_side_turns,
         "resolved_side_turns": resolved_side_turns,

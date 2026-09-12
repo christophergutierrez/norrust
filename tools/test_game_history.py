@@ -1537,6 +1537,34 @@ class ForeignIdentitySafetyTests(unittest.TestCase):
 
 
 class StackCHistoryTests(unittest.TestCase):
+    def test_observer_interrupted_is_catalogued_without_a_winner(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            terminal = {
+                "type": "observer_interrupted",
+                "terminal_class": "observer_interrupted",
+                "reason": "observer_interrupted",
+                "stop_request_id": "stop-1",
+                "stop_reason_code": "manual_operator_stop",
+                "evidence_ids": ["log:0:10:abc"],
+                "observed_sequence": 4,
+                "remote_cancellation": "unknown",
+                "action_boundary_status": "unknown",
+            }
+            (root / "match.ndjson").write_text(json.dumps(terminal) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root, game_id="observer-stop")
+            import_game(conn, root, game_id=game_id)
+            row = conn.execute(
+                "SELECT status,winner_side,coverage_json FROM games WHERE game_id=?",
+                (game_id,)).fetchone()
+            self.assertEqual(row[0:2], ("complete", None))
+            coverage = json.loads(row[2])
+            self.assertEqual(coverage["terminal_class"], "observer_interrupted")
+            self.assertEqual(coverage["stop"]["request_id"], "stop-1")
+            self.assertEqual(coverage["stop"]["action_boundary_status"], "unknown")
+            conn.close()
+
     def test_type_only_budget_stop_is_imported_as_budget_without_winner(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

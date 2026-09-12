@@ -224,10 +224,33 @@ commands receive the restored state and bounded transcript through the new
 backend process.
 
 An explicit `terminal` record and a classified typed terminal failure
-(`model_error`, `budget_interrupted`, `query_error`, `checkpoint_error`, or
-`preflight_error`) use the same resume guard. Gameplay, model-invalid, and
-budget outcomes cannot be resumed in place; an infrastructure outcome remains
-eligible for recovery.
+(`model_error`, `budget_interrupted`, `query_error`, `checkpoint_error`,
+`preflight_error`, or `observer_interrupted`) use the same resume guard.
+Gameplay, model-invalid, budget, and intentional observer-interrupted outcomes
+cannot be resumed in place; an infrastructure outcome remains eligible for
+recovery. A durable watchdog stop is written before cancellation, and a
+supervisor marks it `accepted` only after checking the current run and cited
+evidence. A pending stale request is resolved and cannot fence a later run.
+
+For an operator or a validated observer to request a stop, use the run ID from
+the watchdog state sidecar and the run's artifact parent:
+
+```bash
+python3 -m tools.watchdog_stop request \
+  --run-id RUN_ID --root /path/to/artifacts \
+  --reason-code manual_operator_stop --observed-sequence 0
+```
+
+The request is idempotent and does not signal processes itself. The supervisor
+owns the client session and its nested provider/driver processes, attempts
+graceful shutdown for five seconds, then force-cleans remaining owned
+processes. It records `observer_interrupted` with the last proven checkpoint,
+partial evidence coverage, and `remote_cancellation: unknown`; a remote request
+may continue billing after local cancellation. A natural gameplay terminal
+wins a stop race and is recorded as an ignored late recommendation. When a
+checkpoint or action submission may have crossed the driver acknowledgement
+boundary, the terminal also records `action_boundary_status: unknown`; resume
+and reconciliation must preserve that uncertainty.
 
 An in-place resume appends to the same archive and retains the conversation ID.
 Request and batch IDs continue after archived attempts, including failures, and

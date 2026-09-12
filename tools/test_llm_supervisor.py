@@ -3,14 +3,93 @@ import tempfile
 import os
 import stat
 import sys
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from .llm_supervisor import run
+from .watchdog_stop import read_stop, stop_run
 from .run_watchdog import RunWatchdog
 
 
+class SupervisorStopIntegrationTests(unittest.TestCase):
+    def test_streaming_child_stop_is_terminal_without_restart(self):
+        """A provider-like stream can be stopped while output is still arriving."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "match.ndjson"
+            marker = root / "streaming"
+            foreign = root / "foreign-evidence"
+            foreign.mkdir()
+            script = root / "streaming.py"
+            script.write_text(
+                "import base64, json, os, sys, time\nfrom pathlib import Path\n"
+                "root=Path(os.environ['NORRUST_EVIDENCE_DIR']); root.mkdir(parents=True, exist_ok=True)\n"
+                "chunks=root/'chunks.ndjson'\n"
+                "for i in range(1000):\n"
+                " with chunks.open('a') as out: out.write(json.dumps({'data_b64': base64.b64encode(('data: chunk '+str(i)+'\\n\\n').encode()).decode()})+'\\n')\n"
+                " if i == 2: Path(sys.argv[1]).write_text('ready')\n"
+                " time.sleep(0.02)\n", encoding="utf-8")
+            import threading
+            result = []
+            worker = threading.Thread(target=lambda: result.append(
+                run([sys.executable, str(script), str(marker)], log, 2)))
+            started = time.monotonic()
+            with mock.patch.dict(os.environ, {
+                    "NORRUST_EVIDENCE_DIR": str(foreign),
+                    "NORRUST_REQUEST_CONTEXT_FILE": str(foreign / "context.json"),
+            }):
+                worker.start()
+                deadline = started + 3
+                while not marker.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(marker.exists())
+                stop_run(log, "manual_operator_stop", [], 0)
+                worker.join(timeout=8)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(result, [4])
+            self.assertTrue((root / "match.evidence" / "chunks.ndjson").is_file())
+            self.assertFalse((foreign / "chunks.ndjson").exists())
+            records = [json.loads(line) for line in log.read_text().splitlines()]
+            self.assertEqual(len([r for r in records if r.get("type") == "supervisor_attempt_start"]), 1)
+            self.assertFalse(any(r.get("type") == "supervisor_restart" for r in records))
+            terminal = next(r for r in records if r.get("type") == "terminal")
+            self.assertEqual(terminal["terminal_class"], "observer_interrupted")
+            self.assertTrue(terminal["remote_cancellation"] == "unknown")
+
+    def test_real_process_tree_stop_is_durable_and_forced(self):
+        """A SIGTERM-ignoring nested shell is cleaned up within the grace window."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "match.ndjson"
+            script = root / "hung.py"
+            child_pid = root / "child.pid"
+            script.write_text(
+                "import os, signal, subprocess, sys, time\n"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                "p=subprocess.Popen([sys.executable, '-c', 'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)'])\n"
+                "open(sys.argv[1], 'w').write(str(p.pid))\n"
+                "time.sleep(30)\n", encoding="utf-8")
+            import threading
+            result = []
+            def execute():
+                result.append(run([sys.executable, str(script), str(child_pid)], log, 0))
+            worker = threading.Thread(target=execute)
+            worker.start()
+            deadline = time.monotonic() + 3
+            while not child_pid.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(child_pid.exists())
+            stop_run(log, "manual_operator_stop", [], 0)
+            worker.join(timeout=8)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(result, [4])
+            records = [json.loads(line) for line in log.read_text().splitlines()]
+            terminal = next(record for record in records if record.get("type") == "terminal")
+            self.assertEqual(terminal["terminal_class"], "observer_interrupted")
+            self.assertFalse(terminal["gameplay_valid"])
+            self.assertEqual(read_stop(log)["status"], "resolved")
 class FinishedProcess:
     def __init__(self, returncode):
         self.returncode = returncode
@@ -37,6 +116,53 @@ class ProgressProcess:
 
 
 class SupervisorTests(unittest.TestCase):
+    def test_stop_before_dispatch_does_not_spawn_or_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "match.ndjson"
+            marker = root / "spawned"
+            script = root / "child.py"
+            script.write_text(
+                "from pathlib import Path\nimport sys,time\n"
+                "Path(sys.argv[1]).write_text('spawned')\n"
+                "time.sleep(30)\n", encoding="utf-8")
+            intent = stop_run(log, "manual_operator_stop", [], 0)
+            self.assertNotEqual(intent["run_id"], log.stem)
+            self.assertEqual(run([sys.executable, str(script), str(marker)], log, 2), 4)
+            self.assertFalse(marker.exists())
+            records = [json.loads(line) for line in log.read_text().splitlines()]
+            self.assertEqual(len([r for r in records if r.get("type") == "supervisor_attempt_start"]), 1)
+            self.assertFalse(any(r.get("type") == "supervisor_restart" for r in records))
+
+    def test_game_end_before_client_terminal_wins_stop_race(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "match.ndjson"
+            marker = root / "game_end"
+            script = root / "child.py"
+            script.write_text(
+                "import json,sys,time\nfrom pathlib import Path\n"
+                "log=Path(sys.argv[1]); marker=Path(sys.argv[2])\n"
+                "with log.open('a') as stream: stream.write(json.dumps({'type':'driver', 'line': {'type':'game_end', 'winner': 1, 'reason': 'winner'}})+'\\n')\n"
+                "marker.write_text('ready')\n"
+                "time.sleep(0.4)\n", encoding="utf-8")
+            import threading
+            result = []
+            worker = threading.Thread(target=lambda: result.append(
+                run([sys.executable, str(script), str(log), str(marker)], log, 0)))
+            worker.start()
+            deadline = time.monotonic() + 3
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(marker.exists())
+            stop_run(log, "manual_operator_stop", [], 0)
+            worker.join(timeout=3)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(result, [0])
+            records = [json.loads(line) for line in log.read_text().splitlines()]
+            self.assertFalse(any(r.get("type") == "observer_interrupted" for r in records))
+            self.assertEqual(read_stop(log).get("resolution"), "natural_completion_wins")
+
     def test_open_child_is_polled_and_watchdog_observes_progress(self):
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "match.ndjson"
