@@ -8,9 +8,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from .llm_supervisor import run
+from .llm_supervisor import _watchdog_validation, run
 from .watchdog_stop import read_stop, stop_run
 from .run_watchdog import RunWatchdog
+from .watchdog_observer import FakeObserverBackend
 
 
 class SupervisorStopIntegrationTests(unittest.TestCase):
@@ -58,6 +59,84 @@ class SupervisorStopIntegrationTests(unittest.TestCase):
             self.assertEqual(terminal["terminal_class"], "observer_interrupted")
             self.assertTrue(terminal["remote_cancellation"] == "unknown")
 
+class SupervisorObserverFenceTests(unittest.TestCase):
+    def test_observer_stop_allows_sequence_drift_without_progress(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "match.ndjson"
+            log.write_text(json.dumps({"type": "metadata"}) + "\n")
+            watchdog = root / "match.watchdog"
+            watchdog.mkdir()
+            evidence = "log:0:1:fixture"
+            (watchdog / "state.json").write_text(json.dumps({
+                "run_id": "run-uuid", "index": [{"evidence_id": evidence}],
+            }))
+            packet = {"observation_sequence": 5, "revision": 2,
+                      "last_completed_turn": "turn-1",
+                      "committed_action": {"batch_id": "batch-1", "revision": 2},
+                      "current_request": {"harness_request_id": "request-1"},
+                      "alerts": [{"identity": "incident"}], "evidence_ids": [evidence]}
+            latest = dict(packet, observation_sequence=6)
+            (watchdog / "journal.ndjson").write_text("\n".join(
+                json.dumps({"type": "status", "status": value})
+                for value in (packet, latest)) + "\n")
+            intent = {"run_id": "run-uuid", "reason_code": "repeated_no_progress",
+                      "evidence_ids": [evidence], "observed_sequence": 5}
+            self.assertEqual(_watchdog_validation(log, intent), (True, "validated"))
+
+    def test_observer_stop_is_stale_after_real_progress_even_with_old_refs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "match.ndjson"
+            log.write_text(json.dumps({"type": "metadata"}) + "\n")
+            watchdog = root / "match.watchdog"
+            watchdog.mkdir()
+            evidence = "log:0:1:fixture"
+            (watchdog / "state.json").write_text(json.dumps({
+                "run_id": "run-uuid", "index": [{"evidence_id": evidence}],
+            }))
+            packet = {"observation_sequence": 5, "revision": 2,
+                      "last_completed_turn": "turn-1",
+                      "committed_action": {"batch_id": "batch-1", "revision": 2},
+                      "current_request": {"harness_request_id": "request-1"},
+                      "alerts": [{"identity": "incident"}], "evidence_ids": [evidence]}
+            progressed = dict(packet, observation_sequence=6, revision=3,
+                              committed_action={"batch_id": "batch-2", "revision": 3})
+            (watchdog / "journal.ndjson").write_text("\n".join(
+                json.dumps({"type": "status", "status": value})
+                for value in (packet, progressed)) + "\n")
+            intent = {"run_id": "run-uuid", "reason_code": "repeated_no_progress",
+                      "evidence_ids": [evidence], "observed_sequence": 5}
+            self.assertEqual(_watchdog_validation(log, intent), (False, "stale_progress"))
+
+
+class SupervisorObserverTests(unittest.TestCase):
+    def test_observer_attaches_lazily_after_metadata_with_injected_backend(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "match.ndjson"
+            script = root / "writer.py"
+            script.write_text(
+                "import json,sys,time\n"
+                "with open(sys.argv[1], 'a') as stream:\n"
+                " stream.write(json.dumps({'type':'metadata','conversation_id':'catalog-game'})+'\\n')\n"
+                " stream.flush()\n"
+                "time.sleep(.15)\n", encoding="utf-8")
+            recorder = RunWatchdog(log, run_id="supervisor-uuid", poll_interval=0)
+            backend = FakeObserverBackend([{
+                "decision": "continue", "reason_code": "healthy",
+                "evidence_ids": [], "explanation": "fixture"}])
+            ticks = [0.0]
+            result = run([sys.executable, str(script), str(log)], log, 0,
+                         watchdog=recorder, poll_interval=.01,
+                         watchdog_mode="observe", observer_backend=backend,
+                         observer_clock=lambda: ticks.__setitem__(0, ticks[0] + 300) or ticks[0])
+            self.assertEqual(result, 0)
+            self.assertGreaterEqual(len(backend.payloads), 1)
+            rows = [json.loads(line) for line in (root / "usage.ndjson").read_text().splitlines()]
+            self.assertTrue(rows)
+            self.assertTrue(all(row["call_role"] == "observer" for row in rows))
+            self.assertTrue(all(row["game_id"] == "catalog-game" for row in rows))
     def test_real_process_tree_stop_is_durable_and_forced(self):
         """A SIGTERM-ignoring nested shell is cleaned up within the grace window."""
         with tempfile.TemporaryDirectory() as directory:

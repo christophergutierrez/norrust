@@ -227,7 +227,7 @@ def _build_call_from_record(game_id: str, thread_id: str, call_id: str, record: 
     if not isinstance(usage, dict):
         # No usage block at all: an unsupported/incomplete shape, not zeros.
         return model_usage.ModelCall(
-            game_id=game_id, call_id=call_id, provider=PROVIDER, transport=TRANSPORT,
+            game_id=game_id, call_id=call_id, call_role="player", provider=PROVIDER, transport=TRANSPORT,
             native_thread_id=thread_id, provider_response_id=provider_response_id,
             status="unknown", usage_source="unsupported_payload_shape",
             raw_usage_json=record, source_ref=source_ref, ended_at=ended_at,
@@ -235,7 +235,7 @@ def _build_call_from_record(game_id: str, thread_id: str, call_id: str, record: 
 
     normalized, gaps = model_usage.normalize_usage(usage, model_usage.CODEX_USAGE_MAP)
     call = model_usage.ModelCall(
-        game_id=game_id, call_id=call_id, provider=PROVIDER, transport=TRANSPORT,
+        game_id=game_id, call_id=call_id, call_role="player", provider=PROVIDER, transport=TRANSPORT,
         native_thread_id=thread_id, provider_response_id=provider_response_id,
         status="completed", usage_source="token_usage_record",
         raw_usage_json=record, source_ref=source_ref, ended_at=ended_at,

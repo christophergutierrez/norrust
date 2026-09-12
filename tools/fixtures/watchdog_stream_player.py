@@ -15,10 +15,23 @@ class Stream:
 
     def __init__(self):
         reply = '{"actions":[{"action":"Resign"}]}'
+        if os.environ.get("NORRUST_WATCHDOG_REPEAT_REASONING") == "1":
+            # Keep the provider open after the detector sees the second copy.
+            # This is deliberately opt-in so the fixture remains a normal
+            # streaming player for recorder-only tests.
+            repeated = (
+                "The same bounded investigation remains unresolved across the "
+                "current state snapshot; I will compare the committed action "
+                "and request identity before deciding whether to finish. "
+            )
+            reasoning = (repeated,) * 150 + ("The fixture will now finish. ",)
+        else:
+            reasoning = ("I am checking the current state. ",
+                         "The fixture will now finish. ")
         events = [
             {"id": "offline-watchdog-response", "model": "offline-watchdog-player",
              "choices": [{"delta": {"reasoning_content": text}}]}
-            for text in ("I am checking the current state. ", "The fixture will now finish. ")
+            for text in reasoning
         ]
         events += [{"choices": [{"delta": {"content": reply}, "finish_reason": "stop"}]},
                    {"choices": [], "usage": {"prompt_tokens": 100, "completion_tokens": 20,
@@ -33,7 +46,7 @@ class Stream:
         return False
 
     def read1(self, _size):
-        time.sleep(0.15)
+        time.sleep(0.2 if os.environ.get("NORRUST_WATCHDOG_REPEAT_REASONING") == "1" else 0.15)
         return next(self.chunks, b"")
 
 

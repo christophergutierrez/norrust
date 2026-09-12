@@ -34,7 +34,7 @@ class WatchdogStopTests(unittest.TestCase):
             self.assertIn(evidence_id, json.dumps(current))
             intent = stop_run(log, "repeated_non_progress", [evidence_id], observed)
             self.assertEqual(_watchdog_validation(log, intent),
-                             (False, "stale_observation"))
+                             (False, "stale_progress"))
 
     def test_atomic_idempotent_request_and_resolution(self):
         with tempfile.TemporaryDirectory() as directory:

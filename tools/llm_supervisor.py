@@ -18,12 +18,14 @@ try:
     from .request_recovery import reconcile_request, reconcile_journal
     from .request_journal import _safe_session_name
     from .run_watchdog import RunWatchdog
-    from .watchdog_stop import accept_stop, read_stop, resolve_stop, validate_stop_request
+    from .watchdog_stop import accept_stop, read_stop, resolve_stop, stop_run, validate_stop_request
+    from .llm_client import classify_terminal, TERMINAL_GAMEPLAY
 except ImportError:  # Direct ``python tools/llm_supervisor.py`` invocation.
     from request_recovery import reconcile_request, reconcile_journal
     from request_journal import _safe_session_name
     from run_watchdog import RunWatchdog
-    from watchdog_stop import accept_stop, read_stop, resolve_stop, validate_stop_request
+    from watchdog_stop import accept_stop, read_stop, resolve_stop, stop_run, validate_stop_request
+    from llm_client import classify_terminal, TERMINAL_GAMEPLAY
 STOP_EXIT_CODE = 4
 STOP_GRACE_SECONDS = 5.0
 
@@ -179,11 +181,14 @@ def _watchdog_validation(log: Path, intent: dict) -> tuple[bool, str]:
     except (OSError, ValueError, json.JSONDecodeError):
         state = {}
     latest: dict = {}
+    observed_packet: dict | None = None
     try:
         for raw in journal_path.read_text(encoding="utf-8").splitlines():
             value = json.loads(raw)
             if isinstance(value, dict) and value.get("type") == "status" and isinstance(value.get("status"), dict):
                 latest = value["status"]
+                if latest.get("observation_sequence") == intent.get("observed_sequence"):
+                    observed_packet = latest
     except (OSError, ValueError, json.JSONDecodeError):
         pass
     terminal = _last_terminal(log)
@@ -207,13 +212,25 @@ def _watchdog_validation(log: Path, intent: dict) -> tuple[bool, str]:
         # A semantic recommendation is tied to the exact packet that supplied
         # its evidence. A later packet can show that the suspected incident
         # cleared even when the observation counter advanced normally.
-        require_current_sequence=bool(evidence))
+        # Recorder packets advance while the observer's investigation is in
+        # flight. The controller has already fenced progress/incident
+        # identity; requiring byte-exact sequence here would reject every
+        # valid asynchronous recommendation.
+        require_current_sequence=False)
     if not valid:
         return False, why
-    # An indexed slice must still be cited by the current packet. This catches
-    # an incident that was superseded or recovered before the signal arrived.
-    if evidence and latest:
-        packet_text = json.dumps(latest, sort_keys=True)
+    if observed_packet is None and evidence:
+        return False, "stale_observation"
+    if evidence and observed_packet is not None:
+        if _progress_identity(observed_packet) != _progress_identity(latest):
+            return False, "stale_progress"
+        if _incident_identity(observed_packet) != _incident_identity(latest):
+            return False, "stale_incident"
+    # Evidence belongs to the observed incident. A growing stream replaces
+    # the latest packet's excerpt without invalidating an immutable older
+    # range; progress and incident identity were revalidated above.
+    if evidence and observed_packet:
+        packet_text = json.dumps(observed_packet, sort_keys=True)
         if not all(item in packet_text for item in evidence):
             return False, "stale_incident"
     if not latest and evidence:
@@ -221,10 +238,29 @@ def _watchdog_validation(log: Path, intent: dict) -> tuple[bool, str]:
     return True, "validated"
 
 
+def _progress_identity(packet: dict) -> tuple:
+    committed = packet.get("committed_action")
+    if isinstance(committed, dict):
+        committed = (committed.get("batch_id"), committed.get("revision"))
+    request = packet.get("current_request")
+    if isinstance(request, dict):
+        request = (request.get("harness_request_id"), request.get("request_id"))
+    return (packet.get("revision"), packet.get("last_completed_turn"), committed, request)
+
+
+def _incident_identity(packet: dict) -> tuple[str, ...]:
+    alerts = packet.get("alerts")
+    if not isinstance(alerts, list):
+        return ()
+    return tuple(sorted({alert.get("identity") for alert in alerts
+                         if isinstance(alert, dict) and isinstance(alert.get("identity"), str)}))
+
+
 def _run_attempt(command: list[str], log: Path, *, poll_interval: float = 0.1,
                 grace_seconds: float = STOP_GRACE_SECONDS,
                 watchdog: RunWatchdog | None = None,
-                environment: dict[str, str] | None = None) -> tuple[subprocess.CompletedProcess, dict | None, ProcessCleanup | None]:
+                environment: dict[str, str] | None = None,
+                observer_poller=None) -> tuple[subprocess.CompletedProcess, dict | None, ProcessCleanup | None]:
     """Run one attempt with a responsive stop poll and owned process session."""
     intent = read_stop(log)
     if isinstance(intent, dict) and intent.get("status") == "pending":
@@ -245,7 +281,9 @@ def _run_attempt(command: list[str], log: Path, *, poll_interval: float = 0.1,
     while process.poll() is None:
         if watchdog is not None:
             try:
-                watchdog.poll()
+                packet = watchdog.poll()
+                if observer_poller is not None:
+                    observer_poller(packet)
             except Exception as exc:
                 _append(log, {"type": "supervisor_watchdog_error", "message": str(exc)})
         intent = read_stop(log)
@@ -391,8 +429,9 @@ def _last_terminal(log: Path) -> dict | None:
     # A driver game_end is authoritative even if a SIGTERM lets the client
     # append an infrastructure diagnostic before the supervisor observes the
     # accepted stop. Preserve the engine result as the natural race winner.
-    if natural is not None and (terminal is None or
-                                _terminal_class(terminal) in {"infrastructure", None}):
+    if natural is not None and (natural.get("terminal_class") == TERMINAL_GAMEPLAY
+                                or terminal is None
+                                or _terminal_class(terminal) in {"infrastructure", None}):
         return natural
     return terminal
 
@@ -401,8 +440,13 @@ def _game_end_terminal(records: list[dict]) -> dict | None:
     for record in reversed(records):
         line = record.get("line") if record.get("type") == "driver" else record
         if isinstance(line, dict) and line.get("type") == "game_end":
-            return {"type": "derived_game_end", "terminal_class": "gameplay",
-                    "winner": line.get("winner"), "reason": line.get("reason", "winner")}
+            reason = line.get("reason")
+            terminal_class = classify_terminal(reason)
+            return {"type": "derived_game_end", "terminal_class": terminal_class,
+                    "winner": line.get("winner") if terminal_class == TERMINAL_GAMEPLAY else None,
+                    "reason": reason,
+                    "code": (line.get("code") or line.get("failure_code")
+                             or line.get("error_code"))}
     return None
 
 
@@ -498,7 +542,11 @@ def _attempt_records(log: Path, start: int) -> list[dict]:
 
 def run(command: list[str], log: Path, max_restarts: int,
         request_state: Path | None = None, *, watchdog: RunWatchdog | None = None,
-        poll_interval: float = 0.1) -> int:
+        poll_interval: float = 0.1, watchdog_mode: str = "off",
+        watchdog_model: str = "gpt-5.4-nano", observer_backend=None,
+        observer_clock=None, observer_max_calls: int = 20) -> int:
+    if watchdog_mode not in {"off", "observe", "enforce"}:
+        raise ValueError("watchdog_mode must be off, observe, or enforce")
     log.parent.mkdir(parents=True, exist_ok=True)
     lock_path = log.with_suffix(".supervisor.lock")
     lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
@@ -511,6 +559,40 @@ def run(command: list[str], log: Path, max_restarts: int,
         return 1
     state_path = _supervisor_state_path(log)
     watchdog = watchdog or _watchdog_for_log(log)
+    observer_holder = {"controller": None}
+
+    def poll_observer(packet):
+        if watchdog_mode == "off":
+            return
+        controller = observer_holder["controller"]
+        if controller is None:
+            try:
+                from .watchdog_integration import WatchdogIdentityError, attach_observer
+                from .watchdog_observer import OpenAIObserverBackend
+            except ImportError:
+                from watchdog_integration import WatchdogIdentityError, attach_observer
+                from watchdog_observer import OpenAIObserverBackend
+            try:
+                backend = observer_backend
+                if backend is None:
+                    backend = OpenAIObserverBackend(model=watchdog_model)
+                controller = attach_observer(
+                    watchdog, log, backend=backend, mode=watchdog_mode,
+                    stop=lambda run_id, reason, evidence, sequence: stop_run(
+                        log, reason, list(evidence), sequence), clock=observer_clock,
+                    max_calls=observer_max_calls)
+            except WatchdogIdentityError:
+                # Metadata/request context may not have been written yet.
+                # Retry on the next recorder packet; no provider call exists.
+                return
+            observer_holder["controller"] = controller
+        controller.poll(packet)
+
+    def close_observer():
+        controller = observer_holder.get("controller")
+        if controller is not None:
+            controller.close(wait=False)
+            observer_holder["controller"] = None
     try:
         try:
             supervisor_state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -543,14 +625,16 @@ def run(command: list[str], log: Path, max_restarts: int,
             environment["NORRUST_EVIDENCE_DIR"] = str(watchdog.evidence_dir)
             environment["NORRUST_REQUEST_CONTEXT_FILE"] = str(log.parent / "request_context.json")
             try:
-                watchdog.poll(force=True)
+                packet = watchdog.poll(force=True)
+                poll_observer(packet)
             except Exception as exc:
                 _append(log, {"type": "supervisor_watchdog_error", "message": str(exc)})
             completed, stop_intent, cleanup = _run_attempt(
                 invocation, log, watchdog=watchdog, environment=environment,
-                poll_interval=poll_interval)
+                poll_interval=poll_interval, observer_poller=poll_observer)
             try:
-                watchdog.poll(force=True)
+                packet = watchdog.poll(force=True)
+                poll_observer(packet)
             except Exception as exc:
                 _append(log, {"type": "supervisor_watchdog_error", "message": str(exc)})
             if stop_intent is None:
@@ -648,6 +732,7 @@ def run(command: list[str], log: Path, max_restarts: int,
                           "reason": reason, "failure_key": key})
             time.sleep(min(0.25, 0.05 * supervisor_state["restarts"]))
     finally:
+        close_observer()
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)
 
@@ -658,6 +743,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-restarts", type=int, default=3)
     parser.add_argument("--request-state", type=Path,
                         help="durable model request state used to authorize recovery")
+    parser.add_argument("--watchdog-mode", choices=("off", "observe", "enforce"), default="off",
+                        help="bounded observer mode (default: off)")
+    parser.add_argument("--watchdog-model", default="gpt-5.4-nano",
+                        help="observer model (used only when watchdog mode is enabled)")
+    parser.add_argument("--watchdog-max-calls", type=int, default=20,
+                        help="observer physical-call cap (default: 20; offline evals may use 3)")
     parser.add_argument("command", nargs=argparse.REMAINDER,
                         help="client command after --")
     args = parser.parse_args(argv)
@@ -668,7 +759,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("a client command is required after --")
     if "--log" not in command:
         parser.error("the client command must include --log")
-    return run(command, args.log, args.max_restarts, args.request_state)
+    if args.watchdog_max_calls < 1 or args.watchdog_max_calls > 20:
+        parser.error("--watchdog-max-calls must be between 1 and 20")
+    return run(command, args.log, args.max_restarts, args.request_state,
+               watchdog_mode=args.watchdog_mode, watchdog_model=args.watchdog_model,
+               observer_max_calls=args.watchdog_max_calls)
 
 
 if __name__ == "__main__":

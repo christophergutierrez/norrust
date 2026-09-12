@@ -75,6 +75,7 @@ class OutputLimitPolicy:
                         continue  # interrupted append is unknown, not a failure
                     raise ValueError("invalid usage sidecar; cannot restore output-limit budget")
                 if (call.get("game_id") == conversation_id
+                        and call.get("call_role") != "observer"
                         and call.get("record_kind") == "final"
                         and call.get("status") == "failed"
                         and call.get("finish_reason") == "length"

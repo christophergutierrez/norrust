@@ -160,7 +160,11 @@ def report_sqlite(path: str | Path, game_id: str, model: str | None = None,
         for row in conn.execute("SELECT " + ",".join(selected) + " FROM model_calls WHERE game_id=? ORDER BY rowid", (game_id,)):
             calls.append(_call_from_row(row, selected))
     selected_calls = [c for c in calls if (model is None or c.requested_model == model)
-                      and (layout is None or c.prompt_layout_version == layout)]
+                      and (layout is None or c.prompt_layout_version == layout)
+                      # Prompt-cache reports describe player prompts.  Old
+                      # rows have no role and remain included as unknown;
+                      # only an explicit observer row is excluded.
+                      and c.call_role != "observer"]
     selected_request_ids = {c.request_id for c in selected_calls if c.request_id}
     request_columns = {row[1] for row in conn.execute("PRAGMA table_info(model_requests)")}
     optional = lambda name: name if name in request_columns else "NULL AS " + name

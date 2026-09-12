@@ -37,11 +37,11 @@ def main() -> int:
         with sidecar.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(row, sort_keys=True, default=str) + "\n")
 
-    dispatched = ModelCall(game_id=game_id, call_id=call_id, provider="offline_fixture",
+    dispatched = ModelCall(game_id=game_id, call_id=call_id, call_role="player", provider="offline_fixture",
                            transport="offline_fixture", status="dispatched",
                            started_at=str(time.time()), source_hash=prompt_sha256)
     append(dispatched, "dispatch")
-    final = ModelCall(game_id=game_id, call_id=call_id, provider="offline_fixture",
+    final = ModelCall(game_id=game_id, call_id=call_id, call_role="player", provider="offline_fixture",
                       transport="offline_fixture", status="completed", finish_reason="stop",
                       ended_at=str(time.time()), source_hash=prompt_sha256,
                       input_tokens=len(prompt), output_tokens=1, usage_source="fixture")

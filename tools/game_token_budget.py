@@ -17,6 +17,10 @@ def measured_game_budget(sidecar: Path, conversation_id: str,
     records = [r for r in records if r.game_id == conversation_id
                and r.error_code != "missing_credentials"]
     calls, conflicts = dedupe_calls(records)
+    # Explicit observer calls have an independent allowance.  Legacy rows
+    # with no role stay in the player-compatible bucket because their role is
+    # unknown and historical player accounting must not be silently changed.
+    calls = [call for call in calls if call.call_role != "observer"]
     known_total = 0
     unknown = 0
     for call in calls:

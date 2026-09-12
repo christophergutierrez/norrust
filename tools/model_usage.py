@@ -126,6 +126,17 @@ CODEX_USAGE_MAP = {
     "total_tokens": "total_tokens",
 }
 
+# OpenAI Responses API usage fields.  ``output_tokens_details.reasoning_tokens``
+# is a subset of output tokens; it is retained separately for provenance and
+# is never added to output/total a second time.
+OPENAI_RESPONSES_USAGE_MAP = {
+    "input_tokens": "input_tokens",
+    "input_tokens_details.cached_tokens": "cached_input_tokens",
+    "output_tokens": "output_tokens",
+    "output_tokens_details.reasoning_tokens": "reasoning_tokens",
+    "total_tokens": "total_tokens",
+}
+
 
 def source_identity(provider: str | None, native_thread_id: str | None,
                      provider_response_id: str | None, attempt_id: str) -> str:
@@ -147,6 +158,9 @@ class ModelCall:
 
     game_id: str
     call_id: str
+    # None means the archive predates explicit call roles.  It must remain
+    # unknown rather than being inferred as player or observer.
+    call_role: str | None = None
     request_id: str | None = None
     retry_of_call_id: str | None = None
 
@@ -224,6 +238,8 @@ def validate_call(call: ModelCall) -> list[str]:
         problems.append("missing_call_id")
     if call.status not in CALL_STATUSES:
         problems.append(f"unknown_status:{call.status!r}")
+    if call.call_role not in (None, "player", "observer"):
+        problems.append(f"unknown_call_role:{call.call_role!r}")
     if call.request_id is not None and not isinstance(call.request_id, str):
         problems.append("request_id_must_be_string")
     for field in TOKEN_FIELDS:
@@ -260,7 +276,7 @@ def merge_lifecycle(existing: ModelCall, update: ModelCall) -> tuple[ModelCall, 
                   "native_thread_id", "usage_source", "raw_usage_json", "source_ref",
                   "source_hash", "request_id", "retry_of_call_id", "linkage_evidence",
                   "started_at", "requested_model", "requested_reasoning_effort", "output_limit",
-                  "provider", "transport", "requested_affinity", "prompt_layout_version",
+                  "provider", "transport", "call_role", "requested_affinity", "prompt_layout_version",
                   "prompt_layout_source"):
         new = getattr(update, field)
         if new is not None:

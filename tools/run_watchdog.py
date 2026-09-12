@@ -500,7 +500,12 @@ class RunWatchdog:
             if relative == "usage.ndjson":
                 try:
                     value = json.loads(raw)
-                    if isinstance(value, dict) and isinstance(value.get("call_id"), str):
+                    # The shared usage sidecar contains player and observer
+                    # lifecycles. Recorder health is player progress; keep
+                    # observer calls for catalog role accounting but do not
+                    # count them as player usage here.
+                    if (isinstance(value, dict) and value.get("call_role") != "observer"
+                            and isinstance(value.get("call_id"), str)):
                         key = value["call_id"]
                         if key in self._usage_calls or len(self._usage_calls) < MAX_INDEXED_RECORDS:
                             fields = ("input_tokens", "output_tokens", "reasoning_tokens",

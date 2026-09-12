@@ -14,9 +14,9 @@ from pathlib import Path
 from typing import Any, Iterable
 
 try:
-    from .model_usage import ModelCall, TOKEN_FIELDS, aggregate_calls, dedupe_calls, request_aggregate_from_legacy
+    from .model_usage import ModelCall, TOKEN_FIELDS, aggregate_calls, dedupe_calls, request_aggregate_from_legacy, validate_call
 except ImportError:  # pragma: no cover - direct script compatibility
-    from model_usage import ModelCall, TOKEN_FIELDS, aggregate_calls, dedupe_calls, request_aggregate_from_legacy  # type: ignore
+    from model_usage import ModelCall, TOKEN_FIELDS, aggregate_calls, dedupe_calls, request_aggregate_from_legacy, validate_call  # type: ignore
 
 SCHEMA_VERSION = 6
 # IMPORTER_VERSION guards the SNAPSHOT TIMELINE contract that tools/replay_game.py
@@ -118,6 +118,7 @@ CREATE TABLE IF NOT EXISTS decision_evaluations (
 );
 CREATE TABLE IF NOT EXISTS model_calls (
  game_id TEXT NOT NULL REFERENCES games(game_id), call_id TEXT NOT NULL,
+ call_role TEXT,
  request_id TEXT, retry_of_call_id TEXT,
  provider TEXT, transport TEXT, native_thread_id TEXT, provider_response_id TEXT,
  requested_model TEXT, reported_model TEXT, requested_reasoning_effort TEXT,
@@ -245,7 +246,8 @@ def open_history(path: str | os.PathLike[str], *, read_only: bool = False) -> sq
         if name not in side_turn_columns:
             conn.execute(f"ALTER TABLE side_turns ADD COLUMN {name} {definition}")
     call_columns = {row[1] for row in conn.execute("PRAGMA table_info(model_calls)")}
-    for name, definition in (("requested_affinity", "TEXT"),
+    for name, definition in (("call_role", "TEXT"),
+                             ("requested_affinity", "TEXT"),
                              ("prompt_layout_version", "TEXT"),
                              ("prompt_layout_source", "TEXT")):
         if name not in call_columns:
@@ -1634,7 +1636,7 @@ def _import_events(conn: sqlite3.Connection, game_id: str, records: list[dict[st
 
 
 _MODEL_CALL_COLUMNS = (
-    "game_id", "call_id", "request_id", "retry_of_call_id", "provider", "transport",
+    "game_id", "call_id", "call_role", "request_id", "retry_of_call_id", "provider", "transport",
     "native_thread_id", "provider_response_id", "requested_model", "reported_model",
     "requested_affinity", "prompt_layout_version", "prompt_layout_source",
     "requested_reasoning_effort", "reported_reasoning_effort", "output_limit",
@@ -1687,6 +1689,10 @@ def _read_usage_sidecar(path: Path) -> tuple[list[ModelCall], list[str]]:
             call = ModelCall(**fields)
         except TypeError as exc:
             malformed.append(f"line:{line_number}:{exc}")
+            continue
+        problems = validate_call(call)
+        if any(problem.startswith("unknown_call_role:") for problem in problems):
+            malformed.append(f"line:{line_number}:unknown_call_role")
             continue
         call.normalization_gaps = list(gaps) if isinstance(gaps, list) else []
         records.append(call)
@@ -1860,15 +1866,19 @@ def list_side_turns(conn: sqlite3.Connection, game_id: str) -> list[dict[str, An
     return [dict(zip([d[0] for d in cur.description], row)) for row in cur]
 
 def _load_calls(conn: sqlite3.Connection, game_id: str) -> list[ModelCall]:
-    columns = list(_MODEL_CALL_COLUMNS) + ["raw_usage_json", "source_ref", "source_hash",
-                                           "linkage_evidence", "normalization_gaps_json"]
+    available = {row[1] for row in conn.execute("PRAGMA table_info(model_calls)")}
+    all_columns = list(_MODEL_CALL_COLUMNS) + ["raw_usage_json", "source_ref", "source_hash",
+                                               "linkage_evidence", "normalization_gaps_json"]
+    # Read-only queries must remain usable against a pre-role catalog.  A
+    # missing nullable column is represented as ModelCall's explicit unknown.
+    columns = [column for column in all_columns if column in available]
     cur = conn.execute(f"SELECT {','.join(columns)} FROM model_calls WHERE game_id=? ORDER BY rowid",
                        (game_id,))
     calls = []
     for row in cur:
         values = dict(zip(columns, row))
-        gaps = json.loads(values.pop("normalization_gaps_json") or "[]")
-        raw_usage = values.pop("raw_usage_json")
+        gaps = json.loads(values.pop("normalization_gaps_json", None) or "[]")
+        raw_usage = values.pop("raw_usage_json", None)
         values["raw_usage_json"] = json.loads(raw_usage) if raw_usage is not None else None
         call = ModelCall(**values)
         call.normalization_gaps = gaps
@@ -1930,7 +1940,25 @@ def _usage_by_turn(conn: sqlite3.Connection, game_id: str,
                 "linked_fraction": (linked / len(calls)) if calls else None}}
 
 
-def query_usage(conn: sqlite3.Connection, game_id: str, group_by: str = "game") -> dict[str, Any]:
+def _usage_by_role(calls: Iterable[ModelCall]) -> dict[str, Any]:
+    """Return independent role aggregates without guessing legacy roles.
+
+    ``None`` is deliberately surfaced as ``unknown``.  The combined view is
+    still the historical aggregate, while callers needing player allowance or
+    player-only reports can select the explicit ``player`` bucket.
+    """
+    members = list(calls)
+    return {
+        "player": aggregate_calls([call for call in members if call.call_role == "player"]),
+        "observer": aggregate_calls([call for call in members if call.call_role == "observer"]),
+        "unknown": aggregate_calls([call for call in members if call.call_role is None]),
+        "combined": aggregate_calls(members),
+    }
+
+
+def query_usage(conn: sqlite3.Connection, game_id: str, group_by: str = "game",
+                call_role: str | None = None,
+                rate_file: str | os.PathLike[str] | None = None) -> dict[str, Any]:
     """Query measured model-call usage for one game, grouped as the contract requires.
 
     `group_by="call"` lists every detailed row with per-field coverage;
@@ -1947,22 +1975,36 @@ def query_usage(conn: sqlite3.Connection, game_id: str, group_by: str = "game") 
         raise ValueError(f"unknown group_by: {group_by!r}")
     if conn.execute("SELECT 1 FROM games WHERE game_id=?", (game_id,)).fetchone() is None:
         raise KeyError(game_id)
+    if call_role not in (None, "player", "observer", "unknown"):
+        raise ValueError(f"unknown call role: {call_role!r}")
     calls = _load_calls(conn, game_id)
+    if call_role is not None:
+        calls = [call for call in calls if
+                 (call.call_role == call_role if call_role != "unknown" else call.call_role is None)]
     if group_by == "turn":
         return _usage_by_turn(conn, game_id, calls)
     request_legacy: dict[str, dict[str, Any]] = {}
-    for request_id, input_tokens, cached, output, reasoning in conn.execute(
-        """SELECT request_id,input_tokens,cached_input_tokens,output_tokens,reasoning_tokens
-           FROM model_requests WHERE game_id=?""", (game_id,)):
-        legacy_usage = {"input_tokens": input_tokens, "cached_input_tokens": cached,
-                        "output_tokens": output, "reasoning_tokens": reasoning}
-        if any(value is not None for value in legacy_usage.values()):
-            request_legacy[request_id] = request_aggregate_from_legacy(legacy_usage)
+    # Observer calls intentionally have no player harness request_id.  Legacy
+    # request aggregates therefore cannot be attributed to an observer role;
+    # including them would make every player request appear observer-only.
+    if call_role != "observer":
+        for request_id, input_tokens, cached, output, reasoning in conn.execute(
+            """SELECT request_id,input_tokens,cached_input_tokens,output_tokens,reasoning_tokens
+               FROM model_requests WHERE game_id=?""", (game_id,)):
+            legacy_usage = {"input_tokens": input_tokens, "cached_input_tokens": cached,
+                            "output_tokens": output, "reasoning_tokens": reasoning}
+            if any(value is not None for value in legacy_usage.values()):
+                request_legacy[request_id] = request_aggregate_from_legacy(legacy_usage)
 
     if group_by == "call":
-        return {"game_id": game_id, "group_by": "call",
+        result = {"game_id": game_id, "group_by": "call",
                 "calls": [call.to_row() for call in calls],
-                "coverage": aggregate_calls(calls)}
+                "coverage": aggregate_calls(calls),
+                "role_usage": _usage_by_role(calls)}
+        if rate_file is not None:
+            from .usage_cost import role_cost_report
+            result["role_costs"] = role_cost_report(calls, rate_file)
+        return result
 
     by_request: dict[str | None, list[ModelCall]] = {}
     for call in calls:
@@ -1974,6 +2016,10 @@ def query_usage(conn: sqlite3.Connection, game_id: str, group_by: str = "game") 
             group = by_request[request_id]
             entry: dict[str, Any] = {"request_id": request_id, "detail": aggregate_calls(group),
                                      "call_ids": [call.call_id for call in group]}
+            entry["role_usage"] = _usage_by_role(group)
+            if rate_file is not None:
+                from .usage_cost import role_cost_report
+                entry["role_costs"] = role_cost_report(group, rate_file)
             if request_id is not None and request_id in request_legacy:
                 entry["request_aggregate"] = request_legacy[request_id]
                 entry["note"] = "request_aggregate is reconciliation-only, never added to detail"
@@ -1987,10 +2033,15 @@ def query_usage(conn: sqlite3.Connection, game_id: str, group_by: str = "game") 
 
     aggregate_only_request_ids = sorted(
         rid for rid in request_legacy if rid not in by_request or not by_request.get(rid))
-    return {"game_id": game_id, "group_by": "game", "measured": aggregate_calls(calls),
+    result = {"game_id": game_id, "group_by": "game", "measured": aggregate_calls(calls),
+            "role_usage": _usage_by_role(calls),
             "call_count": len(calls),
             "aggregate_only_request_ids": aggregate_only_request_ids,
             "unassigned_calls": len(by_request.get(None, []))}
+    if rate_file is not None:
+        from .usage_cost import role_cost_report
+        result["role_costs"] = role_cost_report(calls, rate_file)
+    return result
 
 
 def _format_usage_report(value: dict[str, Any]) -> str:
@@ -2041,6 +2092,13 @@ def _format_usage_report(value: dict[str, Any]) -> str:
             lines.append(f"aggregate_only requests (no call detail): {value['aggregate_only_request_ids']}")
         if value["unassigned_calls"]:
             lines.append(f"unassigned calls (no request_id): {value['unassigned_calls']}")
+        if "role_usage" in value:
+            for role in ("player", "observer", "unknown", "combined"):
+                lines.append(f"{role} calls: {value['role_usage'][role]['call_count']}")
+        if "role_costs" in value:
+            for role in ("player", "observer", "unknown", "combined"):
+                costs = value["role_costs"][role]
+                lines.append(f"{role} cost_usd: {costs['cost_usd']} ({costs['coverage']})")
     return "\n".join(lines)
 
 
@@ -2200,6 +2258,8 @@ def main(argv: list[str]) -> int:
     turns = sub.add_parser("turns"); turns.add_argument("--db", required=True); turns.add_argument("game_id")
     usage = sub.add_parser("usage"); usage.add_argument("--db", required=True); usage.add_argument("game_id")
     usage.add_argument("--group-by", choices=("call", "request", "game", "turn"), default="game")
+    usage.add_argument("--call-role", choices=("player", "observer", "unknown"))
+    usage.add_argument("--rate-file")
     usage.add_argument("--json", action="store_true")
     inv = sub.add_parser("inventory"); inv.add_argument("--db", required=True)
     backfill = sub.add_parser("backfill-events"); backfill.add_argument("--db", required=True)
@@ -2233,7 +2293,7 @@ def main(argv: list[str]) -> int:
     elif args.command == "delete": value = delete_history(conn, args.cohort, args.game_id or [], args.reset, args.compact)
     elif args.command == "game": value = summarize_game(conn, args.game_id)
     elif args.command == "usage":
-        value = query_usage(conn, args.game_id, args.group_by)
+        value = query_usage(conn, args.game_id, args.group_by, args.call_role, args.rate_file)
         if not args.json:
             print(_format_usage_report(value))
             conn.close(); return exit_code

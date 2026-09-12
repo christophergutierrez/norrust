@@ -333,6 +333,52 @@ annotation error never requires having used this helper.
 
 ## Usage accounting: launch, handoff, collection, and final report
 
+### Bounded watchdog observer
+
+The optional watchdog is a separate, tool-free observer channel.  It is
+disabled by default and may run in `observe` mode (recommendations recorded)
+or `enforce` mode (a validated durable stop may be submitted).  Its direct
+OpenAI Responses backend uses `NORRUST_OPENAI_API_KEY`, model
+`gpt-5.4-nano`, reasoning effort `none`, `max_output_tokens=512`, and a
+30-second request deadline.  These fields and the candidate model's Responses
+support are verified against the [official GPT-5.4 nano model documentation](https://developers.openai.com/api/docs/models/gpt-5.4-nano)
+and [Responses create reference](https://developers.openai.com/api/reference/cli/resources/responses/methods/create).
+It sends a fresh bounded status packet on each
+check, never the player's canonical prompt or conversation history, and makes
+no automatic retries.  The controller reserves each physical call and its
+512-token allowance in a run-owned state file before dispatch; the ceiling is
+20 calls including failures and one investigation follow-up.  An unavailable
+observer disables advisory checks while the independent game watchdog keeps
+running.
+
+Observer usage is written as `call_role: "observer"` in the run-owned usage
+sidecar.  Player calls retain `call_role: "player"`; historical rows without
+that field remain `unknown`.  SQLite usage reports expose player, observer,
+unknown, and combined coverage separately, and the player's online token
+budget and prompt-cache/bakeoff reports exclude explicit observer calls.
+Unknown usage has no fabricated cost.  A semantic stop in enforce mode requires
+an `inspect` investigation and repeated non-progress evidence across two fresh
+observations with no recovery; a long request, poor tactics, or a negative
+material balance alone cannot stop a healthy game.  The observer's `run_id` is
+separate from the catalog `game_id`; launchers must pass the proven catalog ID
+when they want its sidecar imported.
+
+The maintained supervisor exposes the same opt-in channel for real runs:
+
+```bash
+python3 -m tools.llm_supervisor --log /absolute/run/match.ndjson \
+  --watchdog-mode observe --watchdog-model gpt-5.4-nano -- \
+  python3 -m tools.llm_client --log /absolute/run/match.ndjson ...
+```
+
+`--watchdog-mode` defaults to `off`; `enforce` is the only mode that can
+write a durable stop intent. The supervisor attaches lazily after the
+recorder has published a proven catalog conversation identity, polls the
+recorder packet without blocking the player, and closes the observer promptly
+when the child exits. Offline evaluation injects `FakeObserverBackend` through
+the Python `run(..., observer_backend=...)` API and may set
+`observer_max_calls=3`; this never authorizes a paid request.
+
 Every model game must produce measured or explicitly UNKNOWN token usage --
 never a silently omitted or fabricated number. This is the authoritative
 procedure; whatever launches a game (a script, an agent, or a human) follows

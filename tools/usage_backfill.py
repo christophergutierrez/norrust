@@ -453,6 +453,28 @@ def compare_usage(conn, game_ids: Iterable[str]) -> dict[str, Any]:
         turn_report = gh.query_usage(conn, game_id, "turn")
         call_report = gh.query_usage(conn, game_id, "call")
         calls = call_report["calls"]
+        # Comparison metrics are player metrics.  Preserve pre-role archives
+        # (all rows were historically player calls) while excluding only
+        # explicit observer rows in mixed/new archives.
+        calls = [call for call in calls if call.get("call_role") != "observer"]
+        player_call_ids = {call["call_id"] for call in calls}
+        # Reconstruct request detail from the already filtered call rows so an
+        # observer with no player request link cannot become a comparison
+        # request or percentile denominator.
+        request_report = dict(request_report, requests=[entry for entry in request_report["requests"]
+            if any(call_id in player_call_ids for call_id in entry.get("call_ids", []))])
+        calls_by_id = {call["call_id"]: ModelCall(**call) for call in calls}
+        turn_report = dict(turn_report,
+            completed_turns=[dict(entry, call_ids=[cid for cid in entry["call_ids"] if cid in player_call_ids],
+                                  detail=aggregate_calls(calls_by_id[cid] for cid in entry["call_ids"] if cid in player_call_ids))
+                             for entry in turn_report["completed_turns"]],
+            open_turns=[dict(entry, call_ids=[cid for cid in entry["call_ids"] if cid in player_call_ids],
+                             detail=aggregate_calls(calls_by_id[cid] for cid in entry["call_ids"] if cid in player_call_ids))
+                        for entry in turn_report["open_turns"]],
+            unassigned=dict(turn_report["unassigned"],
+                            call_ids=[cid for cid in turn_report["unassigned"]["call_ids"] if cid in player_call_ids]))
+        game_report = dict(game_report, measured=aggregate_calls(ModelCall(**call) for call in calls),
+                           call_count=len(calls))
         failed_calls = [c for c in calls if c["status"] == "failed"]
         completed_calls = [c for c in calls if c["status"] == "completed"]
 

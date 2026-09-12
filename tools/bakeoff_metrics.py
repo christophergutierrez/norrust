@@ -66,6 +66,8 @@ def aggregate_usage(call_records: list[dict[str, Any]], model: Optional[str] = N
     """Aggregate physical model calls into exact non-overlapping totals and cost."""
     calls: list[model_usage.ModelCall] = []
     for index, raw in enumerate(call_records):
+        if raw.get("call_role") == "observer":
+            continue
         usage = raw.get("usage") if isinstance(raw.get("usage"), dict) else raw
         usage = usage if isinstance(usage, dict) else {}
         fields = {key: value for key, value in raw.items()
@@ -195,6 +197,8 @@ def _physical_request_totals(records: list[dict[str, Any]],
     for index, raw in enumerate(physical_calls):
         if not isinstance(raw, dict):
             unlinked = True
+            continue
+        if raw.get("call_role") == "observer":
             continue
         request_id = raw.get("request_id")
         call_id = raw.get("call_id")

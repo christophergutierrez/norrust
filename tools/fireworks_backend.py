@@ -283,6 +283,7 @@ def _run_stream(prompt: str, *, model: str, max_output_tokens: int, game_id: str
         raw = dict(usage_raw) if usage_raw else None
         final = build_call(
             game_id=game_id or "unbound", call_id=call.call_id, request_id=request_id,
+            call_role="player",
             provider="fireworks", transport=TRANSPORT, raw_usage=raw,
             usage_map=FIREWORKS_USAGE_MAP, status="failed", requested_model=model,
             reported_model=reported_model, provider_response_id=response_id,
@@ -407,6 +408,7 @@ def _run_stream(prompt: str, *, model: str, max_output_tokens: int, game_id: str
             raw["prompt_cache_hit_tokens"] = details["cached_tokens"]
     final = build_call(
         game_id=game_id or "unbound", call_id=call.call_id, request_id=request_id,
+        call_role="player",
         provider="fireworks", transport=TRANSPORT, raw_usage=raw,
         usage_map=FIREWORKS_USAGE_MAP, status="failed" if finish_reason == "length" else "completed",
         requested_model=model, reported_model=reported_model, provider_response_id=response_id,
@@ -498,7 +500,7 @@ def run(prompt: str, *, model: str, max_output_tokens: int, game_id: str | None,
     validate_reasoning_effort(reasoning_effort)
     prompt_sha256 = hashlib.sha256(prompt.encode()).hexdigest()
     call_id = _allocate_call_id(game_id, prompt_sha256)
-    call = ModelCall(game_id=game_id or "unbound", call_id=call_id, request_id=request_id,
+    call = ModelCall(game_id=game_id or "unbound", call_id=call_id, call_role="player", request_id=request_id,
                       provider="fireworks", transport=TRANSPORT, requested_model=model,
                       requested_affinity=session_affinity,
                       retry_of_call_id=retry_of_call_id,
@@ -635,7 +637,7 @@ def run(prompt: str, *, model: str, max_output_tokens: int, game_id: str | None,
     content = choice.get("message", {}).get("content") if isinstance(choice.get("message"), dict) else None
     limited = finish_reason == "length"
     call_status = "completed" if not limited and isinstance(content, str) and content.strip() else "failed"
-    final = build_call(game_id=game_id or "unbound", call_id=call_id, request_id=request_id,
+    final = build_call(game_id=game_id or "unbound", call_id=call_id, call_role="player", request_id=request_id,
                         provider="fireworks", transport=TRANSPORT, raw_usage=usage_raw,
                         usage_map=FIREWORKS_USAGE_MAP, status=call_status,
                         requested_model=model, reported_model=body.get("model"),
