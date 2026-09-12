@@ -22,6 +22,25 @@ class ResponseParseError(ValueError):
   """Raised when a model response cannot be normalized to a single valid JSON payload."""
 
 
+def _reject_duplicate_object_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+  """Object hook enforcing exactly one value per key at every nesting level.
+
+  Plain `json.loads` silently keeps only the last of two identical JSON
+  object keys, which would let a duplicated ``"purpose"`` (or any other
+  field) reach a validator as if only one value had ever been supplied.
+  Strict parsing already rejects malformed and ambiguous responses
+  elsewhere; duplicate keys are the same kind of ambiguity.
+  """
+  seen: set[str] = set()
+  result: dict[str, Any] = {}
+  for key, value in pairs:
+    if key in seen:
+      raise ResponseParseError(f"duplicate key {key!r} in JSON object")
+    seen.add(key)
+    result[key] = value
+  return result
+
+
 def recover_bare_tool_prefix(text: str) -> dict[str, Any] | None:
   """Recognize a complete bare-tool object at the start of malformed text.
 
@@ -70,7 +89,7 @@ def parse_action_response(text: str) -> Any:
 
   direct_error_msg = ""
   try:
-    decoded = json.loads(stripped)
+    decoded = json.loads(stripped, object_pairs_hook=_reject_duplicate_object_keys)
     if not isinstance(decoded, (dict, list)):
       raise ResponseParseError(
         f"unsupported response shape: {type(decoded).__name__}; expected object or array"
@@ -109,7 +128,7 @@ def parse_action_response(text: str) -> Any:
     raise ResponseParseError("empty code fence content")
 
   try:
-    decoded = json.loads(fenced_content)
+    decoded = json.loads(fenced_content, object_pairs_hook=_reject_duplicate_object_keys)
   except json.JSONDecodeError as exc:
     raise ResponseParseError(f"invalid JSON in code fence: {exc.msg}") from exc
 

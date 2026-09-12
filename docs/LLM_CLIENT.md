@@ -157,18 +157,30 @@ an accepted partial is acknowledged when `--log` is supplied.
   most four relevant units when a missing fact matters, then enter a local
   execution phase. Inspect the target for an uncertain attack or the specific
   unit for an uncertain retreat; inspection is optional when the supplied legal
-  actions already establish the objective. The next request replaces the full
-  tactical option rows with the exact inspected options in an explicit
-  untrusted-data block plus compact revision-pinned live rows for referenced
-  targets and matching support, named village ownership, and guardrails (side,
-  phase, recruiter danger, economy, army IDs, and pending promotions). A
-  matching assigned task is preferred; an unrelated task is reported as no
-  match. A fresh inspection replaces that local task. Accepted
-  partial actions invalidate the local context; an engine validation rollback
-  keeps it for repair and another permitted inspection. Legal action envelopes
-  remain accepted without an inspection. Intent and agenda retain origin
-  request, turn, and revision internally when available, and remain provisional
-  rationale rather than rules or permanent garrisons.
+  actions already establish the objective. Any inspect_target, inspect_targets,
+  or inspect_hex request may also carry one optional `purpose`: a string of at
+  most 120 characters explaining why that inspection was requested. It is
+  provisional and unverified, carried only alongside that inspection's local
+  context, and rendered back with explicit untrusted-data framing; it is never
+  a committed intent, rule, hold, or garrison, and the client never infers an
+  action from it. The next request replaces the full tactical option rows with
+  the exact inspected options and that purpose in an explicit untrusted-data
+  block, plus compact revision-pinned live rows for referenced targets and
+  matching support, named village ownership, and guardrails (side, current
+  phase, the opponent's imminent phase this round, next round's phase,
+  recruiter danger, economy, army IDs, and pending promotions). The projection
+  also states its own scope explicitly, so a plan that reaches beyond the
+  inspected entities is recognizable as unsupported by that local view alone.
+  A matching assigned task is preferred; an unrelated task is reported as no
+  match. A fresh inspection replaces that local task and its purpose. Accepted
+  partial actions invalidate the local context and its purpose; an engine
+  validation rollback keeps both for repair and another permitted inspection.
+  An unavailable inspection result clears the local context and purpose rather
+  than leaving a stale one. A rejected draft never promotes its purpose into
+  committed memory, and neither survives into the next side turn. Legal action
+  envelopes remain accepted without an inspection. Intent and agenda retain
+  origin request, turn, and revision internally when available, and remain
+  provisional rationale rather than rules or permanent garrisons.
 
 `--action-encoding {coordinates,choices}` selects how actions are represented
 (default `coordinates`).
@@ -838,8 +850,8 @@ ranked move recommendations. Two other factual inspections are
 available:
 
 ```json
-{"tool":"inspect_target","unit_id":19}
-{"tool":"inspect_hex","col":4,"row":7,"phase":"next_opponent_turn"}
+{"tool":"inspect_target","unit_id":19,"purpose":"optional string, at most 120 characters"}
+{"tool":"inspect_hex","col":4,"row":7,"phase":"next_opponent_turn","purpose":"optional string, at most 120 characters"}
 ```
 
 `inspect_target` lists friendly attackers and origins for one enemy.
@@ -849,6 +861,8 @@ and returns the same inspections in one read-only query. It is separate from
 the friendly `inspect_units` contract.
 `inspect_hex` lists attack coverage for one hex either now or after the
 deterministic next `EndTurn`; empty hexes have no invented combat forecast.
+All three accept the same optional `purpose` string; any other key is still
+rejected with today's "bare tool requests carry no action metadata" message.
 Tool calls are read-only and revision pinned. `--max-tool-calls-per-turn` bounds
 them (default 4), while `--max-model-calls-per-turn` remains the overall
 model-call bound. Every tool follow-up reports the remaining budget. When no
