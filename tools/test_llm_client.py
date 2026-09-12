@@ -33,6 +33,7 @@ from .llm_client import (
     load_resume_checkpoint,
     validate_inspect_target_request, validate_inspect_targets_request,
     validate_inspect_hex_request, validate_orders, validate_preview_request,
+    validate_purpose, build_local_execution_context, local_execution_projection,
     timeout_finish_orders,
 )
 from .response_parsing import recover_bare_tool_prefix, parse_action_response, ResponseParseError
@@ -1012,6 +1013,51 @@ class ClientValidationTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "bare tool requests carry no action metadata"):
                 validator(request)
+
+    def test_inspect_units_carries_the_same_bounded_purpose(self):
+        # inspect_units is the friendly group tool R15 actually used when it
+        # developed an attack/retreat purpose and could send only bare unit
+        # IDs, so it must accept the same bounded purpose as the other three
+        # inspection tools -- from the one shared validator, not a copy.
+        self.assertEqual(ac.validate_inspect_units_request(
+            {"tool": "inspect_units", "unit_ids": [4, 5, 9],
+             "purpose": "screen the wounded Grunt then attack the Bowman"}), [4, 5, 9])
+        # Omitted purpose stays legal.
+        self.assertEqual(ac.validate_inspect_units_request(
+            {"tool": "inspect_units", "unit_ids": [4]}), [4])
+        # Exactly 120 characters is legal; 121 is not.
+        ac.validate_inspect_units_request(
+            {"tool": "inspect_units", "unit_ids": [4], "purpose": "x" * 120})
+        with self.assertRaises(ValueError):
+            ac.validate_inspect_units_request(
+                {"tool": "inspect_units", "unit_ids": [4], "purpose": "x" * 121})
+        with self.assertRaises(ValueError):
+            ac.validate_inspect_units_request(
+                {"tool": "inspect_units", "unit_ids": [4], "purpose": 5})
+        # Every other unknown key is still rejected with today's exact message.
+        with self.assertRaisesRegex(ValueError, "bare tool requests carry no action metadata"):
+            ac.validate_inspect_units_request(
+                {"tool": "inspect_units", "unit_ids": [4], "intent": "x"})
+        # One definition backs every tool, so the bound cannot drift apart.
+        self.assertIs(ac.validate_purpose, validate_purpose)
+
+    def test_inspect_units_purpose_reaches_the_delivered_local_prompt(self):
+        # The R15 case end to end: a purpose supplied on inspect_units must
+        # survive into the local follow-up actually sent to the model, as
+        # provisional operation state rather than committed intent.
+        state = {"state_revision": 314, "active_faction": 0, "turn": 9,
+                 "time_of_day": "day",
+                 "units": [{"id": 4, "faction": 0, "hp": 2, "col": 3, "row": 9}]}
+        request = {"tool": "inspect_units", "unit_ids": [4],
+                   "purpose": "retreat the 2 HP Grunt out of reach"}
+        context = build_local_execution_context(
+            state, request, "inspect_units", {"units": [{"unit_id": 4}]}, "OPTIONS")
+        self.assertEqual(context["operation"]["purpose"],
+                         "retreat the 2 HP Grunt out of reach")
+        # Provisional only: it never becomes committed intent or agenda.
+        self.assertEqual(context["objective"]["intent"], "")
+        self.assertIn("retreat the 2 HP Grunt out of reach",
+                      local_execution_projection(state, context))
 
     def test_duplicate_json_object_keys_are_rejected(self):
         # A duplicated "purpose" (or any other key) must not silently resolve

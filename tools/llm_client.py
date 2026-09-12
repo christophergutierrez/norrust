@@ -32,7 +32,7 @@ try:
     from .game_token_budget import measured_game_budget
     from .action_choices import (ChoiceRegistry, extract_available_choices,
                                  validate_inspect_units_request, validate_friendly_inspect_units,
-                                 query_inspect_units,
+                                 query_inspect_units, validate_purpose, PURPOSE_MAX_CHARS,
                                  extract_units_inspection_choices)
 except ImportError:  # pragma: no cover - direct script compatibility
     # Running `python tools/llm_client.py` puts only the tools directory on
@@ -54,7 +54,7 @@ except ImportError:  # pragma: no cover - direct script compatibility
     from tools.game_token_budget import measured_game_budget
     from tools.action_choices import (ChoiceRegistry, extract_available_choices,
                                       validate_inspect_units_request, validate_friendly_inspect_units,
-                                      query_inspect_units,
+                                      query_inspect_units, validate_purpose, PURPOSE_MAX_CHARS,
                                       extract_units_inspection_choices)
 
 ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "Engage", "EndTurn", "Advance", "Resign",
@@ -1208,26 +1208,6 @@ def compact_unit_inspection(unit: dict[str, Any], choices: Optional[list[Any]] =
     return "\n".join(lines)
 
 
-_PURPOSE_MAX_CHARS = 120
-
-
-def _validate_purpose(request: dict[str, Any], tool: str) -> Optional[str]:
-    """Validate the one optional provisional-purpose field, shared by every
-
-    inspection request. Length is counted in characters, matching the
-    existing FinishWithGreedy hold-reason convention. A present-but-invalid
-    purpose is rejected explicitly rather than silently dropped or truncated.
-    """
-    if "purpose" not in request:
-        return None
-    purpose = request["purpose"]
-    if not isinstance(purpose, str):
-        raise ValueError(f"{tool} purpose must be a string")
-    if len(purpose) > _PURPOSE_MAX_CHARS:
-        raise ValueError(f"{tool} purpose is {len(purpose)} characters; maximum {_PURPOSE_MAX_CHARS}")
-    return purpose
-
-
 def validate_inspect_target_request(request: dict[str, Any]) -> int:
     if not isinstance(request, dict) or request.get("tool") != "inspect_target":
         raise ValueError("inspect_target request must contain tool=inspect_target")
@@ -1240,7 +1220,7 @@ def validate_inspect_target_request(request: dict[str, Any]) -> int:
     unit_id = request.get("unit_id")
     if not isinstance(unit_id, int) or isinstance(unit_id, bool) or not 0 <= unit_id <= 2**32 - 1:
         raise ValueError("inspect_target unit_id must be a uint32")
-    _validate_purpose(request, "inspect_target")
+    validate_purpose(request, "inspect_target")
     return unit_id
 
 
@@ -1270,7 +1250,7 @@ def validate_inspect_targets_request(request: dict[str, Any]) -> list[int]:
     if any(not isinstance(unit_id, int) or isinstance(unit_id, bool) or not 0 <= unit_id <= 2**32 - 1
            for unit_id in unit_ids) or len(set(unit_ids)) != len(unit_ids):
         raise ValueError("inspect_targets unit_ids must be unique uint32 values")
-    _validate_purpose(request, "inspect_targets")
+    validate_purpose(request, "inspect_targets")
     return unit_ids
 
 
@@ -1657,7 +1637,7 @@ def validate_inspect_hex_request(request: dict[str, Any]) -> tuple[int, int, str
         raise ValueError("inspect_hex coordinates must be int32")
     if phase not in {"current", "next_opponent_turn"}:
         raise ValueError("inspect_hex phase must be current or next_opponent_turn")
-    _validate_purpose(request, "inspect_hex")
+    validate_purpose(request, "inspect_hex")
     return col, row, phase
 
 
@@ -2260,7 +2240,7 @@ def tool_shape_repair_prompt(prompt: str, tool_context: str, error: str,
     """
     schemas = {
         "preview_batch": '{"tool":"preview_batch","candidates":[[actions...]]}',
-        "inspect_units": '{"tool":"inspect_units","unit_ids":[N,...]}',
+        "inspect_units": '{"tool":"inspect_units","unit_ids":[N,...],"purpose":"optional string, at most 120 characters"}',
         "inspect_target": '{"tool":"inspect_target","unit_id":N,"purpose":"optional string, at most 120 characters"}',
         "inspect_targets": '{"tool":"inspect_targets","unit_ids":[N,...],"purpose":"optional string, at most 120 characters"}',
         "inspect_hex": '{"tool":"inspect_hex","col":C,"row":R,"phase":"current|next_opponent_turn","purpose":"optional string, at most 120 characters"}',
@@ -3193,7 +3173,7 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
         "- Per-unit origins and DESTINATION_DANGER: {\"tool\":\"inspect_units\",\"unit_ids\":[N,...]} (1-8 unique living friendly "
         "IDs, prefer <=4; one query per ID); friendly attack coverage with {\"tool\":\"inspect_target\",\"unit_id\":N} or "
         "{\"tool\":\"inspect_targets\",\"unit_ids\":[N,...]} (<=8; supplies legal origins); hex coverage with "
-        "{\"tool\":\"inspect_hex\",\"col\":C,\"row\":R,\"phase\":\"current|next_opponent_turn\"}. Last three take optional purpose (<=120 chars).\n"
+        "{\"tool\":\"inspect_hex\",\"col\":C,\"row\":R,\"phase\":\"current|next_opponent_turn\"}. All four take optional purpose (<=120 chars).\n"
         "- One preview per turn: {\"tool\":\"preview_batch\",\"candidates\":[[actions...]]}; 1-2 candidates ending "
         "DoneWithImportantMoves, EndTurn, or FinishWithGreedy; no Resign. Use LIVE_STATE; revised drafts start there.\n"
         if isinstance(state.get("tactical_surface"), dict) else
@@ -4356,7 +4336,7 @@ def build_local_execution_context(
     # durable memory. Raw text is capped defensively even though the
     # validators already enforce the same bound.
     raw_purpose = request.get("purpose") if isinstance(request, dict) else None
-    purpose = (raw_purpose[:_PURPOSE_MAX_CHARS]
+    purpose = (raw_purpose[:PURPOSE_MAX_CHARS]
                if isinstance(raw_purpose, str) and raw_purpose.strip() else None)
     return {
         "revision": state.get("state_revision", "unknown"),

@@ -289,6 +289,31 @@ def extract_inspection_choices(
     return choices
 
 
+PURPOSE_MAX_CHARS = 120
+
+
+def validate_purpose(request: dict[str, Any], tool: str) -> Any:
+    """Validate the one optional provisional-purpose field shared by every
+    inspection request.
+
+    Length is counted in characters, matching the existing FinishWithGreedy
+    hold-reason convention. A present-but-invalid purpose is rejected
+    explicitly rather than silently dropped or truncated. This lives here
+    rather than in llm_client so `inspect_units` -- the friendly group tool
+    that actually carried the diagnosed lost-purpose case -- shares one
+    definition with the target/hex tools instead of duplicating it.
+    """
+    if "purpose" not in request:
+        return None
+    purpose = request["purpose"]
+    if not isinstance(purpose, str):
+        raise ValueError(f"{tool} purpose must be a string")
+    if len(purpose) > PURPOSE_MAX_CHARS:
+        raise ValueError(
+            f"{tool} purpose is {len(purpose)} characters; maximum {PURPOSE_MAX_CHARS}")
+    return purpose
+
+
 def validate_inspect_units_request(request: dict[str, Any]) -> list[int]:
     """Validate the player-facing `inspect_units` friendly group-inspection request.
 
@@ -299,7 +324,7 @@ def validate_inspect_units_request(request: dict[str, Any]) -> list[int]:
     """
     if not isinstance(request, dict) or request.get("tool") != "inspect_units":
         raise ValueError("inspect_units request must contain tool=inspect_units")
-    extra = set(request) - {"tool", "unit_ids"}
+    extra = set(request) - {"tool", "unit_ids", "purpose"}
     if extra:
         raise ValueError("inspect_units request has unknown key(s): %s; bare tool requests carry no action metadata" %
                          ", ".join(sorted(str(name) for name in extra)))
@@ -311,6 +336,7 @@ def validate_inspect_units_request(request: dict[str, Any]) -> list[int]:
     if any(not isinstance(unit_id, int) or isinstance(unit_id, bool) or not 0 <= unit_id <= 2**32 - 1
            for unit_id in unit_ids) or len(set(unit_ids)) != len(unit_ids):
         raise ValueError("inspect_units unit_ids must be unique uint32 values")
+    validate_purpose(request, "inspect_units")
     return unit_ids
 
 
