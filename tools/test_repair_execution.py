@@ -509,6 +509,124 @@ class RepairExecutionIntegrationTests(unittest.TestCase):
                                 and e.get("defender", {}).get("unit") == 24 for e in events))
             self.assertFalse(any(e.get("attacker", {}).get("unit") == 18 for e in events))
 
+    def test_pre_submit_repair_surfaces_rejected_units_own_legal_destinations(self):
+        """(Stack A) A pre-submit rejection naming a unit that was already
+        inspected this turn gets that unit's own revision-pinned legal
+        destinations echoed back in the repair prompt, honestly labeled
+        direct/open threat scope. This reproduces the shape of the archived
+        revision-314 Grunt U11 case: the model is given its own unit's real
+        legal options instead of only the bare rejection.
+
+        The same flow also exercises the two explicit "unavailable" markers:
+        a rejection naming a unit that was never inspected this turn, and a
+        rejection (an unparseable repair reply) that names no unit at all.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            checkpoint = _checkpoint(root)
+            # Step 1: schema-valid but engine-illegal (U18/U44 not adjacent).
+            # No unit has been inspected yet, so the repair for this rejection
+            # must say so explicitly rather than omitting the block.
+            not_adjacent = json.dumps({
+                "actions": [
+                    {"action": "Attack", "attacker_id": 18, "defender_id": 44},
+                    {"action": "FinishWithGreedy", "groups": [], "holds": []},
+                ],
+                "decisions": [{"orders": [0, 1], "rules": ["T3.3", "T7"],
+                               "expected": "Attack a distant enemy and finish without delegation.",
+                               "risk": "The attacker is not adjacent; this is expected to be rejected."}],
+            })
+            # Step 2: an unparseable repair reply names no unit at all.
+            unparseable = "not json at all, no tool, no actions"
+            # Step 3: inspect the friendly group including U7 -- this is the
+            # existing player-facing group tool, spent inside the repair loop.
+            inspect_units_request = json.dumps({"tool": "inspect_units", "unit_ids": [1, 3, 4, 5, 6, 7, 8, 10]})
+            # Step 4: a new engine-illegal batch naming U7 (nonexistent
+            # defender). U7 was just inspected in step 3 at the same
+            # (unchanged) revision, so its real destinations must be echoed.
+            illegal_attack_by_7 = json.dumps({
+                "actions": [
+                    {"action": "Attack", "attacker_id": 7, "defender_id": 999},
+                    {"action": "FinishWithGreedy", "groups": [], "holds": []},
+                ],
+                "decisions": [{"orders": [0, 1], "rules": ["T3.3", "T7"],
+                               "expected": "Attack a nonexistent defender.",
+                               "risk": "none; expected to be rejected."}],
+            })
+            corrected = json.dumps({
+                "actions": [
+                    {"action": "Attack", "attacker_id": 7, "defender_id": 24},
+                    {"action": "FinishWithGreedy", "groups": [], "holds": []},
+                ],
+                "decisions": [{"orders": [0, 1], "rules": ["T3.3", "T7"],
+                               "expected": "Attack the supplied adjacent target, then finish without delegation.",
+                               "risk": "The attack may leave U7 exposed to retaliation."}],
+            })
+            captures = root / "requests.ndjson"
+            backend = root / "backend.py"
+            backend.write_text(
+                "import json, sys\n"
+                "capture = sys.argv[1]\n"
+                "prompt = sys.stdin.read()\n"
+                "with open(capture, 'a', encoding='utf-8') as f:\n"
+                "    f.write(json.dumps({'prompt': prompt}) + '\\n')\n"
+                "count = sum(1 for _ in open(capture, encoding='utf-8'))\n"
+                f"if count == 1:\n"
+                f"    resp = {not_adjacent!r}\n"
+                f"elif count == 2:\n"
+                f"    resp = {unparseable!r}\n"
+                f"elif count == 3:\n"
+                f"    resp = {inspect_units_request!r}\n"
+                f"elif count == 4:\n"
+                f"    resp = {illegal_attack_by_7!r}\n"
+                f"else:\n"
+                f"    resp = {corrected!r}\n"
+                "print(json.dumps({'text': resp}))\n",
+                encoding="utf-8",
+            )
+            log = root / "match.ndjson"
+            command = [sys.executable, "-m", "tools.llm_client", "--driver", str(DRIVER),
+                       "--model-command", shlex.join([sys.executable, str(backend), str(captures)]),
+                       "--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
+                       "--gold", "300", "--seed", "2002", "--llm-side", "0", "--max-turns", "15",
+                       "--log", str(log), "--resume-checkpoint", str(checkpoint),
+                       "--query-budget-seconds", "60", "--model-timeout", "10", "--turn-timeout", "120"]
+            result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=150)
+            self.assertEqual(result.returncode, 0, result.stderr[-3000:] + log.read_text()[-3000:])
+
+            records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+            requests = [r for r in records if r.get("type") == "model_request"]
+            self.assertEqual(
+                [r["raw_output"] for r in requests],
+                [not_adjacent, unparseable, inspect_units_request, illegal_attack_by_7, corrected])
+
+            # Step 1's rejection named U18, never inspected: explicit marker.
+            self.assertIn(
+                "REJECTED_UNIT_LEGAL_DESTINATIONS unavailable unit=18 reason=no_inspection_result_in_scope",
+                requests[1]["prompt"])
+            # Step 2's unparseable reply names no unit: the other explicit marker.
+            self.assertIn(
+                "REJECTED_UNIT_LEGAL_DESTINATIONS unavailable reason=no_unit_identified_in_rejection",
+                requests[2]["prompt"])
+            # Step 4's rejection named U7, inspected in step 3 at the same
+            # (unchanged) revision 338: its real legal destinations are
+            # echoed, direct/open threat scope named honestly, no safety claim.
+            destinations_prompt = requests[4]["prompt"]
+            self.assertIn("REJECTED_UNIT_LEGAL_DESTINATIONS unit=7 state_revision=338", destinations_prompt)
+            self.assertIn("zero_direct_attackers_is_not_a_safety_guarantee", destinations_prompt)
+            self.assertIn("open_bound_removes_blockers_and_zoc", destinations_prompt)
+            self.assertNotIn("REJECTED_UNIT_LEGAL_DESTINATIONS unavailable unit=7", destinations_prompt)
+            self.assertRegex(destinations_prompt, r"REJECTED_UNIT_LEGAL_DESTINATIONS[^\n]*\n[^\n]*direct_attackers=")
+
+            # The corrected batch still committed; the repair loop kept
+            # running through the unparseable reply and the tool call.
+            forwarded = next(r for r in records if r.get("type") == "forwarded_orders")
+            self.assertEqual(forwarded["orders"], json.loads(corrected)["actions"])
+            events = [e for r in records if r.get("type") == "driver"
+                      for e in r.get("line", {}).get("events", [])]
+            self.assertTrue(any(e.get("kind") == "attack" and e.get("attacker", {}).get("unit") == 7
+                                and e.get("defender", {}).get("unit") == 24 for e in events))
+
     def test_revision_286_invalid_preview_draft_is_repaired_and_executes(self):
         """The archived dead-U21 preview is model-invalid feedback, not infra."""
         with tempfile.TemporaryDirectory() as td:

@@ -1828,6 +1828,24 @@ def tactical_attack_coverage(surface: dict[str, Any]) -> dict[str, Any]:
     return {"available": available, "current": current, "targets": targets}
 
 
+def _render_terrain_overrides(raw: Any, fallback_note: str) -> str:
+    """Render a unit type's own per-terrain override map plus its engine fallback.
+
+    Only the unit's own listed overrides are ever rendered as numbers; the
+    fallback note names where an unlisted terrain's real value comes from
+    (the board tile, not this unit) without materializing a per-tile number
+    here, since this profile carries no board/hex context. A key present but
+    not a dict, or entirely absent from the profile, renders `unknown` --
+    never a fabricated number.
+    """
+    if not isinstance(raw, dict):
+        return "unknown"
+    if not raw:
+        return "none (%s)" % fallback_note
+    parts = ["%s:%s" % (key, value) for key, value in sorted(raw.items())]
+    return "%s (%s)" % (",".join(parts), fallback_note)
+
+
 def compact_unit_type_profiles(profiles: Any) -> str:
     """Render the canonical compact unit definitions without synthetic card fields."""
     lines: list[str] = []
@@ -1882,10 +1900,18 @@ def compact_unit_type_profiles(profiles: Any) -> str:
                 abilities = "none"
         else:
             abilities = "unknown"
-        lines.append("TYPE %s cost=%s hp=%s move=%s align=%s abilities=%s attacks=%s resist=%s" % (
-            profile.get("def_id", "?"), profile.get("cost", "?"), profile.get("max_hp", "?"),
-            profile.get("movement", "?"), profile.get("alignment", "?"),
-            abilities, "|".join(attacks) or "-", resistances or "-"))
+        move_costs = _render_terrain_overrides(
+            profile.get("movement_costs"),
+            "99=impassable; terrain not listed here uses the board tile's own movement_cost")
+        defense = _render_terrain_overrides(
+            profile.get("defense"),
+            "terrain not listed here uses the board tile's own defense")
+        lines.append(
+            "TYPE %s cost=%s hp=%s move=%s align=%s abilities=%s attacks=%s "
+            "move_costs=%s defense=%s resist=%s" % (
+                profile.get("def_id", "?"), profile.get("cost", "?"), profile.get("max_hp", "?"),
+                profile.get("movement", "?"), profile.get("alignment", "?"),
+                abilities, "|".join(attacks) or "-", move_costs, defense, resistances or "-"))
     return "\n".join(lines)
 
 
@@ -2235,6 +2261,46 @@ def draft_rationale_block(intent: Optional[str] = None,
                  '{"intent":"absent","decision_annotation":{"status":"truncated"}}\n'
                  "DRAFT_RATIONALE_UNTRUSTED_DATA_END\n")
     return block
+
+
+def rejected_unit_destinations_block(unit_id: Optional[int],
+                                      destinations: Optional[list[dict[str, Any]]],
+                                      state_revision: Any) -> str:
+    """Render a pre-submit rejected unit's own revision-pinned legal destinations.
+
+    This never issues an additional engine query: `destinations` must come
+    from an inspect_units result already fetched this turn (its
+    `destination_threats`). When no unit could be identified from the
+    rejected order, or no such inspection result is in scope, this renders an
+    explicit unavailable marker rather than omitting the block.
+
+    Zero *direct* attackers at a destination is not a safety guarantee: the
+    open bound removes blockers and zones of control, and later actions in
+    the same batch mutate both. This reuses the existing direct/open
+    threat-scope facts as-is -- no new safety score, ranking, or truncation,
+    and no destination is hidden.
+    """
+    if unit_id is None:
+        return "REJECTED_UNIT_LEGAL_DESTINATIONS unavailable reason=no_unit_identified_in_rejection\n"
+    if not isinstance(destinations, list) or not destinations:
+        return ("REJECTED_UNIT_LEGAL_DESTINATIONS unavailable unit=%s "
+                "reason=no_inspection_result_in_scope\n" % unit_id)
+    lines = ["REJECTED_UNIT_LEGAL_DESTINATIONS unit=%s state_revision=%s "
+             "caveat=zero_direct_attackers_is_not_a_safety_guarantee;"
+             "open_bound_removes_blockers_and_zoc;"
+             "later_actions_in_this_batch_can_change_both" % (unit_id, state_revision)]
+    for destination in destinations:
+        if not isinstance(destination, dict):
+            continue
+        marker = "@" if destination.get("current") else "->"
+        lines.append(
+            "%s%s,%s direct_attackers=%s direct_max=%s open_attackers=%s open_max=%s" % (
+                marker, destination.get("col", "?"), destination.get("row", "?"),
+                _readable_threat_count(destination, "distinct_attacker_count"),
+                _readable_whole_hp(destination.get("max_incoming_sum")),
+                _readable_threat_count(destination, "open_distinct_attacker_count"),
+                _readable_whole_hp(destination.get("open_max_incoming_sum"))))
+    return "\n".join(lines) + "\n"
 
 
 def candidate_repair_prompt(prompt: str, tool_context: str,
@@ -6413,6 +6479,13 @@ def run(args: argparse.Namespace) -> int:
                     rejected_orders = list(orders)
                     rejected_error = dict(validation)
                     rejected_raw_text = None
+                    # A unit's own revision-pinned legal destinations, learned
+                    # from an inspect_units result already fetched during this
+                    # same pre-submit repair loop. This is reused verbatim in
+                    # a repair prompt naming that unit; it is never refreshed
+                    # by an extra engine query.
+                    known_unit_destinations: dict[int, list[dict[str, Any]]] = {}
+                    known_unit_destinations_revision = int(state.get("state_revision", 0))
                     while validation.get("valid") is not True:
                         # Validation rejected this proposal before execution.
                         # Only a later repaired response may supply a new
@@ -6478,11 +6551,31 @@ def run(args: argparse.Namespace) -> int:
                                 )
                                 + "\n"
                             )
+                        rejected_unit_id = None
+                        if isinstance(rejected_orders, list):
+                            failed_index = rejected_error.get("failed_index")
+                            if isinstance(failed_index, int) and 0 <= failed_index < len(rejected_orders):
+                                failed_order = rejected_orders[failed_index]
+                                if isinstance(failed_order, dict):
+                                    for id_key in ("unit_id", "attacker_id", "target_id"):
+                                        if isinstance(failed_order.get(id_key), int):
+                                            rejected_unit_id = failed_order[id_key]
+                                            break
+                        current_revision = int(state.get("state_revision", 0))
+                        rejected_unit_destinations_available = (
+                            known_unit_destinations.get(rejected_unit_id)
+                            if (rejected_unit_id is not None
+                                and known_unit_destinations_revision == current_revision)
+                            else None
+                        )
+                        destinations_block = rejected_unit_destinations_block(
+                            rejected_unit_id, rejected_unit_destinations_available, current_revision)
                         repair_prompt = (
                             prompt
                             + candidate_block
                             + rejected_rationale
                             + error_block
+                            + destinations_block
                             + "ROLLBACK_NOTICE: the batch was rejected before submission; the state and revision is unchanged. Return one corrected JSON action envelope, following the shared annotation contract."
                             + repair_tool_context
                         )
@@ -6522,6 +6615,14 @@ def run(args: argparse.Namespace) -> int:
                                     result = query_inspect_units(
                                         exchange, unit_ids, int(state.get("state_revision", 0)))
                                     presentation_units = enrich_inspected_units(result, state)
+                                    known_unit_destinations_revision = int(state.get("state_revision", 0))
+                                    for inspected in presentation_units:
+                                        if not (isinstance(inspected, dict)
+                                                and isinstance(inspected.get("unit_id"), int)):
+                                            continue
+                                        inspected_destinations = inspected.get("destination_threats")
+                                        if isinstance(inspected_destinations, list):
+                                            known_unit_destinations[inspected["unit_id"]] = inspected_destinations
                                     insp_choices = []
                                     if getattr(args, "action_encoding", "coordinates") == "choices":
                                         insp_choices = extract_units_inspection_choices(

@@ -73,6 +73,36 @@ pub struct UnitDef {
     pub vision_range: u32,
 }
 
+/// Effective movement point cost to enter `terrain_id`, in the engine's real
+/// fallback order: the mover's own per-terrain override (`UnitDef.movement_costs`
+/// or the runtime `Unit`'s copy of it), else the board tile's own movement
+/// cost. 99 = impassable. This is the single source of truth that
+/// `norrust_get_unit_terrain_info` and the prompt-facing unit type profile
+/// must both agree with -- both take a plain `&HashMap` so they work for
+/// either the static `UnitDef` or the spawned `Unit`.
+pub fn effective_movement_cost(
+    movement_costs: &HashMap<String, u32>,
+    terrain_id: &str,
+    tile_movement_cost: u32,
+) -> u32 {
+    movement_costs
+        .get(terrain_id)
+        .copied()
+        .unwrap_or(tile_movement_cost)
+}
+
+/// Effective avoidance percentage on `terrain_id` (higher = safer), in the
+/// engine's real fallback order: the mover's own override, else the board
+/// tile's own defense. See `effective_movement_cost` for why this takes a
+/// plain map.
+pub fn effective_defense(
+    defense: &HashMap<String, u32>,
+    terrain_id: &str,
+    tile_defense: u32,
+) -> u32 {
+    defense.get(terrain_id).copied().unwrap_or(tile_defense)
+}
+
 /// Unit placement entry for scenario unit files.
 #[derive(Debug, Clone, Deserialize)]
 pub struct UnitPlacement {
