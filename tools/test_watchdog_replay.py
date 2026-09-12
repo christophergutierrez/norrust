@@ -205,6 +205,20 @@ class WatchdogReplayTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             evaluate.assert_called_once()
 
+    def test_journal_gap_keeps_replay_aggregate_partial(self):
+        result = {"case": "one", "status": {"stage": "active"},
+                  "metrics": {"scored": True, "false_stop": False,
+                              "missed_loop": None, "detection_delay_seconds": None,
+                              "observer_calls": 1, "observer_verdicts": 1,
+                              "observer_failures": 0, "observer_failure_reasons": {},
+                              "evidence_gaps": {"unreadable_journal_entry": 1},
+                              "coverage_complete": False, "usage_coverage": {}},
+                  "model_evaluation": {"status": "completed"}}
+        with tempfile.TemporaryDirectory() as output:
+            with mock.patch.object(watchdog_replay, "replay_case", return_value=result):
+                aggregate = replay_cases([{"case_id": "one"}], output, fake=False)
+            self.assertEqual(aggregate["model_evaluation"]["status"], "partial")
+
 
 if __name__ == "__main__":
     unittest.main()

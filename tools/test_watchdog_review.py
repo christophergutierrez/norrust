@@ -174,6 +174,22 @@ class WatchdogReviewTests(unittest.TestCase):
             self.assertEqual(packet["model_evaluation"]["failures"], 1)
             self.assertIn("unreadable_journal_entry", packet["model_evaluation"]["evidence_gaps"])
 
+    def test_malformed_middle_entry_prevents_review_completion(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            log, state_root = self._run_files(root)
+            completed = ModelCall(game_id="catalog-game", call_id="observer-1",
+                                  call_role="observer", provider="fireworks", status="completed")
+            (root / "usage.ndjson").write_text(
+                json.dumps(dict(completed.to_row(), record_kind="final")) + "\n")
+            (state_root / "observer-state.json").write_text(json.dumps(
+                {"run_id": "run-uuid", "dispatched_calls": 1}))
+            (state_root / "observer-state.journal.ndjson").write_text(
+                '{"type":"verdict","decision":"continue"}\nnot-json\n')
+            packet = review(log)
+            self.assertEqual(packet["model_evaluation"]["status"], "partial")
+            self.assertFalse(packet["model_evaluation"]["coverage_complete"])
+
     def test_pending_inspect_and_malformed_journal_are_coverage_gaps(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "observer.journal.ndjson"

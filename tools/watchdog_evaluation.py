@@ -21,7 +21,7 @@ MAX_CASE_CALLS = 3
 def _is_quota_failure(error: BaseException) -> bool:
     code = str(getattr(error, "provider_code", "") or "").lower()
     message = str(error).lower()
-    if code in {"insufficient_credit", "insufficient_credits", "account_quota_exceeded",
+    if code in {"insufficient_credit", "insufficient_credits",
                 "spending_limit_exceeded", "billing_hard_limit", "payment_required"}:
         return True
     # Billing language is authoritative even when the provider uses HTTP 429.
@@ -247,8 +247,13 @@ def evaluate(cases: list[dict[str, Any]], output_dir: str | Path, *, fake: bool 
             failure_reasons[str(reason)] = failure_reasons.get(str(reason), 0) + int(count)
         for reason, count in (item.get("evidence_gaps") or {}).items():
             evidence_gaps[str(reason)] = evidence_gaps.get(str(reason), 0) + int(count)
-    attempted_partial = any(item.get("model_evaluation", {}).get("status") in {"partial", "failed"}
-                            for item in results if item.get("status", {}).get("stage") != "not_attempted")
+    attempted_partial = any(
+        (item.get("model_evaluation", {}).get("status") in {"partial", "failed"}
+         or bool(item.get("evidence_gaps"))
+         or item.get("coverage_complete") is False
+         or bool(item.get("metrics", {}).get("evidence_gaps"))
+         or item.get("metrics", {}).get("coverage_complete") is False)
+        for item in results if item.get("status", {}).get("stage") != "not_attempted")
     status = ("failed" if not scored else
               "partial" if failures or len(scored) != len(cases) or attempted_partial else
               "completed")

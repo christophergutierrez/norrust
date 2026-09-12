@@ -275,7 +275,7 @@ def replay_case(case: dict[str, Any], output_dir: str | Path, *, fake: bool = Tr
                                "failures": outcomes["observer_failures"],
                                "failure_reasons": outcomes["observer_failure_reasons"],
                                "evidence_gaps": outcomes.get("evidence_gaps", {})}
-        elif (outcomes["observer_failures"] or
+        elif (outcomes["observer_failures"] or outcomes.get("evidence_gaps") or
               outcomes.get("last_outcome") in {"pending", "failure"}):
             case_evaluation = {"status": "partial", "network_calls": dispatched,
                                "verdicts": outcomes["observer_verdicts"],
@@ -315,6 +315,8 @@ def replay_cases(cases: list[dict[str, Any]], output_dir: str | Path, *, fake: b
         if not scored:
             status = "failed"
         elif (failures or len(scored) != len(metrics) or
+              any(item.get("evidence_gaps") or item.get("coverage_complete") is False
+                  for item in metrics) or
               any(item.get("model_evaluation", {}).get("status") in {"partial", "failed"}
                   for item in results)):
             status = "partial"

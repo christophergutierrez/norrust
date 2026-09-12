@@ -78,6 +78,25 @@ class WatchdogEvaluationTests(unittest.TestCase):
             "account quota is temporarily unavailable", status=429)))
         self.assertFalse(_is_quota_failure(ObserverTransportError(
             "account quota exceeded", status=429)))
+        self.assertFalse(_is_quota_failure(ObserverTransportError(
+            "rate limited", status=429, provider_code="account_quota_exceeded")))
+
+    def test_journal_gap_keeps_evaluation_partial(self):
+        backend = FakeObserverBackend([_decision("continue")])
+        result = {"case": "one", "status": {"stage": "active"},
+                  "metrics": {"case_id": "one", "scored": True,
+                              "false_stop": False, "missed_loop": None,
+                              "observer_calls": 1, "observer_verdicts": 1,
+                              "observer_failures": 0, "observer_failure_reasons": {},
+                              "evidence_gaps": {"unreadable_journal_entry": 1},
+                              "coverage_complete": False},
+                  "model_evaluation": {"status": "completed"}}
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch("tools.watchdog_evaluation.FireworksObserverBackend",
+                            lambda **_kwargs: backend), \
+                 mock.patch("tools.watchdog_evaluation.replay_case", return_value=result):
+                evaluated = evaluate([{"case_id": "one", "timeline": []}], td)
+            self.assertEqual(evaluated["model_evaluation"]["status"], "partial")
 
     def test_preflight_receipt_usage_is_measured_with_dated_cost_helper(self):
         backend = FakeObserverBackend([{

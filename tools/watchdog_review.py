@@ -270,7 +270,9 @@ def review(log_path: str | Path, *, run_id: str | None = None,
         # successful evaluation only when a usable decision is also present.
         if not journal_outcomes.get("judgment_observed"):
             evaluation_status = "failed" if failed_calls == observed_calls or completed_calls == 0 else "partial"
-        elif journal_outcomes.get("last_outcome") in {"pending", "failure"}:
+        elif (journal_outcomes.get("last_outcome") in {"pending", "failure"}
+              or not journal_outcomes.get("journal_intact", False)
+              or journal_outcomes.get("evidence_gaps")):
             evaluation_status = "partial"
         elif journal_outcomes.get("observer_failures") or failed_calls:
             evaluation_status = "partial"
