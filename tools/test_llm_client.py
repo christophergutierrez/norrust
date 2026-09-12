@@ -2014,11 +2014,17 @@ class ClientValidationTests(unittest.TestCase):
         naga_line = next(line for line in rendered.splitlines() if line.startswith("TYPE Naga Fighter"))
         self.assertIn("move_costs=flat:2,hills:3,mountains:5", naga_line)
         self.assertIn("99=impassable", naga_line)
-        self.assertIn("board tile's own movement_cost", naga_line)
+        # The movement fallback is the engine's real flat default (1 point),
+        # never the board tile's own movement_cost -- pathfinding's real
+        # callers all pass default_movement_cost=1, so stating a tile-based
+        # fallback here would misdescribe what is actually charged.
+        self.assertIn("costs 1 movement point, the engine's flat default", naga_line)
+        self.assertNotIn("board tile's own movement_cost", naga_line)
         self.assertIn("defense=flat:30,hills:40", naga_line)
         self.assertIn("board tile's own defense", naga_line)
         # No overrides at all: an explicit "none", not a fabricated number,
-        # and the fallback is still named (every terrain uses the tile).
+        # and the fallback is still named (movement uses the flat default;
+        # defense uses the tile).
         self.assertIn("move_costs=none (99=impassable", rendered)
         self.assertIn("defense=none (terrain not listed", rendered)
         # The field is entirely absent from the profile: unknown, not "none".

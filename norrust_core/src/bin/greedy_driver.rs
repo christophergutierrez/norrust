@@ -1071,7 +1071,7 @@ fn unit_type_profile(def: &UnitDef) -> Value {
         "resistance_semantics": "signed_percent_damage_modifier",
         "movement_costs": Value::Object(movement_costs),
         "defense": Value::Object(defense),
-        "terrain_cost_semantics": "movement_costs lists this unit's own per-terrain movement point cost overrides (99 = impassable); a terrain_id absent here falls back to the board tile's own movement_cost, which is board data, not unit data",
+        "terrain_cost_semantics": "movement_costs lists this unit's own per-terrain movement point cost overrides (99 = impassable); a terrain_id absent here costs 1 movement point, the engine's flat default for unlisted terrain",
         "terrain_defense_semantics": "defense lists this unit's own per-terrain avoidance percentage overrides (higher = safer); a terrain_id absent here falls back to the board tile's own defense, which is board data, not unit data",
         "attacks": def.attacks.iter().map(|attack| json!({
             "name": attack.name,
@@ -4294,10 +4294,11 @@ mod tests {
         assert_eq!(profile["defense"], json!({"flat": 30, "hills": 40}));
         // Every listed terrain in the profile must agree with the engine's
         // own fallback function (an omitted terrain, e.g. "deep_water" here,
-        // falls back to whatever tile value is supplied -- proven below).
+        // falls back to a flat cost of 1 for movement -- proven below -- and
+        // to the tile's own value for defense).
         for (terrain_id, expected) in [("flat", 2u32), ("hills", 3), ("mountains", 5)] {
             assert_eq!(
-                norrust_core::schema::effective_movement_cost(&def.movement_costs, terrain_id, 99),
+                norrust_core::schema::effective_movement_cost(&def.movement_costs, terrain_id),
                 expected
             );
         }
@@ -4308,8 +4309,12 @@ mod tests {
             );
         }
         // The fallback semantics are named explicitly and mention 99=impassable.
+        // Movement's fallback is the engine's flat default (1), never the
+        // board tile's own movement_cost -- that would misstate what
+        // pathfinding actually charges.
         let cost_semantics = profile["terrain_cost_semantics"].as_str().unwrap();
-        assert!(cost_semantics.contains("board tile"));
+        assert!(cost_semantics.contains("1 movement point"));
+        assert!(!cost_semantics.contains("board tile's own movement_cost"));
         assert!(cost_semantics.contains("99"));
         assert!(cost_semantics.contains("impassable"));
         let defense_semantics = profile["terrain_defense_semantics"].as_str().unwrap();
@@ -4317,23 +4322,76 @@ mod tests {
     }
 
     #[test]
-    fn unit_type_profile_agrees_with_engine_fallback_on_a_real_board_tile() {
-        // A terrain_id absent from the unit's own maps must resolve to
-        // exactly the tile's own value -- the same fallback
+    fn unit_type_profile_defense_agrees_with_engine_fallback_on_a_real_board_tile() {
+        // Defense: a terrain_id absent from the unit's own map must resolve
+        // to exactly the tile's own value -- the same fallback
         // `norrust_get_unit_terrain_info` performs -- never a fabricated
         // number.
-        let mut def = UnitDef::default();
-        def.movement_costs.insert("flat".into(), 2);
-        let profile = unit_type_profile(&def);
-        assert!(profile["movement_costs"].get("deep_water").is_none());
+        let def = UnitDef::default();
         let tile = norrust_core::board::Tile::new("deep_water");
-        assert_eq!(
-            norrust_core::schema::effective_movement_cost(&def.movement_costs, "deep_water", tile.movement_cost),
-            tile.movement_cost
-        );
         assert_eq!(
             norrust_core::schema::effective_defense(&def.defense, "deep_water", tile.defense),
             tile.defense
+        );
+    }
+
+    #[test]
+    fn movement_cost_fallback_is_flat_one_not_the_tiles_own_value() {
+        // Regression for a corrected finding: pathfinding::reachable_hexes
+        // and find_path pass default_movement_cost=1 at every real call
+        // site (game_state.rs, ffi.rs, ai.rs, greedy_driver.rs,
+        // self_play.rs). A terrain id absent from a unit's own
+        // movement_costs is therefore charged 1 point by the engine,
+        // regardless of the tile's own (possibly higher) movement_cost.
+        // norrust_get_unit_terrain_info's reported effective cost must
+        // agree with that real charge, not with the tile's own value.
+        //
+        // Direct case from the parent's review: a Knight-shaped def with no
+        // "mountains" entry, on a mountains tile (tile movement_cost 3).
+        let knight = UnitDef {
+            id: "Knight".into(),
+            movement: 8,
+            ..Default::default()
+        };
+        assert!(!knight.movement_costs.contains_key("mountains"));
+        let mountains_tile = norrust_core::board::Tile {
+            terrain_id: "mountains".into(),
+            movement_cost: 3,
+            defense: 40,
+            healing: 0,
+            color: "#808080".into(),
+        };
+
+        let effective = norrust_core::schema::effective_movement_cost(
+            &knight.movement_costs,
+            "mountains",
+        );
+        assert_eq!(effective, 1, "the FFI/profile fallback must match the flat engine default");
+        assert_ne!(
+            effective, mountains_tile.movement_cost,
+            "the tile's own movement_cost (3) is NOT what pathfinding actually charges here"
+        );
+
+        // Cross-check against the real pathfinding function directly: on a
+        // one-hex-wide board, entering the mountains tile from an adjacent
+        // flat hex costs exactly `effective`, not the tile's own value.
+        let mut board = norrust_core::board::Board::new(2, 1);
+        let start = norrust_core::hex::Hex::from_offset(0, 0);
+        let mountains_hex = norrust_core::hex::Hex::from_offset(1, 0);
+        board.set_terrain(start, "flat");
+        board.set_tile(mountains_hex, mountains_tile);
+        let reachable = norrust_core::pathfinding::reachable_hexes(
+            &board,
+            &knight.movement_costs,
+            1,
+            start,
+            1, // exactly enough budget for the flat-default cost of 1
+            &std::collections::HashSet::new(),
+            false,
+        );
+        assert!(
+            reachable.contains(&mountains_hex),
+            "1 movement point must be enough to enter mountains under the real flat-default fallback"
         );
     }
 
@@ -4381,11 +4439,11 @@ mod tests {
         assert_eq!(listed_cost("hills") + listed_cost("mountains") + listed_cost("flat"), 10);
         // The FFI fallback function agrees exactly with the profile's own
         // numbers for every terrain used along these three destinations (all
-        // are the unit's own listed overrides, so the tile fallback never
-        // triggers here).
+        // are the unit's own listed overrides, so the flat-default fallback
+        // never triggers here).
         for terrain in ["flat", "hills", "mountains"] {
             assert_eq!(
-                effective_movement_cost(&def.movement_costs, terrain, 999),
+                effective_movement_cost(&def.movement_costs, terrain),
                 def.movement_costs[terrain]
             );
         }

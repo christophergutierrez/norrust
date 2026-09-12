@@ -1902,7 +1902,7 @@ def compact_unit_type_profiles(profiles: Any) -> str:
             abilities = "unknown"
         move_costs = _render_terrain_overrides(
             profile.get("movement_costs"),
-            "99=impassable; terrain not listed here uses the board tile's own movement_cost")
+            "99=impassable; terrain not listed here costs 1 movement point, the engine's flat default")
         defense = _render_terrain_overrides(
             profile.get("defense"),
             "terrain not listed here uses the board tile's own defense")
