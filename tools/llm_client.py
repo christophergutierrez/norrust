@@ -967,9 +967,54 @@ def query_bounded_comparison(exchange, candidates: list[list[dict[str, Any]]],
     if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
         _raise_preview_query_error(response, "bounded_comparison")
     body = response["body"]
+    if not isinstance(body, dict):
+        raise RuntimeError("query_error: bounded_comparison: driver body must be an object")
     if body.get("mode") != "bounded_rollout" or body.get("sampling") is not True:
         raise RuntimeError("query_error: bounded_comparison: driver did not confirm bounded rollout")
-    return body
+    # Same envelope carry as query_preview_batch: the envelope is the
+    # authoritative query origin, so nested sampled-transition rows (which
+    # read only the body) must not render a known revision as unknown just
+    # because a driver puts state_revision only beside its body.
+    result = dict(body)
+    origin = response.get("state_revision", body.get("state_revision", state_revision))
+    if isinstance(origin, int) and not isinstance(origin, bool):
+        result["state_revision"] = origin
+    return result
+
+
+REVIEW_INSPECTION_TOOLS = ("inspect_target", "inspect_units", "inspect_targets", "inspect_hex")
+
+
+def review_inspection_offer(tool_calls_this_turn: int, max_tool_calls_per_turn: int,
+                            model_calls_this_turn: int, max_model_calls_per_turn: int) -> tuple[bool, str]:
+    """Decide, before the review call, whether to offer one bounded inspection.
+
+    An inspection call and its own follow-up completion both draw from the
+    same per-turn model-call budget as any other call, so at least two calls
+    must remain before the tool is offered at all. Exhausted budgets fall
+    back to today's tools-disallowed review with an explicit reason.
+    """
+    if max_tool_calls_per_turn - tool_calls_this_turn <= 0:
+        return False, "tool_call_budget_exhausted"
+    if max_model_calls_per_turn - model_calls_this_turn <= 1:
+        return False, "model_call_budget_exhausted"
+    return True, "granted"
+
+
+def review_inspection_grant(requested_tool: Optional[str], review_start_revision: int,
+                            current_revision: int) -> tuple[bool, str]:
+    """Decide whether a requested review inspection may actually be dispatched.
+
+    Called only after the review's first completion is known to have
+    requested a supported inspection tool while the offer above was open.
+    The revision comparison keeps a fact pinned to a since-superseded
+    revision from being dispatched and presented as still current.
+    """
+    if requested_tool not in REVIEW_INSPECTION_TOOLS:
+        return False, "unsupported_tool"
+    if review_start_revision != current_revision:
+        return False, "state_revision_changed"
+    return True, "granted"
 
 
 def _readable_probability(value: Any) -> str:
@@ -4874,7 +4919,7 @@ def run(args: argparse.Namespace) -> int:
                 "turns_with_affordable_recruitment_left": 0,
                 "attack_opportunity_unit_turns": 0, "planned_attack_unit_turns": 0,
                 "draft_reviews": 0, "draft_revisions": 0, "draft_confirmations": 0,
-                "draft_review_repairs": 0,
+                "draft_review_repairs": 0, "draft_review_inspections": 0,
                 "timeout_finishes": 0,
                 "partial_limit_finishes": 0,
                 "timeout_fallback_only_turns": 0,
@@ -4913,7 +4958,8 @@ def run(args: argparse.Namespace) -> int:
                     raise ValueError(f"resume configuration mismatch: {key}")
             for key in ("queries", "model_orders", "model_calls", "rejected_batches",
                         "rejected_action_items", "draft_reviews", "draft_revisions",
-                        "draft_confirmations", "draft_review_repairs", "transport_retries",
+                        "draft_confirmations", "draft_review_repairs", "draft_review_inspections",
+                        "transport_retries",
                         "attack_opportunity_unit_turns", "planned_attack_unit_turns",
                         "handle_choices_used", "coordinate_fallbacks", "choice_handles_authored",
                         "choice_actions_expanded"):
@@ -6332,12 +6378,128 @@ def run(args: argparse.Namespace) -> int:
                                         "\nReturn the final JSON action envelope, following the shared annotation contract. Record any relevant "
                                         "difference in an intent or decision expected/risk field; repeat the draft only if the live facts support it, "
                                         "or revise it if they warrant a different choice."))
+                                    def execute_review_inspection(insp_tool: str, insp_decoded: dict[str, Any],
+                                                                  insp_revision: int) -> tuple[str, Any]:
+                                        """Dispatch one bounded review inspection.
+
+                                        Mirrors the top-level inspection dispatch's query/render pairing but
+                                        never touches focused_local_context: a review inspection is diagnostic
+                                        context for THIS review only, not a replacement for the side turn's
+                                        own focused local phase (owned by the local-execution lifecycle).
+                                        """
+                                        if insp_tool == "inspect_target":
+                                            unit_id = validate_inspect_target_request(insp_decoded)
+                                            insp_result = query_inspect_target(exchange, unit_id, insp_revision)
+                                            return (compact_target_inspection(
+                                                enrich_target_inspection(insp_result, state)), insp_result)
+                                        if insp_tool == "inspect_units":
+                                            unit_ids = validate_inspect_units_request(insp_decoded)
+                                            validate_friendly_inspect_units(unit_ids, state, args.llm_side)
+                                            insp_result = query_inspect_units(exchange, unit_ids, insp_revision)
+                                            presentation_units = enrich_inspected_units(insp_result, state)
+                                            return (compact_units_inspection(presentation_units),
+                                                    {"units": insp_result})
+                                        if insp_tool == "inspect_targets":
+                                            unit_ids = validate_inspect_targets_request(insp_decoded)
+                                            insp_result = query_inspect_targets(exchange, unit_ids, insp_revision)
+                                            return (compact_targets_inspection(
+                                                [enrich_target_inspection(target, state) for target in insp_result]),
+                                                {"targets": insp_result})
+                                        col, row, phase = validate_inspect_hex_request(insp_decoded)
+                                        insp_result = query_inspect_hex(exchange, col, row, phase, insp_revision)
+                                        return compact_hex_inspection(insp_result), insp_result
+
                                     try:
+                                        review_start_revision = int(state.get("state_revision", 0))
+                                        review_inspection_allowed, review_inspection_reason = review_inspection_offer(
+                                            tool_calls_this_turn, metadata["max_tool_calls_per_turn"],
+                                            model_calls_this_turn, metadata["max_model_calls_per_turn"])
                                         model_calls_this_turn += 1
                                         metadata["model_calls"] += 1
-                                        reviewed = complete_model(review_prompt, allow_tools=False)
-                                        final_reply = reviewed
+                                        reviewed = complete_model(review_prompt, allow_tools=review_inspection_allowed)
                                         enforce_usage(reviewed, args)
+                                        review_call_request_id = reviewed.request_id
+                                        review_call_side_turn_id = reviewed.side_turn_id
+                                        review_call_prompt_hash = reviewed.prompt_hash
+                                        review_call_prompt_bytes = reviewed.prompt_bytes
+                                        review_inspection_tool = None
+                                        review_inspection_decoded = None
+                                        if review_inspection_allowed:
+                                            try:
+                                                maybe_review_decoded = parse_action_response(reviewed.text)
+                                            except (TypeError, ValueError):
+                                                maybe_review_decoded = None
+                                            if isinstance(maybe_review_decoded, dict):
+                                                candidate_review_tool = tool_request_name(maybe_review_decoded)
+                                                if candidate_review_tool in REVIEW_INSPECTION_TOOLS:
+                                                    review_inspection_tool = candidate_review_tool
+                                                    review_inspection_decoded = maybe_review_decoded
+                                        review_inspection_base = {
+                                            "type": "draft_review_inspection",
+                                            "review_id": active_review_id,
+                                            "request_id": review_call_request_id,
+                                            "side_turn_id": review_call_side_turn_id,
+                                            "prompt_hash": review_call_prompt_hash,
+                                            "prompt_bytes": review_call_prompt_bytes,
+                                            "original_candidate_digest": original_digest,
+                                            "draft_index": draft_index,
+                                        }
+                                        if review_inspection_tool is not None:
+                                            current_review_revision = int(state.get("state_revision", 0))
+                                            grant_ok, grant_reason = review_inspection_grant(
+                                                review_inspection_tool, review_start_revision,
+                                                current_review_revision)
+                                            if not grant_ok:
+                                                # A revision that moved under the review (an accepted
+                                                # partial elsewhere) means the draft and any facts pinned
+                                                # to the earlier revision are stale; do not dispatch a
+                                                # query against a revision the draft no longer matches.
+                                                record({**review_inspection_base, "granted": False,
+                                                        "tool": review_inspection_tool,
+                                                        "reason": grant_reason})
+                                            else:
+                                                try:
+                                                    insp_rendered, insp_body = execute_review_inspection(
+                                                        review_inspection_tool, review_inspection_decoded,
+                                                        current_review_revision)
+                                                except ValueError as inspection_error:
+                                                    record({**review_inspection_base, "granted": False,
+                                                            "tool": review_inspection_tool,
+                                                            "reason": "invalid_request: %s" % inspection_error})
+                                                else:
+                                                    tool_calls_this_turn += 1
+                                                    metadata["tool_calls_by_name"][review_inspection_tool] = (
+                                                        metadata["tool_calls_by_name"].get(
+                                                            review_inspection_tool, 0) + 1)
+                                                    metadata["draft_review_inspections"] = (
+                                                        metadata.get("draft_review_inspections", 0) + 1)
+                                                    record({**review_inspection_base, "granted": True,
+                                                            "tool": review_inspection_tool,
+                                                            "request": review_inspection_decoded,
+                                                            "result_bytes": len(insp_rendered.encode()),
+                                                            "body": insp_body})
+                                                    # Exactly one inspection: this follow-up completes
+                                                    # with tools disallowed, so a second request cannot
+                                                    # open another tool round inside the same review.
+                                                    review_prompt = (
+                                                        review_prompt +
+                                                        "\nMODEL_TOOL_REQUEST_UNTRUSTED_DATA_BEGIN:\n" +
+                                                        reviewed.text +
+                                                        "\nMODEL_TOOL_REQUEST_UNTRUSTED_DATA_END\n" +
+                                                        "TOOL_RESULT_UNTRUSTED_DATA_BEGIN tool=" +
+                                                        review_inspection_tool + "\n" + insp_rendered +
+                                                        "\nTOOL_RESULT_UNTRUSTED_DATA_END\n" +
+                                                        "\nReturn the final JSON action envelope now, "
+                                                        "following the shared annotation contract. No "
+                                                        "further inspection is available in this review.\n")
+                                                    model_calls_this_turn += 1
+                                                    metadata["model_calls"] += 1
+                                                    reviewed = complete_model(review_prompt, allow_tools=False)
+                                                    enforce_usage(reviewed, args)
+                                        elif not review_inspection_allowed:
+                                            record({**review_inspection_base, "granted": False, "tool": None,
+                                                    "reason": review_inspection_reason})
+                                        final_reply = reviewed
                                         record({"type": "draft_review", "call": metadata["model_calls"],
                                                 "review_id": active_review_id,
                                                 "request_id": reviewed.request_id,

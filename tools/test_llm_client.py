@@ -1370,8 +1370,48 @@ class ClientValidationTests(unittest.TestCase):
         result = query_bounded_comparison(
             lambda request: sent.append(request) or {"ok": True, "body": body},
             [[{"action": "EndTurn"}]], 4)
-        self.assertEqual(result, body)
+        # The envelope carried no state_revision and neither did the body, so
+        # the call's own state_revision argument is the only known origin.
+        self.assertEqual(result, {**body, "state_revision": 4})
         self.assertEqual(sent[0]["mode"], "bounded_rollout")
+
+    def test_bounded_comparison_preserves_envelope_origin_revision_for_nested_rendering(self):
+        """Finding 4: query_bounded_comparison must carry the envelope's
+        state_revision into its body exactly like query_preview_batch
+        already does (~line 934), so nested SAMPLED_TRANSITION rows in the
+        real envelope-to-renderer path do not render `unknown` when the
+        envelope separately knew the revision."""
+        body = {"mode": "bounded_rollout", "sampling": True, "candidates": [
+            {"valid": True, "post_sweep": {"sampling": True,
+             "coverage": {"own_finish": True, "opponent_response": True}, "stages": {
+                 "post_finish": {"units_detail": [{"unit_id": 3, "side": 0,
+                     "position": {"col": 1, "row": 1}}]},
+                 "post_opponent": {"units_detail": []}}}}]}
+        result = query_bounded_comparison(
+            lambda request: {"ok": True, "state_revision": 167, "body": body},
+            [[{"action": "Attack", "attacker_id": 3, "defender_id": 9}]], 167)
+        self.assertEqual(result["state_revision"], 167)
+        self.assertNotIn("state_revision", body)
+        rendered = compact_batch_preview(
+            result, state={"active_faction": 0, "units": [
+                {"id": 3, "faction": 0, "col": 1, "row": 1}]},
+            friendly_side=0)
+        sampled = llm_client.compact_sampled_transition(result, {"active_faction": 0, "units": [
+            {"id": 3, "faction": 0, "col": 1, "row": 1}]}, 0, 0)
+        self.assertIn("originating_revision=167", sampled)
+        self.assertNotIn("originating_revision=unknown", sampled)
+        self.assertIn("SAMPLED_FRIENDLY_CASUALTIES", rendered)
+
+    def test_bounded_comparison_leaves_genuinely_unknown_revision_unknown(self):
+        body = {"mode": "bounded_rollout", "sampling": True, "candidates": [
+            {"valid": True, "post_sweep": {"sampling": True,
+             "coverage": {"own_finish": True, "opponent_response": True}, "stages": {
+                 "post_finish": {"units_detail": []}, "post_opponent": {"units_detail": []}}}}]}
+        result = query_bounded_comparison(
+            lambda request: {"ok": True, "body": body},
+            [[{"action": "EndTurn"}]], "unknown")
+        sampled = llm_client.compact_sampled_transition(result, {"active_faction": 0, "units": []}, 0, 0)
+        self.assertIn("originating_revision=unknown", sampled)
 
     def test_bounded_comparison_keeps_driver_failure_typed(self):
         with self.assertRaisesRegex(RuntimeError, r"query_error: bounded_comparison: unavailable"):
@@ -3035,9 +3075,13 @@ class ClientValidationTests(unittest.TestCase):
         self.assertFalse([r for r in records if r["type"] == "tool_result"])
 
     def test_critical_draft_can_be_confirmed_after_preview(self):
+        # The review's first completion now requests one bounded inspection
+        # (Stack C item 2) instead of being rejected outright: it is
+        # dispatched for real, and the review's SECOND completion (after the
+        # inspection result is appended) supplies the confirmed final orders.
         end_turn = json.dumps([{"action": "EndTurn"}])
-        review_tool = json.dumps({"tool": "inspect_units", "unit_ids": [1]})
-        code, terminal = self.run_with_orders(
+        review_tool = json.dumps({"tool": "inspect_target", "unit_id": 1})
+        code, records = self.run_with_orders(
             [end_turn, review_tool, end_turn],
             [{"type": "state", "active_faction": 0, "state_revision": 0,
               "units": [{"id": 1, "faction": 0, "can_recruit": True}]},
@@ -3048,17 +3092,162 @@ class ClientValidationTests(unittest.TestCase):
                      "recruiters": [{"recruiter_id": 1, "hp": 34,
                                      "distinct_attacker_count": 2, "max_incoming_sum": 40,
                                      "lethal_attackers_needed": 1}]}}]}},
+             {"type": "status", "ok": True, "what": "inspect_target", "body": {"target_id": 1}},
              {"type": "status", "ok": True, "what": "validate_batch", "body": {
                  "valid": True, "failed_index": None, "results": [{"ok": True}]}},
              {"type": "game_end", "reason": "max_turns", "winner": None}],
             max_model_calls_per_turn=4,
             max_tool_calls_per_turn=2,
+            return_records=True,
         )
+        terminal = records[-1]
         self.assertEqual(code, TERMINAL_EXIT_CODES[TERMINAL_GAMEPLAY])
         self.assertEqual(terminal["draft_reviews"], 1)
         self.assertEqual(terminal["draft_confirmations"], 1)
+        self.assertEqual(terminal["draft_review_inspections"], 1)
+        inspection_records = [r for r in records if r["type"] == "draft_review_inspection"]
+        self.assertEqual(len(inspection_records), 1)
+        self.assertTrue(inspection_records[0]["granted"])
+        self.assertEqual(inspection_records[0]["tool"], "inspect_target")
         self.assertEqual(terminal["draft_revisions"], 0)
+        self.assertEqual(terminal["draft_review_repairs"], 0)
+        # The inspection's facts (rendered from the real driver body) must
+        # reach the SECOND review completion's delivered prompt.
+        final_review_request = [r for r in records if r["type"] == "model_request"][-1]
+        self.assertIn("TOOL_RESULT_UNTRUSTED_DATA_BEGIN tool=inspect_target", final_review_request["prompt"])
+        self.assertIn("No further inspection is available in this review", final_review_request["prompt"])
+        # Exactly one commit: one forwarded batch for the whole turn.
+        self.assertEqual(len([r for r in records if r["type"] == "forwarded_orders"]), 1)
+
+    def test_review_inspection_second_request_in_same_review_is_refused_and_repairs(self):
+        """No recursive review: a second tool request inside the same review,
+        after the tools-disallowed follow-up, is refused by the harness (the
+        prompt no longer offers tools) and repaired exactly once -- never
+        dispatched, never opening a second inspection slot."""
+        draft = json.dumps([{"action": "EndTurn"}])
+        first_inspect = json.dumps({"tool": "inspect_target", "unit_id": 1})
+        second_inspect = json.dumps({"tool": "inspect_target", "unit_id": 1})
+        final_action = json.dumps([{"action": "EndTurn"}])
+        lines = [
+            {"type": "state", "active_faction": 0, "state_revision": 5, "units": []},
+            {"type": "status", "ok": True, "what": "inspect_target", "body": {"target_id": 1}},
+            {"type": "status", "ok": True, "results": [{"ok": True}]},
+            {"type": "game_end", "reason": "max_turns"},
+        ]
+        with mock.patch.object(llm_client, "query_tactical_surface", return_value={}), \
+                mock.patch.object(llm_client, "draft_needs_preview", return_value=True), \
+                mock.patch.object(llm_client, "query_preview_batch",
+                                  return_value={"candidates": [{"valid": True}]}), \
+                mock.patch.object(llm_client, "compact_draft_review", return_value=("review facts", False)), \
+                mock.patch.object(llm_client, "draft_review_needed", return_value=True):
+            code, records = self.run_with_orders(
+                [draft, first_inspect, second_inspect, final_action], lines,
+                max_model_calls_per_turn=6, max_tool_calls_per_turn=6, return_records=True)
+        self.assertEqual(code, 0)
+        terminal = records[-1]
+        self.assertEqual(terminal["draft_review_inspections"], 1)
         self.assertEqual(terminal["draft_review_repairs"], 1)
+        inspection_records = [r for r in records if r["type"] == "draft_review_inspection"]
+        self.assertEqual(len(inspection_records), 1)
+        self.assertTrue(inspection_records[0]["granted"])
+        tool_results = [r for r in records if r["type"] == "tool_result"]
+        self.assertEqual(tool_results, [])
+        self.assertEqual(len([r for r in records if r["type"] == "forwarded_orders"]), 1)
+
+    def test_review_inspection_exhausted_tool_budget_falls_back_with_recorded_reason(self):
+        draft = json.dumps([{"action": "EndTurn"}])
+        final_action = json.dumps([{"action": "EndTurn"}])
+        lines = [
+            {"type": "state", "active_faction": 0, "state_revision": 5, "units": []},
+            {"type": "status", "ok": True, "results": [{"ok": True}]},
+            {"type": "game_end", "reason": "max_turns"},
+        ]
+        with mock.patch.object(llm_client, "query_tactical_surface", return_value={}), \
+                mock.patch.object(llm_client, "draft_needs_preview", return_value=True), \
+                mock.patch.object(llm_client, "query_preview_batch",
+                                  return_value={"candidates": [{"valid": True}]}), \
+                mock.patch.object(llm_client, "compact_draft_review", return_value=("review facts", False)), \
+                mock.patch.object(llm_client, "draft_review_needed", return_value=True):
+            code, records = self.run_with_orders(
+                [draft, final_action], lines,
+                max_model_calls_per_turn=6, max_tool_calls_per_turn=0, return_records=True)
+        self.assertEqual(code, 0)
+        inspection_records = [r for r in records if r["type"] == "draft_review_inspection"]
+        self.assertEqual(len(inspection_records), 1)
+        self.assertFalse(inspection_records[0]["granted"])
+        self.assertEqual(inspection_records[0]["reason"], "tool_call_budget_exhausted")
+        self.assertIsNone(inspection_records[0]["tool"])
+
+    def test_review_inspection_exhausted_model_call_budget_falls_back_with_recorded_reason(self):
+        draft = json.dumps([{"action": "EndTurn"}])
+        final_action = json.dumps([{"action": "EndTurn"}])
+        lines = [
+            {"type": "state", "active_faction": 0, "state_revision": 5, "units": []},
+            {"type": "status", "ok": True, "results": [{"ok": True}]},
+            {"type": "game_end", "reason": "max_turns"},
+        ]
+        with mock.patch.object(llm_client, "query_tactical_surface", return_value={}), \
+                mock.patch.object(llm_client, "draft_needs_preview", return_value=True), \
+                mock.patch.object(llm_client, "query_preview_batch",
+                                  return_value={"candidates": [{"valid": True}]}), \
+                mock.patch.object(llm_client, "compact_draft_review", return_value=("review facts", False)), \
+                mock.patch.object(llm_client, "draft_review_needed", return_value=True):
+            # Two calls total for the turn: the draft, then the review's one
+            # remaining call -- no room left for an inspection follow-up.
+            code, records = self.run_with_orders(
+                [draft, final_action], lines,
+                max_model_calls_per_turn=2, max_tool_calls_per_turn=6, return_records=True)
+        self.assertEqual(code, 0)
+        inspection_records = [r for r in records if r["type"] == "draft_review_inspection"]
+        self.assertEqual(len(inspection_records), 1)
+        self.assertFalse(inspection_records[0]["granted"])
+        self.assertEqual(inspection_records[0]["reason"], "model_call_budget_exhausted")
+
+    def test_review_inspection_revised_draft_commits_exactly_once(self):
+        """A rejected draft's facts must never become committed memory: when
+        the inspection leads the review to revise the draft, only the
+        revised orders are forwarded -- exactly once, no duplicate commit."""
+        draft = self.annotated_orders("draft objective", [{"action": "EndTurn"}])
+        first_inspect = json.dumps({"tool": "inspect_target", "unit_id": 1})
+        revised = self.annotated_orders("revised after inspection",
+                                        [{"action": "DoneWithImportantMoves"}])
+        lines = [
+            {"type": "state", "active_faction": 0, "state_revision": 9, "units": []},
+            {"type": "status", "ok": True, "what": "inspect_target", "body": {"target_id": 1}},
+            {"type": "status", "ok": True, "results": [{"ok": True}]},
+            {"type": "game_end", "reason": "max_turns"},
+        ]
+        with mock.patch.object(llm_client, "query_tactical_surface", return_value={}), \
+                mock.patch.object(llm_client, "draft_needs_preview", return_value=True), \
+                mock.patch.object(llm_client, "query_preview_batch",
+                                  return_value={"candidates": [{"valid": True}]}), \
+                mock.patch.object(llm_client, "compact_draft_review", return_value=("review facts", False)), \
+                mock.patch.object(llm_client, "draft_review_needed", return_value=True):
+            code, records = self.run_with_orders(
+                [draft, first_inspect, revised], lines,
+                max_model_calls_per_turn=6, max_tool_calls_per_turn=6, return_records=True)
+        self.assertEqual(code, 0)
+        terminal = records[-1]
+        self.assertEqual(terminal["draft_review_inspections"], 1)
+        self.assertEqual(terminal["draft_revisions"], 1)
+        self.assertEqual(terminal["draft_confirmations"], 0)
+        forwarded = [r for r in records if r["type"] == "forwarded_orders"]
+        self.assertEqual(len(forwarded), 1)
+        self.assertEqual(forwarded[0]["orders"], [{"action": "DoneWithImportantMoves"}])
+        self.assertEqual(forwarded[0]["intent"], "revised after inspection")
+
+    def test_review_inspection_offer_and_grant_gates(self):
+        """Pure-function coverage for the budget offer and the post-hoc
+        revision-staleness grant, including a revision that moved under the
+        review (an accepted partial elsewhere) invalidating the fact."""
+        self.assertEqual(llm_client.review_inspection_offer(0, 2, 1, 4), (True, "granted"))
+        self.assertEqual(llm_client.review_inspection_offer(2, 2, 1, 4), (False, "tool_call_budget_exhausted"))
+        self.assertEqual(llm_client.review_inspection_offer(0, 2, 3, 4), (False, "model_call_budget_exhausted"))
+        self.assertEqual(llm_client.review_inspection_grant("inspect_target", 7, 7), (True, "granted"))
+        self.assertEqual(llm_client.review_inspection_grant("inspect_target", 7, 8),
+                         (False, "state_revision_changed"))
+        self.assertEqual(llm_client.review_inspection_grant("preview_batch", 7, 7),
+                         (False, "unsupported_tool"))
 
     def test_backend_transport_failure_stays_infrastructure(self):
         """A RuntimeError from the backend is transport, not play. The model

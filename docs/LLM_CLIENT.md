@@ -376,6 +376,68 @@ assembled response or partial receipt; it is diagnostic provider evidence and
 is not imported as SQLite decision annotations. Decision annotations remain
 the separately authored and archived `decisions` records.
 
+#### Reasoning effort: explicit pass-through and provenance
+
+`tools.llm_client`'s `--reasoning-effort` is a generic client-level option;
+`tools/fireworks_backend.py` sends only the values it has verified are
+meaningful for the model actually being played, and rejects anything else
+before any network call. As of 2026-09-11, verified against the
+[Z.ai GLM-5.3-Flash model card](https://huggingface.co/zai-org/GLM-5.3-Flash),
+the [vLLM recipe](https://recipes.vllm.ai/zai-org/GLM-5.3-Flash), and
+[Fireworks' reasoning guide](https://docs.fireworks.ai/guides/reasoning) plus
+its [chat completions reference](https://docs.fireworks.ai/api-reference/post-chatcompletions),
+the adapter accepts exactly `low`, `high`, and `max` -- GLM-5.3-Flash's own
+three documented levels, defaulting to `max` when the field is omitted.
+Fireworks' generic `reasoning_effort` surface additionally lists `medium` for
+other reasoning models, but GLM-5.3-Flash's chat template silently resolves
+any value outside `{low, high, max}` to `max`; sending `medium` here would be
+exactly the silent nearby-value substitution this adapter must not perform,
+so it is rejected like any other unsupported value.
+
+Pass the option once, on the client:
+
+```bash
+python3 -m tools.llm_client \
+  --model-command 'python3 -m tools.fireworks_backend' \
+  --model accounts/fireworks/models/glm-5p3-flash \
+  --reasoning-effort low \
+  --log /absolute/run/match.ndjson
+```
+
+The client writes the requested value into the per-dispatch request context
+(`requested_reasoning_effort`) alongside the existing `output_limit`, and the
+adapter reads it from there -- the same pattern `--max-output-tokens` uses.
+Configuring it a second time inside `--model-command` (its own
+`--reasoning-effort` flag, meant for standalone/manual runs with no harness
+context present) is rejected, exactly like the existing `--max-output-tokens`
+conflict check.
+
+**Omitting the option is the byte-identical default.** With no requested
+effort, the request payload carries no `reasoning_effort` field at all --
+identical to every payload this adapter sent before this option existed --
+so the provider/model default (`max`, per GLM-5.3-Flash's own documentation)
+applies. This is required for a retest that is authorized to compare
+providers only under otherwise-unchanged settings; do not pass an explicit
+effort into that retest.
+
+**Requested and reported provenance are separate fields, and are not the
+same claim.** `requested_reasoning_effort` is exactly what the adapter sent
+(or `None`/unknown when the option was omitted). `runtime_reasoning_effort`
+is what the provider reported having actually applied; Fireworks' response
+schema carries no such field (verified against the API reference above), so
+this stays `None`/unknown regardless of what was requested -- the adapter
+never claims a runtime effort the provider did not report. Both fields flow
+through the existing reply cache (`tools.llm_client.apply_backend_settings`,
+which also raises if a backend's requested/runtime effort conflicts with what
+the client asked for), into the usage sidecar (`ModelCall.requested_reasoning_effort`
+/ `reported_reasoning_effort`), and from there into a normal
+`tools.game_history` import.
+
+Comparing low/high reasoning effort on fixed positions is a separate,
+subsequent experiment requiring its own authorization; implementing the
+pass-through is not itself a live bakeoff, and this adapter never makes a
+paid provider call as part of its own tests.
+
 ### Binding a host thread: the launching parent's job
 
 A **parent agent driving a player** whose own inference calls the harness
@@ -821,11 +883,35 @@ are simulation facts only and do not veto or mutate a legal draft. The model
 may inspect a small friendly group in one read-only request:
 
 The preview result retains the query envelope's authoritative `state_revision`
-at its top level. Automatic `draft_review`, `draft_review_repair`, and
-`draft_review_decision` records carry the generated `review_id` plus the exact
-request and `side_turn_id` that produced them. This makes an automatic review
-auditable without assigning it by call position; missing executor danger data
-continues to render as unknown.
+at its top level, and nested per-candidate sampled-transition rows carry that
+same envelope revision rather than reading a `state_revision` the driver put
+only beside its body -- both the automatic-review preview
+(`query_preview_batch`) and a player-requested `preview_batch` tool call
+(`query_bounded_comparison`) apply this carry the same way. Automatic
+`draft_review`, `draft_review_repair`, and `draft_review_decision` records
+carry the generated `review_id` plus the exact request and `side_turn_id`
+that produced them. This makes an automatic review auditable without
+assigning it by call position; missing executor danger data continues to
+render as unknown.
+
+During the automatic review, the model may request at most one bounded
+inspection (`inspect_target`, `inspect_units`, `inspect_targets`, or
+`inspect_hex`) instead of returning final actions immediately -- resolving,
+for example, an alternative attack the review's facts did not already cover.
+It draws from the same `--max-tool-calls-per-turn` and
+`--max-model-calls-per-turn` budgets as any other tool call (an inspection
+plus its own follow-up completion both cost a model call, so at least two
+calls must remain before the option is even offered); an exhausted budget
+falls back to a tools-disallowed review exactly as before, with a
+`draft_review_inspection` record naming the reason. The granted inspection's
+compact result is appended to the same review prompt before one final
+tools-disallowed completion -- never a second review slot, never a recursive
+review cycle, and never more than the review's one existing commit. A
+`draft_review_inspection` record (`granted`, `tool`, and `reason`) is written
+either way, carrying the review's `review_id`, the triggering request's
+identity, and the draft's own candidate digest and index, so normalized
+review coverage stays complete alongside `draft_review`/`draft_review_repair`/
+`draft_review_decision`.
 
 If the driver rejects a preview candidate with one of the supported candidate
 codes (`parse`, `batch_too_large`, `action_limit`, `partial_limit`,

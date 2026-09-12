@@ -140,6 +140,124 @@ class FireworksBackendTests(unittest.TestCase):
         self.assertEqual(rows[1]["raw_usage_json"]["prompt_tokens_details"], {"cached_tokens": 4})
         self.assertEqual(rows[0]["call_id"], rows[1]["call_id"])
 
+    def test_omitted_reasoning_effort_payload_is_byte_identical_to_default(self):
+        """Item 5: the authorized retest keeps provider-default effort, so an
+        omitted option must send exactly today's payload -- no new key at
+        all, not even a null placeholder."""
+        body = {"id": "resp-default", "model": "m1",
+                "choices": [{"finish_reason": "stop", "message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+        seen: dict = {}
+
+        class Response:
+            headers = {}
+            def __enter__(self): return self
+            def __exit__(self, *exc): return False
+            def read(self): return json.dumps(body).encode()
+
+        def opener(request, timeout=None):
+            seen["data"] = request.data
+            return Response()
+
+        fb.run("prompt", model="m1", max_output_tokens=99, game_id="g-default",
+               request_id="r-default", sidecar_path=self.sidecar, opener=opener,
+               api_key="key123")
+        payload = json.loads(seen["data"])
+        self.assertNotIn("reasoning_effort", payload)
+        self.assertEqual(payload, {
+            "model": "m1", "messages": [{"role": "user", "content": "prompt"}],
+            "stream": False, "max_completion_tokens": 99,
+            "context_length_exceeded_behavior": "error"})
+        rows = _read_sidecar(self.sidecar)
+        self.assertIsNone(rows[-1]["requested_reasoning_effort"])
+        self.assertIsNone(rows[-1]["reported_reasoning_effort"])
+
+    def test_each_supported_reasoning_effort_is_sent_exactly_once(self):
+        body = {"id": "resp-effort", "model": "m1",
+                "choices": [{"finish_reason": "stop", "message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+        for effort in fb.SUPPORTED_REASONING_EFFORTS:
+            with self.subTest(effort=effort):
+                seen: dict = {}
+
+                class Response:
+                    headers = {}
+                    def __enter__(self): return self
+                    def __exit__(self, *exc): return False
+                    def read(self): return json.dumps(body).encode()
+
+                def opener(request, timeout=None, _seen=seen):
+                    _seen["data"] = request.data
+                    return Response()
+
+                reply = fb.run("prompt", model="m1", max_output_tokens=99,
+                               game_id="g-effort", request_id="r-effort-" + effort,
+                               sidecar_path=self.sidecar, opener=opener, api_key="key123",
+                               reasoning_effort=effort)
+                payload = json.loads(seen["data"])
+                self.assertEqual(payload["reasoning_effort"], effort)
+                self.assertEqual(payload["reasoning_effort"], payload.get("reasoning_effort"))
+                self.assertEqual(reply["cache"]["requested_reasoning_effort"], effort)
+                # Provider response schema carries no field reporting the
+                # effort actually applied (verified 2026-09-11); never claim
+                # a runtime effort the provider did not report.
+                self.assertIsNone(reply["cache"]["runtime_reasoning_effort"])
+                rows = _read_sidecar(self.sidecar)
+                self.assertEqual(rows[-1]["requested_reasoning_effort"], effort)
+                self.assertIsNone(rows[-1]["reported_reasoning_effort"])
+
+    def test_unsupported_reasoning_effort_rejected_before_any_network_call(self):
+        def opener(request, timeout=None):
+            raise AssertionError("an unsupported effort must never reach the network")
+
+        with self.assertRaises(fb.UnsupportedReasoningEffort):
+            fb.run("prompt", model="m1", max_output_tokens=99, game_id="g-bad",
+                   request_id="r-bad", sidecar_path=self.sidecar, opener=opener,
+                   api_key="key123", reasoning_effort="medium")
+        # Nothing was dispatched: not even a "dispatch" sidecar line exists,
+        # since the rejection happens before ModelCall allocation.
+        self.assertFalse(self.sidecar.exists())
+
+    def test_stream_payload_reasoning_effort_matches_nonstream(self):
+        payload_without = fb._stream_payload("m1", "prompt", 99)
+        self.assertNotIn("reasoning_effort", payload_without)
+        payload_with = fb._stream_payload("m1", "prompt", 99, "low")
+        self.assertEqual(payload_with["reasoning_effort"], "low")
+
+    def test_cli_reads_reasoning_effort_from_request_context(self):
+        import subprocess
+        import sys
+
+        with tempfile.TemporaryDirectory() as directory:
+            context_path = Path(directory) / "context.json"
+            context_path.write_text(json.dumps({"requested_reasoning_effort": "high"}))
+            result = subprocess.run(
+                [sys.executable, "-m", "tools.fireworks_backend",
+                 "--usage-sidecar", str(self.sidecar),
+                 "--request-context", str(context_path)],
+                input="prompt", capture_output=True, text=True,
+                cwd=str(Path(__file__).resolve().parents[1]),
+                env={"PATH": "/usr/bin:/bin"})
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("FIREWORKS_API_KEY", result.stderr)
+            # Rejected for missing credentials, not for the effort value --
+            # proves the context value was accepted as a supported setting.
+            self.assertNotIn("unsupported reasoning_effort", result.stderr)
+
+    def test_cli_rejects_unsupported_reasoning_effort_before_missing_credentials(self):
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "tools.fireworks_backend",
+             "--usage-sidecar", str(self.sidecar), "--reasoning-effort", "medium"],
+            input="prompt", capture_output=True, text=True,
+            cwd=str(Path(__file__).resolve().parents[1]),
+            env={"PATH": "/usr/bin:/bin"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsupported reasoning_effort", result.stderr)
+        self.assertNotIn("FIREWORKS_API_KEY", result.stderr)
+
     def test_length_finish_reason_empty_content_returns_typed_exhaustion(self):
         """The Stack 1 headline case: input=5881, output=16384, reasoning=16384,
         total=22265, empty content, finish_reason=length -- the typed error

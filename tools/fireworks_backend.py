@@ -53,6 +53,36 @@ FIREWORKS_URL = "https://api.fireworks.ai/inference/v1/chat/completions"
 DEFAULT_MODEL = "accounts/fireworks/models/deepseek-v4-flash-0731"
 TRANSPORT = "fireworks_chat_completions"
 
+# Verified 2026-09-11 against three sources: the Z.ai GLM-5.3-Flash model
+# card (https://huggingface.co/zai-org/GLM-5.3-Flash) -- "GLM-5.3-Flash
+# supports controlling the thinking budget through the `reasoning_effort`
+# parameter, which accepts three levels: `low`, `high`, and `max`. It
+# defaults to `max` if not passed (or if set to any other value)."; the
+# vLLM recipe (https://recipes.vllm.ai/zai-org/GLM-5.3-Flash), which
+# confirms the same three levels and that "the chat template resolves
+# effort to max unless reasoning_effort is explicitly low or high"; and
+# Fireworks' reasoning guide plus API reference
+# (https://docs.fireworks.ai/guides/reasoning,
+# https://docs.fireworks.ai/api-reference/post-chatcompletions), which pass
+# `reasoning_effort` straight through to the served model and document no
+# response field reporting which effort was actually applied.
+#
+# Fireworks' own generic `reasoning_effort` surface additionally lists
+# "medium" for other reasoning models, but GLM-5.3-Flash's chat template
+# would silently resolve any value outside {low, high, max} to max. Sending
+# such a value here would be exactly the silent nearby-value mapping this
+# adapter must not perform, so only the model's own three documented levels
+# are accepted.
+SUPPORTED_REASONING_EFFORTS = ("low", "high", "max")
+
+
+class UnsupportedReasoningEffort(ValueError):
+    """An explicitly requested reasoning effort this adapter will not send.
+
+    Raised before any network call -- never silently remapped to a nearby
+    supported value.
+    """
+
 
 def endpoint_url() -> str:
     """Return the provider endpoint, with a local-test override only."""
@@ -173,22 +203,46 @@ def _iter_sse_events(response: Any, recorder: _EvidenceRecorder):
         raise StreamProtocolError("stream ended with an incomplete SSE frame")
 
 
-def _stream_payload(model: str, prompt: str, max_output_tokens: int) -> dict[str, Any]:
-    return {"model": model, "messages": [{"role": "user", "content": prompt}],
-            "stream": True, "stream_options": {"include_usage": True},
-            "max_completion_tokens": max_output_tokens,
-            "context_length_exceeded_behavior": "error"}
+def validate_reasoning_effort(reasoning_effort: str | None) -> None:
+    """Reject an unsupported effort honestly before any network call.
+
+    `None` means the option was omitted -- the payload then carries no
+    `reasoning_effort` field at all, byte-identical to before this option
+    existed, so the provider/model applies its own documented default.
+    """
+    if reasoning_effort is not None and reasoning_effort not in SUPPORTED_REASONING_EFFORTS:
+        raise UnsupportedReasoningEffort(
+            f"unsupported reasoning_effort {reasoning_effort!r}; "
+            f"supported values are {SUPPORTED_REASONING_EFFORTS}")
+
+
+def _stream_payload(model: str, prompt: str, max_output_tokens: int,
+                    reasoning_effort: str | None = None) -> dict[str, Any]:
+    payload = {"model": model, "messages": [{"role": "user", "content": prompt}],
+               "stream": True, "stream_options": {"include_usage": True},
+               "max_completion_tokens": max_output_tokens,
+               "context_length_exceeded_behavior": "error"}
+    if reasoning_effort is not None:
+        payload["reasoning_effort"] = reasoning_effort
+    return payload
 
 
 def _reply_from_final(content: str, call: ModelCall, final: ModelCall,
                   model: str, reported_model: Any, session_affinity: str | None,
-                  finish_reason: str) -> dict[str, Any]:
+                  finish_reason: str, reasoning_effort: str | None = None) -> dict[str, Any]:
     text = content.strip()
     if text.startswith("```") and text.endswith("```"):
         text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
     reply: dict[str, Any] = {"text": text, "cache": {
         "requested_model": model, "runtime_model": reported_model,
-        "requested_reasoning_effort": None, "runtime_reasoning_effort": None,
+        # Requested is exactly what we sent (or None/unknown if the option
+        # was omitted and the provider/model default applied instead).
+        # Fireworks' chat-completions response schema reports no field for
+        # the effort actually applied (verified 2026-09-11 against
+        # docs.fireworks.ai/api-reference/post-chatcompletions), so runtime
+        # stays unknown (None) regardless of what was requested -- this
+        # adapter never claims a runtime effort the provider did not report.
+        "requested_reasoning_effort": reasoning_effort, "runtime_reasoning_effort": None,
         "runtime_settings_source": "provider_response", "transport": TRANSPORT,
         "session_affinity": session_affinity,
         "prompt_layout_version": call.prompt_layout_version,
@@ -207,7 +261,8 @@ def _run_stream(prompt: str, *, model: str, max_output_tokens: int, game_id: str
                 payload: dict[str, Any], key: str, opener: Any,
                 session_affinity: str | None, prompt_layout_version: str | None,
                 request_context: dict[str, object] | None,
-                evidence: _EvidenceRecorder, timeout: float) -> dict[str, Any]:
+                evidence: _EvidenceRecorder, timeout: float,
+                reasoning_effort: str | None = None) -> dict[str, Any]:
     started = time.monotonic()
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     if session_affinity:
@@ -236,7 +291,8 @@ def _run_stream(prompt: str, *, model: str, max_output_tokens: int, game_id: str
             started_at=call.started_at, ended_at=str(time.time()),
             elapsed_ms=int((time.monotonic() - started) * 1000), source_hash=call.source_hash,
             requested_affinity=session_affinity, prompt_layout_version=prompt_layout_version,
-            usage_source="provider_response" if raw is not None else None, error_code=code)
+            usage_source="provider_response" if raw is not None else None, error_code=code,
+            requested_reasoning_effort=reasoning_effort)
         _append_sidecar(sidecar_path, final, "final")
         evidence.receipt("incomplete.json", {
             "status": "incomplete", "error_code": code, "message": message,
@@ -360,7 +416,8 @@ def _run_stream(prompt: str, *, model: str, max_output_tokens: int, game_id: str
         source_hash=call.source_hash, requested_affinity=session_affinity,
         prompt_layout_version=prompt_layout_version,
         usage_source="provider_response" if raw is not None else None,
-        error_code="output_limit" if finish_reason == "length" else None)
+        error_code="output_limit" if finish_reason == "length" else None,
+        requested_reasoning_effort=reasoning_effort)
     body_usage = raw or {}
     for field, header_value in header_counts.items():
         body_value = body_usage.get(field)
@@ -385,7 +442,8 @@ def _run_stream(prompt: str, *, model: str, max_output_tokens: int, game_id: str
                       "usage": usage_raw},
     })
     return _reply_from_final(assembled_content, call, final,
-                         model, reported_model, session_affinity, finish_reason)
+                         model, reported_model, session_affinity, finish_reason,
+                         reasoning_effort=reasoning_effort)
 
 
 def session_affinity_for(conversation_id: Any, model: Any) -> str | None:
@@ -424,13 +482,20 @@ def run(prompt: str, *, model: str, max_output_tokens: int, game_id: str | None,
         prompt_layout_version: str | None = None,
         retry_of_call_id: str | None = None, timeout: float = 840,
         stream: bool = False, evidence_dir: Path | None = None,
-        request_context: dict[str, object] | None = None) -> dict[str, Any]:
+        request_context: dict[str, object] | None = None,
+        reasoning_effort: str | None = None) -> dict[str, Any]:
     """Dispatch one Fireworks chat-completions call and return the reply envelope.
 
     Returns a typed error on output exhaustion. Raises on other failures; the usage
     sidecar has already recorded the dispatch and final outcome by the time
     this raises, so the caller need not catch anything to preserve evidence.
+
+    `reasoning_effort` is rejected before any network call unless it is one
+    of `SUPPORTED_REASONING_EFFORTS`. Left as `None` (the default), the
+    request payload carries no `reasoning_effort` field at all -- byte
+    identical to every payload this adapter sent before this option existed.
     """
+    validate_reasoning_effort(reasoning_effort)
     prompt_sha256 = hashlib.sha256(prompt.encode()).hexdigest()
     call_id = _allocate_call_id(game_id, prompt_sha256)
     call = ModelCall(game_id=game_id or "unbound", call_id=call_id, request_id=request_id,
@@ -438,14 +503,19 @@ def run(prompt: str, *, model: str, max_output_tokens: int, game_id: str | None,
                       requested_affinity=session_affinity,
                       retry_of_call_id=retry_of_call_id,
                       prompt_layout_version=prompt_layout_version,
+                      requested_reasoning_effort=reasoning_effort,
                       output_limit=max_output_tokens, status="dispatched",
                       started_at=str(time.time()), source_hash=prompt_sha256)
     _append_sidecar(sidecar_path, call, "dispatch")
 
-    payload = (_stream_payload(model, prompt, max_output_tokens) if stream else
-               {"model": model, "messages": [{"role": "user", "content": prompt}],
-                "stream": False, "max_completion_tokens": max_output_tokens,
-                "context_length_exceeded_behavior": "error"})
+    if stream:
+        payload = _stream_payload(model, prompt, max_output_tokens, reasoning_effort)
+    else:
+        payload = {"model": model, "messages": [{"role": "user", "content": prompt}],
+                   "stream": False, "max_completion_tokens": max_output_tokens,
+                   "context_length_exceeded_behavior": "error"}
+        if reasoning_effort is not None:
+            payload["reasoning_effort"] = reasoning_effort
     evidence = _EvidenceRecorder(evidence_dir, call_id, prompt, payload, request_context)
     key = api_key if api_key is not _UNSET else os.environ.get("FIREWORKS_API_KEY")
     if not key:
@@ -470,7 +540,7 @@ def run(prompt: str, *, model: str, max_output_tokens: int, game_id: str | None,
             request_id=request_id, sidecar_path=sidecar_path, call=call, payload=payload,
             key=key, opener=opener, session_affinity=session_affinity,
             prompt_layout_version=prompt_layout_version, request_context=request_context,
-            evidence=evidence, timeout=timeout)
+            evidence=evidence, timeout=timeout, reasoning_effort=reasoning_effort)
 
     started = time.monotonic()
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
@@ -576,7 +646,8 @@ def run(prompt: str, *, model: str, max_output_tokens: int, game_id: str | None,
                         retry_of_call_id=retry_of_call_id,
                         error_code="output_limit" if limited else None,
                         prompt_layout_version=prompt_layout_version,
-                        usage_source="provider_response" if usage_raw is not None else None)
+                        usage_source="provider_response" if usage_raw is not None else None,
+                        requested_reasoning_effort=reasoning_effort)
     body_counts = {
         "prompt_tokens": body_usage.get("prompt_tokens"),
         "prompt_cache_hit_tokens": body_usage.get("prompt_cache_hit_tokens"),
@@ -607,7 +678,8 @@ def run(prompt: str, *, model: str, max_output_tokens: int, game_id: str | None,
     # Truncated text is evidence, never executable orders (even if it happens
     # to parse). Only the harness owns escalation and retries.
     return _reply_from_final(content if isinstance(content, str) else "", call, final,
-                             model, body.get("model"), session_affinity, finish_reason)
+                             model, body.get("model"), session_affinity, finish_reason,
+                             reasoning_effort=reasoning_effort)
 
 
 def read_request_context(path: str | None) -> dict[str, object]:
@@ -641,6 +713,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="use Fireworks SSE streaming with durable partial evidence")
     parser.add_argument("--evidence-dir", default=os.environ.get("NORRUST_EVIDENCE_DIR"),
                         help="match-owned directory for payload, prompt, chunks, and receipts")
+    parser.add_argument("--reasoning-effort", default=None,
+                        help="explicit provider reasoning effort; standalone option when no harness "
+                             "context is present -- under llm_client, configure its --reasoning-effort "
+                             "instead. Omitted, the request payload is byte-identical to today's "
+                             "(no reasoning_effort field; provider/model default applies).")
     args = parser.parse_args(argv)
     # The client publishes one context file per match and rewrites it before each
     # dispatch, so an adapter needs no per-call flag to know which harness
@@ -652,6 +729,18 @@ def main(argv: list[str] | None = None) -> int:
                                if args.max_output_tokens is not None else INITIAL_OUTPUT_LIMIT)
     if type(output_limit) is not int or not 1 <= output_limit <= MAX_OUTPUT_LIMIT:
         parser.error("output limit must be between 1 and 524288 tokens")
+    if "requested_reasoning_effort" in context and args.reasoning_effort is not None:
+        parser.error("configure --reasoning-effort on llm_client, not inside --model-command")
+    reasoning_effort = (context.get("requested_reasoning_effort")
+                        if "requested_reasoning_effort" in context else args.reasoning_effort)
+    if reasoning_effort is not None and not isinstance(reasoning_effort, str):
+        parser.error("reasoning effort must be a string")
+    try:
+        validate_reasoning_effort(reasoning_effort)
+    except UnsupportedReasoningEffort as exc:
+        # Rejected honestly before any network call -- never silently mapped
+        # to a nearby supported value.
+        parser.error(str(exc))
     if not args.request_id:
         args.request_id = context.get("harness_request_id")
     if not args.game_id:
@@ -676,7 +765,7 @@ def main(argv: list[str] | None = None) -> int:
                     timeout=max(1, float(context.get("model_timeout_seconds", 845)) - 5),
                     stream=args.stream,
                     evidence_dir=Path(evidence_dir) if isinstance(evidence_dir, str) else None,
-                    request_context=context)
+                    request_context=context, reasoning_effort=reasoning_effort)
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 1
