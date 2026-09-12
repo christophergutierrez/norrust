@@ -239,7 +239,8 @@ def review(log_path: str | Path, *, run_id: str | None = None,
     completed_calls = sum(call.status == "completed" for call in observer_calls_detail)
     failed_calls = sum(call.status == "failed" for call in observer_calls_detail)
     journal_available = (observer_path is not None and
-                         observer_path.with_suffix(".journal.ndjson").is_file())
+                         observer_path.with_suffix(".journal.ndjson").is_file() and
+                         journal_outcomes.get("journal_intact", False))
     # An intact observer journal owns lifecycle failure counts. A missing
     # journal falls back to failed receipts, avoiding double-counting the same
     # physical failure from both sources.
@@ -280,6 +281,7 @@ def review(log_path: str | Path, *, run_id: str | None = None,
                       "verdicts": journal_outcomes.get("observer_verdicts", 0),
                       "failures": failure_count,
                       "failure_reasons": journal_outcomes.get("observer_failure_reasons", {}),
+                      "evidence_gaps": journal_outcomes.get("evidence_gaps", {}),
                       "coverage_complete": journal_outcomes.get("coverage_complete", False),
                       "journal_truncated": journal_outcomes.get("journal_truncated", False)}
     else:

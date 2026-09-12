@@ -142,6 +142,38 @@ class WatchdogReviewTests(unittest.TestCase):
             self.assertEqual(packet["model_evaluation"]["status"], "failed")
             self.assertEqual(packet["model_evaluation"]["network_calls"], 1)
 
+    def test_missing_journal_uses_failed_receipt_and_reports_integrity_gap(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            log, state_root = self._run_files(root)
+            failed = ModelCall(game_id="catalog-game", call_id="observer-1",
+                               call_role="observer", provider="fireworks", status="failed",
+                               error_code="transport_error")
+            (root / "usage.ndjson").write_text(
+                json.dumps(dict(failed.to_row(), record_kind="final")) + "\n")
+            (state_root / "observer-state.json").write_text(json.dumps(
+                {"run_id": "run-uuid", "dispatched_calls": 1}))
+            packet = review(log)
+            self.assertEqual(packet["model_evaluation"]["failures"], 1)
+            self.assertIn("journal_unavailable", packet["model_evaluation"]["evidence_gaps"])
+
+    def test_torn_journal_does_not_double_count_failed_receipt(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            log, state_root = self._run_files(root)
+            failed = ModelCall(game_id="catalog-game", call_id="observer-1",
+                               call_role="observer", provider="fireworks", status="failed",
+                               error_code="transport_error")
+            (root / "usage.ndjson").write_text(
+                json.dumps(dict(failed.to_row(), record_kind="final")) + "\n")
+            journal = state_root / "observer-state.journal.ndjson"
+            journal.write_text('{"type":"verdict_error","error":"transport_error"}\nnot-json\n')
+            (state_root / "observer-state.json").write_text(json.dumps(
+                {"run_id": "run-uuid", "dispatched_calls": 1}))
+            packet = review(log)
+            self.assertEqual(packet["model_evaluation"]["failures"], 1)
+            self.assertIn("unreadable_journal_entry", packet["model_evaluation"]["evidence_gaps"])
+
     def test_pending_inspect_and_malformed_journal_are_coverage_gaps(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "observer.journal.ndjson"
@@ -150,7 +182,8 @@ class WatchdogReviewTests(unittest.TestCase):
             outcomes = read_observer_outcomes(path)
             self.assertFalse(outcomes["judgment_observed"])
             self.assertEqual(outcomes["last_outcome"], "failure")
-            self.assertGreaterEqual(outcomes["observer_failures"], 2)
+            self.assertEqual(outcomes["observer_failures"], 1)
+            self.assertGreaterEqual(sum(outcomes["evidence_gaps"].values()), 1)
 
     def test_later_pending_window_overrides_earlier_judgment(self):
         with tempfile.TemporaryDirectory() as td:
@@ -188,7 +221,7 @@ class WatchdogReviewTests(unittest.TestCase):
             outcomes = read_observer_outcomes(path)
             self.assertFalse(outcomes["judgment_observed"])
             self.assertEqual(outcomes["last_outcome"], "failure")
-            self.assertEqual(outcomes["observer_failure_reasons"]["invalid_verdict_decision"], 1)
+            self.assertEqual(outcomes["evidence_gaps"]["invalid_verdict_decision"], 1)
 
     def test_invalid_decision_and_truncated_tail_are_not_judgments(self):
         with tempfile.TemporaryDirectory() as td:
@@ -199,8 +232,8 @@ class WatchdogReviewTests(unittest.TestCase):
             outcomes = read_observer_outcomes(path)
             self.assertTrue(outcomes["judgment_observed"])
             self.assertEqual(outcomes["last_outcome"], "failure")
-            self.assertIn("invalid_verdict_decision", outcomes["observer_failure_reasons"])
-            self.assertIn("journal_truncated", outcomes["observer_failure_reasons"])
+            self.assertIn("invalid_verdict_decision", outcomes["evidence_gaps"])
+            self.assertIn("journal_truncated", outcomes["evidence_gaps"])
 
 
 if __name__ == "__main__":

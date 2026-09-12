@@ -273,16 +273,19 @@ def replay_case(case: dict[str, Any], output_dir: str | Path, *, fake: bool = Tr
             case_evaluation = {"status": "failed", "network_calls": dispatched,
                                "verdicts": outcomes["observer_verdicts"],
                                "failures": outcomes["observer_failures"],
-                               "failure_reasons": outcomes["observer_failure_reasons"]}
+                               "failure_reasons": outcomes["observer_failure_reasons"],
+                               "evidence_gaps": outcomes.get("evidence_gaps", {})}
         elif (outcomes["observer_failures"] or
               outcomes.get("last_outcome") in {"pending", "failure"}):
             case_evaluation = {"status": "partial", "network_calls": dispatched,
                                "verdicts": outcomes["observer_verdicts"],
                                "failures": outcomes["observer_failures"],
-                               "failure_reasons": outcomes["observer_failure_reasons"]}
+                               "failure_reasons": outcomes["observer_failure_reasons"],
+                               "evidence_gaps": outcomes.get("evidence_gaps", {})}
         else:
             case_evaluation = {"status": "completed", "network_calls": dispatched,
-                               "verdicts": outcomes["observer_verdicts"], "failures": 0}
+                               "verdicts": outcomes["observer_verdicts"], "failures": 0,
+                               "evidence_gaps": outcomes.get("evidence_gaps", {})}
         report = {"case": case.get("case_id"), "status": final,
                   "metrics": metric, "observer_state": controller.state,
                   "model_evaluation": case_evaluation}
@@ -301,8 +304,10 @@ def replay_cases(cases: list[dict[str, Any]], output_dir: str | Path, *, fake: b
     verdicts = sum(item["observer_verdicts"] for item in metrics)
     failures = sum(item["observer_failures"] for item in metrics)
     reasons: dict[str, int] = {}
+    evidence_gaps: dict[str, int] = {}
     for item in metrics:
         _merge_reasons(reasons, item["observer_failure_reasons"])
+        _merge_reasons(evidence_gaps, item.get("evidence_gaps", {}))
     if fake:
         # No provider was contacted, so there is no model judgment to report.
         evaluation: dict[str, Any] = {"status": "not_run", "network_calls": 0}
@@ -319,6 +324,7 @@ def replay_cases(cases: list[dict[str, Any]], output_dir: str | Path, *, fake: b
                       "network_calls": sum(item["observer_calls"] for item in metrics),
                       "verdicts": verdicts, "failures": failures,
                       "failure_reasons": reasons,
+                      "evidence_gaps": evidence_gaps,
                       "cases_scored": len(scored),
                       "cases_without_judgment": len(metrics) - len(scored)}
     scored_misses = [item["missed_loop"] for item in scored
@@ -335,6 +341,7 @@ def replay_cases(cases: list[dict[str, Any]], output_dir: str | Path, *, fake: b
                         "observer_calls": sum(item["observer_calls"] for item in metrics),
                         "observer_verdicts": verdicts, "observer_failures": failures,
                         "observer_failure_reasons": reasons,
+                        "evidence_gaps": evidence_gaps,
                         "usage_coverage": [item["usage_coverage"] for item in metrics]},
             "cases": results}
     # Keep a durable aggregate beside the case directories. It is the same

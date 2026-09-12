@@ -26,7 +26,8 @@ def _is_quota_failure(error: BaseException) -> bool:
         return True
     # Billing language is authoritative even when the provider uses HTTP 429.
     return any(phrase in message for phrase in
-               ("insufficient credit", "account quota exceeded",
+               ("insufficient credit", "credit balance is exhausted",
+                "exhausted credits", "credits exhausted", "out of credits",
                 "spending limit exceeded", "billing hard limit"))
 
 
@@ -236,6 +237,7 @@ def evaluate(cases: list[dict[str, Any]], output_dir: str | Path, *, fake: bool 
     preflight_verdicts = int(preflight.get("status") == "passed")
     verdicts = preflight_verdicts + case_verdicts
     failure_reasons: dict[str, int] = {}
+    evidence_gaps: dict[str, int] = {}
     if preflight_failed:
         reason = str(preflight.get("error", {}).get("code") or
                      preflight.get("error", {}).get("message") or "preflight_failed")
@@ -243,6 +245,8 @@ def evaluate(cases: list[dict[str, Any]], output_dir: str | Path, *, fake: bool 
     for item in metrics:
         for reason, count in (item.get("observer_failure_reasons") or {}).items():
             failure_reasons[str(reason)] = failure_reasons.get(str(reason), 0) + int(count)
+        for reason, count in (item.get("evidence_gaps") or {}).items():
+            evidence_gaps[str(reason)] = evidence_gaps.get(str(reason), 0) + int(count)
     attempted_partial = any(item.get("model_evaluation", {}).get("status") in {"partial", "failed"}
                             for item in results if item.get("status", {}).get("stage") != "not_attempted")
     status = ("failed" if not scored else
@@ -263,6 +267,7 @@ def evaluate(cases: list[dict[str, Any]], output_dir: str | Path, *, fake: bool 
                  "model_evaluation": {"status": status, "network_calls": shared.calls,
                                       "verdicts": verdicts, "failures": failures,
                                       "failure_reasons": failure_reasons,
+                                      "evidence_gaps": evidence_gaps,
                                       "cases_scored": len(scored),
                                       "cases_without_judgment": len(cases) - len(scored),
                                       "usage": {"status": ("unknown" if not calls else
@@ -290,6 +295,7 @@ def evaluate(cases: list[dict[str, Any]], output_dir: str | Path, *, fake: bool 
                              "observer_calls": sum(item.get("observer_calls", 0) for item in metrics),
                              "observer_verdicts": case_verdicts,
                              "observer_failures": sum(int(item.get("observer_failures", 0)) for item in metrics),
+                             "evidence_gaps": evidence_gaps,
                              "preflight_verdicts": preflight_verdicts,
                              "preflight_failures": preflight_failed},
                  "cases": results}

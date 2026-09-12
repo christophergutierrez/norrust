@@ -22,6 +22,7 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
     judgments = 0
     failures = 0
     reasons: dict[str, int] = {}
+    evidence_gaps: dict[str, int] = {}
     last_outcome: str | None = None
     try:
         with journal_path.open("rb") as stream:
@@ -34,24 +35,20 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
     except OSError:
         truncated = False
         lines = []
-        failures += 1
-        reasons["journal_unavailable"] = 1
+        evidence_gaps["journal_unavailable"] = 1
     if truncated:
-        failures += 1
-        reasons["journal_truncated"] = 1
+        evidence_gaps["journal_truncated"] = 1
     for line in lines:
         if not line.strip():
             continue
         try:
             event = json.loads(line)
         except (TypeError, ValueError, json.JSONDecodeError):
-            failures += 1
-            reasons["unreadable_journal_entry"] = reasons.get("unreadable_journal_entry", 0) + 1
+            evidence_gaps["unreadable_journal_entry"] = evidence_gaps.get("unreadable_journal_entry", 0) + 1
             last_outcome = "failure"
             continue
         if not isinstance(event, dict):
-            failures += 1
-            reasons["journal_record_not_object"] = reasons.get("journal_record_not_object", 0) + 1
+            evidence_gaps["journal_record_not_object"] = evidence_gaps.get("journal_record_not_object", 0) + 1
             last_outcome = "failure"
             continue
         kind = event.get("type")
@@ -67,8 +64,7 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
                 judgments += 1
                 last_outcome = "judgment"
             else:
-                failures += 1
-                reasons["invalid_verdict_decision"] = reasons.get("invalid_verdict_decision", 0) + 1
+                evidence_gaps["invalid_verdict_decision"] = evidence_gaps.get("invalid_verdict_decision", 0) + 1
                 last_outcome = "failure"
         elif kind in FAILURE_EVENTS:
             failures += 1
@@ -78,13 +74,17 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
     if truncated:
         # A valid prefix cannot establish coverage for a torn/omitted tail.
         last_outcome = "failure"
+    if last_outcome == "pending":
+        evidence_gaps["pending_observation"] = evidence_gaps.get("pending_observation", 0) + 1
     return {
         "observer_verdicts": verdicts,
         "usable_judgments": judgments,
         "observer_failures": failures,
         "observer_failure_reasons": reasons,
+        "evidence_gaps": evidence_gaps,
         "judgment_observed": judgments > 0,
         "last_outcome": last_outcome,
         "journal_truncated": truncated,
-        "coverage_complete": not truncated and failures == 0,
+        "journal_intact": not evidence_gaps,
+        "coverage_complete": not evidence_gaps and failures == 0,
     }

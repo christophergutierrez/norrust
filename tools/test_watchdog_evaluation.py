@@ -71,8 +71,13 @@ class WatchdogEvaluationTests(unittest.TestCase):
     def test_explicit_credit_message_on_429_is_exhausted_but_generic_quota_is_not(self):
         self.assertTrue(_is_quota_failure(ObserverTransportError(
             "billing: insufficient credit", status=429)))
+        for message in ("credit balance is exhausted", "exhausted credits",
+                        "credits exhausted", "out of credits"):
+            self.assertTrue(_is_quota_failure(ObserverTransportError(message, status=429)))
         self.assertFalse(_is_quota_failure(ObserverTransportError(
             "account quota is temporarily unavailable", status=429)))
+        self.assertFalse(_is_quota_failure(ObserverTransportError(
+            "account quota exceeded", status=429)))
 
     def test_preflight_receipt_usage_is_measured_with_dated_cost_helper(self):
         backend = FakeObserverBackend([{
