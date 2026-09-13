@@ -3,6 +3,19 @@
 Baseline: `d441582`. Implementation authorized: Luna High workers, orchestrated
 by Astra. Preserve historical evidence. No new full player game in this task.
 
+Implementation record (2026-09-12): recorder stack `d4e4e7f`; observer stack
+integrated as `c093edb`, with validation documentation in `165c8c8`. Both Luna
+workers passed their stack gates. The final integration result is recorded in
+`tmp/watchdog-live-fixes-exec/HANDOFF.md`.
+
+Live observer validation used 32 Fireworks requests and approximately $0.008419:
+two calibration calls plus preflight and the 12 labelled cases. All responses
+were usable. There were zero false stops and four missed loops: three direct
+stop recommendations failed controller prerequisites, while one case received
+continue decisions. The JSON protocol is verified; enforce quality is not.
+Follow-up: align observer instructions and status with the controller's required
+inspection/confirmation contract, then reevaluate without weakening guards.
+
 ## Evidence and outcome
 
 The GLM run `tmp/glm-watchdog-test-nWAKkD` completed 12 side-turns before its
