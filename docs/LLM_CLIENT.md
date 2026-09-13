@@ -1375,11 +1375,13 @@ Use a new output directory. The runner retains chronological status, request
 payloads, receipts and verdicts, distinguishes controller recommendations from
 supervisor-validated stops, and caps each case at three observer calls. The
 manifest records the separately launchable model evaluation's dated ceiling;
-that evaluation has not been run. The profile is protocol-ready only after a
-separate bounded calibration produces valid, nontruncated decisions for both a
-healthy packet and a nontrivial evidence packet. Protocol readiness does not
-establish semantic stop quality. Start with recording or `observe` mode until
-that quality has been evaluated.
+the current frozen-profile run is recorded in its separate dated validation
+report. The profile is protocol-ready only after a separate bounded calibration
+produces valid, nontruncated decisions for both a healthy packet and a
+nontrivial evidence packet. Protocol readiness does not establish semantic stop
+quality; the current report records protocol success while leaving semantic stop
+quality unresolved. Start with recording or `observe` mode until that quality
+has been evaluated and accepted.
 
 Detection rates are reported only over cases the model actually judged. A
 dispatched call that never returned a verdict -- a transport error, an
