@@ -1211,6 +1211,20 @@ fn detect_orders_envelope(parsed: &Value, current_revision: u64) -> OrdersEnvelo
     }
 }
 
+fn is_routine_empty_finish(authored_source: &str, orders: &[Value]) -> bool {
+    authored_source == "routine"
+        && orders.len() == 1
+        && orders[0].get("action").and_then(Value::as_str) == Some("FinishWithGreedy")
+        && orders[0]
+            .get("groups")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+        && orders[0]
+            .get("holds")
+            .and_then(Value::as_array)
+            .is_none_or(Vec::is_empty)
+}
+
 fn valid_action_shape(order: &Value) -> bool {
     let Some(object) = order.as_object() else {
         return false;
@@ -3793,8 +3807,8 @@ fn interactive_protocol_game(mut c: Config) {
             next_id: batch_next_id,
             results,
             events,
-            delegated_ranges,
-            delegated_order_indices,
+            mut delegated_ranges,
+            mut delegated_order_indices,
             did_end,
             forecasts: _,
             sequence_attacks: _,
@@ -3815,6 +3829,13 @@ fn interactive_protocol_game(mut c: Config) {
             c.disable_recruit_batch,
             true,
         );
+        // A routine empty FinishWithGreedy is a no-sweep boundary selected by
+        // the routine. Its engine events stay routine-owned; model-selected
+        // nonempty FinishWithGreedy remains delegated greedy.
+        if is_routine_empty_finish(authored_source, &orders) {
+            delegated_ranges.clear();
+            delegated_order_indices.clear();
+        }
         let batch_succeeded = results
             .iter()
             .all(|result| result.get("ok") == Some(&Value::Bool(true)));
@@ -4941,5 +4962,22 @@ mod tests {
         assert_eq!(execution.events.len(), 1);
         let tagged = event_value(&execution.events[0], "routine");
         assert_eq!(tagged["source"], json!("routine"));
+    }
+
+    #[test]
+    fn routine_empty_finish_keeps_boundary_events_out_of_delegated_greedy() {
+        let routine = vec![json!({
+            "action":"FinishWithGreedy",
+            "groups":[],
+            "holds":[],
+        })];
+        assert!(is_routine_empty_finish("routine", &routine));
+        assert!(!is_routine_empty_finish("llm", &routine));
+        let model_finish = vec![json!({
+            "action":"FinishWithGreedy",
+            "groups":[{"mode":"greedy","unit_ids":[3]}],
+            "holds":[],
+        })];
+        assert!(!is_routine_empty_finish("routine", &model_finish));
     }
 }

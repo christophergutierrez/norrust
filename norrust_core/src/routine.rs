@@ -415,8 +415,15 @@ fn current_contact(state: &GameState, side: u8) -> Result<bool, TacticsError> {
     {
         return Ok(true);
     }
-    Ok(unit_threats_after_end_turn(state, side)?
+    if unit_threats_after_end_turn(state, side)?
         .units
+        .iter()
+        .any(|u| u.distinct_attacker_count > 0 || u.open_distinct_attacker_count > 0)
+    {
+        return Ok(true);
+    }
+    Ok(recruiter_threats_after_end_turn(state, side)?
+        .recruiters
         .iter()
         .any(|u| u.distinct_attacker_count > 0 || u.open_distinct_attacker_count > 0))
 }
@@ -436,16 +443,21 @@ fn post_step_safe(state: &GameState, side: u8, action: Action) -> Result<bool, T
         .any(|u| u.distinct_attacker_count > 0 || u.open_distinct_attacker_count > 0))
 }
 
-/// Select a furthest legal endpoint on a shortest terrain-cost route. A path
-/// crossing a currently occupied intermediate hex is not an executable route.
-fn route_endpoint(state: &GameState, unit_id: u32, goals: &[Hex]) -> Option<(Hex, bool)> {
-    let unit = state.units.get(&unit_id)?;
+/// Return legal endpoints on a shortest terrain-cost route, ordered from
+/// furthest to nearest. The engine permits occupied intermediate hexes; only
+/// the submitted endpoint must be empty.
+fn route_endpoints(state: &GameState, unit_id: u32, goals: &[Hex]) -> Vec<(Hex, bool)> {
+    let Some(unit) = state.units.get(&unit_id) else {
+        return Vec::new();
+    };
     if unit.moved {
-        return None;
+        return Vec::new();
     }
-    let start = *state.positions.get(&unit_id)?;
+    let Some(start) = state.positions.get(&unit_id).copied() else {
+        return Vec::new();
+    };
     if goals.contains(&start) {
-        return Some((start, true));
+        return vec![(start, true)];
     }
     let budget = if unit.slowed {
         unit.movement / 2
@@ -483,7 +495,7 @@ fn route_endpoint(state: &GameState, unit_id: u32, goals: &[Hex]) -> Option<(Hex
         let (c, r) = h.to_offset();
         (*total, std::cmp::Reverse(*cost), r, c)
     });
-    candidates.first().map(|(h, _, _)| (*h, false))
+    candidates.into_iter().map(|(h, _, _)| (h, false)).collect()
 }
 
 fn scout_goal(
@@ -667,7 +679,8 @@ pub fn routine_next(
             }
         }
         Ok(Some((id, village, mut effects))) => {
-            let Some((destination, arrived)) = route_endpoint(state, id, &[village]) else {
+            let endpoints = route_endpoints(state, id, &[village]);
+            if endpoints.is_empty() {
                 if state.units.get(&id).is_some_and(|u| u.moved) {
                     return RoutineOutcome::Finish {
                         reason: "no_remaining_routine_steps",
@@ -678,38 +691,47 @@ pub fn routine_next(
                     reason: "unsafe_route",
                     evidence: json!({"unit_id":id,"target":coord(village),"cause":"unreachable_or_no_legal_endpoint"}),
                 };
-            };
-            if arrived {
-                effects.extend(finish_effects(state, policy, side));
-                return RoutineOutcome::Finish {
-                    reason: "no_remaining_routine_steps",
-                    progress_update: progress_update(effects),
+            }
+            let mut unsafe_destination = None;
+            for (destination, arrived) in endpoints {
+                if arrived {
+                    effects.extend(finish_effects(state, policy, side));
+                    return RoutineOutcome::Finish {
+                        reason: "no_remaining_routine_steps",
+                        progress_update: progress_update(effects),
+                    };
+                }
+                let action = Action::Move {
+                    unit_id: id,
+                    destination,
+                };
+                match post_step_safe(state, side, action) {
+                    Ok(true) => {
+                        effects.shrink_to_fit();
+                        return RoutineOutcome::Action {
+                            action: json!({"action":"Move","unit_id":id,"col":destination.to_offset().0,"row":destination.to_offset().1}),
+                            progress_update: progress_update(effects),
+                            reason: "village",
+                        };
+                    }
+                    Ok(false) => unsafe_destination = Some(destination),
+                    Err(e) => {
+                        return RoutineOutcome::Exception {
+                            reason: "threat_unavailable",
+                            evidence: json!({"stage":"proposed_destination","detail":e.to_string()}),
+                        }
+                    }
+                }
+            }
+            if let Some(destination) = unsafe_destination {
+                return RoutineOutcome::Exception {
+                    reason: "contact",
+                    evidence: json!({"stage":"proposed_destination","unit_id":id,"destination":coord(destination)}),
                 };
             }
-            let action = Action::Move {
-                unit_id: id,
-                destination,
-            };
-            match post_step_safe(state, side, action) {
-                Ok(true) => {}
-                Ok(false) => {
-                    return RoutineOutcome::Exception {
-                        reason: "contact",
-                        evidence: json!({"stage":"proposed_destination","unit_id":id,"destination":coord(destination)}),
-                    }
-                }
-                Err(e) => {
-                    return RoutineOutcome::Exception {
-                        reason: "threat_unavailable",
-                        evidence: json!({"stage":"proposed_destination","detail":e.to_string()}),
-                    }
-                }
-            }
-            effects.shrink_to_fit();
-            return RoutineOutcome::Action {
-                action: json!({"action":"Move","unit_id":id,"col":destination.to_offset().0,"row":destination.to_offset().1}),
-                progress_update: progress_update(effects),
-                reason: "village",
+            return RoutineOutcome::Exception {
+                reason: "unsafe_route",
+                evidence: json!({"unit_id":id,"target":coord(village),"cause":"no_safe_endpoint"}),
             };
         }
         Ok(None) => {}
@@ -782,35 +804,39 @@ pub fn routine_next(
                     .collect();
                 vacatable.sort_unstable();
                 let goals = rally_goals(state, rally);
+                let mut unsafe_destination = None;
                 for id in vacatable {
-                    let Some((destination, _)) = route_endpoint(state, id, &goals) else {
-                        continue;
-                    };
-                    let action = Action::Move {
-                        unit_id: id,
-                        destination,
-                    };
-                    match post_step_safe(state, side, action) {
-                        Ok(true) => {
-                            return RoutineOutcome::Action {
-                                action: json!({"action":"Move","unit_id":id,"col":destination.to_offset().0,"row":destination.to_offset().1}),
-                                progress_update: progress_update(Vec::new()),
-                                reason: "castle_capacity",
-                            }
+                    for (destination, arrived) in route_endpoints(state, id, &goals) {
+                        if arrived {
+                            continue;
                         }
-                        Ok(false) => {
-                            return RoutineOutcome::Exception {
-                                reason: "contact",
-                                evidence: json!({"stage":"proposed_destination","unit_id":id,"destination":coord(destination)}),
+                        let action = Action::Move {
+                            unit_id: id,
+                            destination,
+                        };
+                        match post_step_safe(state, side, action) {
+                            Ok(true) => {
+                                return RoutineOutcome::Action {
+                                    action: json!({"action":"Move","unit_id":id,"col":destination.to_offset().0,"row":destination.to_offset().1}),
+                                    progress_update: progress_update(Vec::new()),
+                                    reason: "castle_capacity",
+                                }
                             }
-                        }
-                        Err(error) => {
-                            return RoutineOutcome::Exception {
-                                reason: "threat_unavailable",
-                                evidence: json!({"stage":"proposed_destination","detail":error.to_string()}),
+                            Ok(false) => unsafe_destination = Some((id, destination)),
+                            Err(error) => {
+                                return RoutineOutcome::Exception {
+                                    reason: "threat_unavailable",
+                                    evidence: json!({"stage":"proposed_destination","detail":error.to_string()}),
+                                }
                             }
                         }
                     }
+                }
+                if let Some((id, destination)) = unsafe_destination {
+                    return RoutineOutcome::Exception {
+                        reason: "contact",
+                        evidence: json!({"stage":"proposed_destination","unit_id":id,"destination":coord(destination)}),
+                    };
                 }
                 if state.units.iter().any(|(id, unit)| {
                     let Some(position) = state.positions.get(id) else {
@@ -926,7 +952,8 @@ pub fn routine_next(
             {
                 continue;
             }
-            let Some((destination, _)) = route_endpoint(state, id, &goals) else {
+            let endpoints = route_endpoints(state, id, &goals);
+            if endpoints.is_empty() {
                 if state.units.get(&id).is_some_and(|u| u.moved) {
                     continue;
                 }
@@ -934,32 +961,43 @@ pub fn routine_next(
                     reason: "unsafe_route",
                     evidence: json!({"unit_id":id,"target":coord(rally),"cause":"unreachable_or_no_legal_endpoint"}),
                 };
-            };
-            let action = Action::Move {
-                unit_id: id,
-                destination,
-            };
-            match post_step_safe(state, side, action) {
-                Ok(true) => {
-                    return RoutineOutcome::Action {
-                        action: json!({"action":"Move","unit_id":id,"col":destination.to_offset().0,"row":destination.to_offset().1}),
-                        progress_update: progress_update(Vec::new()),
-                        reason: "rally",
-                    }
+            }
+            let mut unsafe_destination = None;
+            for (destination, arrived) in endpoints {
+                if arrived {
+                    continue;
                 }
-                Ok(false) => {
-                    return RoutineOutcome::Exception {
-                        reason: "contact",
-                        evidence: json!({"stage":"proposed_destination","unit_id":id,"destination":coord(destination)}),
+                let action = Action::Move {
+                    unit_id: id,
+                    destination,
+                };
+                match post_step_safe(state, side, action) {
+                    Ok(true) => {
+                        return RoutineOutcome::Action {
+                            action: json!({"action":"Move","unit_id":id,"col":destination.to_offset().0,"row":destination.to_offset().1}),
+                            progress_update: progress_update(Vec::new()),
+                            reason: "rally",
+                        }
                     }
-                }
-                Err(e) => {
-                    return RoutineOutcome::Exception {
-                        reason: "threat_unavailable",
-                        evidence: json!({"stage":"proposed_destination","detail":e.to_string()}),
+                    Ok(false) => unsafe_destination = Some(destination),
+                    Err(e) => {
+                        return RoutineOutcome::Exception {
+                            reason: "threat_unavailable",
+                            evidence: json!({"stage":"proposed_destination","detail":e.to_string()}),
+                        }
                     }
                 }
             }
+            if let Some(destination) = unsafe_destination {
+                return RoutineOutcome::Exception {
+                    reason: "contact",
+                    evidence: json!({"stage":"proposed_destination","unit_id":id,"destination":coord(destination)}),
+                };
+            }
+            return RoutineOutcome::Exception {
+                reason: "unsafe_route",
+                evidence: json!({"unit_id":id,"target":coord(rally),"cause":"no_safe_endpoint"}),
+            };
         }
     }
     let pending_village = policy.villages.iter().any(|village| {
@@ -1042,6 +1080,31 @@ mod tests {
         s.place_unit(l, k);
         s
     }
+
+    fn policy(recruits: &[(&str, u32, &str)]) -> RoutinePolicy {
+        RoutinePolicy {
+            reserve_gold: 0,
+            recruits: recruits
+                .iter()
+                .map(|(def_id, count, role)| RecruitEntry {
+                    def_id: (*def_id).into(),
+                    count: *count,
+                    role: (*role).into(),
+                })
+                .collect(),
+            scouts: Vec::new(),
+            villages: Vec::new(),
+            rally: None,
+            holds: Vec::new(),
+        }
+    }
+
+    fn village_state() -> (GameState, Hex) {
+        let mut s = state();
+        let village = Hex::from_offset(5, 4);
+        s.board.set_tile(village, Tile::new("village"));
+        (s, village)
+    }
     #[test]
     fn parses_stack2_policy() {
         let p=parse_policy(&json!({"reserve_gold":4,"recruits":[],"scouts":[9],"villages":[{"col":2,"row":3}],"rally":{"col":6,"row":5},"holds":[8]})).unwrap();
@@ -1070,5 +1133,316 @@ mod tests {
         assert!(
             matches!(routine_next(&s,0,&p,&RoutineProgress::default(),&[],&units()),RoutineOutcome::Finish{progress_update,..} if progress_update["effects"].is_array())
         );
+    }
+
+    #[test]
+    fn old_stack1_queue_reserve_and_roster_guards_remain() {
+        let registry = units();
+        let recruit_ids = vec!["Skeleton".to_owned()];
+        let mut p = policy(&[("Skeleton", 2, "army")]);
+        let mut s = state();
+        s.gold[0] = registry.get("Skeleton").unwrap().cost;
+        assert!(matches!(
+            routine_next(
+                &s,
+                0,
+                &p,
+                &RoutineProgress::default(),
+                &recruit_ids,
+                &registry
+            ),
+            RoutineOutcome::Action {
+                reason: "recruit",
+                ..
+            }
+        ));
+        s.gold[0] = registry.get("Skeleton").unwrap().cost - 1;
+        p.reserve_gold = 0;
+        assert!(matches!(
+            routine_next(
+                &s,
+                0,
+                &p,
+                &RoutineProgress::default(),
+                &recruit_ids,
+                &registry
+            ),
+            RoutineOutcome::Exception {
+                reason: "recruitment_blocked",
+                ..
+            }
+        ));
+        p.recruits[0].def_id = "Ghost".into();
+        assert!(matches!(
+            routine_next(
+                &s,
+                0,
+                &p,
+                &RoutineProgress::default(),
+                &recruit_ids,
+                &registry
+            ),
+            RoutineOutcome::Exception {
+                reason: "recruitment_blocked",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn recruiter_exposure_pauses_before_recruitment() {
+        let registry = units();
+        let mut s = state();
+        let enemy_hex = Hex::from_offset(2, 1);
+        let mut enemy = Unit::from_def(9, registry.get("Skeleton").unwrap(), 1);
+        enemy.attacks = registry.get("Skeleton").unwrap().attacks.clone();
+        s.place_unit(enemy, enemy_hex);
+        let p = policy(&[("Skeleton", 1, "army")]);
+        assert!(matches!(
+            routine_next(
+                &s,
+                0,
+                &p,
+                &RoutineProgress::default(),
+                &["Skeleton".into()],
+                &registry
+            ),
+            RoutineOutcome::Exception {
+                reason: "contact",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn routine_query_preserves_rng_ids_and_state_revision() {
+        let registry = units();
+        let s = state();
+        let before = (
+            s.rng.state(),
+            s.next_unit_id,
+            s.state_revision,
+            s.gold,
+            s.units.len(),
+        );
+        let p = policy(&[("Skeleton", 1, "army")]);
+        assert!(matches!(
+            routine_next(
+                &s,
+                0,
+                &p,
+                &RoutineProgress::default(),
+                &["Skeleton".into()],
+                &registry
+            ),
+            RoutineOutcome::Action { .. }
+        ));
+        assert_eq!(
+            (
+                s.rng.state(),
+                s.next_unit_id,
+                s.state_revision,
+                s.gold,
+                s.units.len()
+            ),
+            before
+        );
+    }
+
+    #[test]
+    fn three_distinct_scouts_and_held_units_are_filtered_deterministically() {
+        let registry = units();
+        let (mut s, village) = village_state();
+        for (id, position) in [
+            (2, Hex::from_offset(3, 4)),
+            (3, Hex::from_offset(3, 5)),
+            (4, Hex::from_offset(3, 6)),
+        ] {
+            s.place_unit(
+                Unit::from_def(id, registry.get("Ghost").unwrap(), 0),
+                position,
+            );
+        }
+        let p = RoutinePolicy {
+            reserve_gold: 0,
+            recruits: Vec::new(),
+            scouts: vec![2, 3, 4],
+            villages: vec![village],
+            rally: None,
+            holds: vec![3],
+        };
+        let outcome = routine_next(&s, 0, &p, &RoutineProgress::default(), &[], &registry);
+        assert!(
+            matches!(outcome, RoutineOutcome::Action { action, progress_update, .. }
+            if action["unit_id"] == 2 && progress_update["effects"][0]["unit_id"] == 2)
+        );
+    }
+
+    #[test]
+    fn dead_assignment_is_typed_and_does_not_fall_through_to_recruitment() {
+        let registry = units();
+        let (s, village) = village_state();
+        let p = RoutinePolicy {
+            reserve_gold: 0,
+            recruits: vec![RecruitEntry {
+                def_id: "Skeleton".into(),
+                count: 1,
+                role: "army".into(),
+            }],
+            scouts: vec![2],
+            villages: vec![village],
+            rally: None,
+            holds: Vec::new(),
+        };
+        let progress = RoutineProgress {
+            scout_ids: vec![2],
+            scout_assignments: vec![ScoutAssignment {
+                unit_id: 2,
+                village,
+            }],
+            ..Default::default()
+        };
+        assert!(matches!(
+            routine_next(&s, 0, &p, &progress, &["Skeleton".into()], &registry),
+            RoutineOutcome::Exception { reason: "invalid_assignment", evidence }
+                if evidence["cause"] == "dead_or_foreign_unit"
+        ));
+    }
+
+    #[test]
+    fn moved_assigned_scout_finishes_without_claiming_capture() {
+        let registry = units();
+        let (mut s, village) = village_state();
+        let mut scout = Unit::from_def(2, registry.get("Ghost").unwrap(), 0);
+        scout.moved = true;
+        s.place_unit(scout, Hex::from_offset(3, 4));
+        let p = RoutinePolicy {
+            reserve_gold: 0,
+            recruits: Vec::new(),
+            scouts: vec![2],
+            villages: vec![village],
+            rally: None,
+            holds: Vec::new(),
+        };
+        let progress = RoutineProgress {
+            scout_assignments: vec![ScoutAssignment {
+                unit_id: 2,
+                village,
+            }],
+            ..Default::default()
+        };
+        assert!(matches!(
+            routine_next(&s, 0, &p, &progress, &[], &registry),
+            RoutineOutcome::Finish { reason: "no_remaining_routine_steps", progress_update }
+                if progress_update["effects"].as_array().unwrap().is_empty()
+        ));
+    }
+
+    #[test]
+    fn occupied_castles_do_not_vacate_held_units_or_recruiter() {
+        let registry = units();
+        let mut s = state();
+        let keep = Hex::from_offset(1, 1);
+        let held = keep
+            .neighbors()
+            .into_iter()
+            .find(|h| s.board.contains(*h))
+            .unwrap();
+        s.place_unit(Unit::from_def(2, registry.get("Fighter").unwrap(), 0), held);
+        let mut blocker = 10;
+        let mut holds = vec![2];
+        for castle in keep.neighbors() {
+            if s.board.contains(castle) && s.hex_to_unit.get(&castle).is_none() {
+                s.place_unit(
+                    Unit::from_def(blocker, registry.get("Fighter").unwrap(), 0),
+                    castle,
+                );
+                holds.push(blocker);
+                blocker += 1;
+            }
+        }
+        let before = s.positions.clone();
+        let mut p = policy(&[("Skeleton", 1, "army")]);
+        p.scouts = Vec::new();
+        p.holds = holds;
+        p.rally = Some(Hex::from_offset(7, 6));
+        let outcome = routine_next(
+            &s,
+            0,
+            &p,
+            &RoutineProgress::default(),
+            &["Skeleton".into()],
+            &registry,
+        );
+        assert!(matches!(
+            outcome,
+            RoutineOutcome::Exception {
+                reason: "recruitment_blocked",
+                ..
+            }
+        ));
+        assert_eq!(s.positions, before);
+    }
+
+    #[test]
+    fn occupied_rally_is_a_direction_with_an_empty_adjacent_endpoint() {
+        let registry = units();
+        let mut s = state();
+        let rally = Hex::from_offset(7, 5);
+        s.place_unit(
+            Unit::from_def(2, registry.get("Skeleton").unwrap(), 0),
+            Hex::from_offset(5, 5),
+        );
+        s.place_unit(
+            Unit::from_def(3, registry.get("Skeleton").unwrap(), 0),
+            rally,
+        );
+        let p = RoutinePolicy {
+            rally: Some(rally),
+            ..policy(&[])
+        };
+        let outcome = routine_next(&s, 0, &p, &RoutineProgress::default(), &[], &registry);
+        assert!(
+            matches!(outcome, RoutineOutcome::Action { action, reason: "rally", .. }
+            if action["unit_id"] == 2
+                && !(action["col"] == rally.to_offset().0 && action["row"] == rally.to_offset().1)
+                && Hex::from_offset(action["col"].as_i64().unwrap() as i32, action["row"].as_i64().unwrap() as i32).distance(rally) <= 1)
+        );
+    }
+
+    #[test]
+    fn standing_on_a_village_reports_capture_only_at_finish() {
+        let registry = units();
+        let (mut s, village) = village_state();
+        s.place_unit(
+            Unit::from_def(2, registry.get("Ghost").unwrap(), 0),
+            village,
+        );
+        let p = RoutinePolicy {
+            villages: vec![village],
+            scouts: vec![2],
+            ..policy(&[])
+        };
+        let progress = RoutineProgress {
+            scout_assignments: vec![ScoutAssignment {
+                unit_id: 2,
+                village,
+            }],
+            ..Default::default()
+        };
+        let outcome = routine_next(&s, 0, &p, &progress, &[], &registry);
+        assert!(
+            matches!(outcome, RoutineOutcome::Finish { reason: "no_remaining_routine_steps", progress_update }
+            if progress_update["effects"][0]["kind"] == "completed_village")
+        );
+        assert_ne!(s.village_owners.get(&village), Some(&0));
+        s.village_owners.insert(village, 0);
+        let progress = RoutineProgress {
+            completed_villages: vec![village],
+            ..progress
+        };
+        assert!(matches!(routine_next(&s, 0, &p, &progress, &[], &registry),
+            RoutineOutcome::Finish { reason: "objectives_complete", progress_update }
+                if progress_update["effects"][0]["kind"] == "policy_completed"));
     }
 }
