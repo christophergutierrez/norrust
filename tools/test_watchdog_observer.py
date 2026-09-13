@@ -388,7 +388,7 @@ class ControllerTests(unittest.TestCase):
         self.assertTrue(self.controller.poll(first))
         self.controller.wait(2)
         self.clock_value[0] = 300
-        second = dict(first, observation_sequence=2, freshness={"state": "fresh"})
+        second = dict(first, observation_sequence=2, freshness={"state": "stale"})
         self.current[0] = second
         self.assertTrue(self.controller.poll(second))
         self.controller.wait(2)
@@ -419,16 +419,45 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(outcomes[0]["stop_requested"], False)
 
     def test_unknown_foreign_and_uninspected_evidence_reject_stop(self):
-        backend = FakeObserverBackend([
-            decision("inspect", "check", ["unknown"]),
-            decision("stop", "repeated_no_progress", ["e1"]),
-        ])
-        self.controller = self.make(backend, max_calls=2)
-        self.assertTrue(self.controller.poll(self.current[0]))
-        self.controller.wait(2)
-        journal = (Path(self.temp.name) / "watchdog.journal.ndjson").read_text()
-        self.assertIn('"failed_prerequisite":"evidence"', journal)
-        self.assertEqual(self.stops, [])
+        def run_case(inspect_id, stop_id, reader, evidence_ids):
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                clock = [0.0]
+                current = [dict(self.current[0], observation_sequence=1,
+                                evidence_ids=evidence_ids)]
+                stops = []
+                controller = ObserverController(
+                    "run-uuid", root / "watchdog.json",
+                    backend=FakeObserverBackend([
+                        decision("continue", "confirmation_missing"),
+                        decision("inspect", "check", [inspect_id]),
+                        decision("stop", "repeated_no_progress", [stop_id]),
+                    ]), catalog_game_id="catalog-game", mode="enforce",
+                    progress=lambda _run: current[0], evidence_reader=reader,
+                    stop=lambda *args: stops.append(args), clock=lambda: clock[0], max_calls=3)
+                controller.poll(current[0]); controller.wait(2)
+                clock[0] = 300.0
+                current[0] = dict(current[0], observation_sequence=2)
+                controller.poll(current[0]); controller.wait(2)
+                journal = (root / "watchdog.journal.ndjson").read_text()
+                controller.close(wait=True)
+                return journal, stops
+
+        unknown_journal, unknown_stops = run_case(
+            "unknown", "e1",
+            lambda *_args: {"run_id": "run-uuid", "evidence_id": "unknown", "data": "x"}, ["e1"])
+        self.assertIn('"failed_prerequisite":"evidence"', unknown_journal)
+        self.assertEqual(unknown_stops, [])
+        foreign_journal, foreign_stops = run_case(
+            "e1", "e1",
+            lambda *_args: {"run_id": "foreign-run", "evidence_id": "e1", "data": "x"}, ["e1"])
+        self.assertIn('"failed_prerequisite":"evidence"', foreign_journal)
+        self.assertEqual(foreign_stops, [])
+        uninspected_journal, uninspected_stops = run_case(
+            "e1", "e2",
+            lambda *_args: {"run_id": "run-uuid", "evidence_id": "e1", "data": "x"}, ["e1", "e2"])
+        self.assertIn('"failed_prerequisite":"evidence"', uninspected_journal)
+        self.assertEqual(uninspected_stops, [])
 
     def test_missing_current_progress_or_sequence_rejects_stop_as_stale(self):
         backend = FakeObserverBackend([
@@ -469,22 +498,6 @@ class ControllerTests(unittest.TestCase):
         self.assertIn('"failed_prerequisite":"freshness"', journal)
         self.assertEqual(self.stops, [])
 
-        self.controller.close(wait=True)
-        self.temp.cleanup()
-        self.temp = tempfile.TemporaryDirectory()
-        self.current[0] = dict(self.current[0], observation_sequence=2)
-        backend = FakeObserverBackend([
-            decision("inspect", "check", ["e1"]),
-            decision("stop", "repeated_no_progress", ["other"]),
-        ])
-        self.controller = self.make(backend, max_calls=2,
-                                    evidence_reader=lambda *_args: {
-                                        "run_id": "foreign-run", "evidence_id": "e1", "data": "x"})
-        self.assertTrue(self.controller.poll(self.current[0]))
-        self.controller.wait(2)
-        journal = (Path(self.temp.name) / "watchdog.journal.ndjson").read_text()
-        self.assertIn('"failed_prerequisite":"evidence"', journal)
-        self.assertEqual(self.stops, [])
 
 
 if __name__ == "__main__":
