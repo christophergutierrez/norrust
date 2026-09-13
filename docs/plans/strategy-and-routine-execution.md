@@ -20,9 +20,16 @@ unrecoverable-proof refusal, immediate completion after capture, and SQLite
 idempotence. The real-wire dedup test fails with identity deduplication removed
 (`tmp/strategy-exec/recovery/luna-resume/dedup-mutation.log`).
 
-Resume implementation at Stack 3 / R3. Stack 4 preparation exists on worker
-commit `f5e55db`, but its executable matrix and reporting acceptance remain;
-read `tmp/strategy-exec/STACK4_REVIEW_NOTES.md`. No paid pilot has started.
+Stack 3 is complete on source `68047d1`. Full `python3 -m tools.fast_check`
+passed: 984 Python tests, selected Rust suites, and Lua bridge/replay/recorded
+checks. Evidence: `tmp/strategy-exec/stack-3-full-gate.log`. Fifteen real-driver
+Stack 3 tests cover compact model contracts, ordinary tactical provenance,
+act-and-finish, final-only contact/promotion/quiet handling, stale/missing query
+revision rejection, bounded inspections/repair and explicit finish/resign.
+
+Resume at Stack 4 / R4. Prepared worker commits start at `f5e55db`; final
+executable matrix/reporting corrections await integration and the full gate.
+Read `tmp/strategy-exec/STACK4_REVIEW_NOTES.md`. No paid pilot has started.
 The recovery tables below describe the original handoff, not current completion.
 
 ## 0. Verified recovery state — read before assigning work
