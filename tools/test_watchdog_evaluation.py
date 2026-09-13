@@ -206,6 +206,37 @@ class WatchdogEvaluationTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 evaluate([], td, fake=True)
 
+    def test_unjudged_loop_windows_do_not_report_zero_missed_loops(self):
+        healthy = {"case": "healthy", "status": {"stage": "active"},
+                   "metrics": {"expected": "continue", "scored": True,
+                               "false_stop": False, "missed_loop": None,
+                               "observer_calls": 1, "observer_verdicts": 1,
+                               "observer_failures": 0,
+                               "observer_failure_reasons": {}, "evidence_gaps": {},
+                               "coverage_complete": True},
+                   "model_evaluation": {"status": "completed"}}
+        unjudged = {"case": "loop", "status": {"stage": "active"},
+                    "metrics": {"expected": "stop", "scored": False,
+                                "false_stop": None, "missed_loop": None,
+                                "observer_calls": 3, "observer_verdicts": 3,
+                                "observer_failures": 0,
+                                "observer_failure_reasons": {},
+                                "evidence_gaps": {"pending_observation": 1},
+                                "coverage_complete": False},
+                    "model_evaluation": {"status": "partial"}}
+        with tempfile.TemporaryDirectory() as td:
+            backend = FakeObserverBackend([_decision("continue")])
+            with mock.patch("tools.watchdog_evaluation.FireworksObserverBackend",
+                            lambda **_kwargs: backend), \
+                 mock.patch("tools.watchdog_evaluation.replay_case",
+                            side_effect=[healthy, unjudged, unjudged]):
+                result = evaluate([{"case_id": "healthy", "expected": "continue"},
+                                   {"case_id": "loop-a", "expected": "stop"},
+                                   {"case_id": "loop-b", "expected": "stop"}], td)
+        self.assertEqual(result["metrics"]["cases_scored"], 1)
+        self.assertEqual(result["metrics"]["false_stops"], 0)
+        self.assertIsNone(result["metrics"]["missed_loops"])
+
 
 if __name__ == "__main__":
     unittest.main()

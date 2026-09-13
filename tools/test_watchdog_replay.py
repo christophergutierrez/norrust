@@ -219,6 +219,38 @@ class WatchdogReplayTests(unittest.TestCase):
                 aggregate = replay_cases([{"case_id": "one"}], output, fake=False)
             self.assertEqual(aggregate["model_evaluation"]["status"], "partial")
 
+    def test_unjudged_loop_windows_remain_unknown_in_aggregate_rates(self):
+        healthy = {"case": "healthy", "status": {"stage": "active"},
+                   "metrics": {"expected": "continue", "scored": True,
+                               "false_stop": False, "missed_loop": None,
+                   "observer_calls": 1, "observer_verdicts": 1,
+                   "observer_failures": 0,
+                   "observer_failure_reasons": {}, "evidence_gaps": {},
+                               "coverage_complete": True, "usage_coverage": {},
+                               "detection_delay_seconds": None},
+                   "model_evaluation": {"status": "completed"}}
+        unjudged = {"case": "loop", "status": {"stage": "active"},
+                    "metrics": {"expected": "stop", "scored": False,
+                                "false_stop": None, "missed_loop": None,
+                                "observer_calls": 3, "observer_verdicts": 3,
+                                "observer_failures": 0,
+                                "observer_failure_reasons": {},
+                                "evidence_gaps": {"pending_observation": 1},
+                                "coverage_complete": False, "usage_coverage": {},
+                                "detection_delay_seconds": None},
+                    "model_evaluation": {"status": "partial"}}
+        with tempfile.TemporaryDirectory() as output:
+            with mock.patch.object(watchdog_replay, "replay_case",
+                                   side_effect=[healthy, unjudged, unjudged]):
+                aggregate = replay_cases(
+                    [{"case_id": "healthy", "expected": "continue"},
+                     {"case_id": "loop-a", "expected": "stop"},
+                     {"case_id": "loop-b", "expected": "stop"}],
+                    output, fake=False)
+        self.assertEqual(aggregate["metrics"]["cases_scored"], 1)
+        self.assertEqual(aggregate["metrics"]["false_stops"], 0)
+        self.assertIsNone(aggregate["metrics"]["missed_loops"])
+
 
 if __name__ == "__main__":
     unittest.main()

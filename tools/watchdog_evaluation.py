@@ -276,6 +276,12 @@ def evaluate(cases: list[dict[str, Any]], output_dir: str | Path, *, fake: bool 
                           "rate_file": costs.get("rate_file"),
                           "rate_sha256": costs.get("rate_sha256"),
                           "rates_used": costs.get("rates_used", [])})
+    judged_nonstop_false_stops = [item["false_stop"] for item in scored
+                                  if item.get("expected") in {"continue", "inspect"}
+                                  and item.get("false_stop") is not None]
+    judged_loop_misses = [item["missed_loop"] for item in scored
+                          if item.get("expected") == "stop"
+                          and item.get("missed_loop") is not None]
     aggregate = {"schema_version": 1, "mode": "model", "preflight": preflight,
                  "source": _source_identity(model, rates_path, reasoning_effort),
                  "model_evaluation": {"status": status, "network_calls": shared.calls,
@@ -301,11 +307,10 @@ def evaluate(cases: list[dict[str, Any]], output_dir: str | Path, *, fake: bool 
                                 "maximum_calls": MAX_EVALUATION_CALLS},
                  "metrics": {"cases": len(cases), "cases_scored": len(scored),
                              "cases_without_judgment": len(cases) - len(scored),
-                             "false_stops": sum(item["false_stop"] for item in scored) if scored else None,
-                             "missed_loops": (sum(item["missed_loop"] for item in scored
-                                                  if item.get("missed_loop") is not None)
-                                              if any(item.get("missed_loop") is not None for item in scored)
-                                              else None),
+                             "false_stops": (sum(judged_nonstop_false_stops)
+                                              if judged_nonstop_false_stops else None),
+                             "missed_loops": (sum(judged_loop_misses)
+                                              if judged_loop_misses else None),
                              "observer_calls": sum(item.get("observer_calls", 0) for item in metrics),
                              "observer_verdicts": case_verdicts,
                              "observer_failures": sum(int(item.get("observer_failures", 0)) for item in metrics),

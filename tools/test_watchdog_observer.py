@@ -72,6 +72,56 @@ class DecisionValidationTests(unittest.TestCase):
         self.assertFalse(clipped)
         self.assertEqual(coverage, "complete")
 
+    def test_response_schema_is_constrained_by_trusted_phase_and_budget(self):
+        def choices(packet):
+            payload, _clipped, _coverage = build_observer_request(packet)
+            schema = payload["response_format"]["json_schema"]["schema"]
+            return schema["properties"]["decision"]["enum"]
+
+        # Preflight and an unconfirmed initial observation are continue-only.
+        self.assertEqual(choices({"stage": "active"}), ["continue"])
+        self.assertEqual(choices({
+            "stage": "active", "controller_context": {
+                "phase": "initial", "incident_identity": "incident",
+                "distinct_observation_count": 1,
+                "required_distinct_observations": 2,
+                "available_evidence_ids": ["e1"], "remaining_calls": 2,
+            }}), ["continue"])
+        # An initial inspection is available only when a follow-up slot exists.
+        self.assertEqual(choices({
+            "stage": "active", "controller_context": {
+                "phase": "initial", "incident_identity": "incident",
+                "distinct_observation_count": 2,
+                "required_distinct_observations": 2,
+                "available_evidence_ids": ["e1"], "remaining_calls": 1,
+            }}), ["continue", "inspect"])
+        self.assertEqual(choices({
+            "stage": "active", "controller_context": {
+                "phase": "initial", "incident_identity": "incident",
+                "distinct_observation_count": 2,
+                "required_distinct_observations": 2,
+                "available_evidence_ids": ["e1"], "remaining_calls": 0,
+            }}), ["continue"])
+        self.assertEqual(choices({
+            "stage": "active", "controller_context": {
+                "phase": "investigation", "remaining_calls": 0,
+            }}), ["continue", "stop"])
+
+    def test_phase_invalid_provider_choice_is_failed_with_receipt_and_usage(self):
+        packet = {"stage": "active", "observation_sequence": 2,
+                  "controller_context": {"phase": "investigation"}}
+        backend = FireworksObserverBackend(api_key="test", transport=lambda _payload, _timeout: {
+            "id": "phase-invalid", "model": DEFAULT_MODEL,
+            "choices": [{"finish_reason": "stop", "message": {
+                "content": json.dumps(decision("inspect", "recursive", ["e1"]))}}],
+            "usage": {"prompt_tokens": 21, "completion_tokens": 4, "total_tokens": 25}})
+        with self.assertRaises(ObserverResponseError) as caught:
+            backend.observe(packet, call_id="phase-invalid-call", game_id="g")
+        self.assertEqual(caught.exception.call.error_code, "schema_error")
+        self.assertEqual(caught.exception.call.input_tokens, 21)
+        self.assertEqual(caught.exception.call.output_tokens, 4)
+        self.assertEqual(caught.exception.call.provider_response_id, "phase-invalid")
+
     def test_oversized_packet_is_clipped_with_incomplete_coverage(self):
         packet = {"stage": "active", "observation_sequence": 1, "alerts": [],
                   "recent_excerpt": "x" * 100000}
@@ -370,7 +420,6 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.stops, [])
         journal = (Path(self.temp.name) / "watchdog.journal.ndjson").read_text()
         self.assertIn('"failed_prerequisite":"confirmation"', journal)
-        self.assertIn('"failed_prerequisite":"inspection"', journal)
 
     def test_contract_following_observer_stops_in_three_calls_with_stale_progress(self):
         def follow_contract(payload):

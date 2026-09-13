@@ -365,12 +365,16 @@ Unknown usage has no fabricated cost.  The observer receives a bounded
 controller-owned context on every request identifying the initial or
 investigation phase, incident identity, distinct unchanged observations,
 progress identity, available evidence references, and missing prerequisites.
-Repeated polls of one observation sequence do not add confirmation.  A
-semantic stop in enforce mode requires an `inspect` investigation and repeated
-non-progress evidence across two fresh observations with no recovery; the
-investigation may choose only continue or stop, and a stop must use the exact
-`repeated_no_progress` reason.  A long request, poor tactics, or a negative
-material balance alone cannot stop a healthy game.  The observer's `run_id` is
+Repeated polls of one observation sequence do not add confirmation.  The
+controller also constrains the response schema from that trusted context:
+preflight and unconfirmed initial observations allow `continue` only; a
+confirmed initial observation allows `continue` or `inspect` only when a
+follow-up call remains; investigation allows `continue` or `stop` and never
+`inspect`.  Inspection cannot manufacture a fresh observation.  A semantic
+stop in enforce mode requires an `inspect` investigation and repeated
+non-progress evidence across two fresh observations with no recovery; a stop
+must use the exact `repeated_no_progress` reason.  A long request, poor
+tactics, or a negative material balance alone cannot stop a healthy game.  The observer's `run_id` is
 separate from the catalog `game_id`; the supervisor proves the canonical conversation identity before attaching
 the observer, so its sidecar joins the same catalog game on import.
 

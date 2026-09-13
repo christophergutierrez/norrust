@@ -329,15 +329,20 @@ def replay_cases(cases: list[dict[str, Any]], output_dir: str | Path, *, fake: b
                       "evidence_gaps": evidence_gaps,
                       "cases_scored": len(scored),
                       "cases_without_judgment": len(metrics) - len(scored)}
+    judged_nonstop_false_stops = [item["false_stop"] for item in scored
+                                  if item.get("expected") in {"continue", "inspect"}
+                                  and item.get("false_stop") is not None]
     scored_misses = [item["missed_loop"] for item in scored
-                     if item.get("missed_loop") is not None]
+                     if item.get("expected") == "stop"
+                     and item.get("missed_loop") is not None]
     aggregate = {"schema_version": 1, "mode": "fake" if fake else "model",
             "model_evaluation": evaluation,
             # Detection rates are reported over scored cases only; with nothing
             # scored they are unknown rather than a clean zero.
             "metrics": {"cases": len(metrics), "cases_scored": len(scored),
                         "cases_without_judgment": len(metrics) - len(scored),
-                        "false_stops": sum(item["false_stop"] for item in scored) if scored else None,
+                        "false_stops": (sum(judged_nonstop_false_stops)
+                                        if judged_nonstop_false_stops else None),
                         "missed_loops": sum(scored_misses) if scored_misses else None,
                         "detection_delays_seconds": [item["detection_delay_seconds"] for item in metrics if item["detection_delay_seconds"] is not None],
                         "observer_calls": sum(item["observer_calls"] for item in metrics),
