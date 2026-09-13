@@ -1130,7 +1130,7 @@ fn handle_routine_next_query(
     }
     let policy_value = parsed.get("policy").cloned().unwrap_or(Value::Null);
     let progress_value = parsed.get("progress").cloned().unwrap_or(Value::Null);
-    let policy = match routine::parse_stack1_policy(&policy_value) {
+    let policy = match routine::parse_policy(&policy_value) {
         Ok(policy) => policy,
         Err(rejected) => {
             return json!({"type":"status","ok":false,"what":what,"code":"parse","message":rejected.0});
@@ -1148,9 +1148,9 @@ fn handle_routine_next_query(
             json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,
                 "body":{"result":"action","action":action,"progress_update":progress_update,"reason":reason}})
         }
-        routine::RoutineOutcome::Finish { reason } => {
+        routine::RoutineOutcome::Finish { reason, progress_update } => {
             json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,
-                "body":{"result":"finish","reason":reason}})
+                "body":{"result":"finish","reason":reason,"progress_update":progress_update}})
         }
         routine::RoutineOutcome::Exception { reason, evidence } => {
             json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,
@@ -4719,7 +4719,7 @@ mod tests {
     }
 
     #[test]
-    fn routine_next_query_rejects_nonempty_future_policy_fields_as_parse() {
+    fn routine_next_query_accepts_stack2_policy_fields_and_rejects_recruiter_scout() {
         let (state, factions, units) = quiet_stack1_fixture(300);
         let parsed = json!({
             "action":"Query","what":"routine_next",
@@ -4728,8 +4728,9 @@ mod tests {
             "progress": {"recruited":[],"scout_assignments":[],"completed_villages":[],"scout_ids":[],"installation_id":"i1"},
         });
         let response = handle_routine_next_query(&state, 0, &factions, &units, &parsed);
-        assert_eq!(response["ok"], json!(false));
-        assert_eq!(response["code"], json!("parse"));
+        assert_eq!(response["ok"], json!(true));
+        assert_eq!(response["body"]["result"], json!("exception"));
+        assert_eq!(response["body"]["reason"], json!("invalid_assignment"));
     }
 
     #[test]
@@ -4750,7 +4751,7 @@ mod tests {
         assert_eq!(response["body"]["result"], json!("action"));
         assert_eq!(response["body"]["action"]["action"], json!("Recruit"));
         assert_eq!(response["body"]["action"]["def_id"], json!("Skeleton"));
-        assert_eq!(response["body"]["progress_update"], json!({"kind":"recruited","def_id":"Skeleton"}));
+        assert_eq!(response["body"]["progress_update"], json!({"effects":[{"kind":"recruited","queue_index":0}]}));
         assert_eq!(response["body"]["reason"], json!("recruit"));
         // Read-only: the live state used to answer this query is unchanged.
         assert_eq!(state.state_revision, before_revision);
@@ -4766,13 +4767,13 @@ mod tests {
             "state_revision": state.state_revision,
             "policy": {"reserve_gold":0,"recruits":[{"def_id":"Skeleton","count":1,"role":"army"}],
                        "scouts":[],"villages":[],"holds":[],"rally":null},
-            "progress": {"recruited":[{"def_id":"Skeleton","done":1}],"scout_assignments":[],
+            "progress": {"recruited":[{"queue_index":0,"done":1}],"scout_assignments":[],
                          "completed_villages":[],"scout_ids":[],"installation_id":"i1"},
         });
         let response = handle_routine_next_query(&state, 0, &factions, &units, &parsed);
         assert_eq!(response["ok"], json!(true));
         assert_eq!(response["body"]["result"], json!("finish"));
-        assert_eq!(response["body"]["reason"], json!("no_remaining_routine_steps"));
+        assert_eq!(response["body"]["reason"], json!("objectives_complete"));
     }
 
     #[test]
