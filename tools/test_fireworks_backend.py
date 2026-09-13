@@ -10,11 +10,13 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 from pathlib import Path
 
 from . import fireworks_backend as fb
+from .game_history import import_game, open_history, query_usage
 
 
 def _fake_opener(status_body: dict, headers: dict | None = None):
@@ -726,6 +728,95 @@ class FireworksStreamDriverIntegrationTests(unittest.TestCase):
                 finally:
                     server.shutdown()
                     server.server_close()
+
+    def test_real_client_timeout_closes_stream_call_and_imports_unknown_usage_once(self):
+        """A killed streaming adapter leaves flushed evidence and one
+        dispatch/final lifecycle, which SQLite can import repeatedly."""
+        received: list[dict] = []
+        partial = _sse(json.dumps({
+            "id": "local-timeout", "model": "runtime-timeout",
+            "choices": [{"delta": {"reasoning_content": "partial reasoning",
+                                      "content": '[{"action":"'},
+                         "finish_reason": None}],
+        }))
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                size = int(self.headers["Content-Length"])
+                received.append(json.loads(self.rfile.read(size)))
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                self.wfile.write(partial)
+                self.wfile.flush()
+                # The client timeout kills the adapter while this response is
+                # still open. Keep the handler alive long enough to exercise
+                # the real process-group cleanup path.
+                time.sleep(2)
+
+            def log_message(self, *args):
+                pass
+
+        server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Handler)
+        server.daemon_threads = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            root = Path(__file__).resolve().parents[1]
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory)
+                log = path / "match.ndjson"
+                evidence = path / "evidence"
+                command = [sys.executable, "-m", "tools.llm_client",
+                           "--driver", str(root / "norrust_core/target/debug/greedy_driver"),
+                           "--model-command", shlex.join([sys.executable, "-m",
+                                                           "tools.fireworks_backend", "--stream"]),
+                           "--player-model", "accounts/fireworks/models/local-timeout",
+                           "--scenario", "big_battle_6", "--faction0", "undead",
+                           "--faction1", "undead", "--llm-side", "0", "--max-turns", "1",
+                           "--incremental-turns", "--disable-agenda-sweep", "--model-timeout", "0.4",
+                           "--turn-timeout", "10", "--query-budget-seconds", "5", "--log", str(log)]
+                env = dict(os.environ, PYTHONPATH=str(root), FIREWORKS_API_KEY="local-key",
+                           NORRUST_FIREWORKS_URL=f"http://127.0.0.1:{server.server_address[1]}/v1/chat/completions",
+                           NORRUST_EVIDENCE_DIR=str(evidence))
+                result = subprocess.run(command, cwd=root, env=env, text=True,
+                                        capture_output=True, timeout=15)
+                self.assertNotEqual(result.returncode, 0,
+                                    f"timeout run unexpectedly completed: {result.stderr!r}")
+                self.assertEqual(len(received), 1)
+                rows = [json.loads(line) for line in log.read_text().splitlines()]
+                metadata = next(row for row in rows if row.get("type") == "metadata")
+                failed_request = next(row for row in rows
+                                      if row.get("type") == "model_request"
+                                      and row.get("status") == "failed")
+                self.assertEqual(failed_request["error_code"], "model_timeout")
+                self.assertEqual(failed_request["physical_call_terminal"], 1)
+                records = [json.loads(line) for line in (path / "usage.ndjson").read_text().splitlines()]
+                self.assertEqual([record["record_kind"] for record in records], ["dispatch", "final"])
+                final = records[-1]
+                self.assertEqual(final["game_id"], metadata["conversation_id"])
+                self.assertEqual(final["request_id"], failed_request["request_id"])
+                self.assertEqual(final["call_role"], "player")
+                self.assertEqual(final["status"], "failed")
+                self.assertEqual(final["error_code"], "model_timeout")
+                self.assertIsNone(final["input_tokens"])
+                self.assertIsNone(final["total_tokens"])
+                chunk_files = list(evidence.glob("*/chunks.ndjson"))
+                self.assertEqual(len(chunk_files), 1)
+                self.assertTrue(chunk_files[0].read_text().strip())
+
+                conn = open_history(path / "history.sqlite")
+                game_id = import_game(conn, log)
+                usage = query_usage(conn, game_id, "game", "player")
+                self.assertEqual(usage["call_count"], 1)
+                self.assertFalse(usage["role_usage"]["player"]["input_tokens"]["fully_measured"])
+                import_game(conn, log)
+                self.assertEqual(conn.execute(
+                    "SELECT COUNT(*) FROM model_calls WHERE game_id=?", (game_id,)).fetchone()[0], 1)
+                conn.close()
+        finally:
+            server.shutdown()
+            server.server_close()
 
 
 class ModelIdentityTests(unittest.TestCase):

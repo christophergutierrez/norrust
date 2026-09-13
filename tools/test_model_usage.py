@@ -184,6 +184,26 @@ class MergeLifecycleTests(unittest.TestCase):
         _, conflicts = merge_lifecycle(first, second)
         self.assertEqual(conflicts, [])
 
+    def test_local_timeout_cannot_overwrite_provider_terminal_on_race(self):
+        provider = ModelCall(game_id="g1", call_id="c1", status="completed",
+                             provider_response_id="resp", input_tokens=10,
+                             raw_usage_json={"prompt_tokens": 10})
+        local_timeout = ModelCall(game_id="g1", call_id="c1", status="failed",
+                                  error_code="model_timeout",
+                                  raw_usage_json={"local_terminal": "model_timeout",
+                                                  "remote_cancellation": "unknown"})
+        merged, conflicts = merge_lifecycle(provider, local_timeout)
+        self.assertEqual(conflicts, [])
+        self.assertEqual(merged.status, "completed")
+        self.assertEqual(merged.provider_response_id, "resp")
+        self.assertEqual(merged.error_code, None)
+        self.assertEqual(merged.raw_usage_json, {"prompt_tokens": 10})
+        reverse, _ = merge_lifecycle(local_timeout, provider)
+        self.assertEqual(reverse.status, "completed")
+        self.assertEqual(reverse.input_tokens, 10)
+        self.assertIsNone(reverse.error_code)
+        self.assertEqual(reverse.raw_usage_json, {"prompt_tokens": 10})
+
     def test_mismatched_identity_raises(self):
         a = ModelCall(game_id="g1", call_id="c1")
         b = ModelCall(game_id="g1", call_id="c2")

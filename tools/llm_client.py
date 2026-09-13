@@ -31,6 +31,7 @@ try:
                                     recover_bare_tool_prefix, RECOGNIZED_BARE_TOOLS)
     from .model_identity import classify_model_identity
     from .game_token_budget import measured_game_budget
+    from .model_usage import TOKEN_FIELDS
     from .action_choices import (ChoiceRegistry, extract_available_choices,
                                  validate_inspect_units_request, validate_friendly_inspect_units,
                                  query_inspect_units, validate_purpose, PURPOSE_MAX_CHARS,
@@ -54,6 +55,7 @@ except ImportError:  # pragma: no cover - direct script compatibility
                                         recover_bare_tool_prefix, RECOGNIZED_BARE_TOOLS)
     from tools.model_identity import classify_model_identity
     from tools.game_token_budget import measured_game_budget
+    from tools.model_usage import TOKEN_FIELDS
     from tools.action_choices import (ChoiceRegistry, extract_available_choices,
                                       validate_inspect_units_request, validate_friendly_inspect_units,
                                       query_inspect_units, validate_purpose, PURPOSE_MAX_CHARS,
@@ -381,35 +383,68 @@ class CommandBackend(ModelBackend):
         signal first, and is force-cleaned only when that does not work.
         """
         details: dict[str, Any] = {"cleanup": "sigint"}
+
+        def bounded_reap(timeout: float) -> bool:
+            """Drain and wait for at most ``timeout`` seconds.
+
+            A descendant can inherit stdout/stderr after the wrapper exits,
+            so an unbounded ``communicate()`` here could keep the client stuck
+            forever even after the whole process group was killed.
+            """
+            try:
+                process.communicate(timeout=timeout)
+                return True
+            except subprocess.TimeoutExpired:
+                for stream_name in ("stdin", "stdout", "stderr"):
+                    stream = getattr(process, stream_name, None)
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except (OSError, ValueError):
+                            pass
+                try:
+                    process.wait(timeout=min(0.2, max(0.05, timeout)))
+                except (subprocess.TimeoutExpired, OSError, ValueError,
+                        AttributeError):
+                    pass
+                return False
+            except (OSError, ValueError):
+                return False
+
         try:
             # Do not use poll() as an early exit: the shell wrapper may have
             # exited while its adapter descendant still owns the provider
             # pipe.  The process group is the ownership boundary.
             os.killpg(process.pid, signal.SIGINT)
             try:
-                process.communicate(timeout=min(5.0, max(0.5, self.timeout * 0.1)))
-                details["cleanup"] = "sigint_reaped"
-                return details
-            except subprocess.TimeoutExpired:
+                bounded_reap(min(5.0, max(0.5, self.timeout * 0.1)))
                 details["cleanup"] = "sigterm"
-            os.killpg(process.pid, signal.SIGTERM)
+            except subprocess.TimeoutExpired:  # pragma: no cover - bounded_reap catches
+                details["cleanup"] = "sigterm"
             try:
-                process.communicate(timeout=1.0)
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
                 details["cleanup"] = "sigterm_reaped"
+                bounded_reap(0.2)
                 return details
-            except subprocess.TimeoutExpired:
-                details["cleanup"] = "sigkill"
-            os.killpg(process.pid, signal.SIGKILL)
-            process.communicate()
-            details["cleanup"] = "sigkill_reaped"
-        except ProcessLookupError:
-            # The process can disappear between poll/kill; communicate still
-            # performs the final pipe drain and wait below.
-            details["cleanup"] = "process_exited"
+            term_reaped = bounded_reap(1.0)
+            # The wrapper may have exited while an inherited pipe or a
+            # descendant remains. A final group kill is cheap and keeps the
+            # ownership boundary explicit; a missing group means the graceful
+            # signal already cleaned it up.
             try:
-                process.communicate()
-            except (OSError, ValueError):
-                pass
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                details["cleanup"] = "sigterm_reaped" if term_reaped else "sigkill_reaped"
+                return details
+            details["cleanup"] = "sigkill"
+            details["cleanup"] = ("sigkill_reaped" if bounded_reap(0.5)
+                                   else "sigkill_bounded")
+        except ProcessLookupError:
+            # The process can disappear between poll/kill. Any remaining pipe
+            # drain is bounded for the same inherited-descriptor reason.
+            details["cleanup"] = "process_exited"
+            bounded_reap(0.2)
         return details
 
     def complete(self, prompt: str) -> ModelReply:
@@ -4675,6 +4710,62 @@ def write_request_context(path: str | os.PathLike[str], context: dict[str, Any])
     os.replace(pending, destination)
 
 
+def finalize_unknown_usage_attempt(sidecar: str | os.PathLike[str], game_id: str,
+                                  request_id: str, error_code: str) -> int:
+    """Close dispatch-only adapter calls after local command cancellation.
+
+    The adapter allocates and durably writes a physical call before contacting
+    Fireworks. If the client timeout kills that adapter, it cannot append its
+    normal final line. The request identity and role are already present in the
+    dispatch row, so append one local terminal update with unknown provider
+    usage. A provider final that won a race remains authoritative because this
+    function skips calls that already have a final row and the importer merges
+    repeated lifecycle rows by call identity.
+    """
+    path = Path(sidecar)
+    try:
+        raw_lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return 0
+    dispatches: dict[str, dict[str, Any]] = {}
+    finals: set[str] = set()
+    for raw in raw_lines:
+        try:
+            row = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(row, dict) or row.get("game_id") != game_id \
+                or row.get("request_id") != request_id:
+            continue
+        call_id = row.get("call_id")
+        if not isinstance(call_id, str):
+            continue
+        if row.get("record_kind") == "final":
+            finals.add(call_id)
+        elif row.get("record_kind") == "dispatch":
+            dispatches[call_id] = row
+    pending = [row for call_id, row in dispatches.items() if call_id not in finals]
+    if not pending:
+        return 0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ended_at = datetime.now(timezone.utc).isoformat()
+    with path.open("a", encoding="utf-8") as handle:
+        for dispatch in pending:
+            terminal = dict(dispatch)
+            terminal.update({
+                "record_kind": "final", "status": "failed", "error_code": error_code,
+                "ended_at": ended_at,
+                "raw_usage_json": {"local_terminal": error_code,
+                                    "remote_cancellation": "unknown"},
+            })
+            for field in TOKEN_FIELDS:
+                terminal[field] = None
+            handle.write(json.dumps(terminal, sort_keys=True, default=str) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    return len(pending)
+
+
 def set_terminal(metadata: dict[str, Any], terminal_class: str,
                  **fields: Any) -> str:
     """Stamp the three-way terminal classification onto metadata.
@@ -5475,6 +5566,13 @@ def run(args: argparse.Namespace) -> int:
             else:
                 failed_usage = None
             cleanup = getattr(backend, "last_cleanup", None)
+            finalized_unknown_calls = 0
+            if (error_code == "model_timeout" and attempt_dispatched
+                    and log_path and request_id):
+                finalized_unknown_calls = finalize_unknown_usage_attempt(
+                    Path(log_path).resolve().with_name("usage.ndjson"),
+                    metadata.get("conversation_id", "match"), request_id,
+                    error_code)
             durable({"type": "model_request",
                     "request_id": request_id,
                     "purpose": purpose,
@@ -5494,6 +5592,7 @@ def run(args: argparse.Namespace) -> int:
                     "error": message,
                     "error_code": error_code,
                     "backend_cleanup": cleanup,
+                    "physical_call_terminal": finalized_unknown_calls,
                     # Include an unknown final attempt when one was actually
                     # dispatched; do not present earlier measured attempts as
                     # a complete logical-request total in that case.

@@ -271,16 +271,39 @@ def merge_lifecycle(existing: ModelCall, update: ModelCall) -> tuple[ModelCall, 
             setattr(merged, field, new)
         elif old != new:
             conflicts.append(f"{field}:{old}!={new}")
-    for field in ("status", "finish_reason", "error_code", "ended_at", "elapsed_ms",
-                  "reported_model", "reported_reasoning_effort", "provider_response_id",
-                  "native_thread_id", "usage_source", "raw_usage_json", "source_ref",
-                  "source_hash", "request_id", "retry_of_call_id", "linkage_evidence",
-                  "started_at", "requested_model", "requested_reasoning_effort", "output_limit",
-                  "provider", "transport", "call_role", "requested_affinity", "prompt_layout_version",
-                  "prompt_layout_source"):
-        new = getattr(update, field)
-        if new is not None:
-            setattr(merged, field, new)
+    # A client-side timeout can append its local unknown terminal after an
+    # adapter final that won a race with process cleanup. Preserve that real
+    # provider terminal even when the sidecar line order is local-terminal
+    # last; the reverse order still lets the provider final fill unknown usage.
+    local_terminal = (isinstance(update.raw_usage_json, dict)
+                      and update.raw_usage_json.get("local_terminal") is not None)
+    provider_replaces_local = (
+        isinstance(existing.raw_usage_json, dict)
+        and existing.raw_usage_json.get("local_terminal") is not None
+        and update.status in ("completed", "failed")
+        and not local_terminal)
+    if provider_replaces_local:
+        # A provider terminal with no error code must clear the local timeout
+        # marker; otherwise reverse-order races retain stale model_timeout
+        # metadata even though the call completed remotely.
+        merged.error_code = None
+        merged.finish_reason = None
+        merged.raw_usage_json = None
+        merged.usage_source = None
+    provider_terminal = existing.status in ("completed", "failed") and not (
+        isinstance(existing.raw_usage_json, dict)
+        and existing.raw_usage_json.get("local_terminal") is not None)
+    if not (local_terminal and provider_terminal):
+        for field in ("status", "finish_reason", "error_code", "ended_at", "elapsed_ms",
+                      "reported_model", "reported_reasoning_effort", "provider_response_id",
+                      "native_thread_id", "usage_source", "raw_usage_json", "source_ref",
+                      "source_hash", "request_id", "retry_of_call_id", "linkage_evidence",
+                      "started_at", "requested_model", "requested_reasoning_effort", "output_limit",
+                      "provider", "transport", "call_role", "requested_affinity", "prompt_layout_version",
+                      "prompt_layout_source"):
+            new = getattr(update, field)
+            if new is not None:
+                setattr(merged, field, new)
     gap_conflicts = [f"conflict:{c}" for c in conflicts]
     merged.normalization_gaps = sorted(set(existing.normalization_gaps) | set(update.normalization_gaps)
                                         | set(gap_conflicts))

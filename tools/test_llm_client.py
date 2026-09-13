@@ -7,6 +7,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -3471,8 +3472,45 @@ class ClientValidationTests(unittest.TestCase):
             self.assertIn(backend.last_cleanup["cleanup"],
                           {"sigterm_reaped", "sigkill_reaped"})
             child = int(child_pid.read_text())
-            with self.assertRaises(ProcessLookupError):
-                os.kill(child, 0)
+            for _ in range(20):
+                try:
+                    os.kill(child, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail(f"timed-out process-group child remains alive: {child}")
+
+    def test_timeout_terminalizes_dispatch_only_usage_idempotently(self):
+        sidecar = Path(tempfile.mkdtemp()) / "usage.ndjson"
+        dispatch = {
+            "record_kind": "dispatch", "game_id": "game-a", "call_id": "call-a",
+            "call_role": "player", "request_id": "request-a", "status": "dispatched",
+            "provider": "fireworks", "input_tokens": None, "output_tokens": None,
+            "total_tokens": None,
+        }
+        sidecar.write_text(json.dumps(dispatch) + "\n", encoding="utf-8")
+        self.assertEqual(llm_client.finalize_unknown_usage_attempt(
+            sidecar, "game-a", "request-a", "model_timeout"), 1)
+        rows = [json.loads(line) for line in sidecar.read_text().splitlines()]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[1]["call_id"], "call-a")
+        self.assertEqual(rows[1]["call_role"], "player")
+        self.assertEqual(rows[1]["request_id"], "request-a")
+        self.assertEqual(rows[1]["status"], "failed")
+        self.assertEqual(rows[1]["error_code"], "model_timeout")
+        self.assertIsNone(rows[1]["input_tokens"])
+        self.assertEqual(llm_client.finalize_unknown_usage_attempt(
+            sidecar, "game-a", "request-a", "model_timeout"), 0)
+
+        provider_final = dict(dispatch)
+        provider_final.update({"record_kind": "final", "status": "completed",
+                               "provider_response_id": "resp-a", "input_tokens": 3,
+                               "output_tokens": 2, "total_tokens": 5})
+        sidecar.write_text("\n".join(json.dumps(row) for row in (dispatch, provider_final)) + "\n",
+                           encoding="utf-8")
+        self.assertEqual(llm_client.finalize_unknown_usage_attempt(
+            sidecar, "game-a", "request-a", "model_timeout"), 0)
 
     def test_command_backend_does_not_retry_native_launch_failure(self):
         class Process:
