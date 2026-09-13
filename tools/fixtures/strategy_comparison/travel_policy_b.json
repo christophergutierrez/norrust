@@ -1,17 +1,13 @@
 {
   "reserve_gold": 0,
-  "recruits": [
-    {
-      "def_id": "Skeleton",
-      "count": 1,
-      "role": "scout"
-    }
+  "recruits": [],
+  "scouts": [
+    3
   ],
-  "scouts": [],
   "villages": [
     {
-      "col": 6,
-      "row": 11
+      "col": 18,
+      "row": 10
     }
   ],
   "rally": null,

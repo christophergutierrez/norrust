@@ -176,6 +176,17 @@ class OfflineMatrixTests(unittest.TestCase):
         self.assertEqual(attribution["boundary_coverage"], "known")
         self.assertEqual(attribution["evidence_status"], "unknown_coverage")
 
+    def test_archive_empty_or_unidentified_usage_is_unknown(self):
+        empty = strategy.archive_attribution([
+            {"type": "terminal", "reason": "max_turns"},
+        ])
+        self.assertEqual(empty["usage_coverage"], "unknown")
+        fixed = strategy.archive_attribution([
+            {"type": "metadata", "model_backend": "fixed_policy_code"},
+            {"type": "terminal", "reason": "max_turns"},
+        ])
+        self.assertEqual(fixed["usage_coverage"], "not_applicable")
+
     def test_single_boundary_record_does_not_prove_complete_coverage(self):
         attribution = strategy.archive_attribution([
             {"type": "metadata", "usage_measured": True},
@@ -184,6 +195,26 @@ class OfflineMatrixTests(unittest.TestCase):
             {"type": "terminal", "reason": "max_turns"},
         ])
         self.assertEqual(attribution["boundary_coverage"], "unknown")
+
+    def test_pilot_report_reads_recorded_run_dir_and_retains_unrun_cells(self):
+        manifest = model_bakeoff.resolve_manifest(strategy.load_prepared_pilot())
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory)
+            (run_dir / "manifest.json").write_text(json.dumps(manifest))
+            cell = manifest["cells"][0]
+            cell_dir = model_bakeoff.cell_dir_for(run_dir, cell["id"])
+            cell_dir.mkdir(parents=True)
+            (cell_dir / "match.ndjson").write_text(json.dumps(
+                {"type": "terminal", "reason": "max_turns"}) + "\n")
+            (cell_dir / "run_status.json").write_text(json.dumps({
+                "cell_id": cell["id"], "status": "ok", "exit_code": 0,
+                "started_at": "start", "ended_at": "end", "error": None}))
+            output = run_dir / "pilot-report.json"
+            self.assertEqual(strategy.main([
+                "pilot-report", "--run-dir", str(run_dir), "--out", str(output)]), 0)
+            report = json.loads(output.read_text())
+            self.assertEqual(report["cells"][0]["evidence_status"], "recorded_archive")
+            self.assertEqual(report["cells"][1]["evidence_status"], "unknown_unrun")
 
     @unittest.skipUnless(Path(os.environ.get(
         "NORRUST_TEST_DRIVER", "norrust_core/target/debug/greedy_driver")).is_file(),
@@ -197,8 +228,14 @@ class OfflineMatrixTests(unittest.TestCase):
         self.assertEqual(report["denominator"]["unknown_unrun"], 0)
         quiet = next(row for row in report["cases"] if row["case_id"] == "quiet-opening")
         self.assertTrue(quiet["policy_difference"]["satisfied"])
+        self.assertTrue(all(run["predicate_verdicts"]["village_objective"]
+                            and run["predicate_verdicts"]["completed_turns"]
+                            for run in quiet["runs"]))
         travel = next(row for row in report["cases"] if row["case_id"] == "multiturn-travel")
         self.assertTrue(travel["deterministic_replay"]["same_event_digest"])
+        self.assertTrue(all(run["predicate_verdicts"]["completed_turns"]
+                            and run["predicate_verdicts"]["routine_moves"]
+                            for run in travel["runs"]))
         self.assertTrue(all(run["import_idempotent"] for row in report["cases"] for run in row["runs"]))
         self.assertEqual(next(row for row in report["cases"] if row["case_id"] == "blocked-objective")
                          ["runs"][0]["exception"], "recruitment_blocked")

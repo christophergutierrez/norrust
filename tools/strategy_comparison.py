@@ -259,17 +259,14 @@ def archive_attribution(records: list[dict[str, Any]], *, synthetic: bool = Fals
             if not (isinstance(item.get("request_id"), str) and item.get("request_id")))
     metadata_rows = [item for item in records if item.get("type") == "metadata"]
     metadata = metadata_rows[-1] if metadata_rows else {}
-    usage_flags = [item.get("usage_measured") for item in metadata_rows]
-    usage_rows = request_rows or response_rows
     # The initial metadata row is written before dispatch and commonly says
     # true. Only final metadata plus every logical request's measured usage
     # can establish known accounting coverage.
-    usage_coverage = "not_applicable" if model_requests == 0 else (
-        "known" if metadata.get("usage_measured") is True
-        and not any(flag is False for flag in usage_flags)
-        and len(usage_rows) >= model_requests
-        and all(item.get("usage") is not None for item in usage_rows)
-        else "unknown")
+    fixed_without_calls = (model_requests == 0
+                           and metadata.get("model_backend") == "fixed_policy_code")
+    # Raw archives do not contain the authoritative physical-call/catalog
+    # coverage. Even a non-null aggregate (including {}) is insufficient.
+    usage_coverage = "not_applicable" if fixed_without_calls else "unknown"
     side_turn_started = sum(item.get("type") == "side_turn_started" for item in records)
     turn_boundaries = sum(item.get("type") == "turn_boundary" for item in records)
     checkpoint_refs = sum(item.get("type") == "checkpoint_ref" for item in records)
@@ -351,6 +348,17 @@ def _matrix_run_predicates(case: dict[str, Any], records: list[dict[str, Any]],
         predicates["completed_turns"] = (
             None if not isinstance(completed, int)
             else completed >= expected["completed_side_turns_at_least"])
+    if "routine_move_events_at_least" in expected:
+        moves = sum(
+            1 for record in records
+            if record.get("type") == "driver"
+            and isinstance(record.get("line"), dict)
+            and record["line"].get("type") == "events"
+            for event in record["line"].get("events", [])
+            if isinstance(event, dict)
+            and event.get("kind") == "move"
+            and event.get("source") == "routine")
+        predicates["routine_moves"] = moves >= expected["routine_move_events_at_least"]
     if "objectives_complete" in expected:
         complete = any(
             isinstance(record, dict)
@@ -360,6 +368,9 @@ def _matrix_run_predicates(case: dict[str, Any], records: list[dict[str, Any]],
                                    if isinstance(record.get("progress_update"), dict) else []))
             for record in records)
         predicates["objectives"] = complete == expected["objectives_complete"]
+    if "owned_villages" in expected:
+        predicates["village_objective"] = model_bakeoff.evaluate_objective(
+            records, {"owned_villages": expected["owned_villages"]}, 0)
     if "contact" in expected:
         terminal_present = attribution.get("terminal_present") is True
         predicates["contact"] = _verdict(
@@ -373,6 +384,11 @@ def _matrix_run_predicates(case: dict[str, Any], records: list[dict[str, Any]],
         predicates["fallback"] = (
             None if not isinstance(model_events, int) else
             (model_events > 0) == expected["model_tactical_fallback"])
+    if "fallback_to_greedy" in expected:
+        delegated = attribution.get("delegated_event_count")
+        predicates["fallback"] = (
+            None if not isinstance(delegated, int) else
+            (delegated > 0) == expected["fallback_to_greedy"])
     if expected.get("boundary_coverage_required"):
         predicates["boundary_coverage"] = _verdict(attribution.get("boundary_coverage"), "known")
     else:
@@ -711,14 +727,30 @@ def build_strategy_report(manifest: dict[str, Any] | None = None,
     return report
 
 
+def _pilot_results_from_run_dir(run_dir: Path,
+                                resolved_manifest: dict[str, Any]) -> list[model_bakeoff.CellRunResult]:
+    """Load every scheduled pilot cell, preserving cells that never ran."""
+    results: list[model_bakeoff.CellRunResult] = []
+    for cell in resolved_manifest.get("cells", []):
+        cell_id = cell["id"]
+        cell_dir = model_bakeoff.cell_dir_for(run_dir, cell_id)
+        result = model_bakeoff._load_run_status(cell_dir, cell_id)
+        if result is None:
+            result = model_bakeoff.CellRunResult(
+                cell_id, cell_dir, cell_dir / "match.ndjson", None, "", None, "not_run")
+        results.append(result)
+    return results
+
+
 def main(argv: list[str] | None = None) -> int:
     """Prepare manifests, print reports, or run the provider-free matrix."""
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     pilot = sub.add_parser("pilot-manifest", help="write the prepared pilot manifest")
     pilot.add_argument("--out", required=True)
-    report = sub.add_parser("pilot-report", help="write an unrun/unknown pilot report")
+    report = sub.add_parser("pilot-report", help="write a pilot report from a prepared or recorded run")
     report.add_argument("--manifest", default=str(PILOT_MANIFEST_PATH))
+    report.add_argument("--run-dir", help="re-aggregate recorded cells from this run directory")
     report.add_argument("--out", required=True)
     matrix = sub.add_parser("offline-report", help="write the provider-free matrix report")
     matrix.add_argument("--matrix", default=str(OFFLINE_MATRIX_PATH))
@@ -733,7 +765,22 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "pilot-manifest":
         payload = load_prepared_pilot() if Path(args.out).resolve() == PILOT_MANIFEST_PATH.resolve() else build_pilot_manifest()
     elif args.command == "pilot-report":
-        payload = build_strategy_report(json.loads(Path(args.manifest).read_text()))
+        if args.run_dir:
+            run_dir = Path(args.run_dir)
+            saved_manifest = run_dir / "manifest.json"
+            if not saved_manifest.is_file():
+                raise StrategyComparisonError(f"no resolved manifest at {saved_manifest}")
+            resolved = json.loads(saved_manifest.read_text())
+            cohort_path = run_dir / "cohort.json"
+            cohort_id = (json.loads(cohort_path.read_text()).get("cohort_id")
+                         if cohort_path.is_file() else run_dir.name)
+            catalog = run_dir / "catalog.sqlite"
+            payload = build_strategy_report(
+                resolved, _pilot_results_from_run_dir(run_dir, resolved),
+                catalog_path=catalog if catalog.is_file() else None,
+                cohort_id=cohort_id)
+        else:
+            payload = build_strategy_report(json.loads(Path(args.manifest).read_text()))
     elif args.command == "offline-report":
         payload = build_offline_matrix_report(json.loads(Path(args.matrix).read_text()))
     else:

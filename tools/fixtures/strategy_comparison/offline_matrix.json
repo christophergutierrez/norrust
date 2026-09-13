@@ -6,31 +6,65 @@
     {
       "id": "quiet-opening",
       "description": "Recruit and reach the first selected village without contact.",
-      "policy_variants": ["quiet_policy_a", "quiet_policy_b"],
+      "policy_variants": [
+        "quiet_policy_a",
+        "quiet_policy_b"
+      ],
       "checkpoint_fixture": "quiet_checkpoint.json",
-      "expected": {"model_calls": 0, "contact": false, "deployment_diff_required": true}
+      "expected": {
+        "model_calls": 0,
+        "contact": false,
+        "deployment_diff_required": true,
+        "completed_side_turns_at_least": 1,
+        "owned_villages": [
+          {
+            "col": 6,
+            "row": 11,
+            "owner": 0
+          }
+        ]
+      }
     },
     {
       "id": "multiturn-travel",
       "description": "Continue a legal route over multiple side turns.",
-      "policy_variants": ["travel_policy_a", "travel_policy_b"],
+      "policy_variants": [
+        "travel_policy_a",
+        "travel_policy_b"
+      ],
       "checkpoint_fixture": "quiet_checkpoint.json",
       "identical_policy_seed_replays": true,
-      "expected": {"identical_policy_seed_replays": true, "actual_events_required": true}
+      "expected": {
+        "identical_policy_seed_replays": true,
+        "actual_events_required": true,
+        "completed_side_turns_at_least": 4,
+        "routine_move_events_at_least": 2
+      },
+      "max_turns": 6
     },
     {
       "id": "blocked-objective",
       "description": "Expose a blocked objective as a typed exception.",
-      "policy_variants": ["blocked_policy"],
+      "policy_variants": [
+        "blocked_policy"
+      ],
       "checkpoint_fixture": "blocked_checkpoint.json",
-      "expected": {"exception": "recruitment_blocked", "fallback_to_greedy": false}
+      "expected": {
+        "exception": "recruitment_blocked",
+        "fallback_to_greedy": false
+      }
     },
     {
       "id": "contact",
       "description": "Stop at enemy contact and preserve the contact source evidence.",
-      "policy_variants": ["contact_policy"],
+      "policy_variants": [
+        "contact_policy"
+      ],
       "checkpoint_fixture": "contact_checkpoint.json",
-      "expected": {"exception": "contact", "model_tactical_fallback": false}
+      "expected": {
+        "exception": "contact",
+        "model_tactical_fallback": false
+      }
     }
   ]
 }
