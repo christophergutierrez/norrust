@@ -46,6 +46,7 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
     termination_reason: str | None = None
     dispatched_ids: set[str] = set()
     terminal_ids: set[str] = set()
+    investigation_dispatch_ids: set[str] = set()
     journal_available = True
     last_outcome: str | None = None
     try:
@@ -82,6 +83,8 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
             physical_dispatches += 1
             if isinstance(event.get("call_id"), str):
                 dispatched_ids.add(event["call_id"])
+                if event.get("phase") == "investigation":
+                    investigation_dispatch_ids.add(event["call_id"])
             last_outcome = "pending"
             continue
         if kind == "preparation":
@@ -146,8 +149,12 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
             if decision == "inspect":
                 last_outcome = "pending"
             elif decision in {"continue", "stop"}:
-                judgments += 1
-                last_outcome = "judgment"
+                if event.get("coverage") == "incomplete":
+                    evidence_gaps["incomplete_verdict_coverage"] = evidence_gaps.get("incomplete_verdict_coverage", 0) + 1
+                    last_outcome = "failure"
+                else:
+                    judgments += 1
+                    last_outcome = "judgment"
             else:
                 evidence_gaps["invalid_verdict_decision"] = evidence_gaps.get("invalid_verdict_decision", 0) + 1
                 last_outcome = "failure"
@@ -169,8 +176,10 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
         evidence_gaps["pending_observation"] = evidence_gaps.get("pending_observation", 0) + 1
     unresolved_receipts = len(dispatched_ids - terminal_ids)
     if unresolved_receipts:
-        pending_investigations += unresolved_receipts
         evidence_gaps["unresolved_receipt"] = unresolved_receipts
+    pending_investigations = len(investigation_dispatch_ids - terminal_ids)
+    if pending_investigations:
+        evidence_gaps["pending_investigation"] = pending_investigations
     if pending_inspections:
         evidence_gaps["pending_inspection"] = pending_inspections
     return {
@@ -194,19 +203,19 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
         # Lifecycle and coverage are deliberately separate dimensions. A
         # dispatch proves a physical provider call; a verdict proves a
         # receipt; evidence reads prove usable investigation material.
-        "physical_dispatches": physical_dispatches,
-        "receipt_completions": receipt_completions,
-        "receipt_failures": receipt_failures,
-        "unresolved_receipts": unresolved_receipts,
-        "preflight_failures": preflight_failures,
-        "deterministic_skips": deterministic_skips,
-        "inspection_attempts": inspection_attempts,
-        "evidence_reads": evidence_reads,
-        "usable_evidence_reads": usable_evidence_reads,
-        "failed_evidence_reads": failed_evidence_reads,
-        "pending_inspections": pending_inspections,
-        "pending_investigations": pending_investigations,
-        "call_cap_exhausted": cap_exhausted > 0,
-        "disabled_reason": disabled_reason,
-        "termination_reason": termination_reason,
+        "physical_dispatches": physical_dispatches if journal_available else None,
+        "receipt_completions": receipt_completions if journal_available else None,
+        "receipt_failures": receipt_failures if journal_available else None,
+        "unresolved_receipts": unresolved_receipts if journal_available else None,
+        "preflight_failures": preflight_failures if journal_available else None,
+        "deterministic_skips": deterministic_skips if journal_available else None,
+        "inspection_attempts": inspection_attempts if journal_available else None,
+        "evidence_reads": evidence_reads if journal_available else None,
+        "usable_evidence_reads": usable_evidence_reads if journal_available else None,
+        "failed_evidence_reads": failed_evidence_reads if journal_available else None,
+        "pending_inspections": pending_inspections if journal_available else None,
+        "pending_investigations": pending_investigations if journal_available else None,
+        "call_cap_exhausted": (cap_exhausted > 0) if journal_available else None,
+        "disabled_reason": disabled_reason if journal_available else None,
+        "termination_reason": termination_reason if journal_available else None,
     }

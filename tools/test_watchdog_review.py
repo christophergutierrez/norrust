@@ -12,6 +12,38 @@ HAS_ROLES = "call_role" in ModelCall.__dataclass_fields__
 
 
 class WatchdogReviewTests(unittest.TestCase):
+    def test_pending_investigation_then_success_is_resolved_and_receipt_separate(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "observer.journal.ndjson"
+            path.write_text("\n".join([
+                json.dumps({"type": "preparation", "phase": "investigation", "status": "pending"}),
+                json.dumps({"type": "dispatch", "phase": "investigation", "call_id": "c1"}),
+                json.dumps({"type": "investigation_verdict", "call_id": "c1",
+                            "decision": "continue", "coverage": "complete"}),
+            ]) + "\n")
+            result = read_observer_outcomes(path)
+            self.assertEqual(result["physical_dispatches"], 1)
+            self.assertEqual(result["receipt_completions"], 1)
+            self.assertEqual(result["pending_investigations"], 0)
+            self.assertEqual(result["usable_judgments"], 1)
+
+    def test_incomplete_verdict_receipt_is_unknown_judgment(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "observer.journal.ndjson"
+            path.write_text(json.dumps({"type": "verdict", "call_id": "c1",
+                                        "decision": "continue", "coverage": "incomplete"}) + "\n")
+            result = read_observer_outcomes(path)
+            self.assertEqual(result["receipt_completions"], 1)
+            self.assertEqual(result["usable_judgments"], 0)
+            self.assertIn("incomplete_verdict_coverage", result["evidence_gaps"])
+
+    def test_missing_journal_does_not_invent_lifecycle_zeroes(self):
+        with tempfile.TemporaryDirectory() as td:
+            result = read_observer_outcomes(Path(td) / "missing.ndjson")
+            self.assertIsNone(result["physical_dispatches"])
+            self.assertIsNone(result["usable_evidence_reads"])
+            self.assertIsNone(result["pending_investigations"])
+
     def test_driver_game_end_classification_preserves_non_gameplay_and_unknown(self):
         infrastructure = _game_end_terminal([{
             "type": "driver", "line": {"type": "game_end",

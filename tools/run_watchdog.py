@@ -822,6 +822,7 @@ class RunWatchdog:
                                            "tool": record.get("tool")}, now)
         if record_type == "model_request":
             request_id = record.get("request_id")
+            self._latest["request_scope"] = record.get("harness_request_id") or request_id
             if record.get("status") in {"completed", "failed"}:
                 self._latest["completed_request_id"] = request_id
         if record_type in {"terminal", "game_end", "budget_interrupted"}:
@@ -851,7 +852,7 @@ class RunWatchdog:
             alert["incident_id"] = _digest(_json({
                 "kind": alert.get("kind"),
                 "revision": alert.get("revision", self._latest.get("revision")),
-                "request": self._latest.get("conversation_id"),
+                "request": self._latest.get("request_scope") or self._latest.get("conversation_id"),
             }).encode())[:24]
         alert.update(identity=identity, monotonic=now, observed_at=_wall_now())
         self._alerts.append(alert)
@@ -982,6 +983,12 @@ class RunWatchdog:
             "degraded": bool(self._degraded),
             "coverage_events": self._degraded[-MAX_RECENT_ERRORS:],
             "evidence_ids": list(self._index)[-MAX_STATUS_ITEMS:],
+            "evidence_index": [
+                {key: entry.get(key) for key in
+                 ("evidence_id", "kind", "record_type", "artifact", "sha256")
+                 if entry.get(key) is not None}
+                for entry in list(self._index.values())[-MAX_STATUS_ITEMS:]
+            ],
         }
         return packet
 

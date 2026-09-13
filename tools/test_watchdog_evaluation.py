@@ -14,6 +14,11 @@ def _decision(kind="continue"):
             "evidence_ids": [], "explanation": "offline fixture"}
 
 
+def _incident_timeline():
+    return [{"type": "batch_validation", "valid": False,
+             "state_revision": 1, "driver_failure": "bad"} for _ in range(4)]
+
+
 class WatchdogEvaluationTests(unittest.TestCase):
     def test_fake_evaluation_skips_paid_preflight(self):
         with tempfile.TemporaryDirectory() as td:
@@ -21,7 +26,7 @@ class WatchdogEvaluationTests(unittest.TestCase):
                               td, fake=True)
             self.assertEqual(result["preflight"]["status"], "skipped_fake")
             self.assertEqual(result["preflight"]["dispatches"], 0)
-            self.assertEqual(result["evaluation"]["physical_calls"], 1)
+            self.assertEqual(result["evaluation"]["physical_calls"], 0)
 
     def test_preflight_failure_attempts_one_call_and_no_cases(self):
         def explode(_payload):
@@ -139,7 +144,7 @@ class WatchdogEvaluationTests(unittest.TestCase):
 
         backend = FakeObserverBackend(responses)
         cases = [{"case_id": "one", "expected": "continue",
-                  "timeline": [{"type": "status", "alerts": [{"identity": "a"}]}]},
+                  "timeline": _incident_timeline()},
                  {"case_id": "two", "expected": "continue", "timeline": []}]
         with tempfile.TemporaryDirectory() as td:
             with mock.patch("tools.watchdog_evaluation.FireworksObserverBackend",
@@ -160,7 +165,7 @@ class WatchdogEvaluationTests(unittest.TestCase):
 
         backend = FakeObserverBackend(responses)
         cases = [{"case_id": "one", "expected": "continue",
-                  "timeline": [{"type": "status", "alerts": [{"identity": "a"}]}]}]
+                  "timeline": _incident_timeline()}]
         cases.extend({"case_id": f"later-{i}", "timeline": []} for i in range(11))
         with tempfile.TemporaryDirectory() as td:
             with mock.patch("tools.watchdog_evaluation.FireworksObserverBackend",
@@ -182,7 +187,7 @@ class WatchdogEvaluationTests(unittest.TestCase):
                             lambda **_kwargs: backend):
                 result = evaluate([{"case_id": "one", "expected": "continue", "timeline": []}], td)
             self.assertEqual(result["preflight"]["status"], "passed")
-            self.assertEqual(result["model_evaluation"]["verdicts"], 2)
+            self.assertEqual(result["model_evaluation"]["verdicts"], 1)
             self.assertEqual(result["evaluation"]["attempted_cases"], 1)
             self.assertLessEqual(result["evaluation"]["physical_calls"], 37)
             self.assertTrue((Path(td) / "preflight.json").is_file())
@@ -197,8 +202,8 @@ class WatchdogEvaluationTests(unittest.TestCase):
             with mock.patch("tools.watchdog_evaluation.FireworksObserverBackend",
                             lambda **_kwargs: backend):
                 result = evaluate(cases, td)
-            self.assertEqual(result["evaluation"]["physical_calls"], 37)
-            self.assertGreater(result["evaluation"]["unattempted_cases"], 0)
+            self.assertEqual(result["evaluation"]["physical_calls"], 1)
+            self.assertEqual(result["evaluation"]["unattempted_cases"], 0)
 
     def test_output_directory_reuse_is_refused(self):
         with tempfile.TemporaryDirectory() as td:

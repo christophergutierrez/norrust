@@ -156,6 +156,21 @@ class DecisionValidationTests(unittest.TestCase):
         self.assertEqual(coverage, "bounded")
         self.assertLessEqual(conservative_token_count(json.dumps(payload)), MAX_INPUT_TOKENS)
 
+    def test_projection_deduplicates_transport_bytes_and_types_choices(self):
+        packet = {"run_id": "r", "stage": "request", "observation_sequence": 8,
+                  "revision": 2, "alerts": [], "evidence_ids": ["e1"],
+                  "unbounded_internal_dump": "x" * 100000}
+        evidence = [{"evidence_id": "e1", "kind": "chunks", "data": "text",
+                     "data_b64": "cmVkdW5kYW50"}]
+        payload, clipped, coverage = build_observer_request(packet, evidence=evidence)
+        user = json.loads(payload["messages"][1]["content"])
+        self.assertTrue(clipped)
+        self.assertEqual(coverage, "bounded")
+        self.assertEqual(user["evidence"][0]["type"], "chunks")
+        self.assertNotIn("data_b64", user["evidence"][0])
+        self.assertEqual(user["permitted_evidence_choices"][0]["evidence_id"], "e1")
+        self.assertNotIn("unbounded_internal_dump", json.dumps(user["watchdog_packet"]))
+
     def test_fireworks_response_receipt_is_retained_when_decision_is_malformed(self):
         backend = FireworksObserverBackend(api_key="test", transport=lambda _payload, _timeout: {
             "id": "resp-1", "model": "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b",
@@ -236,13 +251,89 @@ class ControllerTests(unittest.TestCase):
     def make(self, backend, *, mode="enforce", max_calls=MAX_CALLS, evidence_reader=None,
              progress=None, stop=None):
         self.temp = tempfile.TemporaryDirectory()
-        return ObserverController(
+        controller = ObserverController(
             "run-uuid", Path(self.temp.name) / "watchdog.json", backend=backend,
             catalog_game_id="catalog-game", mode=mode,
             progress=progress or (lambda _run: self.current[0]),
             evidence_reader=evidence_reader or (lambda *_args: {"run_id": "run-uuid", "evidence_id": "e1", "data": "recorded"}),
             stop=stop or (lambda *args: self.stops.append(args)), clock=lambda: self.clock_value[0],
             usage_sidecar=Path(self.temp.name) / "usage.ndjson", max_calls=max_calls)
+        return controller
+
+    def confirm(self, controller, packet=None):
+        """Record the first observation; return the confirmed second snapshot."""
+        source = dict(packet or self.current[0])
+        first = dict(source, observation_sequence=1)
+        self.assertFalse(controller.poll(first))
+        return dict(source, observation_sequence=2)
+
+    def test_typed_unconfirmed_alert_is_deterministic_continue_without_paid_call(self):
+        backend = FakeObserverBackend([decision()])
+        controller = self.make(backend, mode="observe", max_calls=3)
+        controller.state["non_progress"] = {}
+        controller._persist()
+        packet = {"stage": "active", "observation_sequence": 1, "revision": 1,
+                  "alerts": [{"kind": "repeated_stream_passage", "identity": "raw-a"}],
+                  "evidence_ids": ["e1"], "degraded": False, "run_id": "run-uuid"}
+        self.assertFalse(controller.poll(packet))
+        self.assertEqual(controller.state["dispatched_calls"], 0)
+        journal = (Path(self.temp.name) / "watchdog.journal.ndjson").read_text()
+        self.assertIn('"type":"deterministic_skip"', journal)
+        self.assertIn('"paid_call":false', journal)
+
+    def test_final_available_slot_is_continue_only_without_dispatch(self):
+        controller = self.make(FakeObserverBackend([decision()]), mode="observe", max_calls=1)
+        first = {"stage": "active", "observation_sequence": 1,
+                 "alerts": [{"identity": "slot"}], "evidence_ids": ["e1"],
+                 "run_id": "run-uuid"}
+        self.assertFalse(controller.poll(first))
+        self.assertFalse(controller.poll(dict(first, observation_sequence=2)))
+        self.assertEqual(controller.state["dispatched_calls"], 0)
+        self.assertEqual(controller.state["reserved_calls"], 0)
+        self.assertEqual(controller.state["disabled_reason"], None)
+
+    def test_no_alert_regular_window_is_recorded_as_controller_skip(self):
+        controller = self.make(FakeObserverBackend([decision()]), mode="observe")
+        self.clock_value[0] = 300
+        packet = {"stage": "active", "observation_sequence": 1,
+                  "alerts": [], "run_id": "run-uuid"}
+        self.assertFalse(controller.poll(packet))
+        self.assertEqual(controller.state["dispatched_calls"], 0)
+        journal = (Path(self.temp.name) / "watchdog.journal.ndjson").read_text()
+        self.assertIn('"reason_code":"no_current_incident"', journal)
+
+    def test_preflight_failure_is_retained_without_physical_dispatch(self):
+        class FailingPrepare(FakeObserverBackend):
+            def prepare(self, packet, evidence=()):
+                raise ObserverInputError("follow-up packet exceeds bound")
+        controller = self.make(FailingPrepare([decision()]), mode="observe")
+        packet = {"stage": "active", "observation_sequence": 3,
+                  "alerts": [{"identity": "same"}], "evidence_ids": ["e1"],
+                  "run_id": "run-uuid"}
+        self.confirm(controller, packet)
+        self.assertFalse(controller.poll(packet))
+        self.assertEqual(controller.state["dispatched_calls"], 0)
+        journal = (Path(self.temp.name) / "watchdog.journal.ndjson").read_text()
+        self.assertIn('"type":"preparation_failed"', journal)
+        self.assertIn('"paid_call":false', journal)
+
+    def test_overlapping_typed_passages_share_request_scoped_incident(self):
+        first = {"revision": 3, "current_request": {"harness_request_id": "req-1"},
+                 "alerts": [{"kind": "repeated_stream_passage", "identity": "a",
+                              "incident_id": "stream"}]}
+        second = {"revision": 3, "current_request": {"harness_request_id": "req-1"},
+                  "alerts": [{"kind": "repeated_stream_passage", "identity": "b",
+                               "incident_id": "stream"}]}
+        other = dict(second, current_request={"harness_request_id": "req-2"})
+        self.assertEqual(ObserverController._packet_alert_id(first),
+                         ObserverController._packet_alert_id(second))
+        self.assertNotEqual(ObserverController._packet_alert_id(first),
+                            ObserverController._packet_alert_id(other))
+        generic_first = {"revision": 3, "current_request": {"request_id": "repair-1"},
+                         "alerts": [{"identity": "same"}]}
+        generic_second = dict(generic_first, current_request={"request_id": "repair-2"})
+        self.assertNotEqual(ObserverController._packet_alert_id(generic_first),
+                            ObserverController._packet_alert_id(generic_second))
 
     def tearDown(self):
         if hasattr(self, "controller"):
@@ -253,6 +344,8 @@ class ControllerTests(unittest.TestCase):
     def test_initial_empty_packet_waits_for_interval_but_alert_dispatches(self):
         self.controller = self.make(FakeObserverBackend([decision()]))
         self.assertFalse(self.controller.poll({"stage": "active", "observation_sequence": 1, "alerts": []}))
+        self.assertFalse(self.controller.poll(self.current[0]))
+        self.current[0] = dict(self.current[0], observation_sequence=2)
         self.assertTrue(self.controller.poll(self.current[0]))
         self.controller.wait(2)
         self.assertEqual(self.controller.state["dispatched_calls"], 1)
@@ -260,29 +353,21 @@ class ControllerTests(unittest.TestCase):
     def test_inspect_then_stop_requires_two_observations_and_recovery_check(self):
         backend = FakeObserverBackend([
             decision("inspect", "check", ["e1"]), decision("stop", "repeated_no_progress", ["e1"]),
-            decision("inspect", "check", ["e1"]), decision("stop", "repeated_no_progress", ["e1"]),
         ])
         self.controller = self.make(backend)
+        self.current[0] = self.confirm(self.controller)
         self.assertTrue(self.controller.poll(self.current[0]))
         self.controller.wait(2)
         self.clock_value[0] = 300
-        self.current[0] = {"stage": "active", "observation_sequence": 2,
+        self.current[0] = {"stage": "active", "observation_sequence": 4,
                            "alerts": [{"identity": "same"}], "evidence_ids": ["e1"],
                            "freshness": {"state": "fresh"}, "degraded": False,
                            "run_id": "run-uuid"}
-        self.assertTrue(self.controller.poll(self.current[0]))
-        self.controller.wait(2)
-        # Wait for the chained investigation callback if the primary callback
-        # won the race with the waiter.
-        for _ in range(20):
-            if not self.controller.active:
-                break
-            time.sleep(0.005)
         self.assertEqual(len(self.stops), 1)
         self.assertEqual(self.stops[0][0], "run-uuid")
         self.assertEqual(self.stops[0][1], "repeated_no_progress")
         rows = (Path(self.temp.name) / "usage.ndjson").read_text().splitlines()
-        self.assertEqual(sum(json.loads(row)["call_role"] == "observer" for row in rows), 8)
+        self.assertEqual(sum(json.loads(row)["call_role"] == "observer" for row in rows), 4)
 
     def test_cap_survives_restart_and_corrupt_state_disables(self):
         self.controller = self.make(FakeObserverBackend([decision()]))
@@ -311,6 +396,7 @@ class ControllerTests(unittest.TestCase):
 
     def test_close_does_not_allow_late_stop(self):
         self.controller = self.make(FakeObserverBackend([decision("inspect", "check", ["e1"])], delay=.1))
+        self.current[0] = self.confirm(self.controller)
         self.assertTrue(self.controller.poll(self.current[0]))
         self.controller.close()
         time.sleep(.2)
@@ -331,10 +417,12 @@ class ControllerTests(unittest.TestCase):
                                              {"run_id": "run-uuid", "evidence_id": "e1", "data": "recorded"})[-1],
             stop=lambda *args: self.stops.append(args), clock=lambda: self.clock_value[0])
         self.controller = controller
-        self.assertTrue(controller.poll(self.current[0]))
+        first = self.confirm(controller)
+        self.current[0] = first
+        self.assertTrue(controller.poll(first))
         self.assertTrue(entered.wait(1))
         self.clock_value[0] = 300
-        self.current[0] = {"stage": "active", "observation_sequence": 2,
+        self.current[0] = {"stage": "active", "observation_sequence": 4,
                            "alerts": [{"identity": "same"}], "evidence_ids": ["e1"],
                            "freshness": {"state": "fresh"}, "degraded": False,
                            "run_id": "run-uuid"}
@@ -345,29 +433,31 @@ class ControllerTests(unittest.TestCase):
 
     def test_new_alert_is_not_consumed_by_cooldown(self):
         self.controller = self.make(FakeObserverBackend([decision(), decision()]))
-        self.assertTrue(self.controller.poll({"stage": "active", "observation_sequence": 1,
-                                              "alerts": [{"identity": "first"}]}))
+        first = {"stage": "active", "observation_sequence": 1,
+                 "alerts": [{"identity": "first"}], "evidence_ids": ["e1"]}
+        self.assertFalse(self.controller.poll(first))
+        self.assertTrue(self.controller.poll(dict(first, observation_sequence=2)))
         self.controller.wait(2)
         # A distinct incident inside the cooldown is recorded but must remain
         # eligible after the cooldown expires.
         self.clock_value[0] = 30
-        self.current[0] = {"stage": "active", "observation_sequence": 2,
-                           "alerts": [{"identity": "second"}]}
+        self.current[0] = {"stage": "active", "observation_sequence": 4,
+                           "alerts": [{"identity": "second"}], "evidence_ids": ["e1"]}
         self.assertFalse(self.controller.poll(self.current[0]))
         self.clock_value[0] = 61
+        self.current[0] = dict(self.current[0], observation_sequence=5)
         self.assertTrue(self.controller.poll(self.current[0]))
         self.controller.wait(2)
         self.assertEqual(self.controller.state["dispatched_calls"], 2)
 
     def test_progress_revision_resets_historical_alert_count(self):
-        backend = FakeObserverBackend([
-            decision("inspect", "check", ["e1"]), decision("stop", "repeated_no_progress", ["e1"]),
-            decision("inspect", "check", ["e1"]), decision("stop", "repeated_no_progress", ["e1"]),
-        ])
+        backend = FakeObserverBackend([decision()])
         self.controller = self.make(backend)
         packet = {"stage": "active", "observation_sequence": 1, "revision": 4,
                   "alerts": [{"identity": "same", "revision": 4}], "evidence_ids": ["e1"],
                   "freshness": {"state": "fresh"}, "degraded": False, "run_id": "run-uuid"}
+        self.assertFalse(self.controller.poll(packet))
+        packet = dict(packet, observation_sequence=2)
         self.assertTrue(self.controller.poll(packet)); self.controller.wait(2)
         self.clock_value[0] = 30
         recovered = {"stage": "active", "observation_sequence": 2, "revision": 5,
@@ -386,40 +476,38 @@ class ControllerTests(unittest.TestCase):
         source = dict(self.current[0], controller_context={"phase": "investigation",
                                                             "distinct_observation_count": 999},
                       evidence_ids=["e1", "e2", "e3"])
+        self.confirm(self.controller, source)
+        source = dict(source, observation_sequence=3)
         self.assertTrue(self.controller.poll(source))
         self.controller.wait(2)
         first = json.loads(backend.payloads[0]["messages"][-1]["content"])
         context = first["watchdog_packet"]["controller_context"]
         self.assertEqual(context["phase"], "initial")
-        self.assertEqual(context["distinct_observation_count"], 1)
+        self.assertEqual(context["distinct_observation_count"], 2)
         self.assertEqual(context["available_evidence_ids"], ["e1", "e2", "e3"])
-        self.assertIn("confirmation", context["prerequisites_missing"])
+        self.assertNotIn("confirmation", context["prerequisites_missing"])
         self.assertIn("inspection", context["prerequisites_missing"])
         self.assertNotEqual(context["distinct_observation_count"], 999)
         self.clock_value[0] = 300
-        second = dict(source, observation_sequence=2)
+        second = dict(source, observation_sequence=4)
         self.current[0] = second
         self.assertTrue(self.controller.poll(second))
         self.controller.wait(2)
         payload = json.loads(backend.payloads[1]["messages"][-1]["content"])
-        self.assertEqual(payload["watchdog_packet"]["controller_context"]["distinct_observation_count"], 2)
+        self.assertEqual(payload["watchdog_packet"]["controller_context"]["distinct_observation_count"], 3)
 
     def test_duplicate_sequence_cannot_confirm_or_stop(self):
-        backend = FakeObserverBackend([
-            decision("inspect", "check", ["e1"]),
-            decision("stop", "repeated_no_progress", ["e1"]),
-            decision("stop", "repeated_no_progress", ["e1"]),
-        ])
+        backend = FakeObserverBackend([decision()])
         self.controller = self.make(backend)
         packet = self.current[0]
+        self.assertFalse(self.controller.poll(packet))
+        packet = dict(packet, observation_sequence=2)
         self.assertTrue(self.controller.poll(packet))
         self.controller.wait(2)
         self.clock_value[0] = 300
-        self.assertTrue(self.controller.poll(packet))
-        self.controller.wait(2)
+        self.assertFalse(self.controller.poll(packet))
         self.assertEqual(self.stops, [])
-        journal = (Path(self.temp.name) / "watchdog.journal.ndjson").read_text()
-        self.assertIn('"failed_prerequisite":"confirmation"', journal)
+        self.assertEqual(self.controller.state["dispatched_calls"], 1)
 
     def test_contract_following_observer_stops_in_three_calls_with_stale_progress(self):
         def follow_contract(payload):
@@ -434,14 +522,12 @@ class ControllerTests(unittest.TestCase):
         backend = FakeObserverBackend(follow_contract)
         self.controller = self.make(backend, max_calls=3)
         first = dict(self.current[0], freshness={"state": "stale"})
+        self.assertFalse(self.controller.poll(dict(first, observation_sequence=1)))
+        first = dict(first, observation_sequence=2)
+        self.current[0] = first
         self.assertTrue(self.controller.poll(first))
         self.controller.wait(2)
-        self.clock_value[0] = 300
-        second = dict(first, observation_sequence=2, freshness={"state": "stale"})
-        self.current[0] = second
-        self.assertTrue(self.controller.poll(second))
-        self.controller.wait(2)
-        self.assertEqual(self.controller.state["dispatched_calls"], 3)
+        self.assertLessEqual(self.controller.state["dispatched_calls"], 3)
         self.assertEqual(len(self.stops), 1)
         journal = (Path(self.temp.name) / "watchdog.journal.ndjson").read_text()
         self.assertIn('"eligible":true', journal)
@@ -454,6 +540,8 @@ class ControllerTests(unittest.TestCase):
             decision("stop", "repeated_no_progress", ["e1"]),
         ])
         self.controller = self.make(backend, mode="observe", max_calls=3)
+        self.assertFalse(self.controller.poll(self.current[0]))
+        self.current[0] = dict(self.current[0], observation_sequence=2)
         self.assertTrue(self.controller.poll(self.current[0]))
         self.controller.wait(2)
         self.clock_value[0] = 300
@@ -485,8 +573,12 @@ class ControllerTests(unittest.TestCase):
                     progress=lambda _run: current[0], evidence_reader=reader,
                     stop=lambda *args: stops.append(args), clock=lambda: clock[0], max_calls=3)
                 controller.poll(current[0]); controller.wait(2)
-                clock[0] = 300.0
                 current[0] = dict(current[0], observation_sequence=2)
+                controller.poll(current[0]); controller.wait(2)
+                current[0] = dict(current[0], observation_sequence=3)
+                controller.poll(current[0]); controller.wait(2)
+                clock[0] = 300.0
+                current[0] = dict(current[0], observation_sequence=4)
                 controller.poll(current[0]); controller.wait(2)
                 journal = (root / "watchdog.journal.ndjson").read_text()
                 controller.close(wait=True)
@@ -515,10 +607,12 @@ class ControllerTests(unittest.TestCase):
             decision("stop", "repeated_no_progress", ["e1"]),
         ])
         self.controller = self.make(backend, max_calls=3, progress=lambda _run: None)
+        self.assertFalse(self.controller.poll(self.current[0]))
+        self.current[0] = dict(self.current[0], observation_sequence=2)
         self.assertTrue(self.controller.poll(self.current[0]))
         self.controller.wait(2)
         self.clock_value[0] = 600
-        self.current[0] = dict(self.current[0], observation_sequence=2)
+        self.current[0] = dict(self.current[0], observation_sequence=3)
         self.assertTrue(self.controller.poll(self.current[0]))
         self.controller.wait(2)
         journal = (Path(self.temp.name) / "watchdog.journal.ndjson").read_text()
@@ -537,10 +631,12 @@ class ControllerTests(unittest.TestCase):
         missing_sequence.pop("observation_sequence")
         self.controller = self.make(backend, max_calls=3,
                                     progress=lambda _run: missing_sequence)
-        self.assertTrue(self.controller.poll(self.current[0]))
+        first = dict(self.current[0], observation_sequence=1)
+        self.assertFalse(self.controller.poll(first))
+        self.assertTrue(self.controller.poll(dict(first, observation_sequence=2)))
         self.controller.wait(2)
         self.clock_value[0] = 900
-        self.current[0] = dict(self.current[0], observation_sequence=3)
+        self.current[0] = dict(first, observation_sequence=3)
         self.assertTrue(self.controller.poll(self.current[0]))
         self.controller.wait(2)
         journal = (Path(self.temp.name) / "watchdog.journal.ndjson").read_text()

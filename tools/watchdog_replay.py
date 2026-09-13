@@ -229,6 +229,22 @@ def replay_case(case: dict[str, Any], output_dir: str | Path, *, fake: bool = Tr
         if (stop_verdict_at is None and isinstance(verdict, dict)
                 and verdict.get("decision") == "stop"):
             stop_verdict_at = clock.now
+        # A production continue-only skip may have consumed the first
+        # suspicious snapshot without a provider call. Give the recorder one
+        # further regular window so the confirmed fixture reaches inspect and
+        # its single follow-up within the same three-call ceiling.
+        if int(controller.state.get("dispatched_calls", 0)) < 3 and not backend.halted:
+            clock.now += 300.0
+            confirmed_packet = watchdog.poll(force=True)
+            if int(controller.state.get("dispatched_calls", 0)) < 3:
+                controller.poll(confirmed_packet)
+            drained = _drain(controller) and drained
+            with status_path.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(confirmed_packet, sort_keys=True) + "\n")
+            verdict = controller.state.get("last_verdict")
+            if (stop_verdict_at is None and isinstance(verdict, dict)
+                    and verdict.get("decision") == "stop"):
+                stop_verdict_at = clock.now
         final = watchdog.poll(force=True)
         # The controller's bounded drain has already given completed calls a
         # chance to publish their callback. Never add an unbounded future wait

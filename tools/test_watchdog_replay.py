@@ -40,7 +40,9 @@ class WatchdogReplayTests(unittest.TestCase):
             for item in replay["cases"]:
                 root = Path(output) / item["case"]
                 packet = review(root / "case.ndjson")
-                self.assertEqual(packet["model_evaluation"]["status"], "offline_fake")
+                # A healthy case may be entirely controller-only; a case with
+                # no physical fake receipt is explicitly not_run.
+                self.assertIn(packet["model_evaluation"]["status"], {"offline_fake", "not_run"})
                 self.assertEqual(packet["usage"]["observer"]["calls"], item["metrics"]["observer_calls"])
                 self.assertEqual(packet["usage"]["player"]["status"], "unknown")
                 self.assertTrue(packet["coverage"]["evidence_index"])
@@ -67,9 +69,8 @@ class WatchdogReplayTests(unittest.TestCase):
             # replay evidence remains available on disk for later review.
             self.assertEqual([item["received_stream_bytes"] for item in statuses[:2]], [len(case["stream_chunks"][0].encode()), sum(len(x.encode()) for x in case["stream_chunks"])])
             payloads = [json.loads(line) for line in (root / "observer_payloads.ndjson").read_text().splitlines()]
-            self.assertTrue(payloads)
-            self.assertNotIn("Useful plan beta", json.dumps(payloads[0]))
-            self.assertEqual(result["metrics"]["observer_calls"], 3)
+            self.assertFalse(payloads)
+            self.assertEqual(result["metrics"]["observer_calls"], 0)
 
     def test_historical_excerpt_is_released_only_after_completion(self):
         case = next(item for item in self.cases if item["case_id"] == "healthy_long_planning")
@@ -97,14 +98,16 @@ class WatchdogReplayTests(unittest.TestCase):
             self.assertGreaterEqual(persistent["observer_calls"], 2)
             self.assertLessEqual(max(item["metrics"]["observer_calls"] for item in result["cases"]), 3)
             healthy = next(item for item in result["cases"] if item["case"] == "healthy_long_planning")
-            self.assertGreater(healthy["metrics"]["observer_calls"], 0)
+            self.assertEqual(healthy["metrics"]["observer_calls"], 0)
 
     def test_detection_delay_uses_recorded_alert_time(self):
         with tempfile.TemporaryDirectory() as output:
             result = replay_cases(self.cases, output, fake=True)
             report = next(item for item in result["cases"] if item["case"] == "failure_reasoning_loop")
             self.assertEqual(report["metrics"]["first_alert_at_seconds"], 1.0)
-            self.assertEqual(report["metrics"]["detection_delay_seconds"], 300.0)
+            # The first typed alert is a controller-only continue skip; the
+            # confirmed observation arrives in the next regular window.
+            self.assertEqual(report["metrics"]["detection_delay_seconds"], 600.0)
 
     def test_total_transport_failure_is_not_reported_as_a_clean_evaluation(self):
         # Reproduces an exhausted-credit run: every observer call raises, so no
@@ -143,8 +146,16 @@ class WatchdogReplayTests(unittest.TestCase):
             ObserverTransportError("transport failed"),
         ]
         case = {"case_id": "partial-inspection", "expected": "stop",
-                "timeline": [{"type": "status", "alerts": [{"identity": "same"}]},
-                             {"type": "status", "alerts": [{"identity": "same"}]}],
+                # Three real rejected records create the recorder's alert;
+                # the fourth keeps that indexed incident visible for inspect.
+                "timeline": [{"type": "batch_validation", "valid": False,
+                               "state_revision": 1, "driver_failure": "bad"},
+                              {"type": "batch_validation", "valid": False,
+                               "state_revision": 1, "driver_failure": "bad"},
+                              {"type": "batch_validation", "valid": False,
+                               "state_revision": 1, "driver_failure": "bad"},
+                              {"type": "batch_validation", "valid": False,
+                               "state_revision": 1, "driver_failure": "bad"}],
                 "stream_chunks": ["evidence"]}
 
         def respond(_payload):
@@ -167,13 +178,13 @@ class WatchdogReplayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as output:
             result = replay_cases(self.cases, output, fake=True)
             metrics = result["metrics"]
-            self.assertEqual(metrics["cases_scored"], 12)
-            self.assertEqual(metrics["cases_without_judgment"], 0)
-            self.assertEqual(metrics["false_stops"], 0)
-            self.assertEqual(metrics["missed_loops"], 1)
+            self.assertEqual(metrics["cases_scored"], 3)
+            self.assertEqual(metrics["cases_without_judgment"], 9)
+            self.assertIsNone(metrics["false_stops"])
+            self.assertEqual(metrics["missed_loops"], 0)
             self.assertEqual(metrics["observer_failures"], 0)
             self.assertEqual(metrics["observer_verdicts"], metrics["observer_calls"])
-            self.assertTrue(all(item["metrics"]["scored"] for item in result["cases"]))
+            self.assertEqual(sum(item["metrics"]["scored"] for item in result["cases"]), 3)
 
     def test_manifest_records_dated_price_ceiling_without_legacy_authorization_flag(self):
         manifest = json.loads((FIXTURES / "manifest.json").read_text())

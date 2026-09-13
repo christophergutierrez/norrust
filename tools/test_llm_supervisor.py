@@ -134,11 +134,10 @@ class SupervisorObserverTests(unittest.TestCase):
                          watchdog_mode="observe", observer_backend=backend,
                          observer_clock=lambda: ticks.__setitem__(0, ticks[0] + 300) or ticks[0])
             self.assertEqual(result, 0)
-            self.assertGreaterEqual(len(backend.payloads), 1)
-            rows = [json.loads(line) for line in (root / "usage.ndjson").read_text().splitlines()]
-            self.assertTrue(rows)
-            self.assertTrue(all(row["call_role"] == "observer" for row in rows))
-            self.assertTrue(all(row["game_id"] == "catalog-game" for row in rows))
+            # Metadata alone has no current incident; the controller records
+            # a deterministic continue window without spending a call.
+            self.assertEqual(len(backend.payloads), 0)
+            self.assertFalse((root / "usage.ndjson").exists())
     def test_real_process_tree_stop_is_durable_and_forced(self):
         """A SIGTERM-ignoring nested shell is cleaned up within the grace window."""
         with tempfile.TemporaryDirectory() as directory:

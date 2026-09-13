@@ -62,8 +62,6 @@ class RealRunWatchdogIntegrationTests(unittest.TestCase):
             backend = FakeObserverBackend([
                 _decision("inspect", "check", packet["evidence_ids"][:1]),
                 _decision("stop", "repeated_no_progress", packet["evidence_ids"][:1]),
-                _decision("inspect", "check", packet["evidence_ids"][:1]),
-                _decision("stop", "repeated_no_progress", packet["evidence_ids"][:1]),
             ])
             stops = []
             now = [0.0]
@@ -80,7 +78,7 @@ class RealRunWatchdogIntegrationTests(unittest.TestCase):
             current = [dict(packet, degraded=False, coverage_events=[],
                             alerts=[{"identity": "incident", "revision": packet.get("revision")}])]
             controller.progress = lambda _run: current[0]
-            self.assertTrue(controller.poll(current[0]))
+            self.assertFalse(controller.poll(current[0]))
             controller.wait(2)
             current[0] = dict(current[0], observation_sequence=packet["observation_sequence"] + 1)
             # Regular cadence is the only reason to inspect an unchanged alert.
@@ -102,10 +100,10 @@ class RealRunWatchdogIntegrationTests(unittest.TestCase):
             conn = open_history(root / "history.sqlite")
             game_id = import_game(conn, log, game_id="catalog-game")
             report = query_usage(conn, game_id, "game")
-            self.assertEqual(report["role_usage"]["observer"]["call_count"], 4)
+            self.assertEqual(report["role_usage"]["observer"]["call_count"], 2)
             self.assertEqual(conn.execute(
                 "SELECT count(*) FROM model_calls WHERE game_id=? AND call_role='observer'",
-                (game_id,)).fetchone()[0], 4)
+                (game_id,)).fetchone()[0], 2)
             self.assertEqual(conn.execute(
                 "SELECT count(*) FROM model_calls WHERE game_id=? AND game_id='fresh-run-uuid'",
                 (game_id,)).fetchone()[0], 0)

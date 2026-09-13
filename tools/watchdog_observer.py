@@ -384,6 +384,52 @@ def _shrink(value: Any, omitted: list[str], path: str = "packet") -> Any:
     return value
 
 
+_PACKET_PROJECTION_FIELDS = (
+    "run_id", "conversation_id", "stage", "active", "observation_sequence",
+    "request_age_seconds", "current_request", "request_id", "last_completed_turn",
+    "committed_action", "proposed_action", "revision", "recent_actions",
+    "recent_errors", "objective_resource_deltas", "received_stream_bytes",
+    "usage_coverage", "freshness", "alerts", "regular_check_eligible",
+    "previous_verdict", "degraded", "coverage_events", "evidence_ids",
+    "progress_recovered", "controller_context", "evidence_index",
+)
+
+
+def _project_packet(packet: Mapping[str, Any], omitted: list[str]) -> dict[str, Any]:
+    """Select the compact observer contract before recursively bounding text."""
+    projected: dict[str, Any] = {}
+    for field in _PACKET_PROJECTION_FIELDS:
+        if field in packet:
+            projected[field] = _shrink(packet[field], omitted, f"packet.{field}")
+    for field in packet:
+        if field not in _PACKET_PROJECTION_FIELDS:
+            omitted.append(f"packet.{field}")
+    return projected
+
+
+def _evidence_label(item: Mapping[str, Any]) -> tuple[str, str]:
+    """Give an indexed slice a stable, useful label without exposing bytes twice."""
+    derived = item.get("derived")
+    kind = item.get("kind")
+    record_type = item.get("record_type")
+    artifact = item.get("artifact")
+    if derived == "stream_content_reasoning":
+        return "stream reasoning", "decoded stream reasoning excerpt"
+    if record_type:
+        label = f"{record_type} record"
+        return label, f"bounded {label} from the indexed run log"
+    if kind == "record":
+        return "run record", "bounded indexed run record"
+    if kind == "coverage_gap":
+        return "coverage gap", "indexed unavailable coverage range"
+    if isinstance(kind, str) and kind:
+        label = kind[:64]
+        return label, f"bounded {label} evidence slice"
+    if artifact:
+        return "run artifact", f"bounded excerpt from {Path(str(artifact)).name}"
+    return "indexed artifact", "bounded indexed evidence slice"
+
+
 def build_observer_request(packet: Mapping[str, Any], *, model: str = DEFAULT_MODEL,
                            reasoning_effort: str = DEFAULT_EFFORT,
                            evidence: Iterable[Mapping[str, Any]] = ()) -> tuple[dict[str, Any], bool, str]:
@@ -394,7 +440,7 @@ def build_observer_request(packet: Mapping[str, Any], *, model: str = DEFAULT_MO
     decision_schema = _decision_schema_for_packet(packet)
     base = {"model": model}
     omitted: list[str] = []
-    bounded = _shrink(dict(packet), omitted)
+    bounded = _project_packet(packet, omitted)
     # ``RunWatchdog`` retains a raw alert in both its compact alert channel and
     # the repetition detector view. Keep one model-visible passage and retain
     # detector counts as metadata; duplicated text would consume the evidence
@@ -409,13 +455,27 @@ def build_observer_request(packet: Mapping[str, Any], *, model: str = DEFAULT_MO
         # Keep the evidence slice self-describing after projection.  These
         # fields are metadata only; the recorded bytes remain bounded below.
         if isinstance(bounded_item, dict):
-            bounded_item.setdefault("type", str(item.get("type") or item.get("kind")
-                                                 or item.get("record_kind") or "recorded_evidence")[:64])
-            bounded_item.setdefault("description", "bounded recorded evidence slice")
+            if bounded_item.get("data") is not None and "data_b64" in bounded_item:
+                # A decoded text slice is authoritative for model review; do
+                # not spend the same evidence budget on its raw transport form.
+                bounded_item.pop("data_b64", None)
+            item_type, description = _evidence_label(item)
+            bounded_item.setdefault("type", item_type)
+            bounded_item.setdefault("description", description)
         evidence_list.append(bounded_item)
     if len(evidence_values) > MAX_EVIDENCE_READS:
         omitted.append("evidence")
     permitted_ids: list[str] = []
+    evidence_types: dict[str, str] = {}
+    evidence_descriptions: dict[str, str] = {}
+    index = bounded.get("evidence_index") if isinstance(bounded, dict) else None
+    if isinstance(index, list):
+        for entry in index:
+            if not isinstance(entry, Mapping):
+                continue
+            evidence_id = entry.get("evidence_id")
+            if isinstance(evidence_id, str):
+                evidence_types[evidence_id], evidence_descriptions[evidence_id] = _evidence_label(entry)
     raw_ids = packet.get("evidence_ids")
     if isinstance(raw_ids, list):
         for value in raw_ids:
@@ -427,8 +487,10 @@ def build_observer_request(packet: Mapping[str, Any], *, model: str = DEFAULT_MO
         value = item.get("evidence_id") if isinstance(item, Mapping) else None
         if isinstance(value, str) and value and len(value) <= 128 and value not in permitted_ids:
             permitted_ids.append(value)
-    evidence_choices = [{"evidence_id": value, "type": "recorded_evidence",
-                         "description": "available bounded evidence slice",
+        if isinstance(value, str):
+            evidence_types[value], evidence_descriptions[value] = _evidence_label(item)
+    evidence_choices = [{"evidence_id": value, "type": evidence_types.get(value, "indexed_artifact"),
+                         "description": evidence_descriptions.get(value, "bounded indexed evidence slice"),
                          "permitted": True} for value in permitted_ids]
     coverage_value = {"input_clipped": bool(omitted),
                       "omitted_fields": sorted(set(omitted)),
@@ -849,7 +911,8 @@ class ObserverController:
             self._persist()
         self._append_call(call, "dispatch")
         self._journal({"type": "dispatch", "call_id": call.call_id,
-                       "call_role": "observer", "output_limit": MAX_OUTPUT_TOKENS})
+                       "call_role": "observer", "output_limit": MAX_OUTPUT_TOKENS,
+                       "phase": self._active_phase})
 
     def _release_reservation(self) -> None:
         with self._lock:
@@ -866,11 +929,33 @@ class ObserverController:
                        "incident_identity": self._packet_alert_id(packet) or None,
                        "paid_call": False})
 
+    def _controller_only_continue(self, packet: Mapping[str, Any]) -> bool:
+        """Return whether regenerated trusted facts leave only ``continue``."""
+        context = self._controller_context(packet, phase="initial",
+                                           evidence_ids=self._evidence_ids(packet))
+        # The check runs before reservation. Evaluate the schema against the
+        # post-reservation budget so the final available slot cannot dispatch
+        # an inspection that has no room for its mandatory follow-up.
+        prospective = dict(context)
+        prospective["remaining_calls"] = max(0, int(context["remaining_calls"]) - 1)
+        choices = _decision_schema_for_packet({"controller_context": prospective})
+        return choices["properties"]["decision"]["enum"] == ["continue"]
+
     def _eligible(self, packet: Mapping[str, Any], now: float) -> bool:
         if packet.get("active") is False:
             return False
         last = self.state.get("last_dispatch_at")
         alert_id = self._packet_alert_id(packet)
+        # A repeated recorder packet cannot create another paid observation
+        # window. This also protects the stop gate when a provider receipt
+        # arrives after the recorder has emitted the same sequence again.
+        sequence = packet.get("observation_sequence")
+        dispatched_sequence = self.state.get("last_verdict_sequence")
+        if (alert_id and alert_id == self.state.get("last_alert_identity")
+                and isinstance(sequence, int) and not isinstance(sequence, bool)
+                and isinstance(dispatched_sequence, int) and not isinstance(dispatched_sequence, bool)
+                and sequence <= dispatched_sequence):
+            return False
         if alert_id and alert_id != self.state.get("last_alert_identity"):
             last_alert = self.state.get("last_alert_at")
             if last_alert is None or now - float(last_alert) >= ALERT_COOLDOWN_SECONDS:
@@ -915,7 +1000,9 @@ class ObserverController:
         # part of the key so a new engine state cannot inherit confirmation.
         if "repeated_stream_passage" in kinds:
             return f"repeated_stream_passage:{packet.get('revision', 'unknown')}:{request_scope}"
-        return "|".join(sorted(set(identities)))
+        # All alert families are request-scoped. A repair/inspection request
+        # at the same engine revision must start a fresh confirmation window.
+        return "|".join(sorted(set(identities))) + ":" + request_scope
 
     def _record_packet(self, packet: Mapping[str, Any]) -> None:
         sequence = packet.get("observation_sequence")
@@ -1068,11 +1155,16 @@ class ObserverController:
                 if not self._packet_alert_id(packet):
                     self._journal_skip(packet, "no_current_incident")
                 return False
+            self._record_packet(packet)
+            if self._controller_only_continue(packet):
+                self._journal_skip(packet, "no_current_incident"
+                                   if not self._packet_alert_id(packet)
+                                   else "controller_only_continue")
+                return False
             call_id = self._reserve()
             if call_id is None:
                 return False
             sequence = packet.get("observation_sequence")
-            self._record_packet(packet)
             self.state["last_verdict_sequence"] = sequence
             self._persist()
             request_packet = self._request_packet(packet, phase="initial")
