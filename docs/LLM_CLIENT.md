@@ -144,7 +144,7 @@ an accepted partial is acknowledged when `--log` is supplied.
 
 ### Decision modes and action encoding
 
-`--decision-mode {batch,focused}` configures turn granularity:
+`--decision-mode {batch,focused,strategy}` configures turn granularity:
 - `batch` (default): full-turn planning. Incremental turns require explicit
   `--incremental-turns` and default to 3 partial batches, 8 model calls per turn,
   and 4 tool calls per turn. Decision annotations must cover all authored orders.
@@ -302,6 +302,55 @@ provenance. In a selective finish, only listed group IDs are swept and listed
 hold IDs are kept; other units remain unswept. Neither mechanism prevents
 earlier authored moves or recruitment, auto-vacating, or later opponent attacks.
 Delegated destinations remain a tactical choice and are not guaranteed safe.
+
+
+#### Strategy mode
+
+`--decision-mode strategy` is an opt-in hybrid player. The model selects
+executable objectives and resolves consequential tradeoffs; deterministic code
+performs legal recruitment, bookkeeping and turn completion. An ordinary engine
+action does not by itself require another model call.
+
+This is a hybrid player. Automatically selected actions are attributed to code
+(`source: "routine"`), even when they serve a model-selected objective. They are
+not model-authored moves, and a fixed-policy run's strength is not the model's.
+
+Strategy mode requires incremental driver turns. Its defaults are 64 partial
+batches, 256 queries, and eight logical model responses per controlled turn;
+existing validated overrides still apply and resolved values appear in
+provenance. Combining `--focused-max-operations-per-decision` with strategy mode
+is rejected rather than reinterpreted.
+
+The model answers with a strict discriminated union on `kind`: `set_policy`,
+`act`, `finish_turn`, or `resign`. There are no `decisions[]`, rule citations,
+risk/expected strings, intent, or agenda in this mode; `decisions[]` is the old
+annotation array and is absent here. A policy is a validated structured set of
+executable orders — policy prose is never parsed or executed. Each recruit
+`count` is a finite total for that policy installation, not a per-turn purchase,
+and a replacement policy replaces all previous orders and remaining counts.
+
+The client calls the model at initial policy selection and at typed exceptions
+only — never because a revision advanced, a unit moved, a recruit received an
+ID, or a turn ended. Between those points the executor asks the driver's
+read-only, revision-pinned `routine_next` query for one step at a time and
+submits it through an internal orders envelope that only client code can
+construct; a model response carrying an `origin` key is rejected. Progress is
+adopted only after a submission is proven committed, so a resume cannot re-buy a
+finite queue. Routine execution creates zero usage rows.
+
+Automatic turn completion uses `FinishWithGreedy` with empty `groups` and
+`holds`, which is verified to perform no friendly sweep. Plain `EndTurn`
+performs an automatic Greedy sweep and is never used as a routine boundary.
+
+`--strategy-policy PATH` (valid only with strategy mode) installs an exact
+checked-in policy and plays it with no backend started and zero model responses,
+recording the controller identity as fixed-policy code rather than a model.
+
+First release scope is recruitment orders with a gold reserve. Non-empty
+`scouts`, `villages` or `holds`, or a non-null `rally`, are rejected explicitly
+rather than accepted and ignored. Enemy contact ends the run as an explicit
+unsupported exception; there is no hidden fallback and no silent handoff to
+Greedy.
 
 ### Publishing a file-transport reply
 

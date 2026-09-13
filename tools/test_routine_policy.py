@@ -431,72 +431,15 @@ class StrategyPolicyFixedInstallTests(unittest.TestCase):
         defs = rp.static_recruitable_defs(str(ROOT / "data" / "units"))
         self.assertIn("Skeleton", defs)
 
-    def test_run_strategy_fixed_policy_install_starts_no_backend_and_no_driver(self):
-        """--strategy-policy: no backend, no driver subprocess, no usage rows.
-
-        ``run()`` returns via ``run_strategy_fixed_policy_install`` as its
-        second statement (immediately after ``resolve_client_config``),
-        before any ``subprocess.Popen`` driver spawn or ``ModelBackend``
-        construction exists in the function body. This test proves the
-        *observable* half of that guarantee (return code, log contents, no
-        usage sidecar) by calling the real ``run()`` entrypoint; a guard
-        patch on ``subprocess.Popen`` backs that up without stubbing out
-        unrelated backend classes (which would be fragile to keep in sync
-        with their real constructors).
-        """
-        import subprocess as subprocess_module
-        with tempfile.TemporaryDirectory() as td:
-            policy_path = Path(td) / "policy.json"
-            policy_path.write_text(json.dumps({"kind": "set_policy", "policy": {
-                "reserve_gold": 10,
-                "recruits": [{"def_id": "Skeleton", "count": 3, "role": "army"}],
-                "scouts": [], "villages": [], "rally": None, "holds": [],
-            }}))
-            log_path = Path(td) / "match.ndjson"
-            args = type("Args", (), {
-                "decision_mode": "strategy", "strategy_policy": str(policy_path),
-                "log": str(log_path),
-            })()
-
-            original_popen = subprocess_module.Popen
-
-            def guard_popen(*a, **k):
-                raise AssertionError("no driver/model subprocess should start for --strategy-policy")
-
-            subprocess_module.Popen = guard_popen
-            try:
-                rc = llm_client.run(args)
-            finally:
-                subprocess_module.Popen = original_popen
-            self.assertEqual(rc, 0)
-            self.assertTrue(log_path.exists())
-            lines = [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
-            self.assertEqual(len(lines), 1)
-            self.assertEqual(lines[0]["type"], "policy_installed")
-            self.assertNotIn("usage", lines[0])
-            usage_sidecar = log_path.with_name("usage.ndjson")
-            self.assertFalse(usage_sidecar.exists())
-
-    def test_cli_strategy_policy_end_to_end_zero_usage(self):
-        """Full CLI dispatch: argparse -> run() -> zero backend/usage, exit 0."""
-        with tempfile.TemporaryDirectory() as td:
-            policy_path = Path(td) / "policy.json"
-            policy_path.write_text(json.dumps({
-                "reserve_gold": 0,
-                "recruits": [{"def_id": "Skeleton", "count": 1, "role": "army"}],
-                "scouts": [], "villages": [], "rally": None, "holds": [],
-            }))
-            log_path = Path(td) / "match.ndjson"
-            result = subprocess.run(
-                [sys.executable, "-m", "tools.llm_client",
-                 "--decision-mode", "strategy", "--strategy-policy", str(policy_path),
-                 "--log", str(log_path)],
-                cwd=str(ROOT), capture_output=True, text=True, timeout=60)
-            self.assertEqual(result.returncode, 0, msg=result.stderr)
-            self.assertFalse(log_path.with_name("usage.ndjson").exists())
-            lines = [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
-            self.assertEqual(len(lines), 1)
-            self.assertEqual(lines[0]["type"], "policy_installed")
+    # NOTE: --strategy-policy now actually plays the game against the real
+    # driver (Stack 1's gap-closing requirement) instead of validating and
+    # exiting before any subprocess starts. That behavior needs the built
+    # `greedy_driver` binary, so its real-driver coverage -- zero model
+    # responses/usage rows, actual recruitment, terminal on the first
+    # unresolved exception -- lives in tools/test_strategy_integration.py
+    # (guarded the same way as tools/test_movement_integration.py). What
+    # remains testable without a driver process is the argparse/dispatch
+    # validation, covered below.
 
     def test_cli_rejects_strategy_policy_with_model_backend_flags(self):
         result = subprocess.run(
@@ -526,24 +469,14 @@ class StrategyPolicyFixedInstallTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# NOTE: The following capabilities require the Rust `routine_next` driver
-# query, which does not exist in this worktree (norrust_core has no
-# routine.rs and no "routine_next" match arm as of this writing). They are
-# exercised above only against a scripted FakeExchange. Once the Rust half
-# lands, the Stack 1 gate additionally requires, against the REAL built
-# driver:
-#   - one scripted policy response recruits an affordable finite queue and
-#     finishes a turn with zero further backend calls;
-#   - recruitment finishing over two real turns without double-buying;
-#   - occupied castle spaces cause no auto-vacate, no held/recruiter
-#     movement/attack, no automatic Greedy sweep;
-#   - crash-after-commit-before-ack then resume reproduces the same final
-#     recruit count/gold as uninterrupted execution;
-#   - one real backend call record, correctly labelled `routine` events,
-#     playable snapshots, and idempotent catalog import.
-# These are integration tests for the Rust worker / integrator to add once
-# `routine_next` exists; this file cannot fabricate that half of the
-# contract without a real or stub Rust driver binary.
+# The real-driver Stack 1 gate (scripted policy recruits and finishes with
+# zero further backend calls; two-turn recruitment without double-buying;
+# no auto-vacate/held/recruiter movement/attack/sweep; crash-after-commit-
+# before-ack resume parity; routine-labelled events, playable snapshots, and
+# idempotent catalog import) lives in tools/test_strategy_integration.py,
+# against the real built `greedy_driver` binary -- this file exercises the
+# Python-only contract (validation, progress, response parsing) with a
+# scripted FakeExchange/backend and needs no driver process.
 # ---------------------------------------------------------------------------
 
 

@@ -377,9 +377,22 @@ class RoutineProgress:
         must only invoke it after the corresponding action has passed the
         existing driver/checkpoint acknowledgement protocol -- never merely
         because a query proposed it. This is the crash-safety requirement.
+
+        Accepts two shapes: the real driver's per-step wire shape,
+        ``{"kind": "recruited", "def_id": ...}`` (routine.rs emits exactly
+        this -- one committed recruit per routine step, never an absolute
+        count), and the absolute-count shape ``{"recruited": [{"def_id":...,
+        "done": N}], ...}`` used by ``run_scripted_strategy_turn`` and this
+        module's own tests. Both are idempotent-safe: replaying the same
+        wire-shape update twice is guarded by the caller only ever adopting
+        a given commit once (never by re-deriving it from a query result).
         """
         if progress_update.get("installation_id") not in (None, self.installation_id):
             raise ValueError("progress_update belongs to a different installation")
+        if progress_update.get("kind") == "recruited" and "def_id" in progress_update:
+            def_id = progress_update["def_id"]
+            self.recruited[def_id] = self.recruited.get(def_id, 0) + 1
+            return
         for entry in progress_update.get("recruited", []):
             def_id = entry["def_id"]
             done = int(entry["done"])
