@@ -296,9 +296,10 @@ def build_offline_matrix_report(matrix: dict[str, Any] | None = None,
             row["status"] = "observed"
             row["attribution"] = archive_attribution(records, synthetic=True)
         else:
-            row["blocked_reason"] = case.get("blocked_reason", "Rust Stack 3/4 driver fixture pending")
+            row["blocked_reason"] = case.get(
+                "blocked_reason", "not executed; run the offline-run command with the real driver")
         rows.append(row)
-    return {"schema_version": 1, "matrix_status": "partial_pending_rust" if any(
+    return {"schema_version": 1, "matrix_status": "unknown_unrun" if any(
         row["status"] != "observed" for row in rows) else "observed",
         "cases": rows,
         "denominator": {"scheduled": len(rows),

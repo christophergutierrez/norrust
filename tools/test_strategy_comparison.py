@@ -71,7 +71,7 @@ class OfflineMatrixTests(unittest.TestCase):
         matrix = json.loads(strategy.OFFLINE_MATRIX_PATH.read_text())
         report = strategy.build_offline_matrix_report(matrix)
         self.assertEqual(report["denominator"], {"scheduled": 4, "observed": 0, "unknown_unrun": 4})
-        self.assertEqual(report["matrix_status"], "partial_pending_rust")
+        self.assertEqual(report["matrix_status"], "unknown_unrun")
         self.assertTrue(all(row["status"] == "unknown_unrun" for row in report["cases"]))
 
     def test_event_attribution_counts_actual_sources_only(self):
