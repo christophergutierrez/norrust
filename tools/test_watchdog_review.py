@@ -265,6 +265,42 @@ class WatchdogReviewTests(unittest.TestCase):
             self.assertEqual(outcomes["stop_requests"], 1)
             self.assertEqual(outcomes["stop_rejection_reasons"], {"evidence": 1})
 
+    def test_legacy_stop_recommendation_proves_request_without_double_counting(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "observer.journal.ndjson"
+            path.write_text('{"type":"stop_recommendation","reason_code":"repeated_no_progress"}\n')
+            outcomes = read_observer_outcomes(path)
+            self.assertEqual(outcomes["stop_requests"], 1)
+
+            root = Path(td) / "review"
+            root.mkdir()
+            log, state_root = self._run_files(root)
+            journal = state_root / "observer-state.journal.ndjson"
+            journal.write_text(
+                '{"type":"stop_evaluation","eligible":false,"failed_prerequisite":"evidence","stop_requested":false}\n'
+                '{"type":"stop_evaluation","eligible":true,"stop_requested":true}\n'
+                '{"type":"stop_recommendation","reason_code":"repeated_no_progress"}\n')
+            packet = review(log)
+            self.assertEqual(packet["stop_review"]["evaluations"], 2)
+            self.assertEqual(packet["stop_review"]["rejected"], 1)
+            self.assertEqual(packet["stop_review"]["stop_requests"], 1)
+            path.write_text(
+                '{"type":"stop_evaluation","eligible":true,"stop_requested":true}\n'
+                '{"type":"stop_recommendation","reason_code":"repeated_no_progress"}\n')
+            outcomes = read_observer_outcomes(path)
+            self.assertEqual(outcomes["stop_requests"], 1)
+
+    def test_missing_observer_journal_keeps_stop_counts_unknown(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            log, state_root = self._run_files(root)
+            (state_root / "observer-state.json").write_text(json.dumps(
+                {"run_id": "run-uuid", "dispatched_calls": 1,
+                 "last_verdict": {"decision": "stop", "reason_code": "repeated_no_progress"}}))
+            packet = review(log)
+            self.assertIsNone(packet["model_evaluation"]["stop_requests"])
+            self.assertIsNone(packet["stop_review"]["evaluations"])
+
 
 if __name__ == "__main__":
     unittest.main()

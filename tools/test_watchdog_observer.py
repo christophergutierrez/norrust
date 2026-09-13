@@ -88,6 +88,13 @@ class DecisionValidationTests(unittest.TestCase):
         self.assertEqual(coverage, "bounded")
         self.assertLessEqual(conservative_token_count(json.dumps(payload)), MAX_INPUT_TOKENS)
 
+    def test_controller_context_clipping_is_incomplete_critical_coverage(self):
+        packet = {"stage": "active", "observation_sequence": 1, "alerts": [],
+                  "controller_context": {"detail": "x" * 100000}}
+        payload, clipped, coverage = build_observer_request(packet)
+        self.assertTrue(clipped)
+        self.assertEqual(coverage, "incomplete")
+
     def test_two_bounded_evidence_slices_remain_usable(self):
         packet = {"stage": "request", "observation_sequence": 8,
                   "alerts": [{"identity": "incident"}], "coverage_events": [],
@@ -176,15 +183,16 @@ class ControllerTests(unittest.TestCase):
                          "run_id": "run-uuid"}]
         self.stops = []
 
-    def make(self, backend):
+    def make(self, backend, *, mode="enforce", max_calls=MAX_CALLS, evidence_reader=None,
+             progress=None, stop=None):
         self.temp = tempfile.TemporaryDirectory()
         return ObserverController(
             "run-uuid", Path(self.temp.name) / "watchdog.json", backend=backend,
-            catalog_game_id="catalog-game", mode="enforce",
-            progress=lambda _run: self.current[0],
-            evidence_reader=lambda *_args: {"run_id": "run-uuid", "evidence_id": "e1", "data": "recorded"},
-            stop=lambda *args: self.stops.append(args), clock=lambda: self.clock_value[0],
-            usage_sidecar=Path(self.temp.name) / "usage.ndjson")
+            catalog_game_id="catalog-game", mode=mode,
+            progress=progress or (lambda _run: self.current[0]),
+            evidence_reader=evidence_reader or (lambda *_args: {"run_id": "run-uuid", "evidence_id": "e1", "data": "recorded"}),
+            stop=stop or (lambda *args: self.stops.append(args)), clock=lambda: self.clock_value[0],
+            usage_sidecar=Path(self.temp.name) / "usage.ndjson", max_calls=max_calls)
 
     def tearDown(self):
         if hasattr(self, "controller"):
@@ -363,6 +371,120 @@ class ControllerTests(unittest.TestCase):
         journal = (Path(self.temp.name) / "watchdog.journal.ndjson").read_text()
         self.assertIn('"failed_prerequisite":"confirmation"', journal)
         self.assertIn('"failed_prerequisite":"inspection"', journal)
+
+    def test_contract_following_observer_stops_in_three_calls_with_stale_progress(self):
+        def follow_contract(payload):
+            packet = json.loads(payload["messages"][-1]["content"])["watchdog_packet"]
+            context = packet["controller_context"]
+            if context["phase"] == "investigation":
+                return decision("stop", "repeated_no_progress", ["e1"])
+            if context["distinct_observation_count"] >= 2:
+                return decision("inspect", "check", ["e1"])
+            return decision("continue", "confirmation_missing")
+
+        backend = FakeObserverBackend(follow_contract)
+        self.controller = self.make(backend, max_calls=3)
+        first = dict(self.current[0], freshness={"state": "stale"})
+        self.assertTrue(self.controller.poll(first))
+        self.controller.wait(2)
+        self.clock_value[0] = 300
+        second = dict(first, observation_sequence=2, freshness={"state": "fresh"})
+        self.current[0] = second
+        self.assertTrue(self.controller.poll(second))
+        self.controller.wait(2)
+        self.assertEqual(self.controller.state["dispatched_calls"], 3)
+        self.assertEqual(len(self.stops), 1)
+        journal = (Path(self.temp.name) / "watchdog.journal.ndjson").read_text()
+        self.assertIn('"eligible":true', journal)
+        self.assertIn('"stop_requested":true', journal)
+
+    def test_observe_mode_records_eligible_without_submitting_stop(self):
+        backend = FakeObserverBackend([
+            decision("continue", "confirmation_missing"),
+            decision("inspect", "check", ["e1"]),
+            decision("stop", "repeated_no_progress", ["e1"]),
+        ])
+        self.controller = self.make(backend, mode="observe", max_calls=3)
+        self.assertTrue(self.controller.poll(self.current[0]))
+        self.controller.wait(2)
+        self.clock_value[0] = 300
+        self.current[0] = dict(self.current[0], observation_sequence=3)
+        self.assertTrue(self.controller.poll(self.current[0]))
+        self.controller.wait(2)
+        self.assertEqual(self.stops, [])
+        outcomes = json.loads("[" + ",".join(
+            line for line in (Path(self.temp.name) / "watchdog.journal.ndjson").read_text().splitlines()
+            if '"type":"stop_evaluation"' in line) + "]")
+        self.assertEqual(outcomes[0]["eligible"], True)
+        self.assertEqual(outcomes[0]["stop_requested"], False)
+
+    def test_unknown_foreign_and_uninspected_evidence_reject_stop(self):
+        backend = FakeObserverBackend([
+            decision("inspect", "check", ["unknown"]),
+            decision("stop", "repeated_no_progress", ["e1"]),
+        ])
+        self.controller = self.make(backend, max_calls=2)
+        self.assertTrue(self.controller.poll(self.current[0]))
+        self.controller.wait(2)
+        journal = (Path(self.temp.name) / "watchdog.journal.ndjson").read_text()
+        self.assertIn('"failed_prerequisite":"evidence"', journal)
+        self.assertEqual(self.stops, [])
+
+    def test_missing_current_progress_or_sequence_rejects_stop_as_stale(self):
+        backend = FakeObserverBackend([
+            decision("continue", "confirmation_missing"),
+            decision("inspect", "check", ["e1"]),
+            decision("stop", "repeated_no_progress", ["e1"]),
+        ])
+        self.controller = self.make(backend, max_calls=3, progress=lambda _run: None)
+        self.assertTrue(self.controller.poll(self.current[0]))
+        self.controller.wait(2)
+        self.clock_value[0] = 600
+        self.current[0] = dict(self.current[0], observation_sequence=2)
+        self.assertTrue(self.controller.poll(self.current[0]))
+        self.controller.wait(2)
+        journal = (Path(self.temp.name) / "watchdog.journal.ndjson").read_text()
+        self.assertIn('"failed_prerequisite":"freshness"', journal)
+        self.assertEqual(self.stops, [])
+
+        self.controller.close(wait=True)
+        self.temp.cleanup()
+        self.temp = tempfile.TemporaryDirectory()
+        backend = FakeObserverBackend([
+            decision("continue", "confirmation_missing"),
+            decision("inspect", "check", ["e1"]),
+            decision("stop", "repeated_no_progress", ["e1"]),
+        ])
+        missing_sequence = dict(self.current[0])
+        missing_sequence.pop("observation_sequence")
+        self.controller = self.make(backend, max_calls=3,
+                                    progress=lambda _run: missing_sequence)
+        self.assertTrue(self.controller.poll(self.current[0]))
+        self.controller.wait(2)
+        self.clock_value[0] = 900
+        self.current[0] = dict(self.current[0], observation_sequence=3)
+        self.assertTrue(self.controller.poll(self.current[0]))
+        self.controller.wait(2)
+        journal = (Path(self.temp.name) / "watchdog.journal.ndjson").read_text()
+        self.assertIn('"failed_prerequisite":"freshness"', journal)
+        self.assertEqual(self.stops, [])
+
+        self.controller.close(wait=True)
+        self.temp.cleanup()
+        self.temp = tempfile.TemporaryDirectory()
+        self.current[0] = dict(self.current[0], observation_sequence=2)
+        backend = FakeObserverBackend([
+            decision("inspect", "check", ["e1"]),
+            decision("stop", "repeated_no_progress", ["other"]),
+        ])
+        self.controller = self.make(backend, max_calls=2,
+                                    evidence_reader=lambda *_args: {
+                                        "run_id": "foreign-run", "evidence_id": "e1", "data": "x"})
+        self.assertTrue(self.controller.poll(self.current[0]))
+        self.controller.wait(2)
+        journal = (Path(self.temp.name) / "watchdog.journal.ndjson").read_text()
+        self.assertIn('"failed_prerequisite":"evidence"', journal)
+        self.assertEqual(self.stops, [])
 
 
 if __name__ == "__main__":

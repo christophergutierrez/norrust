@@ -1192,18 +1192,19 @@ class ObserverController:
         if count < 2 or not alert_id or not isinstance(sequence, int):
             return False, "confirmation"
         if self.progress is None:
-            current = packet
-        else:
-            try:
-                current = self.progress(self.run_id)
-            except Exception:
-                return False, "freshness"
+            return False, "freshness"
+        try:
+            current = self.progress(self.run_id)
+        except Exception:
+            return False, "freshness"
         if not isinstance(current, Mapping):
             return False, "freshness"
         if current.get("stage") == "terminal":
             return False, "terminal"
         current_sequence = current.get("observation_sequence")
-        if (isinstance(current_sequence, int) and current_sequence < sequence):
+        if (isinstance(current_sequence, bool) or not isinstance(current_sequence, int)
+                or isinstance(sequence, bool) or not isinstance(sequence, int)
+                or current_sequence < sequence):
             return False, "freshness"
         if isinstance(current.get("run_id"), str) and current.get("run_id") != self.run_id:
             return False, "identity"

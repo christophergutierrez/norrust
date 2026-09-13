@@ -292,12 +292,18 @@ def review(log_path: str | Path, *, run_id: str | None = None,
     # Stop evaluations are controller decisions, including rejected proposals
     # and observe-mode eligible recommendations.  Keep them separate from
     # provider failures so review distinguishes model output from enforcement.
+    stop_known = journal_outcomes.get("journal_available", False)
+    stop_eligible = journal_outcomes.get("eligible_stops") if stop_known else None
+    stop_rejected = journal_outcomes.get("rejected_stops") if stop_known else None
+    stop_requested = journal_outcomes.get("stop_requests") if stop_known else None
+    stop_evaluations = journal_outcomes.get("stop_evaluations") if stop_known else None
+    stop_reasons = journal_outcomes.get("stop_rejection_reasons") if stop_known else None
     evaluation.update({
-        "stop_evaluations": journal_outcomes.get("stop_evaluations", 0),
-        "eligible_stops": journal_outcomes.get("eligible_stops", 0),
-        "rejected_stops": journal_outcomes.get("rejected_stops", 0),
-        "stop_requests": journal_outcomes.get("stop_requests", 0),
-        "stop_rejection_reasons": journal_outcomes.get("stop_rejection_reasons", {}),
+        "stop_evaluations": stop_evaluations,
+        "eligible_stops": stop_eligible,
+        "rejected_stops": stop_rejected,
+        "stop_requests": stop_requested,
+        "stop_rejection_reasons": stop_reasons,
     })
     if not isinstance(status, dict):
         coverage_events.append("recorder_status_invalid")
@@ -320,17 +326,17 @@ def review(log_path: str | Path, *, run_id: str | None = None,
                            "last_completed_turn": status.get("last_completed_turn"),
                            "freshness": status.get("freshness")},
         "incidents": incidents,
-        "stop_effect": {"requested": verdict.get("decision") == "stop" if verdict else False,
+        "stop_effect": {"proposed": verdict.get("decision") == "stop" if verdict else False,
                         "effective": bool(terminal and terminal.get("terminal_class") == "observer_interrupted"),
                         "reason": verdict.get("reason_code") if verdict else None,
-                        "eligible": journal_outcomes.get("eligible_stops", 0) > 0,
-                        "stop_requested": journal_outcomes.get("stop_requests", 0) > 0,
-                        "rejected": journal_outcomes.get("rejected_stops", 0)},
-        "stop_review": {"evaluations": journal_outcomes.get("stop_evaluations", 0),
-                         "eligible": journal_outcomes.get("eligible_stops", 0),
-                         "rejected": journal_outcomes.get("rejected_stops", 0),
-                         "stop_requests": journal_outcomes.get("stop_requests", 0),
-                         "rejection_reasons": journal_outcomes.get("stop_rejection_reasons", {})},
+                        "eligible": (stop_eligible > 0 if isinstance(stop_eligible, int) else None),
+                        "requested": (stop_requested > 0 if isinstance(stop_requested, int) else None),
+                        "rejected": stop_rejected},
+        "stop_review": {"evaluations": stop_evaluations,
+                         "eligible": stop_eligible,
+                         "rejected": stop_rejected,
+                         "stop_requests": stop_requested,
+                         "rejection_reasons": stop_reasons},
         "usage": usage,
         "model_evaluation": evaluation,
         "coverage": {"degraded": status.get("degraded"), "events": coverage_events,

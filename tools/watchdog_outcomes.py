@@ -26,8 +26,10 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
     stop_evaluations = 0
     eligible_stops = 0
     stop_requests = 0
+    legacy_stop_requests = 0
     rejected_stops = 0
     stop_rejection_reasons: dict[str, int] = {}
+    journal_available = True
     last_outcome: str | None = None
     try:
         with journal_path.open("rb") as stream:
@@ -38,6 +40,7 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
         if len(all_lines) > 4096:
             truncated = True
     except OSError:
+        journal_available = False
         truncated = False
         lines = []
         evidence_gaps["journal_unavailable"] = 1
@@ -72,6 +75,11 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
             if event.get("stop_requested") is True:
                 stop_requests += 1
             continue
+        if kind == "stop_recommendation":
+            # Older journals predate stop_evaluation but the recommendation
+            # itself proves that the controller submitted a stop request.
+            legacy_stop_requests += 1
+            continue
         if kind in VERDICT_EVENTS:
             verdicts += 1
             if decision == "inspect":
@@ -103,9 +111,11 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
         "journal_truncated": truncated,
         "journal_intact": not evidence_gaps,
         "coverage_complete": not evidence_gaps and failures == 0,
-        "stop_evaluations": stop_evaluations,
-        "eligible_stops": eligible_stops,
-        "rejected_stops": rejected_stops,
-        "stop_requests": stop_requests,
-        "stop_rejection_reasons": stop_rejection_reasons,
+        "journal_available": journal_available,
+        "stop_evaluations": stop_evaluations if journal_available else None,
+        "eligible_stops": eligible_stops if journal_available else None,
+        "rejected_stops": rejected_stops if journal_available else None,
+        "stop_requests": ((stop_requests if stop_evaluations else legacy_stop_requests)
+                          if journal_available else None),
+        "stop_rejection_reasons": stop_rejection_reasons if journal_available else None,
     }
