@@ -36,6 +36,7 @@ import random
 import sqlite3
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,11 +47,14 @@ from . import game_history
 from . import match_report
 from .decision_annotations import guide_hash as _annotation_guide_hash
 from .llm_client import load_tactical_playbook, source_metadata
+from .watchdog_stop import stop_run
 
 SCHEMA_VERSION = 1
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DRIVER = "norrust_core/target/debug/greedy_driver"
 STRATEGY_TREATMENTS = ("strategy_fixed", "strategy_glm", "focused_glm")
+DEFAULT_CELL_DEADLINE_SECONDS = 45 * 60
+SUPERVISOR_HEARTBEAT_SECONDS = 5 * 60
 
 REQUIRED_CELL_KEYS = ("id", "scenario", "seed", "faction0", "faction1",
                       "llm_side", "gold", "max_turns", "model", "backend")
@@ -160,7 +164,9 @@ def resolve_manifest(manifest: dict[str, Any], *, rng: random.Random | None = No
             raise ManifestError(f"cell {cell_id!r}: invalid decision mode or action encoding")
         if encoding == "choices" and mode != "focused":
             raise ManifestError("choices encoding requires focused mode")
-        treatment = cell.get("strategy_treatment") or cell.get("treatment")
+        if "treatment" in cell:
+            raise ManifestError("'treatment' is retired; use the single 'strategy_treatment' field")
+        treatment = cell.get("strategy_treatment")
         if treatment is not None and treatment not in STRATEGY_TREATMENTS:
             raise ManifestError(f"cell {cell_id!r}: unknown strategy treatment {treatment!r}")
         if treatment == "strategy_fixed":
@@ -226,6 +232,64 @@ class CellRunResult:
     error: str | None = None
 
 
+def _write_supervisor_heartbeat(cell_dir: Path, *, state: str,
+                                started_monotonic: float, now_monotonic: float) -> None:
+    """Persist a compact run-owned heartbeat for an operator that is idle.
+
+    This sidecar is deliberately small and independent of the match log.  The
+    existing ``llm_supervisor`` remains the only process-tree owner; the bakeoff
+    runner merely records liveness and requests its durable stop at the cell's
+    wall deadline.
+    """
+    path = cell_dir / "supervisor_heartbeat.json"
+    payload = {"schema_version": 1, "state": state, "updated_at": _now(),
+               "elapsed_seconds": max(0.0, now_monotonic - started_monotonic),
+               "heartbeat_seconds": SUPERVISOR_HEARTBEAT_SECONDS, "compact": True}
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _run_supervised(argv: list[str], *, log_path: Path, cell_dir: Path,
+                    env: dict[str, str], deadline_seconds: float | None) -> int:
+    """Run one client through the recording-only supervisor.
+
+    The monitor has no provider or observer role.  It writes a 5-minute
+    heartbeat and, on deadline, persists a stop intent consumed by the
+    existing supervisor, which performs owned descendant cleanup.
+    """
+    supervisor_argv = [sys.executable, "-m", "tools.llm_supervisor",
+                       "--log", str(log_path), "--max-restarts", "0", "--", *argv]
+    stderr_path = cell_dir / "client_stderr.log"
+    started = time.monotonic()
+    next_heartbeat = started
+    deadline = (started + float(deadline_seconds)
+                if deadline_seconds is not None else None)
+    with open(stderr_path, "w", encoding="utf-8") as stderr_file:
+        process = subprocess.Popen(supervisor_argv, cwd=str(REPO_ROOT), env=env,
+                                    stdout=subprocess.DEVNULL, stderr=stderr_file)
+        stop_requested = False
+        while process.poll() is None:
+            now = time.monotonic()
+            if now >= next_heartbeat:
+                _write_supervisor_heartbeat(cell_dir, state="running",
+                                            started_monotonic=started, now_monotonic=now)
+                next_heartbeat = now + SUPERVISOR_HEARTBEAT_SECONDS
+            if deadline is not None and now >= deadline and not stop_requested:
+                # The maintained stop protocol allows evidence-free operator
+                # cancellation; the runner records that this one was issued
+                # automatically by its wall clock in the heartbeat sidecar.
+                stop_run(log_path, "operator_wall_deadline", [], 0)
+                stop_requested = True
+                _write_supervisor_heartbeat(cell_dir, state="deadline_stop_requested",
+                                            started_monotonic=started, now_monotonic=now)
+            time.sleep(0.1)
+        ended = time.monotonic()
+    _write_supervisor_heartbeat(cell_dir, state="finished", started_monotonic=started,
+                                now_monotonic=ended)
+    return int(process.returncode if process.returncode is not None else 1)
+
+
 def _safe_dirname(cell_id: str) -> str:
     return "".join(ch if (ch.isalnum() or ch in "-_.") else "_" for ch in cell_id) or "cell"
 
@@ -250,7 +314,7 @@ def write_identity(cell_dir: Path, cell: dict[str, Any]) -> None:
             "decision_mode": cell.get("decision_mode"),
             "action_encoding": cell.get("action_encoding"),
             "checkpoint_fixture": cell.get("checkpoint_fixture"),
-            "strategy_treatment": cell.get("strategy_treatment") or cell.get("treatment"),
+            "strategy_treatment": cell.get("strategy_treatment"),
             "strategy_policy": cell.get("strategy_policy"),
         },
         "backend": {"kind": cell.get("backend", {}).get("kind")},
@@ -394,18 +458,13 @@ def run_cell(cell: dict[str, Any], run_dir: Path, *, timeout: float | None = Non
     log_path = cell_dir / "match.ndjson"
     started = _now()
     argv, env = build_llm_client_argv(cell, cell_dir)
-    stderr_path = cell_dir / "client_stderr.log"
     exit_code: int | None
     try:
-        with open(stderr_path, "w") as stderr_file:
-            completed = subprocess.run(argv, cwd=str(REPO_ROOT), env=env,
-                                       stdout=subprocess.DEVNULL, stderr=stderr_file,
-                                       timeout=timeout)
-        exit_code = completed.returncode
+        exit_code = _run_supervised(argv, log_path=log_path, cell_dir=cell_dir,
+                                    env=env, deadline_seconds=(
+                                        DEFAULT_CELL_DEADLINE_SECONDS if timeout is None else timeout))
         status = "ok" if exit_code == 0 else "failed"
-        error = None if exit_code == 0 else f"client exited {exit_code}; see {stderr_path.name}"
-    except subprocess.TimeoutExpired:
-        exit_code, status, error = None, "failed", "timeout waiting for client process"
+        error = None if exit_code == 0 else f"supervised client exited {exit_code}; see client_stderr.log"
     except OSError as exc:
         exit_code, status, error = None, "error", str(exc)
     ended = _now()
@@ -805,7 +864,7 @@ def check_comparison_validity(resolved_manifest: dict[str, Any]) -> dict[str, An
                 # differ, while source/driver/guide/checkpoint identity and
                 # the engine opening remain frozen.
                 if kind == "strategy_comparison" and key in (
-                        "backend", "model", "pricing", "budgets", "transport_fingerprint",
+                        "backend", "model", "pricing", "transport_fingerprint",
                         *TREATMENT_KEYS):
                     continue
                 if kind == "baseline_candidate" and key == declared_field:
@@ -831,13 +890,13 @@ def check_comparison_validity(resolved_manifest: dict[str, Any]) -> dict[str, An
                                        "actual": {"decision_mode": cell.get("decision_mode"),
                                                   "action_encoding": cell.get("action_encoding")}})
         elif kind == "strategy_comparison":
-            treatments = [c.get("strategy_treatment") or c.get("treatment") for c in group_cells]
+            treatments = [c.get("strategy_treatment") for c in group_cells]
             if sorted(t for t in treatments if isinstance(t, str)) != sorted(STRATEGY_TREATMENTS):
                 mismatches.append({"error": "strategy comparison needs exactly strategy_fixed, strategy_glm, focused_glm"})
             if len(set(treatments)) != len(treatments):
                 mismatches.append({"error": "strategy comparison treatments must be unique"})
             for cell in group_cells:
-                treatment = cell.get("strategy_treatment") or cell.get("treatment")
+                treatment = cell.get("strategy_treatment")
                 if treatment == "strategy_fixed":
                     if cell.get("decision_mode") != "strategy" or not cell.get("strategy_policy"):
                         mismatches.append({"cell": cell["id"], "field": "strategy_fixed",
@@ -850,6 +909,22 @@ def check_comparison_validity(resolved_manifest: dict[str, Any]) -> dict[str, An
                         or cell.get("focused_max_operations_per_decision") is not None):
                     mismatches.append({"cell": cell["id"], "field": "focused_glm",
                                        "expected": "focused mode without operation limit"})
+            paid = [c for c in group_cells if c.get("strategy_treatment") in
+                    ("strategy_glm", "focused_glm")]
+            if len(paid) == 2:
+                matched_fields = ("backend", "model", "pricing", "budgets",
+                                  "scenario", "seed", "gold", "max_turns",
+                                  "faction0", "faction1", "llm_side", "reasoning_effort",
+                                  "incremental_turns")
+                first = paid[0]
+                for candidate in paid[1:]:
+                    for field in matched_fields:
+                        if candidate.get(field) != first.get(field):
+                            mismatches.append({"cell": candidate["id"],
+                                               "baseline_cell": first["id"],
+                                               "field": field,
+                                               "baseline_value": first.get(field),
+                                               "candidate_value": candidate.get(field)})
     return {"experiment_kind": kind, "valid": not mismatches, "mismatches": mismatches}
 
 

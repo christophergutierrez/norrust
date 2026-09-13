@@ -60,6 +60,51 @@ also require physical call evidence. Input includes cached input where reported;
 output can include reasoning. These overlapping categories are never added again.
 Reports include aggregate-only requests and unassigned physical calls.
 
+## Stack 4 strategy comparison
+
+The prepared strategy pilot has exactly three cells: `strategy_fixed`,
+`strategy_glm`, and `focused_glm`. The fixed cell runs the checked-in routine
+policy without a model backend. The two GLM cells use the same scenario, seed,
+factions, gold, side, engine-turn limit, backend/model, dated pricing, and
+explicit budgets; only the named decision treatment differs. The maintained
+field is `strategy_treatment`.
+
+The pilot schedule is deliberately still `prepared_not_run`. It permits at
+most two paid cells, 200,000 player tokens per paid cell, six completed engine
+side turns, six player turns for the GLM treatments, a 900-second model-call
+timeout, a 2,100-second controlled-turn timeout, a 2,700-second cell wall
+deadline, and a $1 aggregate estimate. The recorded public rate evidence is
+2026-09-13 Fireworks GLM-5.3 Flash: $0.15/M uncached input, $0.03/M cached
+input, and $0.50/M output. Its conservative two-cell estimate is $0.8815744,
+including one in-flight context bounded at 1,048,576 tokens. Rates must be
+rechecked read-only before any launch; no paid call or observer is part of the
+offline checks.
+
+The runner starts each cell through the existing recording-only
+`tools.llm_supervisor` with zero restarts. It keeps a compact, durable
+`supervisor_heartbeat.json` every five minutes and requests the existing owned
+process-tree cleanup at the cell wall deadline. A stopped or incomplete cell
+remains in the report with unknown coverage.
+
+The executable provider-free matrix uses the real `greedy_driver` and fixed
+routine policies:
+
+```bash
+python3 -m tools.strategy_comparison offline-run \
+  --run-dir /absolute/new/strategy-matrix \
+  --driver /absolute/path/to/norrust_core/target/debug/greedy_driver \
+  --out /absolute/new/strategy-matrix-report.json
+```
+
+It covers quiet opening, multi-turn travel, blocked recruitment, and contact.
+Quiet policies demonstrate different recruited deployments and gold spend;
+travel repeats the same policy and seed and compares the canonical executed
+event digest. Every source is imported twice into the existing SQLite catalog,
+and the report records whether the second import was idempotent. Fixed-policy
+rows have zero model calls and no fabricated token usage. A terminal marker by
+itself does not make evidence complete: missing usage, boundary, replay, or
+partial-failure coverage remains explicit as `unknown_*`.
+
 Cost needs explicit dated rates in each cell, for example:
 
 ```json

@@ -1,35 +1,36 @@
 {
   "schema_version": 1,
-  "status": "prepared_not_run",
-  "description": "Provider-free Stack 4 strategy executor matrix",
+  "status": "executable_network_free",
+  "description": "Provider-free Stack 4 strategy executor matrix through the real driver",
   "cases": [
     {
       "id": "quiet-opening",
       "description": "Recruit and reach the first selected village without contact.",
       "policy_variants": ["quiet_policy_a", "quiet_policy_b"],
-      "expected": {"model_calls": 0, "contact": false, "deployment_diff_required": true},
-      "blocked_reason": "Rust Stack 3/4 driver fixture pending"
+      "checkpoint_fixture": "quiet_checkpoint.json",
+      "expected": {"model_calls": 0, "contact": false, "deployment_diff_required": true}
     },
     {
       "id": "multiturn-travel",
       "description": "Continue a legal route over multiple side turns.",
       "policy_variants": ["travel_policy_a", "travel_policy_b"],
-      "expected": {"identical_policy_seed_replays": true, "actual_events_required": true},
-      "blocked_reason": "Rust route and checkpoint integration pending"
+      "checkpoint_fixture": "quiet_checkpoint.json",
+      "identical_policy_seed_replays": true,
+      "expected": {"identical_policy_seed_replays": true, "actual_events_required": true}
     },
     {
       "id": "blocked-objective",
       "description": "Expose a blocked objective as a typed exception.",
       "policy_variants": ["blocked_policy"],
-      "expected": {"exception": "no_executable_orders", "fallback_to_greedy": false},
-      "blocked_reason": "Rust exception fixture pending"
+      "checkpoint_fixture": "blocked_checkpoint.json",
+      "expected": {"exception": "recruitment_blocked", "fallback_to_greedy": false}
     },
     {
       "id": "contact",
       "description": "Stop at enemy contact and preserve the contact source evidence.",
       "policy_variants": ["contact_policy"],
-      "expected": {"exception": "contact", "model_tactical_fallback": false},
-      "blocked_reason": "Rust contact fixture pending"
+      "checkpoint_fixture": "contact_checkpoint.json",
+      "expected": {"exception": "contact", "model_tactical_fallback": false}
     }
   ]
 }

@@ -78,6 +78,15 @@ class ResolveManifestTests(unittest.TestCase):
         bakeoff.resolve_manifest(manifest)
         self.assertEqual(manifest, original)
 
+    def test_strategy_treatment_has_no_compatibility_alias(self):
+        manifest = _small_manifest(cells=[_base_cell("cell-1", treatment="strategy_fixed",
+                                                     strategy_treatment=None,
+                                                     decision_mode="strategy",
+                                                     strategy_policy="tools/fixtures/strategy_comparison/strategy_fixed_policy.json",
+                                                     backend={"kind": "fixed_policy"})])
+        with self.assertRaises(bakeoff.ManifestError):
+            bakeoff.resolve_manifest(manifest)
+
 
 class ComparisonValidityTests(unittest.TestCase):
     def _resolved_two_cells(self):
@@ -423,6 +432,32 @@ class CliSmokeTest(unittest.TestCase):
         completed = subprocess.run([sys.executable, "-m", "tools.model_bakeoff"],
                                    cwd=ROOT, capture_output=True, text=True)
         self.assertNotEqual(completed.returncode, 0)
+
+
+class SupervisorContractTests(unittest.TestCase):
+    def test_heartbeat_sidecar_is_compact_and_uses_five_minute_interval(self):
+        with tempfile.TemporaryDirectory() as td:
+            directory = Path(td)
+            bakeoff._write_supervisor_heartbeat(directory, state="running",
+                                                 started_monotonic=10, now_monotonic=17)
+            packet = json.loads((directory / "supervisor_heartbeat.json").read_text())
+        self.assertEqual(packet["heartbeat_seconds"], bakeoff.SUPERVISOR_HEARTBEAT_SECONDS)
+        self.assertTrue(packet["compact"])
+        self.assertEqual(packet["elapsed_seconds"], 7)
+
+    def test_short_deadline_requests_recording_supervisor_stop(self):
+        with tempfile.TemporaryDirectory() as td:
+            directory = Path(td)
+            log = directory / "match.ndjson"
+            command = [sys.executable, "-c", "import time; time.sleep(10)", "--log", str(log)]
+            env = dict(os.environ)
+            code = bakeoff._run_supervised(command, log_path=log, cell_dir=directory,
+                                            env=env, deadline_seconds=0.2)
+            self.assertNotEqual(code, 0)
+            heartbeat = json.loads((directory / "supervisor_heartbeat.json").read_text())
+            self.assertEqual(heartbeat["state"], "finished")
+            rows = [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
+            self.assertTrue(any(row.get("type") == "observer_interrupted" for row in rows))
 
 
 if __name__ == "__main__":

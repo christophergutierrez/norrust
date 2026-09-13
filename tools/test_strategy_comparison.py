@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import os
 from pathlib import Path
 
 from . import model_bakeoff
@@ -105,6 +106,38 @@ class OfflineMatrixTests(unittest.TestCase):
         })
         self.assertEqual(report["cases"][0]["status"], "observed")
         self.assertTrue(report["cases"][0]["attribution"]["synthetic"])
+
+    def test_archive_deduplicates_logical_model_request_and_response(self):
+        attribution = strategy.archive_attribution([
+            {"type": "metadata", "usage_measured": False},
+            {"type": "model_request", "request_id": "r1"},
+            {"type": "model", "request_id": "r1"},
+            {"type": "checkpoint_ref", "state_revision": 1},
+            {"type": "terminal", "reason": "max_turns"},
+        ])
+        self.assertEqual(attribution["model_request_count"], 1)
+        self.assertEqual(attribution["usage_coverage"], "unknown")
+        self.assertEqual(attribution["evidence_status"], "unknown_coverage")
+
+    @unittest.skipUnless(Path(os.environ.get(
+        "NORRUST_TEST_DRIVER", "norrust_core/target/debug/greedy_driver")).is_file(),
+        "build the actual integration driver for the executable matrix")
+    def test_executable_matrix_real_driver_predicates(self):
+        with tempfile.TemporaryDirectory() as td:
+            report = strategy.run_offline_matrix(
+                run_dir=Path(td),
+                driver=os.environ.get("NORRUST_TEST_DRIVER"), timeout=45)
+        self.assertEqual(report["matrix_status"], "observed")
+        self.assertEqual(report["denominator"]["unknown_unrun"], 0)
+        quiet = next(row for row in report["cases"] if row["case_id"] == "quiet-opening")
+        self.assertTrue(quiet["policy_difference"]["satisfied"])
+        travel = next(row for row in report["cases"] if row["case_id"] == "multiturn-travel")
+        self.assertTrue(travel["deterministic_replay"]["same_event_digest"])
+        self.assertTrue(all(run["import_idempotent"] for row in report["cases"] for run in row["runs"]))
+        self.assertEqual(next(row for row in report["cases"] if row["case_id"] == "blocked-objective")
+                         ["runs"][0]["exception"], "recruitment_blocked")
+        self.assertEqual(next(row for row in report["cases"] if row["case_id"] == "contact")
+                         ["runs"][0]["exception"], "contact")
 
 
 if __name__ == "__main__":
