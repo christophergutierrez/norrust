@@ -256,6 +256,32 @@ class StrategyRoutineStack3Tests(unittest.TestCase):
             self.assertEqual(len(repairs), 1)
             self.assertEqual(sum(event.get("kind") == "attack" for event in events(rows)), 1)
 
+    def test_final_only_nonlethal_army_exposure_still_asks_model(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            checkpoint, _, backend, prompt_log = prepare(
+                root, "contact.json", [policy(), {"kind": "finish_turn"}],
+                accepted=3, maximum=3)
+            data = json.loads(checkpoint.read_text())
+            # Recruiters are distant and safe; this soldier cannot attack
+            # again, but the adjacent enemy can attack it on its next activation.
+            soldier = next(u for u in data["save_state"]["units"] if u["id"] == 3)
+            soldier.update(moved=True, attacked=True)
+            encoded = json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
+            checkpoint = root / ("checkpoint-" + hashlib.sha256(encoded).hexdigest() + ".json")
+            checkpoint.write_bytes(encoded)
+            log = root / "final-only-army-exposure.ndjson"
+            result = launch(root, log, checkpoint, backend, maximum=3)
+            assert_success(self, result, log)
+            rows = records(log)
+            self.assertEqual(len(prompts(prompt_log)), 2)
+            self.assertTrue(any(r.get("type") == "routine_exception"
+                                and r.get("reason") == "contact" for r in rows))
+            self.assertFalse(any(e.get("kind") == "attack" and e.get("source") == "llm"
+                                 for e in events(rows)))
+            self.assertTrue(all(r.get("source") == "llm" and r.get("request_id")
+                                for r in forwarded(rows)))
+
     def test_explicit_finish_and_resign_are_forwarded(self):
         for response, expected in (({"kind": "finish_turn"}, "FinishWithGreedy"),
                                    ({"kind": "resign"}, "Resign")):
