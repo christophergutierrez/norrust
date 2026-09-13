@@ -669,9 +669,58 @@ def find_unreconstructable_routine_batch(parent_records: list[dict[str, Any]]) -
             pending_batch_id = None
     if pending_batch_id is None:
         return None
+    # ``checkpoint_ref`` is emitted before the acknowledgement and before the
+    # legacy ``batch_committed`` marker.  It is therefore the authoritative
+    # commitment proof for a process that dies in that small window.
     committed_batch_ids = {r.get("batch_id") for r in parent_records
-                           if r.get("type") == "batch_committed"}
+                           if r.get("type") in ("batch_committed", "checkpoint_ref")}
     return pending_batch_id if pending_batch_id in committed_batch_ids else None
+
+
+def pending_routine_commit(parent_records: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """Return the latest checkpoint-proven routine proposal awaiting adoption.
+
+    The returned record is the durable ``checkpoint_ref`` itself.  Stack 2
+    callers use its persisted ``progress_update`` and pre-step identity to
+    reconstruct a commit from the checkpoint's authoritative state.  A
+    proposal without a checkpoint is deliberately absent: it may have been
+    rejected or never reached the engine and is safe to discard on resume.
+    Finish batches are included because their ``policy_completed`` effect also
+    needs a durable progress record, while the older unreconstructable helper
+    intentionally excludes them from interruption checks.
+    """
+    installed: Optional[str] = None
+    pending: Optional[dict[str, Any]] = None
+    for record in parent_records:
+        kind = record.get("type")
+        if kind == "policy_installed":
+            installed = record.get("installation_id")
+            pending = None
+        elif kind == "forwarded_orders" and record.get("source") == ROUTINE_ORIGIN:
+            pending = None
+            if isinstance(record.get("batch_id"), str):
+                pending = {
+                    "batch_id": record["batch_id"],
+                    "installation_id": record.get("installation_id", installed),
+                    "progress_update": record.get("progress_update"),
+                    "routine_finish": bool(record.get("routine_finish", False)),
+                    "pre_step_unit_ids": record.get("pre_step_unit_ids"),
+                    "pre_step_village_owners": record.get("pre_step_village_owners"),
+                }
+        elif kind == "checkpoint_ref" and pending is not None:
+            if record.get("batch_id") == pending.get("batch_id"):
+                result = dict(record)
+                for key in ("installation_id", "progress_update", "routine_finish",
+                            "pre_step_unit_ids", "pre_step_village_owners"):
+                    if key in pending and key not in result:
+                        result[key] = pending[key]
+                if "routine_finish" in result:
+                    result["finish"] = bool(result["routine_finish"])
+                pending = result
+        elif kind == "routine_progress_committed":
+            if pending is not None and record.get("batch_id") == pending.get("batch_id"):
+                pending = None
+    return pending if isinstance(pending, dict) and pending.get("type") == "checkpoint_ref" else None
 
 
 # --------------------------------------------------------------------------

@@ -46,7 +46,8 @@ try:
         NO_SWEEP_FINISH, parse_model_response, SetPolicyResponse,
         ActResponse, FinishTurnResponse, ResignResponse,
         validate_routine_policy, render_policy_brief, render_exception_brief,
-        UNSUPPORTED_EXCEPTION_CODES, find_unreconstructable_routine_batch)
+        UNSUPPORTED_EXCEPTION_CODES, find_unreconstructable_routine_batch,
+        pending_routine_commit)
 except ImportError:  # pragma: no cover - direct script compatibility
     # Running `python tools/llm_client.py` puts only the tools directory on
     # sys.path. Import the package modules from the repository root so their
@@ -80,7 +81,8 @@ except ImportError:  # pragma: no cover - direct script compatibility
         NO_SWEEP_FINISH, parse_model_response, SetPolicyResponse,
         ActResponse, FinishTurnResponse, ResignResponse,
         validate_routine_policy, render_policy_brief, render_exception_brief,
-        UNSUPPORTED_EXCEPTION_CODES, find_unreconstructable_routine_batch)
+        UNSUPPORTED_EXCEPTION_CODES, find_unreconstructable_routine_batch,
+        pending_routine_commit)
 
 ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "Engage", "EndTurn", "Advance", "Resign",
            "DoneWithImportantMoves", "FinishWithGreedy", "MoveGroupToward"}
@@ -5854,17 +5856,40 @@ def run(args: argparse.Namespace) -> int:
         envelope = build_orders_envelope(orders, revision)
         batch_sequence += 1
         batch_id = f"{metadata.get('conversation_id', 'match')}:batch:{batch_sequence}"
+        pre_step_unit_ids = sorted(
+            unit.get("id") for unit in (state.get("units", []) if isinstance(state, dict) else [])
+            if isinstance(unit, dict) and isinstance(unit.get("id"), int))
+        pre_step_village_owners = [
+            [tile.get("col"), tile.get("row"), tile.get("owner")]
+            for tile in (state.get("terrain", []) if isinstance(state, dict) else [])
+            if isinstance(tile, dict) and tile.get("terrain_id") == "village"
+            and isinstance(tile.get("owner"), int)]
         pending_commit = {
             "batch_id": batch_id, "request_id": None, "backend_request_id": None,
             "request_state_path": None, "source_revision": revision,
             "origin": "routine",
+            # Persist the exact proposal and the pre-step identity beside the
+            # checkpoint proof.  A crash after checkpoint publication but
+            # before the progress confirmation can then derive actual IDs
+            # from the committed checkpoint without replaying an action.
+            "installation_id": (strategy_progress.installation_id
+                                 if strategy_progress is not None else None),
+            "progress_update": copy.deepcopy(progress_update),
+            "routine_finish": bool(finish),
+            "pre_step_unit_ids": pre_step_unit_ids,
+            "pre_step_village_owners": pre_step_village_owners,
         }
         durable({"type": "request_submitted", "batch_id": batch_id,
                 "request_id": None, "backend_request_id": None, "source_revision": revision})
         pending_finish_kind = finish_kind_for_orders(orders) if finish else None
         durable({"type": "forwarded_orders", "orders": orders, "batch_id": batch_id,
-                "request_sequence": request_sequence, "request_id": None, "side_turn_id": None,
-                "source": "routine", "state_revision": revision,
+                 "request_sequence": request_sequence, "request_id": None, "side_turn_id": None,
+                 "source": "routine", "state_revision": revision,
+                 "installation_id": pending_commit["installation_id"],
+                 "progress_update": copy.deepcopy(progress_update),
+                 "routine_finish": bool(finish),
+                 "pre_step_unit_ids": pre_step_unit_ids,
+                 "pre_step_village_owners": pre_step_village_owners,
                 "decision_annotation": inapplicable_annotation(""),
                 "prompt_hash": None, "intent": None, "intent_origin": None,
                 "authored_finish_kind": pending_finish_kind, "handoff_audit": {},
@@ -6370,6 +6395,110 @@ def run(args: argparse.Namespace) -> int:
                 resume_record["parent_log"] = str(parent)
         durable(resume_record)
     if strategy_mode and strategy_installation is not None:
+        def recover_checkpoint_progress() -> Optional[str]:
+            """Adopt a checkpoint-proven routine proposal when its effects are factual.
+
+            The checkpoint is the committed engine state.  Recruitment IDs are
+            selected only from units that appear in that state and were absent
+            from the persisted pre-step set; no ID is inferred from a prior
+            loop or from the driver's next-id counter.  Any ambiguity leaves
+            the boundary unknown for the caller below.
+            """
+            pending_record = pending_routine_commit(parent_records)
+            if pending_record is None or checkpoint_dir is None:
+                return None
+            if pending_record.get("installation_id") != strategy_installation.installation_id:
+                return None
+            proposal = pending_record.get("progress_update")
+            if not isinstance(proposal, dict):
+                return None
+            effects = proposal.get("effects")
+            if not isinstance(effects, list):
+                return None
+            try:
+                reference = validate_checkpoint_reference(
+                    {"path": pending_record.get("path"), "digest": pending_record.get("digest")},
+                    checkpoint_dir)
+                checkpoint = json.loads(Path(reference["absolute_path"]).read_text())
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                return None
+            save_state = checkpoint.get("save_state")
+            units = save_state.get("units") if isinstance(save_state, dict) else None
+            if not isinstance(units, list):
+                return None
+            revision = checkpoint.get("state_revision")
+            if revision is None and isinstance(save_state, dict):
+                revision = save_state.get("state_revision")
+            if not isinstance(revision, int):
+                return None
+            pre_ids = pending_record.get("pre_step_unit_ids", [])
+            if (not isinstance(pre_ids, list)
+                    or not all(isinstance(uid, int) and not isinstance(uid, bool) for uid in pre_ids)):
+                return None
+            new_units = [unit for unit in units
+                         if isinstance(unit, dict) and isinstance(unit.get("id"), int)
+                         and unit["id"] not in set(pre_ids)]
+            used_ids: set[int] = set()
+            committed_effects: list[dict[str, Any]] = []
+            for effect in effects:
+                if not isinstance(effect, dict):
+                    return None
+                kind = effect.get("kind")
+                if kind == "recruited":
+                    index = effect.get("queue_index")
+                    if (not isinstance(index, int) or isinstance(index, bool)
+                            or not 0 <= index < len(strategy_installation.policy.get("recruits", []))):
+                        return None
+                    wanted_def = strategy_installation.policy["recruits"][index]["def_id"]
+                    candidates = [unit for unit in new_units
+                                  if unit.get("id") not in used_ids
+                                  and unit.get("faction") == args.llm_side
+                                  and unit.get("def_id") == wanted_def]
+                    if len(candidates) != 1:
+                        return None
+                    actual = candidates[0]
+                    used_ids.add(actual["id"])
+                    committed_effects.append({"kind": "recruited", "queue_index": index,
+                                              "unit_id": actual["id"]})
+                elif kind == "scout_assigned":
+                    unit_id, col, row = effect.get("unit_id"), effect.get("col"), effect.get("row")
+                    matches = [unit for unit in units if isinstance(unit, dict)
+                               and unit.get("id") == unit_id and unit.get("col") == col
+                               and unit.get("row") == row]
+                    if len(matches) != 1:
+                        return None
+                    committed_effects.append({"kind": "scout_assigned", "unit_id": unit_id,
+                                              "col": col, "row": row})
+                elif kind == "completed_village":
+                    col, row = effect.get("col"), effect.get("row")
+                    owners = save_state.get("village_owners") if isinstance(save_state, dict) else None
+                    if not isinstance(owners, list) or not any(
+                            isinstance(item, (list, tuple)) and len(item) == 3
+                            and item[0] == col and item[1] == row and item[2] == args.llm_side
+                            for item in owners):
+                        return None
+                    committed_effects.append({"kind": "completed_village", "col": col, "row": row})
+                elif kind == "policy_completed":
+                    if not pending_record.get("routine_finish"):
+                        return None
+                    committed_effects.append({"kind": "policy_completed"})
+                else:
+                    return None
+            update = {"effects": committed_effects}
+            try:
+                strategy_progress.commit_action(
+                    update, installation_id=strategy_installation.installation_id,
+                    batch_id=pending_record.get("batch_id"), state_revision=revision)
+            except (TypeError, ValueError):
+                return None
+            durable({"type": "routine_progress_committed",
+                     "installation_id": strategy_installation.installation_id,
+                     "batch_id": pending_record.get("batch_id"),
+                     "progress_update": update, "state_revision": revision,
+                     "recovered_from_checkpoint": True})
+            return pending_record.get("batch_id")
+
+        recovered_batch_id = recover_checkpoint_progress()
         # Plan section 6: "If the checkpoint has advanced but its matching
         # policy progress cannot be reconstructed, interrupt with explicit
         # unknown action-boundary status. Do not reset to the original
@@ -6383,6 +6512,8 @@ def run(args: argparse.Namespace) -> int:
             durable({"type": "terminal", **metadata})
             return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
         _unreconstructable_batch_id = find_unreconstructable_routine_batch(parent_records)
+        if _unreconstructable_batch_id == recovered_batch_id:
+            _unreconstructable_batch_id = None
         if _unreconstructable_batch_id is not None:
             set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
                         reason="infrastructure_failure",

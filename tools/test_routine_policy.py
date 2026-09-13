@@ -580,6 +580,33 @@ class UnreconstructableProgressTests(unittest.TestCase):
         ]
         self.assertEqual(rp.find_unreconstructable_routine_batch(records), "b2")
 
+    def test_checkpoint_before_batch_commit_is_also_commitment_proof(self):
+        records = [
+            {"type": "policy_installed", "installation_id": "pol-1"},
+            {"type": "forwarded_orders", "source": "routine", "batch_id": "b3",
+             "orders": [{"action": "Recruit", "def_id": "Ghost"}]},
+            {"type": "checkpoint_ref", "batch_id": "b3", "path": "x.json",
+             "digest": "0" * 64},
+        ]
+        self.assertEqual(rp.find_unreconstructable_routine_batch(records), "b3")
+
+    def test_pending_checkpoint_preserves_proposal_and_finish_identity(self):
+        records = [
+            {"type": "policy_installed", "installation_id": "pol-1"},
+            {"type": "forwarded_orders", "source": "routine", "batch_id": "b4",
+             "installation_id": "pol-1", "routine_finish": True,
+             "progress_update": {"effects": [{"kind": "policy_completed"}]},
+             "pre_step_unit_ids": [1, 2], "orders": [{"action": "FinishWithGreedy"}]},
+            {"type": "checkpoint_ref", "batch_id": "b4", "path": "y.json",
+             "digest": "1" * 64, "state_revision": 12},
+        ]
+        pending = rp.pending_routine_commit(records)
+        self.assertIsNotNone(pending)
+        self.assertEqual(pending["batch_id"], "b4")
+        self.assertTrue(pending["routine_finish"])
+        self.assertEqual(pending["progress_update"]["effects"][0]["kind"], "policy_completed")
+        self.assertEqual(pending["pre_step_unit_ids"], [1, 2])
+
     def test_new_installation_clears_a_stale_pending_batch(self):
         # A policy replacement discards all previous progress -- a batch
         # pending under the superseded installation is moot once a fresh
