@@ -206,3 +206,67 @@ Parent reviews commit/test evidence and the completed report, writes
 previous handoff without rewriting historical evidence. Final response states
 implemented changes, measured acceptance results, GLM performance/cost and any
 remaining failures. Do not claim newly found defects were fixed unless they were.
+
+## Execution record — 2026-09-13
+
+Implementation and the bounded live experiment are complete. Two Luna High
+workers implemented the changes; parent reviewed and integrated them. Source
+played: `77540175664a9f943b87af3fce1c0d71aeca475e`. Implementation commits on main:
+`41ab83f`, `7a86020`, `b474efe`, `7897a9a`, `f78437b`, `2848c7c`, `7754017`.
+Combined full gate passed: 899 Python tests, 281 Rust tests, all Lua checks,
+and diff-check. Functional gates passed; the gameplay experiment failed to
+complete a turn and does not establish improved playing strength.
+
+The one paid observer evaluation used nine physical calls including preflight,
+costing $0.00501380. All three deterministic loop cases produced validated stops
+with 300/600/600-second detection delays. Nine cases received no model judgment
+following deterministic controller skips. Healthy false-stop rate remains
+unknown (null denominator), and semantic drift remains unjudged. No provider
+transport/configuration failures occurred. Observe mode remains appropriate.
+
+The one game is `bb5784f9b0b2a985768e269f84a31033`, present in default Recorded
+Games and run-local SQLite. It stopped as `model_invalid` /
+`action_validation_invalid` after 35m36s, zero completed turns, revision 27.
+There was no winner, watchdog stop, restart, or timeout. GLM recruited 15 units
+and occupied three village hexes but never ended its turn to capture them.
+No combat occurred. All 27 events, 10 snapshots, and 14 player requests were
+imported; repeat imports preserved table counts in both catalogs.
+
+| Role | Physical calls | Total tokens | Estimated cost |
+| --- | ---: | ---: | ---: |
+| GLM player | 14 | 333,626 | $0.10183064 |
+| Game observer | 19 | 72,807 | $0.01681526 |
+| Observer evaluation | 9 | 20,358 | $0.00501380 |
+| Total Fireworks inference | 42 | 426,791 | $0.12365970 |
+
+Player output includes 174,859 reasoning tokens; input includes 94,208 cached
+tokens charged at the cached rate. All API calls have measured usage. The
+coding/operator host tokens and cost are unknown and excluded from this table.
+
+The game observer recorded 19 bounded replies, five resolved inspections and
+ten usable evidence reads, with zero failures/unresolved windows. Its 1,958
+deterministic skips are not model judgments. Spending 19 of 20 calls before
+the first turn finished remains a monitoring-economy concern.
+
+The experiment exposed a concrete contract ambiguity. The new rule says to
+finish in a "separate decision" beside the JSON `decisions[]` annotation schema.
+The saved reasoning for repair request 14 explicitly interpreted that as a
+second annotation group inside the same response. It submitted `RecruitBatch`
+plus `FinishWithGreedy`; the validator requires a later response. Four drafts
+required repair; the final repair failed too (five rejection attempts). This
+newly discovered prompt issue has been identified, not fixed by this iteration.
+Both final requests had `final_only=False`; the final-only path did not cause it.
+
+Next work should clarify "per JSON response/actions array," distinguish
+annotation groups, make finishing the sole action of a later response, and
+regress the exact draft/repair offline before another paid run. Retain the
+single-operation setting as opt-in. The prior baseline completed five GLM
+turns; this run supplies no matched completed-turn tactical comparison.
+
+Evidence and full limitations:
+- `tmp/watchdog-decision-exec/HANDOFF.md`
+- `tmp/watchdog-decision-exec/PARENT_FINDINGS.md`
+- `tmp/glm-single-operation-live-20260913T154253541846Z/FINAL.json`
+- `tmp/glm-single-operation-live-20260913T154253541846Z/REVIEW.md`
+- `tmp/glm-single-operation-live-20260913T154253541846Z/PROMPT_AUDIT.md`
+- `tmp/watchdog-observer-eval-output2-20260913T154253541846Z/report.json`
