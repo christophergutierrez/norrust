@@ -9,6 +9,22 @@ Original baseline: `956b027`; verified implementation resume point: `d71d733`.
 Recheck HEAD and local changes before implementation and preserve unrelated
 work. This plan keeps the existing default until evidence supports a change.
 
+## Execution acceptance — 2026-09-13
+
+Stack 2 is complete on source `8a7c060`. The full `python3 -m tools.fast_check`
+gate passed: 969 Python tests, all selected Rust suites, and Lua bridge/replay/
+recorded-games checks. Evidence: `tmp/strategy-exec/stack-2/luna-full-gate-2.log`.
+Real-driver tests cover three quiet controlled turns from one policy, three
+village captures, queue roles/actual IDs, checkpoint-before-ack recovery,
+unrecoverable-proof refusal, immediate completion after capture, and SQLite
+idempotence. The real-wire dedup test fails with identity deduplication removed
+(`tmp/strategy-exec/recovery/luna-resume/dedup-mutation.log`).
+
+Resume implementation at Stack 3 / R3. Stack 4 preparation exists on worker
+commit `f5e55db`, but its executable matrix and reporting acceptance remain;
+read `tmp/strategy-exec/STACK4_REVIEW_NOTES.md`. No paid pilot has started.
+The recovery tables below describe the original handoff, not current completion.
+
 ## 0. Verified recovery state — read before assigning work
 
 | Component | Verified state | Required action |
