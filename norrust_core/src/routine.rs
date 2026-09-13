@@ -1445,4 +1445,37 @@ mod tests {
             RoutineOutcome::Finish { reason: "objectives_complete", progress_update }
                 if progress_update["effects"][0]["kind"] == "policy_completed"));
     }
+
+    #[test]
+    fn rally_route_uses_terrain_costs_and_can_cross_a_friendly_intermediate() {
+        let registry = units();
+        let mut s = state();
+        let start = Hex::from_offset(3, 4);
+        let rally = Hex::from_offset(7, 4);
+        for col in 4..7 {
+            s.board
+                .set_tile(Hex::from_offset(col, 4), Tile::new("shallow_water"));
+        }
+        s.place_unit(
+            Unit::from_def(2, registry.get("Skeleton").unwrap(), 0),
+            start,
+        );
+        // The shortest legal terrain-cost route can cross this occupied
+        // intermediate hex; the submitted endpoint must still be empty.
+        s.place_unit(
+            Unit::from_def(3, registry.get("Skeleton").unwrap(), 0),
+            Hex::from_offset(4, 4),
+        );
+        let p = RoutinePolicy {
+            rally: Some(rally),
+            ..policy(&[])
+        };
+        let outcome = routine_next(&s, 0, &p, &RoutineProgress::default(), &[], &registry);
+        assert!(
+            matches!(outcome, RoutineOutcome::Action { action, reason: "rally", .. }
+            if action["unit_id"] == 2
+                && action["col"] == 7
+                && action["row"] == 4)
+        );
+    }
 }
