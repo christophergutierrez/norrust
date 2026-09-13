@@ -38,6 +38,7 @@ use norrust_core::game_state::{legal_moves, legal_targets};
 use norrust_core::hex::Hex;
 use norrust_core::loader::{expand_recruits, Registry};
 use norrust_core::pathfinding::{get_zoc_hexes, reachable_hexes};
+use norrust_core::routine;
 use norrust_core::save::SaveState;
 use norrust_core::scenario::{load_board, load_units_file};
 use norrust_core::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
@@ -1103,6 +1104,111 @@ fn time_of_day_modifiers() -> Value {
         "Dusk": row(TimeOfDay::Neutral),
         "Night": row(TimeOfDay::Night),
     })
+}
+
+/// Handle the read-only, revision-pinned `routine_next` driver query. Shares
+/// the query dispatch site (and its query budget/limit) with
+/// `validate_batch`/`tactical_surface`. Never mutates `state`: `routine::
+/// routine_next` only inspects `state` or a discarded clone of it.
+///
+/// Factored out of the interactive query loop so it is directly unit
+/// testable without driving the stdin protocol loop.
+fn handle_routine_next_query(
+    state: &GameState,
+    llm_side: u8,
+    factions: &[Faction; 2],
+    units: &Registry<UnitDef>,
+    parsed: &Value,
+) -> Value {
+    let what = "routine_next";
+    let requested_revision = parsed.get("state_revision").and_then(Value::as_u64);
+    if requested_revision != Some(state.state_revision) {
+        return json!({"type":"status","ok":false,"what":what,"code":"stale_state","message":"requested state revision is no longer current","state_revision":state.state_revision});
+    }
+    if state.active_faction != llm_side {
+        return json!({"type":"status","ok":false,"what":what,"code":"unauthorized_side","message":"model actions are not authorized while the opponent is active"});
+    }
+    let policy_value = parsed.get("policy").cloned().unwrap_or(Value::Null);
+    let progress_value = parsed.get("progress").cloned().unwrap_or(Value::Null);
+    let policy = match routine::parse_stack1_policy(&policy_value) {
+        Ok(policy) => policy,
+        Err(rejected) => {
+            return json!({"type":"status","ok":false,"what":what,"code":"parse","message":rejected.0});
+        }
+    };
+    let progress = routine::parse_progress(&progress_value);
+    let side = state.active_faction;
+    let recruit_ids = &factions[side as usize].recruits;
+    match routine::routine_next(state, side, &policy, &progress, recruit_ids, units) {
+        routine::RoutineOutcome::Action {
+            action,
+            progress_update,
+            reason,
+        } => {
+            json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,
+                "body":{"result":"action","action":action,"progress_update":progress_update,"reason":reason}})
+        }
+        routine::RoutineOutcome::Finish { reason } => {
+            json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,
+                "body":{"result":"finish","reason":reason}})
+        }
+        routine::RoutineOutcome::Exception { reason, evidence } => {
+            json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,
+                "body":{"result":"exception","reason":reason,"evidence":evidence}})
+        }
+    }
+}
+
+/// Outcome of detecting the internal routine orders envelope
+/// (`{"orders":[...],"origin":"routine","source_state_revision":N}`) at the
+/// site that otherwise treats a bare non-array JSON object as a single
+/// order. Only client code constructs this envelope; a model response
+/// cannot set its own origin, and inner orders are validated by the
+/// unchanged shared `valid_action_shape`/executor pipeline, which already
+/// rejects any inner order carrying its own `origin` key (an unknown key
+/// for every action shape).
+#[derive(Debug)]
+enum OrdersEnvelope {
+    /// Not an envelope: a bare array or bare single-action object. Existing
+    /// meaning for both is completely unaffected.
+    NotEnvelope,
+    /// A well-formed, current-revision routine envelope.
+    Routine { orders: Vec<Value> },
+    /// Malformed, forged, or stale envelope. No mutation follows.
+    Rejected(Value),
+}
+
+fn detect_orders_envelope(parsed: &Value, current_revision: u64) -> OrdersEnvelope {
+    let Some(object) = parsed.as_object() else {
+        return OrdersEnvelope::NotEnvelope;
+    };
+    if object.contains_key("action") || !object.contains_key("orders") {
+        return OrdersEnvelope::NotEnvelope;
+    }
+    let origin = object.get("origin").and_then(Value::as_str);
+    if origin != Some("routine") {
+        return OrdersEnvelope::Rejected(json!({
+            "type":"status","ok":false,"code":"parse",
+            "message":"orders envelope origin must be \"routine\""
+        }));
+    }
+    let Some(orders) = object.get("orders").and_then(Value::as_array) else {
+        return OrdersEnvelope::Rejected(json!({
+            "type":"status","ok":false,"code":"parse",
+            "message":"orders envelope orders field must be an array"
+        }));
+    };
+    let source_revision = object.get("source_state_revision").and_then(Value::as_u64);
+    if source_revision != Some(current_revision) {
+        return OrdersEnvelope::Rejected(json!({
+            "type":"status","ok":false,"code":"stale_state",
+            "message":"requested state revision is no longer current",
+            "state_revision":current_revision
+        }));
+    }
+    OrdersEnvelope::Routine {
+        orders: orders.clone(),
+    }
 }
 
 fn valid_action_shape(order: &Value) -> bool {
@@ -3525,6 +3631,9 @@ fn interactive_protocol_game(mut c: Config) {
                     let options: Vec<Value> = faction.recruits.iter().filter_map(|id| units.get(id).map(|d| json!({"def_id":id,"cost":d.cost,"affordable":state.gold[side] >= d.cost}))).collect();
                     json!({"type":"status","ok":true,"what":what,"body":{"faction_id":faction.def.id,"side_can_place":!placement_hexes.is_empty(),"placement_hexes":placement_hexes,"options":options,"batch_macro_enabled":!c.disable_recruit_batch}})
                 }
+                "routine_next" => {
+                    handle_routine_next_query(&state, c.llm_side, &factions, &units, &parsed)
+                }
                 _ => {
                     json!({"type":"status","ok":false,"what":what,"code":"unknown_query","message":"unknown query"})
                 }
@@ -3566,10 +3675,21 @@ fn interactive_protocol_game(mut c: Config) {
             io::stdout().flush().unwrap();
             continue;
         }
-        let orders = if let Some(array) = parsed.as_array() {
-            array.clone()
-        } else {
-            vec![parsed]
+        let (orders, authored_source) = match detect_orders_envelope(&parsed, state.state_revision) {
+            OrdersEnvelope::Rejected(status) => {
+                println!("{}", status);
+                io::stdout().flush().unwrap();
+                continue;
+            }
+            OrdersEnvelope::Routine { orders } => (orders, "routine"),
+            OrdersEnvelope::NotEnvelope => {
+                let orders = if let Some(array) = parsed.as_array() {
+                    array.clone()
+                } else {
+                    vec![parsed]
+                };
+                (orders, "llm")
+            }
         };
         if orders.is_empty() {
             println!(
@@ -3790,7 +3910,7 @@ fn interactive_protocol_game(mut c: Config) {
                     Some(&delegated_order_indices[start..end]),
                 );
             } else {
-                print_events(&events[start..end], "llm", "llm", kind, None);
+                print_events(&events[start..end], authored_source, authored_source, kind, None);
             }
         }
         if did_end && state.check_winner().is_none() {
@@ -4462,5 +4582,363 @@ mod tests {
         let profile = unit_type_profile(&def);
         assert_eq!(profile["movement_costs"], json!({}));
         assert_eq!(profile["defense"], json!({}));
+    }
+
+    fn stack1_config(gold: u32) -> Config {
+        Config {
+            scenario: "big_battle_6".into(),
+            faction0: "undead".into(),
+            faction1: "undead".into(),
+            gold,
+            seed: 42,
+            scripted: false,
+            llm_side: 0,
+            max_turns: 4,
+            turn_timeout: 1,
+            query_timeout: 1,
+            max_queries: 8,
+            disable_recruit_batch: false,
+            incremental_turns: false,
+            max_partial_batches_per_turn: 3,
+            checkpoint_dir: None,
+            resume_checkpoint: None,
+        }
+    }
+
+    fn quiet_stack1_fixture(gold: u32) -> (GameState, [Faction; 2], Registry<UnitDef>) {
+        let config = stack1_config(gold);
+        let (state, faction0, faction1, units) = init_game(&config).expect("valid fixture");
+        (state, [faction0, faction1], units)
+    }
+
+    // --- FinishWithGreedy{groups:[],holds:[]} no-sweep verification ---
+    //
+    // The frozen contract requires finishing routine execution with
+    // `FinishWithGreedy{groups:[],holds:[]}`, NOT plain `EndTurn` (which can
+    // perform an automatic Greedy sweep of every eligible unit). This test
+    // proves the empty-groups/empty-holds form does not move, attack, or
+    // otherwise act on any friendly unit before ending the turn.
+    #[test]
+    fn finish_with_greedy_empty_groups_and_holds_performs_no_sweep() {
+        let (mut state, factions, units) = quiet_stack1_fixture(50);
+        // A second, fully-eligible friendly unit standing next to an enemy:
+        // if FinishWithGreedy performed a sweep like EndTurn's, this unit
+        // would attack and/or move.
+        let leader_hex = state.positions[&1];
+        let mover_hex = leader_hex
+            .neighbors()
+            .into_iter()
+            .find(|hex| state.board.contains(*hex) && !state.hex_to_unit.contains_key(hex))
+            .expect("an open neighbor exists");
+        let mut mover = Unit::new(50, "Fighter", 30, 0);
+        mover.attacks = units.get("Skeleton").unwrap().attacks.clone();
+        mover.movement = 5;
+        state.place_unit(mover, mover_hex);
+        let enemy_hex = mover_hex
+            .neighbors()
+            .into_iter()
+            .find(|hex| state.board.contains(*hex) && !state.hex_to_unit.contains_key(hex))
+            .expect("an open neighbor for the enemy exists");
+        let mut enemy = Unit::new(51, "Fighter", 30, 1);
+        enemy.attacks = units.get("Skeleton").unwrap().attacks.clone();
+        state.place_unit(enemy, enemy_hex);
+
+        let before_positions = state.positions.clone();
+        let before_unit_count = state.units.len();
+
+        let order = json!({"action":"FinishWithGreedy","groups":[],"holds":[]});
+        assert!(valid_action_shape(&order));
+        let execution = execute_model_batch(
+            state.clone(),
+            state.next_unit_id,
+            &[order],
+            0,
+            &factions,
+            &units,
+            false,
+            false,
+        );
+        assert!(
+            execution
+                .results
+                .iter()
+                .all(|result| result.get("ok") == Some(&Value::Bool(true))),
+            "FinishWithGreedy{{groups:[],holds:[]}} must be a legal boundary: {:?}",
+            execution.results
+        );
+        assert!(execution.did_end, "the turn must actually end");
+        assert_eq!(
+            execution.state.positions.get(&50),
+            before_positions.get(&50),
+            "no friendly unit may be moved by an empty-groups/empty-holds finish"
+        );
+        assert_eq!(
+            execution.state.units.len(),
+            before_unit_count,
+            "no friendly unit may attack (and no combat may occur) on this boundary"
+        );
+        assert!(
+            execution.state.units.contains_key(&51),
+            "the untouched enemy must still be alive: no sweep occurred"
+        );
+        assert_eq!(
+            execution.state.active_faction, 1,
+            "the turn must still hand off to the opponent"
+        );
+    }
+
+    // --- routine_next query: shapes, mutation-freedom, and exceptions ---
+
+    #[test]
+    fn routine_next_query_rejects_stale_state_before_any_mutation() {
+        let (state, factions, units) = quiet_stack1_fixture(300);
+        let parsed = json!({
+            "action":"Query","what":"routine_next",
+            "state_revision": state.state_revision + 1,
+            "policy": {"reserve_gold":0,"recruits":[],"scouts":[],"villages":[],"holds":[],"rally":null},
+            "progress": {"recruited":[],"scout_assignments":[],"completed_villages":[],"scout_ids":[],"installation_id":"i1"},
+        });
+        let response = handle_routine_next_query(&state, 0, &factions, &units, &parsed);
+        assert_eq!(response["ok"], json!(false));
+        assert_eq!(response["code"], json!("stale_state"));
+    }
+
+    #[test]
+    fn routine_next_query_rejects_wrong_active_side() {
+        let (state, factions, units) = quiet_stack1_fixture(300);
+        let parsed = json!({
+            "action":"Query","what":"routine_next",
+            "state_revision": state.state_revision,
+            "policy": {"reserve_gold":0,"recruits":[],"scouts":[],"villages":[],"holds":[],"rally":null},
+            "progress": {"recruited":[],"scout_assignments":[],"completed_villages":[],"scout_ids":[],"installation_id":"i1"},
+        });
+        // llm_side=1 while the fixture's active side is 0.
+        let response = handle_routine_next_query(&state, 1, &factions, &units, &parsed);
+        assert_eq!(response["ok"], json!(false));
+        assert_eq!(response["code"], json!("unauthorized_side"));
+    }
+
+    #[test]
+    fn routine_next_query_rejects_nonempty_future_policy_fields_as_parse() {
+        let (state, factions, units) = quiet_stack1_fixture(300);
+        let parsed = json!({
+            "action":"Query","what":"routine_next",
+            "state_revision": state.state_revision,
+            "policy": {"reserve_gold":0,"recruits":[],"scouts":[1],"villages":[],"holds":[],"rally":null},
+            "progress": {"recruited":[],"scout_assignments":[],"completed_villages":[],"scout_ids":[],"installation_id":"i1"},
+        });
+        let response = handle_routine_next_query(&state, 0, &factions, &units, &parsed);
+        assert_eq!(response["ok"], json!(false));
+        assert_eq!(response["code"], json!("parse"));
+    }
+
+    #[test]
+    fn routine_next_query_returns_a_recruit_action_and_mutates_nothing() {
+        let (state, factions, units) = quiet_stack1_fixture(300);
+        let before_revision = state.state_revision;
+        let before_gold = state.gold;
+        let before_units = state.units.len();
+        let parsed = json!({
+            "action":"Query","what":"routine_next",
+            "state_revision": state.state_revision,
+            "policy": {"reserve_gold":0,"recruits":[{"def_id":"Skeleton","count":1,"role":"army"}],
+                       "scouts":[],"villages":[],"holds":[],"rally":null},
+            "progress": {"recruited":[],"scout_assignments":[],"completed_villages":[],"scout_ids":[],"installation_id":"i1"},
+        });
+        let response = handle_routine_next_query(&state, 0, &factions, &units, &parsed);
+        assert_eq!(response["ok"], json!(true));
+        assert_eq!(response["body"]["result"], json!("action"));
+        assert_eq!(response["body"]["action"]["action"], json!("Recruit"));
+        assert_eq!(response["body"]["action"]["def_id"], json!("Skeleton"));
+        assert_eq!(response["body"]["progress_update"], json!({"kind":"recruited","def_id":"Skeleton"}));
+        assert_eq!(response["body"]["reason"], json!("recruit"));
+        // Read-only: the live state used to answer this query is unchanged.
+        assert_eq!(state.state_revision, before_revision);
+        assert_eq!(state.gold, before_gold);
+        assert_eq!(state.units.len(), before_units);
+    }
+
+    #[test]
+    fn routine_next_query_finishes_when_the_queue_is_exhausted() {
+        let (state, factions, units) = quiet_stack1_fixture(300);
+        let parsed = json!({
+            "action":"Query","what":"routine_next",
+            "state_revision": state.state_revision,
+            "policy": {"reserve_gold":0,"recruits":[{"def_id":"Skeleton","count":1,"role":"army"}],
+                       "scouts":[],"villages":[],"holds":[],"rally":null},
+            "progress": {"recruited":[{"def_id":"Skeleton","done":1}],"scout_assignments":[],
+                         "completed_villages":[],"scout_ids":[],"installation_id":"i1"},
+        });
+        let response = handle_routine_next_query(&state, 0, &factions, &units, &parsed);
+        assert_eq!(response["ok"], json!(true));
+        assert_eq!(response["body"]["result"], json!("finish"));
+        assert_eq!(response["body"]["reason"], json!("no_remaining_routine_steps"));
+    }
+
+    #[test]
+    fn routine_next_query_reports_promotion_pending_exception() {
+        let (mut state, factions, units) = quiet_stack1_fixture(300);
+        let mut veteran = Unit::new(60, "Fighter", 30, 0);
+        veteran.advancement_pending = true;
+        let hex = state
+            .positions
+            .values()
+            .copied()
+            .find(|hex| !state.hex_to_unit.contains_key(hex) && state.board.contains(*hex))
+            .map(|hex| hex.neighbors()[0])
+            .filter(|hex| state.board.contains(*hex) && !state.hex_to_unit.contains_key(hex))
+            .unwrap_or_else(|| {
+                state
+                    .positions
+                    .get(&1)
+                    .unwrap()
+                    .neighbors()
+                    .into_iter()
+                    .find(|hex| state.board.contains(*hex) && !state.hex_to_unit.contains_key(hex))
+                    .expect("an open hex exists near the leader")
+            });
+        state.place_unit(veteran, hex);
+        let parsed = json!({
+            "action":"Query","what":"routine_next",
+            "state_revision": state.state_revision,
+            "policy": {"reserve_gold":0,"recruits":[{"def_id":"Skeleton","count":1,"role":"army"}],
+                       "scouts":[],"villages":[],"holds":[],"rally":null},
+            "progress": {"recruited":[],"scout_assignments":[],"completed_villages":[],"scout_ids":[],"installation_id":"i1"},
+        });
+        let response = handle_routine_next_query(&state, 0, &factions, &units, &parsed);
+        assert_eq!(response["ok"], json!(true));
+        assert_eq!(response["body"]["result"], json!("exception"));
+        assert_eq!(response["body"]["reason"], json!("promotion_pending"));
+    }
+
+    // --- Internal routine orders envelope ---
+
+    #[test]
+    fn bare_array_and_bare_single_action_object_are_not_envelopes() {
+        let array = json!([{"action":"EndTurn"}]);
+        assert!(matches!(
+            detect_orders_envelope(&array, 7),
+            OrdersEnvelope::NotEnvelope
+        ));
+        let single = json!({"action":"EndTurn"});
+        assert!(matches!(
+            detect_orders_envelope(&single, 7),
+            OrdersEnvelope::NotEnvelope
+        ));
+        // An object with both "action" and "orders" keys keeps the existing
+        // single-action meaning (and thus is rejected downstream for the
+        // unknown "orders" key), not reinterpreted as an envelope.
+        let both = json!({"action":"EndTurn","orders":[]});
+        assert!(matches!(
+            detect_orders_envelope(&both, 7),
+            OrdersEnvelope::NotEnvelope
+        ));
+    }
+
+    #[test]
+    fn routine_orders_envelope_accepts_current_revision() {
+        let envelope = json!({
+            "orders":[{"action":"EndTurn"}],
+            "origin":"routine",
+            "source_state_revision": 7,
+        });
+        match detect_orders_envelope(&envelope, 7) {
+            OrdersEnvelope::Routine { orders } => {
+                assert_eq!(orders, vec![json!({"action":"EndTurn"})]);
+            }
+            other => panic!("expected a routine envelope, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn routine_orders_envelope_rejects_forged_origin() {
+        let envelope = json!({
+            "orders":[{"action":"EndTurn"}],
+            "origin":"llm",
+            "source_state_revision": 7,
+        });
+        match detect_orders_envelope(&envelope, 7) {
+            OrdersEnvelope::Rejected(status) => assert_eq!(status["code"], json!("parse")),
+            other => panic!("expected rejection, got {other:?}"),
+        }
+        // Missing origin entirely is equally rejected.
+        let missing = json!({"orders":[{"action":"EndTurn"}], "source_state_revision": 7});
+        match detect_orders_envelope(&missing, 7) {
+            OrdersEnvelope::Rejected(status) => assert_eq!(status["code"], json!("parse")),
+            other => panic!("expected rejection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn routine_orders_envelope_rejects_stale_source_revision() {
+        let envelope = json!({
+            "orders":[{"action":"EndTurn"}],
+            "origin":"routine",
+            "source_state_revision": 6,
+        });
+        match detect_orders_envelope(&envelope, 7) {
+            OrdersEnvelope::Rejected(status) => assert_eq!(status["code"], json!("stale_state")),
+            other => panic!("expected rejection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn routine_orders_envelope_passes_orders_through_the_shared_shape_validator_which_rejects_a_forged_inner_origin(
+    ) {
+        // The envelope detector itself accepts this shape (it only validates
+        // the envelope's own origin/source_state_revision), but the inner
+        // order's own "origin" key is an unknown key for every action shape,
+        // so the SAME shared `valid_action_shape` used for ordinary batches
+        // rejects it -- there is no separate mutation path to bypass.
+        let envelope = json!({
+            "orders":[{"action":"EndTurn","origin":"routine"}],
+            "origin":"routine",
+            "source_state_revision": 7,
+        });
+        let orders = match detect_orders_envelope(&envelope, 7) {
+            OrdersEnvelope::Routine { orders } => orders,
+            other => panic!("expected an accepted envelope, got {other:?}"),
+        };
+        assert!(!valid_action_shape(&orders[0]));
+    }
+
+    #[test]
+    fn routine_orders_envelope_events_carry_source_routine() {
+        let (state, factions, units) = quiet_stack1_fixture(300);
+        let placements = legal_recruitment_placements(&state, 0);
+        placements.first().expect("a legal placement exists");
+        let mut sorted = placements.clone();
+        sorted.sort_by_key(|hex| {
+            let (col, row) = hex.to_offset();
+            (row, col)
+        });
+        let (col, row) = sorted[0].to_offset();
+        let inner_order = json!({"action":"Recruit","def_id":"Skeleton","col":col,"row":row});
+        let envelope = json!({
+            "orders":[inner_order],
+            "origin":"routine",
+            "source_state_revision": state.state_revision,
+        });
+        let orders = match detect_orders_envelope(&envelope, state.state_revision) {
+            OrdersEnvelope::Routine { orders } => orders,
+            other => panic!("expected an accepted envelope, got {other:?}"),
+        };
+        let execution = execute_model_batch(
+            state.clone(),
+            state.next_unit_id,
+            &orders,
+            0,
+            &factions,
+            &units,
+            false,
+            false,
+        );
+        assert!(execution
+            .results
+            .iter()
+            .all(|result| result.get("ok") == Some(&Value::Bool(true))));
+        assert_eq!(execution.events.len(), 1);
+        let tagged = event_value(&execution.events[0], "routine");
+        assert_eq!(tagged["source"], json!("routine"));
     }
 }

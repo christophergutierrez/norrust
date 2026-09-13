@@ -1,0 +1,795 @@
+"""Strategy-mode policy validation, routine progress, exceptions and rendering.
+
+This module implements the client half of the frozen `routine_next` contract
+described in `docs/plans/strategy-and-routine-execution.md` (sections 3-6 and
+"Stack 1"). It is deliberately self-contained: it does not import
+``tools.llm_client`` so the two modules can be developed and tested in
+isolation by separate workers. ``tools/llm_client.py`` imports from here.
+
+Stack 1 scope only: advertise/accept recruitment-only policies. ``scouts``,
+``villages`` and ``holds`` must be empty and ``rally`` must be null. A
+non-empty future field is rejected explicitly, never silently accepted.
+"""
+from __future__ import annotations
+
+import copy
+import uuid
+from dataclasses import dataclass, field
+from typing import Any, Iterable, Optional
+
+# --------------------------------------------------------------------------
+# Constants from the frozen contract (plan section 4).
+# --------------------------------------------------------------------------
+
+MAX_RECRUIT_ENTRIES = 8
+MIN_RECRUIT_COUNT = 1
+MAX_RECRUIT_COUNT = 32
+MAX_SCOUTS = 8
+MAX_VILLAGES = 4
+RECRUIT_ROLES = ("scout", "army")
+
+SET_POLICY_KEYS = {"kind", "policy"}
+POLICY_FIELDS = {"reserve_gold", "recruits", "scouts", "villages", "rally", "holds"}
+RECRUIT_ENTRY_FIELDS = {"def_id", "count", "role"}
+ACT_KEYS = {"kind", "actions", "finish_turn"}
+FINISH_TURN_KEYS = {"kind"}
+RESIGN_KEYS = {"kind"}
+RESPONSE_KINDS = ("set_policy", "act", "finish_turn", "resign")
+
+# Stack 1 supports only these exception codes; "contact" is explicitly
+# unsupported until Stack 3 and ends the fixture run instead of prompting.
+STACK1_EXCEPTION_CODES = frozenset({
+    "contact", "threat_unavailable", "promotion_pending",
+    "recruitment_blocked", "no_executable_orders",
+})
+STACK1_UNSUPPORTED_EXCEPTION_CODES = frozenset({"contact"})
+
+ROUTINE_ORIGIN = "routine"
+
+# The only boundary routine execution may submit. Verified in
+# greedy_driver.rs::finish_with_greedy_empty_groups_and_holds_performs_no_sweep
+# to move/engage nothing. Plain EndTurn DOES sweep -- never use it here.
+NO_SWEEP_FINISH = {"action": "FinishWithGreedy", "groups": [], "holds": []}
+
+
+class PolicyValidationError(ValueError):
+    """A policy or model response failed strict contract validation.
+
+    Raising this must never have mutated engine state, persisted progress,
+    or a policy installation. Callers must validate fully before any of
+    those side effects occur.
+    """
+
+
+class ModelResponseError(ValueError):
+    """A model response violated the strict discriminated-union contract."""
+
+
+class RoutineUnsupportedException(RuntimeError):
+    """A machine-detected exception this stack cannot resolve.
+
+    Stack 1 raises this for ``contact`` only: contact handling does not land
+    until Stack 3, so it ends the fixture run as an explicit unsupported
+    exception rather than silently falling back to a hidden policy.
+    """
+
+    def __init__(self, reason: str, evidence: Optional[dict[str, Any]] = None):
+        self.reason = reason
+        self.evidence = evidence or {}
+        super().__init__(f"unsupported routine exception: {reason}")
+
+
+def _require_keys(obj: dict[str, Any], allowed: set[str], required: set[str], where: str) -> None:
+    if not isinstance(obj, dict):
+        raise PolicyValidationError(f"{where} must be an object")
+    extra = set(obj) - allowed
+    if extra:
+        raise PolicyValidationError(
+            f"{where} has unknown key(s): {', '.join(sorted(str(k) for k in extra))}")
+    missing = required - set(obj)
+    if missing:
+        raise PolicyValidationError(
+            f"{where} is missing required key(s): {', '.join(sorted(missing))}")
+
+
+def _require_int(value: Any, where: str, *, minimum: Optional[int] = None,
+                  maximum: Optional[int] = None) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise PolicyValidationError(f"{where} must be an integer")
+    if minimum is not None and value < minimum:
+        raise PolicyValidationError(f"{where} must be >= {minimum}, got {value}")
+    if maximum is not None and value > maximum:
+        raise PolicyValidationError(f"{where} must be <= {maximum}, got {value}")
+    return value
+
+
+def _require_coord(value: Any, where: str, bounds: Optional[tuple[int, int]] = None) -> tuple[int, int]:
+    if not isinstance(value, dict) or set(value) != {"col", "row"}:
+        raise PolicyValidationError(f"{where} must be an object with exactly col/row")
+    col = _require_int(value["col"], f"{where}.col", minimum=0)
+    row = _require_int(value["row"], f"{where}.row", minimum=0)
+    if bounds is not None:
+        max_col, max_row = bounds
+        if not (0 <= col < max_col and 0 <= row < max_row):
+            raise PolicyValidationError(f"{where} is out of bounds")
+    return (col, row)
+
+
+@dataclass(frozen=True)
+class ValidationContext:
+    """Board/roster facts a policy is checked against.
+
+    Stack 1 only strictly needs ``recruitable_defs``; the other fields exist
+    so Stack 2 can reuse this same validator without a new schema registry.
+    """
+    recruitable_defs: frozenset[str] = field(default_factory=frozenset)
+    friendly_unit_ids: frozenset[int] = field(default_factory=frozenset)
+    recruiter_ids: frozenset[int] = field(default_factory=frozenset)
+    village_coords: frozenset[tuple[int, int]] = field(default_factory=frozenset)
+    board_bounds: Optional[tuple[int, int]] = None
+
+
+def validate_policy(policy: Any, context: ValidationContext) -> dict[str, Any]:
+    """Validate a ``set_policy.policy`` object per the frozen contract.
+
+    Returns a normalized (deep-copied, key-order-independent) policy dict on
+    success. Raises ``PolicyValidationError`` on any violation, before any
+    caller-visible side effect. This function alone does not enforce the
+    Stack 1 scope restriction (empty scouts/villages/holds, null rally); use
+    ``enforce_stack1_scope`` for that after this passes.
+    """
+    _require_keys(policy, POLICY_FIELDS, {"reserve_gold", "recruits"}, "policy")
+    reserve_gold = _require_int(policy["reserve_gold"], "policy.reserve_gold", minimum=0)
+
+    recruits_in = policy["recruits"]
+    if not isinstance(recruits_in, list):
+        raise PolicyValidationError("policy.recruits must be a list")
+    if len(recruits_in) > MAX_RECRUIT_ENTRIES:
+        raise PolicyValidationError(
+            f"policy.recruits must have at most {MAX_RECRUIT_ENTRIES} entries")
+    recruits: list[dict[str, Any]] = []
+    for index, entry in enumerate(recruits_in):
+        where = f"policy.recruits[{index}]"
+        _require_keys(entry, RECRUIT_ENTRY_FIELDS, RECRUIT_ENTRY_FIELDS, where)
+        def_id = entry["def_id"]
+        if not isinstance(def_id, str) or not def_id:
+            raise PolicyValidationError(f"{where}.def_id must be a non-empty string")
+        if def_id not in context.recruitable_defs:
+            raise PolicyValidationError(f"{where}.def_id is not recruitable: {def_id!r}")
+        count = _require_int(entry["count"], f"{where}.count",
+                              minimum=MIN_RECRUIT_COUNT, maximum=MAX_RECRUIT_COUNT)
+        role = entry["role"]
+        if role not in RECRUIT_ROLES:
+            raise PolicyValidationError(f"{where}.role must be one of {RECRUIT_ROLES}")
+        recruits.append({"def_id": def_id, "count": count, "role": role})
+
+    scouts_in = policy.get("scouts", [])
+    if not isinstance(scouts_in, list):
+        raise PolicyValidationError("policy.scouts must be a list")
+    if len(set(scouts_in)) != len(scouts_in):
+        raise PolicyValidationError("policy.scouts must not contain duplicates")
+    if len(scouts_in) > MAX_SCOUTS:
+        raise PolicyValidationError(f"policy.scouts must have at most {MAX_SCOUTS} entries")
+    scouts: list[int] = []
+    for index, unit_id in enumerate(scouts_in):
+        where = f"policy.scouts[{index}]"
+        uid = _require_int(unit_id, where)
+        if uid not in context.friendly_unit_ids:
+            raise PolicyValidationError(f"{where} is not an existing friendly unit id: {uid}")
+        if uid in context.recruiter_ids:
+            raise PolicyValidationError(f"{where} cannot be a recruiter: {uid}")
+        scouts.append(uid)
+    new_scout_requests = sum(r["count"] for r in recruits if r["role"] == "scout")
+    if len(scouts) + new_scout_requests > MAX_SCOUTS:
+        raise PolicyValidationError(
+            f"existing scouts plus requested new scouts exceed {MAX_SCOUTS}")
+
+    villages_in = policy.get("villages", [])
+    if not isinstance(villages_in, list):
+        raise PolicyValidationError("policy.villages must be a list")
+    if len(villages_in) > MAX_VILLAGES:
+        raise PolicyValidationError(f"policy.villages must have at most {MAX_VILLAGES} entries")
+    villages: list[dict[str, int]] = []
+    seen_villages: set[tuple[int, int]] = set()
+    for index, coord in enumerate(villages_in):
+        where = f"policy.villages[{index}]"
+        pair = _require_coord(coord, where, context.board_bounds)
+        if pair in seen_villages:
+            raise PolicyValidationError(f"{where} duplicates another village coordinate")
+        if context.village_coords and pair not in context.village_coords:
+            raise PolicyValidationError(f"{where} is not an existing village coordinate")
+        seen_villages.add(pair)
+        villages.append({"col": pair[0], "row": pair[1]})
+
+    rally_in = policy.get("rally")
+    rally: Optional[dict[str, int]] = None
+    if rally_in is not None:
+        pair = _require_coord(rally_in, "policy.rally", context.board_bounds)
+        rally = {"col": pair[0], "row": pair[1]}
+
+    holds_in = policy.get("holds", [])
+    if not isinstance(holds_in, list):
+        raise PolicyValidationError("policy.holds must be a list")
+    if len(set(holds_in)) != len(holds_in):
+        raise PolicyValidationError("policy.holds must not contain duplicates")
+    holds: list[int] = []
+    scout_set = set(scouts)
+    for index, unit_id in enumerate(holds_in):
+        where = f"policy.holds[{index}]"
+        uid = _require_int(unit_id, where)
+        if uid not in context.friendly_unit_ids:
+            raise PolicyValidationError(f"{where} is not an existing friendly unit id: {uid}")
+        if uid in scout_set:
+            raise PolicyValidationError(f"{where} overlaps a scout id: {uid}")
+        holds.append(uid)
+
+    return {
+        "reserve_gold": reserve_gold,
+        "recruits": recruits,
+        "scouts": scouts,
+        "villages": villages,
+        "rally": rally,
+        "holds": holds,
+    }
+
+
+def enforce_stack1_scope(policy: dict[str, Any]) -> None:
+    """Reject any non-empty future field. Stack 1 is recruitment-only.
+
+    Called after ``validate_policy`` succeeds. A field being merely present
+    and empty is fine; a field carrying content is rejected explicitly, per
+    plan section "Stack 1" ("A non-empty future field is rejected
+    explicitly -- never accepted and ignored").
+    """
+    if policy.get("scouts"):
+        raise PolicyValidationError(
+            "policy.scouts is not supported in Stack 1; must be empty")
+    if policy.get("villages"):
+        raise PolicyValidationError(
+            "policy.villages is not supported in Stack 1; must be empty")
+    if policy.get("holds"):
+        raise PolicyValidationError(
+            "policy.holds is not supported in Stack 1; must be empty")
+    if policy.get("rally") is not None:
+        raise PolicyValidationError(
+            "policy.rally is not supported in Stack 1; must be null")
+
+
+def validate_stack1_policy(policy: Any, context: ValidationContext) -> dict[str, Any]:
+    """Validate and then apply the Stack 1 scope gate in one call."""
+    normalized = validate_policy(policy, context)
+    enforce_stack1_scope(normalized)
+    return normalized
+
+
+# --------------------------------------------------------------------------
+# Policy installation.
+# --------------------------------------------------------------------------
+
+def new_installation_id() -> str:
+    """A durable internal installation id. The model never invents this."""
+    return f"pol-{uuid.uuid4().hex[:12]}"
+
+
+@dataclass
+class PolicyInstallation:
+    """A durably recorded policy installation, linked to its source request.
+
+    A valid installation must be durably recorded before its first routine
+    step (plan section 4). ``source_request_id`` links replay/attribution to
+    the originating model request (or, for a fixed policy, to the checked-in
+    file path) without inventing a synthetic model request.
+    """
+    installation_id: str
+    policy: dict[str, Any]
+    source_request_id: Optional[str] = None
+    source_kind: str = "model"  # "model" or "fixed_file"
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "installation_id": self.installation_id,
+            "policy": copy.deepcopy(self.policy),
+            "source_request_id": self.source_request_id,
+            "source_kind": self.source_kind,
+        }
+
+
+def install_policy(policy: dict[str, Any], *, source_request_id: Optional[str] = None,
+                    source_kind: str = "model") -> PolicyInstallation:
+    """Create a fresh installation. Replaces any previous installation's
+    orders, assignments and remaining counts (the caller discards the old
+    ``PolicyInstallation``/``RoutineProgress`` pair and starts a new one)."""
+    return PolicyInstallation(
+        installation_id=new_installation_id(),
+        policy=copy.deepcopy(policy),
+        source_request_id=source_request_id,
+        source_kind=source_kind,
+    )
+
+
+# --------------------------------------------------------------------------
+# Committed progress.
+# --------------------------------------------------------------------------
+
+@dataclass
+class RoutineProgress:
+    """Committed progress for one policy installation.
+
+    Mirrors the ``progress`` object in the frozen ``routine_next`` query.
+    Only ``commit_action`` (proven by the checkpoint acknowledgement path)
+    may mutate ``recruited``/``scout_ids``/``scout_assignments``/
+    ``completed_villages``. A ``progress_update`` proposed by a query result
+    is a proposal only, held by the caller until commitment is proven.
+    """
+    installation_id: str
+    recruited: dict[str, int] = field(default_factory=dict)
+    scout_assignments: list[dict[str, Any]] = field(default_factory=list)
+    completed_villages: list[dict[str, Any]] = field(default_factory=list)
+    scout_ids: list[int] = field(default_factory=list)
+
+    @classmethod
+    def fresh(cls, installation_id: str) -> "RoutineProgress":
+        return cls(installation_id=installation_id)
+
+    def to_query_progress(self) -> dict[str, Any]:
+        """Render the ``progress`` field of a ``routine_next`` query."""
+        return {
+            "recruited": [{"def_id": def_id, "done": done}
+                          for def_id, done in sorted(self.recruited.items())],
+            "scout_assignments": copy.deepcopy(self.scout_assignments),
+            "completed_villages": copy.deepcopy(self.completed_villages),
+            "scout_ids": list(self.scout_ids),
+            "installation_id": self.installation_id,
+        }
+
+    @classmethod
+    def from_query_progress(cls, data: dict[str, Any]) -> "RoutineProgress":
+        recruited = {}
+        for entry in data.get("recruited", []):
+            recruited[entry["def_id"]] = int(entry["done"])
+        return cls(
+            installation_id=data["installation_id"],
+            recruited=recruited,
+            scout_assignments=copy.deepcopy(data.get("scout_assignments", [])),
+            completed_villages=copy.deepcopy(data.get("completed_villages", [])),
+            scout_ids=list(data.get("scout_ids", [])),
+        )
+
+    def remaining(self, policy: dict[str, Any]) -> list[dict[str, Any]]:
+        """The finite queue entries not yet fully recruited.
+
+        A recruit ``count`` is a finite total for the policy installation,
+        not a per-turn buy; this never re-issues an already-committed count.
+        """
+        remaining = []
+        for recruit in policy.get("recruits", []):
+            done = self.recruited.get(recruit["def_id"], 0)
+            left = recruit["count"] - done
+            if left > 0:
+                remaining.append({"def_id": recruit["def_id"], "role": recruit["role"],
+                                  "remaining": left})
+        return remaining
+
+    def commit_action(self, progress_update: dict[str, Any]) -> None:
+        """Adopt a proposed ``progress_update`` after the action commits.
+
+        This is the ONLY method that mutates persisted progress. Callers
+        must only invoke it after the corresponding action has passed the
+        existing driver/checkpoint acknowledgement protocol -- never merely
+        because a query proposed it. This is the crash-safety requirement.
+        """
+        if progress_update.get("installation_id") not in (None, self.installation_id):
+            raise ValueError("progress_update belongs to a different installation")
+        for entry in progress_update.get("recruited", []):
+            def_id = entry["def_id"]
+            done = int(entry["done"])
+            # A committed update is authoritative for its def_id; monotonic
+            # non-decrease guards against a stale/duplicated replay adding
+            # the same recruit twice after a resume.
+            self.recruited[def_id] = max(self.recruited.get(def_id, 0), done)
+        for scout_id in progress_update.get("scout_ids", []):
+            if scout_id not in self.scout_ids:
+                self.scout_ids.append(scout_id)
+        for assignment in progress_update.get("scout_assignments", []):
+            if assignment not in self.scout_assignments:
+                self.scout_assignments.append(copy.deepcopy(assignment))
+        for village in progress_update.get("completed_villages", []):
+            if village not in self.completed_villages:
+                self.completed_villages.append(copy.deepcopy(village))
+
+
+# --------------------------------------------------------------------------
+# routine_next query construction.
+# --------------------------------------------------------------------------
+
+def build_routine_query(state_revision: int, policy: dict[str, Any],
+                         progress: RoutineProgress) -> dict[str, Any]:
+    """Build the frozen ``routine_next`` driver query."""
+    return {
+        "action": "Query",
+        "what": "routine_next",
+        "state_revision": state_revision,
+        "policy": copy.deepcopy(policy),
+        "progress": progress.to_query_progress(),
+    }
+
+
+@dataclass
+class RoutineException:
+    reason: str
+    evidence: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class RoutineActionResult:
+    action: dict[str, Any]
+    progress_update: dict[str, Any]
+    reason: str
+
+
+def parse_routine_result(body: dict[str, Any]) -> Any:
+    """Parse the ``body.result`` of a ``routine_next`` reply.
+
+    Returns a ``RoutineActionResult``, the string ``"finish"``, or a
+    ``RoutineException``. Raises ``ValueError`` for a malformed reply; the
+    driver contract, not this parser, is the source of truth for what a
+    well-formed reply looks like, but the client must not trust an
+    unrecognized shape.
+    """
+    if not isinstance(body, dict) or "result" not in body:
+        raise ValueError("routine_next reply is missing result")
+    kind = body["result"]
+    if kind == "action":
+        if "action" not in body or "progress_update" not in body or "reason" not in body:
+            raise ValueError("routine_next action result is missing required fields")
+        return RoutineActionResult(action=body["action"], progress_update=body["progress_update"],
+                                    reason=body["reason"])
+    if kind == "finish":
+        if body.get("reason") != "no_remaining_routine_steps":
+            raise ValueError("routine_next finish result has an unexpected reason")
+        return "finish"
+    if kind == "exception":
+        if "reason" not in body:
+            raise ValueError("routine_next exception result is missing reason")
+        return RoutineException(reason=body["reason"], evidence=body.get("evidence", {}))
+    raise ValueError(f"routine_next reply has unknown result kind: {kind!r}")
+
+
+# --------------------------------------------------------------------------
+# Internal orders envelope.
+# --------------------------------------------------------------------------
+
+def build_orders_envelope(orders: list[dict[str, Any]], source_state_revision: int) -> dict[str, Any]:
+    """Construct the internal orders envelope.
+
+    Only client code ever calls this. ``origin`` is always set to
+    ``"routine"`` here, unconditionally -- a caller cannot override it, and
+    a model response is never consulted for this value. This is the
+    enforcement point for "a model response must never be able to set
+    origin".
+    """
+    return {"orders": copy.deepcopy(orders), "origin": ROUTINE_ORIGIN,
+            "source_state_revision": source_state_revision}
+
+
+def _scan_for_origin_key(value: Any, path: str = "$") -> Optional[str]:
+    """Recursively find a forbidden ``origin`` key anywhere in a model reply."""
+    if isinstance(value, dict):
+        if "origin" in value:
+            return f"{path}.origin"
+        for key, sub in value.items():
+            found = _scan_for_origin_key(sub, f"{path}.{key}")
+            if found:
+                return found
+    elif isinstance(value, list):
+        for index, sub in enumerate(value):
+            found = _scan_for_origin_key(sub, f"{path}[{index}]")
+            if found:
+                return found
+    return None
+
+
+# --------------------------------------------------------------------------
+# Model response parsing (strict discriminated union on "kind").
+# --------------------------------------------------------------------------
+
+@dataclass
+class SetPolicyResponse:
+    policy: dict[str, Any]
+
+
+@dataclass
+class ActResponse:
+    actions: list[dict[str, Any]]
+    finish_turn: bool
+
+
+@dataclass
+class FinishTurnResponse:
+    pass
+
+
+@dataclass
+class ResignResponse:
+    pass
+
+
+def parse_model_response(obj: Any) -> Any:
+    """Strictly parse a model response into one of the four response forms.
+
+    Raises ``ModelResponseError`` for anything outside the exact contract,
+    including an embedded ``origin`` key anywhere in the payload -- a model
+    response must never be able to set that field (plan section 5).
+    """
+    if not isinstance(obj, dict):
+        raise ModelResponseError("model response must be a JSON object")
+    origin_path = _scan_for_origin_key(obj)
+    if origin_path is not None:
+        raise ModelResponseError(
+            f"model response must not set 'origin' (found at {origin_path}); "
+            "origin is set only by client code constructing the orders envelope")
+    if "decisions" in obj:
+        raise ModelResponseError(
+            "strategy mode responses must not contain 'decisions'; that is the "
+            "old full-annotation array and is absent from this mode")
+    kind = obj.get("kind")
+    if kind not in RESPONSE_KINDS:
+        raise ModelResponseError(
+            f"response 'kind' must be one of {RESPONSE_KINDS}, got {kind!r}")
+    if kind == "set_policy":
+        _require_keys(obj, SET_POLICY_KEYS, SET_POLICY_KEYS, "response")
+        if not isinstance(obj["policy"], dict):
+            raise ModelResponseError("response.policy must be an object")
+        return SetPolicyResponse(policy=obj["policy"])
+    if kind == "act":
+        _require_keys(obj, ACT_KEYS, ACT_KEYS, "response")
+        actions = obj["actions"]
+        if not isinstance(actions, list) or not (1 <= len(actions) <= 16):
+            raise ModelResponseError("response.actions must have between 1 and 16 entries")
+        for index, action in enumerate(actions):
+            if not isinstance(action, dict):
+                raise ModelResponseError(f"response.actions[{index}] must be an object")
+            action_kind = action.get("action")
+            if action_kind in ("Resign", "EndTurn", "FinishWithGreedy", "DoneWithImportantMoves"):
+                raise ModelResponseError(
+                    f"response.actions[{index}] must not embed a boundary/resign action: {action_kind!r}")
+        finish_turn = obj["finish_turn"]
+        if not isinstance(finish_turn, bool):
+            raise ModelResponseError("response.finish_turn must be a boolean")
+        return ActResponse(actions=list(actions), finish_turn=finish_turn)
+    if kind == "finish_turn":
+        _require_keys(obj, FINISH_TURN_KEYS, FINISH_TURN_KEYS, "response")
+        return FinishTurnResponse()
+    # kind == "resign"
+    _require_keys(obj, RESIGN_KEYS, RESIGN_KEYS, "response")
+    return ResignResponse()
+
+
+# --------------------------------------------------------------------------
+# Fixed-policy install (Stack 4's ``strategy_fixed`` treatment; the flag is
+# wired now per Stack 1 scope). Reading the file creates no request or
+# usage row and starts no backend.
+# --------------------------------------------------------------------------
+
+def static_recruitable_defs(units_dir: str = "data/units") -> frozenset[str]:
+    """Enumerate unit definition ids known to the static content tree.
+
+    This is a Stack 1 approximation for ``--strategy-policy``'s pre-flight
+    check only: it answers "does this unit definition exist at all", not the
+    engine-authoritative "is it recruitable right now for this faction/
+    leader/castle" -- that remains the driver's ``recruit_options`` query and
+    the routine executor's job once the Rust half exists. It exists so
+    reading a fixed policy file needs no live driver process, matching "no
+    backend started, zero model responses"; it must never be treated as a
+    substitute for engine recruitment legality once a real game runs.
+    """
+    import tomllib
+    from pathlib import Path
+
+    root = Path(units_dir)
+    ids: set[str] = set()
+    if not root.is_dir():
+        return frozenset()
+    for toml_path in root.rglob("*.toml"):
+        if toml_path.name == "sprite.toml":
+            continue
+        try:
+            with toml_path.open("rb") as handle:
+                data = tomllib.load(handle)
+        except (OSError, tomllib.TOMLDecodeError):
+            continue
+        unit_id = data.get("id")
+        if isinstance(unit_id, str) and unit_id:
+            ids.add(unit_id)
+    return frozenset(ids)
+
+
+def load_checked_in_policy(path: str, context: ValidationContext) -> dict[str, Any]:
+    """Read and strictly validate an exact checked-in policy file.
+
+    Pure function: no model backend, request, or usage row is created as a
+    side effect of calling this. Raises ``PolicyValidationError`` (or
+    ``ValueError``/``OSError`` for file/JSON problems) without partially
+    installing anything.
+    """
+    import json
+    from pathlib import Path
+
+    text = Path(path).read_text()
+    try:
+        obj = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise PolicyValidationError(f"--strategy-policy file is not valid JSON: {exc}") from exc
+    if not isinstance(obj, dict):
+        raise PolicyValidationError("--strategy-policy file must contain a JSON object")
+    if set(obj.keys()) == {"kind", "policy"}:
+        if obj.get("kind") != "set_policy":
+            raise PolicyValidationError(
+                "--strategy-policy file 'kind' must be 'set_policy' when present")
+        policy_obj = obj["policy"]
+    else:
+        policy_obj = obj
+    return validate_stack1_policy(policy_obj, context)
+
+
+# --------------------------------------------------------------------------
+# Response rendering (compact model briefs).
+# --------------------------------------------------------------------------
+
+def render_policy_brief(reserve_gold_default: int, recruitable_defs: Iterable[str]) -> str:
+    """A compact brief offered when requesting the initial policy selection."""
+    defs = ", ".join(sorted(recruitable_defs))
+    return (
+        "Select a recruitment policy as {\"kind\":\"set_policy\",\"policy\":{...}}.\n"
+        f"Recruitable definitions: {defs}\n"
+        "policy.reserve_gold: integer gold to keep unspent.\n"
+        "policy.recruits: ordered list of at most 8 {def_id,count,role}; each "
+        "count is a finite total for this installation, not a per-turn buy.\n"
+        "This stack only supports recruitment: scouts/villages/holds must be "
+        "empty and rally must be null."
+    )
+
+
+def render_exception_brief(exception: RoutineException, remaining: list[dict[str, Any]]) -> str:
+    """A compact brief for a typed exception requiring a model response."""
+    lines = [f"Routine execution paused: {exception.reason}."]
+    if exception.evidence:
+        lines.append(f"Evidence: {exception.evidence!r}")
+    if remaining:
+        lines.append(f"Remaining recruit queue: {remaining!r}")
+    lines.append(
+        "Respond with set_policy to replace the policy, finish_turn to end "
+        "the turn with no further friendly actions, or resign.")
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+# Turn orchestration, driven against a scripted/fake exchange and backend.
+#
+# This loop is deliberately small and is the piece both Stack 1's tests and
+# (once the Rust `routine_next` query exists) the real client can drive: it
+# only depends on three caller-supplied callables, never on a live process.
+# --------------------------------------------------------------------------
+
+class TurnBudgetExhausted(RuntimeError):
+    """The configured per-turn query or model-response budget was hit."""
+
+
+@dataclass
+class StrategyTurnOutcome:
+    status: str  # "finished", "unsupported_exception", "resigned", "budget_exhausted"
+    reason: Optional[str] = None
+    evidence: dict[str, Any] = field(default_factory=dict)
+    model_responses: int = 0
+    committed_actions: int = 0
+
+
+def run_scripted_strategy_turn(
+    *,
+    exchange,
+    request_model,
+    context: ValidationContext,
+    installation: PolicyInstallation,
+    progress: RoutineProgress,
+    state_revision: int,
+    max_queries: int = 256,
+    max_model_responses: int = 8,
+) -> StrategyTurnOutcome:
+    """Drive one controlled turn of routine execution to a boundary.
+
+    ``exchange(query_dict) -> response_dict`` sends a ``{"action":"Query",...}``
+    request and returns the raw ``{"ok":..., "body":...}`` reply, matching the
+    existing driver protocol used throughout ``tools/llm_client.py``.
+
+    ``request_model(brief_text) -> raw_dict`` calls the model backend and
+    returns its parsed JSON object (already decoded from text) for
+    ``parse_model_response``. It must not be called for a ``contact``
+    exception in Stack 1 -- that ends the run immediately instead.
+
+    A ``progress_update`` proposed by ``routine_next`` is only adopted into
+    ``progress`` via ``progress.commit_action`` after ``exchange`` reports
+    the submission as committed (i.e. after the same call that submits the
+    orders envelope succeeds) -- never merely because the query proposed it.
+    """
+    model_responses = 0
+    committed_actions = 0
+    revision = state_revision
+    policy = installation.policy
+    queries = 0
+    while True:
+        if queries >= max_queries:
+            return StrategyTurnOutcome("budget_exhausted", reason="max_queries_per_turn",
+                                        model_responses=model_responses,
+                                        committed_actions=committed_actions)
+        queries += 1
+        query = build_routine_query(revision, policy, progress)
+        raw = exchange(query)
+        if not isinstance(raw, dict) or not raw.get("ok") or "body" not in raw:
+            message = raw.get("message", "query failed") if isinstance(raw, dict) else "invalid query response"
+            raise RuntimeError(f"query_error: routine_next: {message}")
+        result = parse_routine_result(raw["body"])
+
+        if result == "finish":
+            # Finish through the routine envelope with no model call between the
+            # last routine step and the boundary. FinishWithGreedy with empty
+            # groups and holds is the verified no-sweep boundary; plain EndTurn
+            # performs an automatic Greedy sweep and must not be used here.
+            finish_envelope = build_orders_envelope([NO_SWEEP_FINISH], revision)
+            finish_reply = exchange(finish_envelope)
+            if not isinstance(finish_reply, dict) or not finish_reply.get("ok"):
+                message = (finish_reply.get("message", "finish failed")
+                           if isinstance(finish_reply, dict) else "invalid finish response")
+                raise RuntimeError(f"submit_error: routine finish rejected: {message}")
+            return StrategyTurnOutcome("finished", reason="no_remaining_routine_steps",
+                                        model_responses=model_responses,
+                                        committed_actions=committed_actions)
+
+        if isinstance(result, RoutineActionResult):
+            orders = [result.action]
+            envelope = build_orders_envelope(orders, revision)
+            # The envelope is submitted as-is. It must carry no "action" key:
+            # the driver detects it by the presence of "orders" and the absence
+            # of "action", and would otherwise fall through to its single-order
+            # path and reject it.
+            submit_reply = exchange(envelope)
+            if not isinstance(submit_reply, dict) or not submit_reply.get("ok"):
+                message = submit_reply.get("message", "submit failed") if isinstance(submit_reply, dict) else "invalid submit response"
+                raise RuntimeError(f"submit_error: routine action rejected: {message}")
+            # Only now, proven committed, adopt the proposed progress update.
+            progress.commit_action(result.progress_update)
+            committed_actions += 1
+            body = submit_reply.get("body", {})
+            if isinstance(body, dict) and "state_revision" in body:
+                revision = body["state_revision"]
+            continue
+
+        # RoutineException
+        assert isinstance(result, RoutineException)
+        if result.reason in STACK1_UNSUPPORTED_EXCEPTION_CODES:
+            raise RoutineUnsupportedException(result.reason, result.evidence)
+        if model_responses >= max_model_responses:
+            return StrategyTurnOutcome("budget_exhausted", reason="max_model_responses_per_turn",
+                                        model_responses=model_responses,
+                                        committed_actions=committed_actions)
+        brief = render_exception_brief(result, progress.remaining(policy))
+        raw_reply = request_model(brief)
+        model_responses += 1
+        parsed = parse_model_response(raw_reply)
+        if isinstance(parsed, ResignResponse):
+            return StrategyTurnOutcome("resigned", model_responses=model_responses,
+                                        committed_actions=committed_actions)
+        if isinstance(parsed, FinishTurnResponse):
+            return StrategyTurnOutcome("finished", reason="model_finish_turn",
+                                        model_responses=model_responses,
+                                        committed_actions=committed_actions)
+        if isinstance(parsed, SetPolicyResponse):
+            normalized = validate_stack1_policy(parsed.policy, context)
+            installation = install_policy(normalized, source_request_id=installation.source_request_id,
+                                          source_kind="model")
+            policy = installation.policy
+            progress = RoutineProgress.fresh(installation.installation_id)
+            continue
+        # ActResponse: Stack 1 does not resolve tactical exceptions (that is
+        # Stack 3 scope beyond "contact"); reject rather than silently drop.
+        raise ModelResponseError(
+            "an 'act' response is not supported for this exception in Stack 1")

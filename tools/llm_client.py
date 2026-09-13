@@ -37,6 +37,9 @@ try:
                                  query_inspect_units, validate_purpose, PURPOSE_MAX_CHARS,
                                  extract_units_inspection_choices)
     from .watchdog_stop import read_stop, resolve_stop
+    from .routine_policy import (PolicyValidationError, ValidationContext,
+                                 load_checked_in_policy, static_recruitable_defs,
+                                 new_installation_id)
 except ImportError:  # pragma: no cover - direct script compatibility
     # Running `python tools/llm_client.py` puts only the tools directory on
     # sys.path. Import the package modules from the repository root so their
@@ -61,6 +64,9 @@ except ImportError:  # pragma: no cover - direct script compatibility
                                       query_inspect_units, validate_purpose, PURPOSE_MAX_CHARS,
                                       extract_units_inspection_choices)
     from tools.watchdog_stop import read_stop, resolve_stop
+    from tools.routine_policy import (PolicyValidationError, ValidationContext,
+                                      load_checked_in_policy, static_recruitable_defs,
+                                      new_installation_id)
 
 ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "Engage", "EndTurn", "Advance", "Resign",
            "DoneWithImportantMoves", "FinishWithGreedy", "MoveGroupToward"}
@@ -160,6 +166,20 @@ def resolve_client_config(args: Any) -> None:
             setattr(args, "max_model_calls_per_turn", 128)
         if getattr(args, "max_tool_calls_per_turn", None) is None:
             setattr(args, "max_tool_calls_per_turn", 64)
+    elif decision_mode == "strategy":
+        # Strategy mode requires incremental driver turns, like focused.
+        # Defaults per plan section 1/5: 64 partial batches, 256 queries
+        # (--max-queries-per-turn already defaults to 256 globally), and
+        # eight logical model responses per controlled turn.
+        setattr(args, "incremental_turns", True)
+        if getattr(args, "max_partial_batches_per_turn", None) is None:
+            setattr(args, "max_partial_batches_per_turn", 64)
+        if getattr(args, "max_model_calls_per_turn", None) is None:
+            setattr(args, "max_model_calls_per_turn", 8)
+        if getattr(args, "max_tool_calls_per_turn", None) is None:
+            setattr(args, "max_tool_calls_per_turn", 64)
+        if getattr(args, "max_queries_per_turn", None) is None:
+            setattr(args, "max_queries_per_turn", 256)
     else:
         if getattr(args, "max_partial_batches_per_turn", None) is None:
             setattr(args, "max_partial_batches_per_turn", 3)
@@ -175,12 +195,22 @@ def resolve_client_config(args: Any) -> None:
         raise ValueError(f"--max-game-total-tokens must be positive, got {max_game_tokens}")
     operation_limit = getattr(args, "focused_max_operations_per_decision", None)
     if operation_limit is not None:
+        if decision_mode == "strategy":
+            # This must raise explicitly, not be silently reinterpreted as a
+            # strategy-mode limit: focused's single-operation flag has no
+            # meaning for routine-executed strategy actions.
+            raise ValueError(
+                "--focused-max-operations-per-decision cannot be combined with "
+                "--decision-mode strategy")
         if decision_mode != "focused":
             raise ValueError("--focused-max-operations-per-decision requires --decision-mode focused")
         if not 1 <= operation_limit <= 256:
             raise ValueError(
                 "--focused-max-operations-per-decision must be between 1 and 256, "
                 f"got {operation_limit}")
+    strategy_policy = getattr(args, "strategy_policy", None)
+    if strategy_policy is not None and decision_mode != "strategy":
+        raise ValueError("--strategy-policy requires --decision-mode strategy")
 
 
 def validate_checkpoint_identity(envelope: dict[str, Any], args: argparse.Namespace) -> None:
@@ -2652,7 +2682,10 @@ def rescue_priorities(exposure: dict[str, Any]) -> list[dict[str, Any]]:
     return candidates[:3]
 
 
-_COMMITTED_CONTROLLED_EVENT_SOURCES = frozenset({"llm", "delegated_greedy"})
+# "routine" is deterministic client-selected execution. It is a committed
+# controlled source like the other two, but it is NOT model-authored --
+# model-authored predicates must exclude it.
+_COMMITTED_CONTROLLED_EVENT_SOURCES = frozenset({"llm", "delegated_greedy", "routine"})
 
 
 def _window_events(line: dict[str, Any]) -> list[dict[str, Any]]:
@@ -4850,8 +4883,40 @@ def set_terminal(metadata: dict[str, Any], terminal_class: str,
     return terminal_class
 
 
+def run_strategy_fixed_policy_install(args: argparse.Namespace) -> int:
+    """Install an exact checked-in strategy policy with zero model usage.
+
+    This is Stack 4's ``strategy_fixed`` treatment; the flag is wired now per
+    Stack 1 scope. It starts no model backend and creates no request/usage
+    row. It validates the policy file strictly (Stack 1: recruitment-only)
+    against the static unit content tree and records the installation to
+    ``--log`` if given, without starting the Rust driver process or running
+    any routine turn -- automated fixed-policy turn execution depends on the
+    `routine_next` driver query and is delivered when that Rust half lands.
+    """
+    context = ValidationContext(recruitable_defs=static_recruitable_defs())
+    try:
+        policy = load_checked_in_policy(args.strategy_policy, context)
+    except (PolicyValidationError, OSError, ValueError) as exc:
+        print(f"strategy_policy_error: {exc}", file=sys.stderr)
+        return 1
+    installation_id = new_installation_id()
+    print(f"installed fixed strategy policy {installation_id} from "
+          f"{args.strategy_policy}: {json.dumps(policy)}", file=sys.stderr)
+    log_path = getattr(args, "log", None)
+    if log_path:
+        record = {"type": "policy_installed", "installation_id": installation_id,
+                  "source_kind": "fixed_file", "source_path": str(args.strategy_policy),
+                  "policy": policy}
+        with open(log_path, "a", buffering=1) as handle:
+            handle.write(json.dumps(record) + "\n")
+    return 0
+
+
 def run(args: argparse.Namespace) -> int:
     resolve_client_config(args)
+    if getattr(args, "strategy_policy", None):
+        return run_strategy_fixed_policy_install(args)
     driver = args.driver
     log_path = getattr(args, "log", None)
     resume_log = getattr(args, "resume_log", None)
@@ -7455,8 +7520,13 @@ def main() -> int:
     p.add_argument("--no-recruit-macro", action="store_true")
     p.add_argument("--incremental-turns", action="store_true",
                    help="allow up to three bounded partial action batches before EndTurn")
-    p.add_argument("--decision-mode", choices=("batch", "focused"), default="batch",
-                   help="turn decision mode ('batch' or 'focused')")
+    p.add_argument("--decision-mode", choices=("batch", "focused", "strategy"), default="batch",
+                   help="turn decision mode ('batch', 'focused', or 'strategy')")
+    p.add_argument("--strategy-policy",
+                   help="path to an exact checked-in policy JSON file; valid only with "
+                        "--decision-mode strategy. Installs that policy with no backend "
+                        "started and zero model responses (Stack 4's strategy_fixed "
+                        "treatment, wired for Stack 1).")
     p.add_argument("--action-encoding", choices=("coordinates", "choices"), default="coordinates",
                    help="action encoding ('coordinates' or 'choices')")
     p.add_argument("--focused-max-operations-per-decision", type=int, default=None,
@@ -7491,7 +7561,13 @@ def main() -> int:
     resume.add_argument("--resume-checkpoint",
                         help="branch from this checkpoint into a new --log")
     a = p.parse_args()
-    if sum(bool(value) for value in (a.orders_file, a.model_command, a.interactive_model)) != 1:
+    if a.strategy_policy and a.decision_mode != "strategy":
+        p.error("--strategy-policy requires --decision-mode strategy")
+    if a.strategy_policy:
+        if any((a.orders_file, a.model_command, a.interactive_model)):
+            p.error("--strategy-policy installs a fixed policy and starts no model backend; "
+                    "do not also pass --orders-file/--model-command/--interactive-model")
+    elif sum(bool(value) for value in (a.orders_file, a.model_command, a.interactive_model)) != 1:
         p.error("choose exactly one of --orders-file, --model-command, or --interactive-model")
     if a.event_window_observations < 1:
         p.error("--event-window-observations must be positive")
@@ -7506,6 +7582,10 @@ def main() -> int:
     if (a.focused_max_operations_per_decision is not None
             and not 1 <= a.focused_max_operations_per_decision <= 256):
         p.error("--focused-max-operations-per-decision must be between 1 and 256")
+    if (a.focused_max_operations_per_decision is not None
+            and a.decision_mode == "strategy"):
+        p.error("--focused-max-operations-per-decision cannot be combined with "
+                "--decision-mode strategy")
     if (a.focused_max_operations_per_decision is not None
             and a.decision_mode != "focused"):
         p.error("--focused-max-operations-per-decision requires --decision-mode focused")

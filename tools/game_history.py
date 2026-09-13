@@ -1575,10 +1575,13 @@ def _import_events(conn: sqlite3.Connection, game_id: str, records: list[dict[st
     `forwarded_orders` record names its own `batch_id` and (via `links`) its
     side turn by exact revision or ID match. Because the driver protocol is
     synchronous, the events printed for the model's own authored batch (its
-    "llm" source) and any events it delegates within the same batch
-    ("delegated_greedy") are the only ones attached to that batch_id -- an
-    opponent's own turn (source "greedy") or any unrecognized source is never
-    guessed onto a nearby batch. `event_source` prefers the event's own
+    "llm" source), any events it delegates within the same batch
+    ("delegated_greedy"), and deterministic client-selected steps submitted
+    through the routine orders envelope ("routine") are the only ones attached
+    to that batch_id -- an opponent's own turn (source "greedy") or any
+    unrecognized source is never guessed onto a nearby batch. A "routine" event
+    is committed controlled play but is not model-authored; consumers that
+    count model-authored actions must exclude it. `event_source` prefers the event's own
     `source` field over the enclosing envelope's, in case a future driver
     mixes sources within one record; today they are always equal.
 
@@ -1619,7 +1622,7 @@ def _import_events(conn: sqlite3.Connection, game_id: str, records: list[dict[st
             sequence += 1
             event_source = event.get("source") if isinstance(event.get("source"), str) else envelope_source
             batch_id = side_turn_id = None
-            if envelope_source in ("llm", "delegated_greedy") and current_batch is not None:
+            if envelope_source in ("llm", "delegated_greedy", "routine") and current_batch is not None:
                 batch_id = current_batch["batch_id"]
                 side_turn_id = current_batch["side_turn_id"]
             conn.execute("""INSERT INTO events

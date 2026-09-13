@@ -13,6 +13,7 @@ pub mod hex;
 pub mod loader;
 pub mod mapgen;
 pub mod pathfinding;
+pub mod routine;
 pub mod save;
 pub mod scenario;
 pub mod schema;

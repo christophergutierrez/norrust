@@ -207,6 +207,12 @@ def classify(records: list[dict[str, Any]],
     delegated_event_counts = Counter()
     delegated_kills = 0
     delegated_villages = 0
+    # Routine steps are deterministic client-selected execution. They are
+    # committed controlled play but are NOT model-authored, so they are counted
+    # on their own axis and never folded into the delegated or model totals.
+    routine_event_counts = Counter()
+    routine_units: set[int] = set()
+    routine_villages = 0
     generated_end_turns = 0
     generated_model_end_turns = 0
     generated_opponent_end_turns = 0
@@ -227,6 +233,13 @@ def classify(records: list[dict[str, Any]],
                     generated_model_end_turns += 1
                 elif source == "greedy":
                     generated_opponent_end_turns += 1
+            if source == "routine":
+                routine_event_counts[kind] += 1
+                if kind in {"village", "capture_village", "village_capture"}:
+                    routine_villages += 1
+                unit_id = event.get("unit")
+                if isinstance(unit_id, int):
+                    routine_units.add(unit_id)
             if source == "delegated_greedy":
                 delegated_event_counts[kind] += 1
                 if kind in {"village", "capture_village", "village_capture"}:
@@ -373,6 +386,13 @@ def classify(records: list[dict[str, Any]],
             "kills": delegated_kills,
             "villages": delegated_villages,
             "end_turns": delegated_event_counts["end_turn"],
+        },
+        "routine": {
+            "units": len(routine_units),
+            "moves": routine_event_counts["move"],
+            "recruits": routine_event_counts["recruit"],
+            "villages": routine_villages,
+            "end_turns": routine_event_counts["end_turn"],
         },
         "model_end_turns": generated_model_end_turns,
         "opponent_end_turns": generated_opponent_end_turns,
