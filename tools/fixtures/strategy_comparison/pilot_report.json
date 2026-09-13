@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "status": "prepared_not_run",
+  "comparison": {"valid": null, "reason": "provenance is stamped only immediately before an authorized launch"},
+  "totals": {"scheduled": 3, "completed": 0, "failed": 0, "error": 0, "not_run": 3},
+  "cells": [
+    {"cell_id": "strategy-opening-strategy_fixed", "strategy_treatment": "strategy_fixed", "status": "not_run", "evidence_status": "unknown_unrun", "source_attribution": null, "model_calls": null, "known_cost": null},
+    {"cell_id": "strategy-opening-strategy_glm", "strategy_treatment": "strategy_glm", "status": "not_run", "evidence_status": "unknown_unrun", "source_attribution": null, "model_calls": null, "known_cost": null},
+    {"cell_id": "strategy-opening-focused_glm", "strategy_treatment": "focused_glm", "status": "not_run", "evidence_status": "unknown_unrun", "source_attribution": null, "model_calls": null, "known_cost": null}
+  ],
+  "note": "Prepared report only. No pilot cell was launched; calls, tokens, costs, outcomes and replay coverage are unknown."
+}

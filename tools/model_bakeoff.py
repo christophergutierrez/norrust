@@ -50,6 +50,7 @@ from .llm_client import load_tactical_playbook, source_metadata
 SCHEMA_VERSION = 1
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DRIVER = "norrust_core/target/debug/greedy_driver"
+STRATEGY_TREATMENTS = ("strategy_fixed", "strategy_glm", "focused_glm")
 
 REQUIRED_CELL_KEYS = ("id", "scenario", "seed", "faction0", "faction1",
                       "llm_side", "gold", "max_turns", "model", "backend")
@@ -75,6 +76,7 @@ _BUDGET_FLAGS = {
     "token_total_limit": "--token-total-limit",
     "max_game_total_tokens": "--max-game-total-tokens",
     "max_partial_batches_per_turn": "--max-partial-batches-per-turn",
+    "model_timeout": "--model-timeout",
 }
 
 
@@ -154,10 +156,31 @@ def resolve_manifest(manifest: dict[str, Any], *, rng: random.Random | None = No
             checkpoint_hash = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
         mode = cell.get("decision_mode", "focused" if cell.get("arm") in ("B", "C") else "batch")
         encoding = cell.get("action_encoding", "choices" if cell.get("arm") == "C" else "coordinates")
-        if mode not in ("batch", "focused") or encoding not in ("coordinates", "choices"):
+        if mode not in ("batch", "focused", "strategy") or encoding not in ("coordinates", "choices"):
             raise ManifestError(f"cell {cell_id!r}: invalid decision mode or action encoding")
         if encoding == "choices" and mode != "focused":
             raise ManifestError("choices encoding requires focused mode")
+        treatment = cell.get("strategy_treatment") or cell.get("treatment")
+        if treatment is not None and treatment not in STRATEGY_TREATMENTS:
+            raise ManifestError(f"cell {cell_id!r}: unknown strategy treatment {treatment!r}")
+        if treatment == "strategy_fixed":
+            if mode != "strategy" or not cell.get("strategy_policy"):
+                raise ManifestError("strategy_fixed requires strategy mode and strategy_policy")
+        elif treatment == "strategy_glm" and mode != "strategy":
+            raise ManifestError("strategy_glm requires strategy mode")
+        elif treatment == "focused_glm" and mode != "focused":
+            raise ManifestError("focused_glm requires focused mode")
+        if mode == "strategy" and encoding != "coordinates":
+            raise ManifestError("strategy mode requires coordinates encoding")
+        policy_hash = None
+        policy_path_value = cell.get("strategy_policy")
+        if policy_path_value:
+            policy_path = Path(policy_path_value)
+            if not policy_path.is_absolute():
+                policy_path = REPO_ROOT / policy_path
+            if not policy_path.is_file():
+                raise ManifestError(f"cell {cell_id!r}: strategy_policy not found: {policy_path_value}")
+            policy_hash = hashlib.sha256(policy_path.read_bytes()).hexdigest()
         if cell.get("extra_client_args") and resolved.get("experiment_kind") == "bakeoff":
             raise ManifestError("bakeoff settings must use declared manifest fields, not extra_client_args")
         pricing = cell.get("pricing")
@@ -177,6 +200,7 @@ def resolve_manifest(manifest: dict[str, Any], *, rng: random.Random | None = No
             "requested_reasoning_effort": cell.get("reasoning_effort"),
             "transport_fingerprint": transport_fingerprint,
             "checkpoint_sha256": checkpoint_hash,
+            "strategy_policy_sha256": policy_hash,
         }
         provenance.update(source_metadata())
         cell["provenance"] = provenance
@@ -226,6 +250,8 @@ def write_identity(cell_dir: Path, cell: dict[str, Any]) -> None:
             "decision_mode": cell.get("decision_mode"),
             "action_encoding": cell.get("action_encoding"),
             "checkpoint_fixture": cell.get("checkpoint_fixture"),
+            "strategy_treatment": cell.get("strategy_treatment") or cell.get("treatment"),
+            "strategy_policy": cell.get("strategy_policy"),
         },
         "backend": {"kind": cell.get("backend", {}).get("kind")},
         "provenance": cell.get("provenance"),
@@ -300,6 +326,13 @@ def build_llm_client_argv(cell: dict[str, Any], cell_dir: Path) -> tuple[list[st
         env["NORRUST_CODEX_SESSION_FILE"] = str(cell_dir / "session.json")
         env["NORRUST_CODEX_ARTIFACT_DIR"] = str(cell_dir / "artifacts")
         env["NORRUST_CODEX_MATCH_ID"] = cell["id"]
+    elif kind == "fixed_policy":
+        policy = cell.get("strategy_policy") or backend.get("path")
+        if not policy:
+            raise ManifestError(f"cell {cell['id']!r}: fixed_policy backend requires strategy_policy")
+        # The client validates and installs this file before starting routine
+        # execution.  It intentionally receives no model backend at all.
+        argv += ["--strategy-policy", str(policy)]
     else:
         raise ManifestError(f"cell {cell['id']!r}: unsupported backend kind {kind!r}")
     env["NORRUST_REQUEST_CONTEXT_FILE"] = str((cell_dir / "request_context.json").resolve())
@@ -316,6 +349,15 @@ def run_cell(cell: dict[str, Any], run_dir: Path, *, timeout: float | None = Non
     for key, value in current.items():
         if (cell.get("provenance") or {}).get(key) != value:
             raise ManifestError(f"cell {cell['id']!r}: {key} changed after manifest resolution")
+    policy_path_value = cell.get("strategy_policy")
+    expected_policy_hash = (cell.get("provenance") or {}).get("strategy_policy_sha256")
+    if policy_path_value and expected_policy_hash:
+        policy_path = Path(policy_path_value)
+        if not policy_path.is_absolute():
+            policy_path = REPO_ROOT / policy_path
+        if (not policy_path.is_file()
+                or hashlib.sha256(policy_path.read_bytes()).hexdigest() != expected_policy_hash):
+            raise ManifestError(f"cell {cell['id']!r}: strategy_policy changed after manifest resolution")
     cell_dir = cell_dir_for(run_dir, cell["id"])
     cell_dir.mkdir(parents=True, exist_ok=True)
     if cell.get("checkpoint_fixture"):
@@ -758,6 +800,14 @@ def check_comparison_validity(resolved_manifest: dict[str, Any]) -> dict[str, An
                 # differ for the declared A/B/C bakeoff.
                 if kind == "bakeoff" and key in TREATMENT_KEYS:
                     continue
+                # Strategy treatments are a separate comparison family. Their
+                # controller/backend and treatment settings intentionally
+                # differ, while source/driver/guide/checkpoint identity and
+                # the engine opening remain frozen.
+                if kind == "strategy_comparison" and key in (
+                        "backend", "model", "pricing", "budgets", "transport_fingerprint",
+                        *TREATMENT_KEYS):
+                    continue
                 if kind == "baseline_candidate" and key == declared_field:
                     continue
                 mismatches.append({"cell": cell["id"], "baseline_cell": baseline_id, "field": key,
@@ -780,6 +830,26 @@ def check_comparison_validity(resolved_manifest: dict[str, Any]) -> dict[str, An
                                        "expected": expected,
                                        "actual": {"decision_mode": cell.get("decision_mode"),
                                                   "action_encoding": cell.get("action_encoding")}})
+        elif kind == "strategy_comparison":
+            treatments = [c.get("strategy_treatment") or c.get("treatment") for c in group_cells]
+            if sorted(t for t in treatments if isinstance(t, str)) != sorted(STRATEGY_TREATMENTS):
+                mismatches.append({"error": "strategy comparison needs exactly strategy_fixed, strategy_glm, focused_glm"})
+            if len(set(treatments)) != len(treatments):
+                mismatches.append({"error": "strategy comparison treatments must be unique"})
+            for cell in group_cells:
+                treatment = cell.get("strategy_treatment") or cell.get("treatment")
+                if treatment == "strategy_fixed":
+                    if cell.get("decision_mode") != "strategy" or not cell.get("strategy_policy"):
+                        mismatches.append({"cell": cell["id"], "field": "strategy_fixed",
+                                           "expected": "strategy mode plus strategy_policy"})
+                elif treatment == "strategy_glm" and cell.get("decision_mode") != "strategy":
+                    mismatches.append({"cell": cell["id"], "field": "strategy_glm",
+                                       "expected": "strategy mode"})
+                elif treatment == "focused_glm" and (
+                        cell.get("decision_mode") != "focused"
+                        or cell.get("focused_max_operations_per_decision") is not None):
+                    mismatches.append({"cell": cell["id"], "field": "focused_glm",
+                                       "expected": "focused mode without operation limit"})
     return {"experiment_kind": kind, "valid": not mismatches, "mismatches": mismatches}
 
 

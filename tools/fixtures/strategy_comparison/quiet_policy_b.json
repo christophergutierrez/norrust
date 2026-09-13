@@ -1,0 +1,5 @@
+{
+  "reserve_gold": 100,
+  "recruits": [{"def_id": "Skeleton", "count": 2, "role": "army"}],
+  "scouts": [], "villages": [], "rally": null, "holds": []
+}
