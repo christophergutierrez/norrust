@@ -354,7 +354,8 @@ class StrategyModeIntegrationTests(unittest.TestCase):
             # more units than were ever recruited under this policy.
             self.assertFalse(any(line.get("source") == "greedy" for line in _driver_event_lines(records)
                                  if state_lines and state_lines[0].get("state_revision") == 0))
-            self.assertLessEqual(len(routine_events), 6, "castle space caps recruitment at six hexes")
+            self.assertLessEqual(sum(e.get("kind") == "recruit" for e in routine_events),
+                                 6, "castle space caps recruitment at six hexes")
 
     # -- Gate 6: crash after a committed recruit but before acknowledgement,
     # then resume, reproduces the same final recruit count/gold as
