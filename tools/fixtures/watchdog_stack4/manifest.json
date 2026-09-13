@@ -15,22 +15,22 @@
     "status": "prepared_not_run",
     "rates": {
       "currency": "USD",
-      "input_per_million": 0.05,
-      "cached_input_per_million": 0.01,
-      "output_per_million": 0.2,
+      "input_per_million": 0.22,
+      "cached_input_per_million": 0.022,
+      "output_per_million": 0.66,
       "checked_date": "2026-09-12",
       "source": "https://docs.fireworks.ai/serverless/pricing"
     },
-    "worst_case_usd_no_cache": 0.0113664,
+    "worst_case_usd_no_cache": 0.04584448,
     "notes": [
       "No caching discount assumed.",
-      "Reasoning controls are omitted; any provider reasoning usage remains unknown.",
+      "The selected DeepSeek V4 profile sends reasoning_effort=none; any provider reasoning usage remains unknown unless reported.",
       "The 4096 input setting is a conservative local bytes/3 estimate, not a provider tokenizer measurement.",
       "This is a request-limit ceiling, not an invoice or observed usage.",
       "No Fireworks player requests are part of this offline evaluation."
     ],
-    "model": "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b",
-    "reasoning_effort": null,
+    "model": "accounts/fireworks/models/deepseek-v4-flash-0731",
+    "reasoning_effort": "none",
     "maximum_input_tokens_per_call": 4096,
     "maximum_output_tokens_per_call": 512
   }

@@ -616,7 +616,9 @@ class FireworksStreamDriverIntegrationTests(unittest.TestCase):
                 command = [sys.executable, "-m", "tools.llm_client",
                            "--driver", str(root / "norrust_core/target/debug/greedy_driver"),
                            "--model-command", shlex.join([sys.executable, "-m",
-                                                           "tools.fireworks_backend", "--stream"]),
+                                                           "tools.fireworks_backend", "--stream", "--model",
+                                                           "accounts/fireworks/models/glm-5p3-flash"]),
+                           "--player-model", "accounts/fireworks/models/glm-5p3-flash",
                            "--scenario", "big_battle_6", "--faction0", "undead",
                            "--faction1", "undead", "--llm-side", "0", "--max-turns", "1",
                            "--incremental-turns", "--disable-agenda-sweep", "--model-timeout", "10",
@@ -630,10 +632,14 @@ class FireworksStreamDriverIntegrationTests(unittest.TestCase):
                                  f"rc={result.returncode} stderr={result.stderr!r} stdout={result.stdout!r} requests={len(received)} "
                                  f"log={log.read_text() if log.exists() else '<missing>'}")
                 self.assertGreaterEqual(len(received), 1)
+                self.assertTrue(all(request["model"] == "accounts/fireworks/models/glm-5p3-flash"
+                                    for request in received))
                 self.assertTrue(all(request["stream"] for request in received))
                 self.assertTrue(all(request["stream_options"] == {"include_usage": True}
                                     for request in received))
                 records = [json.loads(line) for line in (path / "usage.ndjson").read_text().splitlines()]
+                self.assertTrue(all(record["requested_model"] == "accounts/fireworks/models/glm-5p3-flash"
+                                    for record in records))
                 self.assertEqual(sum(record["record_kind"] == "dispatch" for record in records), len(received))
                 self.assertEqual(sum(record["record_kind"] == "final" for record in records), len(received))
                 self.assertEqual(len(list(evidence.glob("*/completed.json"))), len(received))

@@ -181,7 +181,7 @@ class WatchdogReplayTests(unittest.TestCase):
         self.assertNotIn("paid_launch_authorized", evaluation)
         self.assertEqual(evaluation["rates"]["checked_date"], "2026-09-12")
         self.assertEqual(evaluation["rates"]["source"], "https://docs.fireworks.ai/serverless/pricing")
-        self.assertEqual(evaluation["worst_case_usd_no_cache"], 0.0113664)
+        self.assertEqual(evaluation["worst_case_usd_no_cache"], 0.04584448)
 
     def test_cli_is_offline_and_reports_detection_metrics(self):
         with tempfile.TemporaryDirectory() as output:

@@ -338,11 +338,14 @@ annotation error never requires having used this helper.
 The optional watchdog is a separate, tool-free observer channel.  It is
 disabled by default and may run in `observe` mode (recommendations recorded)
 or `enforce` mode (a validated durable stop may be submitted). Its direct
-Fireworks chat-completions backend uses `FIREWORKS_API_KEY`, model
-`accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b`, `max_tokens=512`,
-and a 30-second request deadline. Structured output uses the documented
-`response_format` JSON schema; reasoning controls are omitted because this
-candidate's Fireworks mapping is unverified. See the [structured response
+Fireworks chat-completions backend uses `FIREWORKS_API_KEY`, the documented
+observer profile `deepseek_v4_flash_0731_disabled_reasoning` with model
+`accounts/fireworks/models/deepseek-v4-flash-0731`,
+`reasoning_effort="none"`, `max_tokens=512`, and a 30-second request deadline.
+Structured output uses the documented `response_format` JSON schema; prose,
+malformed JSON, and `finish_reason: length` are rejected as unusable observer
+responses. Nemotron remains an unverified candidate and is not an automatic
+fallback. See the [structured response
 format](https://docs.fireworks.ai/structured-responses/structured-response-formatting)
 and [serverless pricing](https://docs.fireworks.ai/serverless/pricing).
 It sends a fresh bounded status packet on each
@@ -369,8 +372,11 @@ The maintained supervisor exposes the same opt-in channel for real runs:
 
 ```bash
 python3 -m tools.llm_supervisor --log /absolute/run/match.ndjson \
-  --watchdog-mode observe --watchdog-model accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b -- \
-  python3 -m tools.llm_client --log /absolute/run/match.ndjson ...
+  --watchdog-mode observe \
+  --watchdog-model accounts/fireworks/models/deepseek-v4-flash-0731 -- \
+  python3 -m tools.llm_client --log /absolute/run/match.ndjson \
+  --player-model accounts/fireworks/models/glm-5p3-flash \
+  --model-command 'python3 -m tools.fireworks_backend --model accounts/fireworks/models/glm-5p3-flash'
 ```
 
 `--watchdog-max-calls` sets a persisted ceiling from 1 to 20 physical calls,
@@ -431,8 +437,8 @@ For long Fireworks replies, add `--stream` to the maintained model command:
 
 ```bash
 python3 -m tools.llm_client \
-  --model-command 'python3 -m tools.fireworks_backend --stream' \
-  --model accounts/fireworks/models/deepseek-v4-flash-0731 \
+  --model-command 'python3 -m tools.fireworks_backend --stream --model accounts/fireworks/models/deepseek-v4-flash-0731' \
+  --player-model accounts/fireworks/models/deepseek-v4-flash-0731 \
   --log /absolute/run/match.ndjson
 ```
 
@@ -475,8 +481,8 @@ Pass the option once, on the client:
 
 ```bash
 python3 -m tools.llm_client \
-  --model-command 'python3 -m tools.fireworks_backend' \
-  --model accounts/fireworks/models/glm-5p3-flash \
+  --model-command 'python3 -m tools.fireworks_backend --model accounts/fireworks/models/glm-5p3-flash' \
+  --player-model accounts/fireworks/models/glm-5p3-flash \
   --reasoning-effort low \
   --log /absolute/run/match.ndjson
 ```
@@ -1347,7 +1353,9 @@ python3 -m tools.watchdog_replay \
 ```
 
 The maintained model evaluation entry point performs exactly one validated
-Fireworks preflight before dispatching any labelled case. A failed preflight
+Fireworks preflight before dispatching any labelled case, using the selected
+observer profile and recording its requested model and setting separately from
+the player model. A failed preflight
 leaves every case explicitly unattempted; confirmed account-credit failures
 stop the whole run, while a generic rate-limit response remains a transport
 failure. The experiment is capped at 37 physical calls (one preflight plus
@@ -1367,8 +1375,11 @@ Use a new output directory. The runner retains chronological status, request
 payloads, receipts and verdicts, distinguishes controller recommendations from
 supervisor-validated stops, and caps each case at three observer calls. The
 manifest records the separately launchable model evaluation's dated ceiling;
-that evaluation has not been run. Start with recording or `observe` mode until
-candidate stop quality has been evaluated.
+that evaluation has not been run. The profile is protocol-ready only after a
+separate bounded calibration produces valid, nontruncated decisions for both a
+healthy packet and a nontrivial evidence packet. Protocol readiness does not
+establish semantic stop quality. Start with recording or `observe` mode until
+that quality has been evaluated.
 
 Detection rates are reported only over cases the model actually judged. A
 dispatched call that never returned a verdict -- a transport error, an

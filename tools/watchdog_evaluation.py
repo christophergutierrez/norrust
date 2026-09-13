@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from .model_usage import ModelCall, aggregate_calls, dedupe_calls
-from .watchdog_observer import (DEFAULT_MODEL, FireworksObserverBackend,
-                                ObserverTransportError)
+from .watchdog_observer import (DEFAULT_EFFORT, DEFAULT_MODEL, OBSERVER_PROFILE,
+                                FireworksObserverBackend, ObserverTransportError)
 from .watchdog_replay import replay_case
 
 MAX_EVALUATION_CALLS = 37
@@ -85,6 +85,15 @@ def _write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _backend_settings(backend: EvaluationBackend) -> dict[str, Any]:
+    selected = backend.backend
+    return {"profile": OBSERVER_PROFILE,
+            "model": getattr(selected, "model", None),
+            "estimated_input_tokens": 4096, "max_output_tokens": 512,
+            "reasoning_effort": getattr(selected, "reasoning_effort", DEFAULT_EFFORT),
+            "reasoning_usage": "unknown unless provider reports it"}
+
+
 def _preflight(backend: EvaluationBackend, root: Path) -> dict[str, Any]:
     packet = {"stage": "active", "observation_sequence": 0, "alerts": [],
               "degraded": False, "coverage_events": []}
@@ -99,9 +108,7 @@ def _preflight(backend: EvaluationBackend, root: Path) -> dict[str, Any]:
         final = result.call
         response = result.response
         report = {"status": "passed", "dispatches": 1,
-                  "settings": {"model": getattr(backend.backend, "model", None),
-                               "estimated_input_tokens": 4096, "max_output_tokens": 512,
-                               "reasoning_effort": None},
+                  "settings": _backend_settings(backend),
                   "decision": result.decision.as_dict(), "request": request,
                   "receipt": response, "call": final.to_row()}
     except Exception as error:
@@ -115,9 +122,7 @@ def _preflight(backend: EvaluationBackend, root: Path) -> dict[str, Any]:
         if isinstance(final, ModelCall) and final.raw_usage_json is None and response is not None:
             final.raw_usage_json = response
         report = {"status": "failed", "dispatches": 1 if call else 0,
-                  "settings": {"model": getattr(backend.backend, "model", None),
-                               "estimated_input_tokens": 4096, "max_output_tokens": 512,
-                               "reasoning_effort": None},
+                  "settings": _backend_settings(backend),
                   "error": _error_record(error),
                   "request": request, "receipt": response,
                   "call": final.to_row() if isinstance(final, ModelCall) else None}
@@ -173,7 +178,8 @@ def _evaluation_usage(results: list[dict[str, Any]], root: Path,
     return deduped
 
 
-def _source_identity(model: str, rates_path: Path) -> dict[str, Any]:
+def _source_identity(model: str, rates_path: Path,
+                     reasoning_effort: str | None = DEFAULT_EFFORT) -> dict[str, Any]:
     try:
         commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True,
                                 text=True, check=False).stdout.strip() or None
@@ -184,14 +190,16 @@ def _source_identity(model: str, rates_path: Path) -> dict[str, Any]:
     except OSError:
         rate_sha256 = None
     return {"commit": commit, "model": model,
-            "settings": {"estimated_input_tokens": 4096, "max_output_tokens": 512,
-                          "reasoning_effort": None},
+            "settings": {"profile": OBSERVER_PROFILE, "estimated_input_tokens": 4096,
+                          "max_output_tokens": 512, "reasoning_effort": reasoning_effort,
+                          "reasoning_usage": "unknown unless provider reports it"},
             "rates": {"file": str(rates_path.resolve()), "sha256": rate_sha256,
                       "source": "https://docs.fireworks.ai/serverless/pricing"}}
 
 
 def evaluate(cases: list[dict[str, Any]], output_dir: str | Path, *, fake: bool = False,
-             model: str = DEFAULT_MODEL) -> dict[str, Any]:
+             model: str = DEFAULT_MODEL,
+             reasoning_effort: str | None = DEFAULT_EFFORT) -> dict[str, Any]:
     root = Path(output_dir).resolve()
     if root.exists() and any(root.iterdir()):
         raise FileExistsError(f"refusing to reuse evaluation output directory: {root}")
@@ -206,7 +214,8 @@ def evaluate(cases: list[dict[str, Any]], output_dir: str | Path, *, fake: bool 
         _write_json(root / "report.json", aggregate)
         return aggregate
 
-    shared = EvaluationBackend(FireworksObserverBackend(model=model))
+    shared = EvaluationBackend(FireworksObserverBackend(model=model,
+                                                        reasoning_effort=reasoning_effort))
     preflight = _preflight(shared, root)
     results: list[dict[str, Any]] = []
     if preflight["status"] != "passed":
@@ -268,7 +277,7 @@ def evaluate(cases: list[dict[str, Any]], output_dir: str | Path, *, fake: bool 
                           "rate_sha256": costs.get("rate_sha256"),
                           "rates_used": costs.get("rates_used", [])})
     aggregate = {"schema_version": 1, "mode": "model", "preflight": preflight,
-                 "source": _source_identity(model, rates_path),
+                 "source": _source_identity(model, rates_path, reasoning_effort),
                  "model_evaluation": {"status": status, "network_calls": shared.calls,
                                       "verdicts": verdicts, "failures": failures,
                                       "failure_reasons": failure_reasons,
@@ -314,11 +323,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--fake", action="store_true")
     parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--reasoning-effort", choices=("none",), default=DEFAULT_EFFORT)
     args = parser.parse_args(argv)
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     cases_path = args.manifest.with_name(manifest["cases_file"])
     cases = json.loads(cases_path.read_text(encoding="utf-8"))["cases"]
-    print(json.dumps(evaluate(cases, args.output_dir, fake=args.fake, model=args.model), sort_keys=True))
+    print(json.dumps(evaluate(cases, args.output_dir, fake=args.fake, model=args.model,
+                              reasoning_effort=args.reasoning_effort), sort_keys=True))
     return 0
 
 

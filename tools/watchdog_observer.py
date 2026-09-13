@@ -33,8 +33,12 @@ MAX_OUTPUT_TOKENS = 512
 REQUEST_TIMEOUT_SECONDS = 30.0
 REGULAR_INTERVAL_SECONDS = 300.0
 ALERT_COOLDOWN_SECONDS = 60.0
-DEFAULT_MODEL = "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b"
-DEFAULT_EFFORT = None
+# Fireworks documents `reasoning_effort=none` for DeepSeek V4 and describes it
+# as disabling thinking.  Nemotron's support for this parameter is unverified,
+# so it is deliberately not a selectable implicit fallback.
+DEFAULT_MODEL = "accounts/fireworks/models/deepseek-v4-flash-0731"
+DEFAULT_EFFORT = "none"
+OBSERVER_PROFILE = "deepseek_v4_flash_0731_disabled_reasoning"
 FIREWORKS_URL = "https://api.fireworks.ai/inference/v1/chat/completions"
 MAX_EVIDENCE_READS = 2
 MAX_EVIDENCE_BYTES = 2048
@@ -61,6 +65,20 @@ _INSTRUCTIONS = (
     "or a long request alone are insufficient. Inspect may name at most two "
     "recorded evidence IDs. You cannot call tools or control the game."
 )
+
+
+def validate_observer_profile(model: str, reasoning_effort: str | None) -> None:
+    """Reject settings outside the one demonstrated observer profile.
+
+    The observer has no runtime model fallback.  Keeping this check next to
+    payload construction prevents a caller from accidentally presenting an
+    unverified model/setting pair as the selected profile.
+    """
+    if model != DEFAULT_MODEL or reasoning_effort != DEFAULT_EFFORT:
+        raise ValueError(
+            "unsupported watchdog observer profile; use "
+            f"{OBSERVER_PROFILE} ({DEFAULT_MODEL} with reasoning_effort={DEFAULT_EFFORT!r})"
+        )
 
 
 class ObserverError(RuntimeError):
@@ -313,6 +331,7 @@ def build_observer_request(packet: Mapping[str, Any], *, model: str = DEFAULT_MO
                            reasoning_effort: str = DEFAULT_EFFORT,
                            evidence: Iterable[Mapping[str, Any]] = ()) -> tuple[dict[str, Any], bool, str]:
     """Build a tool-free, schema-constrained request within the input bound."""
+    validate_observer_profile(model, reasoning_effort)
     if not isinstance(packet, Mapping):
         raise ObserverInputError("status packet must be an object")
     base = {"model": model}
@@ -336,6 +355,9 @@ def build_observer_request(packet: Mapping[str, Any], *, model: str = DEFAULT_MO
                    response_format={"type": "json_schema",
                                     "json_schema": {"name": "watchdog_decision",
                                                      "schema": _DECISION_SCHEMA}})
+    # This is the selected model-specific protocol setting.  It is explicit
+    # in every physical request and therefore auditable in payload evidence.
+    payload["reasoning_effort"] = reasoning_effort
     # Escalate clipping only by dropping low-value excerpts.  Never silently
     # send an over-limit packet, since its absent evidence cannot support a
     # stop claim.
@@ -373,13 +395,10 @@ class FireworksObserverBackend:
                  timeout_seconds: float = REQUEST_TIMEOUT_SECONDS,
                  transport: Callable[[dict[str, Any], float], dict[str, Any]] | None = None,
                  endpoint: str | None = None) -> None:
-        # Fireworks structured responses disable reasoning output. The account
-        # model's reasoning control is not assumed or silently translated.
-        if reasoning_effort is not None:
-            raise ValueError("Fireworks watchdog observer does not accept unverified reasoning_effort")
+        validate_observer_profile(model, reasoning_effort)
         self.api_key = api_key if api_key is not None else os.environ.get("FIREWORKS_API_KEY")
         self.model = model
-        self.reasoning_effort = None
+        self.reasoning_effort = reasoning_effort
         self.timeout_seconds = min(float(timeout_seconds), REQUEST_TIMEOUT_SECONDS)
         self.endpoint = endpoint or os.environ.get("NORRUST_FIREWORKS_URL", FIREWORKS_URL)
         self._default_transport = transport is None
@@ -392,7 +411,8 @@ class FireworksObserverBackend:
     def prepare(self, packet: Mapping[str, Any], evidence: Iterable[Mapping[str, Any]] = ()) -> tuple[dict[str, Any], bool, str]:
         if self.api_key is None and self._default_transport:
             raise MissingObserverCredential("FIREWORKS_API_KEY is not configured")
-        return build_observer_request(packet, model=self.model, reasoning_effort=None, evidence=evidence)
+        return build_observer_request(packet, model=self.model,
+                                      reasoning_effort=self.reasoning_effort, evidence=evidence)
 
     def make_dispatch_call(self, game_id: str, call_id: str,
                            request_id: str | None = None) -> ModelCall:
@@ -400,7 +420,7 @@ class FireworksObserverBackend:
                           transport=self.transport_name, raw_usage=None,
                           usage_map=FIREWORKS_USAGE_MAP, status="dispatched",
                           call_role="observer", request_id=request_id,
-                          requested_model=self.model, requested_reasoning_effort=None,
+                          requested_model=self.model, requested_reasoning_effort=self.reasoning_effort,
                           output_limit=MAX_OUTPUT_TOKENS, started_at=str(time.time()))
 
     def observe(self, packet: Mapping[str, Any], *, call_id: str,
@@ -425,6 +445,26 @@ class FireworksObserverBackend:
             response = box.get("response")
             if not isinstance(response, dict):
                 raise ObserverSchemaError("Fireworks response was not an object")
+            choices = response.get("choices")
+            finish_reason = (choices[0].get("finish_reason")
+                             if isinstance(choices, list) and choices and isinstance(choices[0], dict)
+                             else None)
+            if finish_reason == "length":
+                ended = time.time()
+                failed = build_call(
+                    game_id=game_id, call_id=call_id, provider=self.provider,
+                    transport=self.transport_name, raw_usage=response.get("usage"),
+                    usage_map=FIREWORKS_USAGE_MAP, status="failed", call_role="observer",
+                    request_id=request_id, requested_model=self.model,
+                    reported_model=response.get("model"),
+                    provider_response_id=response.get("id") or response.get("_request_id"),
+                    output_limit=MAX_OUTPUT_TOKENS, started_at=str(started),
+                    ended_at=str(ended), elapsed_ms=round((ended - started) * 1000),
+                    usage_source=("provider_response" if response.get("usage") is not None else None),
+                    error_code="output_limit", requested_reasoning_effort=self.reasoning_effort)
+                failed.raw_usage_json = response
+                raise ObserverResponseError("Fireworks observer response was truncated",
+                                             call=failed, response=response)
             text = _response_text(response)
             try:
                 decision = ObserverDecision.parse(json.loads(text))
@@ -439,7 +479,8 @@ class FireworksObserverBackend:
                                     started_at=str(started), ended_at=str(ended),
                                     elapsed_ms=round((ended - started) * 1000),
                                     usage_source="provider_response" if response.get("usage") is not None else None,
-                                    error_code="schema_error")
+                                    error_code="schema_error",
+                                    requested_reasoning_effort=self.reasoning_effort)
                 failed.raw_usage_json = response
                 raise ObserverResponseError(f"invalid Fireworks observer decision: {exc}", call=failed,
                                              response=response) from exc
@@ -453,7 +494,8 @@ class FireworksObserverBackend:
                                provider_response_id=response.get("id") or response.get("_request_id"), output_limit=MAX_OUTPUT_TOKENS,
                                started_at=str(started), ended_at=str(ended),
                                elapsed_ms=round((ended - started) * 1000),
-                               usage_source="provider_response" if usage is not None else None)
+                               usage_source="provider_response" if usage is not None else None,
+                               requested_reasoning_effort=self.reasoning_effort)
             final.raw_usage_json = response
             return ObserverResult(decision, final, response, clipped, coverage)
         except ObserverTransportError as exc:
@@ -471,7 +513,8 @@ class FireworksObserverBackend:
                                 output_limit=MAX_OUTPUT_TOKENS,
                                 started_at=str(started), ended_at=str(ended),
                                 elapsed_ms=round((ended - started) * 1000),
-                                error_code=str(code)[:128], usage_source=None)
+                                error_code=str(code)[:128], usage_source=None,
+                                requested_reasoning_effort=self.reasoning_effort)
             failed.raw_usage_json = exc.response or {"error": {"message": str(exc)[:512]}}
             exc.call = failed
             raise
@@ -505,7 +548,7 @@ class FakeObserverBackend:
                           usage_map=FIREWORKS_USAGE_MAP, status="dispatched",
                           call_role="observer", request_id=request_id,
                           requested_model=self.model,
-                          requested_reasoning_effort=None,
+                          requested_reasoning_effort=DEFAULT_EFFORT,
                           output_limit=MAX_OUTPUT_TOKENS, started_at=str(time.time()))
 
     def observe(self, packet: Mapping[str, Any], *, call_id: str,
@@ -544,7 +587,7 @@ class FakeObserverBackend:
                           call_role="observer", request_id=request_id,
                           requested_model=self.model, reported_model=response.get("model"),
                           provider_response_id=response.get("id"), output_limit=MAX_OUTPUT_TOKENS,
-                          requested_reasoning_effort=None,
+                          requested_reasoning_effort=DEFAULT_EFFORT,
                           started_at=str(now), ended_at=str(now), elapsed_ms=0,
                           usage_source="fixture")
         call.raw_usage_json = response

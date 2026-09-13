@@ -17,6 +17,9 @@ from .watchdog_observer import (
     ObserverSchemaError,
     ObserverTimeout,
     FireworksObserverBackend,
+    DEFAULT_EFFORT,
+    DEFAULT_MODEL,
+    OBSERVER_PROFILE,
     _post_chat_completions,
     build_observer_request,
     conservative_token_count,
@@ -37,6 +40,21 @@ class DecisionValidationTests(unittest.TestCase):
         with self.assertRaises(ObserverSchemaError):
             ObserverDecision.parse(decision("stop", "bad", [str(i) for i in range(9)]))
 
+    def test_selected_profile_is_sent_exactly_to_fake_http_transport(self):
+        seen = []
+        backend = FireworksObserverBackend(
+            api_key="test", transport=lambda payload, _timeout: (
+                seen.append(payload) or {"id": "profile-1", "model": DEFAULT_MODEL,
+                "choices": [{"finish_reason": "stop", "message": {
+                    "content": json.dumps(decision())}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11}}))
+        result = backend.observe({"stage": "active", "observation_sequence": 1, "alerts": []},
+                                 call_id="profile-call", game_id="g")
+        self.assertEqual(seen[0]["model"], DEFAULT_MODEL)
+        self.assertEqual(seen[0]["reasoning_effort"], DEFAULT_EFFORT)
+        self.assertEqual(result.call.requested_model, DEFAULT_MODEL)
+        self.assertEqual(result.call.requested_reasoning_effort, DEFAULT_EFFORT)
+
     def test_request_has_no_tools_and_counts_full_framing(self):
         payload, clipped, coverage = build_observer_request(
             {"stage": "active", "observation_sequence": 1, "alerts": []})
@@ -46,7 +64,9 @@ class DecisionValidationTests(unittest.TestCase):
         self.assertEqual(payload["messages"][1]["role"], "user")
         self.assertIn("json_schema", payload["response_format"])
         self.assertNotIn("text", payload)
-        self.assertEqual(set(payload), {"model", "messages", "max_tokens", "response_format"})
+        self.assertEqual(set(payload), {"model", "messages", "max_tokens", "response_format", "reasoning_effort"})
+        self.assertEqual(payload["model"], DEFAULT_MODEL)
+        self.assertEqual(payload["reasoning_effort"], DEFAULT_EFFORT)
         self.assertNotIn("reasoning", payload)
         self.assertLessEqual(conservative_token_count(json.dumps(payload)), MAX_INPUT_TOKENS)
         self.assertFalse(clipped)
@@ -90,6 +110,23 @@ class DecisionValidationTests(unittest.TestCase):
         self.assertEqual(caught.exception.call.provider_response_id, "resp-1")
         self.assertEqual(caught.exception.call.input_tokens, 12)
         self.assertEqual(caught.exception.call.call_role, "observer")
+
+    def test_truncated_json_is_rejected_even_when_content_is_parseable(self):
+        backend = FireworksObserverBackend(api_key="test", transport=lambda _payload, _timeout: {
+            "id": "resp-truncated", "model": DEFAULT_MODEL,
+            "choices": [{"finish_reason": "length", "message": {
+                "content": json.dumps(decision())}}],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 512, "total_tokens": 524}})
+        with self.assertRaises(ObserverResponseError) as caught:
+            backend.observe({"stage": "active", "observation_sequence": 1, "alerts": []},
+                            call_id="c-truncated", game_id="g")
+        self.assertEqual(caught.exception.call.error_code, "output_limit")
+        self.assertEqual(caught.exception.call.requested_reasoning_effort, DEFAULT_EFFORT)
+
+    def test_only_documented_profile_is_constructible(self):
+        with self.assertRaisesRegex(ValueError, OBSERVER_PROFILE):
+            FireworksObserverBackend(api_key="test", model="accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b",
+                                     reasoning_effort="none")
 
     def test_fireworks_does_not_accept_responses_api_output_fallback(self):
         backend = FireworksObserverBackend(api_key="test", transport=lambda _payload, _timeout: {

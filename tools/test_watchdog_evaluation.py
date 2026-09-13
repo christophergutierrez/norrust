@@ -5,7 +5,8 @@ from pathlib import Path
 from unittest import mock
 
 from .watchdog_evaluation import _is_quota_failure, evaluate
-from .watchdog_observer import FakeObserverBackend, ObserverTransportError
+from .watchdog_observer import (DEFAULT_EFFORT, DEFAULT_MODEL, OBSERVER_PROFILE,
+                                FakeObserverBackend, ObserverTransportError)
 
 
 def _decision(kind="continue"):
@@ -102,7 +103,7 @@ class WatchdogEvaluationTests(unittest.TestCase):
         backend = FakeObserverBackend([{
             "decision": _decision("continue"),
             "response": {"id": "receipt-1",
-                          "model": "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b",
+                          "model": DEFAULT_MODEL,
                           "usage": {"prompt_tokens": 381, "prompt_cache_hit_tokens": 0,
                                     "completion_tokens": 1, "total_tokens": 382}},
         }])
@@ -114,6 +115,17 @@ class WatchdogEvaluationTests(unittest.TestCase):
             self.assertEqual(usage["calls"], 1)
             self.assertGreater(usage["input_tokens"]["sum"], 0)
             self.assertEqual(result["model_evaluation"]["cost"]["coverage"], "complete")
+
+    def test_preflight_and_source_record_selected_profile_settings(self):
+        backend = FakeObserverBackend([_decision("continue")])
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch("tools.watchdog_evaluation.FireworksObserverBackend",
+                            lambda **_kwargs: backend):
+                result = evaluate([], td)
+        self.assertEqual(result["preflight"]["settings"]["profile"], OBSERVER_PROFILE)
+        self.assertEqual(result["preflight"]["settings"]["model"], DEFAULT_MODEL)
+        self.assertEqual(result["preflight"]["settings"]["reasoning_effort"], DEFAULT_EFFORT)
+        self.assertEqual(result["source"]["settings"]["reasoning_effort"], DEFAULT_EFFORT)
 
     def test_auth_failure_in_first_case_stops_later_cases(self):
         seen = [0]

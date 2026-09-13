@@ -556,7 +556,7 @@ def _attempt_records(log: Path, start: int) -> list[dict]:
 def run(command: list[str], log: Path, max_restarts: int,
         request_state: Path | None = None, *, watchdog: RunWatchdog | None = None,
         poll_interval: float = 0.1, watchdog_mode: str = "off",
-        watchdog_model: str = "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b", observer_backend=None,
+        watchdog_model: str = "accounts/fireworks/models/deepseek-v4-flash-0731", observer_backend=None,
         observer_clock=None, observer_max_calls: int = 20) -> int:
     if watchdog_mode not in {"off", "observe", "enforce"}:
         raise ValueError("watchdog_mode must be off, observe, or enforce")
@@ -775,7 +775,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="durable model request state used to authorize recovery")
     parser.add_argument("--watchdog-mode", choices=("off", "observe", "enforce"), default="off",
                         help="bounded observer mode (default: off)")
-    parser.add_argument("--watchdog-model", default="accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b",
+    parser.add_argument("--watchdog-model", default="accounts/fireworks/models/deepseek-v4-flash-0731",
                         help="observer model (used only when watchdog mode is enabled)")
     parser.add_argument("--watchdog-max-calls", type=int, default=20,
                         help="observer physical-call cap (default: 20; offline evals may use 3)")
