@@ -957,21 +957,25 @@ def _strategy_contract(recruitable_defs: Iterable[str] = ()) -> str:
         "it pauses on typed exceptions such as contact, promotion, blocked recruitment, or unavailable facts.\n"
         "Return exactly one JSON object with kind set_policy, act, finish_turn, or resign. "
         "A set_policy replaces the prior installation. Its policy has reserve_gold (integer), "
-        "recruits (ordered {def_id,count,role} totals), scouts (friendly integer IDs), "
-        "villages (integer {col,row} coordinates), rally (one integer {col,row} or null), and "
-        "holds (friendly integer IDs). Recruitable definitions: " + defs + ".\n"
+        "recruits (0-8 ordered entries, each exact def_id/count/role with count 1-32 and role scout or army), "
+        "scouts (0-8 existing friendly integer IDs; existing plus new scout recruits <=8), "
+        "villages (0-4 exact integer {col,row} coordinates), rally (one in-bounds integer {col,row} or null), and "
+        "holds (existing friendly integer IDs, with no scout overlap). Recruitable definitions: " + defs + ".\n"
+        'Shape-only set_policy example (choose live definitions/IDs and nonempty objectives when needed): '
+        '{"kind":"set_policy","policy":{"reserve_gold":0,"recruits":[],"scouts":[],"villages":[],"rally":null,"holds":[]}}\n'
         "An act has ordinary engine actions and finish_turn true or false on an ordinary state; "
         "final_only requires true. Actions cannot contain a boundary or origin. Supported shapes include "
-        '{"action":"Move","unit_id":N,"col":N,"row":N}, '
-        '{"action":"Attack","attacker_id":N,"defender_id":N}, '
-        '{"action":"Recruit","def_id":"Skeleton","col":N,"row":N}, '
-        '{"action":"Advance","unit_id":N,"target_index":N}, and '
-        '{"action":"Engage","target_id":N,"steps":[{"attacker_id":N,"col":N,"row":N}]}.\n'
+        '{"action":"Move","unit_id":1,"col":2,"row":3}, '
+        '{"action":"Attack","attacker_id":1,"defender_id":2}, '
+        '{"action":"Recruit","def_id":"Skeleton","col":2,"row":3}, '
+        '{"action":"Advance","unit_id":1,"target_index":0}, and '
+        '{"action":"Engage","target_id":2,"steps":[{"attacker_id":1,"col":2,"row":3}]}; '
+        "replace example IDs/definition with values in LIVE_STATE and current options.\n"
         "When enabled, optional read-only inspections use one of these complete objects: "
-        '{"tool":"inspect_target","unit_id":N,"purpose":"..."}, '
-        '{"tool":"inspect_targets","unit_ids":[N],"purpose":"..."}, '
-        '{"tool":"inspect_units","unit_ids":[N],"purpose":"..."}, or '
-        '{"tool":"inspect_hex","col":N,"row":N,"phase":"current"}. '
+        '{"tool":"inspect_target","unit_id":1,"purpose":"check target"}, '
+        '{"tool":"inspect_targets","unit_ids":[1],"purpose":"check targets"}, '
+        '{"tool":"inspect_units","unit_ids":[1],"purpose":"check unit"}, or '
+        '{"tool":"inspect_hex","col":2,"row":3,"phase":"current"}. '
         "Use inspections only for a current revision fact; return a strategy response after the result.\n"
     )
 

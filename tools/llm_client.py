@@ -6315,51 +6315,6 @@ def run(args: argparse.Namespace) -> int:
                 durable({"type": "terminal", **metadata})
                 return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
 
-            if isinstance(state, dict) and state.get("final_only"):
-                # A final-only boundary may not run a routine partial. The
-                # engine's current tactical surface decides whether an empty
-                # no-sweep finish is safe; otherwise the model gets one final
-                # exception-style chance to act, finish, or resign.
-                if not isinstance(state.get("tactical_surface"), dict):
-                    try:
-                        strategy_validation_context(exchange)
-                    except RuntimeError as exc:
-                        set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
-                                     reason="infrastructure_failure", code="query_error",
-                                     message=str(exc))
-                        durable({"type": "query_error", **metadata})
-                        return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
-                surface = state.get("tactical_surface")
-                threats = surface.get("threats", {}) if isinstance(surface, dict) else {}
-                recruiters = threats.get("recruiters") if isinstance(threats, dict) else None
-                danger = (recruiters is None or any(
-                    isinstance(item, dict) and
-                    (_positive_lethal(item.get("lethal_attackers_needed")) or
-                     _positive_lethal(item.get("open_lethal_attackers_needed")))
-                    for item in recruiters))
-                # A contact/attack opportunity is a live tactical reason to
-                # ask the model even when the recruiter threat forecast is
-                # non-lethal; silently finishing would skip that action.
-                attack_available = any(
-                    isinstance(unit, dict) and any(
-                        isinstance(origin, dict) and origin.get("engagements")
-                        for origin in unit.get("origins", []))
-                    for unit in surface.get("units", [])
-                ) if isinstance(surface, dict) and isinstance(surface.get("units"), list) else False
-                exposure_units = (surface.get("exposure", {}).get("units", [])
-                                  if isinstance(surface, dict)
-                                  and isinstance(surface.get("exposure"), dict) else [])
-                army_exposed = any(
-                    isinstance(item, dict) and (
-                        _positive_lethal(item.get("distinct_attacker_count")) or
-                        _positive_lethal(item.get("open_distinct_attacker_count")))
-                    for item in exposure_units) if isinstance(exposure_units, list) else False
-                danger = danger or attack_available
-                danger = danger or army_exposed
-                if not danger:
-                    strategy_submit([NO_SWEEP_FINISH], revision, progress_update=None, finish=True)
-                    return None
-
             query = build_routine_query(revision, strategy_installation.policy, strategy_progress)
             try:
                 raw = exchange(query)
@@ -6385,29 +6340,21 @@ def run(args: argparse.Namespace) -> int:
                 return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
 
             if isinstance(result, RoutineFinishResult):
-                if (isinstance(state, dict) and state.get("final_only") and danger):
-                    # The routine screen is authoritative, but final-only
-                    # cannot silently accept a finish while a friendly unit
-                    # remains exposed. Give the model the typed contact
-                    # exception and let it choose an ordinary finish or act.
-                    exc_result = RoutineException(
-                        reason="contact",
-                        evidence={"final_only": True, "routine_finish": True})
-                else:
-                    strategy_submit([NO_SWEEP_FINISH], revision,
-                                     progress_update=result.progress_update, finish=True)
-                    return None
+                strategy_submit([NO_SWEEP_FINISH], revision,
+                                 progress_update=result.progress_update, finish=True)
+                return None
             if isinstance(result, RoutineActionResult):
-                if not (isinstance(state, dict) and state.get("final_only")):
+                if isinstance(state, dict) and state.get("final_only"):
+                    # The engine has already chosen this routine step. At a
+                    # final-only boundary preserve the routine progress by
+                    # ending with an empty no-sweep batch rather than asking
+                    # Python to infer tactical danger from a partial surface.
+                    strategy_submit([NO_SWEEP_FINISH], revision,
+                                    progress_update={"effects": []}, finish=True)
+                else:
                     strategy_submit([result.action], revision,
                                     progress_update=result.progress_update, finish=False)
-                    return None
-                # final_only cannot submit a routine partial. Turn the
-                # planner's otherwise-useful action into a model-owned
-                # exception brief at this same revision.
-                exc_result = RoutineException(
-                    reason="contact" if danger else "threat_unavailable",
-                    evidence={"final_only": True, "routine_action": result.action})
+                return None
             else:
                 exc_result = result  # RoutineException
 
