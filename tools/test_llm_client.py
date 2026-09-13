@@ -3,7 +3,9 @@ import hashlib
 import io
 import json
 import os
+import shlex
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -3406,41 +3408,96 @@ class ClientValidationTests(unittest.TestCase):
         self.assertEqual(terminal["code"], "model_backend_failure")
 
     def test_command_backend_retries_one_process_exit_with_same_prompt(self):
-        success = subprocess.CompletedProcess(
-            "model", 0, '{"text":"[{\\"action\\":\\"EndTurn\\"}]"}', "")
-        failure = subprocess.CompletedProcess("model", 7, "", "temporary")
-        with mock.patch("subprocess.run", side_effect=[failure, success]) as run:
+        class Process:
+            def __init__(self, returncode, stdout, stderr):
+                self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+                self.inputs = []
+            def communicate(self, prompt, timeout=None):
+                self.inputs.append((prompt, timeout))
+                return self.stdout, self.stderr
+            def poll(self):
+                return self.returncode
+
+        failure = Process(7, "", "temporary")
+        success = Process(0, '{"text":"[{\\"action\\":\\"EndTurn\\"}]"}', "")
+        with mock.patch("subprocess.Popen", side_effect=[failure, success]) as popen:
             backend = llm_client.CommandBackend("model", 1)
             reply = backend.complete("same prompt")
         self.assertIn("EndTurn", reply.text)
         self.assertEqual(backend.transport_retries, 1)
-        self.assertEqual(run.call_args_list[0].kwargs["input"], "same prompt")
-        self.assertEqual(run.call_args_list[1].kwargs["input"], "same prompt")
+        self.assertEqual(failure.inputs[0][0], "same prompt")
+        self.assertEqual(success.inputs[0][0], "same prompt")
+        self.assertEqual(popen.call_count, 2)
 
     def test_command_backend_does_not_retry_uncertain_timeout(self):
-        with mock.patch("subprocess.run", side_effect=subprocess.TimeoutExpired("model", 1)) as run:
+        class Process:
+            pid = 41
+            returncode = None
+            def communicate(self, *args, **kwargs):
+                raise subprocess.TimeoutExpired("model", 1)
+            def poll(self):
+                return None
+
+        process = Process()
+        with mock.patch("subprocess.Popen", return_value=process), \
+                mock.patch.object(llm_client.CommandBackend, "_stop_process_group",
+                                  return_value={"cleanup": "sigkill_reaped"}) as cleanup:
             backend = llm_client.CommandBackend("model", 1)
             with self.assertRaisesRegex(RuntimeError, "model_timeout"):
                 backend.complete("prompt")
         self.assertEqual(backend.transport_retries, 0)
-        self.assertEqual(run.call_count, 1)
+        cleanup.assert_called_once_with(process)
+        self.assertEqual(backend.last_cleanup, {"cleanup": "sigkill_reaped"})
+
+    def test_command_backend_timeout_reaps_nested_process_group(self):
+        """A timed-out adapter and a child that ignores graceful signals do
+        not remain alive after the client reports the unknown call."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            child_pid = root / "child.pid"
+            script = root / "hung_adapter.py"
+            script.write_text(
+                "import os, signal, subprocess, sys, time\n"
+                "child = subprocess.Popen([sys.executable, '-c', "
+                "'import signal,time; signal.signal(signal.SIGINT, signal.SIG_IGN); "
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)'])\n"
+                "open(sys.argv[1], 'w').write(str(child.pid))\n"
+                "time.sleep(30)\n", encoding="utf-8")
+            backend = llm_client.CommandBackend(
+                f"{shlex.quote(sys.executable)} {shlex.quote(str(script))} {shlex.quote(str(child_pid))}",
+                .2)
+            with self.assertRaisesRegex(RuntimeError, "model_timeout"):
+                backend.complete("prompt")
+            self.assertIn(backend.last_cleanup["cleanup"],
+                          {"sigterm_reaped", "sigkill_reaped"})
+            child = int(child_pid.read_text())
+            with self.assertRaises(ProcessLookupError):
+                os.kill(child, 0)
 
     def test_command_backend_does_not_retry_native_launch_failure(self):
-        failure = subprocess.CompletedProcess("model", 2, "", "native Codex failed: bad resume flags")
-        with mock.patch("subprocess.run", return_value=failure) as run:
+        class Process:
+            def __init__(self, returncode, stdout, stderr):
+                self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+            def communicate(self, prompt, timeout=None):
+                return self.stdout, self.stderr
+            def poll(self):
+                return self.returncode
+
+        failure = Process(2, "", "native Codex failed: bad resume flags")
+        with mock.patch("subprocess.Popen", return_value=failure) as popen:
             backend = llm_client.CommandBackend("model", 1)
             with self.assertRaisesRegex(RuntimeError, "model_backend_failure"):
                 backend.complete("prompt")
         self.assertEqual(backend.transport_retries, 0)
-        self.assertEqual(run.call_count, 1)
+        self.assertEqual(popen.call_count, 1)
 
-        malformed = subprocess.CompletedProcess("model", 0, "not json", "")
-        with mock.patch("subprocess.run", return_value=malformed) as run:
+        malformed = Process(0, "not json", "")
+        with mock.patch("subprocess.Popen", return_value=malformed) as popen:
             backend = llm_client.CommandBackend("model", 1)
             with self.assertRaises(ValueError):
                 backend.complete("prompt")
         self.assertEqual(backend.transport_retries, 0)
-        self.assertEqual(run.call_count, 1)
+        self.assertEqual(popen.call_count, 1)
 
     def test_model_invalid_is_never_counted_as_gameplay_or_infrastructure(self):
         """The whole point of the third bucket: a model_invalid run is a

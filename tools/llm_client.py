@@ -10,6 +10,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import signal
 import sys
 import threading
 import time
@@ -368,19 +369,67 @@ class CommandBackend(ModelBackend):
         self.command, self.timeout = command, timeout
         self.transport_retries = 0
         self.retry_causes: list[str] = []
+        self.last_cleanup: dict[str, Any] | None = None
+
+    def _stop_process_group(self, process: subprocess.Popen[str]) -> dict[str, Any]:
+        """Boundedly reap a timed-out command and all of its descendants.
+
+        Model commands are often a shell wrapper around an adapter, which may
+        itself own a provider connection.  ``subprocess.run`` only kills the
+        wrapper on timeout; descendants can retain the stdout pipe and outlive
+        the game.  The command gets its own process group, receives a graceful
+        signal first, and is force-cleaned only when that does not work.
+        """
+        details: dict[str, Any] = {"cleanup": "sigint"}
+        try:
+            # Do not use poll() as an early exit: the shell wrapper may have
+            # exited while its adapter descendant still owns the provider
+            # pipe.  The process group is the ownership boundary.
+            os.killpg(process.pid, signal.SIGINT)
+            try:
+                process.communicate(timeout=min(5.0, max(0.5, self.timeout * 0.1)))
+                details["cleanup"] = "sigint_reaped"
+                return details
+            except subprocess.TimeoutExpired:
+                details["cleanup"] = "sigterm"
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                process.communicate(timeout=1.0)
+                details["cleanup"] = "sigterm_reaped"
+                return details
+            except subprocess.TimeoutExpired:
+                details["cleanup"] = "sigkill"
+            os.killpg(process.pid, signal.SIGKILL)
+            process.communicate()
+            details["cleanup"] = "sigkill_reaped"
+        except ProcessLookupError:
+            # The process can disappear between poll/kill; communicate still
+            # performs the final pipe drain and wait below.
+            details["cleanup"] = "process_exited"
+            try:
+                process.communicate()
+            except (OSError, ValueError):
+                pass
+        return details
 
     def complete(self, prompt: str) -> ModelReply:
         for attempt in range(2):
+            self.last_cleanup = None
+            process = subprocess.Popen(self.command, stdin=subprocess.PIPE, text=True,
+                                       shell=True, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, start_new_session=True)
             try:
-                proc = subprocess.run(self.command, input=prompt, text=True, shell=True,
-                                      capture_output=True, timeout=self.timeout)
+                stdout, stderr = process.communicate(prompt, timeout=self.timeout)
             except subprocess.TimeoutExpired as exc:
                 # A timed-out model request may have committed remotely even
                 # after its local child is reaped. Retrying the same prompt can
                 # duplicate an accepted action or concurrently resume a native
                 # thread. Recovery requires request reconciliation at the
                 # persistent backend, so stop here rather than guessing.
+                self.last_cleanup = self._stop_process_group(process)
                 raise RuntimeError("model_timeout") from exc
+            proc = subprocess.CompletedProcess(self.command, process.returncode,
+                                                stdout, stderr)
             if proc.returncode:
                 if proc.stderr and "native Codex failed" in proc.stderr:
                     raise RuntimeError(f"model_backend_failure: {proc.stderr[-400:]}")
@@ -5425,6 +5474,7 @@ def run(args: argparse.Namespace) -> int:
                 failed_usage = combined_usage(attempt_usage)
             else:
                 failed_usage = None
+            cleanup = getattr(backend, "last_cleanup", None)
             durable({"type": "model_request",
                     "request_id": request_id,
                     "purpose": purpose,
@@ -5443,6 +5493,7 @@ def run(args: argparse.Namespace) -> int:
                     "prompt_regions": delivered_regions,
                     "error": message,
                     "error_code": error_code,
+                    "backend_cleanup": cleanup,
                     # Include an unknown final attempt when one was actually
                     # dispatched; do not present earlier measured attempts as
                     # a complete logical-request total in that case.

@@ -681,6 +681,15 @@ uses the harness's per-attempt timeout, minus five seconds to report failures,
 rather than a fixed 840-second HTTP timeout. No timeout is automatically
 extended by an output-limit retry.
 
+When a command backend reaches `--model-timeout`, the client gives the command
+group a bounded graceful shutdown and then force-cleans the group, including
+adapter descendants. The request is recorded as `model_timeout`; a Fireworks
+dispatch that was already written remains one physical player call with final
+usage unknown when the provider supplied no receipt. Flushed stream chunks and
+reasoning stay in the adapter's evidence directory. Local cleanup and remote
+cancellation are separate facts: successful local reaping does not prove that
+the provider stopped billing or accepted no action.
+
 File, interactive and native-host players receive request context where
 supported, but their hosts do not expose a maintained output-limit control or
 typed exhaustion result here. The harness must not claim to enforce these

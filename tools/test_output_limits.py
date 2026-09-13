@@ -53,8 +53,14 @@ class OutputLimitTests(unittest.TestCase):
             self.assertFalse(OutputLimitPolicy.restore([], "fresh", INITIAL_OUTPUT_LIMIT, path).exhausted)
 
     def test_command_backend_does_not_transport_retry_output_exhaustion(self):
-        response = subprocess.CompletedProcess("fake", 0, json.dumps(exhausted(INITIAL_OUTPUT_LIMIT)), "")
-        with mock.patch("subprocess.run", return_value=response) as dispatch:
+        class Process:
+            returncode = 0
+            def communicate(self, prompt, timeout=None):
+                return json.dumps(exhausted(INITIAL_OUTPUT_LIMIT)), ""
+            def poll(self):
+                return self.returncode
+
+        with mock.patch("subprocess.Popen", return_value=Process()) as dispatch:
             backend = CommandBackend("fake", 1)
             with self.assertRaises(OutputLimitExceeded):
                 backend.complete("unaltered prompt")
