@@ -585,6 +585,71 @@ fn scout_goal(
     }
     Ok(None)
 }
+
+/// Find a still-unassigned village for which at least one eligible, unmoved
+/// scout exists but the engine cannot produce any terrain/ZOC route. This is
+/// distinct from a scout that has spent movement and therefore merely needs a
+/// boundary before it can continue.
+fn unreachable_unassigned_village(
+    state: &GameState,
+    policy: &RoutinePolicy,
+    progress: &RoutineProgress,
+    side: u8,
+    scouts: &[u32],
+) -> Option<Hex> {
+    let completed: HashSet<Hex> = progress.completed_villages.iter().copied().collect();
+    let owned: HashSet<Hex> = state
+        .village_owners
+        .iter()
+        .filter_map(|(hex, owner)| (*owner == side as i8).then_some(*hex))
+        .collect();
+    let assigned: HashSet<Hex> = progress
+        .scout_assignments
+        .iter()
+        .map(|a| a.village)
+        .collect();
+    for &village in &policy.villages {
+        if completed.contains(&village) || owned.contains(&village) || assigned.contains(&village) {
+            continue;
+        }
+        let mut eligible = false;
+        let mut reachable = false;
+        for &id in scouts {
+            if progress.scout_assignments.iter().any(|a| a.unit_id == id)
+                || policy.holds.contains(&id)
+                || state.units.get(&id).is_some_and(recruiter)
+            {
+                continue;
+            }
+            let Some(unit) = state.units.get(&id) else {
+                continue;
+            };
+            if unit.moved || state.positions.get(&id).is_none() {
+                continue;
+            }
+            eligible = true;
+            if find_path(
+                &state.board,
+                &unit.movement_costs,
+                1,
+                state.positions[&id],
+                village,
+                u32::MAX / 4,
+                &get_zoc_hexes(state, side),
+                false,
+            )
+            .is_some()
+            {
+                reachable = true;
+                break;
+            }
+        }
+        if eligible && !reachable {
+            return Some(village);
+        }
+    }
+    None
+}
 fn rally_goals(state: &GameState, rally: Hex) -> Vec<Hex> {
     if !state.hex_to_unit.contains_key(&rally) {
         return vec![rally];
@@ -735,6 +800,12 @@ pub fn routine_next(
             };
         }
         Ok(None) => {}
+    }
+    if let Some(village) = unreachable_unassigned_village(state, policy, progress, side, &scouts) {
+        return RoutineOutcome::Exception {
+            reason: "unsafe_route",
+            evidence: json!({"target":coord(village),"cause":"unreachable_or_no_legal_endpoint"}),
+        };
     }
     if let Some((index, entry)) = next_recruit(policy, progress) {
         let Some(def) = units.get(&entry.def_id) else {
@@ -1013,11 +1084,51 @@ pub fn routine_next(
             evidence: json!({"cause":"village_requires_scout","villages":policy.villages.iter().map(|v|coord(*v)).collect::<Vec<_>>() }),
         };
     }
+    if pending_village {
+        let assigned_ids: HashSet<u32> = progress
+            .scout_assignments
+            .iter()
+            .map(|assignment| assignment.unit_id)
+            .collect();
+        let unassigned_unspent = scouts.iter().any(|id| {
+            !assigned_ids.contains(id)
+                && !policy.holds.contains(id)
+                && !state.units.get(id).is_some_and(recruiter)
+                && state.units.get(id).is_some_and(|unit| !unit.moved)
+        });
+        let unassigned_spent = scouts.iter().any(|id| {
+            !assigned_ids.contains(id)
+                && !policy.holds.contains(id)
+                && !state.units.get(id).is_some_and(recruiter)
+                && state.units.get(id).is_some_and(|unit| unit.moved)
+        });
+        let assigned_pending = progress.scout_assignments.iter().any(|assignment| {
+            !progress.completed_villages.contains(&assignment.village)
+                && state.village_owners.get(&assignment.village).copied() != Some(side as i8)
+        });
+        let standing_capture = !finish_effects(state, policy, side).is_empty();
+        if !unassigned_unspent && !unassigned_spent && !assigned_pending && !standing_capture {
+            return RoutineOutcome::Exception {
+                reason: "no_executable_orders",
+                evidence: json!({"cause":"no_scout_available_for_village","villages":policy.villages.iter().map(|v|coord(*v)).collect::<Vec<_>>() }),
+            };
+        }
+    }
     let queue_complete = next_recruit(policy, progress).is_none();
-    let villages_complete = policy
-        .villages
+    let finishing_villages = finish_effects(state, policy, side);
+    let finishing_village_coords: HashSet<Hex> = finishing_villages
         .iter()
-        .all(|village| state.village_owners.get(village).copied() == Some(side as i8));
+        .filter_map(|effect| {
+            Some(Hex::from_offset(
+                effect.get("col")?.as_i64()? as i32,
+                effect.get("row")?.as_i64()? as i32,
+            ))
+        })
+        .collect();
+    let villages_complete = policy.villages.iter().all(|village| {
+        state.village_owners.get(village).copied() == Some(side as i8)
+            || finishing_village_coords.contains(village)
+    });
     let rally_complete = policy.rally.is_none_or(|rally| {
         state.units.iter().all(|(id, unit)| {
             if unit.faction != side
@@ -1034,9 +1145,11 @@ pub fn routine_next(
         })
     });
     if queue_complete && villages_complete && rally_complete {
+        let mut effects = finishing_villages;
+        effects.push(json!({"kind":"policy_completed"}));
         return RoutineOutcome::Finish {
             reason: "objectives_complete",
-            progress_update: progress_update(vec![json!({"kind":"policy_completed"})]),
+            progress_update: progress_update(effects),
         };
     }
     RoutineOutcome::Finish {
@@ -1331,8 +1444,9 @@ mod tests {
             }],
             ..Default::default()
         };
+        let moved_outcome = routine_next(&s, 0, &p, &progress, &[], &registry);
         assert!(matches!(
-            routine_next(&s, 0, &p, &progress, &[], &registry),
+            moved_outcome,
             RoutineOutcome::Finish { reason: "no_remaining_routine_steps", progress_update }
                 if progress_update["effects"].as_array().unwrap().is_empty()
         ));
@@ -1432,8 +1546,9 @@ mod tests {
         };
         let outcome = routine_next(&s, 0, &p, &progress, &[], &registry);
         assert!(
-            matches!(outcome, RoutineOutcome::Finish { reason: "no_remaining_routine_steps", progress_update }
-            if progress_update["effects"][0]["kind"] == "completed_village")
+            matches!(outcome, RoutineOutcome::Finish { reason: "objectives_complete", progress_update }
+            if progress_update["effects"][0]["kind"] == "completed_village"
+                && progress_update["effects"][1]["kind"] == "policy_completed")
         );
         assert_ne!(s.village_owners.get(&village), Some(&0));
         s.village_owners.insert(village, 0);
@@ -1477,5 +1592,121 @@ mod tests {
                 && action["col"] == 7
                 && action["row"] == 4)
         );
+    }
+
+    #[test]
+    fn unavailable_threat_facts_pause_as_threat_unavailable() {
+        let registry = units();
+        let mut s = state();
+        // A live active-side unit without a placement is a malformed engine
+        // snapshot. Tactical projection cannot provide a complete threat
+        // surface, so routine execution must not treat it as safe.
+        s.units.insert(2, Unit::new(2, "broken", 10, 0));
+        let p = policy(&[("Skeleton", 1, "army")]);
+        assert!(matches!(
+            routine_next(
+                &s,
+                0,
+                &p,
+                &RoutineProgress::default(),
+                &["Skeleton".into()],
+                &registry
+            ),
+            RoutineOutcome::Exception { reason: "threat_unavailable", evidence }
+                if evidence["stage"] == "current_state"
+        ));
+    }
+
+    #[test]
+    fn unreachable_village_and_rally_are_typed_unsafe_routes() {
+        let registry = units();
+        let (mut s, village) = village_state();
+        let mut scout = Unit::from_def(2, registry.get("Ghost").unwrap(), 0);
+        scout.attacks.clear();
+        s.place_unit(scout, Hex::from_offset(3, 4));
+        // A wall of enemy zones of control blocks every route across column 4.
+        for row in 0..8 {
+            let mut enemy = Unit::from_def(100 + row as u32, registry.get("Fighter").unwrap(), 1);
+            enemy.attacks.clear();
+            s.place_unit(enemy, Hex::from_offset(4, row));
+        }
+        let village_policy = RoutinePolicy {
+            villages: vec![village],
+            scouts: vec![2],
+            ..policy(&[])
+        };
+        let assigned = RoutineProgress {
+            scout_assignments: vec![ScoutAssignment {
+                unit_id: 2,
+                village,
+            }],
+            ..Default::default()
+        };
+        assert!(matches!(
+            routine_next(&s, 0, &village_policy, &assigned, &[], &registry),
+            RoutineOutcome::Exception { reason: "unsafe_route", evidence }
+                if evidence["cause"] == "unreachable_or_no_legal_endpoint"
+        ));
+        let rally_policy = RoutinePolicy {
+            rally: Some(village),
+            ..policy(&[])
+        };
+        assert!(matches!(
+            routine_next(
+                &s,
+                0,
+                &rally_policy,
+                &RoutineProgress::default(),
+                &[],
+                &registry
+            ),
+            RoutineOutcome::Exception { reason: "unsafe_route", evidence }
+                if evidence["cause"] == "unreachable_or_no_legal_endpoint"
+        ));
+    }
+
+    #[test]
+    fn shorter_safe_endpoint_is_selected_when_furthest_endpoint_is_threatened() {
+        let registry = units();
+        let mut s = state();
+        let rally = Hex::from_offset(7, 2);
+        let mut mover = Unit::from_def(2, registry.get("Skeleton").unwrap(), 0);
+        mover.attacks.clear();
+        s.place_unit(mover, Hex::from_offset(2, 2));
+        let mut enemy = Unit::from_def(9, registry.get("Fighter").unwrap(), 1);
+        enemy.movement = 0;
+        s.place_unit(enemy, Hex::from_offset(8, 2));
+        let p = RoutinePolicy {
+            rally: Some(rally),
+            ..policy(&[])
+        };
+        let shorter_outcome = routine_next(&s, 0, &p, &RoutineProgress::default(), &[], &registry);
+        assert!(matches!(
+            shorter_outcome,
+            RoutineOutcome::Action { action, reason: "rally", .. }
+                if action["unit_id"] == 2 && action["col"] == 6 && action["row"] == 2
+        ));
+    }
+
+    #[test]
+    fn pending_promotion_remains_before_all_routine_steps() {
+        let registry = units();
+        let mut s = state();
+        let mut veteran = Unit::from_def(5, registry.get("Fighter").unwrap(), 0);
+        veteran.advancement_pending = true;
+        s.place_unit(veteran, Hex::from_offset(5, 5));
+        let p = policy(&[("Skeleton", 1, "army")]);
+        assert!(matches!(
+            routine_next(
+                &s,
+                0,
+                &p,
+                &RoutineProgress::default(),
+                &["Skeleton".into()],
+                &registry
+            ),
+            RoutineOutcome::Exception { reason: "promotion_pending", evidence }
+                if evidence["unit_ids"] == json!([5])
+        ));
     }
 }
