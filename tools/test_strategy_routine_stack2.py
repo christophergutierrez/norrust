@@ -30,12 +30,22 @@ def engine_events(rows):
 
 def driver_states(rows):
     result = []
+    boundaries = {r['state_revision']: r['side_turns'] for r in rows
+                  if r.get('type') == 'checkpoint_ref'
+                  and 'state_revision' in r and 'side_turns' in r}
+    boundaries.update({r['line']['state_revision']: r['line']['side_turns']
+                       for r in rows if r.get('type') == 'driver'
+                       and r.get('line', {}).get('type') == 'game_end'
+                       and 'state_revision' in r['line'] and 'side_turns' in r['line']})
     for r in rows:
         if r.get('type') != 'driver':
             continue
         line = r.get('line', {})
         if line.get('type') == 'state':
-            result.append(line)
+            snapshot = dict(line)
+            if line['state_revision'] in boundaries:
+                snapshot['side_turns'] = boundaries[line['state_revision']]
+            result.append(snapshot)
         elif line.get('type') == 'game_end' and isinstance(line.get('state'), dict):
             final = dict(line['state'])
             final.setdefault('side_turns', line.get('side_turns'))
@@ -143,6 +153,24 @@ class StrategyRoutineStack2Tests(unittest.TestCase):
             self.assertFalse(any(r.get('type') == 'model_request' for r in rows))
             self.assertEqual(driver_states(rows)[-1]['side_turns'], 6)
             self.assertEqual(sum(e.get('kind') == 'recruit' for e in engine_events(rows)), 6)
+
+    def test_completed_policy_is_adopted_after_finish_acknowledgement(self):
+        policy = {'reserve_gold': 0, 'recruits': [], 'scouts': [],
+                  'villages': [], 'rally': None, 'holds': []}
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            checkpoint, policy_file, backend, prompts = prepare(root, policy)
+            log = root / 'completed.ndjson'
+            result = launch(root, log, checkpoint, policy_file, backend,
+                            fixed=True, turns=1)
+            self.assert_run_ok(result, log)
+            rows = records(log)
+            completed = [r for r in rows if r.get('type') == 'routine_progress_committed'
+                         and {'kind': 'policy_completed'} in r['progress_update']['effects']]
+            self.assertEqual(len(completed), 1)
+            self.assertTrue(any(r.get('type') == 'turn_boundary'
+                                and r.get('accepted') for r in rows))
+            self.assertFalse(prompts.exists())
 
     def test_repeated_definition_queue_binds_only_actual_scout_recruits(self):
         policy = {'reserve_gold': 0, 'recruits': [

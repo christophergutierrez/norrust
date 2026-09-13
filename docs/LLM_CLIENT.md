@@ -346,11 +346,25 @@ performs an automatic Greedy sweep and is never used as a routine boundary.
 checked-in policy and plays it with no backend started and zero model responses,
 recording the controller identity as fixed-policy code rather than a model.
 
-First release scope is recruitment orders with a gold reserve. Non-empty
-`scouts`, `villages` or `holds`, or a non-null `rally`, are rejected explicitly
-rather than accepted and ignored. Enemy contact ends the run as an explicit
-unsupported exception; there is no hidden fallback and no silent handoff to
-Greedy.
+Policies support finite recruitment with a gold reserve, up to eight scouts
+(existing IDs plus new scout recruits), four village objectives, a rally point,
+and explicit holds. Scouts use terrain-cost routes and remain on an uncaptured
+village through the finishing boundary. Ownership, not arrival, completes a
+village objective. Army units travel toward the rally or its adjacent staging
+hexes; recruiters and held units remain stationary. Routine code performs no
+attacks and does not vacate castle spaces merely to recruit.
+
+Progress tracks each queue entry separately, even when entries request the same
+unit definition with different roles. Recruit IDs come from committed engine
+proof. Each policy installation and committed batch has a durable identity;
+replaying the same evidence cannot recruit twice. Replacing a policy starts new
+orders and explicitly requests its new recruit counts. An unresolved checkpoint
+boundary stops with unknown progress instead of resetting counts.
+
+Enemy contact currently ends the run as an explicit unsupported exception;
+tactical model responses are the next implementation stack. There is no hidden
+fallback or automatic Greedy combat handoff. Use a scripted backend or fixed
+policy while validating this intermediate stack.
 
 ### Publishing a file-transport reply
 

@@ -132,6 +132,8 @@ class StrategyModeIntegrationTests(unittest.TestCase):
             # The finite queue committed exactly 3 recruits, then an automatic
             # no-sweep finish, with no model call between them.
             committed = [r for r in records if r.get("type") == "routine_progress_committed"]
+            committed = [r for r in committed if any(
+                e.get("kind") == "recruited" for e in r["progress_update"]["effects"])]
             self.assertEqual(len(committed), 3)
             self.assertTrue(all(
                 c["progress_update"]["effects"][0]["kind"] == "recruited"
@@ -222,7 +224,8 @@ class StrategyModeIntegrationTests(unittest.TestCase):
 
             self.assertEqual(sum(1 for r in records if r.get("type") == "model_request"), 1)
             committed = [r for r in records if r.get("type") == "routine_progress_committed"]
-            self.assertEqual(len(committed), 6)
+            self.assertEqual(sum(e.get("kind") == "recruited" for r in committed
+                                 for e in r["progress_update"]["effects"]), 6)
             # One installation only -- the queue was never replaced/re-issued.
             self.assertEqual(sum(1 for r in records if r.get("type") == "policy_installed"), 1)
 
@@ -257,6 +260,8 @@ class StrategyModeIntegrationTests(unittest.TestCase):
             self.assertTrue(all(g >= 285 for g in golds), golds)
 
             committed = [r for r in records if r.get("type") == "routine_progress_committed"]
+            committed = [r for r in committed if any(
+                e.get("kind") == "recruited" for e in r["progress_update"]["effects"])]
             self.assertEqual(len(committed), 1)
 
             recruit_events = [e for e in _all_events(records) if e.get("kind") == "recruit"]
@@ -271,13 +276,12 @@ class StrategyModeIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             backend = root / "backend.py"
-            # rally is a Stack 1 "non-empty future field": must be rejected
-            # explicitly, never silently accepted/ignored.
+            # An out-of-bounds rally must be rejected before any execution.
             body = (
                 "resp = {'kind': 'set_policy', 'policy': {"
                 "'reserve_gold': 0, "
                 "'recruits': [{'def_id': 'Skeleton', 'count': 2, 'role': 'army'}], "
-                "'scouts': [], 'villages': [], 'rally': {'col': 5, 'row': 5}, 'holds': []}}"
+                "'scouts': [], 'villages': [], 'rally': {'col': 500, 'row': 5}, 'holds': []}}"
             )
             _write_backend(backend, body)
             log = root / "match.ndjson"

@@ -612,7 +612,7 @@ def parse_routine_result(body: dict[str, Any]) -> Any:
         return RoutineActionResult(action=body["action"], progress_update=body["progress_update"],
                                     reason=body["reason"])
     if kind == "finish":
-        if body.get("reason") != "no_remaining_routine_steps":
+        if body.get("reason") not in {"no_remaining_routine_steps", "objectives_complete"}:
             raise ValueError("routine_next finish result has an unexpected reason")
         update = body.get("progress_update", {"effects": []})
         if not isinstance(update, dict) or set(update) != {"effects"}:

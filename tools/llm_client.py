@@ -5947,7 +5947,9 @@ def run(args: argparse.Namespace) -> int:
                     return
                 committed.append({"kind": "completed_village", "col": col, "row": row})
             elif kind == "policy_completed":
-                if not pending_finish_kind:
+                # Status clears pending_finish_kind before committed events
+                # arrive. The forwarded batch retains its accepted finish kind.
+                if not last_forwarded_finish_kind:
                     return
                 committed.append({"kind": "policy_completed"})
             else:

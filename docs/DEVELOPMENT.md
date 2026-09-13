@@ -316,3 +316,16 @@ python3 -m unittest tools.test_player_contract_integration
 
 They check recruitment beyond initial castle spaces, selective finish positions,
 agenda persistence, and exact request payloads in SQLite.
+
+### Strategy routine integration
+
+`tools/test_strategy_routine_stack2.py` drives the real client and built driver
+from checked-in quiet checkpoints. It checks three controlled turns per policy,
+actual village capture at the finish, recruitment queue roles and actual IDs,
+resume, and idempotent SQLite import. Build `greedy_driver` before running these
+tests; skipped driver tests do not constitute acceptance. The full
+`python3 -m tools.fast_check` builds the driver and runs them.
+
+The live query/effects contract is documented in the strategy execution plan.
+Policy progress belongs to a durable installation and batch; its applied-step
+ledger is recovery metadata and must not be sent to the model or planner.
