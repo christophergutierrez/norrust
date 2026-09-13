@@ -196,7 +196,8 @@ class StrategyRoutineStack2Tests(unittest.TestCase):
             self.assertEqual(len(records(prompts)), 1)
 
 
-    def _replay_cut(self, *, after_finish=False, duplicate=False, omit_progress=False):
+    def _replay_cut(self, *, after_finish=False, duplicate=False, omit_progress=False,
+                    before_ack=False, destroy_proposal=False):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             checkpoint, policy, backend, prompts = prepare(root)
@@ -213,7 +214,15 @@ class StrategyRoutineStack2Tests(unittest.TestCase):
                                any(e.get('kind') == 'recruited' for e in r.get('progress_update', {}).get('effects', [])))]
             self.assertTrue(candidates, 'No actual committed routine step for the required boundary')
             cut, chosen = candidates[0]
+            if before_ack:
+                cut = next(i for i, r in enumerate(rows)
+                           if r.get('type') == 'checkpoint_ref'
+                           and r.get('batch_id') == chosen['batch_id'])
             surviving = rows[:cut + (0 if omit_progress else 1)]
+            if destroy_proposal:
+                for r in surviving:
+                    if r.get('batch_id') == chosen['batch_id']:
+                        r.pop('progress_update', None)
             if duplicate:
                 surviving.append(chosen)
             crash_log.write_text('\n'.join(json.dumps(r) for r in surviving) + '\n')
@@ -222,6 +231,11 @@ class StrategyRoutineStack2Tests(unittest.TestCase):
                 if saved.name not in referenced:
                     saved.unlink()
             resumed = launch(root, crash_log, checkpoint, policy, backend, resume=True)
+            if destroy_proposal:
+                self.assertNotEqual(resumed.returncode, 0)
+                terminal = [r for r in records(crash_log) if r.get('type') == 'terminal'][-1]
+                self.assertEqual(terminal.get('action_boundary_status'), 'unknown')
+                return
             if omit_progress:
                 # Either reconstruct from durable pending evidence, or refuse
                 # unknown progress. Never quietly reset the policy counters.
@@ -231,7 +245,13 @@ class StrategyRoutineStack2Tests(unittest.TestCase):
                     return
             self.assert_run_ok(resumed, crash_log)
             actual = records(crash_log)
-            self.assertEqual(sum(e.get('kind') == 'recruit' for e in engine_events(actual)), 6)
+            # A crash before the event envelope loses that historical event;
+            # checkpoint proof recovers state/progress without fabricating events.
+            expected_recorded_recruits = 5 if before_ack and not after_finish else 6
+            self.assertEqual(sum(e.get('kind') == 'recruit' for e in engine_events(actual)),
+                             expected_recorded_recruits)
+            if before_ack:
+                self.assertTrue(any(r.get('recovered_from_checkpoint') for r in actual))
             want_state, got_state = driver_states(control)[-1], driver_states(actual)[-1]
             self.assertEqual(got_state['side_turns'], 6)
             self.assertEqual(got_state['gold'], want_state['gold'])
@@ -244,6 +264,15 @@ class StrategyRoutineStack2Tests(unittest.TestCase):
 
     def test_capture_finish_checkpoint_resume_preserves_actual_ownership(self):
         self._replay_cut(after_finish=True)
+
+    def test_checkpoint_before_recruit_ack_recovers_actual_id_and_counts(self):
+        self._replay_cut(before_ack=True)
+
+    def test_checkpoint_before_finish_ack_recovers_capture(self):
+        self._replay_cut(before_ack=True, after_finish=True)
+
+    def test_checkpoint_without_proposal_reports_unknown(self):
+        self._replay_cut(before_ack=True, destroy_proposal=True)
 
     def test_missing_committed_progress_reconstructs_or_explicitly_refuses(self):
         self._replay_cut(omit_progress=True)
