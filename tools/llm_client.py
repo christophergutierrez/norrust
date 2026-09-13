@@ -5857,6 +5857,8 @@ def run(args: argparse.Namespace) -> int:
         envelope = build_orders_envelope(orders, revision)
         batch_sequence += 1
         batch_id = f"{metadata.get('conversation_id', 'match')}:batch:{batch_sequence}"
+        effective_progress_update = (copy.deepcopy(progress_update)
+                                     if isinstance(progress_update, dict) else {"effects": []})
         pre_step_unit_ids = sorted(
             unit.get("id") for unit in (state.get("units", []) if isinstance(state, dict) else [])
             if isinstance(unit, dict) and isinstance(unit.get("id"), int))
@@ -5875,7 +5877,7 @@ def run(args: argparse.Namespace) -> int:
             # from the committed checkpoint without replaying an action.
             "installation_id": (strategy_progress.installation_id
                                  if strategy_progress is not None else None),
-            "progress_update": copy.deepcopy(progress_update),
+            "progress_update": effective_progress_update,
             "routine_finish": bool(finish),
             "pre_step_unit_ids": pre_step_unit_ids,
             "pre_step_village_owners": pre_step_village_owners,
@@ -5887,7 +5889,7 @@ def run(args: argparse.Namespace) -> int:
                  "request_sequence": request_sequence, "request_id": None, "side_turn_id": None,
                  "source": "routine", "state_revision": revision,
                  "installation_id": pending_commit["installation_id"],
-                 "progress_update": copy.deepcopy(progress_update),
+                 "progress_update": copy.deepcopy(effective_progress_update),
                  "routine_finish": bool(finish),
                  "pre_step_unit_ids": pre_step_unit_ids,
                  "pre_step_village_owners": pre_step_village_owners,
@@ -5911,8 +5913,8 @@ def run(args: argparse.Namespace) -> int:
         # Held until the driver's checkpoint proves this submission committed
         # (see the "checkpoint" handling below); never adopted on a mere
         # proposal, and never adopted at all if the submission is rejected.
-        strategy_pending_progress_update = (
-            progress_update if progress_update is not None else ({"effects": []} if finish else None))
+        strategy_pending_progress_update = (effective_progress_update if finish or progress_update is not None
+                                            else None)
         strategy_pending_batch_id = batch_id if strategy_pending_progress_update is not None else None
         strategy_pending_proven_revision = None
 
@@ -6406,7 +6408,8 @@ def run(args: argparse.Namespace) -> int:
             the boundary unknown for the caller below.
             """
             pending_record = pending_routine_commit(parent_records)
-            if pending_record is None or checkpoint_dir is None:
+            if (pending_record is None or checkpoint_dir is None
+                    or strategy_progress is None):
                 return None
             if pending_record.get("installation_id") != strategy_installation.installation_id:
                 return None
@@ -6463,9 +6466,12 @@ def run(args: argparse.Namespace) -> int:
                                               "unit_id": actual["id"]})
                 elif kind == "scout_assigned":
                     unit_id, col, row = effect.get("unit_id"), effect.get("col"), effect.get("row")
+                    # ``col``/``row`` identify the assigned target village,
+                    # not the unit's final move endpoint.  The checkpoint
+                    # proves the actual unit identity; the event/forwarded
+                    # move evidence (when present) proves the movement itself.
                     matches = [unit for unit in units if isinstance(unit, dict)
-                               and unit.get("id") == unit_id and unit.get("col") == col
-                               and unit.get("row") == row]
+                               and unit.get("id") == unit_id]
                     if len(matches) != 1:
                         return None
                     committed_effects.append({"kind": "scout_assigned", "unit_id": unit_id,
