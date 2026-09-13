@@ -378,6 +378,28 @@ tactics, or a negative material balance alone cannot stop a healthy game.  The o
 separate from the catalog `game_id`; the supervisor proves the canonical conversation identity before attaching
 the observer, so its sidecar joins the same catalog game on import.
 
+The controller records a deterministic `continue` skip with `paid_call: false`
+when no current incident exists, confirmation is incomplete, or the remaining
+physical-call budget cannot support an inspection and its follow-up. These
+skips are scheduling facts, not observer judgments. Each physical dispatch,
+receipt completion or failure, inspection attempt, evidence read, unresolved
+investigation window, cap exhaustion, and monitoring termination is journaled;
+preparation failures release their reservation without becoming paid calls.
+An inspect window remains an explicit unknown if its follow-up is skipped,
+fails, or is cancelled, even when a later observation receives a continue
+verdict.
+
+The model-visible packet is an explicit projection of recorder status. It
+retains immutable run/sequence/revision provenance, trusted phase and safety
+facts, and at most two bounded indexed evidence slices. Each permitted evidence
+choice names its indexed record type and short source description; unreadable,
+foreign, stale, or unadvertised IDs cannot be selected for investigation. A
+receipt proves that a provider call completed, while an evidence-read result is
+tracked separately and may remain unusable. Input clipping and token counts are
+reported as conservative estimates; omitted critical controller fields make
+decision coverage incomplete. Historical or missing journal fields remain
+unknown rather than being treated as clean coverage.
+
 The maintained supervisor exposes the same opt-in channel for real runs:
 
 ```bash

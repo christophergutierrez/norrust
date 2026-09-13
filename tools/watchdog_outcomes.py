@@ -47,6 +47,12 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
     dispatched_ids: set[str] = set()
     terminal_ids: set[str] = set()
     investigation_dispatch_ids: set[str] = set()
+    # An inspect verdict opens a logical observation window.  The physical
+    # follow-up call is only one way to close it; explicit skip/failure/
+    # cancellation is also terminal evidence.  Keep windows by call and
+    # observation sequence so a later regular verdict cannot erase a gap.
+    windows: dict[str, dict[str, Any]] = {}
+    window_counter = 0
     journal_available = True
     last_outcome: str | None = None
     try:
@@ -85,6 +91,11 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
                 dispatched_ids.add(event["call_id"])
                 if event.get("phase") == "investigation":
                     investigation_dispatch_ids.add(event["call_id"])
+                    sequence = event.get("observation_sequence")
+                    key = next((candidate for candidate, value in windows.items()
+                                if value.get("sequence") == sequence and value.get("status") == "pending"), None)
+                    if key is not None:
+                        windows[key]["investigation_call_id"] = event["call_id"]
             last_outcome = "pending"
             continue
         if kind == "preparation":
@@ -105,6 +116,15 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
         if kind == "inspection_started":
             inspection_attempts += 1
             pending_inspections += 1
+            call_id = event.get("call_id")
+            sequence = event.get("observation_sequence")
+            key = next((candidate for candidate, value in windows.items()
+                        if value.get("primary_call_id") == call_id), None)
+            if key is None:
+                window_counter += 1
+                key = f"inspect:{call_id or sequence or window_counter}"
+                windows[key] = {"sequence": sequence, "status": "pending",
+                                "primary_call_id": call_id}
             last_outcome = "pending"
             continue
         if kind in {"inspection_completed", "inspection_cancelled"}:
@@ -121,8 +141,22 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
                 failed_evidence_reads += 1
             continue
         if kind == "investigation_cancelled":
-            pending_investigations += 1
+            sequence = event.get("observation_sequence")
+            key = next((candidate for candidate, value in windows.items()
+                        if value.get("sequence") == sequence and value.get("status") not in
+                        {"resolved", "skipped", "failed", "cancelled"}), None)
+            if key is not None:
+                windows[key]["status"] = "cancelled"
             evidence_gaps["investigation_cancelled"] = evidence_gaps.get("investigation_cancelled", 0) + 1
+            last_outcome = "failure"
+            continue
+        if kind == "investigation_skipped":
+            sequence = event.get("observation_sequence")
+            key = next((candidate for candidate, value in windows.items()
+                        if value.get("sequence") == sequence and value.get("status") == "pending"), None)
+            if key is not None:
+                windows[key]["status"] = "skipped"
+            evidence_gaps["investigation_skipped"] = evidence_gaps.get("investigation_skipped", 0) + 1
             last_outcome = "failure"
             continue
         if kind == "stop_evaluation":
@@ -147,8 +181,22 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
                 terminal_ids.add(event["call_id"])
             receipt_completions += 1
             if decision == "inspect":
+                window_counter += 1
+                sequence = event.get("observed_sequence")
+                key = f"inspect:{event.get('call_id') or sequence or window_counter}"
+                windows[key] = {"sequence": sequence, "status": "pending",
+                                "primary_call_id": event.get("call_id")}
                 last_outcome = "pending"
             elif decision in {"continue", "stop"}:
+                if kind == "investigation_verdict":
+                    sequence = event.get("observed_sequence")
+                    key = next((candidate for candidate, value in windows.items()
+                                if (value.get("investigation_call_id") == event.get("call_id")
+                                    or value.get("sequence") == sequence)
+                                and value.get("status") not in
+                                {"resolved", "skipped", "failed", "cancelled"}), None)
+                    if key is not None:
+                        windows[key]["status"] = "resolved"
                 if event.get("coverage") == "incomplete":
                     evidence_gaps["incomplete_verdict_coverage"] = evidence_gaps.get("incomplete_verdict_coverage", 0) + 1
                     last_outcome = "failure"
@@ -166,6 +214,12 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
                 preflight_failures += 1
             else:
                 receipt_failures += 1
+            if kind in {"investigation_failure", "investigation_error"}:
+                sequence = event.get("observation_sequence")
+                key = next((candidate for candidate, value in windows.items()
+                            if value.get("sequence") == sequence and value.get("status") == "pending"), None)
+                if key is not None:
+                    windows[key]["status"] = "failed"
             reason = event.get("error") or kind
             reasons[str(reason)] = reasons.get(str(reason), 0) + 1
             last_outcome = "failure"
@@ -177,6 +231,12 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
     unresolved_receipts = len(dispatched_ids - terminal_ids)
     if unresolved_receipts:
         evidence_gaps["unresolved_receipt"] = unresolved_receipts
+    unresolved_windows = [value for value in windows.values()
+                          if value.get("status") not in {"resolved"}]
+    if unresolved_windows:
+        evidence_gaps["unresolved_investigation_window"] = len(unresolved_windows)
+    window_statuses = {status: sum(value.get("status") == status for value in windows.values())
+                       for status in ("pending", "skipped", "failed", "cancelled", "resolved")}
     pending_investigations = len(investigation_dispatch_ids - terminal_ids)
     if pending_investigations:
         evidence_gaps["pending_investigation"] = pending_investigations
@@ -215,6 +275,9 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
         "failed_evidence_reads": failed_evidence_reads if journal_available else None,
         "pending_inspections": pending_inspections if journal_available else None,
         "pending_investigations": pending_investigations if journal_available else None,
+        "unresolved_investigation_windows": (len(unresolved_windows)
+                                              if journal_available else None),
+        "investigation_window_statuses": (window_statuses if journal_available else None),
         "call_cap_exhausted": (cap_exhausted > 0) if journal_available else None,
         "disabled_reason": disabled_reason if journal_available else None,
         "termination_reason": termination_reason if journal_available else None,

@@ -242,6 +242,69 @@ class WatchdogReviewTests(unittest.TestCase):
             self.assertTrue(outcomes["judgment_observed"])
             self.assertEqual(outcomes["last_outcome"], "pending")
 
+    def test_skipped_inspection_window_survives_later_regular_continue(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "observer.journal.ndjson"
+            events = [
+                {"type": "dispatch", "call_id": "c1", "phase": "initial"},
+                {"type": "verdict", "call_id": "c1", "decision": "inspect",
+                 "observed_sequence": 1, "coverage": "complete"},
+                {"type": "inspection_started", "call_id": "c1", "inspection_id": "i1",
+                 "observation_sequence": 1},
+                {"type": "inspection_completed", "inspection_id": "i1",
+                 "observation_sequence": 1, "status": "complete"},
+                {"type": "investigation_skipped", "observation_sequence": 1,
+                 "reason": "budget"},
+                {"type": "dispatch", "call_id": "c2", "phase": "initial"},
+                {"type": "verdict", "call_id": "c2", "decision": "continue",
+                 "observed_sequence": 2, "coverage": "complete"},
+            ]
+            path.write_text("\n".join(json.dumps(item) for item in events) + "\n")
+            outcomes = read_observer_outcomes(path)
+            self.assertEqual(outcomes["physical_dispatches"], 2)
+            self.assertEqual(outcomes["receipt_completions"], 2)
+            self.assertTrue(outcomes["judgment_observed"])
+            self.assertEqual(outcomes["unresolved_investigation_windows"], 1)
+            self.assertEqual(outcomes["investigation_window_statuses"]["skipped"], 1)
+            self.assertIn("unresolved_investigation_window", outcomes["evidence_gaps"])
+            self.assertFalse(outcomes["coverage_complete"])
+
+    def test_legacy_inspect_window_is_unknown_after_different_sequence_continue(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "observer.journal.ndjson"
+            path.write_text("\n".join([
+                json.dumps({"type": "verdict", "call_id": "c1", "decision": "inspect",
+                            "observed_sequence": 7, "coverage": "complete"}),
+                json.dumps({"type": "verdict", "call_id": "c2", "decision": "continue",
+                            "observed_sequence": 8, "coverage": "complete"}),
+            ]) + "\n")
+            outcomes = read_observer_outcomes(path)
+            self.assertTrue(outcomes["judgment_observed"])
+            self.assertEqual(outcomes["unresolved_investigation_windows"], 1)
+            self.assertFalse(outcomes["coverage_complete"])
+
+    def test_same_observation_investigation_verdict_resolves_inspect_window(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "observer.journal.ndjson"
+            events = [
+                {"type": "dispatch", "call_id": "c1", "phase": "initial"},
+                {"type": "verdict", "call_id": "c1", "decision": "inspect",
+                 "observed_sequence": 3, "coverage": "complete"},
+                {"type": "inspection_started", "call_id": "c1", "inspection_id": "i1",
+                 "observation_sequence": 3},
+                {"type": "inspection_completed", "inspection_id": "i1",
+                 "observation_sequence": 3, "status": "complete"},
+                {"type": "dispatch", "call_id": "c2", "phase": "investigation",
+                 "observation_sequence": 3},
+                {"type": "investigation_verdict", "call_id": "c2", "decision": "continue",
+                 "observed_sequence": 3, "coverage": "complete"},
+            ]
+            path.write_text("\n".join(json.dumps(item) for item in events) + "\n")
+            outcomes = read_observer_outcomes(path)
+            self.assertEqual(outcomes["unresolved_investigation_windows"], 0)
+            self.assertEqual(outcomes["investigation_window_statuses"]["resolved"], 1)
+            self.assertTrue(outcomes["coverage_complete"])
+
     def test_inspect_followup_failure_leaves_latest_window_unjudged(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "observer.journal.ndjson"
