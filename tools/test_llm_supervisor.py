@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from .llm_supervisor import _watchdog_validation, run
+from .llm_supervisor import _append_observer_terminal, _watchdog_validation, run
 from .game_history import import_game, open_history
 from .watchdog_stop import read_stop, stop_run
 from .run_watchdog import RunWatchdog
@@ -60,6 +60,26 @@ class SupervisorStopIntegrationTests(unittest.TestCase):
             terminal = next(r for r in records if r.get("type") == "terminal")
             self.assertEqual(terminal["terminal_class"], "observer_interrupted")
             self.assertTrue(terminal["remote_cancellation"] == "unknown")
+
+    def test_stop_finalizer_requires_matching_player_request_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "match.ndjson"
+            log.write_text(json.dumps({"type": "metadata", "conversation_id": "game-a"}) + "\n")
+            (root / "request_context.json").write_text(json.dumps({
+                "harness_request_id": "request-a"}), encoding="utf-8")
+            usage = root / "usage.ndjson"
+            rows = [
+                {"record_kind": "dispatch", "game_id": "game-a", "call_id": "observer-call",
+                 "call_role": "observer", "request_id": "request-a", "status": "dispatched"},
+                {"record_kind": "dispatch", "game_id": "game-a", "call_id": "other-player",
+                 "call_role": "player", "request_id": "request-b", "status": "dispatched"},
+            ]
+            usage.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+            _append_observer_terminal(log, {"request_id": "stop-a", "reason_code": "manual_stop",
+                                             "evidence_ids": [], "observed_sequence": 0}, None)
+            records = [json.loads(line) for line in usage.read_text().splitlines()]
+            self.assertFalse(any(row.get("record_kind") == "final" for row in records))
 
 class SupervisorObserverFenceTests(unittest.TestCase):
     def test_observer_stop_allows_sequence_drift_without_progress(self):

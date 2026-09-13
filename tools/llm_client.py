@@ -4792,7 +4792,7 @@ def finalize_unknown_usage_attempt(sidecar: str | os.PathLike[str], game_id: str
             continue
         if row.get("record_kind") == "final":
             finals.add(call_id)
-        elif row.get("record_kind") == "dispatch":
+        elif row.get("record_kind") == "dispatch" and row.get("call_role") == "player":
             dispatches[call_id] = row
     pending = [row for call_id, row in dispatches.items() if call_id not in finals]
     if not pending:

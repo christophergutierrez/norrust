@@ -4,6 +4,7 @@ import os
 import shlex
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -65,17 +66,38 @@ class WatchdogSupervisorE2ETests(unittest.TestCase):
                 return clock_state["ticks"]
 
             backend = FakeObserverBackend(observe_fixture)
-            command = [sys.executable, "-m", "tools.llm_client", "--driver", str(driver),
+            child_pid = root / "owned-child.pid"
+            wrapper = root / "client_wrapper.py"
+            wrapper.write_text(
+                "import os, subprocess, sys, time\n"
+                "from pathlib import Path\n"
+                "child = subprocess.Popen([sys.executable, '-c', "
+                "'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)'])\n"
+                "Path(os.environ['NORRUST_OWNED_CHILD_PID']).write_text(str(child.pid))\n"
+                "os.execv(sys.executable, [sys.executable, '-m', 'tools.llm_client', *sys.argv[1:]])\n",
+                encoding="utf-8")
+            command = [sys.executable, str(wrapper), "--driver", str(driver),
                        "--log", str(log), "--max-turns", "2", "--model-command",
                        shlex.join([sys.executable, "-m",
                                    "tools.fixtures.watchdog_stream_player"])]
             with mock.patch.dict(os.environ, {
                     "NORRUST_WATCHDOG_REPEAT_REASONING": "1",
+                    "NORRUST_OWNED_CHILD_PID": str(child_pid),
             }, clear=False):
                 result = run(command, log, 0, watchdog=recorder, poll_interval=.01,
                              watchdog_mode="enforce", observer_backend=backend,
                              observer_clock=clock, observer_max_calls=3)
             self.assertEqual(result, 4)
+            self.assertTrue(child_pid.exists())
+            owned_child = int(child_pid.read_text())
+            for _ in range(20):
+                try:
+                    os.kill(owned_child, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail(f"supervisor-owned child remains alive: {owned_child}")
             self.assertEqual(len(observer_calls), 3)
             intent = read_stop(log)
             self.assertEqual(intent["status"], "resolved")
@@ -97,6 +119,13 @@ class WatchdogSupervisorE2ETests(unittest.TestCase):
             usage = root / "usage.ndjson"
             rows = [json.loads(line) for line in usage.read_text().splitlines()]
             self.assertTrue(any(row.get("call_role") == "player" for row in rows))
+            player_finals = [row for row in rows
+                             if row.get("call_role") == "player"
+                             and row.get("record_kind") == "final"]
+            self.assertEqual(len(player_finals), 1)
+            self.assertEqual(player_finals[0]["status"], "failed")
+            self.assertEqual(player_finals[0]["error_code"], "watchdog_stop")
+            self.assertIsNone(player_finals[0]["total_tokens"])
             self.assertTrue(any(row.get("call_role") == "observer" for row in rows))
             metadata = next(row for row in (json.loads(line) for line in log.read_text().splitlines())
                             if row.get("type") == "metadata")
@@ -117,6 +146,8 @@ class WatchdogSupervisorE2ETests(unittest.TestCase):
                              second["role_usage"]["observer"]["call_count"])
             self.assertGreater(first["role_usage"]["player"]["call_count"], 0)
             self.assertGreater(first["role_usage"]["observer"]["call_count"], 0)
+            self.assertEqual(first["role_usage"]["player"]["call_count"], 1)
+            self.assertEqual(first["role_usage"]["player"]["statuses"], ["failed"])
             self.assertIsNone(conn.execute(
                 "SELECT winner_side FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
             conn.close()

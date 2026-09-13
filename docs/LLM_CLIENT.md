@@ -699,6 +699,15 @@ reasoning stay in the adapter's evidence directory. Local cleanup and remote
 cancellation are separate facts: successful local reaping does not prove that
 the provider stopped billing or accepted no action.
 
+When an enforcing supervisor accepts a maintained watchdog stop while the
+client is still in a model request, it first cleans the supervisor-owned
+process session and then uses the match-owned request context to close a
+matching player dispatch as `failed` with `error_code: "watchdog_stop"` and
+unknown token fields. Observer calls and requests without a verified matching
+identity remain untouched. Repeated cleanup is idempotent, and a provider
+final that wins the race remains authoritative; remote cancellation is still
+unknown.
+
 File, interactive and native-host players receive request context where
 supported, but their hosts do not expose a maintained output-limit control or
 typed exhaustion result here. The harness must not claim to enforce these

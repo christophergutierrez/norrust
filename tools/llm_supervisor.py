@@ -19,13 +19,15 @@ try:
     from .request_journal import _safe_session_name
     from .run_watchdog import RunWatchdog
     from .watchdog_stop import accept_stop, read_stop, resolve_stop, stop_run, validate_stop_request
-    from .llm_client import classify_terminal, TERMINAL_GAMEPLAY
+    from .llm_client import (classify_terminal, TERMINAL_GAMEPLAY,
+                             finalize_unknown_usage_attempt)
 except ImportError:  # Direct ``python tools/llm_supervisor.py`` invocation.
     from request_recovery import reconcile_request, reconcile_journal
     from request_journal import _safe_session_name
     from run_watchdog import RunWatchdog
     from watchdog_stop import accept_stop, read_stop, resolve_stop, stop_run, validate_stop_request
-    from llm_client import classify_terminal, TERMINAL_GAMEPLAY
+    from llm_client import (classify_terminal, TERMINAL_GAMEPLAY,
+                            finalize_unknown_usage_attempt)
 STOP_EXIT_CODE = 4
 STOP_GRACE_SECONDS = 5.0
 
@@ -365,6 +367,13 @@ def _append_observer_terminal(log: Path, intent: dict, cleanup: ProcessCleanup |
                         "native_request_id", "dispatched_at") if key in value}
     except (OSError, ValueError, json.JSONDecodeError):
         pass
+    request_id = context.get("harness_request_id")
+    conversation_id = metadata.get("conversation_id")
+    physical_call_terminal = 0
+    if isinstance(conversation_id, str) and isinstance(request_id, str):
+        physical_call_terminal = finalize_unknown_usage_attempt(
+            log.parent / "usage.ndjson", conversation_id, request_id,
+            "watchdog_stop")
     details = {
         "type": "observer_interrupted", "terminal_class": "observer_interrupted",
         "infrastructure_invalid": False, "gameplay_valid": False,
@@ -377,6 +386,7 @@ def _append_observer_terminal(log: Path, intent: dict, cleanup: ProcessCleanup |
         "action_boundary_status": _action_boundary_status(log),
         "cancellation_status": ("complete" if cleanup and not cleanup.remaining_pids else "unknown"),
         "remote_cancellation": "unknown", "coverage_status": "unknown",
+        "physical_call_terminal": physical_call_terminal,
         "cleanup": (None if cleanup is None else cleanup.__dict__), **context}
     metadata.update(details)
     _append(log, details)
