@@ -251,6 +251,20 @@ class WatchdogReviewTests(unittest.TestCase):
             self.assertIn("invalid_verdict_decision", outcomes["evidence_gaps"])
             self.assertIn("journal_truncated", outcomes["evidence_gaps"])
 
+    def test_review_counts_stop_eligibility_requests_and_rejections(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "observer.journal.ndjson"
+            path.write_text(
+                '{"type":"stop_evaluation","eligible":false,"stop_requested":false,"failed_prerequisite":"evidence"}\n'
+                '{"type":"stop_evaluation","eligible":true,"stop_requested":false,"failed_prerequisite":null}\n'
+                '{"type":"stop_evaluation","eligible":true,"stop_requested":true,"failed_prerequisite":null}\n')
+            outcomes = read_observer_outcomes(path)
+            self.assertEqual(outcomes["stop_evaluations"], 3)
+            self.assertEqual(outcomes["eligible_stops"], 2)
+            self.assertEqual(outcomes["rejected_stops"], 1)
+            self.assertEqual(outcomes["stop_requests"], 1)
+            self.assertEqual(outcomes["stop_rejection_reasons"], {"evidence": 1})
+
 
 if __name__ == "__main__":
     unittest.main()

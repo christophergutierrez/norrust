@@ -171,7 +171,9 @@ class ControllerTests(unittest.TestCase):
     def setUp(self):
         self.clock_value = [0.0]
         self.current = [{"stage": "active", "observation_sequence": 1,
-                         "alerts": [{"identity": "same"}]}]
+                         "alerts": [{"identity": "same"}], "evidence_ids": ["e1"],
+                         "freshness": {"state": "fresh"}, "degraded": False,
+                         "run_id": "run-uuid"}]
         self.stops = []
 
     def make(self, backend):
@@ -180,7 +182,7 @@ class ControllerTests(unittest.TestCase):
             "run-uuid", Path(self.temp.name) / "watchdog.json", backend=backend,
             catalog_game_id="catalog-game", mode="enforce",
             progress=lambda _run: self.current[0],
-            evidence_reader=lambda *_args: {"evidence_id": "e1", "excerpt": "recorded"},
+            evidence_reader=lambda *_args: {"run_id": "run-uuid", "evidence_id": "e1", "data": "recorded"},
             stop=lambda *args: self.stops.append(args), clock=lambda: self.clock_value[0],
             usage_sidecar=Path(self.temp.name) / "usage.ndjson")
 
@@ -207,7 +209,9 @@ class ControllerTests(unittest.TestCase):
         self.controller.wait(2)
         self.clock_value[0] = 300
         self.current[0] = {"stage": "active", "observation_sequence": 2,
-                           "alerts": [{"identity": "same"}]}
+                           "alerts": [{"identity": "same"}], "evidence_ids": ["e1"],
+                           "freshness": {"state": "fresh"}, "degraded": False,
+                           "run_id": "run-uuid"}
         self.assertTrue(self.controller.poll(self.current[0]))
         self.controller.wait(2)
         # Wait for the chained investigation callback if the primary callback
@@ -266,14 +270,16 @@ class ControllerTests(unittest.TestCase):
             catalog_game_id="catalog-game", mode="enforce",
             progress=lambda _run: self.current[0],
             evidence_reader=lambda *_args: (entered.set(), release.wait(2),
-                                             {"evidence_id": "e1", "excerpt": "recorded"})[-1],
+                                             {"run_id": "run-uuid", "evidence_id": "e1", "data": "recorded"})[-1],
             stop=lambda *args: self.stops.append(args), clock=lambda: self.clock_value[0])
         self.controller = controller
         self.assertTrue(controller.poll(self.current[0]))
         self.assertTrue(entered.wait(1))
         self.clock_value[0] = 300
         self.current[0] = {"stage": "active", "observation_sequence": 2,
-                           "alerts": [{"identity": "same"}]}
+                           "alerts": [{"identity": "same"}], "evidence_ids": ["e1"],
+                           "freshness": {"state": "fresh"}, "degraded": False,
+                           "run_id": "run-uuid"}
         self.assertFalse(controller.poll(self.current[0]))
         release.set()
         controller.wait(2)
@@ -302,17 +308,61 @@ class ControllerTests(unittest.TestCase):
         ])
         self.controller = self.make(backend)
         packet = {"stage": "active", "observation_sequence": 1, "revision": 4,
-                  "alerts": [{"identity": "same", "revision": 4}]}
+                  "alerts": [{"identity": "same", "revision": 4}], "evidence_ids": ["e1"],
+                  "freshness": {"state": "fresh"}, "degraded": False, "run_id": "run-uuid"}
         self.assertTrue(self.controller.poll(packet)); self.controller.wait(2)
         self.clock_value[0] = 30
         recovered = {"stage": "active", "observation_sequence": 2, "revision": 5,
                      "committed_action": {"batch_id": "b5", "revision": 5},
                      # The recorder keeps this old alert in its packet.
-                     "alerts": [{"identity": "same", "revision": 4}]}
+                     "alerts": [{"identity": "same", "revision": 4}], "evidence_ids": ["e1"],
+                     "freshness": {"state": "fresh"}, "degraded": False, "run_id": "run-uuid"}
         self.current[0] = recovered
         self.assertFalse(self.controller.poll(recovered))
         self.assertEqual(self.controller.state["non_progress"], {})
         self.assertEqual(self.stops, [])
+
+    def test_request_contains_trusted_phase_confirmation_and_bounded_references(self):
+        backend = FakeObserverBackend([decision(), decision()])
+        self.controller = self.make(backend)
+        source = dict(self.current[0], controller_context={"phase": "investigation",
+                                                            "distinct_observation_count": 999},
+                      evidence_ids=["e1", "e2", "e3"])
+        self.assertTrue(self.controller.poll(source))
+        self.controller.wait(2)
+        first = json.loads(backend.payloads[0]["messages"][-1]["content"])
+        context = first["watchdog_packet"]["controller_context"]
+        self.assertEqual(context["phase"], "initial")
+        self.assertEqual(context["distinct_observation_count"], 1)
+        self.assertEqual(context["available_evidence_ids"], ["e1", "e2", "e3"])
+        self.assertIn("confirmation", context["prerequisites_missing"])
+        self.assertIn("inspection", context["prerequisites_missing"])
+        self.assertNotEqual(context["distinct_observation_count"], 999)
+        self.clock_value[0] = 300
+        second = dict(source, observation_sequence=2)
+        self.current[0] = second
+        self.assertTrue(self.controller.poll(second))
+        self.controller.wait(2)
+        payload = json.loads(backend.payloads[1]["messages"][-1]["content"])
+        self.assertEqual(payload["watchdog_packet"]["controller_context"]["distinct_observation_count"], 2)
+
+    def test_duplicate_sequence_cannot_confirm_or_stop(self):
+        backend = FakeObserverBackend([
+            decision("inspect", "check", ["e1"]),
+            decision("stop", "repeated_no_progress", ["e1"]),
+            decision("stop", "repeated_no_progress", ["e1"]),
+        ])
+        self.controller = self.make(backend)
+        packet = self.current[0]
+        self.assertTrue(self.controller.poll(packet))
+        self.controller.wait(2)
+        self.clock_value[0] = 300
+        self.assertTrue(self.controller.poll(packet))
+        self.controller.wait(2)
+        self.assertEqual(self.stops, [])
+        journal = (Path(self.temp.name) / "watchdog.journal.ndjson").read_text()
+        self.assertIn('"failed_prerequisite":"confirmation"', journal)
+        self.assertIn('"failed_prerequisite":"inspection"', journal)
 
 
 if __name__ == "__main__":

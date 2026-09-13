@@ -23,6 +23,11 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
     failures = 0
     reasons: dict[str, int] = {}
     evidence_gaps: dict[str, int] = {}
+    stop_evaluations = 0
+    eligible_stops = 0
+    stop_requests = 0
+    rejected_stops = 0
+    stop_rejection_reasons: dict[str, int] = {}
     last_outcome: str | None = None
     try:
         with journal_path.open("rb") as stream:
@@ -56,6 +61,17 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
         if kind == "dispatch":
             last_outcome = "pending"
             continue
+        if kind == "stop_evaluation":
+            stop_evaluations += 1
+            if event.get("eligible") is True:
+                eligible_stops += 1
+            else:
+                rejected_stops += 1
+                reason = event.get("failed_prerequisite") or "unknown"
+                stop_rejection_reasons[str(reason)] = stop_rejection_reasons.get(str(reason), 0) + 1
+            if event.get("stop_requested") is True:
+                stop_requests += 1
+            continue
         if kind in VERDICT_EVENTS:
             verdicts += 1
             if decision == "inspect":
@@ -87,4 +103,9 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
         "journal_truncated": truncated,
         "journal_intact": not evidence_gaps,
         "coverage_complete": not evidence_gaps and failures == 0,
+        "stop_evaluations": stop_evaluations,
+        "eligible_stops": eligible_stops,
+        "rejected_stops": rejected_stops,
+        "stop_requests": stop_requests,
+        "stop_rejection_reasons": stop_rejection_reasons,
     }

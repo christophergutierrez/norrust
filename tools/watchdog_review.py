@@ -289,6 +289,16 @@ def review(log_path: str | Path, *, run_id: str | None = None,
     else:
         evaluation = {"status": "unknown", "network_calls": None,
                       "observed_calls": observer_calls}
+    # Stop evaluations are controller decisions, including rejected proposals
+    # and observe-mode eligible recommendations.  Keep them separate from
+    # provider failures so review distinguishes model output from enforcement.
+    evaluation.update({
+        "stop_evaluations": journal_outcomes.get("stop_evaluations", 0),
+        "eligible_stops": journal_outcomes.get("eligible_stops", 0),
+        "rejected_stops": journal_outcomes.get("rejected_stops", 0),
+        "stop_requests": journal_outcomes.get("stop_requests", 0),
+        "stop_rejection_reasons": journal_outcomes.get("stop_rejection_reasons", {}),
+    })
     if not isinstance(status, dict):
         coverage_events.append("recorder_status_invalid")
         status = {}
@@ -312,7 +322,15 @@ def review(log_path: str | Path, *, run_id: str | None = None,
         "incidents": incidents,
         "stop_effect": {"requested": verdict.get("decision") == "stop" if verdict else False,
                         "effective": bool(terminal and terminal.get("terminal_class") == "observer_interrupted"),
-                        "reason": verdict.get("reason_code") if verdict else None},
+                        "reason": verdict.get("reason_code") if verdict else None,
+                        "eligible": journal_outcomes.get("eligible_stops", 0) > 0,
+                        "stop_requested": journal_outcomes.get("stop_requests", 0) > 0,
+                        "rejected": journal_outcomes.get("rejected_stops", 0)},
+        "stop_review": {"evaluations": journal_outcomes.get("stop_evaluations", 0),
+                         "eligible": journal_outcomes.get("eligible_stops", 0),
+                         "rejected": journal_outcomes.get("rejected_stops", 0),
+                         "stop_requests": journal_outcomes.get("stop_requests", 0),
+                         "rejection_reasons": journal_outcomes.get("stop_rejection_reasons", {})},
         "usage": usage,
         "model_evaluation": evaluation,
         "coverage": {"degraded": status.get("degraded"), "events": coverage_events,

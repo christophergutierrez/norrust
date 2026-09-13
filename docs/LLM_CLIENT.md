@@ -361,9 +361,15 @@ sidecar.  Player calls retain `call_role: "player"`; historical rows without
 that field remain `unknown`.  SQLite usage reports expose player, observer,
 unknown, and combined coverage separately, and the player's online token
 budget and prompt-cache/bakeoff reports exclude explicit observer calls.
-Unknown usage has no fabricated cost.  A semantic stop in enforce mode requires
-an `inspect` investigation and repeated non-progress evidence across two fresh
-observations with no recovery; a long request, poor tactics, or a negative
+Unknown usage has no fabricated cost.  The observer receives a bounded
+controller-owned context on every request identifying the initial or
+investigation phase, incident identity, distinct unchanged observations,
+progress identity, available evidence references, and missing prerequisites.
+Repeated polls of one observation sequence do not add confirmation.  A
+semantic stop in enforce mode requires an `inspect` investigation and repeated
+non-progress evidence across two fresh observations with no recovery; the
+investigation may choose only continue or stop, and a stop must use the exact
+`repeated_no_progress` reason.  A long request, poor tactics, or a negative
 material balance alone cannot stop a healthy game.  The observer's `run_id` is
 separate from the catalog `game_id`; the supervisor proves the canonical conversation identity before attaching
 the observer, so its sidecar joins the same catalog game on import.
@@ -1372,8 +1378,10 @@ provider calls. Preflight and aggregate reports retain measured provider usage
 when available and leave cache, reasoning, and final billing unknown otherwise.
 
 Use a new output directory. The runner retains chronological status, request
-payloads, receipts and verdicts, distinguishes controller recommendations from
-supervisor-validated stops, and caps each case at three observer calls. The
+payloads, receipts and verdicts, distinguishes eligible and rejected stop
+proposals (including the failed prerequisite) from stop requests and the
+supervisor's eventual terminal outcome,
+and caps each case at three observer calls. The
 manifest records the separately launchable model evaluation's dated ceiling;
 the current frozen-profile run is recorded in its separate dated validation
 report. The profile is protocol-ready only after a separate bounded calibration
