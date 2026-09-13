@@ -27,9 +27,20 @@ Stack 3 tests cover compact model contracts, ordinary tactical provenance,
 act-and-finish, final-only contact/promotion/quiet handling, stale/missing query
 revision rejection, bounded inspections/repair and explicit finish/resign.
 
-Resume at Stack 4 / R4. Prepared worker commits start at `f5e55db`; final
-executable matrix/reporting corrections await integration and the full gate.
-Read `tmp/strategy-exec/STACK4_REVIEW_NOTES.md`. No paid pilot has started.
+Stack 4 implementation is complete on source `d177820`. Full
+`python3 -m tools.fast_check` passed: 1,005 Python tests, selected Rust suites,
+and Lua bridge/replay/recorded checks. Evidence:
+`tmp/strategy-exec/stack-4-full-gate.log`. The separate real-driver offline
+matrix passed all four cases, including real village ownership, multi-turn
+movement, policy-dependent spending/deployment, deterministic replay, typed
+blocked/contact interruptions, and equal per-game SQLite rows/hashes after
+reimport (`tmp/strategy-exec/stack-4-matrix-report.json`). Comparison limits are
+explicitly matched at eight model responses, 64 inspections, 256 queries and
+64 partial batches per controlled turn. Post-run reporting uses
+`python3 -m tools.strategy_comparison pilot-report --run-dir RUN --out REPORT`.
+
+Resume at the bounded live pilot in R4, then R5 final experiment record.
+No paid pilot has started as of this acceptance commit.
 The recovery tables below describe the original handoff, not current completion.
 
 ## 0. Verified recovery state — read before assigning work
