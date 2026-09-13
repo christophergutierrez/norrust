@@ -93,6 +93,33 @@ tests; do not rerun the whole gate for ignored evidence-only report updates.
 
 ## Stack 3 — One Luna-operated GLM Flash game, sparse monitoring
 
+### Evidence-driven correction before launch
+
+The first full evaluation at `9b73be7` used 35 calls ($0.01255232) and was
+partial: models inspected without confirmation, recursively proposed inspection
+in the follow-up, and exhausted three-call windows. Zero reported missed loops
+does not establish success when loop windows are unjudged. Preserve this run.
+
+Luna must now restrict the JSON response schema by controller phase: initial
+checks without a confirmed incident/usable references permit only continue;
+confirmed initial checks permit continue/inspect only when a follow-up call
+remains; investigation permits continue/stop, never inspect. Apply strict local
+validation too and retain phase-invalid receipts/usage as failures. Preflight
+without controller confirmation is a continue-only check. State the decision
+procedure explicitly; the model cannot create fresh observations by inspection.
+Do not auto-convert a model verdict, raise call caps, or weaken stop guards.
+
+Add meaningful fake HTTP/controller tests for each phase, remaining-call edge,
+illegal phase replies, and the three-call loop path. Test and commit the
+correction through the full gate. Then run only the unchanged
+`failure_repeated_invalid` fixture through the maintained bounded evaluation
+entry point, using a one-case manifest in a new evidence directory: at most one
+preflight plus three case calls. This explicitly amends the evaluation ceiling
+to 39 total physical calls across both runs; keep the original $0.05 aggregate
+evaluation spend ceiling. No second full 12-case paid evaluation. Report this
+as a targeted protocol/contract check, not a replacement semantic quality pass.
+Then proceed with the requested game in observe mode and disclose all results.
+
 Use a fresh Luna High subagent after the code is tested/committed. Read
 docs/LLM_CLIENT.md first, including authoritative usage accounting. This agent
 operates the harness; Fireworks GLM is the player. No file-backend player or
