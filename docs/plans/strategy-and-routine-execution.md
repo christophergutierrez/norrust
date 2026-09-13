@@ -1,13 +1,54 @@
 # Strategy decisions with automatic routine execution
 
-Status: implementation plan; no implementation or games are requested by the
-act of writing this document. When the user asks to execute this plan, complete
-the stacks and the bounded pilot below. Do not start a wider model tournament.
+Status: recovery plan for execution by **Luna High subagents**. Updating this
+plan does not launch workers or games. When asked to execute it, resume from
+section 0 and the work packets in section 8; do not restart Stack 1. Finish
+Stacks 2–4 and the existing bounded pilot. No wider model tournament is in scope.
 
-Baseline inspected: `956b027` (game implementation source `7754017`). Recheck
-HEAD and local changes before implementation; preserve unrelated work. This
-plan supersedes the single-operation experiment as the proposed next direction.
-It does not change the existing default until evidence supports that decision.
+Original baseline: `956b027`; verified implementation resume point: `d71d733`.
+Recheck HEAD and local changes before implementation and preserve unrelated
+work. This plan keeps the existing default until evidence supports a change.
+
+## 0. Verified recovery state — read before assigning work
+
+| Component | Verified state | Required action |
+| --- | --- | --- |
+| Stack 1 | Committed in `b1f7f62` and `d71d733` | Preserve and retain regressions; do not rebuild from old workers |
+| Full Stack 1 gate | Saved gate: 937 Python tests passed, plus Rust/Lua | Historical evidence, not acceptance of Stack 2 |
+| Independent recovery check | All nine main-tree real-driver strategy integration tests passed | Keep the fixed-policy zero-call test |
+| Stack 2 Python | Three modified files in the worktree below; 45 unit tests pass | Preserve/reuse selectively; replay protection is still missing |
+| Stack 2 Rust | No new implementation found; old Rust worker matches main | Implement village/rally work from the integrated baseline |
+| Stacks 3 and 4 | Not completed; only read-only Fireworks availability checked | Implement, gate, then run bounded pilot |
+
+Recovery evidence: `tmp/strategy-exec/RECOVERY_AUDIT.md`.
+Prior chronological handoff: `tmp/strategy-exec/HANDOFF.md`. Its old "pending
+failures: none" and "not yet merged" paragraphs are historical; this section
+and the recovery audit take precedence for assignment/status decisions.
+
+**Unmerged work to preserve:**
+`/mnt/storage/git_home/norrust/.claude/worktrees/agent-a50cc619533679a47`
+contains changes to `tools/llm_client.py`, `tools/routine_policy.py`, and
+`tools/test_routine_policy.py`, based on `d71d733`. At audit it had approximately
+507 additions / 77 deletions. Save its diff and status before reusing it; do not
+reset, clean, cherry-pick an older baseline, or overwrite the main tree with it.
+
+**Old worktrees are not new deliverables:**
+`agent-acd9fc6f3c435b9e4`'s three Rust files match main. The old loop worker
+`agent-a067881f9f54b9356` matches main for its three source/test files, but its
+`test_strategy_integration.py` lacks the integrator's additional fixed-policy
+test. Keep the main version. Other historical worktrees are outside this task.
+
+**Blocking Stack 2 issue:** repeating the actual driver update
+`{"kind":"recruited","def_id":"Skeleton"}` currently increments twice.
+The unmerged Python worker records `state_revision=7` but repeating that same
+revision still increments twice. Its duplicate-step test uses an absolute-count
+fixture instead of the real wire format. A green unit suite does not close this
+requirement. Section 8 specifies the necessary real-format regressions.
+
+The frozen Stack 1 interface is in `tmp/strategy-exec/INTERFACE.md`. Before
+workers code, update it to the Stack 2 contract described in section 8. Do not
+let Python and Rust independently invent new progress shapes. All source changes
+still follow the end-to-end stack gates in section 7.
 
 ## 1. Objective and boundaries
 
@@ -352,6 +393,9 @@ Use default Cargo artifact paths unless the actual tests support an override.
 
 ### Stack 1 — Executable recruitment policy, persistence, and automatic finish
 
+**Already implemented and gated at d71d733.** The requirements below are retained
+as regression requirements. Resume with Stack 2; do not rerun Stack 1 development.
+
 Implement strategy mode and the minimal set_policy/finish response paths, ordered
 finite recruitment, reserve enforcement, no-sweep finish, routine query/submission
 provenance, checkpoint progress, and catalog import. For this stack advertise
@@ -376,6 +420,9 @@ Gate, real client + built driver + temporary SQLite:
 - Existing batch/focused tests still pass. Full gate, docs, commit.
 
 ### Stack 2 — Persistent village and rally execution
+
+**Current unfinished stack.** First complete section 8 packets R0 and R1, then
+R2. The unit-test-only partial Python work does not satisfy this stack.
 
 Enable the remaining policy fields. Implement assignment, engine-cost routes,
 arrival/ownership distinction, deterministic ordering and all routine blocking
@@ -443,7 +490,8 @@ satisfy a model-authored-action predicate.
 Treatments:
 
 1. `strategy_fixed`: same routine executor, checked-in policy input, zero model
-   calls. Add `--strategy-policy PATH`, valid only with strategy mode, to install
+   calls. Preserve the existing, real-driver-tested `--strategy-policy PATH`,
+   valid only with strategy mode, to install
    that exact policy without starting a backend. Record the controller identity
    as fixed-policy code, not a model. At an exception requiring judgment, stop
    with a recorded `fixed_policy_exception` interruption and no winner. No Greedy
@@ -514,26 +562,205 @@ only; no unnecessary full gate rerun without code changes). Leave default mode
 unchanged. Three opening trials cannot establish win rate or combat strength.
 A broader matched full-game experiment is future work after reviewing this pilot.
 
-## 8. Ownership and handoff for Opus
+## 8. Luna execution packets and ownership
 
-Opus is the integrator. Parallel work is optional, not a reason to add layers.
-If delegating, give workers disjoint files in isolated worktrees:
+Use `gpt-5.6-luna` with reasoning effort `high` for implementation, tests,
+fixture/report work, and the pilot operator. The parent integrator coordinates,
+reviews cross-layer evidence, resolves shared edits, runs acceptance gates and
+commits. Do not silently substitute another worker model. No nested subagents.
+Use at most three workers concurrently, each with a concrete bounded task in an
+isolated worktree. Workers must not mutate the shared main checkout.
 
-- Rust worker: routine planner, driver query/submit integration, Rust tests.
-- Python worker: strategy loop/contract/persistence, Python integration tests.
-- Evaluation/docs worker: fixtures, comparison/report consumers and docs after
-  the response/event contract is frozen.
+Every assignment must give the worker: this updated plan; the recovery audit;
+its exact base commit and owned files; the frozen interface; the named gate
+predicates; and an explicit prohibition on paid calls until the pilot packet.
+Read the updated plan from main before creating worktrees; do not inherit a
+stale copy from an older worker. Commit the reviewed plan/recovery documentation
+checkpoint before branching when execution starts, keeping unrelated work out.
 
-Agree on the small query result and internal submission envelope before coding.
-The integrator owns shared-file integration, cross-layer resume/provenance tests,
-full gates and final commits. Merge each end-to-end stack before advancing; do
-not merge all Rust work first and call an unconnected library a completed stack.
-Do not rewrite unrelated llm_client branches while introducing the strategy path.
+### R0 — Preserve work and freeze the contract (integrator; no game)
 
-Keep `tmp/strategy-exec/HANDOFF.md` current with last passed stack/commit, actual
-commands/results, source changes, pending failures, and any live process/run ID.
-If credits run out, leave an exact resumable handoff. Never write "complete"
-because code files exist. Completion means the documented gates ran, changes
-were committed, the pilot was completed or explicitly blocked/unrun, and a
-report names remaining limitations. Distinguish implementation completion,
-functional acceptance, and gameplay improvement in the final answer.
+1. Record main HEAD/status and statuses of the named recovery worktrees. Save a
+   binary-capable patch, untracked-file inventory and file hashes from the
+   unmerged Python worktree under `tmp/strategy-exec/recovery/`. Copy any
+   untracked work separately. Never delete or modify the original recovery copy.
+2. Create new task worktrees from current integrated main, which must contain
+   `d71d733`. Apply only the preserved Python changes in the Python worktree.
+   Inspect the patch before applying; resolve against current source instead of
+   replacing whole files. Keep the added fixed-policy integration regression.
+3. Freeze these corrections in INTERFACE.md before parallel coding:
+   - Use existing client batch/checkpoint identity plus policy installation ID
+     for a committed routine step. The model invents neither identity.
+   - Pass the proven batch ID, installation ID and committed revision to progress
+     adoption. Persist an applied-step ledger with the committed update digest
+     and revision. Keep that ledger out of model briefs and routine query payloads;
+     it belongs to checkpoint/recovery metadata, not the engine's planning facts.
+   - Exact duplicate identity/payload/revision is a no-op. Reusing an identity
+     with different content/revision is an explicit conflict, with no partial
+     progress mutation. A distinct committed identity with identical recruit
+     content is a distinct recruit and must count. Merely saving last revision
+     or clearing a caller's pending variable is insufficient.
+   - Recruitment is an ordered queue. Identify each immutable policy entry by
+     zero-based `queue_index`, and track completion per entry, not merely by unit
+     definition. The model need not output this index. Include a repeated-def_id
+     queue with different scout/army roles in the shared fixture. Do not prohibit
+     repeated types merely to avoid correct accounting.
+   - A recruit query's proposed update names its queue index. The client adopts
+     the actual recruited unit ID from committed engine evidence, including the
+     scout role from that entry. Never predict a new unit ID in a model prompt.
+   - Standardize assignment fields on `unit_id`, `col`, `row`, consistent with
+     the frozen scout_assigned example. Eliminate competing `scout_id`/nested
+     village shapes in maintained code/tests. Specify how one committed step
+     carries assignment plus movement progress when both are needed.
+   - Specify ownership completion that occurs on the finishing boundary, and
+     how its progress is committed even when the query returned `result:finish`.
+     The post-finish engine state/event, not a proposed arrival, proves capture.
+4. Maintain readability of historical records. Do not retain fake absolute-count
+   test messages as an alternate live interface. If an old resume lacks identity
+   or progress, reconstruct only from unambiguous existing batch/checkpoint
+   evidence; otherwise interrupt as unknown. Never invent identifiers or reset
+   completed recruitment. An adapter solely to keep old development names alive
+   is prohibited by AGENTS.md.
+
+R0 done means preserved work is recoverable, one actual producer/consumer
+contract is written, and both coding workers receive the same version. No full
+test gate is claimed for this preparation packet.
+
+### R1 — Complete Stack 2 in parallel (two code workers, one fixture worker)
+
+**Worker P — Python progress and runtime integration**
+
+Own: `tools/routine_policy.py`, `tools/llm_client.py`,
+`tools/test_routine_policy.py`, and existing `tools/test_strategy_integration.py`.
+Reuse the uncommitted Python patch selectively. Finish structural duplicate
+protection, queue-index accounting, actual-ID bindings, assignments, replacement,
+serialization, and checkpoint/ack adoption using the frozen interface. Remove
+STACK1_* and validate_stack1_policy compatibility aliases; update all maintained
+callers/tests. Do not remove a regression and claim relocation without naming
+and running its replacement. Do not enable unsupported Rust fields in main
+before Worker R's matching implementation is integrated.
+
+Required direct progress tests (all use actual committed-update shapes):
+
+- The same real recruit step applied twice counts exactly one recruit.
+- Serialize/reload, then repeat that step: count and scout IDs stay unchanged.
+- Two distinct proven batch IDs with otherwise identical recruit content count
+  two recruits. No content-hash-only deduplication that suppresses legal work.
+- Same step ID with conflicting content/revision is rejected before mutation.
+- Foreign installation identity and unproven proposed update cannot be adopted.
+- Earlier duplicate replay after a later commit does not change totals or move
+  last-proven revision backwards.
+- Two queue entries of the same definition, including different roles, retain
+  distinct requested/remaining counts and correct actual scout IDs.
+- Policy replacement creates fresh installation state while old replay cannot
+  recreate its orders or add counts to the new policy.
+
+**Worker R — Rust routine village/rally selection**
+
+Own: `norrust_core/src/routine.rs`, `norrust_core/src/bin/greedy_driver.rs`,
+minimal needed module registration, and Rust routine/protocol tests. Start from
+integrated main, not the old Rust worktree. Implement Stack 2 selection and threat
+rules exactly as section 5, plus queue-index and progress results agreed in R0.
+Use real pathfinding/engine rules. Queries must not mutate live state or consume
+RNG/IDs. Stale submissions and unsafe destinations must not execute. Preserve
+ordinary mode and no-sweep finish behavior. Do not expand into combat automation.
+
+**Worker T — Stack 2 integration fixtures**
+
+Own a new self-contained fixture directory `tools/fixtures/strategy_routine/`
+and `tools/test_strategy_routine_stack2.py`. It may design fixtures and predicates
+while P/R code, but runs them against the integrated P+R candidate before
+acceptance. No copied implementation of the planner inside a fake test driver.
+Use scripted model responses only, built real driver, and temporary SQLite.
+
+Required integration cases supplement every Stack 2 gate bullet in section 7:
+
+- Wire scout assignment and actual new scout ID survive a committed move and
+  checkpoint reload; two implementations agreeing only with separate stubs fails.
+- Village ownership and completed-objective progress change only at the finish;
+  a crash near that finish neither loses capture nor causes reexecution.
+- Duplicate real committed recruitment evidence, lost acknowledgement and rollback
+  reproduce uninterrupted counts, gold, assignments and engine events.
+- A checkpoint that proves advancement but has unresolvable policy progress
+  interrupts explicitly. It never silently resumes from empty progress.
+- The fixed-policy flag still uses zero backend calls/usage rows. One scripted
+  policy can operate across three quiet turns with no follow-up model response.
+- Routine attribution, per-game import counts and replay endpoints are correct.
+
+Worker reports must list changed files, exact tests run, skips, source commit,
+remaining problems and the specific wire formats exercised. A unit suite with
+45 green tests is not evidence that the real duplicate path is fixed.
+
+### R2 — Stack 2 integration gate and commit (integrator)
+
+Integrate P/R changes into an isolated candidate sequentially, then integrate
+T's tests. Preserve current main's Stack 1 coverage. Run focused policy, real
+strategy integration, new Stack 2 integration and relevant Rust tests. Verify
+that driver-dependent cases ran rather than skipped. Review actual query/result
+and committed-progress examples from the tests for field agreement.
+
+For the critical duplicate test, demonstrate that reverting the deduplication
+logic alone makes the real-wire regression fail. This is evidence the new test
+covers the defect, not a demand to mutate production archives. Restore the fix.
+
+Then freeze tracked source, run the full `python3 -m tools.fast_check`, inspect
+exit and failures, update maintained docs and commit the complete Stack 2 slice
+with its final gate. If docs need editing after the gate, keep them documentation
+only and run diff-check. Do not call Stack 2 complete from independent worktree
+test counts. Stop adding features until a failed integration gate is resolved.
+
+### R3 — Complete Stack 3 from the new integrated commit
+
+Assign Luna P the compact response/exception client work; Luna T the real-driver
+contract tests and prompt snapshots in a separate owned test file. Only assign
+Rust work if a concrete missing engine fact blocks this existing interface.
+Follow Stack 3's entire gate, especially act-and-finish, final_only, stale facts,
+contact/promotions, bounded repair, and no annotation obligation. Briefs must
+show committed remaining orders, not reset original requested counts.
+
+Reuse the real response parser components already landed in Stack 1. Inspect
+what exists before coding; a parser present in a module is not proof its runtime
+path works. Integrator merges, runs focused/full gates, updates docs, commits.
+
+### R4 — Finish Stack 4 reporting, then the bounded pilot
+
+Assign one Luna worker the maintained comparison/report integration and offline
+matrix; it must preserve the already-working fixed-policy path. Follow Stack 4
+as written. Review and commit the network-free matrix before any paid launch.
+
+Then give one Luna operator the frozen source, exact pilot manifest, limits and
+artifact paths. No other worker may start a game. Fireworks is the only provider;
+OpenAI account/key/credit status is irrelevant. Do not add a separate paid
+credit probe: preserve any actual auth/credit failure as that cell's result.
+
+The pilot remains exactly three opening treatments: fixed strategy (no model),
+strategy GLM, and focused GLM without the one-operation limit. At most two paid
+games, six engine side-turns each, 200k player-token cap per paid cell, the
+existing output-exhaustion rules, automatic 45-minute deadlines, and $1 aggregate
+estimated ceiling including a conservatively costed in-flight overshoot. No
+paid observer or model substitution. Do not increase these limits on failure.
+
+The operator must announce and durably record launch/run/session identity before
+waiting. An independent automatic deadline and five-minute compact heartbeat
+must survive an idle or interrupted coding agent. No repeated full-log/model
+reasoning inspection during play. Import failures/interruptions as well as
+finished runs; review recorded evidence once after completion. Report all three
+cells, including unknown/unrun/failed cells and missing costs. Credit exhaustion
+may block paid trials but must not prevent finishing offline implementation,
+reporting, commits and the prepared launch packet.
+
+### R5 — Final acceptance and handoff
+
+The integrator verifies the final source/gate, real replay/catalog records,
+per-role usage and cache calculation, and the worker's claim of task completion.
+Update `tmp/strategy-exec/HANDOFF.md` by putting current status first; preserve
+historical notes beneath it. Record each stack commit and exact gate log,
+remaining defect, pilot cell ID/result/cost and unknown coverage. Commit the
+final experiment record; leave the default decision mode unchanged.
+
+The final response must separately state implementation completion, functional
+gates, and measured gameplay result. Do not equate a passed test suite with
+beating Greedy. If paid trials were blocked, say so plainly and link a concrete
+launch manifest; do not say the pilot ran. If credits run out during coding,
+leave the current worker/branch/patch, command/session IDs, and exact next failing
+predicate so another Luna can resume without rebuilding completed stacks.
