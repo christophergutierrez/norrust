@@ -109,6 +109,22 @@ rows have zero model calls and no fabricated token usage. A terminal marker by
 itself does not make evidence complete: missing usage, boundary, replay, or
 partial-failure coverage remains explicit as `unknown_*`.
 
+After a recorded pilot, regenerate the strategy report from saved cell status
+and the run-local catalog:
+
+```bash
+python3 -m tools.strategy_comparison pilot-report \
+  --run-dir /absolute/existing/strategy-pilot \
+  --out /absolute/existing/strategy-pilot/strategy-report.json
+```
+
+Without `--run-dir`, this command only prepares an unrun report. Missing cells
+stay unrun in either report. Raw-archive usage coverage remains unknown for
+model players; the report's catalog accounting provides measured physical-call
+usage and per-field coverage. A proven fixed-policy run with no model requests
+has no accountable inference. The offline-run command exits nonzero when its
+acceptance predicates fail or lack evidence.
+
 Cost needs explicit dated rates in each cell, for example:
 
 ```json
