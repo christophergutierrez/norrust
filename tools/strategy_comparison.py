@@ -1,7 +1,8 @@
 """Prepared Stack 4 strategy comparisons and the provider-free matrix.
 
-This is an experiment/report layer over :mod:`tools.model_bakeoff`.  It does
-not run a game, contact a provider, or invent a second history or cost store.
+This is an experiment/report layer over :mod:`tools.model_bakeoff`.  Its
+offline-run command executes fixed policies through the real driver without a
+provider; it does not invent a second history or cost store.
 The three named strategy treatments are kept separate from bakeoff arms A/B/C:
 ``strategy_fixed`` (checked-in policy and no backend), ``strategy_glm`` (the
 same routine executor with GLM decisions), and ``focused_glm`` (existing
@@ -16,7 +17,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable
 
-from . import bakeoff_metrics, match_report, model_bakeoff
+from . import bakeoff_metrics, game_history, match_report, model_bakeoff
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_DIR = REPO_ROOT / "tools" / "fixtures" / "strategy_comparison"
@@ -33,6 +34,9 @@ PILOT_GOLD = 300
 PILOT_PLAYER_SIDE = 0
 PILOT_MAX_PLAYER_TOKENS = 200_000
 PILOT_AGGREGATE_CEILING_USD = 1.0
+PILOT_MAX_MODEL_CALLS_PER_TURN = 8
+PILOT_MAX_TOOL_CALLS_PER_TURN = 64
+PILOT_MAX_QUERIES_PER_TURN = 256
 OFFLINE_DRIVER = model_bakeoff.DEFAULT_DRIVER
 PILOT_PRICING = {
     "date": "2026-09-13",
@@ -90,6 +94,9 @@ def build_pilot_manifest(*, driver: str | None = None,
                 "model_timeout": 900,
                 "turn_timeout": 2100,
                 "query_budget_seconds": 300,
+                "max_model_calls_per_turn": PILOT_MAX_MODEL_CALLS_PER_TURN,
+                "max_tool_calls_per_turn": PILOT_MAX_TOOL_CALLS_PER_TURN,
+                "max_queries_per_turn": PILOT_MAX_QUERIES_PER_TURN,
                 "max_partial_batches_per_turn": 64,
             },
             "pilot_status": "prepared_not_run",
@@ -118,6 +125,12 @@ def build_pilot_manifest(*, driver: str | None = None,
             "model_call_timeout_seconds": 900,
             "controlled_turn_timeout_seconds": 2100,
             "query_budget_seconds": 300,
+            "matched_client_limits": {
+                "max_model_calls_per_turn": PILOT_MAX_MODEL_CALLS_PER_TURN,
+                "max_tool_calls_per_turn": PILOT_MAX_TOOL_CALLS_PER_TURN,
+                "max_queries_per_turn": PILOT_MAX_QUERIES_PER_TURN,
+                "max_partial_batches_per_turn": 64,
+            },
             "wall_deadline_seconds": 2700,
             "supervisor_max_restarts": 0,
             "supervisor_mode": "recording_only",
@@ -169,6 +182,11 @@ def validate_pilot_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
             mismatches.append({"field": f"pilot_limits.{key}",
                                "expected": expected["pilot_limits"].get(key),
                                "actual": manifest.get("pilot_limits", {}).get(key)})
+    if (manifest.get("pilot_limits", {}).get("matched_client_limits") !=
+            expected["pilot_limits"].get("matched_client_limits")):
+        mismatches.append({"field": "pilot_limits.matched_client_limits",
+                           "expected": expected["pilot_limits"].get("matched_client_limits"),
+                           "actual": manifest.get("pilot_limits", {}).get("matched_client_limits")})
     for actual, wanted in zip(cells, expected["cells"]):
         for key in ("id", "strategy_treatment", "scenario", "seed", "faction0", "faction1",
                     "llm_side", "gold", "max_turns", "model", "decision_mode",
@@ -239,14 +257,29 @@ def archive_attribution(records: list[dict[str, Any]], *, synthetic: bool = Fals
         model_requests = len(response_ids) + sum(
             1 for item in response_rows
             if not (isinstance(item.get("request_id"), str) and item.get("request_id")))
-    metadata = next((item for item in records if item.get("type") == "metadata"), {})
-    usage_measured = metadata.get("usage_measured")
-    usage_coverage = ("not_applicable" if model_requests == 0 else
-                      "known" if usage_measured is True else
-                      "unknown" if model_requests or usage_measured is not False else "not_applicable")
-    boundary_types = {"side_turn", "turn_boundary", "checkpoint_ref", "batch_committed"}
-    boundary_coverage = ("known" if any(item.get("type") in boundary_types for item in records)
-                         else "unknown")
+    metadata_rows = [item for item in records if item.get("type") == "metadata"]
+    metadata = metadata_rows[-1] if metadata_rows else {}
+    usage_flags = [item.get("usage_measured") for item in metadata_rows]
+    usage_rows = request_rows or response_rows
+    # The initial metadata row is written before dispatch and commonly says
+    # true. Only final metadata plus every logical request's measured usage
+    # can establish known accounting coverage.
+    usage_coverage = "not_applicable" if model_requests == 0 else (
+        "known" if metadata.get("usage_measured") is True
+        and not any(flag is False for flag in usage_flags)
+        and len(usage_rows) >= model_requests
+        and all(item.get("usage") is not None for item in usage_rows)
+        else "unknown")
+    side_turn_started = sum(item.get("type") == "side_turn_started" for item in records)
+    turn_boundaries = sum(item.get("type") == "turn_boundary" for item in records)
+    checkpoint_refs = sum(item.get("type") == "checkpoint_ref" for item in records)
+    batch_commits = sum(item.get("type") == "batch_committed" for item in records)
+    submitted = sum(item.get("type") == "request_submitted" for item in records)
+    boundary_complete = (bool(terminal) and side_turn_started > 0
+                         and turn_boundaries == side_turn_started
+                         and batch_commits == submitted
+                         and checkpoint_refs >= batch_commits)
+    boundary_coverage = "known" if boundary_complete else "unknown"
     partial_failure = any(item.get("type") in {"supervisor_error", "infrastructure_error"}
                           for item in records)
     terminal_present = bool(terminal)
@@ -263,6 +296,11 @@ def archive_attribution(records: list[dict[str, Any]], *, synthetic: bool = Fals
         "terminal_present": terminal_present,
         "usage_coverage": usage_coverage,
         "boundary_coverage": boundary_coverage,
+        "boundary_evidence": {"side_turn_started": side_turn_started,
+                               "turn_boundary": turn_boundaries,
+                               "checkpoint_ref": checkpoint_refs,
+                               "request_submitted": submitted,
+                               "batch_committed": batch_commits},
         "partial_failure": partial_failure,
         "routine_event_count": counts["events_by_source"].get("routine", 0),
         "model_event_count": counts["events_by_source"].get("llm", 0),
@@ -270,6 +308,60 @@ def archive_attribution(records: list[dict[str, Any]], *, synthetic: bool = Fals
         "evidence_status": evidence_status,
     })
     return counts
+
+
+def _verdict(actual: Any, expected: Any) -> bool | None:
+    """Compare a factual value while preserving unavailable evidence."""
+    return None if actual is None else actual == expected
+
+
+def _acceptance_status(verdicts: dict[str, Any]) -> str:
+    values = [value for value in verdicts.values() if isinstance(value, bool)]
+    if any(value is False for value in values):
+        return "failed"
+    if any(value is None for value in verdicts.values()) or not values:
+        return "unknown"
+    return "passed"
+
+
+def _matrix_run_predicates(case: dict[str, Any], records: list[dict[str, Any]],
+                           attribution: dict[str, Any] | None,
+                           exception: str | None) -> dict[str, Any]:
+    expected = case.get("expected", {}) if isinstance(case.get("expected"), dict) else {}
+    if not records or attribution is None:
+        return {key: None for key in ("expected_exception", "model_calls",
+                                      "contact", "actual_events", "fallback",
+                                      "usage_coverage", "boundary_coverage")}
+    predicates: dict[str, Any] = {}
+    predicates["usage_coverage"] = attribution.get("usage_coverage") not in (None, "unknown")
+    predicates["boundary_coverage"] = _verdict(attribution.get("boundary_coverage"), "known")
+    if "exception" in expected:
+        terminal_present = attribution.get("terminal_present") is True
+        predicates["expected_exception"] = _verdict(
+            exception if exception is not None else ("none" if terminal_present else None),
+            expected["exception"])
+    if "model_calls" in expected:
+        predicates["model_calls"] = _verdict(attribution.get("model_request_count"), expected["model_calls"])
+    if "contact" in expected:
+        terminal_present = attribution.get("terminal_present") is True
+        predicates["contact"] = _verdict(
+            (exception == "contact") if exception is not None
+            else (False if terminal_present else None), expected["contact"])
+    if expected.get("actual_events_required"):
+        count = attribution.get("actual_event_count")
+        predicates["actual_events"] = None if not isinstance(count, int) else count > 0
+    if "model_tactical_fallback" in expected:
+        model_events = attribution.get("model_event_count")
+        predicates["fallback"] = (
+            None if not isinstance(model_events, int) else
+            (model_events > 0) == expected["model_tactical_fallback"])
+    if expected.get("boundary_coverage_required"):
+        predicates["boundary_coverage"] = _verdict(attribution.get("boundary_coverage"), "known")
+    else:
+        # Typed exception cases intentionally stop before an own-turn boundary;
+        # archive attribution still reports that coverage separately.
+        predicates.pop("boundary_coverage", None)
+    return predicates
 
 
 def build_offline_matrix_report(matrix: dict[str, Any] | None = None,
@@ -295,16 +387,28 @@ def build_offline_matrix_report(matrix: dict[str, Any] | None = None,
         if records is not None:
             row["status"] = "observed"
             row["attribution"] = archive_attribution(records, synthetic=True)
+            exception = next((r.get("reason") for r in records
+                              if r.get("type") == "routine_exception"), None)
+            row["predicate_verdicts"] = _matrix_run_predicates(
+                case, records, row["attribution"], exception)
+            row["acceptance_status"] = _acceptance_status(row["predicate_verdicts"])
         else:
             row["blocked_reason"] = case.get(
                 "blocked_reason", "not executed; run the offline-run command with the real driver")
         rows.append(row)
+    observed = sum(row["status"] == "observed" for row in rows)
+    acceptance = [row.get("acceptance_status") for row in rows
+                  if row["status"] == "observed"]
+    acceptance_status = ("failed" if "failed" in acceptance else
+                         "unknown" if len(acceptance) != len(rows) or "unknown" in acceptance
+                         else "passed")
     return {"schema_version": 1, "matrix_status": "unknown_unrun" if any(
         row["status"] != "observed" for row in rows) else "observed",
         "cases": rows,
         "denominator": {"scheduled": len(rows),
-                        "observed": sum(row["status"] == "observed" for row in rows),
+                        "observed": observed,
                         "unknown_unrun": sum(row["status"] != "observed" for row in rows)},
+        "acceptance_status": acceptance_status,
         "note": "Unknown/unrun cases remain explicit; synthetic attribution is labelled and does not establish gameplay quality."}
 
 
@@ -367,6 +471,35 @@ def _event_spend(records: list[dict[str, Any]]) -> int:
     return spend
 
 
+def _catalog_snapshot(catalog: Path, game_ids: list[str]) -> dict[str, Any]:
+    """Hash all imported per-game rows so re-import checks content, not IDs."""
+    if not game_ids:
+        return {}
+    import sqlite3
+    conn = sqlite3.connect(f"file:{catalog}?mode=ro", uri=True)
+    try:
+        snapshot: dict[str, Any] = {}
+        placeholders = ",".join("?" for _ in game_ids)
+        for table in game_history.TABLES:
+            columns = [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
+            if "game_id" not in columns:
+                continue
+            rows = conn.execute(
+                f"SELECT * FROM {table} WHERE game_id IN ({placeholders}) ORDER BY rowid",
+                game_ids).fetchall()
+            normalized = [
+                [value.hex() if isinstance(value, bytes) else value for value in row]
+                for row in rows
+            ]
+            encoded = json.dumps(normalized, sort_keys=True, separators=(",", ":"),
+                                 default=str).encode()
+            snapshot[table] = {"count": len(rows),
+                               "sha256": hashlib.sha256(encoded).hexdigest()}
+        return snapshot
+    finally:
+        conn.close()
+
+
 def run_offline_matrix(matrix: dict[str, Any] | None = None, *,
                        run_dir: Path, driver: str | None = None,
                        timeout: float | None = 90) -> dict[str, Any]:
@@ -410,7 +543,9 @@ def run_offline_matrix(matrix: dict[str, Any] | None = None, *,
             result = results[0]
             records = match_report.load_records(result.log_path) if result.log_path.is_file() else []
             imported = model_bakeoff.import_cells(catalog, results, "strategy-offline")
+            import_snapshot = _catalog_snapshot(catalog, imported)
             imported_again = model_bakeoff.import_cells(catalog, results, "strategy-offline")
+            import_snapshot_again = _catalog_snapshot(catalog, imported_again)
             attribution = archive_attribution(records, synthetic=False) if records else None
             exception = next((r.get("reason") for r in records
                               if r.get("type") == "routine_exception"), None)
@@ -421,6 +556,7 @@ def run_offline_matrix(matrix: dict[str, Any] | None = None, *,
                     exception = message.split("unsupported exception:", 1)[1].strip()
                 elif isinstance(message, str) and "cannot resolve exception:" in message:
                     exception = message.split("cannot resolve exception:", 1)[1].strip()
+            run_predicates = _matrix_run_predicates(case, records, attribution, exception)
             run_rows.append({"variant": variant, "policy": policy,
                              "status": "observed" if records else "unknown_unrun",
                              "exit_status": result.status, "exit_code": result.exit_code,
@@ -436,7 +572,11 @@ def run_offline_matrix(matrix: dict[str, Any] | None = None, *,
                              "spend": _event_spend(records),
                              "attribution": attribution,
                              "imported_game_ids": imported,
-                             "import_idempotent": sorted(imported) == sorted(imported_again)})
+                             "import_idempotent": import_snapshot == import_snapshot_again,
+                             "import_snapshot": {"before": import_snapshot,
+                                                 "after": import_snapshot_again},
+                             "predicate_verdicts": run_predicates,
+                             "acceptance_status": _acceptance_status(run_predicates)})
         policy_difference = None
         distinct_policy_rows = []
         seen_policies = set()
@@ -459,16 +599,40 @@ def run_offline_matrix(matrix: dict[str, Any] | None = None, *,
         if case.get("identical_policy_seed_replays") and len(run_rows) >= 2:
             replay = {"same_event_digest": run_rows[0]["event_digest"] == run_rows[1]["event_digest"],
                       "event_digest": run_rows[0]["event_digest"]}
+        case_predicates: dict[str, Any] = {
+            "runs": (None if not run_rows else
+                     (False if any(item.get("acceptance_status") == "failed" for item in run_rows)
+                      else None if any(item.get("acceptance_status") != "passed" for item in run_rows)
+                      else True)),
+        }
+        if case.get("expected", {}).get("deployment_diff_required"):
+            case_predicates["policy_difference"] = (
+                None if policy_difference is None else policy_difference.get("satisfied"))
+        if case.get("identical_policy_seed_replays"):
+            case_predicates["deterministic_replay"] = (
+                None if replay is None else replay.get("same_event_digest"))
+        case_predicates["import_idempotence"] = (
+            None if not run_rows else
+            (False if any(item.get("import_idempotent") is False for item in run_rows)
+             else None if any(item.get("import_idempotent") is None for item in run_rows)
+             else True))
         rows.append({"case_id": case["id"], "description": case.get("description"),
                      "expected": copy.deepcopy(case.get("expected", {})), "status":
                      "observed" if all(item["status"] == "observed" for item in run_rows) else "unknown_unrun",
                      "runs": run_rows, "policy_difference": policy_difference,
-                     "deterministic_replay": replay})
+                     "deterministic_replay": replay,
+                     "predicate_verdicts": case_predicates,
+                     "acceptance_status": _acceptance_status(case_predicates)})
     observed = sum(row["status"] == "observed" for row in rows)
+    acceptance = [row.get("acceptance_status") for row in rows]
+    acceptance_status = ("failed" if "failed" in acceptance else
+                         "unknown" if observed != len(rows) or "unknown" in acceptance
+                         else "passed")
     return {"schema_version": 1, "matrix_status": "observed" if observed == len(rows) else "partial_unknown",
             "cases": rows,
             "denominator": {"scheduled": len(rows), "observed": observed,
                             "unknown_unrun": len(rows) - observed},
+            "acceptance_status": acceptance_status,
             "catalog": str(catalog), "network": "disabled", "paid_calls": 0,
             "note": "Fixed policies use real engine transitions; usage is unknown/not applicable and no synthetic model tokens are claimed."}
 
@@ -530,7 +694,7 @@ def build_strategy_report(manifest: dict[str, Any] | None = None,
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Prepare or print reports; this CLI has no run/launch operation."""
+    """Prepare manifests, print reports, or run the provider-free matrix."""
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     pilot = sub.add_parser("pilot-manifest", help="write the prepared pilot manifest")
@@ -559,6 +723,8 @@ def main(argv: list[str] | None = None) -> int:
                                      run_dir=Path(args.run_dir), driver=args.driver,
                                      timeout=args.timeout)
     Path(args.out).write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n")
+    if args.command == "offline-run" and payload.get("acceptance_status") != "passed":
+        return 1
     return 0
 
 

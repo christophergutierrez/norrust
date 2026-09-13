@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 import os
+from unittest import mock
 from pathlib import Path
 
 from . import model_bakeoff
@@ -34,6 +35,21 @@ class StrategyManifestTests(unittest.TestCase):
         self.assertIn("--strategy-policy", argv)
         self.assertNotIn("--model-command", argv)
         self.assertNotIn("--orders-file", argv)
+
+    def test_pilot_client_limits_are_explicit_in_every_generated_argv(self):
+        resolved = model_bakeoff.resolve_manifest(strategy.load_prepared_pilot())
+        expected = {
+            "--max-model-calls-per-turn": "8",
+            "--max-tool-calls-per-turn": "64",
+            "--max-queries-per-turn": "256",
+            "--max-partial-batches-per-turn": "64",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for cell in resolved["cells"]:
+                argv, _ = model_bakeoff.build_llm_client_argv(
+                    cell, Path(directory) / cell["id"])
+                for flag, value in expected.items():
+                    self.assertEqual(argv[argv.index(flag) + 1], value)
 
     def test_named_strategy_treatments_do_not_enter_bakeoff_arms(self):
         resolved = model_bakeoff.resolve_manifest(strategy.load_prepared_pilot())
@@ -107,6 +123,21 @@ class OfflineMatrixTests(unittest.TestCase):
         self.assertEqual(report["cases"][0]["status"], "observed")
         self.assertTrue(report["cases"][0]["attribution"]["synthetic"])
 
+    def test_observed_case_with_failed_predicate_is_not_accepted(self):
+        matrix = {"cases": [{"id": "case", "expected": {"exception": "contact"}}]}
+        records = [{"type": "terminal", "reason": "max_turns"}]
+        report = strategy.build_offline_matrix_report(matrix, archives={"case": records})
+        self.assertEqual(report["cases"][0]["status"], "observed")
+        self.assertEqual(report["cases"][0]["acceptance_status"], "failed")
+        self.assertEqual(report["acceptance_status"], "failed")
+
+    def test_offline_run_cli_rejects_unknown_acceptance(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+                strategy, "run_offline_matrix", return_value={"acceptance_status": "unknown"}):
+            output = Path(directory) / "report.json"
+            self.assertNotEqual(strategy.main([
+                "offline-run", "--run-dir", directory, "--out", str(output)]), 0)
+
     def test_archive_deduplicates_logical_model_request_and_response(self):
         attribution = strategy.archive_attribution([
             {"type": "metadata", "usage_measured": False},
@@ -118,6 +149,26 @@ class OfflineMatrixTests(unittest.TestCase):
         self.assertEqual(attribution["model_request_count"], 1)
         self.assertEqual(attribution["usage_coverage"], "unknown")
         self.assertEqual(attribution["evidence_status"], "unknown_coverage")
+
+    def test_archive_does_not_trust_initial_usage_metadata(self):
+        attribution = strategy.archive_attribution([
+            {"type": "metadata", "usage_measured": True},
+            {"type": "model_request", "request_id": "r1", "usage": None},
+            {"type": "side_turn_started"}, {"type": "turn_boundary"},
+            {"type": "terminal", "reason": "max_turns"},
+        ])
+        self.assertEqual(attribution["usage_coverage"], "unknown")
+        self.assertEqual(attribution["boundary_coverage"], "known")
+        self.assertEqual(attribution["evidence_status"], "unknown_coverage")
+
+    def test_single_boundary_record_does_not_prove_complete_coverage(self):
+        attribution = strategy.archive_attribution([
+            {"type": "metadata", "usage_measured": True},
+            {"type": "side_turn_started"},
+            {"type": "checkpoint_ref"},
+            {"type": "terminal", "reason": "max_turns"},
+        ])
+        self.assertEqual(attribution["boundary_coverage"], "unknown")
 
     @unittest.skipUnless(Path(os.environ.get(
         "NORRUST_TEST_DRIVER", "norrust_core/target/debug/greedy_driver")).is_file(),

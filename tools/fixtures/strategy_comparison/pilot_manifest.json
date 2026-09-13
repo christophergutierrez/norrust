@@ -18,6 +18,12 @@
     "model_call_timeout_seconds": 900,
     "controlled_turn_timeout_seconds": 2100,
     "query_budget_seconds": 300,
+    "matched_client_limits": {
+      "max_model_calls_per_turn": 8,
+      "max_tool_calls_per_turn": 64,
+      "max_queries_per_turn": 256,
+      "max_partial_batches_per_turn": 64
+    },
     "wall_deadline_seconds": 2700,
     "supervisor_max_restarts": 0,
     "supervisor_mode": "recording_only",
@@ -70,6 +76,9 @@
         "model_timeout": 900,
         "turn_timeout": 2100,
         "query_budget_seconds": 300,
+        "max_model_calls_per_turn": 8,
+        "max_tool_calls_per_turn": 64,
+        "max_queries_per_turn": 256,
         "max_partial_batches_per_turn": 64
       },
       "pilot_status": "prepared_not_run"
@@ -100,6 +109,9 @@
         "model_timeout": 900,
         "turn_timeout": 2100,
         "query_budget_seconds": 300,
+        "max_model_calls_per_turn": 8,
+        "max_tool_calls_per_turn": 64,
+        "max_queries_per_turn": 256,
         "max_partial_batches_per_turn": 64
       },
       "pilot_status": "prepared_not_run",
@@ -138,6 +150,9 @@
         "model_timeout": 900,
         "turn_timeout": 2100,
         "query_budget_seconds": 300,
+        "max_model_calls_per_turn": 8,
+        "max_tool_calls_per_turn": 64,
+        "max_queries_per_turn": 256,
         "max_partial_batches_per_turn": 64
       },
       "pilot_status": "prepared_not_run",

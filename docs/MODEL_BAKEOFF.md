@@ -71,7 +71,7 @@ field is `strategy_treatment`.
 
 The pilot schedule is deliberately still `prepared_not_run`. It permits at
 most two paid cells, 200,000 player tokens per paid cell, six completed engine
-side turns, six player turns for the GLM treatments, a 900-second model-call
+side turns, three controlled player turns for the GLM treatments, a 900-second model-call
 timeout, a 2,100-second controlled-turn timeout, a 2,700-second cell wall
 deadline, and a $1 aggregate estimate. The recorded public rate evidence is
 2026-09-13 Fireworks GLM-5.3 Flash: $0.15/M uncached input, $0.03/M cached
@@ -79,6 +79,10 @@ input, and $0.50/M output. Its conservative two-cell estimate is $0.8815744,
 including one in-flight context bounded at 1,048,576 tokens. Rates must be
 rechecked read-only before any launch; no paid call or observer is part of the
 offline checks.
+
+All three cells explicitly use matched client limits of 8 model responses, 64
+tool calls, 256 queries, and 64 partial batches per side turn; mode defaults do
+not silently widen a comparison arm.
 
 The runner starts each cell through the existing recording-only
 `tools.llm_supervisor` with zero restarts. It keeps a compact, durable
