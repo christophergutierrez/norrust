@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import textwrap
 import tempfile
 import unittest
 
@@ -19,6 +20,29 @@ from .test_strategy_routine_stack3 import (
 
 @unittest.skipUnless(DRIVER.is_file(), "Build the actual integration driver; skipped is not acceptance")
 class FinalOnlyStrategyTests(unittest.TestCase):
+    def _query_revision_proxy(self, root: Path, what: str, *, missing: bool) -> Path:
+        proxy = root / ("driver-" + what + ".py")
+        proxy.write_text("#!/usr/bin/env python3\n" + textwrap.dedent(f"""
+            import json, subprocess, sys, threading
+            child = subprocess.Popen([{str(DRIVER)!r}] + sys.argv[1:], stdin=subprocess.PIPE,
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            def forward_input():
+                for line in sys.stdin:
+                    child.stdin.write(line)
+                    child.stdin.flush()
+            threading.Thread(target=forward_input, daemon=True).start()
+            for raw in child.stdout:
+                row = json.loads(raw)
+                if row.get('what') == {what!r} and row.get('ok'):
+                    if {missing!r}:
+                        row.pop('state_revision', None)
+                    else:
+                        row['state_revision'] = -1
+                print(json.dumps(row, separators=(',', ':')), flush=True)
+        """).lstrip(), encoding="utf-8")
+        proxy.chmod(0o755)
+        return proxy
+
     def test_quiet_final_only_fixed_policy_uses_no_model_calls(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -67,3 +91,22 @@ class FinalOnlyStrategyTests(unittest.TestCase):
                                 for row in model_batches))
             self.assertFalse(any(event.get("kind") == "advance" and event.get("source") == "llm"
                                  for event in engine_events(rows)))
+
+    def test_missing_or_stale_strategy_query_revision_stops_before_action(self):
+        for what, missing in (("recruit_options", True),
+                              ("tactical_surface", False),
+                              ("routine_next", False)):
+            with self.subTest(what=what, missing=missing), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                checkpoint, _, backend, _ = prepare_stack3(
+                    root, "contact.json", [policy(), {"kind": "finish_turn"}],
+                    accepted=3, maximum=3)
+                proxy = self._query_revision_proxy(root, what, missing=missing)
+                log = root / (what + ".ndjson")
+                result = launch_stack3(root, log, checkpoint, backend,
+                                       maximum=3, driver_path=proxy)
+                self.assertNotEqual(result.returncode, 0)
+                rows = records(log)
+                failure = [row for row in rows if row.get("type") == "query_error"][-1]
+                self.assertIn("revision", failure.get("message", "").lower())
+                self.assertFalse(any(row.get("type") == "forwarded_orders" for row in rows))

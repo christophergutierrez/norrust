@@ -981,13 +981,24 @@ def query_options(exchange) -> dict[str, Any]:
     return result
 
 
-def query_tactical_surface(exchange, state_revision: int) -> dict[str, Any]:
+def _require_query_revision(response: dict[str, Any], state_revision: int, what: str) -> None:
+    """Require a read-only reply to prove the revision it was queried for."""
+    returned = response.get("state_revision") if isinstance(response, dict) else None
+    if returned != state_revision:
+        raise RuntimeError(f"query_error: {what}: stale revision mismatch "
+                           f"(requested {state_revision}, returned {returned})")
+
+
+def query_tactical_surface(exchange, state_revision: int, *,
+                           require_revision: bool = False) -> dict[str, Any]:
     """Fetch the single engine-owned tactical surface for one revision."""
     response = exchange({"action": "Query", "what": "tactical_surface",
                          "state_revision": state_revision})
     if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
         message = response.get("message", "query failed") if isinstance(response, dict) else "invalid query response"
         raise RuntimeError(f"query_error: tactical_surface: {message}")
+    if require_revision:
+        _require_query_revision(response, state_revision, "tactical_surface")
     return response["body"]
 
 
@@ -1398,11 +1409,14 @@ def validate_inspect_target_request(request: dict[str, Any]) -> int:
     return unit_id
 
 
-def query_inspect_target(exchange, unit_id: int, state_revision: int) -> dict[str, Any]:
+def query_inspect_target(exchange, unit_id: int, state_revision: int, *,
+                         require_revision: bool = False) -> dict[str, Any]:
     response = exchange({"action": "Query", "what": "inspect_target",
                          "state_revision": state_revision, "unit_id": unit_id})
-    if (isinstance(response, dict) and response.get("state_revision") is not None
-            and response.get("state_revision") != state_revision):
+    if require_revision:
+        _require_query_revision(response, state_revision, "inspect_target")
+    elif (isinstance(response, dict) and response.get("state_revision") is not None
+          and response.get("state_revision") != state_revision):
         raise ValueError(f"stale inspect_target result: expected revision {state_revision}, "
                          f"got {response.get('state_revision')}")
     if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
@@ -1432,11 +1446,14 @@ def validate_inspect_targets_request(request: dict[str, Any]) -> list[int]:
     return unit_ids
 
 
-def query_inspect_targets(exchange, unit_ids: list[int], state_revision: int) -> list[dict[str, Any]]:
+def query_inspect_targets(exchange, unit_ids: list[int], state_revision: int, *,
+                          require_revision: bool = False) -> list[dict[str, Any]]:
     response = exchange({"action": "Query", "what": "inspect_targets",
                          "state_revision": state_revision, "unit_ids": unit_ids})
-    if (isinstance(response, dict) and response.get("state_revision") is not None
-            and response.get("state_revision") != state_revision):
+    if require_revision:
+        _require_query_revision(response, state_revision, "inspect_targets")
+    elif (isinstance(response, dict) and response.get("state_revision") is not None
+          and response.get("state_revision") != state_revision):
         raise ValueError(f"stale inspect_targets result: expected revision {state_revision}, "
                          f"got {response.get('state_revision')}")
     if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
@@ -1823,11 +1840,14 @@ def validate_inspect_hex_request(request: dict[str, Any]) -> tuple[int, int, str
     return col, row, phase
 
 
-def query_inspect_hex(exchange, col: int, row: int, phase: str, state_revision: int) -> dict[str, Any]:
+def query_inspect_hex(exchange, col: int, row: int, phase: str, state_revision: int, *,
+                      require_revision: bool = False) -> dict[str, Any]:
     response = exchange({"action": "Query", "what": "inspect_hex", "state_revision": state_revision,
                          "col": col, "row": row, "phase": phase})
-    if (isinstance(response, dict) and response.get("state_revision") is not None
-            and response.get("state_revision") != state_revision):
+    if require_revision:
+        _require_query_revision(response, state_revision, "inspect_hex")
+    elif (isinstance(response, dict) and response.get("state_revision") is not None
+          and response.get("state_revision") != state_revision):
         raise ValueError(f"stale inspect_hex result: expected revision {state_revision}, "
                          f"got {response.get('state_revision')}")
     if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
@@ -5884,24 +5904,22 @@ def run(args: argparse.Namespace) -> int:
         if isinstance(state, dict) and isinstance(state.get("cols"), int) and isinstance(state.get("rows"), int):
             bounds = (state["cols"], state["rows"])
         recruitable: frozenset[str] = frozenset()
-        try:
-            options_reply = exchange({"action": "Query", "what": "recruit_options",
-                                      "state_revision": int(state.get("state_revision", 0))})
-        except RuntimeError:
-            options_reply = None
-        if isinstance(options_reply, dict) and options_reply.get("ok") and isinstance(options_reply.get("body"), dict):
-            state = dict(state)
-            state["strategy_recruit_options"] = copy.deepcopy(options_reply["body"])
-            recruitable = frozenset(
-                opt["def_id"] for opt in options_reply["body"].get("options", [])
-                if isinstance(opt, dict) and isinstance(opt.get("def_id"), str))
-        try:
-            surface = query_tactical_surface(exchange, int(state.get("state_revision", 0)))
-        except RuntimeError:
-            surface = None
-        if isinstance(surface, dict):
-            state = dict(state)
-            state["tactical_surface"] = surface
+        revision = int(state.get("state_revision", 0))
+        options_reply = exchange({"action": "Query", "what": "recruit_options",
+                                  "state_revision": revision})
+        if (not isinstance(options_reply, dict) or options_reply.get("ok") is not True
+                or not isinstance(options_reply.get("body"), dict)):
+            message = (options_reply.get("message", "invalid recruit options reply")
+                       if isinstance(options_reply, dict) else "invalid recruit options reply")
+            raise RuntimeError(f"query_error: recruit_options: {message}")
+        _require_query_revision(options_reply, revision, "recruit_options")
+        state = dict(state)
+        state["strategy_recruit_options"] = copy.deepcopy(options_reply["body"])
+        recruitable = frozenset(
+            opt["def_id"] for opt in options_reply["body"].get("options", [])
+            if isinstance(opt, dict) and isinstance(opt.get("def_id"), str))
+        surface = query_tactical_surface(exchange, revision, require_revision=True)
+        state["tactical_surface"] = surface
         return ValidationContext(recruitable_defs=recruitable, friendly_unit_ids=friendly_ids,
                                  recruiter_ids=recruiter_ids, village_coords=village_coords,
                                  board_bounds=bounds)
@@ -6253,7 +6271,14 @@ def run(args: argparse.Namespace) -> int:
             revision = int(state.get("state_revision", 0)) if isinstance(state, dict) else 0
             if strategy_installation is None:
                 if strategy_fixed:
-                    context = strategy_validation_context(exchange)
+                    try:
+                        context = strategy_validation_context(exchange)
+                    except RuntimeError as exc:
+                        set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
+                                     reason="infrastructure_failure", code="strategy_facts_unavailable",
+                                     message=str(exc))
+                        durable({"type": "query_error", **metadata})
+                        return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
                     try:
                         policy = load_checked_in_policy(args.strategy_policy, context)
                     except (PolicyValidationError, OSError, ValueError) as exc:
@@ -6266,7 +6291,14 @@ def run(args: argparse.Namespace) -> int:
                     return emit_budget_interrupted(
                         "model_calls_budget_exhausted",
                         "model decision call budget exhausted for this side turn")
-                context = strategy_validation_context(exchange)
+                try:
+                    context = strategy_validation_context(exchange)
+                except RuntimeError as exc:
+                    set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
+                                 reason="infrastructure_failure", code="strategy_facts_unavailable",
+                                 message=str(exc))
+                    durable({"type": "query_error", **metadata})
+                    return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
                 brief = render_policy_brief(
                     0, context.recruitable_defs, state=state,
                     recruit_options=state.get("strategy_recruit_options") if isinstance(state, dict) else None,
@@ -6331,6 +6363,14 @@ def run(args: argparse.Namespace) -> int:
                 durable({"type": "query_error", **metadata})
                 return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
             try:
+                _require_query_revision(raw, revision, "routine_next")
+            except RuntimeError as exc:
+                set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
+                             reason="infrastructure_failure", code="routine_next_revision_mismatch",
+                             message=str(exc))
+                durable({"type": "query_error", **metadata})
+                return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
+            try:
                 result = parse_routine_result(raw.get("body", {}))
             except ValueError as exc:
                 set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
@@ -6366,7 +6406,14 @@ def run(args: argparse.Namespace) -> int:
                 return emit_budget_interrupted(
                     "model_calls_budget_exhausted",
                     "model decision call budget exhausted for this side turn")
-            context = strategy_validation_context(exchange)
+            try:
+                context = strategy_validation_context(exchange)
+            except RuntimeError as exc:
+                set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
+                             reason="infrastructure_failure", code="strategy_facts_unavailable",
+                             message=str(exc))
+                durable({"type": "query_error", **metadata})
+                return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
             brief = render_exception_brief(
                 exc_result, strategy_progress.remaining(strategy_installation.policy),
                 state=state,
@@ -6464,7 +6511,9 @@ def run(args: argparse.Namespace) -> int:
                     "candidates": preview_candidates, "body": result})
         elif tool == "inspect_target":
             unit_id = validate_inspect_target_request(decoded)
-            result = query_inspect_target(exchange, unit_id, int(state.get("state_revision", 0)))
+            result = query_inspect_target(
+                exchange, unit_id, int(state.get("state_revision", 0)),
+                require_revision=getattr(args, "decision_mode", "batch") == "strategy")
             rendered = compact_target_inspection(enrich_target_inspection(result, state))
             record({"type": "tool_result", "tool": tool, "request": decoded,
                     "result_bytes": len(rendered.encode()), "body": result})
@@ -6483,13 +6532,17 @@ def run(args: argparse.Namespace) -> int:
                     "result_bytes": len(rendered.encode()), "body": {"units": result}})
         elif tool == "inspect_targets":
             unit_ids = validate_inspect_targets_request(decoded)
-            result = query_inspect_targets(exchange, unit_ids, int(state.get("state_revision", 0)))
+            result = query_inspect_targets(
+                exchange, unit_ids, int(state.get("state_revision", 0)),
+                require_revision=getattr(args, "decision_mode", "batch") == "strategy")
             rendered = compact_targets_inspection([enrich_target_inspection(target, state) for target in result])
             record({"type": "tool_result", "tool": tool, "request": decoded,
                     "result_bytes": len(rendered.encode()), "body": {"targets": result}})
         else:
             col, row, phase = validate_inspect_hex_request(decoded)
-            result = query_inspect_hex(exchange, col, row, phase, int(state.get("state_revision", 0)))
+            result = query_inspect_hex(
+                exchange, col, row, phase, int(state.get("state_revision", 0)),
+                require_revision=getattr(args, "decision_mode", "batch") == "strategy")
             rendered = compact_hex_inspection(result)
             record({"type": "tool_result", "tool": tool, "request": decoded,
                     "result_bytes": len(rendered.encode()), "body": result})
