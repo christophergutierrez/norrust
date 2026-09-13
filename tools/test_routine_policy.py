@@ -373,19 +373,19 @@ class ProgressAdoptionTests(unittest.TestCase):
 
 
 class ContactHandlingTests(unittest.TestCase):
-    def test_contact_ends_run_explicitly_with_no_model_call(self):
+    def test_contact_reaches_model_exception_path(self):
         installation = rp.install_policy(valid_stack1_policy())
         progress = rp.RoutineProgress.fresh(installation.installation_id)
         script = [{"ok": True, "body": {"result": "exception", "reason": "contact",
                                         "evidence": {"unit_id": 7}}}]
         exchange = FakeExchange(script)
-        backend = FakeBackend([])
-        with self.assertRaises(rp.RoutineUnsupportedException) as ctx:
-            rp.run_scripted_strategy_turn(
-                exchange=exchange, request_model=backend, context=make_context(),
-                installation=installation, progress=progress, state_revision=5)
-        self.assertEqual(ctx.exception.reason, "contact")
-        self.assertEqual(backend.calls, 0)
+        backend = FakeBackend([{"kind": "finish_turn"}])
+        outcome = rp.run_scripted_strategy_turn(
+            exchange=exchange, request_model=backend, context=make_context(),
+            installation=installation, progress=progress, state_revision=5)
+        self.assertEqual(outcome.status, "finished")
+        self.assertEqual(outcome.reason, "model_finish_turn")
+        self.assertEqual(backend.calls, 1)
 
     def test_non_contact_exception_calls_model_and_replaces_policy(self):
         installation = rp.install_policy(valid_stack1_policy())
@@ -408,13 +408,11 @@ class ContactHandlingTests(unittest.TestCase):
         # Plan section 5: "The Rust side will now raise unsafe_route,
         # invalid_assignment, and objectives_complete in addition to Stack
         # 1's set. Handle them in the client loop's exception path." None of
-        # them are in UNSUPPORTED_EXCEPTION_CODES (only "contact" is), so
-        # each reaches the model through the ordinary exception path exactly
+        # Each reaches the model through the ordinary exception path exactly
         # like recruitment_blocked already does above.
         for reason in ("unsafe_route", "invalid_assignment", "objectives_complete"):
             with self.subTest(reason=reason):
                 self.assertIn(reason, rp.ROUTINE_EXCEPTION_CODES)
-                self.assertNotIn(reason, rp.UNSUPPORTED_EXCEPTION_CODES)
                 installation = rp.install_policy(valid_stack1_policy())
                 progress = rp.RoutineProgress.fresh(installation.installation_id)
                 script = [

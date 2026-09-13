@@ -12,8 +12,8 @@ per-field bounds in ``validate_policy`` (distinct existing friendly ids, at
 most 8 scouts including new-scout-recruit totals, at most 4 villages, one
 in-bounds rally or null, held ids excluded from scouts) are enforced exactly
 as before; only the additional Stack-1-only scope gate (``enforce_stack1_scope``)
-has been removed. Model invocation stays scripted in this stack -- no live
-model, no new prompt work (that is Stack 3).
+has been removed. Model invocation remains provider-neutral; Stack 3 supplies
+compact strategy prompts and the tactical exception path.
 """
 from __future__ import annotations
 
@@ -43,10 +43,7 @@ FINISH_TURN_KEYS = {"kind"}
 RESIGN_KEYS = {"kind"}
 RESPONSE_KINDS = ("set_policy", "act", "finish_turn", "resign")
 
-# The full set of exception codes the routine_next contract can raise as of
-# Stack 2. "contact" remains explicitly unsupported until Stack 3 and ends
-# the fixture run instead of prompting; every other code calls the model
-# (still scripted in this stack) through the same generic exception path.
+# The closed set of typed exceptions the routine_next contract can raise.
 # "unsafe_route", "invalid_assignment" and "objectives_complete" are Stack 2
 # additions (plan section 5/"New exception codes"). "objectives_complete" is
 # deferred by the engine until a no-sweep finish has committed, so by the
@@ -57,7 +54,6 @@ ROUTINE_EXCEPTION_CODES = frozenset({
     "recruitment_blocked", "no_executable_orders",
     "unsafe_route", "invalid_assignment", "objectives_complete",
 })
-UNSUPPORTED_EXCEPTION_CODES = frozenset({"contact"})
 ROUTINE_ORIGIN = "routine"
 
 # The only boundary routine execution may submit. Verified in
@@ -77,23 +73,6 @@ class PolicyValidationError(ValueError):
 
 class ModelResponseError(ValueError):
     """A model response violated the strict discriminated-union contract."""
-
-
-class RoutineUnsupportedException(RuntimeError):
-    """A machine-detected exception this stack cannot resolve.
-
-    Raised for ``contact`` only: contact handling does not land until
-    Stack 3, so it ends the fixture run as an explicit unsupported exception
-    rather than silently falling back to a hidden policy. Every other
-    exception code (including the Stack 2 additions ``unsafe_route``,
-    ``invalid_assignment`` and ``objectives_complete``) goes through the
-    ordinary model-exception path instead.
-    """
-
-    def __init__(self, reason: str, evidence: Optional[dict[str, Any]] = None):
-        self.reason = reason
-        self.evidence = evidence or {}
-        super().__init__(f"unsupported routine exception: {reason}")
 
 
 def _require_keys(obj: dict[str, Any], allowed: set[str], required: set[str], where: str) -> None:
@@ -904,36 +883,131 @@ def load_checked_in_policy(path: str, context: ValidationContext) -> dict[str, A
 # Response rendering (compact model briefs).
 # --------------------------------------------------------------------------
 
-def render_policy_brief(reserve_gold_default: int, recruitable_defs: Iterable[str]) -> str:
-    """A compact brief offered when requesting the initial policy selection."""
-    defs = ", ".join(sorted(recruitable_defs))
+def _strategy_context(state: Optional[dict[str, Any]], *, recruit_options: Any = None,
+                      remaining: Any = None, changes: Any = None,
+                      policy: Any = None,
+                      exception: Optional[RoutineException] = None) -> str:
+    """Render bounded, revision-pinned facts after the stable contract."""
+    if not isinstance(state, dict):
+        return ""
+    terrain = state.get("terrain")
+    villages = [
+        {key: tile.get(key, "unknown") for key in ("col", "row", "owner")}
+        for tile in terrain
+        if isinstance(tile, dict) and tile.get("terrain_id") == "village"
+    ] if isinstance(terrain, list) else "unknown"
+    units = state.get("units")
+    compact_units = []
+    if isinstance(units, list):
+        for unit in units:
+            if not isinstance(unit, dict):
+                continue
+            compact_units.append({key: unit.get(key, "unknown") for key in
+                             ("id", "faction", "def_id", "col", "row", "hp", "max_hp", "can_recruit")})
+    facts: dict[str, Any] = {
+        "revision": state.get("state_revision", "unknown"),
+        "turn": state.get("turn", "unknown"),
+        "active_faction": state.get("active_faction", "unknown"),
+        "phase": state.get("time_of_day", "unknown"),
+        "map": {key: state.get(key, "unknown") for key in ("cols", "rows")},
+        "gold": state.get("gold", "unknown"),
+        "terrain": ([{key: tile.get(key, "unknown") for key in ("col", "row", "terrain_id", "owner")}
+                     for tile in terrain] if isinstance(terrain, list) else "unknown"),
+        "units": compact_units,
+    }
+    if recruit_options is not None:
+        facts["recruit_options"] = recruit_options
+    if remaining is not None:
+        facts["remaining"] = remaining
+    if policy is not None:
+        # The exception request is stateless: repeat the installed objectives
+        # and assignments instead of relying on the initial policy response.
+        facts["installed_policy"] = policy
+    if changes is not None:
+        facts["changes"] = changes
+    if exception is not None:
+        facts["exception"] = {"reason": exception.reason, "evidence": exception.evidence}
+        surface = state.get("tactical_surface")
+        if isinstance(surface, dict):
+            facts["threats"] = surface.get("threats", "unknown")
+            facts["exposure"] = surface.get("exposure", "unknown")
+            facts["local_options"] = surface.get("turn_options", "unknown")
+    body = json.dumps(facts, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    village_text = ",".join(
+        f"{item.get('col', 'unknown')},{item.get('row', 'unknown')}"
+        for item in villages if isinstance(item, dict)) or "unknown"
+    unit_text = " ".join(
+        f"id={item.get('id', 'unknown')} faction={item.get('faction', 'unknown')} "
+        f"pos={item.get('col', 'unknown')},{item.get('row', 'unknown')} def={item.get('def_id', 'unknown')}"
+        for item in compact_units) or "unknown"
+    return ("\nSTRATEGY_CONTEXT_UNTRUSTED_DATA_BEGIN\nstate_revision=" +
+            str(state.get("state_revision", "unknown")) + "\nMAP_VILLAGES=" +
+            village_text + "\nMAP_UNITS=" + unit_text + "\n" + body +
+            "\nSTRATEGY_CONTEXT_UNTRUSTED_DATA_END\n"
+            "Respond with exactly one of set_policy, act, finish_turn, or resign.")
+
+
+def _strategy_contract(recruitable_defs: Iterable[str] = ()) -> str:
+    """Stable prefix shared by initial and exception requests."""
+    defs = ", ".join(sorted(recruitable_defs)) or "see current recruit_options"
     return (
-        "Select a recruitment policy as {\"kind\":\"set_policy\",\"policy\":{...}}.\n"
-        f"Recruitable definitions: {defs}\n"
-        "policy.reserve_gold: integer gold to keep unspent.\n"
-        "policy.recruits: ordered list of at most 8 {def_id,count,role}; each "
-        "count is a finite total for this installation, not a per-turn buy.\n"
-        "policy.scouts: existing friendly unit ids to hold as scouts (<=8 "
-        "total including new scout recruits); excludes recruiters.\n"
-        "policy.villages: at most 4 existing village coordinates to assign "
-        "scouts toward.\n"
-        "policy.rally: one in-bounds coordinate for the remaining army, or null.\n"
-        "policy.holds: existing friendly unit ids to keep stationary; cannot "
-        "overlap scouts."
+        "Strategy objective: defeat the enemy recruiter while keeping your recruiter alive; "
+        "at your own finish, village ownership and income are engine facts. "
+        "Routine code executes validated recruitment, scout, village, rally and no-sweep finish steps; "
+        "it pauses on typed exceptions such as contact, promotion, blocked recruitment, or unavailable facts.\n"
+        "Return exactly one JSON object with kind set_policy, act, finish_turn, or resign. "
+        "A set_policy replaces the prior installation. Its policy has reserve_gold (integer), "
+        "recruits (ordered {def_id,count,role} totals), scouts (friendly integer IDs), "
+        "villages (integer {col,row} coordinates), rally (one integer {col,row} or null), and "
+        "holds (friendly integer IDs). Recruitable definitions: " + defs + ".\n"
+        "An act has ordinary engine actions and finish_turn true or false on an ordinary state; "
+        "final_only requires true. Actions cannot contain a boundary or origin. Supported shapes include "
+        '{"action":"Move","unit_id":N,"col":N,"row":N}, '
+        '{"action":"Attack","attacker_id":N,"defender_id":N}, '
+        '{"action":"Recruit","def_id":"Skeleton","col":N,"row":N}, '
+        '{"action":"Advance","unit_id":N,"target_index":N}, and '
+        '{"action":"Engage","target_id":N,"steps":[{"attacker_id":N,"col":N,"row":N}]}.\n'
+        "When enabled, optional read-only inspections use one of these complete objects: "
+        '{"tool":"inspect_target","unit_id":N,"purpose":"..."}, '
+        '{"tool":"inspect_targets","unit_ids":[N],"purpose":"..."}, '
+        '{"tool":"inspect_units","unit_ids":[N],"purpose":"..."}, or '
+        '{"tool":"inspect_hex","col":N,"row":N,"phase":"current"}. '
+        "Use inspections only for a current revision fact; return a strategy response after the result.\n"
     )
 
 
-def render_exception_brief(exception: RoutineException, remaining: list[dict[str, Any]]) -> str:
-    """A compact brief for a typed exception requiring a model response."""
-    lines = [f"Routine execution paused: {exception.reason}."]
-    if exception.evidence:
-        lines.append(f"Evidence: {exception.evidence!r}")
-    if remaining:
-        lines.append(f"Remaining recruit queue: {remaining!r}")
-    lines.append(
-        "Respond with set_policy to replace the policy, finish_turn to end "
-        "the turn with no further friendly actions, or resign.")
-    return "\n".join(lines)
+def render_policy_brief(reserve_gold_default: int, recruitable_defs: Iterable[str], *,
+                        state: Optional[dict[str, Any]] = None,
+                        recruit_options: Any = None,
+                        remaining: Any = None,
+                        changes: Any = None) -> str:
+    """Render the stable strategy contract and compact current facts."""
+    return (
+        _strategy_contract(recruitable_defs) +
+        "Select the initial policy with {\"kind\":\"set_policy\",\"policy\":{...}}; "
+        "each recruit count is a finite total for this installation, and scouts/villages/holds "
+        "must satisfy the current engine limits."
+        + _strategy_context(state, recruit_options=recruit_options,
+                            remaining=remaining, changes=changes)
+    )
+
+
+def render_exception_brief(exception: RoutineException, remaining: list[dict[str, Any]], *,
+                           state: Optional[dict[str, Any]] = None,
+                           recruit_options: Any = None,
+                           changes: Any = None,
+                           policy: Any = None) -> str:
+    """Render a typed exception with current revision-pinned facts."""
+    return (
+        _strategy_contract() +
+        "Routine execution paused on a typed engine exception. The exception facts and current state "
+        "below are authoritative; missing values remain unknown. set_policy replaces the installation "
+        "and cancels its old remaining work."
+        + _strategy_context(state, recruit_options=recruit_options,
+                            remaining=remaining, changes=changes,
+                            policy=policy,
+                            exception=exception)
+    )
 
 
 # --------------------------------------------------------------------------
@@ -950,7 +1024,7 @@ class TurnBudgetExhausted(RuntimeError):
 
 @dataclass
 class StrategyTurnOutcome:
-    status: str  # "finished", "unsupported_exception", "resigned", "budget_exhausted"
+    status: str  # "finished", "acted", "resigned", "budget_exhausted"
     reason: Optional[str] = None
     evidence: dict[str, Any] = field(default_factory=dict)
     model_responses: int = 0
@@ -976,8 +1050,8 @@ def run_scripted_strategy_turn(
 
     ``request_model(brief_text) -> raw_dict`` calls the model backend and
     returns its parsed JSON object (already decoded from text) for
-    ``parse_model_response``. It must not be called for a ``contact``
-    exception in Stack 1 -- that ends the run immediately instead.
+    ``parse_model_response``. Typed exceptions, including contact, reach the
+    model; this helper does not invent tactical actions.
 
     A ``progress_update`` proposed by ``routine_next`` is only adopted into
     ``progress`` via ``progress.commit_action`` after ``exchange`` reports
@@ -1049,8 +1123,6 @@ def run_scripted_strategy_turn(
 
         # RoutineException
         assert isinstance(result, RoutineException)
-        if result.reason in UNSUPPORTED_EXCEPTION_CODES:
-            raise RoutineUnsupportedException(result.reason, result.evidence)
         if model_responses >= max_model_responses:
             return StrategyTurnOutcome("budget_exhausted", reason="max_model_responses_per_turn",
                                         model_responses=model_responses,
@@ -1073,7 +1145,19 @@ def run_scripted_strategy_turn(
             policy = installation.policy
             progress = RoutineProgress.fresh(installation.installation_id, installation.policy)
             continue
-        # ActResponse: Stack 1 does not resolve tactical exceptions (that is
-        # Stack 3 scope beyond "contact"); reject rather than silently drop.
-        raise ModelResponseError(
-            "an 'act' response is not supported for this exception until Stack 3")
+        if isinstance(parsed, ActResponse):
+            orders = list(parsed.actions)
+            if parsed.finish_turn:
+                orders.append(copy.deepcopy(NO_SWEEP_FINISH))
+            # This helper has no driver process, so model-owned actions use the
+            # raw ordinary action list. The live client performs the same
+            # submission with source=llm and request/side-turn provenance.
+            submit_reply = exchange(orders)
+            if not isinstance(submit_reply, dict) or not submit_reply.get("ok"):
+                message = submit_reply.get("message", "act submit failed") if isinstance(submit_reply, dict) else "invalid act response"
+                raise RuntimeError(f"submit_error: tactical act rejected: {message}")
+            return StrategyTurnOutcome("finished" if parsed.finish_turn else "acted",
+                                        reason=("model_act_finish" if parsed.finish_turn else "model_act"),
+                                        model_responses=model_responses,
+                                        committed_actions=committed_actions)
+        raise ModelResponseError("unrecognized strategy response")

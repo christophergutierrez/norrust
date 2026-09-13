@@ -329,3 +329,16 @@ tests; skipped driver tests do not constitute acceptance. The full
 The live query/effects contract is documented in the strategy execution plan.
 Policy progress belongs to a durable installation and batch; its applied-step
 ledger is recovery metadata and must not be sent to the model or planner.
+
+Stack 3 strategy-mode regressions use the built driver and a local scripted
+backend, so they make no paid model calls:
+
+```bash
+NORRUST_TEST_DRIVER=/absolute/path/to/greedy_driver \\
+  python3 -m unittest tools.test_strategy_routine_stack3
+```
+
+The suite covers the four-response union, contact and exposure exceptions,
+model-owned tactical provenance, one bounded response repair, revision-stale
+inspection recovery, and final-only boundaries. A skipped driver test is a
+coverage gap and does not constitute acceptance.

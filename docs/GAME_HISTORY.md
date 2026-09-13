@@ -45,6 +45,13 @@ snapshot by position, and never use a nearest revision as a substitute. A
 request's identity is updated on reimport only when the previously missing link
 is proven, so an interrupted open turn retains all of its request and call
 spending.
+
+Strategy-mode batches retain `source: "llm"` for model-owned tactical actions,
+including explicit finish and resign choices, and `source: "routine"` for
+deterministic policy execution. The empty `FinishWithGreedy` boundary appended
+to a model `act` remains in that same ordinary batch. Strategy responses have
+no decision-annotation row; read-only inspection requests and their revision
+checks remain linked to the originating model request.
 Review IDs, candidate digests, forced partial-limit finishes, and review outcomes
 remain in the archived log/metrics JSON for ad hoc analysis and training-data
 selection. `games.coverage_json.review_coverage` keeps the raw draft review and

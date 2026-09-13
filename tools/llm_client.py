@@ -39,7 +39,7 @@ try:
                                  extract_units_inspection_choices)
     from .watchdog_stop import read_stop, resolve_stop
     from .routine_policy import (
-        PolicyValidationError, ModelResponseError, RoutineUnsupportedException,
+        PolicyValidationError, ModelResponseError,
         ValidationContext, PolicyInstallation, RoutineProgress,
         load_checked_in_policy, static_recruitable_defs, new_installation_id,
         install_policy, build_routine_query, parse_routine_result,
@@ -47,7 +47,7 @@ try:
         NO_SWEEP_FINISH, parse_model_response, SetPolicyResponse,
         ActResponse, FinishTurnResponse, ResignResponse,
         validate_routine_policy, render_policy_brief, render_exception_brief,
-        UNSUPPORTED_EXCEPTION_CODES, find_unreconstructable_routine_batch,
+        find_unreconstructable_routine_batch,
         pending_routine_commit)
 except ImportError:  # pragma: no cover - direct script compatibility
     # Running `python tools/llm_client.py` puts only the tools directory on
@@ -74,7 +74,7 @@ except ImportError:  # pragma: no cover - direct script compatibility
                                       extract_units_inspection_choices)
     from tools.watchdog_stop import read_stop, resolve_stop
     from tools.routine_policy import (
-        PolicyValidationError, ModelResponseError, RoutineUnsupportedException,
+        PolicyValidationError, ModelResponseError,
         ValidationContext, PolicyInstallation, RoutineProgress,
         load_checked_in_policy, static_recruitable_defs, new_installation_id,
         install_policy, build_routine_query, parse_routine_result,
@@ -82,7 +82,7 @@ except ImportError:  # pragma: no cover - direct script compatibility
         NO_SWEEP_FINISH, parse_model_response, SetPolicyResponse,
         ActResponse, FinishTurnResponse, ResignResponse,
         validate_routine_policy, render_policy_brief, render_exception_brief,
-        UNSUPPORTED_EXCEPTION_CODES, find_unreconstructable_routine_batch,
+        find_unreconstructable_routine_batch,
         pending_routine_commit)
 
 ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "Engage", "EndTurn", "Advance", "Resign",
@@ -1401,6 +1401,10 @@ def validate_inspect_target_request(request: dict[str, Any]) -> int:
 def query_inspect_target(exchange, unit_id: int, state_revision: int) -> dict[str, Any]:
     response = exchange({"action": "Query", "what": "inspect_target",
                          "state_revision": state_revision, "unit_id": unit_id})
+    if (isinstance(response, dict) and response.get("state_revision") is not None
+            and response.get("state_revision") != state_revision):
+        raise ValueError(f"stale inspect_target result: expected revision {state_revision}, "
+                         f"got {response.get('state_revision')}")
     if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
         message = response.get("message", "inspection query failed") if isinstance(response, dict) else "invalid inspection response"
         if isinstance(message, str) and "unavailable" in message.lower():
@@ -1431,6 +1435,10 @@ def validate_inspect_targets_request(request: dict[str, Any]) -> list[int]:
 def query_inspect_targets(exchange, unit_ids: list[int], state_revision: int) -> list[dict[str, Any]]:
     response = exchange({"action": "Query", "what": "inspect_targets",
                          "state_revision": state_revision, "unit_ids": unit_ids})
+    if (isinstance(response, dict) and response.get("state_revision") is not None
+            and response.get("state_revision") != state_revision):
+        raise ValueError(f"stale inspect_targets result: expected revision {state_revision}, "
+                         f"got {response.get('state_revision')}")
     if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
         message = response.get("message", "inspection query failed") if isinstance(response, dict) else "invalid inspection response"
         if isinstance(message, str) and "unavailable" in message.lower():
@@ -1818,6 +1826,10 @@ def validate_inspect_hex_request(request: dict[str, Any]) -> tuple[int, int, str
 def query_inspect_hex(exchange, col: int, row: int, phase: str, state_revision: int) -> dict[str, Any]:
     response = exchange({"action": "Query", "what": "inspect_hex", "state_revision": state_revision,
                          "col": col, "row": row, "phase": phase})
+    if (isinstance(response, dict) and response.get("state_revision") is not None
+            and response.get("state_revision") != state_revision):
+        raise ValueError(f"stale inspect_hex result: expected revision {state_revision}, "
+                         f"got {response.get('state_revision')}")
     if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
         message = response.get("message", "inspection query failed") if isinstance(response, dict) else "invalid inspection response"
         raise RuntimeError(f"query_error: inspect_hex: {message}")
@@ -3862,6 +3874,56 @@ def finalize_model_prompt(prompt: str, state: dict[str, Any], *, allow_tools: bo
     return value + "\n" + authoritative_live_state_reminder(state, allow_tools=allow_tools)
 
 
+def strategy_live_state_footer(state: dict[str, Any], *, allow_tools: bool = True) -> str:
+    """Return the volatile strategy anchor without ordinary annotations."""
+    units = state.get("units", []) if isinstance(state, dict) else []
+    friendly = [
+        {key: unit.get(key, "unknown") for key in ("id", "col", "row", "hp", "can_recruit")}
+        for unit in units
+        if isinstance(unit, dict) and unit.get("faction") == state.get("active_faction")
+    ] if isinstance(units, list) else "unknown"
+    live = {
+        "revision": state.get("state_revision", "unknown"),
+        "turn": state.get("turn", "unknown"),
+        "active_faction": state.get("active_faction", "unknown"),
+        "phase": state.get("time_of_day", "unknown"),
+        "final_only": state.get("final_only", False),
+        "friendly_units": friendly,
+    }
+    tools = ("; optional read-only inspection requests at this revision use "
+             '{"tool":"inspect_target","unit_id":N,"purpose":"..."}, '
+             '{"tool":"inspect_targets","unit_ids":[N,...],"purpose":"..."}, '
+             '{"tool":"inspect_units","unit_ids":[N,...],"purpose":"..."}, or '
+             '{"tool":"inspect_hex","col":N,"row":N,"phase":"current|next_opponent_turn"}'
+             if allow_tools else "; no inspection is available at this boundary")
+    return ("STRATEGY_LIVE_STATE_BEGIN\n" +
+            json.dumps(live, sort_keys=True, separators=(",", ":")) +
+            "\nSTRATEGY_LIVE_STATE_END\n"
+            "STRATEGY_RESPONSE_INSTRUCTION_BEGIN\n"
+            "Return exactly one JSON object with kind set_policy, act, finish_turn, or resign. "
+            "Act actions contain ordinary actions only and never origin or a finishing action; "
+            "finish_turn may be true or false on ordinary states; final_only requires true." + tools +
+            "\nSTRATEGY_RESPONSE_INSTRUCTION_END")
+
+
+def finalize_strategy_prompt(prompt: str, state: dict[str, Any], *, allow_tools: bool = True) -> str:
+    """Place strategy live state last, without the ordinary response contract."""
+    value = prompt.rstrip()
+    marker = "\nSTRATEGY_LIVE_STATE_BEGIN\n"
+    start = value.rfind(marker)
+    while start >= 0:
+        block_start = value.rfind("_UNTRUSTED_DATA_BEGIN", 0, start)
+        block_end = value.rfind("_UNTRUSTED_DATA_END", 0, start)
+        if block_start <= block_end:
+            break
+        start = value.rfind(marker, 0, start)
+    if start >= 0:
+        footer_end = value.find("\nSTRATEGY_RESPONSE_INSTRUCTION_END", start)
+        if footer_end >= 0:
+            value = value[:start].rstrip()
+    return value + "\n" + strategy_live_state_footer(state, allow_tools=allow_tools)
+
+
 def build_completion_audit_data(state: dict[str, Any], agenda: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     surface = state.get("tactical_surface", {})
     recruitment = surface.get("recruitment", {}) if isinstance(surface, dict) else {}
@@ -5494,6 +5556,7 @@ def run(args: argparse.Namespace) -> int:
         if purpose not in {"decision", "inspection_followup", "review", "repair"}:
             raise ValueError(f"unknown model request purpose: {purpose}")
         nonlocal request_sequence, pending_annotation_notice, pending_agenda_feedback
+        strategy_prompt = getattr(args, "decision_mode", "batch") == "strategy"
         # This check precedes prompt assembly and request ID allocation. A
         # stop therefore cannot spend a fresh provider call merely to discover
         # that cancellation was requested.
@@ -5502,7 +5565,7 @@ def run(args: argparse.Namespace) -> int:
         # agenda commits or the side turn ends, because a player that keeps
         # re-proposing the same rejected shape needs it on each attempt, not
         # once. `pending_annotation_notice` is one-shot; this is not.
-        if pending_agenda_feedback:
+        if pending_agenda_feedback and not strategy_prompt:
             kept = pending_agenda_feedback.get("retained_task_ids") or []
             model_prompt = model_prompt.rstrip() + "\n" + (
                 "AGENDA_REJECTED: your last proposed agenda was refused whole and NOT stored: %s. "
@@ -5516,6 +5579,8 @@ def run(args: argparse.Namespace) -> int:
                    ("tasks " + ", ".join(kept)) if kept else "no tasks recorded")
             )
         notice, pending_annotation_notice = pending_annotation_notice, None
+        if strategy_prompt:
+            notice = None
         if notice:
             # Client-side context only, appended after the canonical prompt
             # content and before the live-state/response-instruction footer
@@ -5528,7 +5593,8 @@ def run(args: argparse.Namespace) -> int:
         # refreshes the sidecar measurement.
         refresh_game_budget()
         model_prompt = model_prompt.rstrip() + "\n" + game_budget_context(args, metadata)
-        delivered_prompt = finalize_model_prompt(
+        finalizer = finalize_strategy_prompt if strategy_prompt else finalize_model_prompt
+        delivered_prompt = finalizer(
             model_prompt, state if isinstance(state, dict) else {},
             allow_tools=allow_tools)
         delivered_bytes = len(delivered_prompt.encode())
@@ -5674,19 +5740,20 @@ def run(args: argparse.Namespace) -> int:
                     state_revision=(state.get("state_revision")
                                     if isinstance(state, dict) else None),
                     phase="model_response")
-            if getattr(args, "decision_mode", "batch") == "strategy":
+            if strategy_prompt:
                 # Strategy mode's four-way response union has no `decisions`
                 # field at all (plan section 4: "There are no required
                 # decisions ... in strategy mode"). The old annotation
                 # contract does not apply here and must not be evaluated
                 # against it -- `playbook` (the tactics guide) is also never
                 # loaded in this mode, so it must not be referenced.
-                reply.decision_annotation = inapplicable_annotation("")
+                reply.decision_annotation = None
             else:
                 reply.decision_annotation = annotation_for_response(
                     reply.text, guide_text=playbook,
                     require_full_coverage=(getattr(args, "decision_mode", "batch") != "focused"))
-            if reply.decision_annotation.get("status") == "invalid":
+            if (isinstance(reply.decision_annotation, dict) and
+                    reply.decision_annotation.get("status") == "invalid"):
                 # Bookkeeping only: this reply's actions still execute
                 # normally. The exact error is queued as short factual
                 # context for the next request the client was already going
@@ -5696,7 +5763,7 @@ def run(args: argparse.Namespace) -> int:
                     + " That reply's decisions were rejected and not recorded as evidence.")
             # Only a returned response acknowledges delivery. A failed dispatch
             # keeps the correction pending, including through checkpoint resume.
-            if pending_agenda_feedback:
+            if pending_agenda_feedback and not strategy_prompt:
                 if pending_agenda_feedback.get("next_turn_once"):
                     pending_agenda_feedback = None
                 else:
@@ -5798,6 +5865,7 @@ def run(args: argparse.Namespace) -> int:
         so a future stack's scouts/villages/holds validation needs no new
         query plumbing.
         """
+        nonlocal state
         units = state.get("units", []) if isinstance(state, dict) else []
         friendly_ids = frozenset(
             u["id"] for u in units
@@ -5822,9 +5890,18 @@ def run(args: argparse.Namespace) -> int:
         except RuntimeError:
             options_reply = None
         if isinstance(options_reply, dict) and options_reply.get("ok") and isinstance(options_reply.get("body"), dict):
+            state = dict(state)
+            state["strategy_recruit_options"] = copy.deepcopy(options_reply["body"])
             recruitable = frozenset(
                 opt["def_id"] for opt in options_reply["body"].get("options", [])
                 if isinstance(opt, dict) and isinstance(opt.get("def_id"), str))
+        try:
+            surface = query_tactical_surface(exchange, int(state.get("state_revision", 0)))
+        except RuntimeError:
+            surface = None
+        if isinstance(surface, dict):
+            state = dict(state)
+            state["tactical_surface"] = surface
         return ValidationContext(recruitable_defs=recruitable, friendly_unit_ids=friendly_ids,
                                  recruiter_ids=recruiter_ids, village_coords=village_coords,
                                  board_bounds=bounds)
@@ -5918,6 +5995,60 @@ def run(args: argparse.Namespace) -> int:
         strategy_pending_batch_id = batch_id if strategy_pending_progress_update is not None else None
         strategy_pending_proven_revision = None
 
+    def strategy_submit_act(orders: list[dict[str, Any]], revision: int,
+                            reply: ModelReply, *, finish_turn: bool) -> None:
+        """Submit a model-owned tactical batch through ordinary execution."""
+        nonlocal batch_sequence, pending_action, pending_commit, pending_finish_kind
+        nonlocal last_forwarded_orders, last_forwarded_results, last_forwarded_revision
+        nonlocal last_forwarded_repair, last_forwarded_finish_kind
+        # Act's boundary is client-owned.  It is appended only after the model
+        # actions have passed the ordinary structural validator and is sent as
+        # one transactional raw action list, preserving model provenance.
+        submitted = list(orders)
+        if finish_turn:
+            submitted.append(copy.deepcopy(NO_SWEEP_FINISH))
+        pending_finish_kind = finish_kind_for_orders(submitted) if finish_turn else None
+        batch_sequence += 1
+        batch_id = f"{metadata.get('conversation_id', 'match')}:batch:{batch_sequence}"
+        backend_cache = reply.cache if isinstance(reply.cache, dict) else {}
+        pending_commit = {
+            "batch_id": batch_id,
+            "request_id": reply.request_id,
+            "backend_request_id": backend_cache.get("request_id"),
+            "request_state_path": backend_cache.get("request_state_path"),
+            "source_revision": revision,
+            "origin": "llm",
+        }
+        durable({"type": "request_submitted", "batch_id": batch_id,
+                 "request_id": reply.request_id,
+                 "backend_request_id": backend_cache.get("request_id"),
+                 "source_revision": revision})
+        durable({"type": "forwarded_orders", "orders": submitted,
+                 "batch_id": batch_id, "request_sequence": request_sequence,
+                 "request_id": reply.request_id, "side_turn_id": reply.side_turn_id,
+                 "source": "llm", "state_revision": revision,
+                 "decision_annotation": None, "prompt_hash": reply.prompt_hash,
+                 "authored_finish_kind": pending_finish_kind,
+                 "handoff_audit": {}, "action_encoding": "coordinates",
+                 "coordinate_fallback": False,
+                 "authored_choices": None,
+                 "expansion_mapping": list(range(len(submitted)))})
+        metadata["model_orders"] += len(orders)
+        last_forwarded_orders = list(submitted)
+        last_forwarded_results = None
+        last_forwarded_revision = revision
+        last_forwarded_repair = False
+        last_forwarded_finish_kind = pending_finish_kind
+        check_stop_fence("before_model_action_dispatch")
+        try:
+            proc.stdin.write(json.dumps(submitted, separators=(",", ":")) + "\n")
+            proc.stdin.flush()
+        except (BrokenPipeError, OSError) as exc:
+            raise RuntimeError(f"query_error: driver pipe closed: {exc}") from exc
+        pending_action = True
+        event_intervals.append(event_window)
+        event_window.clear()
+
     def strategy_adopt_progress_from_events(event_line: Optional[dict[str, Any]] = None) -> None:
         """Adopt one routine update after checkpoint and engine proof.
 
@@ -5996,36 +6127,124 @@ def run(args: argparse.Namespace) -> int:
         strategy_pending_batch_id = None
         strategy_pending_proven_revision = None
 
-    def strategy_call_model(prompt_text: str) -> Any:
-        """Call the model for policy selection or an exception, and parse it.
+    def strategy_call_model(prompt_text: str, *, policy_context: Optional[ValidationContext] = None) -> tuple[Any, ModelReply]:
+        """Call, inspect, repair once, and parse one strategy response."""
+        nonlocal strategy_model_responses_this_turn, model_calls_this_turn
+        nonlocal focused_local_context
+        repair_attempted = False
+        tool_context = ""
+        current_prompt = prompt_text
 
-        Raises `ModelResponseError`/`PolicyValidationError` for a malformed or
-        illegal response (no repair loop in Stack 1: strategy responses are
-        small and structured, and a malformed one is a model fault, not an
-        engine fact to negotiate over).
-        """
-        nonlocal strategy_model_responses_this_turn
-        strategy_model_responses_this_turn += 1
-        metadata["model_calls"] += 1
-        reply = complete_model(prompt_text, allow_tools=False, purpose="decision")
-        enforce_usage(reply, args)
-        record({"type": "model", "call": metadata["model_calls"],
-                "prompt_hash": reply.prompt_hash, "prompt_bytes": reply.prompt_bytes,
-                "raw_output": reply.text, "usage": reply.usage, "cache": reply.cache})
-        if reply.usage is None:
-            metadata["usage_measured"] = False
-        try:
-            decoded = json.loads(reply.text)
-        except (TypeError, ValueError) as exc:
-            raise ModelResponseError(f"response is not valid JSON: {exc}") from exc
-        return parse_model_response(decoded)
+        def note_response_repair(error: object, raw_output: object) -> None:
+            # Keep the bounded repair visible in the durable transcript.  The
+            # engine action-repair path has its own record; strategy responses
+            # need the same evidence when validation happens before dispatch.
+            record({"type": "strategy_response_repair",
+                    "error": str(error), "raw_output": raw_output,
+                    "turn": state.get("turn") if isinstance(state, dict) else None,
+                    "state_revision": state.get("state_revision") if isinstance(state, dict) else None})
+
+        while True:
+            if model_calls_this_turn >= metadata["max_model_calls_per_turn"]:
+                raise ModelCallBudgetExhausted("strategy logical response budget exhausted")
+            model_calls_this_turn += 1
+            strategy_model_responses_this_turn += 1
+            metadata["model_calls"] += 1
+            allow_tools = (not bool(isinstance(state, dict) and state.get("final_only"))
+                           and tool_calls_this_turn < metadata["max_tool_calls_per_turn"]
+                           and model_calls_this_turn < metadata["max_model_calls_per_turn"])
+            delivered = current_prompt + tool_context
+            purpose = ("repair" if repair_attempted else
+                       ("inspection_followup" if tool_context else "decision"))
+            reply = complete_model(delivered, allow_tools=allow_tools, purpose=purpose)
+            enforce_usage(reply, args)
+            record({"type": "model", "call": metadata["model_calls"],
+                    "prompt_hash": reply.prompt_hash, "prompt_bytes": reply.prompt_bytes,
+                    "raw_output": reply.text, "usage": reply.usage, "cache": reply.cache})
+            if reply.usage is None:
+                metadata["usage_measured"] = False
+            try:
+                decoded = json.loads(reply.text)
+            except (TypeError, ValueError) as exc:
+                if repair_attempted:
+                    raise ModelResponseError(f"response is not valid JSON: {exc}") from exc
+                repair_attempted = True
+                note_response_repair(exc, reply.text)
+                current_prompt = (prompt_text + "\nSTRATEGY_REPAIR: previous output was not valid JSON (" +
+                                   str(exc) + "). Return exactly one strategy response object.")
+                tool_context = ""
+                continue
+            # A valid JSON object without a strategy kind may be a read-only
+            # inspection request. It is executed only at the current revision.
+            if isinstance(decoded, dict) and tool_request_name(decoded) is not None:
+                if not allow_tools:
+                    exc = ModelResponseError("strategy inspection is unavailable at this boundary")
+                    if repair_attempted:
+                        raise exc
+                    repair_attempted = True
+                    note_response_repair(exc, reply.text)
+                    current_prompt = prompt_text + "\nSTRATEGY_TOOL_REPAIR: " + str(exc) + ". Return one corrected response."
+                    tool_context = ""
+                    continue
+                try:
+                    tool_context, _, _ = dispatch_tool_request(
+                        decoded, reply.text, exchange, tool_context, None)
+                except (ValueError, RuntimeError) as exc:
+                    if repair_attempted:
+                        raise ModelResponseError(str(exc)) from exc
+                    # Preserve a failed/stale inspection as a tool result so
+                    # the transcript proves that the local projection was
+                    # invalidated before the repaired ordinary response.
+                    record({"type": "tool_result", "tool": tool_request_name(decoded),
+                            "request": decoded, "error": str(exc), "body": None})
+                    focused_local_context = None
+                    repair_attempted = True
+                    note_response_repair(exc, reply.text)
+                    current_prompt = prompt_text + "\nSTRATEGY_TOOL_REPAIR: " + str(exc) + ". Return one corrected response."
+                    tool_context = ""
+                    continue
+                current_prompt = prompt_text + "\n"
+                continue
+            try:
+                parsed = parse_model_response(decoded)
+                if isinstance(parsed, SetPolicyResponse) and policy_context is not None:
+                    parsed = SetPolicyResponse(validate_routine_policy(parsed.policy, policy_context))
+                if isinstance(parsed, ActResponse):
+                    if isinstance(state, dict) and state.get("final_only") and not parsed.finish_turn:
+                        raise ModelResponseError("final_only strategy act must set finish_turn=true")
+                    try:
+                        act_orders = validate_orders(
+                            json.dumps({"actions": parsed.actions}),
+                            args.no_recruit_macro, require_end_turn=False)
+                    except ValueError as exc:
+                        raise ModelResponseError(str(exc)) from exc
+                    submitted = list(act_orders)
+                    if parsed.finish_turn:
+                        submitted.append(copy.deepcopy(NO_SWEEP_FINISH))
+                    validation = query_validate_batch(
+                        exchange, submitted, int(state.get("state_revision", 0)))
+                    if validation.get("valid") is not True:
+                        raise ModelResponseError(
+                            "engine rejected strategy act: " +
+                            str(validation.get("error_message", validation)))
+                return parsed, reply
+            except (ModelResponseError, PolicyValidationError) as exc:
+                if repair_attempted:
+                    raise
+                repair_attempted = True
+                note_response_repair(exc, reply.text)
+                current_prompt = (prompt_text + "\nSTRATEGY_REPAIR_UNTRUSTED_DATA_BEGIN\n" +
+                                   reply.text + "\nSTRATEGY_REPAIR_UNTRUSTED_DATA_END\n" +
+                                   "The previous response was invalid: " + str(exc) +
+                                   ". Return one corrected strategy response now with only the defined fields.")
+                tool_context = ""
 
     def strategy_step() -> Optional[int]:
         """Advance strategy-mode play until an actual submission is made.
 
         Returns an exit code if the run reached a terminal outcome without
-        submitting anything (an unsupported exception, a budget exhaustion, or
-        a malformed model response); returns None once a routine action,
+        submitting anything (a budget exhaustion or malformed model response);
+        returns None once a routine action,
         finish, resign, or tactical act has been written to the driver and the
         caller should resume the ordinary checkpoint/status/state read loop.
         """
@@ -6048,9 +6267,14 @@ def run(args: argparse.Namespace) -> int:
                         "model_calls_budget_exhausted",
                         "model decision call budget exhausted for this side turn")
                 context = strategy_validation_context(exchange)
-                brief = render_policy_brief(0, context.recruitable_defs)
+                brief = render_policy_brief(
+                    0, context.recruitable_defs, state=state,
+                    recruit_options=state.get("strategy_recruit_options") if isinstance(state, dict) else None,
+                                   changes=continuity_entries[-2:] if continuity_entries else None)
                 try:
-                    parsed = strategy_call_model(brief)
+                    parsed, reply = strategy_call_model(brief, policy_context=context)
+                except ModelCallBudgetExhausted as exc:
+                    return emit_budget_interrupted("model_calls_budget_exhausted", str(exc))
                 except (ModelResponseError, PolicyValidationError) as exc:
                     set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
                                 reason=TERMINAL_MODEL_INVALID, code="strategy_response_invalid",
@@ -6058,21 +6282,32 @@ def run(args: argparse.Namespace) -> int:
                     durable({"type": "terminal", **metadata})
                     return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
                 if isinstance(parsed, SetPolicyResponse):
-                    try:
-                        normalized = validate_routine_policy(parsed.policy, context)
-                    except PolicyValidationError as exc:
-                        set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
-                                    reason=TERMINAL_MODEL_INVALID, code="strategy_policy_invalid",
-                                    message=str(exc))
-                        durable({"type": "terminal", **metadata})
-                        return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
-                    strategy_install(normalized, source_request_id=None, source_kind="model")
+                    strategy_install(parsed.policy, source_request_id=reply.request_id,
+                                     source_kind="model")
                     continue
                 if isinstance(parsed, FinishTurnResponse):
-                    strategy_submit([NO_SWEEP_FINISH], revision, progress_update=None, finish=True)
+                    strategy_submit_act([], revision, reply, finish_turn=True)
                     return None
                 if isinstance(parsed, ResignResponse):
-                    strategy_submit([{"action": "Resign"}], revision, progress_update=None, finish=False)
+                    strategy_submit_act([{"action": "Resign"}], revision, reply, finish_turn=False)
+                    return None
+                if isinstance(parsed, ActResponse):
+                    if state.get("final_only") and not parsed.finish_turn:
+                        set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
+                                     reason=TERMINAL_MODEL_INVALID, code="strategy_response_invalid",
+                                     message="final_only strategy act must set finish_turn=true")
+                        durable({"type": "terminal", **metadata})
+                        return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
+                    try:
+                        orders = validate_orders(json.dumps({"actions": parsed.actions}),
+                                                 args.no_recruit_macro, require_end_turn=False)
+                    except ValueError as exc:
+                        set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
+                                     reason=TERMINAL_MODEL_INVALID, code="strategy_act_invalid",
+                                     message=str(exc))
+                        durable({"type": "terminal", **metadata})
+                        return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
+                    strategy_submit_act(orders, revision, reply, finish_turn=parsed.finish_turn)
                     return None
                 set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
                             reason=TERMINAL_MODEL_INVALID, code="strategy_response_invalid",
@@ -6081,13 +6316,49 @@ def run(args: argparse.Namespace) -> int:
                 return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
 
             if isinstance(state, dict) and state.get("final_only"):
-                # Plan section 5: "no further routine partial action is
-                # permitted" once final_only is true. FinishWithGreedy with
-                # empty groups/holds is always a legal final response, so this
-                # never needs a model call; the unfinished queue (if any)
-                # simply carries over via persisted progress to the next turn.
-                strategy_submit([NO_SWEEP_FINISH], revision, progress_update=None, finish=True)
-                return None
+                # A final-only boundary may not run a routine partial. The
+                # engine's current tactical surface decides whether an empty
+                # no-sweep finish is safe; otherwise the model gets one final
+                # exception-style chance to act, finish, or resign.
+                if not isinstance(state.get("tactical_surface"), dict):
+                    try:
+                        strategy_validation_context(exchange)
+                    except RuntimeError as exc:
+                        set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
+                                     reason="infrastructure_failure", code="query_error",
+                                     message=str(exc))
+                        durable({"type": "query_error", **metadata})
+                        return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
+                surface = state.get("tactical_surface")
+                threats = surface.get("threats", {}) if isinstance(surface, dict) else {}
+                recruiters = threats.get("recruiters") if isinstance(threats, dict) else None
+                danger = (recruiters is None or any(
+                    isinstance(item, dict) and
+                    (_positive_lethal(item.get("lethal_attackers_needed")) or
+                     _positive_lethal(item.get("open_lethal_attackers_needed")))
+                    for item in recruiters))
+                # A contact/attack opportunity is a live tactical reason to
+                # ask the model even when the recruiter threat forecast is
+                # non-lethal; silently finishing would skip that action.
+                attack_available = any(
+                    isinstance(unit, dict) and any(
+                        isinstance(origin, dict) and origin.get("engagements")
+                        for origin in unit.get("origins", []))
+                    for unit in surface.get("units", [])
+                ) if isinstance(surface, dict) and isinstance(surface.get("units"), list) else False
+                exposure_units = (surface.get("exposure", {}).get("units", [])
+                                  if isinstance(surface, dict)
+                                  and isinstance(surface.get("exposure"), dict) else [])
+                army_exposed = any(
+                    isinstance(item, dict) and (
+                        _positive_lethal(item.get("distinct_attacker_count")) or
+                        _positive_lethal(item.get("open_distinct_attacker_count")))
+                    for item in exposure_units) if isinstance(exposure_units, list) else False
+                danger = danger or attack_available
+                danger = danger or army_exposed
+                if not danger:
+                    strategy_submit([NO_SWEEP_FINISH], revision, progress_update=None, finish=True)
+                    return None
 
             query = build_routine_query(revision, strategy_installation.policy, strategy_progress)
             try:
@@ -6114,19 +6385,32 @@ def run(args: argparse.Namespace) -> int:
                 return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
 
             if isinstance(result, RoutineFinishResult):
-                strategy_submit([NO_SWEEP_FINISH], revision,
-                                 progress_update=result.progress_update, finish=True)
-                return None
+                if (isinstance(state, dict) and state.get("final_only") and danger):
+                    # The routine screen is authoritative, but final-only
+                    # cannot silently accept a finish while a friendly unit
+                    # remains exposed. Give the model the typed contact
+                    # exception and let it choose an ordinary finish or act.
+                    exc_result = RoutineException(
+                        reason="contact",
+                        evidence={"final_only": True, "routine_finish": True})
+                else:
+                    strategy_submit([NO_SWEEP_FINISH], revision,
+                                     progress_update=result.progress_update, finish=True)
+                    return None
             if isinstance(result, RoutineActionResult):
-                strategy_submit([result.action], revision,
-                                progress_update=result.progress_update, finish=False)
-                return None
+                if not (isinstance(state, dict) and state.get("final_only")):
+                    strategy_submit([result.action], revision,
+                                    progress_update=result.progress_update, finish=False)
+                    return None
+                # final_only cannot submit a routine partial. Turn the
+                # planner's otherwise-useful action into a model-owned
+                # exception brief at this same revision.
+                exc_result = RoutineException(
+                    reason="contact" if danger else "threat_unavailable",
+                    evidence={"final_only": True, "routine_action": result.action})
+            else:
+                exc_result = result  # RoutineException
 
-            exc_result = result  # RoutineException
-            if exc_result.reason in UNSUPPORTED_EXCEPTION_CODES:
-                return emit_budget_interrupted(
-                    "routine_unsupported_exception",
-                    f"routine execution paused on an unsupported exception: {exc_result.reason}")
             if strategy_fixed:
                 return emit_budget_interrupted(
                     "fixed_policy_exception",
@@ -6135,11 +6419,19 @@ def run(args: argparse.Namespace) -> int:
                 return emit_budget_interrupted(
                     "model_calls_budget_exhausted",
                     "model decision call budget exhausted for this side turn")
-            brief = render_exception_brief(exc_result, strategy_progress.remaining(strategy_installation.policy))
+            context = strategy_validation_context(exchange)
+            brief = render_exception_brief(
+                exc_result, strategy_progress.remaining(strategy_installation.policy),
+                state=state,
+                recruit_options=state.get("strategy_recruit_options") if isinstance(state, dict) else None,
+                changes=continuity_entries[-2:] if continuity_entries else None,
+                policy=strategy_installation.policy if strategy_installation is not None else None)
             durable({"type": "routine_exception", "reason": exc_result.reason,
                     "evidence": exc_result.evidence, "state_revision": revision})
             try:
-                parsed = strategy_call_model(brief)
+                parsed, reply = strategy_call_model(brief, policy_context=context)
+            except ModelCallBudgetExhausted as exc:
+                return emit_budget_interrupted("model_calls_budget_exhausted", str(exc))
             except (ModelResponseError, PolicyValidationError) as exc:
                 set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
                             reason=TERMINAL_MODEL_INVALID, code="strategy_response_invalid",
@@ -6147,27 +6439,36 @@ def run(args: argparse.Namespace) -> int:
                 durable({"type": "terminal", **metadata})
                 return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
             if isinstance(parsed, SetPolicyResponse):
-                try:
-                    normalized = validate_routine_policy(parsed.policy, strategy_validation_context(exchange))
-                except PolicyValidationError as exc:
-                    set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
-                                reason=TERMINAL_MODEL_INVALID, code="strategy_policy_invalid",
-                                message=str(exc))
-                    durable({"type": "terminal", **metadata})
-                    return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
-                strategy_install(normalized, source_request_id=None, source_kind="model")
+                strategy_install(parsed.policy, source_request_id=reply.request_id,
+                                 source_kind="model")
                 continue
             if isinstance(parsed, FinishTurnResponse):
-                strategy_submit([NO_SWEEP_FINISH], revision, progress_update=None, finish=True)
+                strategy_submit_act([], revision, reply, finish_turn=True)
                 return None
             if isinstance(parsed, ResignResponse):
-                strategy_submit([{"action": "Resign"}], revision, progress_update=None, finish=False)
+                strategy_submit_act([{"action": "Resign"}], revision, reply, finish_turn=False)
                 return None
-            # ActResponse: Stack 1 does not resolve tactical exceptions (Stack 3
-            # scope beyond "contact", which is already unsupported above).
+            if isinstance(parsed, ActResponse):
+                if state.get("final_only") and not parsed.finish_turn:
+                    set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
+                                 reason=TERMINAL_MODEL_INVALID, code="strategy_response_invalid",
+                                 message="final_only strategy act must set finish_turn=true")
+                    durable({"type": "terminal", **metadata})
+                    return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
+                try:
+                    orders = validate_orders(json.dumps({"actions": parsed.actions}),
+                                             args.no_recruit_macro, require_end_turn=False)
+                except ValueError as exc:
+                    set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
+                                 reason=TERMINAL_MODEL_INVALID, code="strategy_act_invalid",
+                                 message=str(exc))
+                    durable({"type": "terminal", **metadata})
+                    return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
+                strategy_submit_act(orders, revision, reply, finish_turn=parsed.finish_turn)
+                return None
             set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
                         reason=TERMINAL_MODEL_INVALID, code="strategy_response_invalid",
-                        message="an 'act' response is not supported for this exception in Stack 1")
+                        message="unrecognized strategy response")
             durable({"type": "terminal", **metadata})
             return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
 
@@ -6256,7 +6557,7 @@ def run(args: argparse.Namespace) -> int:
             tool_context = latest_tool_context
         else:
             tool_context += latest_tool_context
-        if (getattr(args, "decision_mode", "batch") == "focused"
+        if (getattr(args, "decision_mode", "batch") in {"focused", "strategy"}
                 and tool in {"inspect_units", "inspect_target", "inspect_targets", "inspect_hex"}):
             # Replace the prior local task with this inspection. Unavailable
             # results remain unknown and therefore cannot create a usable local

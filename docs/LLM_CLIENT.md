@@ -322,14 +322,23 @@ provenance. Combining `--focused-max-operations-per-decision` with strategy mode
 is rejected rather than reinterpreted.
 
 The model answers with a strict discriminated union on `kind`: `set_policy`,
-`act`, `finish_turn`, or `resign`. There are no `decisions[]`, rule citations,
-risk/expected strings, intent, or agenda in this mode; `decisions[]` is the old
-annotation array and is absent here. A policy is a validated structured set of
-executable orders — policy prose is never parsed or executed. Each recruit
+`act`, `finish_turn`, or `resign`. Ordinary `act` responses may set
+`finish_turn` either way; a `final_only` boundary requires `true`, and the
+client appends the empty `FinishWithGreedy` boundary to that one validated
+batch. There are no `decisions[]`, rule citations, risk/expected strings,
+intent, or agenda in this mode; `decisions[]` is the old annotation array and
+is absent here. A policy is a validated structured set of executable orders —
+policy prose is never parsed or executed. Each recruit
 `count` is a finite total for that policy installation, not a per-turn purchase,
 and a replacement policy replaces all previous orders and remaining counts.
 
-The client calls the model at initial policy selection and at typed exceptions
+The initial policy and exception briefs repeat the compact live map, both-side
+unit identities, economy and recruit costs. Exception briefs also repeat the
+installed assignments, holds, rally and remaining counts. At an ordinary
+revision-pinned boundary the model may request one bounded read-only
+inspection with `inspect_target`, `inspect_targets`, `inspect_units`, or
+`inspect_hex`; the response must then use the returned current revision. The
+client calls the model at initial policy selection and at typed exceptions
 only — never because a revision advanced, a unit moved, a recruit received an
 ID, or a turn ended. Between those points the executor asks the driver's
 read-only, revision-pinned `routine_next` query for one step at a time and
@@ -361,10 +370,10 @@ replaying the same evidence cannot recruit twice. Replacing a policy starts new
 orders and explicitly requests its new recruit counts. An unresolved checkpoint
 boundary stops with unknown progress instead of resetting counts.
 
-Enemy contact currently ends the run as an explicit unsupported exception;
-tactical model responses are the next implementation stack. There is no hidden
-fallback or automatic Greedy combat handoff. Use a scripted backend or fixed
-policy while validating this intermediate stack.
+Enemy contact is a typed exception delivered to the strategy model. Tactical
+actions use the ordinary transactional executor and retain model request and
+side-turn provenance. Use a scripted backend or fixed policy for network-free
+validation.
 
 ### Publishing a file-transport reply
 
