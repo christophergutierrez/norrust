@@ -349,6 +349,16 @@ def replay_cases(cases: list[dict[str, Any]], output_dir: str | Path, *, fake: b
                         "observer_verdicts": verdicts, "observer_failures": failures,
                         "observer_failure_reasons": reasons,
                         "evidence_gaps": evidence_gaps,
+                        "physical_dispatches": sum(item.get("physical_dispatches", item["observer_calls"])
+                                                    for item in metrics),
+                        "receipt_completions": sum(item.get("receipt_completions", 0)
+                                                    for item in metrics),
+                        "usable_evidence_reads": sum(item.get("usable_evidence_reads", 0)
+                                                      for item in metrics),
+                        "pending_investigations": sum(item.get("pending_investigations", 0)
+                                                       for item in metrics),
+                        "deterministic_skips": sum(item.get("deterministic_skips", 0)
+                                                    for item in metrics),
                         "usage_coverage": [item["usage_coverage"] for item in metrics]},
             "cases": results}
     # Keep a durable aggregate beside the case directories. It is the same

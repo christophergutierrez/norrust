@@ -843,7 +843,17 @@ class RunWatchdog:
         if self._alerts and now - float(self._alerts[-1].get("monotonic", now)) < self.cooldown:
             alert = dict(alert)
             alert["coalesced"] = True
-        alert = dict(alert, identity=identity, monotonic=now, observed_at=_wall_now())
+        alert = dict(alert)
+        # ``identity`` remains the raw passage identity for replay and audit.
+        # ``incident_id`` is the scheduling identity: overlapping passages in
+        # one revision/request are coalesced without dropping those raw rows.
+        if not isinstance(alert.get("incident_id"), str):
+            alert["incident_id"] = _digest(_json({
+                "kind": alert.get("kind"),
+                "revision": alert.get("revision", self._latest.get("revision")),
+                "request": self._latest.get("conversation_id"),
+            }).encode())[:24]
+        alert.update(identity=identity, monotonic=now, observed_at=_wall_now())
         self._alerts.append(alert)
         self._alerts = self._alerts[-32:]
         self._append_journal({"type": "alert", **alert})

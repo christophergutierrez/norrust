@@ -304,6 +304,12 @@ def review(log_path: str | Path, *, run_id: str | None = None,
         "rejected_stops": stop_rejected,
         "stop_requests": stop_requested,
         "stop_rejection_reasons": stop_reasons,
+        "physical_dispatches": journal_outcomes.get("physical_dispatches"),
+        "receipt_completions": journal_outcomes.get("receipt_completions"),
+        "receipt_failures": journal_outcomes.get("receipt_failures"),
+        "preflight_failures": journal_outcomes.get("preflight_failures"),
+        "pending_investigations": journal_outcomes.get("pending_investigations"),
+        "deterministic_skips": journal_outcomes.get("deterministic_skips"),
     })
     if not isinstance(status, dict):
         coverage_events.append("recorder_status_invalid")
@@ -343,6 +349,21 @@ def review(log_path: str | Path, *, run_id: str | None = None,
                      "evidence_ids": evidence_ids,
                      "evidence_index": [{"evidence_id": item, "max_bytes": MAX_EVIDENCE_BYTES}
                                          for item in evidence_ids]},
+        "observer_coverage": {
+            "physical_dispatches": journal_outcomes.get("physical_dispatches"),
+            "receipt_completions": journal_outcomes.get("receipt_completions"),
+            "receipt_failures": journal_outcomes.get("receipt_failures"),
+            "usable_evidence_reads": journal_outcomes.get("usable_evidence_reads"),
+            "failed_evidence_reads": journal_outcomes.get("failed_evidence_reads"),
+            "inspection_attempts": journal_outcomes.get("inspection_attempts"),
+            "pending_inspections": journal_outcomes.get("pending_inspections"),
+            "pending_investigations": journal_outcomes.get("pending_investigations"),
+            "preflight_failures": journal_outcomes.get("preflight_failures"),
+            "deterministic_skips": journal_outcomes.get("deterministic_skips"),
+            "cap_exhausted": journal_outcomes.get("call_cap_exhausted"),
+            "termination_reason": journal_outcomes.get("termination_reason"),
+            "disabled_reason": journal_outcomes.get("disabled_reason"),
+        },
     }
 
 

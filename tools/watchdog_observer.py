@@ -395,14 +395,50 @@ def build_observer_request(packet: Mapping[str, Any], *, model: str = DEFAULT_MO
     base = {"model": model}
     omitted: list[str] = []
     bounded = _shrink(dict(packet), omitted)
+    # ``RunWatchdog`` retains a raw alert in both its compact alert channel and
+    # the repetition detector view. Keep one model-visible passage and retain
+    # detector counts as metadata; duplicated text would consume the evidence
+    # budget without increasing coverage.
+    repetition = bounded.get("repetition") if isinstance(bounded, dict) else None
+    if isinstance(repetition, dict) and "alerts" in repetition:
+        repetition.pop("alerts", None)
     evidence_values = list(evidence)
-    evidence_list = [_shrink(dict(item), omitted, f"evidence[{i}]")
-                     for i, item in enumerate(evidence_values[:MAX_EVIDENCE_READS])]
+    evidence_list = []
+    for i, item in enumerate(evidence_values[:MAX_EVIDENCE_READS]):
+        bounded_item = _shrink(dict(item), omitted, f"evidence[{i}]")
+        # Keep the evidence slice self-describing after projection.  These
+        # fields are metadata only; the recorded bytes remain bounded below.
+        if isinstance(bounded_item, dict):
+            bounded_item.setdefault("type", str(item.get("type") or item.get("kind")
+                                                 or item.get("record_kind") or "recorded_evidence")[:64])
+            bounded_item.setdefault("description", "bounded recorded evidence slice")
+        evidence_list.append(bounded_item)
     if len(evidence_values) > MAX_EVIDENCE_READS:
         omitted.append("evidence")
+    permitted_ids: list[str] = []
+    raw_ids = packet.get("evidence_ids")
+    if isinstance(raw_ids, list):
+        for value in raw_ids:
+            if isinstance(value, str) and value and len(value) <= 128 and value not in permitted_ids:
+                permitted_ids.append(value)
+            if len(permitted_ids) >= MAX_CONTEXT_EVIDENCE_IDS:
+                break
+    for item in evidence_values[:MAX_EVIDENCE_READS]:
+        value = item.get("evidence_id") if isinstance(item, Mapping) else None
+        if isinstance(value, str) and value and len(value) <= 128 and value not in permitted_ids:
+            permitted_ids.append(value)
+    evidence_choices = [{"evidence_id": value, "type": "recorded_evidence",
+                         "description": "available bounded evidence slice",
+                         "permitted": True} for value in permitted_ids]
+    coverage_value = {"input_clipped": bool(omitted),
+                      "omitted_fields": sorted(set(omitted)),
+                      "token_bound_is_estimate": True,
+                      "provenance": {key: packet.get(key) for key in
+                                     ("run_id", "observation_sequence", "revision")
+                                     if packet.get(key) is not None}}
     user_content = json.dumps({"watchdog_packet": bounded, "evidence": evidence_list,
-                               "coverage": {"input_clipped": bool(omitted),
-                                            "omitted_fields": sorted(set(omitted))}},
+                               "permitted_evidence_choices": evidence_choices,
+                               "coverage": coverage_value},
                               sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     payload = dict(base,
                    messages=[{"role": "system", "content": _INSTRUCTIONS +
@@ -432,12 +468,21 @@ def build_observer_request(packet: Mapping[str, Any], *, model: str = DEFAULT_MO
             raise ObserverInputError("observer request exceeds 4096-token conservative input bound")
         payload["messages"][1]["content"] = json.dumps(
             {"watchdog_packet": bounded, "evidence": evidence_list,
+             "permitted_evidence_choices": evidence_choices,
              "coverage": {"input_clipped": True,
-                          "omitted_fields": sorted(set(omitted))}},
+                          "omitted_fields": sorted(set(omitted)),
+                          "token_bound_is_estimate": True,
+                          "provenance": {key: packet.get(key) for key in
+                                         ("run_id", "observation_sequence", "revision")
+                                         if packet.get(key) is not None}}},
             sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     critical = {"packet.stage", "packet.observation_sequence", "packet.alerts",
                 "packet.coverage_events", "packet.degraded", "packet.controller_context"}
-    critical_omitted = any(item in critical or item.startswith("packet.alerts[")
+    # Passage text is intentionally summarized and remains bounded usable
+    # evidence. Critical coverage is lost only when the alert container or
+    # trusted controller fields themselves are absent, not when an excerpt is
+    # shortened for the input budget.
+    critical_omitted = any(item in critical or item == "packet.alerts"
                            or item.startswith("packet.controller_context") for item in omitted)
     coverage = "incomplete" if critical_omitted else ("bounded" if omitted else "complete")
     return payload, bool(omitted), coverage
@@ -686,6 +731,8 @@ class ObserverController:
         self._lock = threading.RLock()
         self._future: concurrent.futures.Future[Any] | None = None
         self._busy = False
+        self._active_phase: str | None = None
+        self._active_inspection_id: str | None = None
         self._closed = False
         self._state_invalid = False
         self._journal_path = self.state_path.with_suffix(".journal.ndjson")
@@ -781,6 +828,8 @@ class ObserverController:
             if (int(self.state.get("dispatched_calls", 0)) + int(self.state.get("reserved_calls", 0)) >= self.max_calls):
                 self.state["disabled_reason"] = "observer_call_cap_exhausted"
                 self._persist()
+                self._journal({"type": "call_cap_exhausted", "max_calls": self.max_calls,
+                               "paid_call": False})
                 return None
             call_id = f"observer-{secrets.token_hex(10)}"
             self.state["reserved_calls"] = int(self.state.get("reserved_calls", 0)) + 1
@@ -809,6 +858,14 @@ class ObserverController:
             self.state["active_call_id"] = None
             self._persist()
 
+    def _journal_skip(self, packet: Mapping[str, Any], reason: str) -> None:
+        """Record a controller-only continue decision without a model call."""
+        self._journal({"type": "deterministic_skip", "decision": "continue",
+                       "reason_code": reason,
+                       "observation_sequence": packet.get("observation_sequence"),
+                       "incident_identity": self._packet_alert_id(packet) or None,
+                       "paid_call": False})
+
     def _eligible(self, packet: Mapping[str, Any], now: float) -> bool:
         if packet.get("active") is False:
             return False
@@ -830,6 +887,8 @@ class ObserverController:
             return ""
         revision = packet.get("revision")
         identities = []
+        incident_ids = []
+        kinds = []
         for alert in alerts:
             # RunWatchdog retains old alerts. An alert tied to a prior engine
             # revision cannot establish a current no-progress incident.
@@ -837,6 +896,25 @@ class ObserverController:
                     and (revision is None or alert.get("revision") is None
                          or alert.get("revision") == revision)):
                 identities.append(alert["identity"])
+                if isinstance(alert.get("incident_id"), str) and alert["incident_id"]:
+                    incident_ids.append(alert["incident_id"])
+                kind = alert.get("kind")
+                if isinstance(kind, str):
+                    kinds.append(kind)
+        if not identities:
+            return ""
+        request = packet.get("current_request")
+        if isinstance(request, Mapping):
+            request = request.get("harness_request_id") or request.get("request_id")
+        request_scope = str(request) if request is not None else "unknown_request"
+        if incident_ids:
+            return "incident:" + "|".join(sorted(set(incident_ids))) + ":" + request_scope
+        # Stream repetition alerts are passages from one request stream. New
+        # overlapping passages must keep the same scheduling incident while
+        # the recorder still retains every raw alert for review. Revision is
+        # part of the key so a new engine state cannot inherit confirmation.
+        if "repeated_stream_passage" in kinds:
+            return f"repeated_stream_passage:{packet.get('revision', 'unknown')}:{request_scope}"
         return "|".join(sorted(set(identities)))
 
     def _record_packet(self, packet: Mapping[str, Any]) -> None:
@@ -949,6 +1027,11 @@ class ObserverController:
         context = self._controller_context(packet, phase=phase,
                                             evidence_ids=refs,
                                             evidence_complete=evidence_complete)
+        if phase == "investigation":
+            # Only references actually returned by the reader may be selected
+            # in the follow-up schema. The original packet remains available
+            # to offline audit, but is not an invitation to request unread IDs.
+            source["evidence_ids"] = list(context["available_evidence_ids"])
         source["controller_context"] = context
         return source
 
@@ -978,6 +1061,12 @@ class ObserverController:
         with self._lock:
             if not self._eligible(packet, now):
                 self._record_packet(packet)
+                # A regular interval, cooldown, active recorder, or absent
+                # incident is a deterministic controller decision. Recording
+                # it makes skipped windows distinguishable from missing
+                # observer receipts during offline review.
+                if not self._packet_alert_id(packet):
+                    self._journal_skip(packet, "no_current_incident")
                 return False
             call_id = self._reserve()
             if call_id is None:
@@ -987,19 +1076,34 @@ class ObserverController:
             self.state["last_verdict_sequence"] = sequence
             self._persist()
             request_packet = self._request_packet(packet, phase="initial")
+            self._active_phase = "initial"
+            self._journal({"type": "preparation", "phase": "initial", "status": "pending",
+                           "call_id": call_id, "observation_sequence": sequence,
+                           "paid_call": False})
         try:
             # Preflight is intentionally before the durable dispatch marker:
             # an oversized or credential-less request owns no provider call.
             self.backend.prepare(request_packet)
             dispatched_call = self.backend.make_dispatch_call(self.catalog_game_id, call_id)
-        except Exception:
+        except Exception as exc:
             self._release_reservation()
+            self._active_phase = None
             with self._lock:
-                self.state["last_verdict"] = {"error": "observer_preflight_failed"}
-                self.state["disabled_reason"] = "observer_preflight_failed"
+                error = type(exc).__name__
+                self.state["last_verdict"] = {"error": "observer_preflight_failed",
+                                                "detail": error}
                 self._persist()
-                self._journal({"type": "preflight_error", "error": "observer_preflight_failed"})
+                self._journal({"type": "preparation_failed", "phase": "initial",
+                               "call_id": call_id, "error": error, "message": str(exc)[:256], "paid_call": False,
+                               "observation_sequence": sequence})
+                # A local bound or transient preparation error did not spend a
+                # provider call and may be retried on the next recorder packet.
+                self._journal({"type": "preflight_error", "error": error,
+                               "paid_call": False, "observation_sequence": sequence})
             return False
+        self._journal({"type": "preparation", "phase": "initial", "status": "ready",
+                       "call_id": call_id, "observation_sequence": sequence,
+                       "paid_call": False})
         self._mark_dispatched(dispatched_call, now)
         alert_id = self._packet_alert_id(packet)
         if alert_id:
@@ -1038,8 +1142,10 @@ class ObserverController:
         except Exception as exc:
             with self._lock:
                 self._busy = False
+                self._active_phase = None
                 if self._closed:
                     return
+                failed_call_id = self.state.get("active_call_id")
                 failures = int(self.state.get("consecutive_failures", 0)) + 1
                 self.state["consecutive_failures"] = failures
                 self.state["last_verdict"] = {"error": type(exc).__name__, "message": str(exc)[:256]}
@@ -1048,7 +1154,8 @@ class ObserverController:
                     self.state["disabled_reason"] = "two_consecutive_observer_failures"
                 self._persist()
                 self._journal({"type": "verdict_error", "error": type(exc).__name__,
-                               "message": str(exc)[:256]})
+                               "message": str(exc)[:256],
+                               "call_id": failed_call_id, "paid_call": True})
             return
         with self._lock:
             if self._closed:
@@ -1058,23 +1165,37 @@ class ObserverController:
             # the one allowed investigation is reserved. Otherwise a fast
             # recorder poll can dispatch a second primary call concurrently.
             self._busy = result.decision.decision == "inspect"
+            self._active_phase = "inspection" if self._busy else None
             self.state["consecutive_failures"] = 0
             self.state["active_call_id"] = None
             self.state["last_verdict"] = result.decision.as_dict()
             self._persist()
             self._journal({"type": "verdict", **result.decision.as_dict(),
-                           "observed_sequence": sequence, "coverage": result.coverage})
+                           "observed_sequence": sequence, "coverage": result.coverage,
+                           "call_id": result.call.call_id})
         if result.decision.decision == "inspect":
+            inspection_id = f"inspection-{secrets.token_hex(8)}"
+            self._active_inspection_id = inspection_id
+            self._journal({"type": "inspection_started", "inspection_id": inspection_id,
+                           "call_id": result.call.call_id, "observation_sequence": sequence,
+                           "requested_evidence_ids": list(result.decision.evidence_ids[:MAX_EVIDENCE_READS]),
+                           "status": "pending", "paid_call": False})
             evidence: list[Mapping[str, Any]] = []
             requested_ids = result.decision.evidence_ids[:MAX_EVIDENCE_READS]
             if not requested_ids:
                 evidence.append({"coverage": "incomplete", "error": "empty_evidence_reference"})
+                self._journal({"type": "evidence_read", "inspection_id": inspection_id,
+                               "status": "failed", "error": "empty_evidence_reference",
+                               "paid_call": False})
             elif self.evidence_reader is not None:
                 advertised = set(self._evidence_ids(packet))
                 for evidence_id in requested_ids:
                     if not isinstance(packet.get("evidence_ids"), list) or evidence_id not in advertised:
                         evidence.append({"evidence_id": evidence_id, "coverage": "incomplete",
                                          "error": "unknown_evidence_reference"})
+                        self._journal({"type": "evidence_read", "inspection_id": inspection_id,
+                                       "evidence_id": evidence_id, "status": "failed",
+                                       "error": "unknown_evidence_reference", "paid_call": False})
                         continue
                     try:
                         value = self.evidence_reader(self.run_id, evidence_id, 0, MAX_EVIDENCE_BYTES)
@@ -1087,17 +1208,45 @@ class ObserverController:
                                 item["coverage"] = "incomplete"
                                 item["error"] = "foreign_evidence"
                             evidence.append(item)
+                            self._journal({"type": "evidence_read", "inspection_id": inspection_id,
+                                           "evidence_id": evidence_id,
+                                           "status": "complete" if item.get("coverage") != "incomplete" else "failed",
+                                           "error": item.get("error"), "bytes": min(MAX_EVIDENCE_BYTES,
+                                                                                     len(json.dumps(item, default=str))),
+                                           "paid_call": False})
                         else:
                             evidence.append({"evidence_id": evidence_id, "coverage": "incomplete",
                                              "error": "evidence_record_not_object"})
+                            self._journal({"type": "evidence_read", "inspection_id": inspection_id,
+                                           "evidence_id": evidence_id, "status": "failed",
+                                           "error": "evidence_record_not_object", "paid_call": False})
                     except Exception as exc:
                         evidence.append({"evidence_id": evidence_id, "coverage": "incomplete", "error": type(exc).__name__})
+                        self._journal({"type": "evidence_read", "inspection_id": inspection_id,
+                                       "evidence_id": evidence_id, "status": "failed",
+                                       "error": type(exc).__name__, "paid_call": False})
             else:
                 evidence.append({"coverage": "incomplete", "error": "evidence_reader_unavailable"})
+                self._journal({"type": "evidence_read", "inspection_id": inspection_id,
+                               "status": "failed", "error": "evidence_reader_unavailable",
+                               "paid_call": False})
             # One investigation follow-up, using the same durable cap.  Its
             # result is terminal for this observation; inspect cannot recurse.
             evidence_complete = all(not (isinstance(item, Mapping) and item.get("coverage") == "incomplete")
                                     for item in evidence)
+            if self._closed:
+                self._journal({"type": "inspection_cancelled", "inspection_id": inspection_id,
+                               "reason": "operator_close", "paid_call": False})
+                self._active_inspection_id = None
+                self._active_phase = None
+                self._busy = False
+                return
+            self._journal({"type": "inspection_completed", "inspection_id": inspection_id,
+                           "status": "complete" if evidence_complete else "incomplete",
+                           "evidence_ids": [item.get("evidence_id") for item in evidence
+                                            if isinstance(item, Mapping) and isinstance(item.get("evidence_id"), str)],
+                           "paid_call": False})
+            self._active_inspection_id = None
             self._investigate(packet, sequence, evidence, evidence_complete=evidence_complete)
             return
         self._consider_stop(packet, sequence, result)
@@ -1107,6 +1256,8 @@ class ObserverController:
         call_id = self._reserve()
         if call_id is None:
             self._busy = False
+            self._journal({"type": "investigation_skipped", "reason": self.state.get("disabled_reason") or "unavailable",
+                           "observation_sequence": sequence, "paid_call": False})
             return
         now = self.clock()
         evidence_ids = [item.get("evidence_id") for item in evidence
@@ -1114,13 +1265,25 @@ class ObserverController:
         request_packet = self._request_packet(
             packet, phase="investigation", evidence_ids=evidence_ids,
             evidence_complete=evidence_complete)
+        self._active_phase = "investigation"
+        self._journal({"type": "preparation", "phase": "investigation", "status": "pending",
+                       "call_id": call_id, "observation_sequence": sequence,
+                       "evidence_complete": evidence_complete, "paid_call": False})
         try:
             self.backend.prepare(request_packet, evidence)
             dispatched_call = self.backend.make_dispatch_call(self.catalog_game_id, call_id)
-        except Exception:
+        except Exception as exc:
             self._release_reservation()
             self._busy = False
+            self._active_phase = None
+            self._journal({"type": "investigation_failure", "phase": "preparation",
+                           "call_id": call_id, "error": type(exc).__name__,
+                           "message": str(exc)[:256], "paid_call": False,
+                           "observation_sequence": sequence})
             return
+        self._journal({"type": "preparation", "phase": "investigation", "status": "ready",
+                       "call_id": call_id, "observation_sequence": sequence,
+                       "evidence_complete": evidence_complete, "paid_call": False})
         self._mark_dispatched(dispatched_call, now)
         started_wall = time.time()
         def work() -> Any:
@@ -1145,6 +1308,7 @@ class ObserverController:
                 result = done.result()
             except Exception as exc:
                 self._busy = False
+                self._active_phase = None
                 if self._closed:
                     return
                 self._finish_failure(exc)
@@ -1158,16 +1322,19 @@ class ObserverController:
                 self.state["last_verdict"] = result.decision.as_dict()
                 self._persist()
                 self._journal({"type": "investigation_verdict", **result.decision.as_dict(),
-                               "observed_sequence": sequence, "coverage": result.coverage})
+                               "observed_sequence": sequence, "coverage": result.coverage,
+                               "call_id": result.call.call_id})
             self._consider_stop(packet, sequence, result, investigated=True,
                                 evidence_complete=evidence_complete,
                                 inspected_evidence_ids=evidence_ids)
             with self._lock:
                 self._busy = False
+                self._active_phase = None
         future.add_done_callback(finish_investigation)
 
     def _finish_failure(self, exc: Exception) -> None:
         with self._lock:
+            failed_call_id = self.state.get("active_call_id")
             failures = int(self.state.get("consecutive_failures", 0)) + 1
             self.state["consecutive_failures"] = failures
             self.state["active_call_id"] = None
@@ -1176,7 +1343,8 @@ class ObserverController:
                 self.state["disabled_reason"] = "two_consecutive_observer_failures"
             self._persist()
             self._journal({"type": "investigation_error", "error": type(exc).__name__,
-                           "message": str(exc)[:256]})
+                           "message": str(exc)[:256], "call_id": failed_call_id,
+                           "paid_call": True})
 
     def _consider_stop(self, packet: Mapping[str, Any], sequence: Any, result: ObserverResult,
                        *, investigated: bool = False, evidence_complete: bool = True,
@@ -1287,6 +1455,18 @@ class ObserverController:
         with self._lock:
             self._closed = True
             self.state["closed"] = True
+            if self._busy:
+                self._journal({"type": "monitoring_terminated", "reason": "operator_close",
+                               "active_call_id": self.state.get("active_call_id"),
+                               "pending": True, "paid_call": False})
+                if self._active_inspection_id:
+                    self._journal({"type": "inspection_cancelled",
+                                   "inspection_id": self._active_inspection_id,
+                                   "reason": "operator_close", "paid_call": False})
+                if self._active_phase == "investigation":
+                    self._journal({"type": "investigation_cancelled",
+                                   "active_call_id": self.state.get("active_call_id"),
+                                   "reason": "operator_close", "paid_call": False})
             self._persist()
         if wait:
             future = self._future

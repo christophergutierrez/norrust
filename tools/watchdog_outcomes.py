@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Any
 
 VERDICT_EVENTS = ("verdict", "investigation_verdict")
-FAILURE_EVENTS = ("verdict_error", "investigation_error", "preflight_error")
+FAILURE_EVENTS = ("verdict_error", "investigation_error", "preflight_error",
+                  "preparation_failed", "investigation_failure")
 MAX_JOURNAL_BYTES = 2 * 1024 * 1024
 
 
@@ -29,6 +30,22 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
     legacy_stop_requests = 0
     rejected_stops = 0
     stop_rejection_reasons: dict[str, int] = {}
+    physical_dispatches = 0
+    receipt_completions = 0
+    receipt_failures = 0
+    preflight_failures = 0
+    deterministic_skips = 0
+    inspection_attempts = 0
+    evidence_reads = 0
+    usable_evidence_reads = 0
+    failed_evidence_reads = 0
+    pending_inspections = 0
+    pending_investigations = 0
+    cap_exhausted = 0
+    disabled_reason: str | None = None
+    termination_reason: str | None = None
+    dispatched_ids: set[str] = set()
+    terminal_ids: set[str] = set()
     journal_available = True
     last_outcome: str | None = None
     try:
@@ -62,7 +79,48 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
         kind = event.get("type")
         decision = event.get("decision")
         if kind == "dispatch":
+            physical_dispatches += 1
+            if isinstance(event.get("call_id"), str):
+                dispatched_ids.add(event["call_id"])
             last_outcome = "pending"
+            continue
+        if kind == "preparation":
+            if event.get("status") == "pending":
+                last_outcome = "pending"
+            continue
+        if kind == "deterministic_skip":
+            deterministic_skips += 1
+            continue
+        if kind == "call_cap_exhausted":
+            cap_exhausted += 1
+            disabled_reason = "observer_call_cap_exhausted"
+            termination_reason = "observer_call_cap_exhausted"
+            continue
+        if kind == "monitoring_terminated":
+            termination_reason = str(event.get("reason") or "operator_close")
+            continue
+        if kind == "inspection_started":
+            inspection_attempts += 1
+            pending_inspections += 1
+            last_outcome = "pending"
+            continue
+        if kind in {"inspection_completed", "inspection_cancelled"}:
+            pending_inspections = max(0, pending_inspections - 1)
+            if kind == "inspection_cancelled":
+                evidence_gaps["inspection_cancelled"] = evidence_gaps.get("inspection_cancelled", 0) + 1
+                last_outcome = "failure"
+            continue
+        if kind == "evidence_read":
+            evidence_reads += 1
+            if event.get("status") == "complete":
+                usable_evidence_reads += 1
+            else:
+                failed_evidence_reads += 1
+            continue
+        if kind == "investigation_cancelled":
+            pending_investigations += 1
+            evidence_gaps["investigation_cancelled"] = evidence_gaps.get("investigation_cancelled", 0) + 1
+            last_outcome = "failure"
             continue
         if kind == "stop_evaluation":
             stop_evaluations += 1
@@ -82,6 +140,9 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
             continue
         if kind in VERDICT_EVENTS:
             verdicts += 1
+            if isinstance(event.get("call_id"), str):
+                terminal_ids.add(event["call_id"])
+            receipt_completions += 1
             if decision == "inspect":
                 last_outcome = "pending"
             elif decision in {"continue", "stop"}:
@@ -92,6 +153,12 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
                 last_outcome = "failure"
         elif kind in FAILURE_EVENTS:
             failures += 1
+            if isinstance(event.get("call_id"), str) and event.get("paid_call") is True:
+                terminal_ids.add(event["call_id"])
+            if kind in ("preflight_error", "preparation_failed", "investigation_failure"):
+                preflight_failures += 1
+            else:
+                receipt_failures += 1
             reason = event.get("error") or kind
             reasons[str(reason)] = reasons.get(str(reason), 0) + 1
             last_outcome = "failure"
@@ -100,6 +167,12 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
         last_outcome = "failure"
     if last_outcome == "pending":
         evidence_gaps["pending_observation"] = evidence_gaps.get("pending_observation", 0) + 1
+    unresolved_receipts = len(dispatched_ids - terminal_ids)
+    if unresolved_receipts:
+        pending_investigations += unresolved_receipts
+        evidence_gaps["unresolved_receipt"] = unresolved_receipts
+    if pending_inspections:
+        evidence_gaps["pending_inspection"] = pending_inspections
     return {
         "observer_verdicts": verdicts,
         "usable_judgments": judgments,
@@ -118,4 +191,22 @@ def read_observer_outcomes(journal_path: Path) -> dict[str, Any]:
         "stop_requests": ((stop_requests if stop_evaluations else legacy_stop_requests)
                           if journal_available else None),
         "stop_rejection_reasons": stop_rejection_reasons if journal_available else None,
+        # Lifecycle and coverage are deliberately separate dimensions. A
+        # dispatch proves a physical provider call; a verdict proves a
+        # receipt; evidence reads prove usable investigation material.
+        "physical_dispatches": physical_dispatches,
+        "receipt_completions": receipt_completions,
+        "receipt_failures": receipt_failures,
+        "unresolved_receipts": unresolved_receipts,
+        "preflight_failures": preflight_failures,
+        "deterministic_skips": deterministic_skips,
+        "inspection_attempts": inspection_attempts,
+        "evidence_reads": evidence_reads,
+        "usable_evidence_reads": usable_evidence_reads,
+        "failed_evidence_reads": failed_evidence_reads,
+        "pending_inspections": pending_inspections,
+        "pending_investigations": pending_investigations,
+        "call_cap_exhausted": cap_exhausted > 0,
+        "disabled_reason": disabled_reason,
+        "termination_reason": termination_reason,
     }
