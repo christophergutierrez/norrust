@@ -1,10 +1,12 @@
 import base64
+import hashlib
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from .run_watchdog import EvidenceError, RepetitionDetector, RunWatchdog, read_run_evidence, run_status
+from .run_watchdog import (EvidenceError, MAX_RECORD_SIZE, RepetitionDetector,
+                            RunWatchdog, _NDJSONCursor, read_run_evidence, run_status)
 
 
 class FakeClock:
@@ -41,6 +43,7 @@ class WatchdogTests(unittest.TestCase):
             second = watchdog.poll()
             self.assertEqual(second["revision"], 4)
             self.assertEqual(second["committed_action"]["batch_id"], "b1")
+            self.assertIsInstance(second["recent_actions"][-1]["revision"], int)
             ref = second["committed_action"]["evidence_id"]
             result = watchdog.read_evidence(ref, 0, 2048)
             self.assertIn("batch_committed", result["data"])
@@ -186,6 +189,166 @@ class WatchdogTests(unittest.TestCase):
             watchdog = RunWatchdog(log, "bounded", clock=FakeClock())
             status = watchdog.poll()
             self.assertTrue(any("oversized" in event for event in status["coverage_events"]))
+
+    def test_large_complete_records_are_indexed_without_false_gaps_or_retained_payloads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "match.ndjson"
+            records = []
+            for size, revision in ((70_000, 70), (560_000, 560)):
+                records.append(json.dumps({"type": "driver", "line": {
+                    "type": "state", "state_revision": revision, "turn": revision},
+                    "payload": "x" * size}, separators=(",", ":")))
+            records.append(json.dumps({"type": "terminal", "reason": "max_turns"}))
+            source = ("\n".join(records) + "\n").encode()
+            log.write_bytes(source)
+            watchdog = RunWatchdog(log, "large", clock=FakeClock(), poll_interval=0)
+            status = watchdog.poll()
+            self.assertEqual(status["stage"], "terminal")
+            self.assertEqual(status["revision"], 560)
+            self.assertFalse(any("invalid" in event or "oversized" in event
+                                 for event in status["coverage_events"]))
+            self.assertEqual(len(watchdog._records), 3)
+            self.assertTrue(all("payload" not in record for record in watchdog._records))
+            expected_offset = 0
+            for original in (item.encode() + b"\n" for item in records):
+                entry = next(item for item in watchdog._index.values()
+                             if item["start"] == expected_offset)
+                self.assertEqual(entry["end"], expected_offset + len(original))
+                self.assertEqual(entry["sha256"], hashlib.sha256(original).hexdigest())
+                evidence = watchdog.read_evidence(entry["evidence_id"], limit=64)
+                self.assertEqual(evidence["data"], original[:64].decode())
+                expected_offset += len(original)
+
+    def test_large_partial_line_completes_after_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "match.ndjson"
+            record = json.dumps({"type": "driver", "line": {
+                "type": "state", "state_revision": 701},
+                "payload": "z" * 70_000}, separators=(",", ":")).encode() + b"\n"
+            split = 12_345
+            log.write_bytes(record[:split])
+            first = RunWatchdog(log, "large-partial", clock=FakeClock(), poll_interval=0)
+            first.poll()
+            self.assertEqual(first._cursors[log.name].buffer, record[:split])
+            second = RunWatchdog(log, "large-partial", clock=FakeClock(), poll_interval=0)
+            with log.open("ab") as stream:
+                stream.write(record[split:])
+            self.assertEqual(second.poll(force=True)["revision"], 701)
+            self.assertEqual(len(second._records), 1)
+
+    def test_oversized_partial_record_resumes_after_restart_and_indexes_gap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "match.ndjson"
+            oversized = b"{" + b"x" * (MAX_RECORD_SIZE + 100)
+            log.write_bytes(oversized)
+            first = RunWatchdog(log, "oversized", clock=FakeClock(), poll_interval=0)
+            first.poll()
+            self.assertTrue(first._cursors[log.name].discarding)
+            self.assertEqual(first._cursors[log.name].buffer, b"")
+            second = RunWatchdog(log, "oversized", clock=FakeClock(), poll_interval=0)
+            with log.open("ab") as stream:
+                stream.write(b"}\n")
+                stream.write(json.dumps({"type": "driver", "line": {
+                    "type": "state", "state_revision": 99}}).encode() + b"\n")
+            status = second.poll(force=True)
+            self.assertEqual(status["revision"], 99)
+            self.assertFalse(any("invalid_record" in event for event in status["coverage_events"]))
+            gaps = [entry for entry in second._index.values() if entry["kind"] == "coverage_gap"]
+            self.assertEqual(len(gaps), 1)
+            evidence = second.read_evidence(gaps[0]["evidence_id"], limit=32)
+            self.assertEqual(evidence["bytes_read"], 32)
+            self.assertTrue(evidence["truncated"])
+
+    def test_oversized_record_with_newline_and_following_valid_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "match.ndjson"
+            valid = json.dumps({"type": "driver", "line": {
+                "type": "state", "state_revision": 123}}).encode() + b"\n"
+            log.write_bytes(b"x" * (MAX_RECORD_SIZE + 100) + b"\n" + valid)
+            watchdog = RunWatchdog(log, "oversized-same-poll", clock=FakeClock(), poll_interval=0)
+            status = watchdog.poll()
+            self.assertEqual(status["revision"], 123)
+            self.assertFalse(any("invalid_record" in event for event in status["coverage_events"]))
+            self.assertEqual(len([entry for entry in watchdog._index.values()
+                                  if entry["kind"] == "coverage_gap"]), 1)
+
+    def test_truncation_while_discarding_resets_and_reads_new_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "match.ndjson"
+            log.write_bytes(b"x" * (MAX_RECORD_SIZE + 100))
+            clock = FakeClock()
+            watchdog = RunWatchdog(log, "discard-truncate", clock=clock, poll_interval=0)
+            watchdog.poll()
+            self.assertTrue(watchdog._cursors[log.name].discarding)
+            log.write_bytes(json.dumps({"type": "driver", "line": {
+                "type": "state", "state_revision": 88}}).encode() + b"\n")
+            status = watchdog.poll(force=True)
+            self.assertEqual(status["revision"], 88)
+            self.assertTrue(any("truncated" in event for event in status["coverage_events"]))
+
+    def test_distinct_large_tool_requests_do_not_share_compacted_alert_signature(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "match.ndjson"
+            rows = []
+            rows.append({"type": "driver", "line": {"type": "state", "state_revision": 4}})
+            for suffix in ("one", "two", "three"):
+                rows.append({"type": "tool_result", "tool": "inspect_target",
+                             "request": {"description": "a" * 600 + suffix}})
+            rows.extend({"type": "model_error", "code": "distinct", "message": "error-" + str(i)}
+                        for i in range(2))
+            log.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            watchdog = RunWatchdog(log, "request-signatures", clock=FakeClock(), poll_interval=0)
+            status = watchdog.poll()
+            self.assertFalse(any(alert["kind"] == "repeated_tool_request"
+                                 for alert in status["alerts"]))
+            self.assertEqual(len(watchdog._tool_requests), 3)
+            with log.open("a") as stream:
+                repeated = json.dumps(rows[1]) + "\n"
+                stream.write(repeated)
+                stream.write(repeated)
+            status = watchdog.poll(force=True)
+            self.assertTrue(any(alert["kind"] == "repeated_tool_request"
+                                for alert in status["alerts"]))
+            retained_errors = [row for row in watchdog._records if row["type"] == "model_error"]
+            self.assertEqual([row["code"] for row in retained_errors], ["distinct", "distinct"])
+            self.assertEqual([row["message"] for row in retained_errors], ["error-0", "error-1"])
+
+    def test_truncation_resets_partial_cursor_and_malformed_json_is_explicit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "match.ndjson"
+            log.write_bytes(b'{"type":"metadata"')
+            clock = FakeClock()
+            watchdog = RunWatchdog(log, "truncate", clock=clock, poll_interval=0)
+            self.assertEqual(watchdog.poll()["stage"], "unknown")
+            with log.open("ab") as stream:
+                stream.write(b"}\n")
+            self.assertEqual(watchdog.poll(force=True)["stage"], "starting")
+            log.write_bytes(b"not-json\n")
+            status = watchdog.poll(force=True)
+            self.assertTrue(any("truncated" in event for event in status["coverage_events"]))
+            self.assertTrue(any("invalid_record" in event for event in status["coverage_events"]))
+
+    def test_boundary_sized_cursor_record_is_complete_and_next_line_survives(self):
+        raw = b'{"type":"x","payload":"' + b"a" * 5 + b'"}\n'
+        self.assertEqual(len(raw) - 1, 30)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "records.ndjson"
+            path.write_bytes(raw + b'{"type":"next"}\n')
+            cursor = _NDJSONCursor()
+            seen = []
+            errors = cursor.consume(path, lambda start, end, value, digest:
+                                    seen.append((start, end, value, digest)),
+                                    io_chunk=7, max_record_size=len(raw) - 1)
+            self.assertEqual(errors, [])
+            self.assertEqual([value for _, _, value, _ in seen],
+                             [raw, b'{"type":"next"}\n'])
 
 
 if __name__ == "__main__":

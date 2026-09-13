@@ -27,7 +27,11 @@ MAX_EVIDENCE_READ = 2048
 MAX_INDEXED_RECORDS = 512
 MAX_STATUS_ITEMS = 8
 MAX_RECENT_ERRORS = 8
-MAX_PARSER_BUFFER = 64 * 1024
+MAX_IO_CHUNK = 64 * 1024
+MAX_RECORD_SIZE = 4 * 1024 * 1024
+# Kept as the bounded parser/static-artifact limit.  It is deliberately not
+# used as the NDJSON record limit.
+MAX_PARSER_BUFFER = MAX_IO_CHUNK
 DEFAULT_POLL_INTERVAL = 5.0
 REGULAR_INTERVAL = 300.0
 ALERT_COOLDOWN = 60.0
@@ -154,53 +158,113 @@ class RepetitionDetector:
 
 
 class _NDJSONCursor:
-    """Incremental byte cursor retaining only one bounded incomplete line."""
+    """Incremental byte cursor retaining one incomplete line or discard state.
 
-    def __init__(self, offset: int = 0, buffer: bytes = b"", buffer_start: int | None = None):
+    ``offset`` is the next unread source byte.  A complete line is delivered
+    only after its newline is consumed.  Lines over ``max_record_size`` are
+    hashed and skipped without retaining their body, including when the skip
+    spans polls or a watchdog restart.
+    """
+
+    def __init__(self, offset: int = 0, buffer: bytes = b"", buffer_start: int | None = None,
+                 *, discarding: bool = False, discard_start: int | None = None,
+                 discard_size: int = 0):
         self.offset = offset
         self.buffer = buffer
         self.buffer_start = offset if buffer_start is None else buffer_start
+        self.discarding = discarding
+        self.discard_start = discard_start
+        self.discard_size = discard_size
 
-    def read(self, path: Path, max_bytes: int = 64 * 1024) -> tuple[list[tuple[int, int, bytes]], list[str]]:
-        records: list[tuple[int, int, bytes]] = []
+    def _begin_discard(self) -> None:
+        self.discarding = True
+        self.discard_start = self.buffer_start
+        self.discard_size = len(self.buffer)
+        self.buffer = b""
+
+    def _discard(self, chunk: bytes) -> tuple[int, int] | None:
+        """Consume an oversized line suffix, returning its range at newline."""
+        newline = chunk.find(b"\n")
+        if newline < 0:
+            self.discard_size += len(chunk)
+            return None
+        prefix = chunk[:newline]
+        self.discard_size += len(prefix) + 1
+        start = int(self.discard_start or 0)
+        end = start + self.discard_size
+        self.discarding = False
+        self.discard_start = None
+        self.discard_size = 0
+        # Any suffix belongs to the next record and is retained as its start.
+        self.buffer_start = end
+        self.buffer = chunk[newline + 1:]
+        return start, end
+
+    def consume(self, path: Path, on_record: Callable[[int, int, bytes | None, str | None], None],
+                *, io_chunk: int = MAX_IO_CHUNK,
+                max_record_size: int = MAX_RECORD_SIZE) -> list[str]:
+        """Read complete records, invoking ``on_record`` as each is available."""
         errors: list[str] = []
         try:
             size = path.stat().st_size
         except OSError as exc:
-            return records, [f"unavailable:{exc}"]
+            return [f"unavailable:{exc}"]
         if size < self.offset:
             errors.append("truncated")
             self.offset = 0
             self.buffer = b""
             self.buffer_start = 0
+            self.discarding = False
+            self.discard_start = None
+            self.discard_size = 0
         try:
             with path.open("rb") as stream:
                 stream.seek(self.offset)
                 while True:
-                    chunk = stream.read(max_bytes)
+                    chunk = stream.read(io_chunk)
                     if not chunk:
                         break
                     self.offset += len(chunk)
-                    self.buffer += chunk
-                    while b"\n" in self.buffer:
-                        line, self.buffer = self.buffer.split(b"\n", 1)
+                    pending = chunk
+                    while pending:
+                        if self.discarding:
+                            discarded = self._discard(pending)
+                            if discarded is None:
+                                pending = b""
+                                continue
+                            start, end = discarded
+                            on_record(start, end, None, None)
+                            pending = self.buffer
+                            self.buffer = b""
+                            continue
+                        newline = pending.find(b"\n")
+                        if newline < 0:
+                            self.buffer += pending
+                            pending = b""
+                            if len(self.buffer) > max_record_size:
+                                self._begin_discard()
+                                errors.append(f"oversized_record_pending:{self.discard_start}")
+                            continue
+                        line = self.buffer + pending[:newline + 1]
                         start = self.buffer_start
-                        end = start + len(line) + 1
+                        end = start + len(line)
+                        self.buffer = b""
                         self.buffer_start = end
-                        records.append((start, end, line + b"\n"))
-                    if len(self.buffer) > max_bytes:
-                        # Preserve a raw range before discarding the prefix;
-                        # callers index it as an incomplete/degraded record.
-                        discard = len(self.buffer) - max_bytes
-                        records.append((self.buffer_start, self.buffer_start + discard,
-                                        self.buffer[:discard]))
-                        errors.append(f"buffer_exceeded:{discard}")
-                        self.buffer_start += discard
-                        self.buffer = self.buffer[discard:]
+                        pending = pending[newline + 1:]
+                        # The limit applies to record bytes excluding its
+                        # structural newline, so an exact boundary record is
+                        # accepted and indexed as one complete source range.
+                        if len(line) - 1 > max_record_size:
+                            self.discard_start = start
+                            self.discard_size = len(line) - 1
+                            on_record(start, end, None, None)
+                        else:
+                            on_record(start, end, line, None)
         except OSError as exc:
             errors.append(f"read_error:{exc}")
-        return records, errors
-
+        if self.discarding:
+            errors.append(f"oversized_record_pending:{self.discard_start}")
+        return errors
 
 class EvidenceError(ValueError):
     """The requested evidence is not a valid immutable run-owned range."""
@@ -360,6 +424,9 @@ class RunWatchdog:
             self._usage_measured = int(raw.get("usage_measured", 0))
             self._usage_unknown = int(raw.get("usage_unknown", 0))
             self._usage_calls = raw.get("usage_calls", {})
+            coverage_events = raw.get("coverage_events", [])
+            if isinstance(coverage_events, list):
+                self._degraded.extend(item for item in coverage_events if isinstance(item, str))
             for item in raw.get("alerts", []):
                 if isinstance(item, dict):
                     self._alerts.append(item)
@@ -376,7 +443,11 @@ class RunWatchdog:
                         self._cursors[key] = _NDJSONCursor(
                             int(value.get("offset", 0)),
                             base64.b64decode(value.get("buffer", "")),
-                            int(value.get("buffer_start", value.get("offset", 0))))
+                            int(value.get("buffer_start", value.get("offset", 0))),
+                            discarding=bool(value.get("discarding", False)),
+                            discard_start=(int(value["discard_start"])
+                                           if value.get("discard_start") is not None else None),
+                            discard_size=int(value.get("discard_size", 0)))
             self._loaded = True
         except FileNotFoundError:
             pass  # A new recorder has no persisted state yet.
@@ -398,10 +469,14 @@ class RunWatchdog:
             "usage_measured": self._usage_measured,
             "usage_unknown": self._usage_unknown,
             "usage_calls": self._usage_calls,
+            "coverage_events": self._degraded[-32:],
             "alerts": self._alerts[-32:],
             "index": list(self._index.values())[-MAX_INDEXED_RECORDS:],
             "cursors": {key: {"offset": value.offset,
                               "buffer_start": value.buffer_start,
+                              "discarding": value.discarding,
+                              "discard_start": value.discard_start,
+                              "discard_size": value.discard_size,
                               "buffer": base64.b64encode(value.buffer).decode("ascii")}
                         for key, value in self._cursors.items()},
         }
@@ -426,6 +501,42 @@ class RunWatchdog:
         entry = {"evidence_id": evidence_id, "run_id": self.run_id,
                  "artifact": relative, "start": start, "end": end,
                  "sha256": _digest(raw), "kind": kind}
+        if record_type:
+            entry["record_type"] = record_type
+        self._index[evidence_id] = entry
+        if len(self._index) > MAX_INDEXED_RECORDS:
+            self._index.pop(next(iter(self._index)))
+        try:
+            with self.index_path.open("a", encoding="utf-8") as stream:
+                stream.write(_json(entry) + "\n")
+        except OSError as exc:
+            self._degraded.append(f"index_write_failed:{type(exc).__name__}")
+        return evidence_id
+
+    def _index_file_range(self, relative: str, start: int, end: int,
+                          *, kind: str = "raw", record_type: str | None = None) -> str:
+        """Index a source range while retaining only one I/O chunk in memory."""
+        path = self.root / relative
+        digest = hashlib.sha256()
+        remaining = max(0, end - start)
+        try:
+            with path.open("rb") as stream:
+                stream.seek(start)
+                while remaining:
+                    chunk = stream.read(min(MAX_IO_CHUNK, remaining))
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    remaining -= len(chunk)
+        except OSError as exc:
+            self._record_error(f"{relative}:range_unavailable:{type(exc).__name__}")
+        sha256 = digest.hexdigest()
+        identity = f"{relative}:{start}:{end}:{sha256}"
+        evidence_id = "log:" + identity.split(":", 1)[1] if relative == self.log_path.name else (
+            "artifact:" + _digest(identity.encode())[:24])
+        entry = {"evidence_id": evidence_id, "run_id": self.run_id,
+                 "artifact": relative, "start": start, "end": end,
+                 "sha256": sha256, "kind": kind}
         if record_type:
             entry["record_type"] = record_type
         self._index[evidence_id] = entry
@@ -469,34 +580,52 @@ class RunWatchdog:
         cursor = self._cursors.setdefault(key, _NDJSONCursor())
         if not self.log_path.exists() and cursor.offset == 0:
             return  # Supervisor has not launched the client yet.
-        records, errors = cursor.read(self.log_path, self.parser_buffer)
-        for error in errors:
-            self._record_error(f"log_{error}")
-        for start, end, raw in records:
+        def consume_record(start: int, end: int, raw: bytes | None, _digest: str | None) -> None:
+            if raw is None:
+                self._index_file_range(key, start, end, kind="coverage_gap")
+                self._record_error(f"{key}:oversized_record:{start}:{end}")
+                return
             evidence_id = self._index_range(key, start, end, raw, kind="record")
             try:
                 value = json.loads(raw)
             except (UnicodeDecodeError, json.JSONDecodeError):
                 self._record_error("log_invalid_record")
-                continue
+                return
             if not isinstance(value, dict):
                 self._record_error("log_record_not_object")
-                continue
-            value = dict(value)
+                return
             value["_evidence_id"] = evidence_id
-            self._records.append(value)
+            # Alert signatures must see the complete parsed record.  Only the
+            # history retained for status fallback is compacted afterwards.
             self._observe_record(value, now)
+            self._records.append(self._compact_record(value, evidence_id))
+
+        errors = cursor.consume(self.log_path, consume_record,
+                                io_chunk=MAX_IO_CHUNK,
+                                max_record_size=MAX_RECORD_SIZE)
+        for error in errors:
+            self._record_error(f"log_{error}")
         if not self.log_path.exists() and cursor.offset:
             self._record_error("log_missing")
 
     def _scan_ndjson_artifact(self, path: Path, relative: str, now: float,
                               *, stream_chunks: bool = False) -> None:
         cursor = self._cursors.setdefault(relative, _NDJSONCursor())
-        records, errors = cursor.read(path, self.parser_buffer)
+        def consume_record(start: int, end: int, raw: bytes | None, _digest: str | None) -> None:
+            if raw is None:
+                self._index_file_range(relative, start, end, kind="coverage_gap")
+                self._record_error(f"{relative}:oversized_record:{start}:{end}")
+                return
+            evidence_id = self._index_range(relative, start, end, raw, kind="record")
+            self._consume_artifact_record(relative, raw, evidence_id, now, stream_chunks)
+
+        errors = cursor.consume(path, consume_record,
+                                io_chunk=MAX_IO_CHUNK,
+                                max_record_size=MAX_RECORD_SIZE)
         for error in errors:
             self._record_error(f"{relative}:{error}")
-        for start, end, raw in records:
-            evidence_id = self._index_range(relative, start, end, raw, kind="record")
+    def _consume_artifact_record(self, relative: str, raw: bytes, evidence_id: str,
+                                 now: float, stream_chunks: bool) -> None:
             if relative == "usage.ndjson":
                 try:
                     value = json.loads(raw)
@@ -522,13 +651,13 @@ class RunWatchdog:
                 except (ValueError, TypeError, json.JSONDecodeError):
                     self._record_error("usage_invalid_record")
             if not stream_chunks:
-                continue
+                return
             try:
                 value = json.loads(raw)
                 data = base64.b64decode(value.get("data_b64", ""), validate=True)
             except (ValueError, TypeError, json.JSONDecodeError, UnicodeDecodeError):
                 self._record_error(f"{relative}:invalid_chunk")
-                continue
+                return
             self._stream_bytes += len(data)
             self._last_stream = now
             parser = self._stream_parsers.setdefault(relative, _SSEContentParser(self.parser_buffer))
@@ -587,6 +716,37 @@ class RunWatchdog:
         self._index_range(relative, 0, len(raw), raw, kind="artifact")
         self._cursors[relative] = _NDJSONCursor(len(raw))
 
+    @staticmethod
+    def _compact_value(value: Any, *, depth: int = 0) -> Any:
+        """Retain a small status-safe projection of arbitrary record data."""
+        if depth > 3:
+            return _safe_text(value, 256)
+        if isinstance(value, str):
+            return value[:512]
+        if isinstance(value, (int, float, bool)) or value is None:
+            return value
+        if isinstance(value, list):
+            return [RunWatchdog._compact_value(item, depth=depth + 1)
+                    for item in value[:MAX_STATUS_ITEMS]]
+        if isinstance(value, dict):
+            return {str(key)[:64]: RunWatchdog._compact_value(item, depth=depth + 1)
+                    for key, item in list(value.items())[:16]}
+        return _safe_text(value, 256)
+
+    @staticmethod
+    def _compact_record(value: dict[str, Any], evidence_id: str) -> dict[str, Any]:
+        """Keep only flat fields read by status construction."""
+        compact = {"type": value.get("type"), "_evidence_id": evidence_id}
+        for field in ("state_revision", "revision", "status", "started_at", "code",
+                      "error_code", "message", "error", "driver_failure"):
+            if field in value:
+                item = value[field]
+                if field in {"state_revision", "revision"} and type(item) is int:
+                    compact[field] = item
+                else:
+                    compact[field] = RunWatchdog._compact_value(item)
+        return compact
+
     def _observe_record(self, record: dict[str, Any], now: float) -> None:
         record_type = record.get("type")
         self._latest["type"] = record_type
@@ -622,7 +782,7 @@ class RunWatchdog:
         elif record_type == "forwarded_orders":
             self._latest["proposed_action"] = {
                 "batch_id": record.get("batch_id"),
-                "orders": record.get("orders", [])[:MAX_STATUS_ITEMS]
+                "orders": self._compact_value(record.get("orders", [])[:MAX_STATUS_ITEMS])
                 if isinstance(record.get("orders"), list) else [],
                 "revision": record.get("state_revision"),
                 "evidence_id": record.get("_evidence_id"),
@@ -845,17 +1005,39 @@ class RunWatchdog:
             raise EvidenceError("evidence path escapes run")
         start = int(entry["start"])
         end = int(entry["end"])
+        if start < 0 or end < start:
+            raise EvidenceError("invalid evidence range")
+        expected_size = end - start
+        selected_parts: list[bytes] = []
+        retained_parts: list[bytes] = [] if expected_size <= MAX_RECORD_SIZE else []
+        digest = hashlib.sha256()
         try:
             with path.open("rb") as stream:
                 stream.seek(start)
-                raw = stream.read(end - start)
+                position = 0
+                while position < expected_size:
+                    chunk = stream.read(min(MAX_IO_CHUNK, expected_size - position))
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    if expected_size <= MAX_RECORD_SIZE:
+                        retained_parts.append(chunk)
+                    chunk_start = position
+                    chunk_end = position + len(chunk)
+                    selected_start = max(offset, chunk_start)
+                    selected_end = min(offset + limit, chunk_end)
+                    if selected_start < selected_end:
+                        selected_parts.append(chunk[selected_start - chunk_start:selected_end - chunk_start])
+                    position = chunk_end
         except OSError as exc:
             raise EvidenceError("evidence is unavailable") from exc
-        if _digest(raw) != entry.get("sha256"):
+        if position != expected_size or digest.hexdigest() != entry.get("sha256"):
             raise EvidenceError("evidence range changed")
-        selected = raw[offset:offset + limit]
-        truncated = offset + len(selected) < len(raw)
-        if isinstance(relative, str) and relative.endswith("chunks.ndjson"):
+        selected = b"".join(selected_parts)
+        raw = b"".join(retained_parts) if expected_size <= MAX_RECORD_SIZE else None
+        truncated = offset + len(selected) < expected_size
+        if (raw is not None and isinstance(relative, str)
+                and relative.endswith("chunks.ndjson") and entry.get("kind") == "record"):
             decoded_stream = _decode_stream_chunk(raw)
             if decoded_stream:
                 bounded = decoded_stream[:limit]
