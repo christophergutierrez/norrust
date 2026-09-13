@@ -116,6 +116,8 @@ class StrategyRoutineStack2Tests(unittest.TestCase):
             self.assertEqual(states[-1]['side_turns'], 6)
             # No automatic combat, no enemy recruitment, no recruiter movement.
             self.assertFalse(any(e.get('kind') == 'attack' for e in events))
+            self.assertTrue(all(e.get('source') == 'routine' for e in events
+                                if e.get('kind') == 'village' and e.get('owner') == 0))
             self.assertFalse(any(e.get('kind') in ('move', 'vacate') and e.get('unit') == 1 for e in events))
             db = root / 'history.sqlite'
             conn = open_history(db)
@@ -129,7 +131,7 @@ class StrategyRoutineStack2Tests(unittest.TestCase):
                 self.assertEqual(conn.execute('SELECT count(*) FROM model_requests WHERE game_id=?', (game_id,)).fetchone()[0], 1)
                 self.assertGreater(conn.execute("SELECT count(*) FROM events WHERE game_id=? AND source='routine'", (game_id,)).fetchone()[0], 6)
                 self.assertEqual(conn.execute("SELECT count(*) FROM events WHERE game_id=? AND source='llm'", (game_id,)).fetchone()[0], 0)
-                self.assertEqual(conn.execute("SELECT count(*) FROM side_turns WHERE game_id=? AND side=0 AND ended_at IS NOT NULL", (game_id,)).fetchone()[0], 3)
+                self.assertEqual(conn.execute("SELECT count(*) FROM side_turns WHERE game_id=? AND side=0 AND status IN ('ended','terminal')", (game_id,)).fetchone()[0], 3)
             finally:
                 conn.close()
             # Actual village ownership must be present at the final boundary.
@@ -172,6 +174,30 @@ class StrategyRoutineStack2Tests(unittest.TestCase):
                                 and r.get('accepted') for r in rows))
             self.assertFalse(prompts.exists())
 
+    def test_capture_completes_policy_without_an_extra_empty_turn(self):
+        policy = {'reserve_gold': 0,
+                  'recruits': [{'def_id': 'Ghost', 'count': 1, 'role': 'scout'}],
+                  'scouts': [], 'villages': [{'col': 2, 'row': 4}],
+                  'rally': None, 'holds': []}
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            checkpoint, policy_file, backend, prompts = prepare(root, policy)
+            log = root / 'capture-complete.ndjson'
+            result = launch(root, log, checkpoint, policy_file, backend,
+                            fixed=True, turns=3)
+            self.assertNotEqual(result.returncode, 0)
+            rows = records(log)
+            terminal = [r for r in rows if r.get('type') == 'terminal'][-1]
+            self.assertEqual(terminal.get('code'), 'fixed_policy_exception')
+            self.assertIn('objectives_complete', terminal.get('message', ''))
+            self.assertEqual(sum(r.get('type') == 'turn_boundary' and r.get('accepted')
+                                 for r in rows), 1)
+            commits = [r for r in rows if r.get('type') == 'routine_progress_committed']
+            self.assertTrue(any({'kind': 'policy_completed'} in r['progress_update']['effects']
+                                and {'kind': 'completed_village', 'col': 2, 'row': 4}
+                                in r['progress_update']['effects'] for r in commits))
+            self.assertFalse(prompts.exists())
+
     def test_repeated_definition_queue_binds_only_actual_scout_recruits(self):
         policy = {'reserve_gold': 0, 'recruits': [
             {'def_id': 'Ghost', 'count': 2, 'role': 'scout'},
@@ -197,7 +223,7 @@ class StrategyRoutineStack2Tests(unittest.TestCase):
 
 
     def _replay_cut(self, *, after_finish=False, duplicate=False, omit_progress=False,
-                    before_ack=False, destroy_proposal=False):
+                    before_ack=False, destroy_proposal=False, after_assignment=False):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             checkpoint, policy, backend, prompts = prepare(root)
@@ -211,7 +237,8 @@ class StrategyRoutineStack2Tests(unittest.TestCase):
                         and r.get('orders', [{}])[0].get('action') == 'FinishWithGreedy'}
             candidates = [(i, r) for i, r in enumerate(rows) if r.get('type') == 'routine_progress_committed'
                           and ((r.get('batch_id') in finishes) if after_finish else
-                               any(e.get('kind') == 'recruited' for e in r.get('progress_update', {}).get('effects', [])))]
+                               any(e.get('kind') == ('scout_assigned' if after_assignment else 'recruited')
+                                   for e in r.get('progress_update', {}).get('effects', [])))]
             self.assertTrue(candidates, 'No actual committed routine step for the required boundary')
             cut, chosen = candidates[0]
             if before_ack:
@@ -247,7 +274,7 @@ class StrategyRoutineStack2Tests(unittest.TestCase):
             actual = records(crash_log)
             # A crash before the event envelope loses that historical event;
             # checkpoint proof recovers state/progress without fabricating events.
-            expected_recorded_recruits = 5 if before_ack and not after_finish else 6
+            expected_recorded_recruits = 5 if before_ack and not after_finish and not after_assignment else 6
             self.assertEqual(sum(e.get('kind') == 'recruit' for e in engine_events(actual)),
                              expected_recorded_recruits)
             if before_ack:
@@ -264,6 +291,9 @@ class StrategyRoutineStack2Tests(unittest.TestCase):
 
     def test_capture_finish_checkpoint_resume_preserves_actual_ownership(self):
         self._replay_cut(after_finish=True)
+
+    def test_checkpoint_before_assignment_ack_preserves_scout_target(self):
+        self._replay_cut(before_ack=True, after_assignment=True)
 
     def test_checkpoint_before_recruit_ack_recovers_actual_id_and_counts(self):
         self._replay_cut(before_ack=True)

@@ -343,8 +343,9 @@ class StrategyModeIntegrationTests(unittest.TestCase):
                 for e in line.get("events", [])
             ]
             self.assertTrue(routine_events)
-            self.assertTrue(all(e.get("kind") == "recruit" for e in routine_events),
-                            "routine completion must never move/attack -- recruit only")
+            self.assertTrue(all(e.get("kind") in {"recruit", "end_turn", "village", "gold"}
+                                for e in routine_events),
+                            "recruitment-only policy may recruit and finish, never move/attack")
             self.assertFalse(any(e.get("kind") == "move" and e.get("unit") == recruiter_id
                                  for e in events), "the recruiter must never be moved automatically")
             self.assertFalse(any(e.get("kind") == "attack" for e in events),
