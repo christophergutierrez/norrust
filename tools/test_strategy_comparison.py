@@ -138,6 +138,21 @@ class OfflineMatrixTests(unittest.TestCase):
             self.assertNotEqual(strategy.main([
                 "offline-run", "--run-dir", directory, "--out", str(output)]), 0)
 
+    def test_matrix_reports_completion_and_objective_verdicts(self):
+        matrix = {"cases": [{"id": "case", "expected": {
+            "completed_side_turns_at_least": 2, "objectives_complete": True}}]}
+        records = [
+            {"type": "metadata", "usage_measured": True},
+            {"type": "side_turn_started"}, {"type": "turn_boundary"},
+            {"type": "routine_progress_committed",
+             "progress_update": {"effects": [{"kind": "policy_completed"}]}},
+            {"type": "terminal", "reason": "max_turns", "side_turns": 2},
+        ]
+        report = strategy.build_offline_matrix_report(matrix, archives={"case": records})
+        predicates = report["cases"][0]["predicate_verdicts"]
+        self.assertTrue(predicates["completed_turns"])
+        self.assertTrue(predicates["objectives"])
+
     def test_archive_deduplicates_logical_model_request_and_response(self):
         attribution = strategy.archive_attribution([
             {"type": "metadata", "usage_measured": False},

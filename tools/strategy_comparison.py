@@ -342,6 +342,24 @@ def _matrix_run_predicates(case: dict[str, Any], records: list[dict[str, Any]],
             expected["exception"])
     if "model_calls" in expected:
         predicates["model_calls"] = _verdict(attribution.get("model_request_count"), expected["model_calls"])
+    if "completed_side_turns_at_least" in expected:
+        terminal = match_report.terminal_record(records)
+        terminal_line = terminal.get("line", {}) if isinstance(terminal, dict) else {}
+        completed = terminal.get("side_turns") if isinstance(terminal, dict) else None
+        if not isinstance(completed, int):
+            completed = terminal_line.get("side_turns") if isinstance(terminal_line, dict) else None
+        predicates["completed_turns"] = (
+            None if not isinstance(completed, int)
+            else completed >= expected["completed_side_turns_at_least"])
+    if "objectives_complete" in expected:
+        complete = any(
+            isinstance(record, dict)
+            and record.get("type") == "routine_progress_committed"
+            and any(isinstance(effect, dict) and effect.get("kind") == "policy_completed"
+                    for effect in (record.get("progress_update", {}).get("effects", [])
+                                   if isinstance(record.get("progress_update"), dict) else []))
+            for record in records)
+        predicates["objectives"] = complete == expected["objectives_complete"]
     if "contact" in expected:
         terminal_present = attribution.get("terminal_present") is True
         predicates["contact"] = _verdict(
