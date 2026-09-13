@@ -173,6 +173,14 @@ def resolve_client_config(args: Any) -> None:
     max_game_tokens = getattr(args, "max_game_total_tokens", None)
     if max_game_tokens is not None and max_game_tokens <= 0:
         raise ValueError(f"--max-game-total-tokens must be positive, got {max_game_tokens}")
+    operation_limit = getattr(args, "focused_max_operations_per_decision", None)
+    if operation_limit is not None:
+        if decision_mode != "focused":
+            raise ValueError("--focused-max-operations-per-decision requires --decision-mode focused")
+        if not 1 <= operation_limit <= 256:
+            raise ValueError(
+                "--focused-max-operations-per-decision must be between 1 and 256, "
+                f"got {operation_limit}")
 
 
 def validate_checkpoint_identity(envelope: dict[str, Any], args: argparse.Namespace) -> None:
@@ -199,12 +207,19 @@ def validate_checkpoint_identity(envelope: dict[str, Any], args: argparse.Namesp
         if "max_partial_batches_per_turn" in identity:
             if identity.get("max_partial_batches_per_turn") != getattr(args, "max_partial_batches_per_turn", None):
                 raise ValueError("cannot change mode or partial limit at mid-turn boundary")
+        if "focused_max_operations_per_decision" in identity:
+            if identity.get("focused_max_operations_per_decision") != getattr(
+                    args, "focused_max_operations_per_decision", None):
+                raise ValueError("cannot change focused operation limit at mid-turn boundary")
     elif not is_branch:
         if "max_partial_batches_per_turn" in identity:
             expected["max_partial_batches_per_turn"] = getattr(args, "max_partial_batches_per_turn", None)
         elif envelope.get("incremental_turns") and getattr(args, "max_partial_batches_per_turn", None) is not None:
             if getattr(args, "max_partial_batches_per_turn") != 3:
                 raise ValueError("resume configuration mismatch: max_partial_batches_per_turn")
+        if "focused_max_operations_per_decision" in identity:
+            expected["focused_max_operations_per_decision"] = getattr(
+                args, "focused_max_operations_per_decision", None)
     if is_branch and at_side_turn_boundary:
         expected.pop("incremental_turns", None)
     for key, value in expected.items():
@@ -759,6 +774,32 @@ def validate_orders(text: str, strict: bool = False, require_end_turn: bool = Tr
     if not require_end_turn and end_indices and end_indices[0] != len(orders) - 1:
         raise ValueError("a turn boundary, when present, must be final")
     return orders
+
+
+def focused_operation_limit_error(orders: list[dict[str, Any]], limit: int | None,
+                                  authored_count: int | None = None) -> str | None:
+    """Return a concise error when focused decisions exceed their opt-in cap.
+
+    The cap applies to authored top-level operations.  A macro such as Engage,
+    RecruitBatch, or MoveGroupToward remains one operation even when the
+    engine expands it internally.  A finish boundary is deliberately a
+    separate decision: combining it with an operation would hide the fresh
+    state that focused mode is meant to provide.
+    """
+    if limit is None:
+        return None
+    boundary_actions = {"DoneWithImportantMoves", "EndTurn", "FinishWithGreedy"}
+    boundaries = [order for order in orders
+                  if isinstance(order, dict) and order.get("action") in boundary_actions]
+    operation_count = authored_count if authored_count is not None else len(orders) - len(boundaries)
+    if operation_count > limit:
+        return ("focused operation limit exceeded: response authors "
+                f"{operation_count} mutating operations; maximum is {limit}")
+    if operation_count and boundaries:
+        return ("focused operation must be followed by a separate finishing decision; "
+                "do not combine an operation with EndTurn, DoneWithImportantMoves, "
+                "or FinishWithGreedy")
+    return None
 
 
 def is_resignation(orders: list[dict[str, Any]]) -> bool:
@@ -3161,7 +3202,8 @@ def draft_needs_preview(state: dict[str, Any], orders: list[dict[str, Any]],
     return danger_before or any(order.get("action") != "EndTurn" for order in orders)
 
 
-def shared_response_rules(boundary_guidance: str, decision_mode: str = "batch") -> str:
+def shared_response_rules(boundary_guidance: str, decision_mode: str = "batch",
+                          focused_max_operations_per_decision: int | None = None) -> str:
     """Response semantics that are identical under every action encoding.
 
     The executor and the validators do not care which encoding produced a
@@ -3192,6 +3234,12 @@ def shared_response_rules(boundary_guidance: str, decision_mode: str = "batch") 
         + " A request requiring final actions accepts no inspection and no partial-only reply.\n"
         + annotation_guidance
         + annotation_schema
+        + (("- Focused operation limit: return at most %d authored mutating operation per decision. "
+            "Engage, RecruitBatch, and MoveGroupToward each count as one operation using engine-owned expansion. "
+            "Return a finishing boundary (EndTurn, DoneWithImportantMoves, or FinishWithGreedy) in a separate decision; "
+            "never combine it with an operation. Do not split, reorder, or truncate an oversized response.\n"
+            ) % focused_max_operations_per_decision
+           if decision_mode == "focused" and focused_max_operations_per_decision is not None else "")
         + ("- Focused mode uses two tiers: choose one small objective; when a missing route, target, or weapon fact matters, request a permitted inspection "
            "of the target for an uncertain attack or the specific unit for an uncertain retreat, preferably at most four relevant units. "
            "Then use the revision-pinned local context: its selected operation is central, exact referenced live rows and all legal choices are preserved, "
@@ -3224,7 +3272,8 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
                action_encoding: str = "coordinates",
                choices: Optional[list[Any]] = None,
                decision_mode: str = "batch",
-               local_context: Optional[dict[str, Any]] = None) -> str:
+               local_context: Optional[dict[str, Any]] = None,
+               focused_max_operations_per_decision: int | None = None) -> str:
     schemas = [
         'Move: {"action":"Move","unit_id": integer,"col": integer,"row": integer}',
         'Attack: {"action":"Attack","attacker_id": integer,"defender_id": integer}',
@@ -3312,7 +3361,8 @@ def prompt_for(state: dict[str, Any], events: list[dict[str, Any]],
             "actions is a non-empty JSON array of at most 256 objects, in order. Except for standalone Resign, "
             "normal mode requires exactly one final DoneWithImportantMoves, EndTurn, or FinishWithGreedy boundary.\n"
         )
-        + shared_response_rules(boundary_guidance, decision_mode)
+        + shared_response_rules(boundary_guidance, decision_mode,
+                                focused_max_operations_per_decision)
         + "\n## Action schemas\n- " + "\n- ".join(schemas) + "\n"
         "- Fields match schemas; engine responses remain authoritative. Only entries with \"movable\":true are Move destinations; "
         "own hex causes DestinationOccupied and rolls back. Advance requires advancement_pending=true (compact pending=True); "
@@ -4859,6 +4909,16 @@ def run(args: argparse.Namespace) -> int:
 
     def validate_model_orders(text: str, final_only: Optional[bool] = None) -> list[dict[str, Any]]:
         nonlocal authored_choices, expansion_mapping, is_coordinate_fallback
+        def enforce_focused_limit(orders: list[dict[str, Any]],
+                                  authored_count: int | None = None) -> None:
+            if getattr(args, "decision_mode", "batch") != "focused":
+                return
+            limit = getattr(args, "focused_max_operations_per_decision", None)
+            error = focused_operation_limit_error(orders, limit, authored_count)
+            if error is not None:
+                metadata["focused_operation_rejections"] += 1
+                raise ValueError(error)
+
         if final_only is None:
             final_only = bool(isinstance(state, dict) and state.get("final_only"))
         req_end = (not getattr(args, "incremental_turns", False)) or final_only
@@ -4869,6 +4929,7 @@ def run(args: argparse.Namespace) -> int:
 
         if isinstance(decoded, list):
             orders = validate_orders(text, args.no_recruit_macro, require_end_turn=req_end)
+            enforce_focused_limit(orders)
             authored_choices = None
             expansion_mapping = list(range(len(orders)))
             is_coordinate_fallback = (getattr(args, "action_encoding", "coordinates") == "choices")
@@ -4901,6 +4962,7 @@ def run(args: argparse.Namespace) -> int:
                 raise ValueError("resolved actions exceed 256")
             if req_end:
                 raise ValueError("turn requires a finishing action; finish with DoneWithImportantMoves, EndTurn, or FinishWithGreedy using actions envelope")
+            enforce_focused_limit(resolved_actions, len(handles))
             authored_choices = handles
             expansion_mapping = exp_map
             is_coordinate_fallback = False
@@ -4908,6 +4970,7 @@ def run(args: argparse.Namespace) -> int:
 
         # has_actions
         orders = validate_orders(text, args.no_recruit_macro, require_end_turn=req_end)
+        enforce_focused_limit(orders)
         authored_choices = None
         expansion_mapping = list(range(len(orders)))
         is_coordinate_fallback = (getattr(args, "action_encoding", "coordinates") == "choices")
@@ -5008,6 +5071,8 @@ def run(args: argparse.Namespace) -> int:
                 "decision_mode": getattr(args, "decision_mode", "batch"),
                 "action_encoding": getattr(args, "action_encoding", "coordinates"),
                 "max_partial_batches_per_turn": getattr(args, "max_partial_batches_per_turn", 3),
+                "focused_max_operations_per_decision": getattr(
+                    args, "focused_max_operations_per_decision", None),
                 "continuity_mode": "bounded_transcript",
                 "conversation_id": conversation_id,
                 "output_limit_policy": output_policy.state(),
@@ -5057,6 +5122,7 @@ def run(args: argparse.Namespace) -> int:
                 "draft_review_repairs": 0, "draft_review_inspections": 0,
                 "timeout_finishes": 0,
                 "partial_limit_finishes": 0,
+                "focused_operation_rejections": 0,
                 "timeout_fallback_only_turns": 0,
                 "explicit_done_turns": 0,
                 "implicit_end_turn_turns": 0,
@@ -5410,6 +5476,8 @@ def run(args: argparse.Namespace) -> int:
                     "output_limit": output_policy.output_limit,
                     "decision_mode": getattr(args, "decision_mode", "batch"),
                     "action_encoding": getattr(args, "action_encoding", "coordinates"),
+                    "focused_max_operations_per_decision": getattr(
+                        args, "focused_max_operations_per_decision", None),
                     "model_timeout_seconds": args.model_timeout,
                     "retry_of_call_id": None,
                 }
@@ -5719,7 +5787,9 @@ def run(args: argparse.Namespace) -> int:
             trend=compact_trend(trend_states), playbook=playbook,
             action_encoding=encoding, choices=prompt_choices,
             decision_mode=getattr(args, "decision_mode", "batch"),
-            local_context=local_context)
+            local_context=local_context,
+            focused_max_operations_per_decision=getattr(
+                args, "focused_max_operations_per_decision", None))
 
     def complete_tool_followup(base_prompt: str, tool_context: str, tool: str,
                                exchange) -> ModelReply:
@@ -6340,7 +6410,9 @@ def run(args: argparse.Namespace) -> int:
                                     trend=compact_trend(trend_states), playbook=playbook,
                                     action_encoding=encoding,
                                     choices=prompt_choices,
-                                    decision_mode=getattr(args, "decision_mode", "batch"))
+                                    decision_mode=getattr(args, "decision_mode", "batch"),
+                                    focused_max_operations_per_decision=getattr(
+                                        args, "focused_max_operations_per_decision", None))
                 regions = prompt_regions(prompt)
                 danger_before = any(
                     isinstance(recruiter, dict) and
@@ -7387,6 +7459,9 @@ def main() -> int:
                    help="turn decision mode ('batch' or 'focused')")
     p.add_argument("--action-encoding", choices=("coordinates", "choices"), default="coordinates",
                    help="action encoding ('coordinates' or 'choices')")
+    p.add_argument("--focused-max-operations-per-decision", type=int, default=None,
+                   help="focused-mode authored mutating operation limit per response; "
+                        "disabled by default, range: 1..256")
     p.add_argument("--max-partial-batches-per-turn", type=int, default=None,
                    help="maximum partial batches per side turn (default: 3 in batch, 64 in focused; range: 1..1024)")
     p.add_argument("--disable-agenda-sweep", action="store_true",
@@ -7428,6 +7503,12 @@ def main() -> int:
         p.error("--max-tool-calls-per-turn must be non-negative")
     if a.max_partial_batches_per_turn is not None and not 1 <= a.max_partial_batches_per_turn <= 1024:
         p.error("--max-partial-batches-per-turn must be between 1 and 1024")
+    if (a.focused_max_operations_per_decision is not None
+            and not 1 <= a.focused_max_operations_per_decision <= 256):
+        p.error("--focused-max-operations-per-decision must be between 1 and 256")
+    if (a.focused_max_operations_per_decision is not None
+            and a.decision_mode != "focused"):
+        p.error("--focused-max-operations-per-decision requires --decision-mode focused")
     if a.resume_log and not a.log:
         p.error("--resume-log requires --log pointing to the same audit log")
     if a.resume_log and Path(a.resume_log).resolve() != Path(a.log).resolve():

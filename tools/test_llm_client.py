@@ -2402,6 +2402,25 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("finish the wounded target before ending the turn", prompt)
         self.assertIn("completing an operation does not end the turn", prompt)
 
+    def test_focused_operation_limit_is_opt_in_and_counts_authored_entries(self):
+        move = {"action": "Move", "unit_id": 1, "col": 3, "row": 7}
+        self.assertIsNone(llm_client.focused_operation_limit_error([move], 1))
+        self.assertIsNone(llm_client.focused_operation_limit_error(
+            [{"action": "EndTurn"}], 1))
+        self.assertIn("mutating operations", llm_client.focused_operation_limit_error(
+            [move, {"action": "RecruitBatch", "def_id": "Skeleton", "count": 1}], 1))
+        self.assertIsNone(llm_client.focused_operation_limit_error(
+            [move, {"action": "Attack", "attacker_id": 1, "defender_id": 2}],
+            1, authored_count=1))
+        self.assertIn("separate finishing decision", llm_client.focused_operation_limit_error(
+            [move, {"action": "EndTurn"}], 1))
+        prompt = prompt_for({"incremental_turns": True}, [],
+                            decision_mode="focused", focused_max_operations_per_decision=1)
+        self.assertIn("Focused operation limit", prompt)
+        self.assertIn("Engage, RecruitBatch, and MoveGroupToward each count as one", prompt)
+        self.assertNotIn("Focused operation limit", prompt_for(
+            {"incremental_turns": True}, [], decision_mode="focused"))
+
     def test_annotation_contract_is_shared_and_matches_utf8_validator(self):
         for mode in ("batch", "focused"):
             for encoding in ("coordinates", "choices"):

@@ -181,6 +181,15 @@ an accepted partial is acknowledged when `--log` is supplied.
   envelopes remain accepted without an inspection. Intent and agenda retain
   origin request, turn, and revision internally when available, and remain
   provisional rationale rather than rules or permanent garrisons.
+  An opt-in `--focused-max-operations-per-decision N` limit rejects a response
+  that authors more than N mutating top-level operations before engine
+  submission. Set it to `1` for one operation followed by a fresh state; an
+  `Engage`, `RecruitBatch`, or `MoveGroupToward` macro remains one authored
+  operation while the engine owns its expansion. A finishing boundary is a
+  separate response and cannot be combined with an operation. Oversized
+  responses are rejected through the existing bounded repair path and are
+  never silently split, reordered, truncated, or submitted. The option is
+  disabled by default and is recorded in run provenance with rejection counts.
 
 `--action-encoding {coordinates,choices}` selects how actions are represented
 (default `coordinates`).

@@ -128,6 +128,57 @@ class FocusedTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_focused_single_operation_rejects_oversized_batch_before_engine(self):
+        """The opt-in cap rejects a multi-operation draft, then accepts one
+        operation per fresh revision and a separate finishing decision."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            backend = root / "backend.py"
+            captures = root / "captures.ndjson"
+            backend.write_text(
+                "import json, sys\n"
+                "capture = sys.argv[1]\n"
+                "prompt = sys.stdin.read()\n"
+                "with open(capture, 'a', encoding='utf-8') as f: f.write('call\\n')\n"
+                "step = sum(1 for _ in open(capture, encoding='utf-8'))\n"
+                "if step == 1:\n"
+                "    actions = [{'action':'Recruit','def_id':'Skeleton Archer','col':2,'row':6},\n"
+                "               {'action':'Recruit','def_id':'Walking Corpse','col':2,'row':5}]\n"
+                "elif step == 2:\n"
+                "    actions = [{'action':'Recruit','def_id':'Skeleton Archer','col':2,'row':6}]\n"
+                "elif step == 3:\n"
+                "    actions = [{'action':'EndTurn'}]\n"
+                "else:\n"
+                "    actions = [{'action':'EndTurn'}]\n"
+                "response = {'actions': actions, 'decisions': [{'orders': list(range(len(actions))),\n"
+                " 'rules':['T0'], 'expected':'one operation', 'risk':'none'}]}\n"
+                "print(json.dumps({'text': json.dumps(response, separators=(',',':'))}))\n",
+                encoding="utf-8")
+            log = root / "match.ndjson"
+            cmd = [sys.executable, "-m", "tools.llm_client", "--driver", str(DRIVER),
+                   "--model-command", shlex.join([sys.executable, str(backend), str(captures)]),
+                   "--scenario", "big_battle_6", "--faction0", "undead",
+                   "--faction1", "undead", "--gold", "300", "--seed", "9911",
+                   "--llm-side", "0", "--max-turns", "1", "--decision-mode", "focused",
+                   "--focused-max-operations-per-decision", "1", "--max-partial-batches-per-turn", "3",
+                   "--disable-agenda-sweep", "--log", str(log), "--query-budget-seconds", "10",
+                   "--model-timeout", "10", "--turn-timeout", "30"]
+            res = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=60)
+            self.assertEqual(res.returncode, 0, res.stderr + "\n" + log.read_text())
+            rows = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+            forwarded = [row for row in rows if row.get("type") == "forwarded_orders"]
+            self.assertEqual([len(row["orders"]) for row in forwarded], [1, 1])
+            self.assertEqual(forwarded[0]["orders"][0]["action"], "Recruit")
+            self.assertEqual(forwarded[-1]["orders"][0]["action"], "EndTurn")
+            self.assertTrue(any(row.get("type") == "repair" for row in rows))
+            terminal = next(row for row in reversed(rows) if row.get("type") == "terminal")
+            self.assertEqual(terminal["focused_max_operations_per_decision"], 1)
+            self.assertEqual(terminal["focused_operation_rejections"], 1)
+            events = [event for row in rows if row.get("type") == "driver"
+                      for event in row.get("line", {}).get("events", [])]
+            self.assertEqual(sum(event.get("kind") == "recruit" and event.get("source") == "llm"
+                                 for event in events), 1)
+
     def test_focused_village_assignment_preserves_jobs_and_asserts_ownership(self):
         """2. Village-assignment fixture preserves two distinct jobs through multiple calls
         and a restart; task output includes current unit status. Assert actual specified village ownership."""
@@ -251,6 +302,24 @@ class FocusedTests(unittest.TestCase):
         self.assertEqual(args_focused.max_model_calls_per_turn, 128)
         self.assertEqual(args_focused.max_tool_calls_per_turn, 64)
         self.assertTrue(args_focused.incremental_turns)
+
+        args_limited = type("Args", (), {
+            "decision_mode": "focused",
+            "max_partial_batches_per_turn": None,
+            "focused_max_operations_per_decision": 1,
+        })()
+        llm_client.resolve_client_config(args_limited)
+        self.assertEqual(args_limited.focused_max_operations_per_decision, 1)
+        with self.assertRaisesRegex(ValueError, "between 1 and 256"):
+            llm_client.resolve_client_config(type("Args", (), {
+                "decision_mode": "focused",
+                "focused_max_operations_per_decision": 0,
+            })())
+        with self.assertRaisesRegex(ValueError, "requires --decision-mode focused"):
+            llm_client.resolve_client_config(type("Args", (), {
+                "decision_mode": "batch",
+                "focused_max_operations_per_decision": 1,
+            })())
 
         args_batch = type("Args", (), {"decision_mode": "batch", "incremental_turns": True})()
         llm_client.resolve_client_config(args_batch)
