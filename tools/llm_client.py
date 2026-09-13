@@ -42,11 +42,11 @@ try:
         ValidationContext, PolicyInstallation, RoutineProgress,
         load_checked_in_policy, static_recruitable_defs, new_installation_id,
         install_policy, build_routine_query, parse_routine_result,
-        RoutineActionResult, RoutineException, build_orders_envelope,
+        RoutineActionResult, RoutineFinishResult, RoutineException, build_orders_envelope,
         NO_SWEEP_FINISH, parse_model_response, SetPolicyResponse,
         ActResponse, FinishTurnResponse, ResignResponse,
-        validate_stack1_policy, render_policy_brief, render_exception_brief,
-        STACK1_UNSUPPORTED_EXCEPTION_CODES)
+        validate_routine_policy, render_policy_brief, render_exception_brief,
+        UNSUPPORTED_EXCEPTION_CODES, find_unreconstructable_routine_batch)
 except ImportError:  # pragma: no cover - direct script compatibility
     # Running `python tools/llm_client.py` puts only the tools directory on
     # sys.path. Import the package modules from the repository root so their
@@ -76,11 +76,11 @@ except ImportError:  # pragma: no cover - direct script compatibility
         ValidationContext, PolicyInstallation, RoutineProgress,
         load_checked_in_policy, static_recruitable_defs, new_installation_id,
         install_policy, build_routine_query, parse_routine_result,
-        RoutineActionResult, RoutineException, build_orders_envelope,
+        RoutineActionResult, RoutineFinishResult, RoutineException, build_orders_envelope,
         NO_SWEEP_FINISH, parse_model_response, SetPolicyResponse,
         ActResponse, FinishTurnResponse, ResignResponse,
-        validate_stack1_policy, render_policy_brief, render_exception_brief,
-        STACK1_UNSUPPORTED_EXCEPTION_CODES)
+        validate_routine_policy, render_policy_brief, render_exception_brief,
+        UNSUPPORTED_EXCEPTION_CODES, find_unreconstructable_routine_batch)
 
 ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "Engage", "EndTurn", "Advance", "Resign",
            "DoneWithImportantMoves", "FinishWithGreedy", "MoveGroupToward"}
@@ -5120,6 +5120,8 @@ def run(args: argparse.Namespace) -> int:
     # must not lose a committed recruit, and a rejected submission must leave
     # progress untouched.
     strategy_pending_progress_update: Optional[dict[str, Any]] = None
+    strategy_pending_batch_id: Optional[str] = None
+    strategy_pending_proven_revision: Optional[int] = None
     strategy_model_responses_this_turn = 0
     metadata = {"scenario": args.scenario, "faction0": args.faction0, "faction1": args.faction1,
                 "gold": args.gold, "seed": args.seed, "llm_side": args.llm_side,
@@ -5295,9 +5297,21 @@ def run(args: argparse.Namespace) -> int:
                 policy=strategy_installed_record["policy"],
                 source_request_id=strategy_installed_record.get("source_request_id"),
                 source_kind=strategy_installed_record.get("source_kind", "model"))
-            strategy_progress = RoutineProgress.fresh(strategy_installation.installation_id)
+            strategy_progress = RoutineProgress.fresh(strategy_installation.installation_id,
+                                                     strategy_installation.policy)
             for committed in strategy_committed_updates:
-                strategy_progress.commit_action(committed.get("progress_update", {}))
+                try:
+                    strategy_progress.commit_action(
+                        committed.get("progress_update", {}),
+                        installation_id=committed.get("installation_id"),
+                        batch_id=committed.get("batch_id"),
+                        state_revision=committed.get("state_revision"))
+                except (TypeError, ValueError):
+                    # An old archive with Stack 1 absolute-count progress is
+                    # not a safe source for Stack 2 resume.  Leave the
+                    # installation unresolved so the caller can surface an
+                    # unknown boundary rather than silently reinterpret it.
+                    strategy_progress = None
         continuity_entries = replay_committed_continuity(parent_records)
         if resume_log:
             if resume_event_line is not None:
@@ -5784,13 +5798,17 @@ def run(args: argparse.Namespace) -> int:
         units = state.get("units", []) if isinstance(state, dict) else []
         friendly_ids = frozenset(
             u["id"] for u in units
-            if isinstance(u, dict) and u.get("faction") == args.llm_side and "id" in u)
+            if isinstance(u, dict) and u.get("faction") == args.llm_side
+            and isinstance(u.get("id"), int) and not isinstance(u.get("id"), bool))
         recruiter_ids = frozenset(
             u["id"] for u in units
-            if isinstance(u, dict) and u.get("faction") == args.llm_side and u.get("can_recruit"))
+            if isinstance(u, dict) and u.get("faction") == args.llm_side
+            and isinstance(u.get("id"), int) and not isinstance(u.get("id"), bool)
+            and u.get("can_recruit"))
         village_coords = frozenset(
             (t["col"], t["row"]) for t in (state.get("terrain", []) if isinstance(state, dict) else [])
-            if isinstance(t, dict) and isinstance(t.get("owner"), int) and t.get("owner") != -1)
+            if isinstance(t, dict) and t.get("terrain_id") == "village"
+            and isinstance(t.get("col"), int) and isinstance(t.get("row"), int))
         bounds = None
         if isinstance(state, dict) and isinstance(state.get("cols"), int) and isinstance(state.get("rows"), int):
             bounds = (state["cols"], state["rows"])
@@ -5813,7 +5831,8 @@ def run(args: argparse.Namespace) -> int:
         nonlocal strategy_installation, strategy_progress
         strategy_installation = install_policy(
             policy, source_request_id=source_request_id, source_kind=source_kind)
-        strategy_progress = RoutineProgress.fresh(strategy_installation.installation_id)
+        strategy_progress = RoutineProgress.fresh(strategy_installation.installation_id,
+                                                  strategy_installation.policy)
         # A valid policy installation is durably recorded BEFORE its first
         # routine step (plan section 4) -- this happens before the caller can
         # possibly issue the first routine_next query for it.
@@ -5830,7 +5849,8 @@ def run(args: argparse.Namespace) -> int:
         nonlocal batch_sequence, pending_action, pending_commit, pending_finish_kind
         nonlocal last_forwarded_orders, last_forwarded_results, last_forwarded_revision
         nonlocal last_forwarded_repair, last_forwarded_finish_kind
-        nonlocal strategy_pending_progress_update
+        nonlocal strategy_pending_progress_update, strategy_pending_batch_id
+        nonlocal strategy_pending_proven_revision
         envelope = build_orders_envelope(orders, revision)
         batch_sequence += 1
         batch_id = f"{metadata.get('conversation_id', 'match')}:batch:{batch_sequence}"
@@ -5865,7 +5885,86 @@ def run(args: argparse.Namespace) -> int:
         # Held until the driver's checkpoint proves this submission committed
         # (see the "checkpoint" handling below); never adopted on a mere
         # proposal, and never adopted at all if the submission is rejected.
-        strategy_pending_progress_update = progress_update
+        strategy_pending_progress_update = (
+            progress_update if progress_update is not None else ({"effects": []} if finish else None))
+        strategy_pending_batch_id = batch_id if strategy_pending_progress_update is not None else None
+        strategy_pending_proven_revision = None
+
+    def strategy_adopt_progress_from_events(event_line: Optional[dict[str, Any]] = None) -> None:
+        """Adopt one routine update after checkpoint and engine proof.
+
+        The driver publishes a checkpoint before status and event lines.  A
+        recruit's actual id exists only in the committed ``recruit`` event,
+        so adoption waits for that event; a crash in this interval remains an
+        explicit unreconstructable boundary on resume.
+        """
+        nonlocal strategy_pending_progress_update, strategy_pending_batch_id
+        nonlocal strategy_pending_proven_revision
+        if (strategy_pending_progress_update is None or strategy_progress is None
+                or strategy_pending_batch_id is None
+                or strategy_pending_proven_revision is None):
+            return
+        proposal = strategy_pending_progress_update
+        effects = proposal.get("effects") if isinstance(proposal, dict) else None
+        if not isinstance(effects, list):
+            raise ValueError("routine progress proposal must contain effects")
+        events = event_line.get("events", []) if isinstance(event_line, dict) else []
+        committed: list[dict[str, Any]] = []
+        used_recruits: set[int] = set()
+        for effect in effects:
+            if not isinstance(effect, dict):
+                raise ValueError("routine progress proposal contains malformed effect")
+            kind = effect.get("kind")
+            if kind == "recruited":
+                queue_index = effect.get("queue_index")
+                if not isinstance(queue_index, int):
+                    raise ValueError("routine recruited proposal requires queue_index")
+                def_id = (strategy_installation.policy["recruits"][queue_index]["def_id"]
+                           if strategy_installation is not None
+                           and 0 <= queue_index < len(strategy_installation.policy.get("recruits", []))
+                           else None)
+                match_pair = next(((index, event) for index, event in enumerate(events)
+                                   if index not in used_recruits and isinstance(event, dict)
+                                   and event.get("kind") == "recruit"
+                                   and event.get("def_id") == def_id
+                                   and isinstance(event.get("unit"), int)), None)
+                if match_pair is None:
+                    return
+                match_index, match = match_pair
+                used_recruits.add(match_index)
+                committed.append({"kind": "recruited", "queue_index": queue_index,
+                                  "unit_id": match["unit"]})
+            elif kind == "scout_assigned":
+                if not all(key in effect for key in ("unit_id", "col", "row")):
+                    raise ValueError("scout_assigned proposal requires unit_id, col and row")
+                committed.append({"kind": "scout_assigned", "unit_id": effect["unit_id"],
+                                  "col": effect["col"], "row": effect["row"]})
+            elif kind == "completed_village":
+                col, row = effect.get("col"), effect.get("row")
+                if not any(isinstance(event, dict) and event.get("kind") == "village"
+                           and event.get("col") == col and event.get("row") == row
+                           and event.get("owner") == args.llm_side for event in events):
+                    return
+                committed.append({"kind": "completed_village", "col": col, "row": row})
+            elif kind == "policy_completed":
+                if not pending_finish_kind:
+                    return
+                committed.append({"kind": "policy_completed"})
+            else:
+                raise ValueError(f"unknown routine progress proposal effect: {kind!r}")
+        committed_update = {"effects": committed}
+        strategy_progress.commit_action(
+            committed_update, installation_id=strategy_progress.installation_id,
+            batch_id=strategy_pending_batch_id,
+            state_revision=strategy_pending_proven_revision)
+        durable({"type": "routine_progress_committed",
+                 "installation_id": strategy_progress.installation_id,
+                 "batch_id": strategy_pending_batch_id,
+                 "progress_update": committed_update,
+                 "state_revision": strategy_pending_proven_revision})
+        strategy_pending_progress_update = None
+        strategy_pending_batch_id = None
+        strategy_pending_proven_revision = None
 
     def strategy_call_model(prompt_text: str) -> Any:
         """Call the model for policy selection or an exception, and parse it.
@@ -5930,7 +6029,7 @@ def run(args: argparse.Namespace) -> int:
                     return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
                 if isinstance(parsed, SetPolicyResponse):
                     try:
-                        normalized = validate_stack1_policy(parsed.policy, context)
+                        normalized = validate_routine_policy(parsed.policy, context)
                     except PolicyValidationError as exc:
                         set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
                                     reason=TERMINAL_MODEL_INVALID, code="strategy_policy_invalid",
@@ -5984,8 +6083,9 @@ def run(args: argparse.Namespace) -> int:
                 durable({"type": "query_error", **metadata})
                 return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
 
-            if result == "finish":
-                strategy_submit([NO_SWEEP_FINISH], revision, progress_update=None, finish=True)
+            if isinstance(result, RoutineFinishResult):
+                strategy_submit([NO_SWEEP_FINISH], revision,
+                                 progress_update=result.progress_update, finish=True)
                 return None
             if isinstance(result, RoutineActionResult):
                 strategy_submit([result.action], revision,
@@ -5993,7 +6093,7 @@ def run(args: argparse.Namespace) -> int:
                 return None
 
             exc_result = result  # RoutineException
-            if exc_result.reason in STACK1_UNSUPPORTED_EXCEPTION_CODES:
+            if exc_result.reason in UNSUPPORTED_EXCEPTION_CODES:
                 return emit_budget_interrupted(
                     "routine_unsupported_exception",
                     f"routine execution paused on an unsupported exception: {exc_result.reason}")
@@ -6018,7 +6118,7 @@ def run(args: argparse.Namespace) -> int:
                 return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
             if isinstance(parsed, SetPolicyResponse):
                 try:
-                    normalized = validate_stack1_policy(parsed.policy, strategy_validation_context(exchange))
+                    normalized = validate_routine_policy(parsed.policy, strategy_validation_context(exchange))
                 except PolicyValidationError as exc:
                     set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
                                 reason=TERMINAL_MODEL_INVALID, code="strategy_policy_invalid",
@@ -6267,6 +6367,33 @@ def run(args: argparse.Namespace) -> int:
             if parent is not None and parent.exists():
                 resume_record["parent_log"] = str(parent)
         durable(resume_record)
+    if strategy_mode and strategy_installation is not None:
+        # Plan section 6: "If the checkpoint has advanced but its matching
+        # policy progress cannot be reconstructed, interrupt with explicit
+        # unknown action-boundary status. Do not reset to the original
+        # recruitment list."
+        if strategy_progress is None:
+            set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
+                         reason="infrastructure_failure",
+                         code="routine_progress_unreconstructable",
+                         message="existing routine progress lacks Stack 2 identity/effects evidence",
+                         action_boundary_status="unknown")
+            durable({"type": "terminal", **metadata})
+            return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
+        _unreconstructable_batch_id = find_unreconstructable_routine_batch(parent_records)
+        if _unreconstructable_batch_id is not None:
+            set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
+                        reason="infrastructure_failure",
+                        code="routine_progress_unreconstructable",
+                        message=("the driver checkpoint proves a routine action "
+                                 "committed, but its policy progress update was "
+                                 "never durably recorded before the process "
+                                 "stopped; resuming would either lose or "
+                                 "duplicate that step"),
+                        action_boundary_status="unknown",
+                        pending_action_boundary={"batch_id": _unreconstructable_batch_id})
+            durable({"type": "terminal", **metadata})
+            return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
     try:
         while True:
             raw = proc.stdout.readline()
@@ -6346,21 +6473,11 @@ def run(args: argparse.Namespace) -> int:
                             durable({"type": "terminal", **metadata})
                             return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
                     pending_commit = None
-                    # The checkpoint is proof of engine-side commitment (it is
-                    # only ever written for a batch whose every result was ok
-                    # -- see greedy_driver's `batch_succeeded` gate). Adopting
-                    # the routine progress_update HERE, not at the later
-                    # "status" line, closes the same lost-acknowledgement gap
-                    # for recruit-count bookkeeping: a crash between this
-                    # checkpoint and the status ack must not lose a committed
-                    # recruit or double-buy it on resume.
-                    if strategy_pending_progress_update is not None and strategy_progress is not None:
-                        strategy_progress.commit_action(strategy_pending_progress_update)
-                        durable({"type": "routine_progress_committed",
-                                "installation_id": strategy_progress.installation_id,
-                                "progress_update": strategy_pending_progress_update,
-                                "state_revision": checkpoint_record.get("state_revision")})
-                        strategy_pending_progress_update = None
+                    # Checkpoint proves the batch, while actual recruit IDs
+                    # arrive in the following committed event envelope.
+                    # Keep the proposal pending until that proof is available;
+                    # a crash in this window is intentionally unreconstructable.
+                    strategy_pending_proven_revision = checkpoint_record.get("state_revision")
                 else:
                     durable(checkpoint_record)
                 continue
@@ -6368,6 +6485,13 @@ def run(args: argparse.Namespace) -> int:
                 failure = status_failure(line)
                 if failure is None and pending_action and isinstance(line.get("results"), list):
                     last_forwarded_results = line["results"]
+                if (failure is None and pending_action
+                        and isinstance(strategy_pending_progress_update, dict)
+                        and strategy_pending_progress_update.get("effects") == []):
+                    # Empty progress (ordinary move or no-sweep finish) has no
+                    # event carrying additional identity, so status plus the
+                    # already durable checkpoint is sufficient proof.
+                    strategy_adopt_progress_from_events()
                 if failure is None and pending_action and pending_intent is not None:
                     intent_memory = pending_intent
                     intent_origin = dict(pending_intent_origin) if isinstance(pending_intent_origin, dict) else None
@@ -6447,6 +6571,8 @@ def run(args: argparse.Namespace) -> int:
                         metadata["rejected_batches"] += 1
                         pending_commit = None
                         strategy_pending_progress_update = None
+                        strategy_pending_batch_id = None
+                        strategy_pending_proven_revision = None
                         set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
                                     reason="infrastructure_failure", code="routine_action_rejected",
                                     message="the driver rejected a routine-selected action",
@@ -7793,6 +7919,16 @@ def run(args: argparse.Namespace) -> int:
                 events.extend(new_events)
                 event_window.extend(_window_events(line))
                 update_committed_progress(turn_progress_moved, turn_progress_attacked, line)
+                if strategy_pending_progress_update is not None:
+                    try:
+                        strategy_adopt_progress_from_events(line)
+                    except (TypeError, ValueError) as exc:
+                        set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
+                                     reason="infrastructure_failure",
+                                     code="routine_progress_invalid",
+                                     message=str(exc))
+                        durable({"type": "terminal", **metadata})
+                        return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
             elif line.get("type") == "game_start":
                 # The opening, before either side acts. Recorded as an
                 # ordinary driver state record for the same reason as the

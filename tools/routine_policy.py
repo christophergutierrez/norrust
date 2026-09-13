@@ -1,18 +1,25 @@
 """Strategy-mode policy validation, routine progress, exceptions and rendering.
 
 This module implements the client half of the frozen `routine_next` contract
-described in `docs/plans/strategy-and-routine-execution.md` (sections 3-6 and
-"Stack 1"). It is deliberately self-contained: it does not import
-``tools.llm_client`` so the two modules can be developed and tested in
+described in `docs/plans/strategy-and-routine-execution.md` (sections 3-6,
+"Stack 1" and "Stack 2"). It is deliberately self-contained: it does not
+import ``tools.llm_client`` so the two modules can be developed and tested in
 isolation by separate workers. ``tools/llm_client.py`` imports from here.
 
-Stack 1 scope only: advertise/accept recruitment-only policies. ``scouts``,
-``villages`` and ``holds`` must be empty and ``rally`` must be null. A
-non-empty future field is rejected explicitly, never silently accepted.
+Stack 2 enables the remaining policy fields (``scouts``, ``villages``,
+``rally``, ``holds``) that Stack 1 kept scoped to empty/null. The full
+per-field bounds in ``validate_policy`` (distinct existing friendly ids, at
+most 8 scouts including new-scout-recruit totals, at most 4 villages, one
+in-bounds rally or null, held ids excluded from scouts) are enforced exactly
+as before; only the additional Stack-1-only scope gate (``enforce_stack1_scope``)
+has been removed. Model invocation stays scripted in this stack -- no live
+model, no new prompt work (that is Stack 3).
 """
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
@@ -36,14 +43,21 @@ FINISH_TURN_KEYS = {"kind"}
 RESIGN_KEYS = {"kind"}
 RESPONSE_KINDS = ("set_policy", "act", "finish_turn", "resign")
 
-# Stack 1 supports only these exception codes; "contact" is explicitly
-# unsupported until Stack 3 and ends the fixture run instead of prompting.
-STACK1_EXCEPTION_CODES = frozenset({
+# The full set of exception codes the routine_next contract can raise as of
+# Stack 2. "contact" remains explicitly unsupported until Stack 3 and ends
+# the fixture run instead of prompting; every other code calls the model
+# (still scripted in this stack) through the same generic exception path.
+# "unsafe_route", "invalid_assignment" and "objectives_complete" are Stack 2
+# additions (plan section 5/"New exception codes"). "objectives_complete" is
+# deferred by the engine until a no-sweep finish has committed, so by the
+# time the client observes it, it never blocks the current turn from
+# finishing -- it is handled like any other exception once it arrives.
+ROUTINE_EXCEPTION_CODES = frozenset({
     "contact", "threat_unavailable", "promotion_pending",
     "recruitment_blocked", "no_executable_orders",
+    "unsafe_route", "invalid_assignment", "objectives_complete",
 })
-STACK1_UNSUPPORTED_EXCEPTION_CODES = frozenset({"contact"})
-
+UNSUPPORTED_EXCEPTION_CODES = frozenset({"contact"})
 ROUTINE_ORIGIN = "routine"
 
 # The only boundary routine execution may submit. Verified in
@@ -68,9 +82,12 @@ class ModelResponseError(ValueError):
 class RoutineUnsupportedException(RuntimeError):
     """A machine-detected exception this stack cannot resolve.
 
-    Stack 1 raises this for ``contact`` only: contact handling does not land
-    until Stack 3, so it ends the fixture run as an explicit unsupported
-    exception rather than silently falling back to a hidden policy.
+    Raised for ``contact`` only: contact handling does not land until
+    Stack 3, so it ends the fixture run as an explicit unsupported exception
+    rather than silently falling back to a hidden policy. Every other
+    exception code (including the Stack 2 additions ``unsafe_route``,
+    ``invalid_assignment`` and ``objectives_complete``) goes through the
+    ordinary model-exception path instead.
     """
 
     def __init__(self, reason: str, evidence: Optional[dict[str, Any]] = None):
@@ -134,9 +151,10 @@ def validate_policy(policy: Any, context: ValidationContext) -> dict[str, Any]:
 
     Returns a normalized (deep-copied, key-order-independent) policy dict on
     success. Raises ``PolicyValidationError`` on any violation, before any
-    caller-visible side effect. This function alone does not enforce the
-    Stack 1 scope restriction (empty scouts/villages/holds, null rally); use
-    ``enforce_stack1_scope`` for that after this passes.
+    caller-visible side effect. As of Stack 2 this is the full validator for
+    every field -- ``scouts``, ``villages``, ``rally`` and ``holds`` are
+    enforced here directly; there is no separate scope gate to apply
+    afterward.
     """
     _require_keys(policy, POLICY_FIELDS, {"reserve_gold", "recruits"}, "policy")
     reserve_gold = _require_int(policy["reserve_gold"], "policy.reserve_gold", minimum=0)
@@ -233,33 +251,16 @@ def validate_policy(policy: Any, context: ValidationContext) -> dict[str, Any]:
     }
 
 
-def enforce_stack1_scope(policy: dict[str, Any]) -> None:
-    """Reject any non-empty future field. Stack 1 is recruitment-only.
+def validate_routine_policy(policy: Any, context: ValidationContext) -> dict[str, Any]:
+    """Validate a ``set_policy.policy`` object against the full Stack 2 contract.
 
-    Called after ``validate_policy`` succeeds. A field being merely present
-    and empty is fine; a field carrying content is rejected explicitly, per
-    plan section "Stack 1" ("A non-empty future field is rejected
-    explicitly -- never accepted and ignored").
+    Stack 1 additionally applied ``enforce_stack1_scope`` here to reject any
+    non-empty ``scouts``/``villages``/``holds`` or non-null ``rally``. Stack 2
+    enables those fields (plan section "Stack 2": "Enable the remaining
+    policy fields"), so this is the single validation entry point for a
+    routine policy installation.
     """
-    if policy.get("scouts"):
-        raise PolicyValidationError(
-            "policy.scouts is not supported in Stack 1; must be empty")
-    if policy.get("villages"):
-        raise PolicyValidationError(
-            "policy.villages is not supported in Stack 1; must be empty")
-    if policy.get("holds"):
-        raise PolicyValidationError(
-            "policy.holds is not supported in Stack 1; must be empty")
-    if policy.get("rally") is not None:
-        raise PolicyValidationError(
-            "policy.rally is not supported in Stack 1; must be null")
-
-
-def validate_stack1_policy(policy: Any, context: ValidationContext) -> dict[str, Any]:
-    """Validate and then apply the Stack 1 scope gate in one call."""
-    normalized = validate_policy(policy, context)
-    enforce_stack1_scope(normalized)
-    return normalized
+    return validate_policy(policy, context)
 
 
 # --------------------------------------------------------------------------
@@ -318,42 +319,81 @@ class RoutineProgress:
     Mirrors the ``progress`` object in the frozen ``routine_next`` query.
     Only ``commit_action`` (proven by the checkpoint acknowledgement path)
     may mutate ``recruited``/``scout_ids``/``scout_assignments``/
-    ``completed_villages``. A ``progress_update`` proposed by a query result
-    is a proposal only, held by the caller until commitment is proven.
+    ``completed_villages``/``last_proven_revision``. A ``progress_update``
+    proposed by a query result is a proposal only, held by the caller until
+    commitment is proven.
+
+    ``last_proven_revision`` is the state revision at which the most recent
+    commit was proven (plan section 6). It is persisted by
+    ``to_runtime_record`` alongside the applied-step ledger, while
+    ``to_query_progress`` deliberately exposes planning facts only.
     """
     installation_id: str
-    recruited: dict[str, int] = field(default_factory=dict)
+    # Counts are keyed by immutable policy queue index.  Definition ids are
+    # deliberately absent from this map: two entries may request the same
+    # definition with different roles.
+    recruited: dict[int, int] = field(default_factory=dict)
     scout_assignments: list[dict[str, Any]] = field(default_factory=list)
     completed_villages: list[dict[str, Any]] = field(default_factory=list)
     scout_ids: list[int] = field(default_factory=list)
+    policy_complete: bool = False
+    last_proven_revision: Optional[int] = None
+    # Recovery metadata only.  This is intentionally omitted by
+    # ``to_query_progress`` so the planner never sees commit bookkeeping.
+    applied_steps: dict[str, dict[str, Any]] = field(default_factory=dict)
+    policy: Optional[dict[str, Any]] = field(default=None, repr=False, compare=False)
 
     @classmethod
-    def fresh(cls, installation_id: str) -> "RoutineProgress":
-        return cls(installation_id=installation_id)
+    def fresh(cls, installation_id: str, policy: Optional[dict[str, Any]] = None) -> "RoutineProgress":
+        initial_scouts = list(policy.get("scouts", [])) if isinstance(policy, dict) else []
+        return cls(installation_id=installation_id, scout_ids=initial_scouts,
+                   policy=copy.deepcopy(policy) if policy is not None else None)
 
     def to_query_progress(self) -> dict[str, Any]:
         """Render the ``progress`` field of a ``routine_next`` query."""
         return {
-            "recruited": [{"def_id": def_id, "done": done}
-                          for def_id, done in sorted(self.recruited.items())],
+            "recruited": [{"queue_index": queue_index, "done": done}
+                          for queue_index, done in sorted(self.recruited.items())],
             "scout_assignments": copy.deepcopy(self.scout_assignments),
             "completed_villages": copy.deepcopy(self.completed_villages),
             "scout_ids": list(self.scout_ids),
             "installation_id": self.installation_id,
+            "policy_complete": self.policy_complete,
         }
 
+    def to_runtime_record(self) -> dict[str, Any]:
+        """Serialize query progress plus recovery-only commit metadata."""
+        record = self.to_query_progress()
+        record["last_proven_revision"] = self.last_proven_revision
+        record["applied_steps"] = copy.deepcopy(self.applied_steps)
+        return record
+
     @classmethod
-    def from_query_progress(cls, data: dict[str, Any]) -> "RoutineProgress":
-        recruited = {}
+    def from_query_progress(cls, data: dict[str, Any],
+                            policy: Optional[dict[str, Any]] = None) -> "RoutineProgress":
+        if not isinstance(data, dict) or not isinstance(data.get("installation_id"), str):
+            raise ValueError("progress is missing installation_id")
+        recruited: dict[int, int] = {}
         for entry in data.get("recruited", []):
-            recruited[entry["def_id"]] = int(entry["done"])
+            if not isinstance(entry, dict) or not isinstance(entry.get("queue_index"), int):
+                raise ValueError("progress.recruited entries require queue_index")
+            recruited[entry["queue_index"]] = int(entry["done"])
         return cls(
             installation_id=data["installation_id"],
             recruited=recruited,
             scout_assignments=copy.deepcopy(data.get("scout_assignments", [])),
             completed_villages=copy.deepcopy(data.get("completed_villages", [])),
             scout_ids=list(data.get("scout_ids", [])),
+            last_proven_revision=data.get("last_proven_revision"),
+            policy_complete=bool(data.get("policy_complete", False)),
+            applied_steps=copy.deepcopy(data.get("applied_steps", {})),
+            policy=copy.deepcopy(policy),
         )
+
+    @classmethod
+    def from_runtime_record(cls, data: dict[str, Any],
+                            policy: Optional[dict[str, Any]] = None) -> "RoutineProgress":
+        return cls.from_query_progress(data, policy=policy)
 
     def remaining(self, policy: dict[str, Any]) -> list[dict[str, Any]]:
         """The finite queue entries not yet fully recruited.
@@ -362,15 +402,63 @@ class RoutineProgress:
         not a per-turn buy; this never re-issues an already-committed count.
         """
         remaining = []
-        for recruit in policy.get("recruits", []):
-            done = self.recruited.get(recruit["def_id"], 0)
+        for queue_index, recruit in enumerate(policy.get("recruits", [])):
+            done = self.recruited.get(queue_index, 0)
             left = recruit["count"] - done
             if left > 0:
-                remaining.append({"def_id": recruit["def_id"], "role": recruit["role"],
-                                  "remaining": left})
+                remaining.append({"queue_index": queue_index, "def_id": recruit["def_id"],
+                                  "role": recruit["role"], "remaining": left})
         return remaining
 
-    def commit_action(self, progress_update: dict[str, Any]) -> None:
+    def _validate_effects(self, effects: Any) -> list[dict[str, Any]]:
+        if not isinstance(effects, list):
+            raise ValueError("committed progress requires an effects array")
+        if self.policy is None:
+            # A recovered record can still be safely replayed structurally,
+            # but queue bounds/roles require the installation policy.
+            queue_len = None
+        else:
+            queue_len = len(self.policy.get("recruits", []))
+        normalized: list[dict[str, Any]] = []
+        for index, effect in enumerate(effects):
+            if not isinstance(effect, dict) or not isinstance(effect.get("kind"), str):
+                raise ValueError(f"effects[{index}] must be an object with kind")
+            kind = effect["kind"]
+            if kind == "recruited":
+                if set(effect) != {"kind", "queue_index", "unit_id"}:
+                    raise ValueError("recruited effect requires queue_index and actual unit_id")
+                queue_index = effect["queue_index"]
+                unit_id = effect["unit_id"]
+                if (isinstance(queue_index, bool) or not isinstance(queue_index, int)
+                        or queue_index < 0 or (queue_len is not None and queue_index >= queue_len)):
+                    raise ValueError("recruited effect has invalid queue_index")
+                if isinstance(unit_id, bool) or not isinstance(unit_id, int) or unit_id <= 0:
+                    raise ValueError("recruited effect requires a positive actual unit_id")
+                normalized.append({"kind": kind, "queue_index": queue_index, "unit_id": unit_id})
+            elif kind == "scout_assigned":
+                if set(effect) != {"kind", "unit_id", "col", "row"}:
+                    raise ValueError("scout_assigned effect requires unit_id, col and row")
+                if any(isinstance(effect[key], bool) or not isinstance(effect[key], int)
+                       for key in ("unit_id", "col", "row")):
+                    raise ValueError("scout_assigned coordinates and unit_id must be integers")
+                normalized.append({key: effect[key] for key in ("kind", "unit_id", "col", "row")})
+            elif kind == "completed_village":
+                if set(effect) != {"kind", "col", "row"}:
+                    raise ValueError("completed_village effect requires col and row")
+                if any(isinstance(effect[key], bool) or not isinstance(effect[key], int)
+                       for key in ("col", "row")):
+                    raise ValueError("completed_village coordinates must be integers")
+                normalized.append({key: effect[key] for key in ("kind", "col", "row")})
+            elif kind == "policy_completed":
+                if set(effect) != {"kind"}:
+                    raise ValueError("policy_completed effect has unknown fields")
+                normalized.append({"kind": kind})
+            else:
+                raise ValueError(f"unknown committed progress effect: {kind!r}")
+        return normalized
+
+    def commit_action(self, committed_update: dict[str, Any], *, installation_id: str,
+                      batch_id: str, state_revision: int) -> bool:
         """Adopt a proposed ``progress_update`` after the action commits.
 
         This is the ONLY method that mutates persisted progress. Callers
@@ -378,37 +466,89 @@ class RoutineProgress:
         existing driver/checkpoint acknowledgement protocol -- never merely
         because a query proposed it. This is the crash-safety requirement.
 
-        Accepts two shapes: the real driver's per-step wire shape,
-        ``{"kind": "recruited", "def_id": ...}`` (routine.rs emits exactly
-        this -- one committed recruit per routine step, never an absolute
-        count), and the absolute-count shape ``{"recruited": [{"def_id":...,
-        "done": N}], ...}`` used by ``run_scripted_strategy_turn`` and this
-        module's own tests. Both are idempotent-safe: replaying the same
-        wire-shape update twice is guarded by the caller only ever adopting
-        a given commit once (never by re-deriving it from a query result).
+        The batch identity and state revision are mandatory.  Duplicate
+        identity/payload/revision is a no-op; reusing identity with different
+        evidence is a conflict.  All validation happens before mutation.
         """
-        if progress_update.get("installation_id") not in (None, self.installation_id):
-            raise ValueError("progress_update belongs to a different installation")
-        if progress_update.get("kind") == "recruited" and "def_id" in progress_update:
-            def_id = progress_update["def_id"]
-            self.recruited[def_id] = self.recruited.get(def_id, 0) + 1
-            return
-        for entry in progress_update.get("recruited", []):
-            def_id = entry["def_id"]
-            done = int(entry["done"])
-            # A committed update is authoritative for its def_id; monotonic
-            # non-decrease guards against a stale/duplicated replay adding
-            # the same recruit twice after a resume.
-            self.recruited[def_id] = max(self.recruited.get(def_id, 0), done)
-        for scout_id in progress_update.get("scout_ids", []):
-            if scout_id not in self.scout_ids:
-                self.scout_ids.append(scout_id)
-        for assignment in progress_update.get("scout_assignments", []):
-            if assignment not in self.scout_assignments:
-                self.scout_assignments.append(copy.deepcopy(assignment))
-        for village in progress_update.get("completed_villages", []):
-            if village not in self.completed_villages:
-                self.completed_villages.append(copy.deepcopy(village))
+        if installation_id != self.installation_id:
+            raise ValueError("committed progress belongs to a foreign installation")
+        if not isinstance(batch_id, str) or not batch_id:
+            raise ValueError("committed progress requires batch_id")
+        if isinstance(state_revision, bool) or not isinstance(state_revision, int) or state_revision < 0:
+            raise ValueError("committed progress requires a non-negative state_revision")
+        if not isinstance(committed_update, dict) or set(committed_update) != {"effects"}:
+            raise ValueError("committed progress requires exactly an effects array")
+        effects = self._validate_effects(committed_update["effects"])
+        digest = hashlib.sha256(json.dumps(effects, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        prior = self.applied_steps.get(batch_id)
+        if prior is not None:
+            if prior.get("digest") == digest and prior.get("state_revision") == state_revision:
+                return False
+            raise ValueError("committed batch_id was reused with conflicting progress evidence")
+        if self.last_proven_revision is not None and state_revision < self.last_proven_revision:
+            raise ValueError("committed progress state_revision moved backwards")
+
+        # Validate cross-effect relationships before changing any field.
+        known_scouts = set(self.scout_ids)
+        recruited_in_batch: dict[int, int] = {}
+        recruited_ids = set()
+        for effect in effects:
+            if effect["kind"] == "recruited":
+                if self.policy is None:
+                    raise ValueError("recruited progress requires the installation policy")
+                queue_index, unit_id = effect["queue_index"], effect["unit_id"]
+                if unit_id in recruited_ids or unit_id in self.scout_ids:
+                    raise ValueError("recruited effect repeats an actual unit_id")
+                recruited_ids.add(unit_id)
+                recruited_in_batch[queue_index] = recruited_in_batch.get(queue_index, 0) + 1
+                if self.policy is not None:
+                    entry = self.policy["recruits"][queue_index]
+                    if self.recruited.get(queue_index, 0) + recruited_in_batch[queue_index] > entry["count"]:
+                        raise ValueError("committed recruitment exceeds the policy queue count")
+                    if entry["role"] == "scout":
+                        known_scouts.add(unit_id)
+        for effect in effects:
+            if effect["kind"] == "scout_assigned" and effect["unit_id"] not in known_scouts:
+                raise ValueError("scout_assigned effect references an unknown scout")
+            elif effect["kind"] == "scout_assigned" and self.policy is not None:
+                if {"col": effect["col"], "row": effect["row"]} not in self.policy.get("villages", []):
+                    raise ValueError("scout_assigned effect references an unselected village")
+            elif effect["kind"] == "completed_village" and self.policy is not None:
+                if {"col": effect["col"], "row": effect["row"]} not in self.policy.get("villages", []):
+                    raise ValueError("completed_village effect references an unselected village")
+        if any(effect["kind"] == "policy_completed" for effect in effects) and self.policy is not None:
+            if self.remaining(self.policy):
+                # Include this batch's recruit effects when determining whether
+                # completion is proven at the same boundary.
+                remaining_after = [entry for entry in self.remaining(self.policy)
+                                   if self.recruited.get(entry["queue_index"], 0)
+                                   + recruited_in_batch.get(entry["queue_index"], 0) < self.policy["recruits"][entry["queue_index"]]["count"]]
+                if remaining_after:
+                    raise ValueError("policy_completed requires all recruitment objectives complete")
+
+        # Apply atomically after every check succeeded.
+        for effect in effects:
+            kind = effect["kind"]
+            if kind == "recruited":
+                queue_index, unit_id = effect["queue_index"], effect["unit_id"]
+                self.recruited[queue_index] = self.recruited.get(queue_index, 0) + 1
+                if self.policy["recruits"][queue_index]["role"] == "scout":
+                    if unit_id not in self.scout_ids:
+                        self.scout_ids.append(unit_id)
+            elif kind == "scout_assigned":
+                self.scout_assignments = [a for a in self.scout_assignments
+                                          if a.get("unit_id") != effect["unit_id"]]
+                self.scout_assignments.append({"unit_id": effect["unit_id"],
+                                               "col": effect["col"], "row": effect["row"]})
+            elif kind == "completed_village":
+                if not any(v.get("col") == effect["col"] and v.get("row") == effect["row"]
+                           for v in self.completed_villages):
+                    self.completed_villages.append({"col": effect["col"], "row": effect["row"]})
+            elif kind == "policy_completed":
+                self.policy_complete = True
+        self.last_proven_revision = state_revision
+        self.applied_steps[batch_id] = {"digest": digest, "state_revision": state_revision}
+        return True
 
 
 # --------------------------------------------------------------------------
@@ -440,6 +580,20 @@ class RoutineActionResult:
     reason: str
 
 
+@dataclass
+class RoutineFinishResult:
+    progress_update: dict[str, Any]
+    reason: str = "no_remaining_routine_steps"
+
+    def __eq__(self, other: Any) -> bool:
+        # Keep the small historical sentinel comparison useful to callers
+        # while carrying finish-boundary proof effects for Stack 2.
+        return other == "finish" or (
+            isinstance(other, RoutineFinishResult)
+            and self.progress_update == other.progress_update
+            and self.reason == other.reason)
+
+
 def parse_routine_result(body: dict[str, Any]) -> Any:
     """Parse the ``body.result`` of a ``routine_next`` reply.
 
@@ -460,12 +614,64 @@ def parse_routine_result(body: dict[str, Any]) -> Any:
     if kind == "finish":
         if body.get("reason") != "no_remaining_routine_steps":
             raise ValueError("routine_next finish result has an unexpected reason")
-        return "finish"
+        update = body.get("progress_update", {"effects": []})
+        if not isinstance(update, dict) or set(update) != {"effects"}:
+            raise ValueError("routine_next finish progress_update must contain effects only")
+        return RoutineFinishResult(progress_update=update)
     if kind == "exception":
         if "reason" not in body:
             raise ValueError("routine_next exception result is missing reason")
         return RoutineException(reason=body["reason"], evidence=body.get("evidence", {}))
     raise ValueError(f"routine_next reply has unknown result kind: {kind!r}")
+
+
+def find_unreconstructable_routine_batch(parent_records: list[dict[str, Any]]) -> Optional[str]:
+    """Detect a routine batch the checkpoint proves committed with no progress record.
+
+    Plan section 6: "If the checkpoint has advanced but its matching policy
+    progress cannot be reconstructed, interrupt with explicit unknown
+    action-boundary status. Do not reset to the original recruitment list."
+
+    A routine submission's engine-side commitment (a durable ``checkpoint_ref``
+    record, mirrored by a ``batch_committed`` record carrying the same
+    ``batch_id``) is written strictly *before* the corresponding
+    ``routine_progress_committed`` confirmation of what that step actually
+    changed (see the client's checkpoint handling: the checkpoint is proof of
+    engine-side commitment; the progress update is only adopted, and its
+    confirmation record only written, immediately afterward). A crash in
+    exactly that window leaves a batch with proven engine commitment but no
+    record of the progress it produced -- replaying the checkpoint's routine
+    action would double-apply it (its cause is already reflected in engine
+    state), and simply ignoring it would silently under-count a completed
+    step. Neither is safe, so this is surfaced as unreconstructable instead.
+
+    A later ``policy_installed`` record clears any earlier pending batch: a
+    fresh installation discards all previous orders, assignments and
+    remaining counts (plan section 4), so a batch pending under a
+    *superseded* installation is moot.
+
+    Returns the ``batch_id`` of the unreconstructable routine batch, or
+    ``None`` if none exists (either no routine batch is pending, or the
+    pending one never proved committed and can simply be dropped -- a
+    submission that crashed before its checkpoint is safe to treat as never
+    having happened, matching "a duplicate pending step is never applied
+    twice" without needing special handling here).
+    """
+    pending_batch_id: Optional[str] = None
+    for record in parent_records:
+        if record.get("type") == "forwarded_orders" and record.get("source") == "routine":
+            orders = record.get("orders") or []
+            is_boundary = any(isinstance(order, dict)
+                              and order.get("action") in ("FinishWithGreedy", "Resign")
+                              for order in orders)
+            pending_batch_id = None if is_boundary else record.get("batch_id")
+        elif record.get("type") in ("routine_progress_committed", "policy_installed"):
+            pending_batch_id = None
+    if pending_batch_id is None:
+        return None
+    committed_batch_ids = {r.get("batch_id") for r in parent_records
+                           if r.get("type") == "batch_committed"}
+    return pending_batch_id if pending_batch_id in committed_batch_ids else None
 
 
 # --------------------------------------------------------------------------
@@ -642,7 +848,7 @@ def load_checked_in_policy(path: str, context: ValidationContext) -> dict[str, A
         policy_obj = obj["policy"]
     else:
         policy_obj = obj
-    return validate_stack1_policy(policy_obj, context)
+    return validate_routine_policy(policy_obj, context)
 
 
 # --------------------------------------------------------------------------
@@ -658,8 +864,13 @@ def render_policy_brief(reserve_gold_default: int, recruitable_defs: Iterable[st
         "policy.reserve_gold: integer gold to keep unspent.\n"
         "policy.recruits: ordered list of at most 8 {def_id,count,role}; each "
         "count is a finite total for this installation, not a per-turn buy.\n"
-        "This stack only supports recruitment: scouts/villages/holds must be "
-        "empty and rally must be null."
+        "policy.scouts: existing friendly unit ids to hold as scouts (<=8 "
+        "total including new scout recruits); excludes recruiters.\n"
+        "policy.villages: at most 4 existing village coordinates to assign "
+        "scouts toward.\n"
+        "policy.rally: one in-bounds coordinate for the remaining army, or null.\n"
+        "policy.holds: existing friendly unit ids to keep stationary; cannot "
+        "overlap scouts."
     )
 
 
@@ -728,6 +939,7 @@ def run_scripted_strategy_turn(
     committed_actions = 0
     revision = state_revision
     policy = installation.policy
+    progress.policy = copy.deepcopy(policy)
     queries = 0
     while True:
         if queries >= max_queries:
@@ -742,7 +954,7 @@ def run_scripted_strategy_turn(
             raise RuntimeError(f"query_error: routine_next: {message}")
         result = parse_routine_result(raw["body"])
 
-        if result == "finish":
+        if isinstance(result, RoutineFinishResult):
             # Finish through the routine envelope with no model call between the
             # last routine step and the boundary. FinishWithGreedy with empty
             # groups and holds is the verified no-sweep boundary; plain EndTurn
@@ -753,6 +965,12 @@ def run_scripted_strategy_turn(
                 message = (finish_reply.get("message", "finish failed")
                            if isinstance(finish_reply, dict) else "invalid finish response")
                 raise RuntimeError(f"submit_error: routine finish rejected: {message}")
+            batch_id = (finish_reply.get("body", {}).get("batch_id")
+                        if isinstance(finish_reply.get("body"), dict) else None)
+            progress.commit_action(result.progress_update, installation_id=installation.installation_id,
+                                   batch_id=batch_id or f"scripted-finish-{committed_actions}",
+                                   state_revision=(finish_reply.get("body", {}).get("state_revision", revision)
+                                                   if isinstance(finish_reply.get("body"), dict) else revision))
             return StrategyTurnOutcome("finished", reason="no_remaining_routine_steps",
                                         model_responses=model_responses,
                                         committed_actions=committed_actions)
@@ -769,16 +987,20 @@ def run_scripted_strategy_turn(
                 message = submit_reply.get("message", "submit failed") if isinstance(submit_reply, dict) else "invalid submit response"
                 raise RuntimeError(f"submit_error: routine action rejected: {message}")
             # Only now, proven committed, adopt the proposed progress update.
-            progress.commit_action(result.progress_update)
-            committed_actions += 1
             body = submit_reply.get("body", {})
-            if isinstance(body, dict) and "state_revision" in body:
-                revision = body["state_revision"]
+            new_revision = body["state_revision"] if isinstance(body, dict) and "state_revision" in body else revision
+            batch_id = body.get("batch_id") if isinstance(body, dict) else None
+            progress.commit_action(result.progress_update, installation_id=installation.installation_id,
+                                   batch_id=batch_id or f"scripted-batch-{committed_actions + 1}",
+                                   state_revision=new_revision)
+            committed_actions += 1
+            if new_revision is not None:
+                revision = new_revision
             continue
 
         # RoutineException
         assert isinstance(result, RoutineException)
-        if result.reason in STACK1_UNSUPPORTED_EXCEPTION_CODES:
+        if result.reason in UNSUPPORTED_EXCEPTION_CODES:
             raise RoutineUnsupportedException(result.reason, result.evidence)
         if model_responses >= max_model_responses:
             return StrategyTurnOutcome("budget_exhausted", reason="max_model_responses_per_turn",
@@ -796,13 +1018,13 @@ def run_scripted_strategy_turn(
                                         model_responses=model_responses,
                                         committed_actions=committed_actions)
         if isinstance(parsed, SetPolicyResponse):
-            normalized = validate_stack1_policy(parsed.policy, context)
+            normalized = validate_routine_policy(parsed.policy, context)
             installation = install_policy(normalized, source_request_id=installation.source_request_id,
                                           source_kind="model")
             policy = installation.policy
-            progress = RoutineProgress.fresh(installation.installation_id)
+            progress = RoutineProgress.fresh(installation.installation_id, installation.policy)
             continue
         # ActResponse: Stack 1 does not resolve tactical exceptions (that is
         # Stack 3 scope beyond "contact"); reject rather than silently drop.
         raise ModelResponseError(
-            "an 'act' response is not supported for this exception in Stack 1")
+            "an 'act' response is not supported for this exception until Stack 3")

@@ -133,7 +133,11 @@ class StrategyModeIntegrationTests(unittest.TestCase):
             # no-sweep finish, with no model call between them.
             committed = [r for r in records if r.get("type") == "routine_progress_committed"]
             self.assertEqual(len(committed), 3)
-            self.assertTrue(all(c["progress_update"]["def_id"] == "Skeleton" for c in committed))
+            self.assertTrue(all(
+                c["progress_update"]["effects"][0]["kind"] == "recruited"
+                and c["progress_update"]["effects"][0]["queue_index"] == 0
+                and isinstance(c["progress_update"]["effects"][0].get("unit_id"), int)
+                for c in committed))
 
             forwarded = [r for r in records if r.get("type") == "forwarded_orders"]
             self.assertEqual([f["orders"][0]["action"] for f in forwarded],
@@ -419,8 +423,10 @@ class StrategyModeIntegrationTests(unittest.TestCase):
             # The interrupted attempt is never double counted: no def_id
             # accumulates more committed recruits than the control run.
             self.assertEqual(
-                sum(1 for c in resumed_committed if c["progress_update"]["def_id"] == "Skeleton"),
-                sum(1 for c in control_committed if c["progress_update"]["def_id"] == "Skeleton"))
+                sum(1 for c in resumed_committed
+                    if c["progress_update"]["effects"][0]["kind"] == "recruited"),
+                sum(1 for c in control_committed
+                    if c["progress_update"]["effects"][0]["kind"] == "recruited"))
 
     # -- Gate 7: events are labelled source: routine, snapshots are
     # playable, and import is idempotent. -----------------------------------

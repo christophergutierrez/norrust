@@ -1,11 +1,19 @@
-"""Contract tests for tools/routine_policy.py and its Stack 1 wiring into
+"""Contract tests for tools/routine_policy.py and its Stack 1/2 wiring into
 tools/llm_client.py.
 
-Per the plan (docs/plans/strategy-and-routine-execution.md, "Stack 1"), the
-Rust `routine_next` driver query does not exist yet in this worktree. Every
-test here drives the client contract with a scripted/faked exchange and
-backend rather than a live model or the real Rust routine executor. Tests
-that will only pass once the Rust half lands are marked explicitly below.
+Per the plan (docs/plans/strategy-and-routine-execution.md, "Stack 1" and
+"Stack 2"), the Rust `routine_next` driver query does not exist yet in this
+worktree. Every test here drives the client contract with a scripted/faked
+exchange and backend rather than a live model or the real Rust routine
+executor. Tests that will only pass once the Rust half lands are marked
+explicitly below.
+
+Stack 2 enables the scouts/villages/rally/holds fields that Stack 1 scoped
+to empty/null via `enforce_stack1_scope`. That function is removed (plan
+section "Stack 2": "Remove that scope gate"); `test_stack1_scope_rejects_
+nonempty_future_fields_explicitly` from Stack 1 was replaced with
+`test_stack2_enables_previously_scoped_fields`, which asserts the opposite
+(these fields are now accepted) -- see PolicyValidationTests below.
 """
 from __future__ import annotations
 
@@ -92,7 +100,7 @@ class FakeBackend:
 
 class PolicyValidationTests(unittest.TestCase):
     def test_valid_policy_accepted(self):
-        normalized = rp.validate_stack1_policy(valid_stack1_policy(), make_context())
+        normalized = rp.validate_routine_policy(valid_stack1_policy(), make_context())
         self.assertEqual(normalized["reserve_gold"], 60)
         self.assertEqual(normalized["recruits"],
                          [{"def_id": "Skeleton", "count": 6, "role": "army"}])
@@ -142,7 +150,11 @@ class PolicyValidationTests(unittest.TestCase):
         # No case above should have touched an exchange/driver.
         self.assertEqual(never_called.calls, [])
 
-    def test_stack1_scope_rejects_nonempty_future_fields_explicitly(self):
+    def test_stack2_enables_previously_scoped_fields(self):
+        # Stack 1 rejected any of these as non-empty via enforce_stack1_scope
+        # (removed in Stack 2 -- see test_routine_policy history). Stack 2
+        # accepts them through validate_policy/validate_routine_policy
+        # directly, with no separate scope gate to apply afterward.
         base = valid_stack1_policy()
         nonempty_scouts = {**base, "scouts": [2]}
         nonempty_villages = {**base, "villages": [{"col": 2, "row": 4}]}
@@ -151,13 +163,35 @@ class PolicyValidationTests(unittest.TestCase):
         for name, policy in (("scouts", nonempty_scouts), ("villages", nonempty_villages),
                              ("holds", nonempty_holds), ("rally", nonnull_rally)):
             with self.subTest(field=name):
-                # Each individually passes generic validation...
-                normalized = rp.validate_policy(policy, make_context())
-                # ...but Stack 1 explicitly rejects it, never silently drops it.
-                with self.assertRaisesRegex(rp.PolicyValidationError, "not supported in Stack 1"):
-                    rp.enforce_stack1_scope(normalized)
-                with self.assertRaises(rp.PolicyValidationError):
-                    rp.validate_stack1_policy(policy, make_context())
+                normalized = rp.validate_routine_policy(policy, make_context())
+                self.assertEqual(normalized.get(name), policy[name])
+        self.assertFalse(hasattr(rp, "enforce_stack1_scope"))
+
+    def test_scouts_recruiters_excluded_and_bound_checked_before_execution(self):
+        # An existing recruiter can never be named as a scout.
+        with self.assertRaisesRegex(rp.PolicyValidationError, "cannot be a recruiter"):
+            rp.validate_policy({**valid_stack1_policy(), "scouts": [1]}, make_context())
+        # Existing scouts (2, 3) plus 7 new scout recruits = 9 > 8: rejected
+        # before any execution, per plan section 4 ("reject a larger policy
+        # before any execution").
+        context = make_context(friendly_unit_ids=frozenset({1, 2, 3}))
+        over_budget = {
+            "reserve_gold": 0,
+            "recruits": [{"def_id": "Ghost", "count": 7, "role": "scout"}],
+            "scouts": [2, 3], "villages": [], "rally": None, "holds": [],
+        }
+        with self.assertRaisesRegex(rp.PolicyValidationError, "exceed 8"):
+            rp.validate_policy(over_budget, context)
+        # Exactly at the boundary (2 existing + 6 new == 8) is accepted.
+        at_budget = {**over_budget,
+                     "recruits": [{"def_id": "Ghost", "count": 6, "role": "scout"}]}
+        normalized = rp.validate_policy(at_budget, context)
+        self.assertEqual(normalized["scouts"], [2, 3])
+
+    def test_held_ids_cannot_overlap_scouts(self):
+        with self.assertRaisesRegex(rp.PolicyValidationError, "overlaps a scout"):
+            rp.validate_policy(
+                {**valid_stack1_policy(), "scouts": [2], "holds": [2]}, make_context())
 
 
 class ModelResponseParsingTests(unittest.TestCase):
@@ -236,12 +270,13 @@ class RoutineQueryContractTests(unittest.TestCase):
         self.assertEqual(query["progress"], {
             "recruited": [], "scout_assignments": [], "completed_villages": [],
             "scout_ids": [], "installation_id": installation.installation_id,
+            "policy_complete": False,
         })
 
     def test_parse_routine_result_forms(self):
         action = rp.parse_routine_result({
             "result": "action", "action": {"action": "Recruit"},
-            "progress_update": {"recruited": [{"def_id": "Skeleton", "done": 1}]},
+            "progress_update": {"effects": [{"kind": "recruited", "queue_index": 0}]},
             "reason": "recruit"})
         self.assertIsInstance(action, rp.RoutineActionResult)
         self.assertEqual(rp.parse_routine_result(
@@ -256,89 +291,85 @@ class RoutineQueryContractTests(unittest.TestCase):
 
 
 class ProgressAdoptionTests(unittest.TestCase):
-    def test_progress_adopted_only_after_committed_submit(self):
-        installation = rp.install_policy(valid_stack1_policy())
-        progress = rp.RoutineProgress.fresh(installation.installation_id)
-        # The routine_next query proposes a recruit; the exchange's Submit
-        # call is what proves commitment.
-        script = [
-            {"ok": True, "body": {
-                "result": "action",
-                "action": {"action": "Recruit", "def_id": "Skeleton", "col": 1, "row": 1},
-                "progress_update": {"installation_id": installation.installation_id,
-                                    "recruited": [{"def_id": "Skeleton", "done": 1}]},
-                "reason": "recruit"}},
-            {"ok": True, "body": {"state_revision": 42}},
-            {"ok": True, "body": {"result": "finish", "reason": "no_remaining_routine_steps"}},
-            {"ok": True, "body": {"state_revision": 43}},
-        ]
-        exchange = FakeExchange(script)
-        outcome = rp.run_scripted_strategy_turn(
-            exchange=exchange, request_model=lambda brief: (_ for _ in ()).throw(
-                AssertionError("model should not be called on a quiet committed path")),
-            context=make_context(), installation=installation, progress=progress,
-            state_revision=41)
-        self.assertEqual(outcome.status, "finished")
-        self.assertEqual(outcome.committed_actions, 1)
-        self.assertEqual(progress.recruited.get("Skeleton"), 1)
-        # One recruit envelope, then the automatic no-sweep boundary. No model
-        # call happens between the last routine step and the finish.
-        self.assertEqual(call_kinds(exchange),
-                         ["Query:routine_next", "Envelope:Recruit",
-                          "Query:routine_next", "Envelope:FinishWithGreedy"])
-        finish = exchange.calls[-1]["orders"][0]
-        self.assertEqual(finish, {"action": "FinishWithGreedy", "groups": [], "holds": []})
+    def _installation(self):
+        policy = {"reserve_gold": 0,
+                  "recruits": [{"def_id": "Ghost", "count": 2, "role": "scout"},
+                               {"def_id": "Ghost", "count": 2, "role": "army"}],
+                  "scouts": [], "villages": [{"col": 2, "row": 4}],
+                  "rally": {"col": 8, "row": 8}, "holds": []}
+        return rp.install_policy(policy)
 
-    def test_progress_not_adopted_when_submit_is_rejected(self):
-        installation = rp.install_policy(valid_stack1_policy())
-        progress = rp.RoutineProgress.fresh(installation.installation_id)
-        script = [
-            {"ok": True, "body": {
-                "result": "action",
-                "action": {"action": "Recruit", "def_id": "Skeleton", "col": 1, "row": 1},
-                "progress_update": {"installation_id": installation.installation_id,
-                                    "recruited": [{"def_id": "Skeleton", "done": 1}]},
-                "reason": "recruit"}},
-            {"ok": False, "message": "stale revision"},
-        ]
-        exchange = FakeExchange(script)
-        with self.assertRaises(RuntimeError):
-            rp.run_scripted_strategy_turn(
-                exchange=exchange, request_model=lambda brief: None,
-                context=make_context(), installation=installation, progress=progress,
-                state_revision=41)
+    def _commit(self, progress, installation, batch, effects, revision):
+        return progress.commit_action({"effects": effects},
+                                       installation_id=installation.installation_id,
+                                       batch_id=batch, state_revision=revision)
+
+    def test_duplicate_real_recruit_step_is_noop(self):
+        installation = self._installation()
+        progress = rp.RoutineProgress.fresh(installation.installation_id, installation.policy)
+        effect = {"kind": "recruited", "queue_index": 0, "unit_id": 47}
+        self.assertTrue(self._commit(progress, installation, "b1", [effect], 7))
+        self.assertFalse(self._commit(progress, installation, "b1", [effect], 7))
+        self.assertEqual(progress.recruited, {0: 1})
+        self.assertEqual(progress.scout_ids, [47])
+        self.assertEqual(progress.last_proven_revision, 7)
+
+    def test_duplicate_survives_serialization_and_later_commit(self):
+        installation = self._installation()
+        progress = rp.RoutineProgress.fresh(installation.installation_id, installation.policy)
+        effect = {"kind": "recruited", "queue_index": 0, "unit_id": 47}
+        self._commit(progress, installation, "b1", [effect], 7)
+        self._commit(progress, installation, "b2", [{"kind": "recruited", "queue_index": 1, "unit_id": 48}], 8)
+        reloaded = rp.RoutineProgress.from_runtime_record(progress.to_runtime_record(), installation.policy)
+        self.assertFalse(self._commit(reloaded, installation, "b1", [effect], 7))
+        self.assertEqual(reloaded.recruited, {0: 1, 1: 1})
+        self.assertEqual(reloaded.scout_ids, [47])
+        self.assertEqual(reloaded.last_proven_revision, 8)
+
+    def test_distinct_batches_with_identical_content_count_twice(self):
+        installation = self._installation()
+        progress = rp.RoutineProgress.fresh(installation.installation_id, installation.policy)
+        effect = {"kind": "recruited", "queue_index": 0, "unit_id": 47}
+        self._commit(progress, installation, "b1", [effect], 1)
+        self._commit(progress, installation, "b2", [effect | {"unit_id": 48}], 2)
+        self.assertEqual(progress.recruited, {0: 2})
+        self.assertEqual(progress.scout_ids, [47, 48])
+
+    def test_conflict_foreign_and_proposal_rejected_without_mutation(self):
+        installation = self._installation()
+        progress = rp.RoutineProgress.fresh(installation.installation_id, installation.policy)
+        with self.assertRaises(ValueError):
+            progress.commit_action({"effects": [{"kind": "recruited", "queue_index": 0,
+                                                   "unit_id": 47}]},
+                                   installation_id="other", batch_id="b1", state_revision=3)
+        with self.assertRaises(ValueError):
+            progress.commit_action({"effects": [{"kind": "recruited", "queue_index": 0}]},
+                                   installation_id=installation.installation_id, batch_id="b1", state_revision=3)
         self.assertEqual(progress.recruited, {})
+        self._commit(progress, installation, "b1", [{"kind": "recruited", "queue_index": 0, "unit_id": 47}], 3)
+        before = progress.to_runtime_record()
+        with self.assertRaises(ValueError):
+            self._commit(progress, installation, "b1", [{"kind": "recruited", "queue_index": 0, "unit_id": 49}], 4)
+        self.assertEqual(progress.to_runtime_record(), before)
 
-    def test_finite_queue_not_rebought_after_resume(self):
-        installation = rp.install_policy(
-            {**valid_stack1_policy(), "recruits": [{"def_id": "Skeleton", "count": 2, "role": "army"}]})
-        # Simulate a resumed session: progress already shows the full count
-        # committed, serialized and reloaded exactly as persistence would.
-        progress = rp.RoutineProgress.fresh(installation.installation_id)
-        progress.commit_action({"recruited": [{"def_id": "Skeleton", "done": 2}]})
-        serialized = progress.to_query_progress()
-        reloaded = rp.RoutineProgress.from_query_progress(serialized)
-        self.assertEqual(reloaded.remaining(installation.policy), [])
+    def test_assignments_use_standard_fields_and_finish_proof(self):
+        installation = self._installation()
+        progress = rp.RoutineProgress.fresh(installation.installation_id, installation.policy)
+        self._commit(progress, installation, "b1", [{"kind": "recruited", "queue_index": 0, "unit_id": 47}], 1)
+        self._commit(progress, installation, "b2", [{"kind": "scout_assigned", "unit_id": 47, "col": 2, "row": 4}], 2)
+        self._commit(progress, installation, "b3", [{"kind": "completed_village", "col": 2, "row": 4}], 3)
+        self.assertEqual(progress.scout_assignments, [{"unit_id": 47, "col": 2, "row": 4}])
+        self.assertFalse(progress.policy_complete)
+        self.assertEqual(progress.to_query_progress()["recruited"], [{"queue_index": 0, "done": 1}])
+        self.assertNotIn("applied_steps", progress.to_query_progress())
 
-        # A duplicated committed update must not double-count (monotonic).
-        reloaded.commit_action({"recruited": [{"def_id": "Skeleton", "done": 2}]})
-        self.assertEqual(reloaded.recruited["Skeleton"], 2)
-
-        script = [{"ok": True, "body": {"result": "finish", "reason": "no_remaining_routine_steps"}},
-                  {"ok": True, "body": {"state_revision": 101}}]
-        exchange = FakeExchange(script)
-        outcome = rp.run_scripted_strategy_turn(
-            exchange=exchange, request_model=lambda brief: (_ for _ in ()).throw(
-                AssertionError("no exception should occur; queue is already complete")),
-            context=make_context(), installation=installation, progress=reloaded,
-            state_revision=100)
-        self.assertEqual(outcome.status, "finished")
-        self.assertEqual(outcome.committed_actions, 0)
-        self.assertEqual(reloaded.recruited["Skeleton"], 2)
-        # The resumed turn buys nothing: it queries once and finishes. No
-        # Recruit envelope is ever submitted.
-        self.assertEqual(call_kinds(exchange),
-                         ["Query:routine_next", "Envelope:FinishWithGreedy"])
+    def test_repeated_definition_entries_keep_independent_remaining_counts(self):
+        installation = self._installation()
+        progress = rp.RoutineProgress.fresh(installation.installation_id, installation.policy)
+        self._commit(progress, installation, "b1", [{"kind": "recruited", "queue_index": 0, "unit_id": 47}], 1)
+        self.assertEqual(progress.remaining(installation.policy), [
+            {"queue_index": 0, "def_id": "Ghost", "role": "scout", "remaining": 1},
+            {"queue_index": 1, "def_id": "Ghost", "role": "army", "remaining": 2}])
 
 
 class ContactHandlingTests(unittest.TestCase):
@@ -372,6 +403,258 @@ class ContactHandlingTests(unittest.TestCase):
         self.assertEqual(outcome.status, "finished")
         self.assertEqual(outcome.reason, "model_finish_turn")
         self.assertEqual(backend.calls, 1)
+
+    def test_new_stack2_exception_codes_call_model_not_unsupported(self):
+        # Plan section 5: "The Rust side will now raise unsafe_route,
+        # invalid_assignment, and objectives_complete in addition to Stack
+        # 1's set. Handle them in the client loop's exception path." None of
+        # them are in UNSUPPORTED_EXCEPTION_CODES (only "contact" is), so
+        # each reaches the model through the ordinary exception path exactly
+        # like recruitment_blocked already does above.
+        for reason in ("unsafe_route", "invalid_assignment", "objectives_complete"):
+            with self.subTest(reason=reason):
+                self.assertIn(reason, rp.ROUTINE_EXCEPTION_CODES)
+                self.assertNotIn(reason, rp.UNSUPPORTED_EXCEPTION_CODES)
+                installation = rp.install_policy(valid_stack1_policy())
+                progress = rp.RoutineProgress.fresh(installation.installation_id)
+                script = [
+                    {"ok": True, "body": {"result": "exception", "reason": reason, "evidence": {}}},
+                    {"ok": True, "body": {"result": "finish", "reason": "no_remaining_routine_steps"}},
+                ]
+                exchange = FakeExchange(script)
+                backend = FakeBackend([{"kind": "finish_turn"}])
+                outcome = rp.run_scripted_strategy_turn(
+                    exchange=exchange, request_model=backend, context=make_context(),
+                    installation=installation, progress=progress, state_revision=5)
+                self.assertEqual(outcome.status, "finished")
+                self.assertEqual(backend.calls, 1)
+
+    def test_objectives_complete_does_not_block_current_turn_finish(self):
+        # "objectives_complete is deferred by the engine until a no-sweep
+        # finish has committed and must not prevent the current turn from
+        # finishing." From the client's perspective this means: when it
+        # does arrive, a model finish_turn response still finishes cleanly
+        # -- no special-cased blocking logic sits between the exception and
+        # the boundary.
+        installation = rp.install_policy(valid_stack1_policy())
+        progress = rp.RoutineProgress.fresh(installation.installation_id)
+        script = [
+            {"ok": True, "body": {"result": "exception", "reason": "objectives_complete",
+                                  "evidence": {}}},
+        ]
+        exchange = FakeExchange(script)
+        backend = FakeBackend([{"kind": "finish_turn"}])
+        outcome = rp.run_scripted_strategy_turn(
+            exchange=exchange, request_model=backend, context=make_context(),
+            installation=installation, progress=progress, state_revision=5)
+        self.assertEqual(outcome.status, "finished")
+        self.assertEqual(outcome.reason, "model_finish_turn")
+        self.assertEqual(backend.calls, 1)
+        self.assertEqual(call_kinds(exchange), ["Query:routine_next"])
+
+
+class ScoutAssignmentPersistenceTests(unittest.TestCase):
+    """Actual-vs-predicted scout ids and assignment/objective round-trips."""
+
+    def test_actual_scout_id_adopted_never_predicted(self):
+        policy = {**valid_stack1_policy(),
+                  "recruits": [{"def_id": "Ghost", "count": 1, "role": "scout"}]}
+        installation = rp.install_policy(policy)
+        progress = rp.RoutineProgress.fresh(installation.installation_id, policy)
+        progress.commit_action(
+            {"effects": [{"kind": "recruited", "queue_index": 0, "unit_id": 47}]},
+            installation_id=installation.installation_id, batch_id="b1", state_revision=10)
+        self.assertEqual(progress.scout_ids, [47])
+        self.assertEqual(progress.recruited[0], 1)
+        self.assertEqual(progress.last_proven_revision, 10)
+
+    def test_scout_assignments_and_completed_villages_round_trip(self):
+        policy = {**valid_stack1_policy(), "villages": [{"col": 2, "row": 4}]}
+        installation = rp.install_policy(policy)
+        progress = rp.RoutineProgress.fresh(installation.installation_id, policy)
+        progress.scout_ids.append(2)
+        progress.commit_action({"effects": [{"kind": "scout_assigned", "unit_id": 2,
+                                               "col": 2, "row": 4}]},
+                               installation_id=installation.installation_id, batch_id="b1", state_revision=20)
+        progress.commit_action({"effects": [{"kind": "completed_village", "col": 2, "row": 4}]},
+                               installation_id=installation.installation_id, batch_id="b2", state_revision=21)
+        serialized = progress.to_runtime_record()
+        reloaded = rp.RoutineProgress.from_runtime_record(serialized, policy)
+        self.assertEqual(reloaded.scout_ids, [2])
+        self.assertEqual(reloaded.scout_assignments, progress.scout_assignments)
+        self.assertEqual(reloaded.completed_villages, progress.completed_villages)
+        self.assertEqual(reloaded.last_proven_revision, 21)
+        # Round-tripping again (e.g. a second resume) is stable.
+        twice = rp.RoutineProgress.from_query_progress(reloaded.to_query_progress())
+        self.assertEqual(twice.scout_assignments, progress.scout_assignments)
+
+    def test_reassigning_a_scout_supersedes_not_duplicates(self):
+        # A scout's original village target became invalid and it was
+        # reassigned; the stale assignment for the same scout id must not
+        # linger alongside the new one.
+        policy = {**valid_stack1_policy(), "villages": [{"col": 2, "row": 4}, {"col": 5, "row": 3}]}
+        installation = rp.install_policy(policy)
+        progress = rp.RoutineProgress.fresh(installation.installation_id, policy)
+        progress.scout_ids.append(10)
+        progress.commit_action({"effects": [{"kind": "scout_assigned", "unit_id": 10,
+                                               "col": 2, "row": 4}]},
+                               installation_id=installation.installation_id, batch_id="b1", state_revision=1)
+        progress.commit_action({"effects": [{"kind": "scout_assigned", "unit_id": 10,
+                                               "col": 5, "row": 3}]},
+                               installation_id=installation.installation_id, batch_id="b2", state_revision=2)
+        self.assertEqual(progress.scout_assignments,
+                         [{"unit_id": 10, "col": 5, "row": 3}])
+
+    def test_restart_preserves_assignments_remaining_counts_and_scout_ids(self):
+        """Restart/branch preserves valid assignments and remaining queue
+        counts, including newly recruited scout ids (plan section "Stack 2")."""
+        installation = rp.install_policy({
+            "reserve_gold": 10,
+            "recruits": [{"def_id": "Ghost", "count": 3, "role": "scout"},
+                        {"def_id": "Skeleton", "count": 4, "role": "army"}],
+            "scouts": [], "villages": [{"col": 2, "row": 4}], "rally": None, "holds": [],
+        })
+        progress = rp.RoutineProgress.fresh(installation.installation_id, installation.policy)
+        # Two of three scouts recruited and assigned; one Skeleton recruited.
+        progress.commit_action({"effects": [{"kind": "recruited", "queue_index": 0, "unit_id": 20}]},
+                               installation_id=installation.installation_id, batch_id="b1", state_revision=1)
+        progress.commit_action({"effects": [{"kind": "recruited", "queue_index": 0, "unit_id": 21}]},
+                               installation_id=installation.installation_id, batch_id="b2", state_revision=2)
+        progress.commit_action({"effects": [{"kind": "recruited", "queue_index": 1, "unit_id": 22}]},
+                               installation_id=installation.installation_id, batch_id="b3", state_revision=3)
+        progress.commit_action({"effects": [{"kind": "scout_assigned", "unit_id": 20,
+                                               "col": 2, "row": 4}]},
+                               installation_id=installation.installation_id, batch_id="b4", state_revision=4)
+
+        # Simulate a restart/branch: serialize and reload exactly as the
+        # checkpoint-ref metadata / RoutineProgress persistence would.
+        reloaded = rp.RoutineProgress.from_runtime_record(progress.to_runtime_record(), installation.policy)
+
+        self.assertEqual(sorted(reloaded.scout_ids), [20, 21])
+        self.assertEqual(reloaded.scout_assignments, progress.scout_assignments)
+        remaining = {(entry["queue_index"], entry["role"]): entry["remaining"]
+                    for entry in reloaded.remaining(installation.policy)}
+        self.assertEqual(remaining, {(0, "scout"): 1, (1, "army"): 3})
+        self.assertEqual(reloaded.last_proven_revision, 4)
+
+class UnreconstructableProgressTests(unittest.TestCase):
+    """Plan section 6: an advanced checkpoint with no matching progress record
+    interrupts explicitly rather than resuming or resetting."""
+
+    def test_no_pending_batch_is_reconstructable(self):
+        self.assertIsNone(rp.find_unreconstructable_routine_batch([]))
+        records = [
+            {"type": "policy_installed", "installation_id": "pol-1"},
+            {"type": "forwarded_orders", "source": "routine", "batch_id": "b1",
+             "orders": [{"action": "Recruit"}]},
+            {"type": "routine_progress_committed", "installation_id": "pol-1"},
+            {"type": "batch_committed", "batch_id": "b1"},
+        ]
+        self.assertIsNone(rp.find_unreconstructable_routine_batch(records))
+
+    def test_finish_or_resign_batch_needs_no_progress_record(self):
+        records = [
+            {"type": "forwarded_orders", "source": "routine", "batch_id": "b1",
+             "orders": [{"action": "FinishWithGreedy", "groups": [], "holds": []}]},
+            {"type": "batch_committed", "batch_id": "b1"},
+        ]
+        self.assertIsNone(rp.find_unreconstructable_routine_batch(records))
+
+    def test_uncommitted_batch_is_safely_dropped_not_flagged(self):
+        # The batch was submitted but the driver never checkpointed it (no
+        # batch_committed): safe to treat as never having happened.
+        records = [
+            {"type": "forwarded_orders", "source": "routine", "batch_id": "b1",
+             "orders": [{"action": "Recruit"}]},
+        ]
+        self.assertIsNone(rp.find_unreconstructable_routine_batch(records))
+
+    def test_committed_batch_with_no_progress_record_is_unreconstructable(self):
+        # The exact crash window: checkpoint/batch_committed durable, but the
+        # process died before routine_progress_committed was written.
+        records = [
+            {"type": "policy_installed", "installation_id": "pol-1"},
+            {"type": "forwarded_orders", "source": "routine", "batch_id": "b2",
+             "orders": [{"action": "Recruit", "def_id": "Ghost"}]},
+            {"type": "batch_committed", "batch_id": "b2"},
+        ]
+        self.assertEqual(rp.find_unreconstructable_routine_batch(records), "b2")
+
+    def test_new_installation_clears_a_stale_pending_batch(self):
+        # A policy replacement discards all previous progress -- a batch
+        # pending under the superseded installation is moot once a fresh
+        # set_policy lands, even if it was never confirmed.
+        records = [
+            {"type": "forwarded_orders", "source": "routine", "batch_id": "b1",
+             "orders": [{"action": "Recruit"}]},
+            {"type": "batch_committed", "batch_id": "b1"},
+            {"type": "policy_installed", "installation_id": "pol-2"},
+        ]
+        self.assertIsNone(rp.find_unreconstructable_routine_batch(records))
+
+
+class PolicyReplacementCancelsPriorStateTests(unittest.TestCase):
+    def test_replacement_via_exception_discards_old_holds_and_assignments(self):
+        installation = rp.install_policy({
+            **valid_stack1_policy(),
+            "holds": [3], "villages": [{"col": 2, "row": 4}],
+        })
+        progress = rp.RoutineProgress.fresh(installation.installation_id, installation.policy)
+        progress.scout_ids.append(2)
+        progress.commit_action({"effects": [{"kind": "scout_assigned", "unit_id": 2,
+                                               "col": 2, "row": 4}]},
+                               installation_id=installation.installation_id, batch_id="b1", state_revision=1)
+        self.assertEqual(progress.scout_assignments, [
+            {"unit_id": 2, "col": 2, "row": 4}])
+
+        replacement_policy = {
+            "reserve_gold": 0, "recruits": [], "scouts": [], "villages": [],
+            "rally": None, "holds": [],
+        }
+        script = [
+            {"ok": True, "body": {"result": "exception", "reason": "invalid_assignment",
+                                  "evidence": {}}},
+            {"ok": True, "body": {"result": "finish", "reason": "no_remaining_routine_steps"}},
+            {"ok": True, "body": {"state_revision": 6}},
+        ]
+        exchange = FakeExchange(script)
+        backend = FakeBackend([{"kind": "set_policy", "policy": replacement_policy}])
+        outcome = rp.run_scripted_strategy_turn(
+            exchange=exchange, request_model=backend, context=make_context(),
+            installation=installation, progress=progress, state_revision=5)
+        self.assertEqual(outcome.status, "finished")
+        # run_scripted_strategy_turn's local `installation`/`progress` are
+        # rebound to the fresh pair on set_policy -- the caller's original
+        # `progress` object (asserted above to hold the old hold/assignment)
+        # is not mutated by the replacement, matching "a policy replacement
+        # ... cancels old holds/orders". The caller must discard it and read
+        # the fresh installation id from the next durable policy_installed
+        # record instead, exactly as install_policy()'s docstring specifies.
+        self.assertEqual(progress.scout_assignments, [
+            {"unit_id": 2, "col": 2, "row": 4}])
+
+    def test_replacement_never_replayed_merely_because_client_resumed(self):
+        # "The client never replays a replacement merely because it
+        # resumed." Resuming replays committed progress into a
+        # RoutineProgress for the LATEST installed policy only (see
+        # llm_client's resume handling: only records after the newest
+        # policy_installed contribute). This directly exercises that
+        # reconstruction rule at the RoutineProgress level.
+        first = rp.install_policy(valid_stack1_policy())
+        second = rp.install_policy(
+            {**valid_stack1_policy(), "recruits": [{"def_id": "Ghost", "count": 1, "role": "scout"}]})
+        # Progress committed under the second (current) installation only.
+        progress = rp.RoutineProgress.fresh(second.installation_id, second.policy)
+        progress.commit_action({"effects": [{"kind": "recruited", "queue_index": 0,
+                                               "unit_id": 5}]},
+                               installation_id=second.installation_id, batch_id="b1", state_revision=1)
+        with self.assertRaises(ValueError):
+            # A progress_update stamped for a superseded installation must
+            # never be adopted into the current one.
+            progress.commit_action({"effects": [{"kind": "recruited", "queue_index": 0,
+                                                  "unit_id": 6}]},
+                                   installation_id=first.installation_id, batch_id="b2", state_revision=2)
+        self.assertEqual(progress.recruited, {0: 1})
 
 
 class ClientCliWiringTests(unittest.TestCase):
