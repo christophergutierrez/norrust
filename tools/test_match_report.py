@@ -87,6 +87,74 @@ class ReportTests(unittest.TestCase):
         self.assertIsNone(report["protected_recruiters"])
         self.assertTrue(report["accounting_mismatch"])
 
+    def test_controlled_finish_ownership_includes_routine_model_and_delegated(self):
+        # Strategy can finish through the deterministic routine (including an
+        # empty FinishWithGreedy), while ordinary and delegated model paths
+        # use their own committed event sources.  The opponent's greedy
+        # boundary must remain on its separate axis.
+        events = [
+            {"kind": "end_turn", "source": "routine", "ended_faction": 0,
+             "active_faction": 1},
+            {"kind": "end_turn", "source": "model", "ended_faction": 0,
+             "active_faction": 1},
+            {"kind": "end_turn", "source": "delegated_greedy", "ended_faction": 0,
+             "active_faction": 1},
+            {"kind": "end_turn", "source": "greedy", "ended_faction": 1,
+             "active_faction": 0},
+        ]
+        report = classify([
+            {"type": "metadata", "llm_side": 0, "finish_telemetry_available": True},
+            *[
+                {"type": "turn_boundary", "accepted": True,
+                 "side": 0, "authored_finish_kind": "selective",
+                 "executed_finish_kind": "selective"}
+                for _ in range(3)
+            ],
+            {"type": "driver", "line": {"type": "events", "events": events}},
+            {"type": "driver", "line": {"type": "game_end", "side_turns": 4}},
+            {"type": "terminal", "terminal_class": "gameplay", "reason": "max_turns"},
+        ])
+        self.assertEqual(report["model_end_turns"], 3)
+        self.assertEqual(report["opponent_end_turns"], 1)
+        self.assertEqual(report["unknown_end_turns"], 0)
+        self.assertFalse(report["accounting_mismatch"])
+
+    def test_end_turn_source_falls_back_to_envelope_and_conflicts_stay_unknown(self):
+        report = classify([
+            {"type": "metadata", "llm_side": 0, "finish_telemetry_available": True},
+            {"type": "turn_boundary", "accepted": True, "side": 0,
+             "authored_finish_kind": "selective", "executed_finish_kind": "selective"},
+            {"type": "driver", "line": {"type": "events", "source": "routine",
+                "events": [{"kind": "end_turn", "ended_faction": 0,
+                             "active_faction": 1}]}},
+            # The source says controlled while the ending faction says
+            # opponent.  Retain the event in the total, but do not guess its
+            # ownership to satisfy the boundary count.
+            {"type": "driver", "line": {"type": "events", "source": "routine",
+                "events": [{"kind": "end_turn", "ended_faction": 1,
+                             "active_faction": 0}]}},
+            {"type": "terminal", "terminal_class": "gameplay", "reason": "max_turns"},
+        ])
+        self.assertEqual(report["model_end_turns"], 1)
+        self.assertEqual(report["opponent_end_turns"], 0)
+        self.assertEqual(report["unknown_end_turns"], 1)
+        self.assertFalse(report["accounting_mismatch"])
+
+    def test_missing_controlled_finish_still_reports_mismatch(self):
+        report = classify([
+            {"type": "metadata", "llm_side": 0, "finish_telemetry_available": True},
+            {"type": "turn_boundary", "accepted": True, "side": 0,
+             "authored_finish_kind": "selective", "executed_finish_kind": "selective"},
+            {"type": "turn_boundary", "accepted": True, "side": 0,
+             "authored_finish_kind": "selective", "executed_finish_kind": "selective"},
+            {"type": "driver", "line": {"type": "events", "source": "routine",
+                "events": [{"kind": "end_turn", "ended_faction": 0,
+                             "active_faction": 1}]}},
+            {"type": "terminal", "terminal_class": "gameplay", "reason": "max_turns"},
+        ])
+        self.assertEqual(report["model_end_turns"], 1)
+        self.assertTrue(report["accounting_mismatch"])
+
     def test_partial_limit_finish_is_not_model_awareness(self):
         report = classify([
             {"type": "metadata", "finish_telemetry_available": True},

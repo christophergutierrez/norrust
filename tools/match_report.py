@@ -13,6 +13,15 @@ _TYPED_TERMINAL_TYPES = {"model_error", "budget_interrupted", "query_error",
                          "observer_interrupted"}
 _BUDGET_CODES = {"max_game_total_tokens_exhausted", "model_calls_budget_exhausted"}
 
+# These are the sources the maintained client/driver uses for events on the
+# controlled side.  ``routine`` is deliberately included here: it can submit
+# the empty FinishWithGreedy boundary itself, while delegated_greedy is used
+# when that boundary has a non-empty generated sweep.  A source is evidence of
+# provenance, but an explicit faction on the end_turn event must agree with it
+# when one is available.
+_CONTROLLED_EVENT_SOURCES = frozenset({"llm", "model", "delegated_greedy", "routine"})
+_OPPONENT_EVENT_SOURCES = frozenset({"greedy"})
+
 
 def terminal_record(records: list[dict[str, Any]]) -> dict[str, Any]:
     for item in reversed(records):
@@ -120,6 +129,34 @@ def _forced_partial_limit_boundaries(records: list[dict[str, Any]], boundaries: 
     return result
 
 
+def _end_turn_owner(event: dict[str, Any], source: Any,
+                    controlled_side: int | None) -> str:
+    """Classify one committed end_turn from source and faction evidence.
+
+    Event source is the driver's committed provenance.  The event's ending
+    faction (or, for older records, the inverse of its active faction) is a
+    second check when present.  A disagreement is intentionally unknown: a
+    report must not turn malformed or foreign evidence into a controlled or
+    opponent boundary merely to make totals balance.
+    """
+    provenance = (
+        "controlled" if source in _CONTROLLED_EVENT_SOURCES
+        else "opponent" if source in _OPPONENT_EVENT_SOURCES
+        else "unknown"
+    )
+    ended = event.get("ended_faction")
+    active = event.get("active_faction")
+    event_side: int | None = None
+    if isinstance(ended, int) and ended in (0, 1):
+        event_side = ended
+    elif isinstance(active, int) and active in (0, 1):
+        event_side = 1 - active
+    if event_side is None or controlled_side not in (0, 1):
+        return provenance
+    side_owner = "controlled" if event_side == controlled_side else "opponent"
+    return provenance if provenance in {"unknown", side_owner} else "unknown"
+
+
 def classify(records: list[dict[str, Any]],
              publication_records: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     terminal = terminal_record(records)
@@ -216,6 +253,12 @@ def classify(records: list[dict[str, Any]],
     generated_end_turns = 0
     generated_model_end_turns = 0
     generated_opponent_end_turns = 0
+    generated_unknown_end_turns = 0
+    controlled_side = metadata.get("llm_side")
+    if not isinstance(controlled_side, int) or controlled_side not in (0, 1):
+        controlled_side = metadata.get("controlled_side")
+    if not isinstance(controlled_side, int) or controlled_side not in (0, 1):
+        controlled_side = None
     for item in events:
         if item.get("type") == "state":
             for unit in item.get("units", []):
@@ -226,13 +269,21 @@ def classify(records: list[dict[str, Any]],
             if not isinstance(event, dict):
                 continue
             kind = event.get("kind")
-            source = event.get("source", "unknown")
+            # Event-level source is preferred by the archive contract, with
+            # the enclosing events envelope as the fallback used by older
+            # archives.  Never use a missing source as proof of ownership.
+            source = event.get("source")
+            if not isinstance(source, str):
+                source = batch.get("source", "unknown")
             if kind == "end_turn":
                 generated_end_turns += 1
-                if source == "delegated_greedy":
+                owner = _end_turn_owner(event, source, controlled_side)
+                if owner == "controlled":
                     generated_model_end_turns += 1
-                elif source == "greedy":
+                elif owner == "opponent":
                     generated_opponent_end_turns += 1
+                else:
+                    generated_unknown_end_turns += 1
             if source == "routine":
                 routine_event_counts[kind] += 1
                 if kind in {"village", "capture_village", "village_capture"}:
@@ -396,6 +447,7 @@ def classify(records: list[dict[str, Any]],
         },
         "model_end_turns": generated_model_end_turns,
         "opponent_end_turns": generated_opponent_end_turns,
+        "unknown_end_turns": generated_unknown_end_turns,
         "protected_units": len(protected_units),
         "protected_recruiters": len(protected_recruiters) if protected_recruiters else None,
         "protected_critical_units": len(protected_critical) if protected_critical else None,

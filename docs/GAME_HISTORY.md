@@ -52,6 +52,15 @@ deterministic policy execution. The empty `FinishWithGreedy` boundary appended
 to a model `act` remains in that same ordinary batch. Strategy responses have
 no decision-annotation row; read-only inspection requests and their revision
 checks remain linked to the originating model request.
+
+Reports count a completed controlled finish from committed `end_turn` events
+whose source is `routine`, `llm`/`model`, or `delegated_greedy`; `greedy` remains
+the opponent axis. When an event records its ending or active faction, that
+faction must agree with the source and the metadata controlled side before the
+event is counted. Missing or conflicting ownership remains unknown, and an
+accepted boundary with no provable controlled ending still raises the
+accounting mismatch. This keeps deterministic routine finishes visible while
+preserving missing-boundary detection.
 Review IDs, candidate digests, forced partial-limit finishes, and review outcomes
 remain in the archived log/metrics JSON for ad hoc analysis and training-data
 selection. `games.coverage_json.review_coverage` keeps the raw draft review and
