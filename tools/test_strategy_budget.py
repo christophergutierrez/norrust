@@ -63,7 +63,8 @@ def _launch(log: Path, checkpoint: Path, backend: Path, *, cap: int | None = Non
                '--max-turns', '1', '--decision-mode', 'strategy', '--log', str(log),
                '--model-command', shlex.join([sys.executable, str(backend)]),
                '--player-model', 'offline-fixture', '--query-budget-seconds', '20',
-               '--turn-timeout', '45', '--model-timeout', '10']
+               '--turn-timeout', '45', '--model-timeout', '10',
+               '--resume-checkpoint', str(checkpoint)]
     if cap is not None:
         command += ['--max-game-total-tokens', str(cap)]
     return subprocess.run(command, cwd=ROOT, env=env, text=True,
@@ -98,6 +99,12 @@ class StrategyBudgetBoundaryTests(unittest.TestCase):
             requests = [row for row in rows if row.get('type') == 'model_request']
             self.assertEqual([row.get('status') for row in requests], ['completed', 'failed'])
             self.assertIn('max_game_total_tokens_exhausted', requests[-1].get('error', ''))
+            self.assertTrue(any(row.get('type') == 'policy_installed'
+                                and row.get('source_kind') == 'model' for row in rows))
+            self.assertTrue(any(row.get('type') == 'routine_exception'
+                                and row.get('reason') == 'recruitment_blocked' for row in rows))
+            self.assertTrue(requests[0].get('side_turn_id'))
+            self.assertEqual(requests[0].get('side_turn_id'), requests[1].get('side_turn_id'))
             usage = [json.loads(line) for line in (root / 'usage.ndjson').read_text().splitlines()]
             self.assertEqual(sum(row.get('record_kind') == 'final' for row in usage), 1)
             self.assertEqual(usage[-1]['total_tokens'], 300)
