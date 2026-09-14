@@ -138,10 +138,12 @@ class StrategyResponseRecoveryDriverTests(unittest.TestCase):
 
     def test_recovered_objects_still_use_schema_and_engine_validation(self):
         cases = (
-            '{"kind":"act","actions":[],"finish_turn":false}\ninvalid shape note',
-            '{"kind":"act","actions":[{"action":"EndTurn"}],"finish_turn":false}\nillegal action note',
+            ('{"kind":"act","actions":[],"finish_turn":false}\ninvalid shape note', False),
+            ('{"kind":"act","actions":[{"action":"EndTurn"}],"finish_turn":false}\nillegal action note', False),
+            ('{"kind":"act","actions":[{"action":"Move","unit_id":9999,"col":2,"row":3}],'
+             '"finish_turn":false}\nunknown unit note', True),
         )
-        for invalid in cases:
+        for invalid, engine_rejected in cases:
             with self.subTest(invalid=invalid):
                 result, rows, call_count = self._run(
                     invalid, responses_after=['{"kind":"finish_turn"}'])
@@ -153,6 +155,9 @@ class StrategyResponseRecoveryDriverTests(unittest.TestCase):
                                      for row in rows), 1)
                 self.assertFalse(any(event.get('kind') in {'attack', 'move', 'recruit'}
                                      for event in events(rows)))
+                if engine_rejected:
+                    repairs = [row for row in rows if row.get('type') == 'strategy_response_repair']
+                    self.assertIn('engine rejected strategy act', repairs[0].get('error', ''))
 
     def test_provider_output_limit_retry_is_not_json_recovery(self):
         result, rows, call_count = self._run(
