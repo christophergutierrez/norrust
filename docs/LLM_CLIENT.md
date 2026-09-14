@@ -2,6 +2,10 @@
 
 ## Start here for a model game
 
+For an operator walkthrough with a bounded Fireworks launch, compact status,
+stopping and catalog import, use [FIREWORKS_RUNBOOK.md](FIREWORKS_RUNBOOK.md).
+The usage-accounting section below remains authoritative for every run.
+
 The parent process should read this document, choose isolated artifact paths, and
 launch one client per game. The player receives the complete canonical prompt on
 each request and does not need to read repository files. A model-subagent request
@@ -321,6 +325,21 @@ existing validated overrides still apply and resolved values appear in
 provenance. Combining `--focused-max-operations-per-decision` with strategy mode
 is rejected rather than reinterpreted.
 
+The prompt requires one complete JSON object and nothing else: no prose or
+Markdown fences before or after it. Strategy mode alone can recover a leading
+complete object followed by whitespace and a plain prose suffix of at most
+2,048 UTF-8 bytes after trimming surrounding whitespace. Recovery rejects
+braces, brackets, backticks, unsupported control characters, and suffixes that
+start with another JSON value. It never searches through leading prose or
+salvages truncated JSON. Provider output-limit handling is unchanged.
+
+The original reply remains in `model_request.raw_output`. A
+`strategy_response_recovered` record links its request ID and prompt hash to the
+discarded suffix and byte count. This records syntax recovery, not approval to
+execute: schema, live revision and engine validation still apply. Invalid or
+ambiguous responses still use the existing bounded repair path. Observer
+responses and other decision modes retain their own parsing contracts.
+
 The model answers with a strict discriminated union on `kind`: `set_policy`,
 `act`, `finish_turn`, or `resign`. Ordinary `act` responses may set
 `finish_turn` either way; a `final_only` boundary requires `true`, and the
@@ -374,6 +393,29 @@ Enemy contact is a typed exception delivered to the strategy model. Tactical
 actions use the ordinary transactional executor and retain model request and
 side-turn provenance. Use a scripted backend or fixed policy for network-free
 validation.
+
+Routine exceptions use `reason` plus an `evidence` object. These current engine
+labels distinguish unavailable movement from evaluated danger; read the cause
+or stage instead of inferring a tactical response from the word "route":
+
+| Reason | Evidence fields / causes | Meaning |
+| --- | --- | --- |
+| `route_unavailable` | `cause: unreachable_or_no_legal_endpoint`, `target`, and `unit_id` when assigned | No path or legal endpoint for that objective now. Occupancy may be temporary; this does not establish danger or permanent unreachability. |
+| `unsafe_route` | `cause: no_safe_endpoint`, `unit_id`, `target` | Safety-specific route fallback; do not equate it with a missing path. |
+| `contact` | `stage: current_state`, `proposed_destination`, `proposed_placement`, or `proposed_placement_recruiter`; relevant unit/destination facts | Current or projected attack exposure requires model judgment. |
+| `threat_unavailable` | `stage` and `detail` | Required threat facts could not be evaluated; missing is not zero. |
+| `recruitment_blocked` | `unknown_definition`, `not_recruitable`, `insufficient_gold_no_income`, `no_placement_hex`, or `placement_rejected` | Inspect the named recruitment constraint. Routine code does not auto-vacate a castle. |
+| `no_executable_orders` | `village_requires_scout` or `no_scout_available_for_village` | Selected village work lacks an eligible scout. |
+| `promotion_pending` | `unit_ids` | The model must choose advancement. |
+| `invalid_assignment` | `cause` and relevant unit/village facts | Identity, progress, objective, eligibility, or assignment consistency failed. |
+| `objectives_complete` | `policy_complete: true` | The finite orders completed. A fixed-policy player stops; it does not invent another policy. |
+
+Historical archives can contain `unsafe_route` with
+`unreachable_or_no_legal_endpoint`; preserve that original evidence and interpret
+its cause. New live results use `route_unavailable` for that condition. Successful
+strategy queries must prove the requested revision; stale or missing revision
+facts cannot drive actions. `inspect_units` purpose text is limited to 120
+characters; it is not a request for a long rationale.
 
 ### Publishing a file-transport reply
 
@@ -514,6 +556,11 @@ documents the query/coverage semantics this procedure feeds;
 `docs/AGENT_GUIDE.md` distinguishes catalog absence from recoverable host
 evidence; `AGENTS.md` only routes launchers to this section, it does not
 duplicate it.
+
+Observation runs follow this procedure too. A request to leave source code
+unchanged does not by itself exempt the resulting game from catalog import.
+If the user explicitly prohibited catalog writes, preserve that restriction and
+report the game as not imported; do not invent a general observation exemption.
 
 ### What the client and a maintained adapter record automatically
 

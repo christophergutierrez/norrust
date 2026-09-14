@@ -69,7 +69,10 @@ factions, gold, side, engine-turn limit, backend/model, dated pricing, and
 explicit budgets; only the named decision treatment differs. The maintained
 field is `strategy_treatment`.
 
-The pilot schedule is deliberately still `prepared_not_run`. It permits at
+The checked-in pilot template remains `prepared_not_run`; the executed pilot
+and its later fixes are recorded in
+[the experiment record](experiments/strategy-routine-pilot-2026-09-13.md).
+The template is not evidence that the experiment never ran. It permits at
 most two paid cells, 200,000 player tokens per paid cell, six completed engine
 side turns, three controlled player turns for the GLM treatments, a 900-second model-call
 timeout, a 2,100-second controlled-turn timeout, a 2,700-second cell wall

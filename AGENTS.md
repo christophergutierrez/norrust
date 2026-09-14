@@ -1,8 +1,11 @@
 # Norrust task routing
 
 For a request to play headless Norrust games, read `docs/LLM_CLIENT.md` first.
-Use its client-generated prompt and supported backend examples. The player does
-not need to explore the repository or read `.paul`, bridge documentation, or
+Use its client-generated prompt and supported backend examples.
+For the Fireworks operator walkthrough, follow `docs/FIREWORKS_RUNBOOK.md`
+after reading that client guide. It covers bounded recording, optional observer
+use, stopping, catalog import, and the final review.
+The player does not need to explore the repository or read `.paul`, bridge documentation, or
 temporary backend scripts unless a concrete setup failure requires it.
 `docs/LLM_CLIENT.md`'s "Usage accounting" section is the authoritative launch,
 handoff, collection, and final-report procedure for every player shape --

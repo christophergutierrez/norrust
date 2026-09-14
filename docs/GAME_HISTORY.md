@@ -245,6 +245,11 @@ and the unchanged completed-side-turn count and state revision.
 
 Example commands:
 
+Observation games require normal import, including failures and interruptions.
+Use the same game ID when importing into both a run-local and the default
+catalog so the browser can deduplicate them. For a Fireworks operator's complete
+collection sequence, see [FIREWORKS_RUNBOOK.md](FIREWORKS_RUNBOOK.md#collect-before-reporting).
+
     python3 -m tools.game_history import --db .norrust_history/history.sqlite --cohort cohort-name path/to/game-directory
     python3 -m tools.game_history game --db .norrust_history/history.sqlite GAME_ID
     python3 -m tools.game_history turns --db .norrust_history/history.sqlite GAME_ID
