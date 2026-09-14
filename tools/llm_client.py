@@ -6307,6 +6307,8 @@ def run(args: argparse.Namespace) -> int:
                     parsed, reply = strategy_call_model(brief, policy_context=context)
                 except ModelCallBudgetExhausted as exc:
                     return emit_budget_interrupted("model_calls_budget_exhausted", str(exc))
+                except RuntimeError as exc:
+                    return strategy_model_runtime_failure(exc)
                 except (ModelResponseError, PolicyValidationError) as exc:
                     set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
                                 reason=TERMINAL_MODEL_INVALID, code="strategy_response_invalid",
@@ -6426,6 +6428,8 @@ def run(args: argparse.Namespace) -> int:
                 parsed, reply = strategy_call_model(brief, policy_context=context)
             except ModelCallBudgetExhausted as exc:
                 return emit_budget_interrupted("model_calls_budget_exhausted", str(exc))
+            except RuntimeError as exc:
+                return strategy_model_runtime_failure(exc)
             except (ModelResponseError, PolicyValidationError) as exc:
                 set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
                             reason=TERMINAL_MODEL_INVALID, code="strategy_response_invalid",
@@ -6642,6 +6646,25 @@ def run(args: argparse.Namespace) -> int:
         durable({"type": "preflight_error", **metadata,
                  "bytes": metadata.get("max_observed_prompt_bytes"),
                  "limit": args.max_prompt_bytes})
+        return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
+
+    def strategy_model_runtime_failure(error: RuntimeError) -> int:
+        """Classify a strategy model failure after its request was journaled.
+
+        ``complete_model`` records the failed request and then re-raises.  The
+        strategy loop has to turn that re-raise into the same durable terminal
+        record used by the ordinary action loop; otherwise a pre-dispatch game
+        budget check escapes the client and loses the terminal evidence.
+        """
+        message = str(error)
+        if "max_game_total_tokens_exhausted" in message:
+            return emit_budget_interrupted("max_game_total_tokens_exhausted", message)
+        if isinstance(error, PromptTooLarge):
+            return emit_prompt_too_large(error)
+        set_terminal(metadata, TERMINAL_INFRASTRUCTURE,
+                     winner=None, reason="infrastructure_failure",
+                     code="model_backend_failure", message=message)
+        durable({"type": "model_error", **metadata})
         return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
 
     def capture_agenda(text: str, request_id: Optional[str] = None) -> None:
