@@ -1,0 +1,58 @@
+{
+  "tool": "tools/benchmark_exact_routine_query.py",
+  "command": "python3 tools/benchmark_exact_routine_query.py --binary /mnt/storage/git_home/norrust/norrust_core/target/release/greedy_driver --checkpoint /mnt/storage/git_home/norrust/tmp/glm-strategy-20260914T213554Z/recording/glm-strategy/match.ckpt/4-84-model-702b5c92a8ec920e9f2ca3a1e35d288c4bac315b24ac1e9e507b8587b8a45fb2.json --repeats 2 --timeout-seconds 15",
+  "binary_sha256": "ef5b81b70b75f11a9f0d66aacd293a14cb3d4738d6aa24f536900ae753fb74af",
+  "checkpoint_sha256_before": "702b5c92a8ec920e9f2ca3a1e35d288c4bac315b24ac1e9e507b8587b8a45fb2",
+  "checkpoint_sha256_after": "702b5c92a8ec920e9f2ca3a1e35d288c4bac315b24ac1e9e507b8587b8a45fb2",
+  "initial_state_revision": 84,
+  "initial_state_sha256": "d8d4fc5a49892b06220c85140df4e8c367814c4fa0b27e595d0598412257ba0e",
+  "policy_sha256": "ecb650e927541aee9da0b7a0b8c6e6531d4b57f9f9667c458cb96e66ef948fcf",
+  "progress_sha256": "3aac9238b808934bc728fcec2232a17a1f8d036ff5ab6ac23a509fa904965cfe",
+  "query_sha256": "9038fbe0e0a6f52294e1ee5e5a5050a7d5e9959349a190a272a00c698a93a232",
+  "replies": [
+    {
+      "elapsed_ms": 4332.8,
+      "state_revision": 84,
+      "alive_after_reply": true,
+      "body_sha256": "c253b9201d78a7adeb1631f76a1d30c8c48aff0664d9182f3cfe51730cd407b4",
+      "body": {
+        "action": {"action": "Move", "col": 8, "row": 7, "unit_id": 6},
+        "independent_move": {
+          "coverage": "complete",
+          "deferred_incident_key": {
+            "enemy_unit_ids": [17, 18, 19, 20, 21, 23, 25, 26, 27, 28, 31, 32],
+            "friendly_unit_ids": [4], "reason": "contact",
+            "stage": "current_state", "trigger": "attack_and_exposure"
+          },
+          "policy_objective": {"target": {"col": 10, "row": 6}, "type": "rally"},
+          "post_tactical_hash": "1e98d6f02a187eb25efea7efb336484adc2a9c42fcdcc0c08a6146dfa60939db",
+          "pre_tactical_hash": "1e98d6f02a187eb25efea7efb336484adc2a9c42fcdcc0c08a6146dfa60939db"
+        },
+        "progress_update": {"effects": []}, "reason": "rally", "result": "action"
+      }
+    },
+    {
+      "elapsed_ms": 4350.9,
+      "state_revision": 84,
+      "alive_after_reply": true,
+      "body_sha256": "c253b9201d78a7adeb1631f76a1d30c8c48aff0664d9182f3cfe51730cd407b4",
+      "body": {
+        "action": {"action": "Move", "col": 8, "row": 7, "unit_id": 6},
+        "independent_move": {
+          "coverage": "complete",
+          "deferred_incident_key": {
+            "enemy_unit_ids": [17, 18, 19, 20, 21, 23, 25, 26, 27, 28, 31, 32],
+            "friendly_unit_ids": [4], "reason": "contact",
+            "stage": "current_state", "trigger": "attack_and_exposure"
+          },
+          "policy_objective": {"target": {"col": 10, "row": 6}, "type": "rally"},
+          "post_tactical_hash": "1e98d6f02a187eb25efea7efb336484adc2a9c42fcdcc0c08a6146dfa60939db",
+          "pre_tactical_hash": "1e98d6f02a187eb25efea7efb336484adc2a9c42fcdcc0c08a6146dfa60939db"
+        },
+        "progress_update": {"effects": []}, "reason": "rally", "result": "action"
+      }
+    }
+  ],
+  "same_process_body_equal": true,
+  "same_process_revision_equal": true
+}

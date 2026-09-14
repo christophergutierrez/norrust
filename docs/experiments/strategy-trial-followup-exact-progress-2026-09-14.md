@@ -46,6 +46,16 @@ The reusable query API is the driver protocol's read-only request:
 }
 ```
 
+The reusable runner is
+`tools/benchmark_exact_routine_query.py`; its raw two-query output, including
+the complete response bodies, is preserved in
+`strategy-trial-followup-exact-progress-2026-09-14.raw.json`. It sends both
+queries through one live driver process. Both replies reported revision 84 and
+had the same full-body digest
+`c253b9201d78a7adeb1631f76a1d30c8c48aff0664d9182f3cfe51730cd407b4`, while the
+process stayed alive. This same-process equality and the unchanged checkpoint
+are the direct query-purity/no-mutation checks.
+
 The original release binary is
 `ef5b81b70b75f11a9f0d66aacd293a14cb3d4738d6aa24f536900ae753fb74af`.
 Five independent process starts all returned revision 84 in a median 4,278.7
