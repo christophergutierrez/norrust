@@ -930,13 +930,18 @@ def _strategy_context(state: Optional[dict[str, Any]], *, recruit_options: Any =
         if isinstance(tile, dict) and tile.get("terrain_id") == "village"
     ] if isinstance(terrain, list) else "unknown"
     units = state.get("units")
-    compact_units = []
+    # A missing roster is unknown; an empty list is an authoritative empty
+    # roster.  Keep that distinction in both the JSON facts and the readable
+    # index below.
+    compact_units: list[dict[str, Any]] | str = "unknown"
     if isinstance(units, list):
+        compact_units = []
         for unit in units:
             if not isinstance(unit, dict):
                 continue
             compact_units.append({key: unit.get(key, "unknown") for key in
-                             ("id", "faction", "def_id", "col", "row", "hp", "max_hp", "can_recruit")})
+                             ("id", "faction", "def_id", "col", "row", "hp", "max_hp",
+                              "moved", "attacked", "movement", "can_recruit")})
     facts: dict[str, Any] = {
         "revision": state.get("state_revision", "unknown"),
         "turn": state.get("turn", "unknown"),
@@ -971,8 +976,10 @@ def _strategy_context(state: Optional[dict[str, Any]], *, recruit_options: Any =
         for item in villages if isinstance(item, dict)) or "unknown"
     unit_text = " ".join(
         f"id={item.get('id', 'unknown')} faction={item.get('faction', 'unknown')} "
-        f"pos={item.get('col', 'unknown')},{item.get('row', 'unknown')} def={item.get('def_id', 'unknown')}"
-        for item in compact_units) or "unknown"
+        f"pos={item.get('col', 'unknown')},{item.get('row', 'unknown')} def={item.get('def_id', 'unknown')} "
+        f"moved={item.get('moved', 'unknown')} attacked={item.get('attacked', 'unknown')} "
+        f"movement={item.get('movement', 'unknown')}"
+        for item in compact_units if isinstance(compact_units, list)) or "unknown"
     allowed_str = (", ".join(allowed_kinds) if allowed_kinds is not None
                    else "set_policy, act, finish_turn, or resign")
     return ("\nSTRATEGY_CONTEXT_UNTRUSTED_DATA_BEGIN\nstate_revision=" +
@@ -994,6 +1001,10 @@ def _strategy_contract(recruitable_defs: Iterable[str] = ()) -> str:
         "at your own finish, village ownership and income are engine facts. "
         "Routine code executes validated recruitment, scout, village, rally and no-sweep finish steps; "
         "it pauses on typed exceptions such as contact, promotion, blocked recruitment, or unavailable facts.\n"
+        "In LIVE_STATE and the current facts, moved and attacked are authoritative engine flags. "
+        "movement is the unit's engine movement allowance, not remaining points and not a count of legal moves; "
+        "a missing field stays unknown and must not be treated as false or zero. A routine result of finish is a "
+        "finishing boundary and does not imply additional legal movement actions.\n"
         "Return exactly one complete JSON object with kind set_policy, act, finish_turn, or resign; "
         "output no prose, markdown fences, or text before or after the JSON. "
         "A set_policy replaces the prior installation. Its policy has reserve_gold (integer), "

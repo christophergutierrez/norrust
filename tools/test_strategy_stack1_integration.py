@@ -53,8 +53,8 @@ def act(*, finish: bool, action: dict = ATTACK) -> dict:
     return {"kind": "act", "actions": [copy.deepcopy(action)], "finish_turn": finish}
 
 
-def prepare(root: Path, fixture: str, responses: list[dict], *, accepted: int | None = None,
-            maximum: int | None = None) -> tuple[Path, Path, Path, Path]:
+def prepare(root: Path, fixture: str, responses: list[dict], *, extra_units: list[dict] | None = None,
+            accepted: int | None = None, maximum: int | None = None) -> tuple[Path, Path, Path, Path]:
     data = json.loads((STACK3 / fixture).read_text())
     board = ROOT / "scenarios/big_battle_6/board.toml"
     if not board.is_file():
@@ -63,6 +63,12 @@ def prepare(root: Path, fixture: str, responses: list[dict], *, accepted: int | 
         raise AssertionError("maintained big_battle_6 board is absent or hash changed")
     data["board_path"] = str(board)
     data["save_state"]["board_path"] = str(board)
+    if extra_units:
+        for unit in extra_units:
+            data["save_state"]["units"].append(copy.deepcopy(unit))
+            data["save_state"]["next_unit_id"] = max(
+                data["save_state"]["next_unit_id"], unit["id"] + 1)
+        data["next_id"] = data["save_state"]["next_unit_id"]
     if accepted is not None:
         data["accepted_partial_batches"] = accepted
     if maximum is not None:
@@ -115,6 +121,60 @@ def prompts(path: Path) -> list[str]:
 
 @unittest.skipUnless(DRIVER.is_file(), "Build greedy_driver before integration tests")
 class StrategyStack1IntegrationTests(unittest.TestCase):
+
+    def test_midturn_routine_readiness_rejects_spent_move_then_executes_one_corrected_act(self):
+        """A routine move is visible mid-turn and one rejected act is repaired once."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            scout = {
+                "id": 5, "def_id": "Ghost", "name": "Ghost", "level": 1, "faction": 0,
+                "hp": 18, "max_hp": 18, "movement": 7, "col": 2, "row": 5,
+                "moved": False, "attacked": False, "can_recruit": False,
+                "advancement_pending": False, "slowed": False, "poisoned": False,
+                "xp": 0, "xp_needed": 30, "abilities": ["skirmisher"],
+            }
+            initial_policy = {
+                "reserve_gold": 0, "recruits": [], "scouts": [5],
+                "villages": [{"col": 2, "row": 4}], "rally": None, "holds": [],
+            }
+            # The first tactical response tries to move the scout after the
+            # routine has already moved it.  The bounded repair must issue one
+            # corrected attack and the rejected batch must remain uncommitted.
+            responses = [
+                policy(value=initial_policy),
+                act(finish=False, action={"action": "Move", "unit_id": 5, "col": 2, "row": 5}),
+                act(finish=True, action=ATTACK),
+            ]
+            checkpoint, _, backend, prompt_log = prepare(
+                root, "contact.json", responses, extra_units=[scout])
+            log = root / "midturn-readiness.ndjson"
+            result = launch(root, log, checkpoint, backend,
+                            driver_path=Path(os.environ.get(
+                                "NORRUST_TEST_DRIVER", str(DRIVER))))
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
+            prompt_rows = records(prompt_log)
+            self.assertEqual(len(prompt_rows), 3)
+            tactical_prompt = prompt_rows[1]["prompt"]
+            self.assertIn('"moved":true', tactical_prompt)
+            self.assertIn('"moved":false', tactical_prompt)
+            self.assertIn('"attacked":false', tactical_prompt)
+            self.assertIn('"movement":7', tactical_prompt)
+            self.assertIn("attack", tactical_prompt.lower())
+
+            rows = records(log)
+            rejected = [row for row in rows if row.get("type") == "strategy_batch_validation"]
+            self.assertEqual(len(rejected), 1)
+            repair_record = next(row for row in rows if row.get("type") == "strategy_response_repair")
+            self.assertIn("ENGINE_REJECTION", str(repair_record.get("error")))
+            self.assertIn("destination=(2,5)", str(repair_record.get("error")))
+            self.assertIn("UnitAlreadyMoved", str(rejected[0]["validation"]))
+            tactical_batches = [row for row in forwarded(rows) if row.get("source") == "llm"]
+            self.assertEqual(len(tactical_batches), 1)
+            self.assertEqual(tactical_batches[0]["orders"][0]["action"], "Attack")
+            self.assertEqual(
+                sum(event.get("kind") == "attack" and event.get("attacker", {}).get("unit") == 3
+                    for event in events(rows)), 1)
 
     def test_contact_checkpoint_rejects_repeated_set_policy_and_stops_as_strategy_no_progress(self):
         """Two set_policy calls at contact pause produce typed interruption strategy_no_progress."""

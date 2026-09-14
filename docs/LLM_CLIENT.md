@@ -375,6 +375,18 @@ construct; a model response carrying an `origin` key is rejected. Progress is
 adopted only after a submission is proven committed, so a resume cannot re-buy a
 finite queue. Routine execution creates zero usage rows.
 
+Each compact strategy unit fact includes the engine's authoritative `moved` and
+`attacked` flags and its `movement` allowance when the driver supplies them.
+Missing fields remain `unknown`, never false or zero. `movement` is the unit's
+allowance used by engine pathfinding (and can be halved while slowed); it is not
+remaining points and does not mean that many legal moves exist. A `finish`
+result is a finishing boundary, so it cannot be counted as an additional move.
+When an engine validation rejects an authored batch, repair feedback names the
+offending authored index, involved unit IDs, destination, and engine error in a
+compact line. The complete validation result remains in the untrusted feedback
+and audit record. Rejection is transactional: no earlier action in that batch
+commits, and the corrected response is validated from the unchanged revision.
+
 Automatic turn completion uses `FinishWithGreedy` with empty `groups` and
 `holds`, which is verified to perform no friendly sweep. Plain `EndTurn`
 performs an automatic Greedy sweep and is never used as a routine boundary.

@@ -26,6 +26,7 @@ from .llm_client import (
     authoritative_live_state_reminder, finalize_model_prompt,
     compact_unit_inspection, compact_draft_review, tool_followup_instruction, tool_budget_repair_prompt,
     compact_events, compact_trend, tactical_attack_coverage, build_current_turn_readiness,
+    concise_engine_rejection, engine_validation_feedback,
     replay_accepted_progress, update_committed_progress,
     select_event_window,
     query_tactical_surface, query_validate_batch, query_preview_batch, query_bounded_comparison,
@@ -41,6 +42,7 @@ from .llm_client import (
     timeout_finish_orders,
 )
 from .response_parsing import recover_bare_tool_prefix, parse_action_response, ResponseParseError
+from .routine_policy import render_policy_brief
 from .watchdog_stop import accept_stop, stop_run
 
 
@@ -60,6 +62,43 @@ class FakeDriverProcess:
 
 
 class ClientValidationTests(unittest.TestCase):
+
+    def test_strategy_facts_preserve_unit_readiness_and_movement_unknowns(self):
+        state = {
+            "state_revision": 9, "turn": 2, "active_faction": 0,
+            "units": [
+                {"id": 3, "faction": 0, "col": 2, "row": 7,
+                 "moved": True, "attacked": False, "movement": 5},
+                {"id": 4, "faction": 0, "col": 3, "row": 7},
+            ],
+        }
+        brief = render_policy_brief(0, [], state=state)
+        self.assertIn('"moved":true', brief)
+        self.assertIn('"attacked":false', brief)
+        self.assertIn('"movement":5', brief)
+        self.assertIn('"moved":"unknown"', brief)
+        self.assertIn('"attacked":"unknown"', brief)
+        self.assertIn('"movement":"unknown"', brief)
+        self.assertIn("movement is the unit's engine movement allowance", brief)
+        self.assertIn("does not imply additional legal movement actions", brief)
+
+    def test_engine_rejection_names_offending_ids_and_destination_and_keeps_raw_result(self):
+        orders = [{"action": "Move", "unit_id": 7, "col": 4, "row": 6},
+                  {"action": "Attack", "attacker_id": 8, "defender_id": 9}]
+        validation = {
+            "valid": False, "failed_index": 0,
+            "results": [{"ok": False, "code": "DestinationOccupied",
+                          "message": "destination is occupied"},
+                         {"ok": True}],
+        }
+        line = concise_engine_rejection(orders, validation)
+        self.assertIn("index=0 action=Move unit=U7 destination=(4,6)", line)
+        self.assertIn("DestinationOccupied: destination is occupied", line)
+        feedback = engine_validation_feedback(orders, validation)
+        self.assertIn("ENGINE_REJECTION", feedback)
+        self.assertIn("ENGINE_VALIDATION_UNTRUSTED_DATA_BEGIN", feedback)
+        self.assertIn('"failed_index":0', feedback)
+        self.assertIn('"results"', feedback)
 
     def test_direct_resume_honors_accepted_stop_without_dispatch(self):
         with tempfile.TemporaryDirectory() as directory:
