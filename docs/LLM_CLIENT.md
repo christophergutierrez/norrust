@@ -417,6 +417,31 @@ strategy queries must prove the requested revision; stale or missing revision
 facts cannot drive actions. `inspect_units` purpose text is limited to 120
 characters; it is not a request for a long rationale.
 
+### Decision routing and bounded ineffective responses
+
+Strategy execution routes exceptions and initial requests into structured decision packets
+with strictly validated applicable responses:
+
+| Request | Decision Kind | Applicable responses | Rationale |
+| --- | --- | --- | --- |
+| Initial policy or completed objectives | `policy` | `set_policy`, `act`, `finish_turn`, `resign` | Model directs routine execution or takes tactical control. |
+| `contact` (`stage: current_state`) | `tactical` | `act`, `finish_turn`, `resign` | Current board contact pause cannot be cleared by policy edits; requires tactical action. |
+| Proposed movement contact / `unsafe_route` | `policy` | `set_policy`, `act`, `finish_turn`, `resign` | Replacing the policy objective can avoid the hazardous destination. |
+| `recruitment_blocked`, `route_unavailable`, `invalid_assignment` | `policy` | `set_policy`, `act`, `finish_turn`, `resign` | Policy adjustment can redirect routine tasks. |
+| `promotion_pending` | `promotion` | `act`, `resign` | Unit must submit legal `Advance` action; engine rejects ending turn during promotion. |
+| `threat_unavailable` | `facts_unavailable` | `act`, `finish_turn`, `resign` | Manual actions required when threat calculations cannot be completed. |
+
+Policy validation requires that any policy with `villages` targets must have at least one
+existing living scout or at least one recruit with `role: "scout"`. Policies violating this
+are rejected with `PolicyValidationError` before installation.
+
+At a fixed side-turn, board revision, and incident key, at most one corrective follow-up is
+permitted after an invalid contextual response or an installed replacement that reproduces
+the identical incident. Further ineffective responses halt execution with terminal status
+`budget_interrupted` and stop code `strategy_no_progress`. This allowance shares the single-repair
+budget and tracks encountered incidents per revision to prevent A→B→A loops. Allowance
+consumption is durably recorded in the request journal and reconstructed on resume.
+
 ### Publishing a file-transport reply
 
 `tools/file_backend.py` is the file-transport `--model-command` adapter: it writes

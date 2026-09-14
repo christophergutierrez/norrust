@@ -157,7 +157,7 @@ class PolicyValidationTests(unittest.TestCase):
         # directly, with no separate scope gate to apply afterward.
         base = valid_stack1_policy()
         nonempty_scouts = {**base, "scouts": [2]}
-        nonempty_villages = {**base, "villages": [{"col": 2, "row": 4}]}
+        nonempty_villages = {**base, "scouts": [2], "villages": [{"col": 2, "row": 4}]}
         nonempty_holds = {**base, "holds": [3]}
         nonnull_rally = {**base, "rally": {"col": 1, "row": 1}}
         for name, policy in (("scouts", nonempty_scouts), ("villages", nonempty_villages),
@@ -166,6 +166,27 @@ class PolicyValidationTests(unittest.TestCase):
                 normalized = rp.validate_routine_policy(policy, make_context())
                 self.assertEqual(normalized.get(name), policy[name])
         self.assertFalse(hasattr(rp, "enforce_stack1_scope"))
+
+    def test_village_policy_requires_scout_or_scout_recruit(self):
+        context = make_context()
+        base = valid_stack1_policy()
+        with self.assertRaisesRegex(rp.PolicyValidationError, "must specify at least one scout or scout-role recruit"):
+            rp.validate_policy({**base, "villages": [{"col": 2, "row": 4}], "scouts": []}, context)
+
+        with_recruit = {
+            **base,
+            "recruits": [{"def_id": "Ghost", "count": 1, "role": "scout"}],
+            "villages": [{"col": 2, "row": 4}],
+            "scouts": [],
+        }
+        self.assertIsNotNone(rp.validate_policy(with_recruit, context))
+
+        with_scout = {
+            **base,
+            "villages": [{"col": 2, "row": 4}],
+            "scouts": [2],
+        }
+        self.assertIsNotNone(rp.validate_policy(with_scout, context))
 
     def test_scouts_recruiters_excluded_and_bound_checked_before_execution(self):
         # An existing recruiter can never be named as a scout.

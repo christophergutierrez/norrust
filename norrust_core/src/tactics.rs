@@ -155,6 +155,7 @@ pub struct UnitThreatSummary {
     pub open_max_incoming_sum: u32,
     pub open_lethal_attackers_needed: Option<u32>,
     pub open_origins_conflict: bool,
+    pub attacker_ids: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -752,6 +753,14 @@ pub fn unit_threats_after_end_turn(
         let Some(open) = target_threats_in_projected(&projected, unit_id, true)? else {
             continue;
         };
+        let mut attacker_ids: Vec<u32> = direct
+            .threats
+            .iter()
+            .chain(open.threats.iter())
+            .map(|t| t.attacker_id)
+            .collect();
+        attacker_ids.sort_unstable();
+        attacker_ids.dedup();
         units.push(UnitThreatSummary {
             unit_id,
             hp: direct.hp,
@@ -768,6 +777,7 @@ pub fn unit_threats_after_end_turn(
             open_max_incoming_sum: open.max_incoming_sum,
             open_lethal_attackers_needed: open.lethal_attackers_needed,
             open_origins_conflict: open.origins_conflict,
+            attacker_ids,
         });
     }
     Ok(UnitThreatSurface {

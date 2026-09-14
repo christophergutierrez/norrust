@@ -192,6 +192,16 @@ pub fn parse_policy(policy: &Value) -> Result<RoutinePolicy, PolicyRejected> {
     if unique_villages.len() != villages.len() {
         return Err(reject("villages must contain distinct coordinates"));
     }
+    let scout_requests: u32 = recruits
+        .iter()
+        .filter(|r| r.role == "scout")
+        .map(|r| r.count)
+        .sum();
+    if !villages.is_empty() && scouts.is_empty() && scout_requests == 0 {
+        return Err(reject(
+            "policy with villages must specify at least one scout or scout-role recruit",
+        ));
+    }
     let rally = match object.get("rally") {
         None | Some(Value::Null) => None,
         Some(v) => Some(parse_coordinate(Some(v), "rally")?),
@@ -408,24 +418,78 @@ fn validate_identity(
     Ok(scouts)
 }
 
-fn current_contact(state: &GameState, side: u8) -> Result<bool, TacticsError> {
-    if turn_tactics(state, side)?
-        .iter()
-        .any(|u| u.origins.iter().any(|o| !o.engagements.is_empty()))
-    {
-        return Ok(true);
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct CurrentContactFacts {
+    pub trigger: &'static str,
+    pub friendly_unit_ids: Vec<u32>,
+    pub enemy_unit_ids: Vec<u32>,
+    pub coverage: &'static str,
+}
+
+fn current_contact(state: &GameState, side: u8) -> Result<Option<CurrentContactFacts>, TacticsError> {
+    let mut attack_friendly = Vec::new();
+    let mut attack_enemy = Vec::new();
+    for u in turn_tactics(state, side)? {
+        let mut has_eng = false;
+        for o in &u.origins {
+            for e in &o.engagements {
+                has_eng = true;
+                attack_enemy.push(e.defender_id);
+            }
+        }
+        if has_eng {
+            attack_friendly.push(u.unit_id);
+        }
     }
-    if unit_threats_after_end_turn(state, side)?
-        .units
-        .iter()
-        .any(|u| u.distinct_attacker_count > 0 || u.open_distinct_attacker_count > 0)
-    {
-        return Ok(true);
+
+    let mut exposure_friendly = Vec::new();
+    let mut exposure_enemy = Vec::new();
+    for u in unit_threats_after_end_turn(state, side)?.units {
+        if u.distinct_attacker_count > 0 || u.open_distinct_attacker_count > 0 {
+            exposure_friendly.push(u.unit_id);
+            exposure_enemy.extend(u.attacker_ids);
+        }
     }
-    Ok(recruiter_threats_after_end_turn(state, side)?
-        .recruiters
-        .iter()
-        .any(|u| u.distinct_attacker_count > 0 || u.open_distinct_attacker_count > 0))
+    for r in recruiter_threats_after_end_turn(state, side)?.recruiters {
+        if r.distinct_attacker_count > 0 || r.open_distinct_attacker_count > 0 {
+            exposure_friendly.push(r.recruiter_id);
+            for t in &r.threats {
+                exposure_enemy.push(t.attacker_id);
+            }
+            for t in &r.open_threats {
+                exposure_enemy.push(t.attacker_id);
+            }
+        }
+    }
+
+    let has_attack = !attack_friendly.is_empty();
+    let has_exposure = !exposure_friendly.is_empty();
+
+    if !has_attack && !has_exposure {
+        return Ok(None);
+    }
+
+    let trigger = match (has_attack, has_exposure) {
+        (true, true) => "attack_and_exposure",
+        (true, false) => "attack",
+        (false, true) => "exposure",
+        (false, false) => unreachable!(),
+    };
+
+    let mut friendly_unit_ids: Vec<u32> = attack_friendly.into_iter().chain(exposure_friendly).collect();
+    friendly_unit_ids.sort_unstable();
+    friendly_unit_ids.dedup();
+
+    let mut enemy_unit_ids: Vec<u32> = attack_enemy.into_iter().chain(exposure_enemy).collect();
+    enemy_unit_ids.sort_unstable();
+    enemy_unit_ids.dedup();
+
+    Ok(Some(CurrentContactFacts {
+        trigger,
+        friendly_unit_ids,
+        enemy_unit_ids,
+        coverage: "complete",
+    }))
 }
 fn post_step_safe(state: &GameState, side: u8, action: Action) -> Result<bool, TacticsError> {
     let mut clone = state.clone();
@@ -716,18 +780,24 @@ pub fn routine_next(
         };
     }
     match current_contact(state, side) {
-        Ok(true) => {
+        Ok(Some(facts)) => {
             return RoutineOutcome::Exception {
                 reason: "contact",
-                evidence: json!({"stage":"current_state"}),
-            }
+                evidence: json!({
+                    "stage": "current_state",
+                    "trigger": facts.trigger,
+                    "friendly_unit_ids": facts.friendly_unit_ids,
+                    "enemy_unit_ids": facts.enemy_unit_ids,
+                    "coverage": facts.coverage,
+                }),
+            };
         }
-        Ok(false) => {}
+        Ok(None) => {}
         Err(e) => {
             return RoutineOutcome::Exception {
                 reason: "threat_unavailable",
                 evidence: json!({"stage":"current_state","detail":e.to_string()}),
-            }
+            };
         }
     }
     if progress.policy_complete {
@@ -1733,5 +1803,70 @@ mod tests {
             RoutineOutcome::Exception { reason: "promotion_pending", evidence }
                 if evidence["unit_ids"] == json!([5])
         ));
+    }
+
+    #[test]
+    fn village_policy_requires_scout_or_scout_recruit() {
+        // Zero scouts and zero scout recruits with villages rejects.
+        let invalid = json!({
+            "reserve_gold": 0,
+            "recruits": [{"def_id": "Skeleton", "count": 1, "role": "army"}],
+            "scouts": [],
+            "villages": [{"col": 2, "row": 3}],
+            "rally": null,
+            "holds": []
+        });
+        assert!(parse_policy(&invalid).is_err());
+
+        // Scout recruit allows villages even with empty initial scouts.
+        let with_recruit = json!({
+            "reserve_gold": 0,
+            "recruits": [{"def_id": "Ghost", "count": 1, "role": "scout"}],
+            "scouts": [],
+            "villages": [{"col": 2, "row": 3}],
+            "rally": null,
+            "holds": []
+        });
+        assert!(parse_policy(&with_recruit).is_ok());
+
+        // Existing scout allows villages with empty recruits.
+        let with_scout = json!({
+            "reserve_gold": 0,
+            "recruits": [],
+            "scouts": [3],
+            "villages": [{"col": 2, "row": 3}],
+            "rally": null,
+            "holds": []
+        });
+        assert!(parse_policy(&with_scout).is_ok());
+    }
+
+    #[test]
+    fn current_state_contact_emits_deterministic_facts() {
+        let registry = units();
+        let mut s = state();
+        // Place friendly unit at (3, 3) and enemy at (3, 4)
+        let friendly = Unit::from_def(3, registry.get("Skeleton").unwrap(), 0);
+        s.place_unit(friendly, Hex::from_offset(3, 3));
+        let enemy = Unit::from_def(7, registry.get("Skeleton").unwrap(), 1);
+        s.place_unit(enemy, Hex::from_offset(3, 4));
+
+        let p = policy(&[]);
+        let outcome = routine_next(&s, 0, &p, &RoutineProgress::default(), &[], &registry);
+        match outcome {
+            RoutineOutcome::Exception { reason, evidence } => {
+                assert_eq!(reason, "contact");
+                assert_eq!(evidence["stage"], "current_state");
+                assert_eq!(evidence["coverage"], "complete");
+                assert_eq!(evidence["friendly_unit_ids"], json!([1, 3]));
+                assert_eq!(evidence["enemy_unit_ids"], json!([7]));
+                assert!(
+                    evidence["trigger"] == "attack"
+                        || evidence["trigger"] == "exposure"
+                        || evidence["trigger"] == "attack_and_exposure"
+                );
+            }
+            other => panic!("expected contact exception, got {other:?}"),
+        }
     }
 }

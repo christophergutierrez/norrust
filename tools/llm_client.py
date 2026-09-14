@@ -49,6 +49,13 @@ try:
         validate_routine_policy, render_policy_brief, render_exception_brief,
         find_unreconstructable_routine_batch,
         pending_routine_commit)
+    from .strategy_decision import (
+        DecisionPacket,
+        IncidentTracker,
+        ContextualResponseError,
+        build_decision_packet,
+        validate_response_context,
+        render_decision_brief)
 except ImportError:  # pragma: no cover - direct script compatibility
     # Running `python tools/llm_client.py` puts only the tools directory on
     # sys.path. Import the package modules from the repository root so their
@@ -84,6 +91,13 @@ except ImportError:  # pragma: no cover - direct script compatibility
         validate_routine_policy, render_policy_brief, render_exception_brief,
         find_unreconstructable_routine_batch,
         pending_routine_commit)
+    from tools.strategy_decision import (
+        DecisionPacket,
+        IncidentTracker,
+        ContextualResponseError,
+        build_decision_packet,
+        validate_response_context,
+        render_decision_brief)
 
 ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "Engage", "EndTurn", "Advance", "Resign",
            "DoneWithImportantMoves", "FinishWithGreedy", "MoveGroupToward"}
@@ -5250,6 +5264,7 @@ def run(args: argparse.Namespace) -> int:
     strategy_pending_batch_id: Optional[str] = None
     strategy_pending_proven_revision: Optional[int] = None
     strategy_model_responses_this_turn = 0
+    strategy_incident_tracker = IncidentTracker()
     metadata = {"scenario": args.scenario, "faction0": args.faction0, "faction1": args.faction1,
                 "gold": args.gold, "seed": args.seed, "llm_side": args.llm_side,
                 "first_player": 0 if args.llm_side == 0 else 1,
@@ -5439,6 +5454,8 @@ def run(args: argparse.Namespace) -> int:
                     # installation unresolved so the caller can surface an
                     # unknown boundary rather than silently reinterpret it.
                     strategy_progress = None
+        if strategy_mode and parent_records:
+            strategy_incident_tracker.reconstruct_from_journal(parent_records)
         continuity_entries = replay_committed_continuity(parent_records)
         if resume_log:
             if resume_event_line is not None:
@@ -6187,7 +6204,9 @@ def run(args: argparse.Namespace) -> int:
         strategy_pending_batch_id = None
         strategy_pending_proven_revision = None
 
-    def strategy_call_model(prompt_text: str, *, policy_context: Optional[ValidationContext] = None) -> tuple[Any, ModelReply]:
+    def strategy_call_model(prompt_text: str, *,
+                            policy_context: Optional[ValidationContext] = None,
+                            decision_packet: Optional[DecisionPacket] = None) -> tuple[Any, ModelReply]:
         """Call, inspect, repair once, and parse one strategy response."""
         nonlocal strategy_model_responses_this_turn, model_calls_this_turn
         nonlocal focused_local_context
@@ -6273,6 +6292,8 @@ def run(args: argparse.Namespace) -> int:
                 continue
             try:
                 parsed = parse_model_response(decoded)
+                if decision_packet is not None:
+                    validate_response_context(parsed, decision_packet)
                 if isinstance(parsed, SetPolicyResponse) and policy_context is not None:
                     parsed = SetPolicyResponse(validate_routine_policy(parsed.policy, policy_context))
                 if isinstance(parsed, ActResponse):
@@ -6295,6 +6316,29 @@ def run(args: argparse.Namespace) -> int:
                             str(validation.get("error_message", validation)))
                 return parsed, reply
             except (ModelResponseError, PolicyValidationError) as exc:
+                if decision_packet is not None and isinstance(exc, ContextualResponseError):
+                    current_side_turn = state.get("turn") if isinstance(state, dict) else 0
+                    strategy_incident_tracker.record_ineffective(
+                        current_side_turn, decision_packet.state_revision, decision_packet.incident_key)
+                    durable({"type": "contextual_rejection",
+                             "incident_key": decision_packet.incident_key,
+                             "state_revision": decision_packet.state_revision,
+                             "side_turn": current_side_turn,
+                             "reason": str(exc),
+                             "response": reply.text})
+                    if repair_attempted or not strategy_incident_tracker.can_attempt_correction(
+                            current_side_turn, decision_packet.state_revision, decision_packet.incident_key):
+                        raise
+                    repair_attempted = True
+                    note_response_repair(exc, reply.text)
+                    current_prompt = (
+                        prompt_text + "\nSTRATEGY_REPAIR_UNTRUSTED_DATA_BEGIN\n" +
+                        reply.text + "\nSTRATEGY_REPAIR_UNTRUSTED_DATA_END\n" +
+                        f"The previous response was invalid: {exc}. "
+                        f"Applicable response kinds: {', '.join(decision_packet.allowed_kinds)}. "
+                        "Return one corrected strategy response now with only the defined fields.")
+                    tool_context = ""
+                    continue
                 if repair_attempted:
                     raise
                 repair_attempted = True
@@ -6347,20 +6391,35 @@ def run(args: argparse.Namespace) -> int:
                                  message=str(exc))
                     durable({"type": "query_error", **metadata})
                     return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
+                current_side_turn = int(state.get("turn", 0)) if isinstance(state, dict) else 0
+                final_only = bool(isinstance(state, dict) and state.get("final_only"))
+                initial_packet = build_decision_packet(
+                    "initial", {}, revision,
+                    game_id=metadata.get("game_id", ""),
+                    side_turn=current_side_turn,
+                    final_only=final_only,
+                )
+                strategy_incident_tracker.observe_incident(
+                    current_side_turn, revision, initial_packet.incident_key)
+                durable({"type": "decision_packet", "packet": initial_packet.to_dict(),
+                         "side_turn": current_side_turn, "state_revision": revision})
                 brief = render_policy_brief(
                     0, context.recruitable_defs, state=state,
                     recruit_options=state.get("strategy_recruit_options") if isinstance(state, dict) else None,
-                                   changes=continuity_entries[-2:] if continuity_entries else None)
+                    changes=continuity_entries[-2:] if continuity_entries else None)
                 try:
-                    parsed, reply = strategy_call_model(brief, policy_context=context)
+                    parsed, reply = strategy_call_model(
+                        brief, policy_context=context, decision_packet=initial_packet)
                 except ModelCallBudgetExhausted as exc:
                     return emit_budget_interrupted("model_calls_budget_exhausted", str(exc))
+                except ContextualResponseError as exc:
+                    return emit_budget_interrupted("strategy_no_progress", str(exc))
                 except RuntimeError as exc:
                     return strategy_model_runtime_failure(exc)
                 except (ModelResponseError, PolicyValidationError) as exc:
                     set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
-                                reason=TERMINAL_MODEL_INVALID, code="strategy_response_invalid",
-                                message=str(exc))
+                                 reason=TERMINAL_MODEL_INVALID, code="strategy_response_invalid",
+                                 message=str(exc))
                     durable({"type": "terminal", **metadata})
                     return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
                 if isinstance(parsed, SetPolicyResponse):
@@ -6464,18 +6523,54 @@ def run(args: argparse.Namespace) -> int:
                              message=str(exc))
                 durable({"type": "query_error", **metadata})
                 return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
-            brief = render_exception_brief(
-                exc_result, strategy_progress.remaining(strategy_installation.policy),
+            current_side_turn = int(state.get("turn", 0)) if isinstance(state, dict) else 0
+            final_only = bool(isinstance(state, dict) and state.get("final_only"))
+            packet = build_decision_packet(
+                exc_result.reason, exc_result.evidence, revision,
+                game_id=metadata.get("game_id", ""),
+                side_turn=current_side_turn,
+                final_only=final_only,
+            )
+            durable({"type": "routine_exception", "reason": exc_result.reason,
+                    "evidence": exc_result.evidence, "state_revision": revision})
+
+            if strategy_incident_tracker.has_encountered_at_revision(revision, packet.incident_key):
+                durable({
+                    "type": "incident_recurrence",
+                    "incident_key": packet.incident_key,
+                    "state_revision": revision,
+                    "side_turn": current_side_turn,
+                    "reason": exc_result.reason,
+                })
+                strategy_incident_tracker.record_ineffective(
+                    current_side_turn, revision, packet.incident_key)
+                if not strategy_incident_tracker.can_attempt_correction(
+                    current_side_turn, revision, packet.incident_key):
+                    return emit_budget_interrupted(
+                        "strategy_no_progress",
+                        f"incident recurrence allowance exhausted: {exc_result.reason}")
+            else:
+                strategy_incident_tracker.observe_incident(
+                    current_side_turn, revision, packet.incident_key)
+
+            durable({"type": "decision_packet", "packet": packet.to_dict(),
+                     "side_turn": current_side_turn, "state_revision": revision})
+
+            brief = render_decision_brief(
+                packet,
                 state=state,
                 recruit_options=state.get("strategy_recruit_options") if isinstance(state, dict) else None,
                 changes=continuity_entries[-2:] if continuity_entries else None,
-                policy=strategy_installation.policy if strategy_installation is not None else None)
-            durable({"type": "routine_exception", "reason": exc_result.reason,
-                    "evidence": exc_result.evidence, "state_revision": revision})
+                policy=strategy_installation.policy if strategy_installation is not None else None,
+                remaining=strategy_progress.remaining(strategy_installation.policy) if (strategy_progress and strategy_installation) else None,
+                recruitable_defs=context.recruitable_defs,
+            )
             try:
-                parsed, reply = strategy_call_model(brief, policy_context=context)
+                parsed, reply = strategy_call_model(brief, policy_context=context, decision_packet=packet)
             except ModelCallBudgetExhausted as exc:
                 return emit_budget_interrupted("model_calls_budget_exhausted", str(exc))
+            except ContextualResponseError as exc:
+                return emit_budget_interrupted("strategy_no_progress", str(exc))
             except RuntimeError as exc:
                 return strategy_model_runtime_failure(exc)
             except (ModelResponseError, PolicyValidationError) as exc:

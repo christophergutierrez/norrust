@@ -8,7 +8,7 @@ import time
 import unittest
 from pathlib import Path
 
-from .llm_supervisor import _watchdog_validation, terminate_process_tree
+from .llm_supervisor import _proc_starttime, _watchdog_validation, terminate_process_tree
 from .run_watchdog import RunWatchdog
 from .watchdog_stop import (StopError, read_stop, resolve_stop, stop_path_for_log,
                             stop_run, validate_stop_request)
@@ -104,18 +104,19 @@ class ProcessTreeCleanupTests(unittest.TestCase):
                 "def finish(_sig, _frame): raise SystemExit(0)\n"
                 "signal.signal(signal.SIGTERM, finish)\n"
                 "p=subprocess.Popen([sys.executable, '-c', "
-                "'import os,signal,time; os.setsid(); signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)'])\n"
-                "open(sys.argv[1], 'w').write(str(p.pid))\n"
+                "'import os,signal,sys,time; os.setsid(); signal.signal(signal.SIGTERM, signal.SIG_IGN); open(sys.argv[1], \"w\").write(str(os.getpid())); time.sleep(30)', sys.argv[1]])\n"
                 "time.sleep(30)\n", encoding="utf-8")
             target = subprocess.Popen([sys.executable, str(script), str(marker)],
                                        start_new_session=True)
             unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
             try:
                 deadline = time.monotonic() + 3
-                while not marker.exists() and time.monotonic() < deadline:
+                while (not marker.exists() or not marker.read_text().strip()) and time.monotonic() < deadline:
                     time.sleep(0.01)
                 self.assertTrue(marker.exists())
-                child_pid = int(marker.read_text())
+                child_pid = int(marker.read_text().strip())
+                while _proc_starttime(child_pid) is None and time.monotonic() < deadline:
+                    time.sleep(0.01)
                 started = time.monotonic()
                 cleanup = terminate_process_tree(target, grace_seconds=0.25,
                                                   poll_interval=0.01)

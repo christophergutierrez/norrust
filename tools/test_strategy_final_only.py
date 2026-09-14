@@ -64,11 +64,14 @@ class FinalOnlyStrategyTests(unittest.TestCase):
                                 for row in rows if row.get("type") == "forwarded_orders"
                                 for order in row.get("orders", [])))
 
-    def test_final_only_promotion_is_rust_exception_then_model_finish(self):
+    def test_final_only_promotion_is_rust_exception_then_model_advance_and_finish(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             checkpoint, _, backend, prompt_log = prepare_stack3(
-                root, "promotion.json", [policy(), {"kind": "finish_turn"}],
+                root, "promotion.json", [
+                    policy(),
+                    {"kind": "act", "actions": [{"action": "Advance", "unit_id": 13, "target_index": 0}], "finish_turn": True},
+                ],
                 accepted=3, maximum=3)
             data = json.loads(checkpoint.read_text())
             # This archived position predates incremental mode; final-only
@@ -89,8 +92,8 @@ class FinalOnlyStrategyTests(unittest.TestCase):
             self.assertTrue(any(any(order.get("action") == "FinishWithGreedy"
                                     for order in row.get("orders", []))
                                 for row in model_batches))
-            self.assertFalse(any(event.get("kind") == "advance" and event.get("source") == "llm"
-                                 for event in engine_events(rows)))
+            self.assertTrue(any(event.get("kind") == "advance" and event.get("source") == "llm"
+                                for event in engine_events(rows)))
 
     def test_missing_or_stale_strategy_query_revision_stops_before_action(self):
         for what, missing in (("recruit_options", True),

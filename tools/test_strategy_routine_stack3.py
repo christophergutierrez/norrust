@@ -304,8 +304,10 @@ class StrategyRoutineStack3Tests(unittest.TestCase):
             with self.subTest(fixture=fixture):
                 with tempfile.TemporaryDirectory() as td:
                     root = Path(td)
+                    response = ({"kind": "act", "actions": [{"action": "Advance", "unit_id": 13, "target_index": 0}], "finish_turn": True}
+                                if fixture == "promotion.json" else {"kind": "finish_turn"})
                     checkpoint, _, backend, prompt_log = prepare(
-                        root, fixture, [policy(value=installed), {"kind": "finish_turn"}])
+                        root, fixture, [policy(value=installed), response])
                     log = root / (label + ".ndjson")
                     result = launch(root, log, checkpoint, backend)
                     assert_success(self, result, log)
@@ -368,7 +370,7 @@ class StrategyRoutineStack3Tests(unittest.TestCase):
             terminal = [row for row in rows if row.get("type") == "terminal"]
             self.assertTrue(terminal)
             self.assertIn(terminal[-1].get("code"), {
-                "model_calls_budget_exhausted", "strategy_repeated_exception",
+                "model_calls_budget_exhausted", "strategy_no_progress",
                 "model_response_budget_exhausted"})
 
     def test_strategy_prompt_is_compact_revision_pinned_and_has_no_annotations(self):

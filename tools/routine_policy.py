@@ -198,6 +198,10 @@ def validate_policy(policy: Any, context: ValidationContext) -> dict[str, Any]:
         seen_villages.add(pair)
         villages.append({"col": pair[0], "row": pair[1]})
 
+    if villages and len(scouts) == 0 and new_scout_requests == 0:
+        raise PolicyValidationError(
+            "policy with villages must specify at least one scout or scout-role recruit")
+
     rally_in = policy.get("rally")
     rally: Optional[dict[str, int]] = None
     if rally_in is not None:
@@ -886,7 +890,8 @@ def load_checked_in_policy(path: str, context: ValidationContext) -> dict[str, A
 def _strategy_context(state: Optional[dict[str, Any]], *, recruit_options: Any = None,
                       remaining: Any = None, changes: Any = None,
                       policy: Any = None,
-                      exception: Optional[RoutineException] = None) -> str:
+                      exception: Optional[RoutineException] = None,
+                      allowed_kinds: Optional[Iterable[str]] = None) -> str:
     """Render bounded, revision-pinned facts after the stable contract."""
     if not isinstance(state, dict):
         return ""
@@ -940,12 +945,17 @@ def _strategy_context(state: Optional[dict[str, Any]], *, recruit_options: Any =
         f"id={item.get('id', 'unknown')} faction={item.get('faction', 'unknown')} "
         f"pos={item.get('col', 'unknown')},{item.get('row', 'unknown')} def={item.get('def_id', 'unknown')}"
         for item in compact_units) or "unknown"
+    allowed_str = (", ".join(allowed_kinds) if allowed_kinds is not None
+                   else "set_policy, act, finish_turn, or resign")
     return ("\nSTRATEGY_CONTEXT_UNTRUSTED_DATA_BEGIN\nstate_revision=" +
             str(state.get("state_revision", "unknown")) + "\nMAP_VILLAGES=" +
             village_text + "\nMAP_UNITS=" + unit_text + "\n" + body +
             "\nSTRATEGY_CONTEXT_UNTRUSTED_DATA_END\n"
-            "Respond with exactly one of set_policy, act, finish_turn, or resign. Output one complete JSON "
+            f"Respond with exactly one of {allowed_str}. Output one complete JSON "
             "object only: no prose, markdown fences, or text before or after the JSON.")
+
+
+strategy_context = _strategy_context
 
 
 def _strategy_contract(recruitable_defs: Iterable[str] = ()) -> str:
