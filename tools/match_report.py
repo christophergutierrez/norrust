@@ -14,11 +14,10 @@ _TYPED_TERMINAL_TYPES = {"model_error", "budget_interrupted", "query_error",
 _BUDGET_CODES = {"max_game_total_tokens_exhausted", "model_calls_budget_exhausted"}
 
 # These are the sources the maintained client/driver uses for events on the
-# controlled side.  ``routine`` is deliberately included here: it can submit
-# the empty FinishWithGreedy boundary itself, while delegated_greedy is used
-# when that boundary has a non-empty generated sweep.  A source is evidence of
-# provenance, but an explicit faction on the end_turn event must agree with it
-# when one is available.
+# controlled side.  ``routine`` and ``delegated_greedy`` are distinct
+# provenance values; delegated_greedy may describe an empty FinishWithGreedy
+# sweep too.  A source is evidence of provenance, but an explicit faction on
+# the end_turn event must agree with it when one is available.
 _CONTROLLED_EVENT_SOURCES = frozenset({"llm", "model", "delegated_greedy", "routine"})
 _OPPONENT_EVENT_SOURCES = frozenset({"greedy"})
 
@@ -139,17 +138,20 @@ def _end_turn_owner(event: dict[str, Any], source: Any,
     report must not turn malformed or foreign evidence into a controlled or
     opponent boundary merely to make totals balance.
     """
-    provenance = (
-        "controlled" if source in _CONTROLLED_EVENT_SOURCES
-        else "opponent" if source in _OPPONENT_EVENT_SOURCES
-        else "unknown"
-    )
+    if not isinstance(source, str):
+        provenance = "unknown"
+    else:
+        provenance = (
+            "controlled" if source in _CONTROLLED_EVENT_SOURCES
+            else "opponent" if source in _OPPONENT_EVENT_SOURCES
+            else "unknown"
+        )
     ended = event.get("ended_faction")
     active = event.get("active_faction")
     event_side: int | None = None
-    if isinstance(ended, int) and ended in (0, 1):
+    if isinstance(ended, int) and not isinstance(ended, bool) and ended in (0, 1):
         event_side = ended
-    elif isinstance(active, int) and active in (0, 1):
+    elif isinstance(active, int) and not isinstance(active, bool) and active in (0, 1):
         event_side = 1 - active
     if event_side is None or controlled_side not in (0, 1):
         return provenance
@@ -255,9 +257,11 @@ def classify(records: list[dict[str, Any]],
     generated_opponent_end_turns = 0
     generated_unknown_end_turns = 0
     controlled_side = metadata.get("llm_side")
-    if not isinstance(controlled_side, int) or controlled_side not in (0, 1):
+    if (not isinstance(controlled_side, int) or isinstance(controlled_side, bool)
+            or controlled_side not in (0, 1)):
         controlled_side = metadata.get("controlled_side")
-    if not isinstance(controlled_side, int) or controlled_side not in (0, 1):
+    if (not isinstance(controlled_side, int) or isinstance(controlled_side, bool)
+            or controlled_side not in (0, 1)):
         controlled_side = None
     for item in events:
         if item.get("type") == "state":

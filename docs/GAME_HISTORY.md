@@ -60,7 +60,8 @@ faction must agree with the source and the metadata controlled side before the
 event is counted. Missing or conflicting ownership remains unknown, and an
 accepted boundary with no provable controlled ending still raises the
 accounting mismatch. This keeps deterministic routine finishes visible while
-preserving missing-boundary detection.
+preserving missing-boundary detection. `delegated_greedy` describes provenance
+and does not imply that its FinishWithGreedy sweep contained generated orders.
 Review IDs, candidate digests, forced partial-limit finishes, and review outcomes
 remain in the archived log/metrics JSON for ad hoc analysis and training-data
 selection. `games.coverage_json.review_coverage` keeps the raw draft review and
