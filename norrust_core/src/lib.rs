@@ -14,6 +14,7 @@ pub mod loader;
 pub mod mapgen;
 pub mod pathfinding;
 pub mod routine;
+pub mod routine_decision;
 pub mod save;
 pub mod scenario;
 pub mod schema;

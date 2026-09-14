@@ -787,7 +787,7 @@ pub fn unit_threats_after_end_turn(
     })
 }
 
-fn target_threats_in_projected(
+pub fn target_threats_in_projected(
     projected: &GameState,
     target_id: u32,
     open_board: bool,

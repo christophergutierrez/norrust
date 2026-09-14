@@ -224,8 +224,49 @@ class ModelResponseParsingTests(unittest.TestCase):
             rp.parse_model_response({"kind": "act", "actions": [{"action": "Move", "unit_id": 1}],
                                      "finish_turn": True}),
             rp.ActResponse)
+        self.assertIsInstance(
+            rp.parse_model_response({"kind": "choose", "decision_id": "dec-1", "option_id": "opt-1",
+                                     "finish_turn": False}),
+            rp.ChooseResponse)
         self.assertIsInstance(rp.parse_model_response({"kind": "finish_turn"}), rp.FinishTurnResponse)
         self.assertIsInstance(rp.parse_model_response({"kind": "resign"}), rp.ResignResponse)
+
+    def test_choose_response_parsing(self):
+        valid = {
+            "kind": "choose",
+            "decision_id": "dec-123",
+            "option_id": "attack_1",
+            "finish_turn": False,
+        }
+        res = rp.parse_model_response(valid)
+        self.assertIsInstance(res, rp.ChooseResponse)
+        self.assertEqual(res.decision_id, "dec-123")
+        self.assertEqual(res.option_id, "attack_1")
+        self.assertFalse(res.finish_turn)
+
+        res2 = rp.parse_model_response({**valid, "finish_turn": True})
+        self.assertTrue(res2.finish_turn)
+
+        for key in ("decision_id", "option_id", "finish_turn"):
+            bad = dict(valid)
+            del bad[key]
+            with self.subTest(missing=key):
+                with self.assertRaises(rp.ModelResponseError):
+                    rp.parse_model_response(bad)
+
+        with self.assertRaises(rp.ModelResponseError):
+            rp.parse_model_response({**valid, "extra": 1})
+
+        with self.assertRaises(rp.ModelResponseError):
+            rp.parse_model_response({**valid, "decision_id": ""})
+        with self.assertRaises(rp.ModelResponseError):
+            rp.parse_model_response({**valid, "option_id": ""})
+
+        with self.assertRaises(rp.ModelResponseError):
+            rp.parse_model_response({**valid, "finish_turn": "true"})
+
+        with self.assertRaises(rp.ModelResponseError):
+            rp.parse_model_response({**valid, "origin": "routine"})
 
     def test_origin_rejected_everywhere_it_could_hide(self):
         cases = [

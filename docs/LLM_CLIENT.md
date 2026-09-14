@@ -341,7 +341,7 @@ ambiguous responses still use the existing bounded repair path. Observer
 responses and other decision modes retain their own parsing contracts.
 
 The model answers with a strict discriminated union on `kind`: `set_policy`,
-`act`, `finish_turn`, or `resign`. Ordinary `act` responses may set
+`choose`, `act`, `finish_turn`, or `resign`. Ordinary `act` and `choose` responses may set
 `finish_turn` either way; a `final_only` boundary requires `true`, and the
 client appends the empty `FinishWithGreedy` boundary to that one validated
 batch. There are no `decisions[]`, rule citations, risk/expected strings,
@@ -350,6 +350,15 @@ is absent here. A policy is a validated structured set of executable orders —
 policy prose is never parsed or executed. Each recruit
 `count` is a finite total for that policy installation, not a per-turn purchase,
 and a replacement policy replaces all previous orders and remaining counts.
+
+When tactical options are generated for current-state contact, the model may select an
+offered option with strict four-key JSON:
+`{"kind": "choose", "decision_id": "...", "option_id": "...", "finish_turn": false}`.
+No extra keys or omitted fields are permitted. The Python controller expands the chosen
+option strictly from the issued packet, validates the actions against the current revision,
+and submits them transactionally with `proposal_source: "engine_option"` while preserving
+model authorship (`source: "llm"`). Option IDs alone never authorize execution. Custom
+`act` orders, read-only inspections, `finish_turn`, and `resign` remain available escape paths.
 
 The initial policy and exception briefs repeat the compact live map, both-side
 unit identities, economy and recruit costs. Exception briefs also repeat the
@@ -402,7 +411,7 @@ or stage instead of inferring a tactical response from the word "route":
 | --- | --- | --- |
 | `route_unavailable` | `cause: unreachable_or_no_legal_endpoint`, `target`, and `unit_id` when assigned | No path or legal endpoint for that objective now. Occupancy may be temporary; this does not establish danger or permanent unreachability. |
 | `unsafe_route` | `cause: no_safe_endpoint`, `unit_id`, `target` | Safety-specific route fallback; do not equate it with a missing path. |
-| `contact` | `stage: current_state`, `proposed_destination`, `proposed_placement`, or `proposed_placement_recruiter`; relevant unit/destination facts | Current or projected attack exposure requires model judgment. |
+| `contact` | `stage: current_state`, `proposed_destination`, `proposed_placement`, or `proposed_placement_recruiter`; relevant unit/destination facts | Current or projected attack exposure requires model judgment. When `current_state`, includes bounded tactical options. |
 | `threat_unavailable` | `stage` and `detail` | Required threat facts could not be evaluated; missing is not zero. |
 | `recruitment_blocked` | `unknown_definition`, `not_recruitable`, `insufficient_gold_no_income`, `no_placement_hex`, or `placement_rejected` | Inspect the named recruitment constraint. Routine code does not auto-vacate a castle. |
 | `no_executable_orders` | `village_requires_scout` or `no_scout_available_for_village` | Selected village work lacks an eligible scout. |
@@ -425,11 +434,19 @@ with strictly validated applicable responses:
 | Request | Decision Kind | Applicable responses | Rationale |
 | --- | --- | --- | --- |
 | Initial policy or completed objectives | `policy` | `set_policy`, `act`, `finish_turn`, `resign` | Model directs routine execution or takes tactical control. |
-| `contact` (`stage: current_state`) | `tactical` | `act`, `finish_turn`, `resign` | Current board contact pause cannot be cleared by policy edits; requires tactical action. |
+| `contact` (`stage: current_state`) with options | `tactical` | `choose`, `act`, `finish_turn`, `resign` | Model may choose an offered tactical option, author custom orders, end the turn, or resign. |
+| `contact` (`stage: current_state`) no options | `tactical` | `act`, `finish_turn`, `resign` | Current board contact pause cannot be cleared by policy edits; requires tactical action. |
 | Proposed movement contact / `unsafe_route` | `policy` | `set_policy`, `act`, `finish_turn`, `resign` | Replacing the policy objective can avoid the hazardous destination. |
 | `recruitment_blocked`, `route_unavailable`, `invalid_assignment` | `policy` | `set_policy`, `act`, `finish_turn`, `resign` | Policy adjustment can redirect routine tasks. |
 | `promotion_pending` | `promotion` | `act`, `resign` | Unit must submit legal `Advance` action; engine rejects ending turn during promotion. |
 | `threat_unavailable` | `facts_unavailable` | `act`, `finish_turn`, `resign` | Manual actions required when threat calculations cannot be completed. |
+
+Tactical options for current-state contact offer up to four bounded alternatives for a single
+deterministically chosen primary actor (threatened recruiter first, then lowest-ID threatened friendly unit,
+then lowest-ID unit with an attack opportunity):
+- Up to two legal attack options (ranked by target kill probability, then expected damage, then coordinate tie-breaks).
+- Up to two legal relocation options (evaluating at most 16 endpoints, ranked by lower projected incoming damage, movement cost, and coordinates).
+- Coverage is reported as `{"facts": "complete", "options": "complete"}` or `{"facts": "complete", "options": "truncated"}` when relocation endpoints exceeded 16.
 
 Policy validation requires that any policy with `villages` targets must have at least one
 existing living scout or at least one recruit with `role: "scout"`. Policies violating this

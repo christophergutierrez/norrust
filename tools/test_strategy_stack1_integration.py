@@ -138,7 +138,7 @@ class StrategyStack1IntegrationTests(unittest.TestCase):
             self.assertGreaterEqual(len(packets), 2)
             self.assertEqual(packets[0]["packet"]["decision_kind"], "policy")
             self.assertEqual(packets[1]["packet"]["decision_kind"], "tactical")
-            self.assertEqual(packets[1]["packet"]["allowed_kinds"], ["act", "finish_turn", "resign"])
+            self.assertEqual(packets[1]["packet"]["allowed_kinds"], ["choose", "act", "finish_turn", "resign"])
 
             # Check contextual rejections: exactly 2
             rejections = [row for row in rows if row.get("type") == "contextual_rejection"]

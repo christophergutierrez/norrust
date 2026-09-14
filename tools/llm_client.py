@@ -45,7 +45,7 @@ try:
         install_policy, build_routine_query, parse_routine_result,
         RoutineActionResult, RoutineFinishResult, RoutineException, build_orders_envelope,
         NO_SWEEP_FINISH, parse_model_response, SetPolicyResponse,
-        ActResponse, FinishTurnResponse, ResignResponse,
+        ActResponse, FinishTurnResponse, ResignResponse, ChooseResponse,
         validate_routine_policy, render_policy_brief, render_exception_brief,
         find_unreconstructable_routine_batch,
         pending_routine_commit)
@@ -87,7 +87,7 @@ except ImportError:  # pragma: no cover - direct script compatibility
         install_policy, build_routine_query, parse_routine_result,
         RoutineActionResult, RoutineFinishResult, RoutineException, build_orders_envelope,
         NO_SWEEP_FINISH, parse_model_response, SetPolicyResponse,
-        ActResponse, FinishTurnResponse, ResignResponse,
+        ActResponse, FinishTurnResponse, ResignResponse, ChooseResponse,
         validate_routine_policy, render_policy_brief, render_exception_brief,
         find_unreconstructable_routine_batch,
         pending_routine_commit)
@@ -6073,7 +6073,10 @@ def run(args: argparse.Namespace) -> int:
         strategy_pending_proven_revision = None
 
     def strategy_submit_act(orders: list[dict[str, Any]], revision: int,
-                            reply: ModelReply, *, finish_turn: bool) -> None:
+                            reply: ModelReply, *, finish_turn: bool,
+                            decision_id: Optional[str] = None,
+                            option_id: Optional[str] = None,
+                            proposal_source: Optional[str] = None) -> None:
         """Submit a model-owned tactical batch through ordinary execution."""
         nonlocal batch_sequence, pending_action, pending_commit, pending_finish_kind
         nonlocal last_forwarded_orders, last_forwarded_results, last_forwarded_revision
@@ -6096,20 +6099,46 @@ def run(args: argparse.Namespace) -> int:
             "source_revision": revision,
             "origin": "llm",
         }
-        durable({"type": "request_submitted", "batch_id": batch_id,
-                 "request_id": reply.request_id,
-                 "backend_request_id": backend_cache.get("request_id"),
-                 "source_revision": revision})
-        durable({"type": "forwarded_orders", "orders": submitted,
-                 "batch_id": batch_id, "request_sequence": request_sequence,
-                 "request_id": reply.request_id, "side_turn_id": reply.side_turn_id,
-                 "source": "llm", "state_revision": revision,
-                 "decision_annotation": None, "prompt_hash": reply.prompt_hash,
-                 "authored_finish_kind": pending_finish_kind,
-                 "handoff_audit": {}, "action_encoding": "coordinates",
-                 "coordinate_fallback": False,
-                 "authored_choices": None,
-                 "expansion_mapping": list(range(len(submitted)))})
+        if decision_id is not None:
+            pending_commit["decision_id"] = decision_id
+        if option_id is not None:
+            pending_commit["option_id"] = option_id
+        if proposal_source is not None:
+            pending_commit["proposal_source"] = proposal_source
+
+        req_sub = {
+            "type": "request_submitted", "batch_id": batch_id,
+            "request_id": reply.request_id,
+            "backend_request_id": backend_cache.get("request_id"),
+            "source_revision": revision,
+        }
+        if decision_id is not None:
+            req_sub["decision_id"] = decision_id
+        if option_id is not None:
+            req_sub["option_id"] = option_id
+        if proposal_source is not None:
+            req_sub["proposal_source"] = proposal_source
+        durable(req_sub)
+
+        fwd = {
+            "type": "forwarded_orders", "orders": submitted,
+            "batch_id": batch_id, "request_sequence": request_sequence,
+            "request_id": reply.request_id, "side_turn_id": reply.side_turn_id,
+            "source": "llm", "state_revision": revision,
+            "decision_annotation": None, "prompt_hash": reply.prompt_hash,
+            "authored_finish_kind": pending_finish_kind,
+            "handoff_audit": {}, "action_encoding": "coordinates",
+            "coordinate_fallback": False,
+            "authored_choices": None,
+            "expansion_mapping": list(range(len(submitted))),
+        }
+        if decision_id is not None:
+            fwd["decision_id"] = decision_id
+        if option_id is not None:
+            fwd["option_id"] = option_id
+        if proposal_source is not None:
+            fwd["proposal_source"] = proposal_source
+        durable(fwd)
         metadata["model_orders"] += len(orders)
         last_forwarded_orders = list(submitted)
         last_forwarded_results = None
@@ -6313,6 +6342,32 @@ def run(args: argparse.Namespace) -> int:
                     if validation.get("valid") is not True:
                         raise ModelResponseError(
                             "engine rejected strategy act: " +
+                            str(validation.get("error_message", validation)))
+                if isinstance(parsed, ChooseResponse):
+                    if isinstance(state, dict) and state.get("final_only") and not parsed.finish_turn:
+                        raise ModelResponseError("final_only strategy choose must set finish_turn=true")
+                    if decision_packet is None:
+                        raise ContextualResponseError("choose response received without active decision packet")
+                    selected_option = next(
+                        (opt for opt in decision_packet.options if opt.get("option_id") == parsed.option_id),
+                        None
+                    )
+                    if selected_option is None:
+                        raise ContextualResponseError(f"unknown option_id: {parsed.option_id!r}")
+                    try:
+                        opt_orders = validate_orders(
+                            json.dumps({"actions": selected_option.get("actions", [])}),
+                            args.no_recruit_macro, require_end_turn=False)
+                    except ValueError as exc:
+                        raise ModelResponseError(str(exc)) from exc
+                    submitted = list(opt_orders)
+                    if parsed.finish_turn:
+                        submitted.append(copy.deepcopy(NO_SWEEP_FINISH))
+                    validation = query_validate_batch(
+                        exchange, submitted, int(state.get("state_revision", 0)))
+                    if validation.get("valid") is not True:
+                        raise ModelResponseError(
+                            "engine rejected strategy choose: " +
                             str(validation.get("error_message", validation)))
                 return parsed, reply
             except (ModelResponseError, PolicyValidationError) as exc:
@@ -6606,6 +6661,40 @@ def run(args: argparse.Namespace) -> int:
                     durable({"type": "terminal", **metadata})
                     return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
                 strategy_submit_act(orders, revision, reply, finish_turn=parsed.finish_turn)
+                return None
+            if isinstance(parsed, ChooseResponse):
+                if state.get("final_only") and not parsed.finish_turn:
+                    set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
+                                 reason=TERMINAL_MODEL_INVALID, code="strategy_response_invalid",
+                                 message="final_only strategy choose must set finish_turn=true")
+                    durable({"type": "terminal", **metadata})
+                    return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
+                selected_option = next(
+                    (opt for opt in packet.options if opt.get("option_id") == parsed.option_id),
+                    None
+                )
+                if selected_option is None:
+                    set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
+                                 reason=TERMINAL_MODEL_INVALID, code="strategy_response_invalid",
+                                 message=f"unknown option_id: {parsed.option_id!r}")
+                    durable({"type": "terminal", **metadata})
+                    return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
+                try:
+                    orders = validate_orders(json.dumps({"actions": selected_option.get("actions", [])}),
+                                             args.no_recruit_macro, require_end_turn=False)
+                except ValueError as exc:
+                    set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
+                                 reason=TERMINAL_MODEL_INVALID, code="strategy_act_invalid",
+                                 message=str(exc))
+                    durable({"type": "terminal", **metadata})
+                    return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
+                strategy_submit_act(
+                    orders, revision, reply,
+                    finish_turn=parsed.finish_turn,
+                    decision_id=parsed.decision_id,
+                    option_id=parsed.option_id,
+                    proposal_source="engine_option",
+                )
                 return None
             set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
                         reason=TERMINAL_MODEL_INVALID, code="strategy_response_invalid",

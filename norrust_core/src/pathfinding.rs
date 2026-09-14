@@ -112,11 +112,8 @@ pub fn find_path(
 ///
 /// Uses Dijkstra (single-pass flood fill) rather than repeated A* calls.
 /// The result always includes `start` (cost = 0).
-///
-/// ZOC stop rule: a non-skirmisher that enters a ZOC hex is added to the
-/// reachable set but its neighbours are not expanded (unit must stop there).
 #[allow(clippy::too_many_arguments)]
-pub fn reachable_hexes(
+pub fn reachable_hexes_with_costs(
     board: &Board,
     movement_costs: &HashMap<String, u32>,
     default_movement_cost: u32,
@@ -124,7 +121,7 @@ pub fn reachable_hexes(
     movement_budget: u32,
     zoc_hexes: &HashSet<Hex>,
     is_skirmisher: bool,
-) -> HashSet<Hex> {
+) -> HashMap<Hex, u32> {
     let mut reachable: HashSet<Hex> = HashSet::new();
     // Min-heap: Reverse((g_cost, hex))
     let mut open: BinaryHeap<Reverse<(u32, Hex)>> = BinaryHeap::new();
@@ -174,7 +171,36 @@ pub fn reachable_hexes(
         }
     }
 
-    reachable
+    g_cost.retain(|hex, _| reachable.contains(hex));
+    g_cost
+}
+
+/// All hexes reachable by a unit within movement_budget, respecting terrain
+/// costs and ZOC. Hexes occupied by other units must be filtered by caller.
+///
+/// ZOC stop rule: a non-skirmisher that enters a ZOC hex is added to the
+/// reachable set but its neighbours are not expanded (unit must stop there).
+#[allow(clippy::too_many_arguments)]
+pub fn reachable_hexes(
+    board: &Board,
+    movement_costs: &HashMap<String, u32>,
+    default_movement_cost: u32,
+    start: Hex,
+    movement_budget: u32,
+    zoc_hexes: &HashSet<Hex>,
+    is_skirmisher: bool,
+) -> HashSet<Hex> {
+    reachable_hexes_with_costs(
+        board,
+        movement_costs,
+        default_movement_cost,
+        start,
+        movement_budget,
+        zoc_hexes,
+        is_skirmisher,
+    )
+    .into_keys()
+    .collect()
 }
 
 fn h(a: Hex, b: Hex) -> u32 {

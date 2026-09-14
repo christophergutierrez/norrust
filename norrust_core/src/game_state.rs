@@ -6,7 +6,7 @@ use crate::board::Board;
 use crate::combat::{resolve_attack, time_of_day, tod_damage_modifier, Rng};
 use crate::events::{AttackUnitEvent, GameEvent, OffsetHex};
 use crate::hex::Hex;
-use crate::pathfinding::{find_path, get_zoc_hexes, reachable_hexes};
+use crate::pathfinding::{find_path, get_zoc_hexes, reachable_hexes_with_costs};
 use crate::unit::{has_special, Unit};
 
 /// Errors returned by `apply_action` and `apply_recruit` when an action is invalid.
@@ -92,7 +92,7 @@ pub struct TriggerZone {
 }
 
 /// Discrete state changes that may be applied to a `GameState`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Move { unit_id: u32, destination: Hex },
     Attack { attacker_id: u32, defender_id: u32 },
@@ -349,8 +349,8 @@ pub fn leadership_bonus(state: &GameState, unit_id: u32) -> u32 {
     best_diff * 25
 }
 
-/// Canonical legal destinations for a unit's current move.
-pub fn legal_moves(state: &GameState, unit_id: u32) -> Result<Vec<Hex>, ActionError> {
+/// Canonical legal destinations with shortest-path movement costs for a unit's current move.
+pub fn legal_moves_with_costs(state: &GameState, unit_id: u32) -> Result<HashMap<Hex, u32>, ActionError> {
     let unit = state
         .units
         .get(&unit_id)
@@ -359,7 +359,7 @@ pub fn legal_moves(state: &GameState, unit_id: u32) -> Result<Vec<Hex>, ActionEr
         return Err(ActionError::NotYourTurn);
     }
     if unit.moved {
-        return Ok(Vec::new());
+        return Ok(HashMap::new());
     }
     let from = *state
         .positions
@@ -371,7 +371,7 @@ pub fn legal_moves(state: &GameState, unit_id: u32) -> Result<Vec<Hex>, ActionEr
         unit.movement
     };
     let zoc = get_zoc_hexes(state, unit.faction);
-    let mut result = reachable_hexes(
+    let mut costs = reachable_hexes_with_costs(
         &state.board,
         &unit.movement_costs,
         1,
@@ -379,10 +379,15 @@ pub fn legal_moves(state: &GameState, unit_id: u32) -> Result<Vec<Hex>, ActionEr
         movement,
         &zoc,
         false,
-    )
-    .into_iter()
-    .filter(|h| *h != from && !state.hex_to_unit.contains_key(h))
-    .collect::<Vec<_>>();
+    );
+    costs.remove(&from);
+    costs.retain(|h, _| !state.hex_to_unit.contains_key(h));
+    Ok(costs)
+}
+
+/// Canonical legal destinations for a unit's current move.
+pub fn legal_moves(state: &GameState, unit_id: u32) -> Result<Vec<Hex>, ActionError> {
+    let mut result: Vec<Hex> = legal_moves_with_costs(state, unit_id)?.into_keys().collect();
     result.sort_by_key(|h| {
         let (c, r) = h.to_offset();
         (r, c)

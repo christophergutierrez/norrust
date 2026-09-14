@@ -24,6 +24,7 @@ try:
     ActResponse,
     FinishTurnResponse,
     ResignResponse,
+    ChooseResponse,
   )
 except ImportError:
   from tools.routine_policy import (
@@ -35,6 +36,7 @@ except ImportError:
     ActResponse,
     FinishTurnResponse,
     ResignResponse,
+    ChooseResponse,
   )
 
 # Canonical decision kinds
@@ -45,6 +47,7 @@ DECISION_KIND_FACTS_UNAVAILABLE = "facts_unavailable"
 
 # Closed set of allowable responses
 ALLOWED_ALL = ["set_policy", "act", "finish_turn", "resign"]
+ALLOWED_TACTICAL_WITH_OPTIONS = ["choose", "act", "finish_turn", "resign"]
 ALLOWED_TACTICAL = ["act", "finish_turn", "resign"]
 ALLOWED_PROMOTION = ["act", "resign"]
 
@@ -66,6 +69,7 @@ class DecisionPacket:
   allowed_kinds: list[str]
   options: list[dict[str, Any]]
   coverage: dict[str, str]
+  final_only: bool = False
 
   def to_dict(self) -> dict[str, Any]:
     return {
@@ -78,6 +82,7 @@ class DecisionPacket:
       "allowed_kinds": list(self.allowed_kinds),
       "options": copy.deepcopy(self.options),
       "coverage": copy.deepcopy(self.coverage),
+      "final_only": self.final_only,
     }
 
   @classmethod
@@ -92,6 +97,7 @@ class DecisionPacket:
       allowed_kinds=list(data.get("allowed_kinds", [])),
       options=copy.deepcopy(data.get("options", [])),
       coverage=copy.deepcopy(data.get("coverage", {})),
+      final_only=bool(data.get("final_only", False)),
     )
 
 
@@ -208,11 +214,19 @@ def build_decision_packet(
   else:
     decision_kind = DECISION_KIND_POLICY
 
+  # Extract options from evidence if tactical
+  raw_options = evidence.get("options")
+  options = list(raw_options) if isinstance(raw_options, list) else []
+  options_truncated = bool(evidence.get("options_truncated", False))
+
   # Determine allowed_kinds
   if allowed_kinds_override is not None:
     allowed = list(allowed_kinds_override)
   elif decision_kind == DECISION_KIND_TACTICAL:
-    allowed = list(ALLOWED_TACTICAL)
+    if options:
+      allowed = list(ALLOWED_TACTICAL_WITH_OPTIONS)
+    else:
+      allowed = list(ALLOWED_TACTICAL)
   elif decision_kind == DECISION_KIND_PROMOTION:
     allowed = list(ALLOWED_PROMOTION)
   elif decision_kind == DECISION_KIND_FACTS_UNAVAILABLE:
@@ -224,6 +238,11 @@ def build_decision_packet(
 
   if reason == "threat_unavailable":
     coverage = {"facts": "unavailable", "options": "not_generated"}
+  elif decision_kind == DECISION_KIND_TACTICAL:
+    coverage = {
+      "facts": "complete",
+      "options": "truncated" if options_truncated else "complete",
+    }
   else:
     coverage = {"facts": "complete", "options": "not_generated"}
 
@@ -235,8 +254,9 @@ def build_decision_packet(
     reason=reason,
     evidence=copy.deepcopy(evidence),
     allowed_kinds=allowed,
-    options=[],
+    options=options,
     coverage=coverage,
+    final_only=final_only,
   )
 
 
@@ -250,6 +270,8 @@ def validate_response_context(response: Any, packet: DecisionPacket) -> None:
     kind = "finish_turn"
   elif isinstance(response, ResignResponse):
     kind = "resign"
+  elif isinstance(response, ChooseResponse):
+    kind = "choose"
   elif isinstance(response, dict):
     kind = response.get("kind")
   else:
@@ -262,6 +284,30 @@ def validate_response_context(response: Any, packet: DecisionPacket) -> None:
       f"Response kind {kind!r} is not allowed for {packet.reason} ({packet.decision_kind}). "
       f"Applicable responses: {', '.join(packet.allowed_kinds)}."
     )
+
+  if kind == "choose":
+    resp_did = getattr(response, "decision_id", response.get("decision_id") if isinstance(response, dict) else None)
+    if resp_did != packet.decision_id:
+      raise ContextualResponseError(
+        f"Decision ID mismatch: expected {packet.decision_id!r}, got {resp_did!r}"
+      )
+    resp_oid = getattr(response, "option_id", response.get("option_id") if isinstance(response, dict) else None)
+    valid_oids = [
+      opt["option_id"] for opt in packet.options
+      if isinstance(opt, dict) and "option_id" in opt
+    ]
+    if resp_oid not in valid_oids:
+      raise ContextualResponseError(
+        f"Unknown option_id {resp_oid!r}. Available options: {valid_oids}"
+      )
+    finish_turn = getattr(response, "finish_turn", response.get("finish_turn") if isinstance(response, dict) else False)
+    if packet.final_only and not finish_turn:
+      raise ContextualResponseError("final_only strategy choose must set finish_turn=true")
+
+  if kind == "act":
+    finish_turn = getattr(response, "finish_turn", response.get("finish_turn") if isinstance(response, dict) else False)
+    if packet.final_only and not finish_turn:
+      raise ContextualResponseError("final_only strategy act must set finish_turn=true")
 
 
 class IncidentTracker:
@@ -358,18 +404,72 @@ def render_decision_brief(
 
   # Specific Guidance
   if packet.decision_kind == DECISION_KIND_TACTICAL:
-    sections.append(
-      "TACTICAL DECISION REQUIRED: Enemy contact exists on the current board. Changing policy "
-      "moves no units and cannot clear the current-board pause. You must submit tactical action "
-      f"orders (`act`), `finish_turn`, or `resign`. Applicable responses: {', '.join(packet.allowed_kinds)}."
-    )
+    if packet.options:
+      sections.append(
+        "TACTICAL DECISION REQUIRED: Enemy contact exists on the current board. Changing policy "
+        "moves no units and cannot clear the current-board pause. You may choose an offered option "
+        f"(`choose`), submit tactical action orders (`act`), `finish_turn`, or `resign`. "
+        f"Applicable responses: {', '.join(packet.allowed_kinds)}."
+      )
+    else:
+      sections.append(
+        "TACTICAL DECISION REQUIRED: Enemy contact exists on the current board. Changing policy "
+        "moves no units and cannot clear the current-board pause. You must submit tactical action "
+        f"orders (`act`), `finish_turn`, or `resign`. Applicable responses: {', '.join(packet.allowed_kinds)}."
+      )
     if packet.evidence:
       trigger = packet.evidence.get("trigger", "unspecified")
       friendly = packet.evidence.get("friendly_unit_ids", [])
       enemy = packet.evidence.get("enemy_unit_ids", [])
+      primary = packet.evidence.get("primary_actor_id")
+      primary_str = f", primary_actor={primary}" if primary is not None else ""
       sections.append(
-        f"Contact facts: trigger={trigger}, friendly_units={friendly}, enemy_units={enemy}"
+        f"Contact facts: trigger={trigger}, friendly_units={friendly}, enemy_units={enemy}{primary_str}"
       )
+    if packet.options:
+      opt_lines = ["Offered tactical options for primary actor:"]
+      for opt in packet.options:
+        oid = opt.get("option_id")
+        cat = opt.get("category")
+        acts = opt.get("actions", [])
+        act_descs = []
+        for a in acts:
+          act_name = a.get("action")
+          if act_name == "Move":
+            act_descs.append(f"Move({a.get('unit_id')} -> ({a.get('col', a.get('to_col'))}, {a.get('row', a.get('to_row'))}))")
+          elif act_name == "Attack":
+            att_id = a.get("attacker_id", a.get("unit_id"))
+            def_id = a.get("defender_id", a.get("target_id"))
+            act_descs.append(f"Attack({att_id} -> {def_id})")
+          else:
+            act_descs.append(json.dumps(a))
+        actions_summary = "; ".join(act_descs)
+        forecast_str = ""
+        if "combat_forecast" in opt and opt["combat_forecast"] is not None:
+          fc = opt["combat_forecast"]
+          dmg = fc.get("expected_damage_tenths", [0, 0])
+          bps = fc.get("outcome_bps", [0, 0])
+          forecast_str = (
+            f" | Forecast: expected damage dealt={dmg[0]/10.0:.1f}, counter={dmg[1]/10.0:.1f}; "
+            f"kill prob={bps[0]/100.0:.1f}%, death prob={bps[1]/100.0:.1f}% (estimates, not guarantees)"
+          )
+        exposure_str = ""
+        if "exposure" in opt and opt["exposure"] is not None:
+          exp = opt["exposure"]
+          exp_dmg = exp.get("projected_incoming_damage_tenths", 0) / 10.0
+          threatened = exp.get("threatened", False)
+          attackers = exp.get("attacker_count", 0)
+          exposure_str = (
+            f" | Exposure: threatened={threatened}, attackers={attackers}, "
+            f"projected incoming damage={exp_dmg:.1f}"
+          )
+        cost_str = f" | Cost: {opt.get('cost')}" if "cost" in opt and opt.get("cost") is not None else ""
+        opt_lines.append(f"  - Option {oid!r} ({cat}): [{actions_summary}]{cost_str}{forecast_str}{exposure_str}")
+      opt_lines.append(
+        f"To choose an option, respond with: "
+        f'{{"kind": "choose", "decision_id": "{packet.decision_id}", "option_id": "<option_id>", "finish_turn": false}}'
+      )
+      sections.append("\n".join(opt_lines))
   elif packet.reason in ("unsafe_route", "route_unavailable"):
     sections.append(
       "ROUTE / OBJECTIVE DECISION REQUIRED: A proposed routine movement encounters an obstacle, "

@@ -7,6 +7,7 @@ use crate::game_state::{
 use crate::hex::Hex;
 use crate::loader::Registry;
 use crate::pathfinding::{find_path, get_zoc_hexes};
+use crate::routine_decision::{generate_tactical_options, TacticalOption};
 use crate::schema::UnitDef;
 use crate::tactics::{
     recruiter_threats_after_end_turn, turn_tactics, unit_threats_after_end_turn, TacticsError,
@@ -423,6 +424,9 @@ pub struct CurrentContactFacts {
     pub trigger: &'static str,
     pub friendly_unit_ids: Vec<u32>,
     pub enemy_unit_ids: Vec<u32>,
+    pub primary_actor_id: Option<u32>,
+    pub options: Vec<TacticalOption>,
+    pub options_truncated: bool,
     pub coverage: &'static str,
 }
 
@@ -484,10 +488,15 @@ fn current_contact(state: &GameState, side: u8) -> Result<Option<CurrentContactF
     enemy_unit_ids.sort_unstable();
     enemy_unit_ids.dedup();
 
+    let tactical_decision = generate_tactical_options(state, side)?;
+
     Ok(Some(CurrentContactFacts {
         trigger,
         friendly_unit_ids,
         enemy_unit_ids,
+        primary_actor_id: tactical_decision.primary_actor_id,
+        options: tactical_decision.options,
+        options_truncated: tactical_decision.options_truncated,
         coverage: "complete",
     }))
 }
@@ -788,6 +797,9 @@ pub fn routine_next(
                     "trigger": facts.trigger,
                     "friendly_unit_ids": facts.friendly_unit_ids,
                     "enemy_unit_ids": facts.enemy_unit_ids,
+                    "primary_actor_id": facts.primary_actor_id,
+                    "options": facts.options,
+                    "options_truncated": facts.options_truncated,
                     "coverage": facts.coverage,
                 }),
             };

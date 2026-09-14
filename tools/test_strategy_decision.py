@@ -143,5 +143,175 @@ class IncidentTrackerTests(unittest.TestCase):
     self.assertFalse(tracker.can_attempt_correction(1, 64, "k1"))
 
 
+class TacticalOptionsTests(unittest.TestCase):
+  def setUp(self):
+    self.sample_options = [
+      {
+        "option_id": "attack_1",
+        "category": "attack",
+        "actor_id": 1,
+        "actions": [{"action": "Attack", "unit_id": 1, "target_id": 5, "weapon_index": 0}],
+        "combat_forecast": {
+          "expected_damage_tenths": [120, 30],
+          "outcome_bps": [5000, 100],
+        },
+        "coverage": "complete",
+      },
+      {
+        "option_id": "relocate_1",
+        "category": "relocate",
+        "actor_id": 1,
+        "actions": [{"action": "Move", "unit_id": 1, "to_row": 3, "to_col": 4}],
+        "cost": 2,
+        "exposure": {
+          "threatened": False,
+          "projected_incoming_damage_tenths": 0,
+          "attacker_count": 0,
+        },
+        "coverage": "complete",
+      },
+    ]
+
+  def test_tactical_decision_with_options_includes_choose(self):
+    evidence = {
+      "stage": "current_state",
+      "trigger": "attack",
+      "friendly_unit_ids": [1],
+      "enemy_unit_ids": [5],
+      "primary_actor_id": 1,
+      "options": self.sample_options,
+      "options_truncated": False,
+    }
+    packet = sd.build_decision_packet("contact", evidence, revision=42)
+    self.assertEqual(packet.decision_kind, sd.DECISION_KIND_TACTICAL)
+    self.assertEqual(packet.allowed_kinds, ["choose", "act", "finish_turn", "resign"])
+    self.assertEqual(packet.coverage["options"], "complete")
+    self.assertEqual(len(packet.options), 2)
+    self.assertEqual(packet.options[0]["option_id"], "attack_1")
+
+  def test_tactical_decision_truncated_options_coverage(self):
+    evidence = {
+      "stage": "current_state",
+      "trigger": "exposure",
+      "friendly_unit_ids": [1],
+      "enemy_unit_ids": [5],
+      "options": self.sample_options,
+      "options_truncated": True,
+    }
+    packet = sd.build_decision_packet("contact", evidence, revision=42)
+    self.assertEqual(packet.coverage["options"], "truncated")
+
+  def test_tactical_decision_without_options_excludes_choose(self):
+    evidence = {
+      "stage": "current_state",
+      "trigger": "attack",
+      "friendly_unit_ids": [1],
+      "enemy_unit_ids": [5],
+      "options": [],
+    }
+    packet = sd.build_decision_packet("contact", evidence, revision=42)
+    self.assertEqual(packet.allowed_kinds, ["act", "finish_turn", "resign"])
+    self.assertNotIn("choose", packet.allowed_kinds)
+
+  def test_choose_response_validation_success(self):
+    packet = sd.build_decision_packet(
+      "contact",
+      {"stage": "current_state", "options": self.sample_options},
+      revision=42,
+      decision_id="dec-1234",
+    )
+    resp = SimpleNamespace(kind="choose", decision_id="dec-1234", option_id="attack_1", finish_turn=False)
+    sd.validate_response_context(resp, packet)
+
+  def test_choose_response_decision_id_mismatch(self):
+    packet = sd.build_decision_packet(
+      "contact",
+      {"stage": "current_state", "options": self.sample_options},
+      revision=42,
+      decision_id="dec-1234",
+    )
+    resp = SimpleNamespace(kind="choose", decision_id="dec-stale", option_id="attack_1", finish_turn=False)
+    with self.assertRaises(sd.ContextualResponseError) as ctx:
+      sd.validate_response_context(resp, packet)
+    self.assertIn("Decision ID mismatch", str(ctx.exception))
+
+  def test_choose_response_unknown_option_id(self):
+    packet = sd.build_decision_packet(
+      "contact",
+      {"stage": "current_state", "options": self.sample_options},
+      revision=42,
+      decision_id="dec-1234",
+    )
+    resp = SimpleNamespace(kind="choose", decision_id="dec-1234", option_id="attack_999", finish_turn=False)
+    with self.assertRaises(sd.ContextualResponseError) as ctx:
+      sd.validate_response_context(resp, packet)
+    self.assertIn("Unknown option_id", str(ctx.exception))
+
+  def test_choose_response_disallowed_when_no_options(self):
+    packet = sd.build_decision_packet(
+      "contact",
+      {"stage": "current_state", "options": []},
+      revision=42,
+      decision_id="dec-1234",
+    )
+    resp = SimpleNamespace(kind="choose", decision_id="dec-1234", option_id="attack_1", finish_turn=False)
+    with self.assertRaises(sd.ContextualResponseError):
+      sd.validate_response_context(resp, packet)
+
+  def test_final_only_enforcement(self):
+    packet = sd.build_decision_packet(
+      "contact",
+      {"stage": "current_state", "options": self.sample_options},
+      revision=42,
+      decision_id="dec-1234",
+      final_only=True,
+    )
+    # Choose with finish_turn=False fails
+    with self.assertRaises(sd.ContextualResponseError):
+      sd.validate_response_context(
+        SimpleNamespace(kind="choose", decision_id="dec-1234", option_id="attack_1", finish_turn=False),
+        packet,
+      )
+    # Choose with finish_turn=True succeeds
+    sd.validate_response_context(
+      SimpleNamespace(kind="choose", decision_id="dec-1234", option_id="attack_1", finish_turn=True),
+      packet,
+    )
+    # Act with finish_turn=False fails
+    with self.assertRaises(sd.ContextualResponseError):
+      sd.validate_response_context(
+        SimpleNamespace(kind="act", actions=[], finish_turn=False),
+        packet,
+      )
+    # Act with finish_turn=True succeeds
+    sd.validate_response_context(
+      SimpleNamespace(kind="act", actions=[], finish_turn=True),
+      packet,
+    )
+
+  def test_render_decision_brief_displays_options(self):
+    packet = sd.build_decision_packet(
+      "contact",
+      {
+        "stage": "current_state",
+        "trigger": "attack",
+        "friendly_unit_ids": [1],
+        "enemy_unit_ids": [5],
+        "primary_actor_id": 1,
+        "options": self.sample_options,
+      },
+      revision=42,
+      decision_id="dec-abc",
+    )
+    brief = sd.render_decision_brief(packet)
+    self.assertIn("Offered tactical options for primary actor:", brief)
+    self.assertIn("Option 'attack_1'", brief)
+    self.assertIn("Option 'relocate_1'", brief)
+    self.assertIn("Forecast:", brief)
+    self.assertIn("Exposure:", brief)
+    self.assertIn('"kind": "choose"', brief)
+    self.assertIn('"decision_id": "dec-abc"', brief)
+
+
 if __name__ == "__main__":
   unittest.main()

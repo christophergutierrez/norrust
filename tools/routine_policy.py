@@ -39,9 +39,10 @@ SET_POLICY_KEYS = {"kind", "policy"}
 POLICY_FIELDS = {"reserve_gold", "recruits", "scouts", "villages", "rally", "holds"}
 RECRUIT_ENTRY_FIELDS = {"def_id", "count", "role"}
 ACT_KEYS = {"kind", "actions", "finish_turn"}
+CHOOSE_KEYS = {"kind", "decision_id", "option_id", "finish_turn"}
 FINISH_TURN_KEYS = {"kind"}
 RESIGN_KEYS = {"kind"}
-RESPONSE_KINDS = ("set_policy", "act", "finish_turn", "resign")
+RESPONSE_KINDS = ("set_policy", "act", "choose", "finish_turn", "resign")
 
 # The closed set of typed exceptions the routine_next contract can raise.
 # "unsafe_route", "invalid_assignment" and "objectives_complete" are Stack 2
@@ -756,6 +757,13 @@ class ActResponse:
 
 
 @dataclass
+class ChooseResponse:
+    decision_id: str
+    option_id: str
+    finish_turn: bool = False
+
+
+@dataclass
 class FinishTurnResponse:
     pass
 
@@ -766,7 +774,7 @@ class ResignResponse:
 
 
 def parse_model_response(obj: Any) -> Any:
-    """Strictly parse a model response into one of the four response forms.
+    """Strictly parse a model response into one of the response forms.
 
     Raises ``ModelResponseError`` for anything outside the exact contract,
     including an embedded ``origin`` key anywhere in the payload -- a model
@@ -787,33 +795,48 @@ def parse_model_response(obj: Any) -> Any:
     if kind not in RESPONSE_KINDS:
         raise ModelResponseError(
             f"response 'kind' must be one of {RESPONSE_KINDS}, got {kind!r}")
-    if kind == "set_policy":
-        _require_keys(obj, SET_POLICY_KEYS, SET_POLICY_KEYS, "response")
-        if not isinstance(obj["policy"], dict):
-            raise ModelResponseError("response.policy must be an object")
-        return SetPolicyResponse(policy=obj["policy"])
-    if kind == "act":
-        _require_keys(obj, ACT_KEYS, ACT_KEYS, "response")
-        actions = obj["actions"]
-        if not isinstance(actions, list) or not (1 <= len(actions) <= 16):
-            raise ModelResponseError("response.actions must have between 1 and 16 entries")
-        for index, action in enumerate(actions):
-            if not isinstance(action, dict):
-                raise ModelResponseError(f"response.actions[{index}] must be an object")
-            action_kind = action.get("action")
-            if action_kind in ("Resign", "EndTurn", "FinishWithGreedy", "DoneWithImportantMoves"):
-                raise ModelResponseError(
-                    f"response.actions[{index}] must not embed a boundary/resign action: {action_kind!r}")
-        finish_turn = obj["finish_turn"]
-        if not isinstance(finish_turn, bool):
-            raise ModelResponseError("response.finish_turn must be a boolean")
-        return ActResponse(actions=list(actions), finish_turn=finish_turn)
-    if kind == "finish_turn":
-        _require_keys(obj, FINISH_TURN_KEYS, FINISH_TURN_KEYS, "response")
-        return FinishTurnResponse()
-    # kind == "resign"
-    _require_keys(obj, RESIGN_KEYS, RESIGN_KEYS, "response")
-    return ResignResponse()
+    try:
+        if kind == "set_policy":
+            _require_keys(obj, SET_POLICY_KEYS, SET_POLICY_KEYS, "response")
+            if not isinstance(obj["policy"], dict):
+                raise ModelResponseError("response.policy must be an object")
+            return SetPolicyResponse(policy=obj["policy"])
+        if kind == "act":
+            _require_keys(obj, ACT_KEYS, ACT_KEYS, "response")
+            actions = obj["actions"]
+            if not isinstance(actions, list) or not (1 <= len(actions) <= 16):
+                raise ModelResponseError("response.actions must have between 1 and 16 entries")
+            for index, action in enumerate(actions):
+                if not isinstance(action, dict):
+                    raise ModelResponseError(f"response.actions[{index}] must be an object")
+                action_kind = action.get("action")
+                if action_kind in ("Resign", "EndTurn", "FinishWithGreedy", "DoneWithImportantMoves"):
+                    raise ModelResponseError(
+                        f"response.actions[{index}] must not embed a boundary/resign action: {action_kind!r}")
+            finish_turn = obj["finish_turn"]
+            if not isinstance(finish_turn, bool):
+                raise ModelResponseError("response.finish_turn must be a boolean")
+            return ActResponse(actions=list(actions), finish_turn=finish_turn)
+        if kind == "choose":
+            _require_keys(obj, CHOOSE_KEYS, CHOOSE_KEYS, "response")
+            decision_id = obj["decision_id"]
+            if not isinstance(decision_id, str) or not decision_id.strip():
+                raise ModelResponseError("response.decision_id must be a non-empty string")
+            option_id = obj["option_id"]
+            if not isinstance(option_id, str) or not option_id.strip():
+                raise ModelResponseError("response.option_id must be a non-empty string")
+            finish_turn = obj["finish_turn"]
+            if not isinstance(finish_turn, bool):
+                raise ModelResponseError("response.finish_turn must be a boolean")
+            return ChooseResponse(decision_id=decision_id, option_id=option_id, finish_turn=finish_turn)
+        if kind == "finish_turn":
+            _require_keys(obj, FINISH_TURN_KEYS, FINISH_TURN_KEYS, "response")
+            return FinishTurnResponse()
+        # kind == "resign"
+        _require_keys(obj, RESIGN_KEYS, RESIGN_KEYS, "response")
+        return ResignResponse()
+    except PolicyValidationError as exc:
+        raise ModelResponseError(str(exc)) from exc
 
 
 # --------------------------------------------------------------------------
