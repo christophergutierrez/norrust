@@ -289,10 +289,16 @@ pub fn generate_tactical_options(
 
             let distinct_attackers = summary.distinct_attacker_count;
             let max_incoming = summary.max_incoming_sum;
+            // The focus vectors have fixed one-, two-, and three-attacker
+            // slots. Unsupported larger slots are padded with zero, so the
+            // last slot is not the aggregate for this relocation. Use the
+            // greatest supported value and keep a genuine one-attacker
+            // exposure (for example [84, 0, 0]) visible to the ranking.
             let expected_incoming = summary
                 .focus_expected_damage_tenths
-                .last()
+                .iter()
                 .copied()
+                .max()
                 .unwrap_or(0);
 
             evaluated_relocations.push((
@@ -529,6 +535,31 @@ mod tests {
         for opt in &facts.options {
             assert!(opt.option_id.starts_with("attack_") || opt.option_id.starts_with("relocate_"));
             assert_eq!(opt.coverage, "complete");
+        }
+    }
+
+    #[test]
+    fn relocation_exposure_keeps_supported_focus_slots_for_one_two_and_three_attackers() {
+        let registry = units();
+        for attacker_count in 1..=3 {
+            let mut s = large_test_state();
+            let friendly = Unit::from_def(2, registry.get("Skeleton").unwrap(), 0);
+            s.place_unit(friendly, Hex::from_offset(15, 15));
+            let enemy_hexes = [(15, 16), (16, 15), (14, 15)];
+            for (offset, &(col, row)) in enemy_hexes.iter().take(attacker_count).enumerate() {
+                let enemy = Unit::from_def(7 + offset as u32, registry.get("Skeleton").unwrap(), 1);
+                s.place_unit(enemy, Hex::from_offset(col, row));
+            }
+
+            let facts = generate_tactical_options(&s, 0).unwrap();
+            let exposures: Vec<u32> = facts.options.iter()
+                .filter(|option| option.category == "relocation")
+                .filter_map(|option| option.exposure.as_ref())
+                .map(|exposure| exposure.expected_incoming_damage_tenths)
+                .collect();
+            assert!(!exposures.is_empty(), "attacker_count={attacker_count} produced no relocation");
+            assert!(exposures.iter().any(|value| *value > 0),
+                    "attacker_count={attacker_count} lost all supported expected damage: {exposures:?}");
         }
     }
 
