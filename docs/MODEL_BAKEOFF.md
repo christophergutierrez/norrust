@@ -112,6 +112,31 @@ rows have zero model calls and no fabricated token usage. A terminal marker by
 itself does not make evidence complete: missing usage, boundary, replay, or
 partial-failure coverage remains explicit as `unknown_*`.
 
+### Strategy decision boundaries acceptance matrix
+
+The 8-position decision acceptance matrix verifies tactical boundaries, custom action escapes, loop bounds, and resume idempotence through the real driver and fake transport:
+
+```bash
+python3 -m tools.strategy_comparison decision-matrix-run \
+  --run-dir /absolute/new/strategy-decision-matrix \
+  --driver /absolute/path/to/norrust_core/target/debug/greedy_driver \
+  --out /absolute/new/strategy-decision-report.json
+```
+
+Or re-evaluate recorded decision archives without rerunning:
+
+```bash
+python3 -m tools.strategy_comparison decision-matrix-report \
+  --run-dir /absolute/existing/strategy-decision-matrix \
+  --out /absolute/existing/strategy-decision-matrix/report.json
+```
+
+A 16-cell bounded Fireworks screening schedule is prepared at `tools/fixtures/strategy_decisions/fireworks_screening_manifest.json` and can be inspected or dumped via:
+
+```bash
+python3 -m tools.strategy_comparison screening-manifest --out /tmp/screening.json
+```
+
 After a recorded pilot, regenerate the strategy report from saved cell status
 and the run-local catalog:
 

@@ -15,6 +15,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import sys
 from typing import Any, Iterable
 
 from . import bakeoff_metrics, game_history, match_report, model_bakeoff
@@ -24,6 +25,10 @@ FIXTURE_DIR = REPO_ROOT / "tools" / "fixtures" / "strategy_comparison"
 PILOT_MANIFEST_PATH = FIXTURE_DIR / "pilot_manifest.json"
 OFFLINE_MATRIX_PATH = FIXTURE_DIR / "offline_matrix.json"
 FIXED_POLICY_PATH = FIXTURE_DIR / "strategy_fixed_policy.json"
+DECISION_FIXTURE_DIR = REPO_ROOT / "tools" / "fixtures" / "strategy_decisions"
+DECISION_MATRIX_PATH = DECISION_FIXTURE_DIR / "matrix_manifest.json"
+SCREENING_MANIFEST_PATH = DECISION_FIXTURE_DIR / "fireworks_screening_manifest.json"
+FAKE_TRANSPORT_PATH = DECISION_FIXTURE_DIR / "fake_transport.py"
 
 STRATEGY_TREATMENTS = model_bakeoff.STRATEGY_TREATMENTS
 PILOT_MODEL = "accounts/fireworks/models/glm-5p3-flash"
@@ -743,6 +748,520 @@ def _pilot_results_from_run_dir(run_dir: Path,
     return results
 
 
+def decision_archive_attribution(records: list[dict[str, Any]], *,
+                                 synthetic: bool = False,
+                                 pricing: dict[str, Any] | None = None) -> dict[str, Any]:
+  """Summarize the 16 required strategy decision dimensions from match records."""
+  counts = event_source_counts(records)
+  terminal = match_report.terminal_record(records)
+  classification = match_report.classify(records) if records else {"terminal_class": "unknown"}
+  terminal_class = classification.get("terminal_class", "unknown")
+  terminal_code = terminal.get("code") if isinstance(terminal, dict) else None
+  terminal_present = bool(terminal)
+
+  # 1 & 2: Provider calls and logical requests
+  request_rows = [item for item in records if item.get("type") == "model_request"]
+  response_rows = [item for item in records if item.get("type") == "model"]
+  request_ids = {
+    item.get("request_id") for item in request_rows
+    if isinstance(item.get("request_id"), str) and item.get("request_id")
+  }
+  logical_requests = len(request_ids) + sum(
+    1 for item in request_rows
+    if not (isinstance(item.get("request_id"), str) and item.get("request_id"))
+  )
+  if not request_rows:
+    response_ids = {
+      item.get("request_id") for item in response_rows
+      if isinstance(item.get("request_id"), str) and item.get("request_id")
+    }
+    logical_requests = len(response_ids) + sum(
+      1 for item in response_rows
+      if not (isinstance(item.get("request_id"), str) and item.get("request_id"))
+    )
+  provider_calls = len(response_rows)
+
+  # 3: Repairs
+  repairs = sum(
+    1 for item in records
+    if item.get("type") in ("strategy_response_repair", "action_repair", "model_response_repair")
+    or item.get("purpose") == "repair"
+  )
+
+  # 4 & 5: Option selections and custom acts
+  forwarded_rows = [item for item in records if item.get("type") == "forwarded_orders"]
+  option_selections = sum(
+    1 for item in forwarded_rows
+    if item.get("proposal_source") == "engine_option" or item.get("option_id") is not None
+  )
+  custom_acts = sum(
+    1 for item in forwarded_rows
+    if item.get("proposal_source") != "engine_option"
+    and item.get("option_id") is None
+    and bool(item.get("orders"))
+  )
+
+  # 6 & 7: Context-invalid replies and identical incident recurrences
+  context_invalid_replies = sum(
+    1 for item in records if item.get("type") == "contextual_rejection"
+  )
+  incident_keys: list[str] = []
+  for item in records:
+    if item.get("type") == "decision_packet" and isinstance(item.get("packet"), dict):
+      key = item["packet"].get("incident_key")
+      if key:
+        incident_keys.append(str(key))
+    elif item.get("type") == "contextual_rejection" and item.get("incident_key"):
+      incident_keys.append(str(item["incident_key"]))
+  identical_incident_recurrences = sum(
+    1 for idx in range(1, len(incident_keys))
+    if incident_keys[idx] == incident_keys[idx - 1]
+  )
+
+  # 8, 9 & 10: Routine vs model actions and actual board effects
+  routine_actions = counts["events_by_source"].get("routine", 0)
+  model_actions = counts["events_by_source"].get("llm", 0)
+  damage_dealt = 0
+  units_killed = 0
+  moves = 0
+  attacks = 0
+  recruits = 0
+  captures = 0
+  for item in records:
+    if item.get("type") != "driver" or not isinstance(item.get("line"), dict):
+      continue
+    line = item["line"]
+    if line.get("type") != "events" or not isinstance(line.get("events"), list):
+      continue
+    for ev in line["events"]:
+      if not isinstance(ev, dict):
+        continue
+      k = ev.get("kind")
+      if k == "move":
+        moves += 1
+      elif k == "attack":
+        attacks += 1
+        dmg = ev.get("damage_to_defender", ev.get("damage_dealt", ev.get("damage", 0)))
+        if isinstance(dmg, (int, float)):
+          damage_dealt += int(dmg)
+        defender = ev.get("defender")
+        attacker = ev.get("attacker")
+        if ((isinstance(defender, dict) and defender.get("killed"))
+            or (isinstance(attacker, dict) and attacker.get("killed"))
+            or ev.get("killed")):
+          units_killed += 1
+      elif k == "recruit":
+        recruits += 1
+      elif k == "village":
+        captures += 1
+      elif k == "kill":
+        units_killed += 1
+
+  board_effects = {
+    "total_events": counts["actual_event_count"],
+    "moves": moves,
+    "attacks": attacks,
+    "recruits": recruits,
+    "captures": captures,
+    "damage_dealt": damage_dealt,
+    "units_killed": units_killed,
+    "events_by_source": counts["events_by_source"],
+    "events_by_kind": counts["events_by_kind"],
+  }
+
+  # 11, 12, 13 & 14: Incident resolution, tactical progress, explicit finish, budget stop
+  tactical_incidents = [
+    item for item in records
+    if item.get("type") == "decision_packet"
+    and isinstance(item.get("packet"), dict)
+    and item["packet"].get("decision_kind") == "tactical"
+  ]
+  incident_raised = len(tactical_incidents) > 0
+  replacement_policy_installed = any(
+    item.get("type") == "policy_installed" and item.get("source_kind") == "model"
+    for item in records
+  )
+  incident_resolution = None
+  if incident_raised:
+    incident_resolution = (
+      option_selections > 0
+      or custom_acts > 0
+      or replacement_policy_installed
+      or (terminal_class == "gameplay" and not context_invalid_replies)
+    )
+
+  relocation_selected = any(
+    item.get("type") == "forwarded_orders" and str(item.get("option_id", "")).startswith("relocate")
+    for item in records
+  )
+  tactical_progress = (attacks > 0 and damage_dealt > 0) or (moves > 0 and relocation_selected)
+
+  explicit_finish = (
+    any(
+      item.get("type") == "forwarded_orders"
+      and (not item.get("orders") or item.get("authored_finish_kind") is not None)
+      for item in records
+    )
+    or (terminal.get("reason") in ("max_turns", "winner", "resignation") if isinstance(terminal, dict) else False)
+  )
+
+  budget_stop = (
+    terminal_class == "budget_interrupted"
+    or terminal_code in ("strategy_no_progress", "model_calls_exhausted", "tool_calls_exhausted", "operator_wall_deadline")
+  )
+
+  # 15 & 16: Usage and cost accounting
+  pricing_dict = copy.deepcopy(pricing) if pricing else copy.deepcopy(PILOT_PRICING)
+  usage_summary = bakeoff_metrics.aggregate_usage(
+    response_rows,
+    model=pricing_dict.get("model"),
+    price_date=pricing_dict.get("date"),
+    custom_prices=pricing_dict.get("rates"),
+  )
+  cost_val = usage_summary.get("known_cost")
+  cost_cov = usage_summary.get("cost_coverage", "unknown")
+  usage_cov = usage_summary.get("usage_coverage", "unknown")
+
+  if not terminal_present:
+    evidence_status = "unknown_truncated"
+  elif usage_cov == "unknown":
+    evidence_status = "unknown_coverage"
+  elif budget_stop:
+    evidence_status = "budget_stopped"
+  else:
+    evidence_status = "complete"
+
+  return {
+    "source_label": "synthetic_fixture" if synthetic else "recorded_archive",
+    "synthetic": synthetic,
+    "provider_calls": provider_calls if terminal_present else None,
+    "logical_requests": logical_requests if terminal_present else None,
+    "repairs": repairs,
+    "option_selections": option_selections,
+    "custom_acts": custom_acts,
+    "context_invalid_replies": context_invalid_replies,
+    "identical_incident_recurrences": identical_incident_recurrences,
+    "routine_actions": routine_actions,
+    "model_actions": model_actions,
+    "actual_board_effects": board_effects,
+    "incident_resolution": incident_resolution,
+    "tactical_progress": tactical_progress,
+    "explicit_finish": explicit_finish,
+    "budget_stop": budget_stop,
+    "terminal_present": terminal_present,
+    "terminal_class": terminal_class,
+    "terminal_code": terminal_code,
+    "usage": {
+      "input_tokens": usage_summary.get("input_tokens"),
+      "output_tokens": usage_summary.get("output_tokens"),
+      "reasoning_tokens": usage_summary.get("reasoning_tokens"),
+      "cached_input_tokens": usage_summary.get("cached_input_tokens"),
+      "total_tokens": (
+        (usage_summary.get("input_tokens") or 0) + (usage_summary.get("output_tokens") or 0)
+        if usage_summary.get("input_tokens") is not None and usage_summary.get("output_tokens") is not None
+        else None
+      ),
+      "usage_coverage": usage_cov,
+    },
+    "cost": {
+      "cost_usd": cost_val,
+      "cost_coverage": cost_cov,
+      "pricing": pricing_dict,
+    },
+    "evidence_status": evidence_status,
+  }
+
+
+def _decision_matrix_predicates(case: dict[str, Any],
+                                records: list[dict[str, Any]],
+                                attribution: dict[str, Any] | None) -> dict[str, Any]:
+  """Evaluate the acceptance predicates for one matrix position."""
+  expected = case.get("expected", {}) if isinstance(case.get("expected"), dict) else {}
+  if not records or attribution is None:
+    return {
+      "terminal_class": None,
+      "terminal_outcome": None,
+      "predicate_pass": None,
+    }
+
+  predicates: dict[str, Any] = {}
+  pos = case.get("position")
+
+  if pos == "repeated_current_contact":
+    predicates["budget_stopped"] = (attribution["budget_stop"] is True)
+    predicates["terminal_class"] = (attribution["terminal_class"] == expected.get("terminal_class", "budget_interrupted"))
+    predicates["terminal_code"] = (attribution["terminal_code"] == expected.get("terminal_code", "strategy_no_progress"))
+    predicates["bounded_requests"] = (
+      attribution["logical_requests"] is not None
+      and attribution["logical_requests"] <= expected.get("max_model_calls", 3)
+    )
+    predicates["context_invalid_observed"] = (
+      attribution["context_invalid_replies"] >= expected.get("context_invalid_count", 1)
+    )
+    predicates["no_board_mutation"] = (attribution["actual_board_effects"]["total_events"] == expected.get("board_actions_count", 0))
+    rejection_seen = False
+    policy_after_rejection = False
+    for r in records:
+      if r.get("type") == "contextual_rejection":
+        rejection_seen = True
+      elif rejection_seen and r.get("type") == "policy_installed":
+        policy_after_rejection = True
+    predicates["policy_not_mutated"] = not policy_after_rejection
+
+  elif pos == "proposed_dangerous_route":
+    predicates["terminal_class"] = (attribution["terminal_class"] == expected.get("terminal_class", "gameplay"))
+    predicates["replacement_objective_accepted"] = any(
+      r.get("type") == "policy_installed" and r.get("source_kind") == "model" for r in records
+    )
+    predicates["incident_removed"] = (attribution["actual_board_effects"]["attacks"] == 0)
+    predicates["no_budget_stop"] = (attribution["budget_stop"] is False)
+
+  elif pos == "favorable_tactical_attack":
+    predicates["terminal_class"] = (attribution["terminal_class"] == expected.get("terminal_class", "gameplay"))
+    predicates["attack_committed"] = (
+      attribution["option_selections"] >= 1
+      and attribution["actual_board_effects"]["attacks"] >= 1
+    )
+    predicates["enemy_hp_reduced"] = (attribution["actual_board_effects"]["damage_dealt"] > 0)
+    predicates["defender_killed"] = (attribution["actual_board_effects"]["units_killed"] >= 1)
+    predicates["tactical_progress"] = (attribution["tactical_progress"] is True)
+
+  elif pos == "withdrawal":
+    predicates["terminal_class"] = (attribution["terminal_class"] == expected.get("terminal_class", "gameplay"))
+    predicates["relocation_committed"] = (
+      attribution["option_selections"] >= 1
+      and attribution["actual_board_effects"]["moves"] >= 1
+      and any(r.get("type") == "forwarded_orders" and str(r.get("option_id", "")).startswith("relocate") for r in records)
+    )
+    predicates["recruiter_survived"] = (
+      attribution["actual_board_effects"]["units_killed"] == 0
+      and attribution["terminal_class"] == "gameplay"
+    )
+    predicates["exposure_lowered"] = (attribution["tactical_progress"] is True)
+
+  elif pos == "independent_scout_movement":
+    predicates["terminal_class"] = (attribution["terminal_class"] == expected.get("terminal_class", "gameplay"))
+    predicates["independent_routine_move"] = (
+      any(r.get("type") == "independent_routine_move" for r in records)
+      and attribution["routine_actions"] >= 1
+    )
+    predicates["tactical_incident_visible"] = any(
+      r.get("type") == "decision_packet"
+      and r.get("packet", {}).get("decision_kind") == "tactical"
+      for r in records
+    )
+    predicates["tactical_option_executed"] = (attribution["actual_board_effects"]["attacks"] >= 1)
+
+  elif pos == "blocking_unit":
+    predicates["terminal_class"] = (attribution["terminal_class"] == expected.get("terminal_class", "gameplay"))
+    predicates["automatic_move_refused"] = (attribution["actual_board_effects"]["moves"] == 0)
+    no_greedy_sweep_actions = not any(
+      r.get("type") == "driver"
+      and isinstance(r.get("line"), dict)
+      and any(
+        e.get("source") == "delegated_greedy" and e.get("kind") in ("move", "attack")
+        for e in r["line"].get("events", [])
+      )
+      for r in records
+    )
+    predicates["no_greedy_sweep"] = (
+      attribution["actual_board_effects"]["attacks"] == 0
+      and no_greedy_sweep_actions
+    )
+
+  elif pos == "scouts_absent":
+    predicates["terminal_class"] = (attribution["terminal_class"] == expected.get("terminal_class", "model_invalid"))
+    predicates["policy_rejected_before_installation"] = not any(
+      r.get("type") == "policy_installed" for r in records
+    )
+    predicates["zero_board_actions"] = (attribution["actual_board_effects"]["total_events"] == expected.get("board_actions_count", 0))
+
+  elif pos == "resume_at_decision_boundary":
+    predicates["terminal_class"] = (attribution["terminal_class"] == expected.get("terminal_class", "gameplay"))
+    predicates["no_renewed_allowance"] = (attribution["budget_stop"] is False)
+    predicates["attack_executed"] = (attribution["actual_board_effects"]["attacks"] == 1)
+    predicates["no_duplicate_actions"] = (
+      attribution["actual_board_effects"]["recruits"] == 0
+      and attribution["option_selections"] == 1
+    )
+
+  else:
+    for k, v in expected.items():
+      predicates[k] = _verdict(attribution.get(k), v)
+
+  return predicates
+
+
+def build_decision_matrix_report(manifest: dict[str, Any] | None = None, *,
+                                 archives: dict[str, list[dict[str, Any]]] | None = None,
+                                 pricing: dict[str, Any] | None = None) -> dict[str, Any]:
+  """Generate the acceptance matrix report across all 8 positions."""
+  if manifest is None:
+    manifest = json.loads(DECISION_MATRIX_PATH.read_text())
+  cases = manifest.get("cases", [])
+  if not cases:
+    raise StrategyComparisonError("decision matrix manifest has no cases")
+
+  rows: list[dict[str, Any]] = []
+  for case in cases:
+    records = (archives or {}).get(case["id"])
+    row: dict[str, Any] = {
+      "case_id": case["id"],
+      "position": case.get("position"),
+      "description": case.get("description"),
+      "checkpoint_fixture": case.get("checkpoint_fixture"),
+      "checkpoint_sha256": case.get("checkpoint_sha256"),
+      "actor_id": case.get("actor_id"),
+      "target_id": case.get("target_id"),
+      "expected": copy.deepcopy(case.get("expected", {})),
+      "status": "observed" if records is not None else "unknown_unrun",
+      "attribution": None,
+    }
+    if records is not None:
+      attribution = decision_archive_attribution(records, synthetic=False, pricing=pricing)
+      verdicts = _decision_matrix_predicates(case, records, attribution)
+      row["attribution"] = attribution
+      row["predicate_verdicts"] = verdicts
+      row["acceptance_status"] = _acceptance_status(verdicts)
+    else:
+      row["blocked_reason"] = "not executed; run the decision-matrix-run command with real driver"
+    rows.append(row)
+
+  observed_count = sum(1 for r in rows if r["status"] == "observed")
+  statuses = [r.get("acceptance_status") for r in rows if r["status"] == "observed"]
+  overall_status = (
+    "failed" if "failed" in statuses
+    else "unknown" if len(statuses) != len(rows) or "unknown" in statuses
+    else "passed"
+  )
+
+  return {
+    "schema_version": 1,
+    "matrix_status": "observed" if observed_count == len(rows) else "unknown_unrun",
+    "cases": rows,
+    "denominator": {
+      "scheduled": len(rows),
+      "observed": observed_count,
+      "unknown_unrun": len(rows) - observed_count,
+    },
+    "acceptance_status": overall_status,
+    "pricing": copy.deepcopy(pricing) if pricing else copy.deepcopy(PILOT_PRICING),
+    "note": "Strategy decision boundaries acceptance matrix covering all 8 specified positions.",
+  }
+
+
+def run_decision_matrix(manifest: dict[str, Any] | None = None, *,
+                        run_dir: Path, driver: str | None = None,
+                        timeout: float = 90.0,
+                        pricing: dict[str, Any] | None = None) -> dict[str, Any]:
+  """Execute the 8 matrix cases with real driver, verify 2x catalog import idempotence."""
+  if manifest is None:
+    manifest = json.loads(DECISION_MATRIX_PATH.read_text())
+  cases = manifest.get("cases", [])
+  if not cases:
+    raise StrategyComparisonError("decision matrix manifest has no cases")
+
+  driver = driver or OFFLINE_DRIVER
+  driver_path = Path(driver)
+  if not driver_path.is_absolute():
+    driver_path = REPO_ROOT / driver_path
+  if not driver_path.is_file():
+    raise StrategyComparisonError(f"driver is unavailable: {driver}")
+
+  run_dir.mkdir(parents=True, exist_ok=True)
+  catalog = run_dir / "catalog.sqlite"
+  archives: dict[str, list[dict[str, Any]]] = {}
+  catalog_audits: dict[str, Any] = {}
+
+  for case in cases:
+    cell_dir = model_bakeoff.cell_dir_for(run_dir, case["id"])
+    cell_dir.mkdir(parents=True, exist_ok=True)
+
+    resp_file = cell_dir / "responses.json"
+    resp_file.write_text(json.dumps(case["fake_responses"], indent=2))
+    log_reqs = cell_dir / "prompt_requests.ndjson"
+
+    ckpt_path = REPO_ROOT / case["checkpoint_fixture"]
+    ckpt_data = json.loads(ckpt_path.read_text())
+
+    cmd = f"{sys.executable} {FAKE_TRANSPORT_PATH} --responses {resp_file} --request-log {log_reqs}"
+    cell = {
+      "id": case["id"],
+      "scenario": str(ckpt_data["scenario"]),
+      "seed": int(ckpt_data["seed"]),
+      "faction0": str(ckpt_data["faction0"]),
+      "faction1": str(ckpt_data["faction1"]),
+      "llm_side": int(ckpt_data["llm_side"]),
+      "gold": int(ckpt_data.get("starting_gold", 300)),
+      "max_turns": 1,
+      "model": "fake-glm-decision",
+      "decision_mode": "strategy",
+      "action_encoding": "coordinates",
+      "checkpoint_fixture": case["checkpoint_fixture"],
+      "allow_partial_turn_checkpoint": bool(case.get("allow_partial_turn_checkpoint", case.get("position") == "resume_at_decision_boundary")),
+      "backend": {
+        "kind": "command",
+        "command": cmd,
+      },
+      "driver": str(driver_path),
+      "budgets": {
+        "max_model_calls_per_turn": 8,
+        "max_partial_batches_per_turn": 64,
+        "query_budget_seconds": 20,
+        "turn_timeout": 45,
+        "model_timeout": 10,
+      },
+      "pricing": copy.deepcopy(pricing or PILOT_PRICING),
+    }
+
+    resolved = model_bakeoff.resolve_manifest({
+      "experiment_kind": "matched",
+      "cells": [cell],
+    })
+    results = model_bakeoff.run_manifest(resolved, run_dir, timeout=timeout)
+    res = results[0]
+    records = match_report.load_records(res.log_path) if res.log_path.is_file() else []
+    archives[case["id"]] = records
+
+    # Import into SQLite catalog twice to verify idempotence
+    imported1 = model_bakeoff.import_cells(catalog, results, "strategy-matrix")
+    snap1 = _catalog_snapshot(catalog, imported1)
+    imported2 = model_bakeoff.import_cells(catalog, results, "strategy-matrix")
+    snap2 = _catalog_snapshot(catalog, imported2)
+    catalog_audits[case["id"]] = {
+      "imported_game_ids": imported1,
+      "idempotent": (snap1 == snap2),
+      "snapshot": snap1,
+    }
+
+  report = build_decision_matrix_report(manifest, archives=archives, pricing=pricing)
+  for case_row in report.get("cases", []):
+    audit = catalog_audits.get(case_row["case_id"])
+    if audit:
+      case_row["catalog_import"] = audit
+      if not audit["idempotent"]:
+        case_row["acceptance_status"] = "failed"
+        case_row["predicate_verdicts"]["catalog_import_idempotent"] = False
+
+  statuses = [r.get("acceptance_status") for r in report["cases"]]
+  report["acceptance_status"] = (
+    "failed" if "failed" in statuses
+    else "unknown" if "unknown" in statuses or not statuses
+    else "passed"
+  )
+  return report
+
+
+def load_prepared_screening(path: Path = SCREENING_MANIFEST_PATH) -> dict[str, Any]:
+  try:
+    manifest = json.loads(path.read_text())
+  except (OSError, json.JSONDecodeError) as exc:
+    raise StrategyComparisonError(f"cannot read screening manifest {path}: {exc}") from exc
+  if manifest.get("status") != "prepared_not_run":
+    raise StrategyComparisonError("screening manifest must remain prepared_not_run until launch authorization")
+  return manifest
+
+
 def main(argv: list[str] | None = None) -> int:
     """Prepare manifests, print reports, or run the provider-free matrix."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -762,6 +1281,18 @@ def main(argv: list[str] | None = None) -> int:
     run_matrix.add_argument("--driver", default=OFFLINE_DRIVER)
     run_matrix.add_argument("--timeout", type=float, default=90)
     run_matrix.add_argument("--out", required=True)
+    dm_run = sub.add_parser("decision-matrix-run", help="execute the strategy decision acceptance matrix")
+    dm_run.add_argument("--manifest", default=str(DECISION_MATRIX_PATH))
+    dm_run.add_argument("--run-dir", required=True)
+    dm_run.add_argument("--driver", default=OFFLINE_DRIVER)
+    dm_run.add_argument("--timeout", type=float, default=90)
+    dm_run.add_argument("--out", required=True)
+    dm_report = sub.add_parser("decision-matrix-report", help="report from strategy decision matrix run")
+    dm_report.add_argument("--manifest", default=str(DECISION_MATRIX_PATH))
+    dm_report.add_argument("--run-dir", help="run directory containing recorded match.ndjson files")
+    dm_report.add_argument("--out", required=True)
+    screening = sub.add_parser("screening-manifest", help="write the prepared 16-cell screening manifest")
+    screening.add_argument("--out", required=True)
     args = parser.parse_args(argv)
     if args.command == "pilot-manifest":
         payload = load_prepared_pilot() if Path(args.out).resolve() == PILOT_MANIFEST_PATH.resolve() else build_pilot_manifest()
@@ -784,12 +1315,36 @@ def main(argv: list[str] | None = None) -> int:
             payload = build_strategy_report(json.loads(Path(args.manifest).read_text()))
     elif args.command == "offline-report":
         payload = build_offline_matrix_report(json.loads(Path(args.matrix).read_text()))
-    else:
+    elif args.command == "offline-run":
         payload = run_offline_matrix(json.loads(Path(args.matrix).read_text()),
                                      run_dir=Path(args.run_dir), driver=args.driver,
                                      timeout=args.timeout)
+    elif args.command == "decision-matrix-run":
+        payload = run_decision_matrix(
+            json.loads(Path(args.manifest).read_text()),
+            run_dir=Path(args.run_dir),
+            driver=args.driver,
+            timeout=args.timeout,
+        )
+    elif args.command == "decision-matrix-report":
+        archives = None
+        if args.run_dir:
+            run_dir = Path(args.run_dir)
+            manifest = json.loads(Path(args.manifest).read_text())
+            archives = {}
+            for c in manifest.get("cases", []):
+                cid = c["id"]
+                match_path = run_dir / cid / "match.ndjson"
+                if match_path.is_file():
+                    archives[cid] = match_report.load_records(match_path)
+        payload = build_decision_matrix_report(
+            json.loads(Path(args.manifest).read_text()),
+            archives=archives,
+        )
+    elif args.command == "screening-manifest":
+        payload = load_prepared_screening()
     Path(args.out).write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n")
-    if args.command == "offline-run" and payload.get("acceptance_status") != "passed":
+    if args.command in ("offline-run", "decision-matrix-run") and payload.get("acceptance_status") != "passed":
         return 1
     return 0
 

@@ -165,7 +165,10 @@ def resolve_manifest(manifest: dict[str, Any], *, rng: random.Random | None = No
         if encoding == "choices" and mode != "focused":
             raise ManifestError("choices encoding requires focused mode")
         if "treatment" in cell:
-            raise ManifestError("'treatment' is retired; use the single 'strategy_treatment' field")
+            if cell.get("treatment") in STRATEGY_TREATMENTS:
+                raise ManifestError("'treatment' is retired; use the single 'strategy_treatment' field")
+            if cell.get("treatment") not in ("baseline", "candidate"):
+                raise ManifestError(f"cell {cell_id!r}: unknown treatment {cell.get('treatment')!r}")
         treatment = cell.get("strategy_treatment")
         if treatment is not None and treatment not in STRATEGY_TREATMENTS:
             raise ManifestError(f"cell {cell_id!r}: unknown strategy treatment {treatment!r}")
@@ -316,6 +319,9 @@ def write_identity(cell_dir: Path, cell: dict[str, Any]) -> None:
             "checkpoint_fixture": cell.get("checkpoint_fixture"),
             "strategy_treatment": cell.get("strategy_treatment"),
             "strategy_policy": cell.get("strategy_policy"),
+            "treatment": cell.get("treatment"),
+            "position_id": cell.get("position_id"),
+            "repetition": cell.get("repetition"),
         },
         "backend": {"kind": cell.get("backend", {}).get("kind")},
         "provenance": cell.get("provenance"),
@@ -435,7 +441,7 @@ def run_cell(cell: dict[str, Any], run_dir: Path, *, timeout: float | None = Non
                 raise ValueError("checkpoint source changed after manifest resolution")
             payload = json.loads(source_bytes)
             if (payload.get("boundary") != "model" or payload.get("pending_opponent_turn")
-                    or payload.get("accepted_partial_batches", 0)):
+                    or (payload.get("accepted_partial_batches", 0) and not cell.get("allow_partial_turn_checkpoint"))):
                 raise ValueError("comparison branches require a model side-turn boundary")
             (cell_dir / "source_checkpoint.json").write_bytes(source_bytes)
             board = REPO_ROOT / "scenarios" / str(payload["scenario"]) / "board.toml"

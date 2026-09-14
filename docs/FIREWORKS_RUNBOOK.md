@@ -150,3 +150,16 @@ repair is not a measured rerun. Do not add a rescue/control game outside scope.
 Current strategy response and route semantics are in
 [Strategy mode](LLM_CLIENT.md#strategy-mode). Historical runs retain their old
 labels and parsing behavior; evaluate the source commit that actually ran.
+
+During contact decisions, the strategy model may either pick an offered tactical
+choice (`choose`) or author custom coordinates orders (`act`). Routine execution
+continues independent movement for units uninvolved in contact. If an invalid
+policy attempt or identical contact incident is repeated at the same revision,
+the player is halted after one corrective follow-up with `budget_interrupted`
+and stop code `strategy_no_progress`.
+
+For authorized evaluation between Stack 3 baseline and Stack 4 candidate, a
+frozen 16-cell screening schedule is prepared at
+`tools/fixtures/strategy_decisions/fireworks_screening_manifest.json` under a
+$1.20 USD conservative cap, marked `model_evaluation_status: "pending_authorization"`
+until explicitly authorized by the operator.

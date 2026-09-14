@@ -1,0 +1,342 @@
+{
+  "schema_version": 1,
+  "description": "Stack 4 Strategy Decision Boundaries Acceptance Matrix",
+  "cases": [
+    {
+      "id": "repeated-current-contact",
+      "position": "repeated_current_contact",
+      "description": "Context-invalid policy loop stops within the shared correction allowance; no policy/action mutation",
+      "checkpoint_fixture": "tools/fixtures/strategy_decisions/repeated_current_contact.json",
+      "checkpoint_sha256": "3153504e9eccbf58e99789aade1deacece04110f4cfcb39a97308bbc343a2f22",
+      "actor_id": 3,
+      "target_id": 4,
+      "initial_facts": {
+        "contact": true,
+        "stage": "current_state",
+        "trigger": "attack_and_exposure"
+      },
+      "fake_responses": [
+        {
+          "kind": "set_policy",
+          "policy": {
+            "reserve_gold": 0,
+            "recruits": [],
+            "scouts": [],
+            "villages": [],
+            "rally": null,
+            "holds": []
+          }
+        },
+        {
+          "kind": "set_policy",
+          "policy": {
+            "reserve_gold": 0,
+            "recruits": [],
+            "scouts": [],
+            "villages": [],
+            "rally": null,
+            "holds": []
+          }
+        }
+      ],
+      "expected": {
+        "terminal_class": "budget_interrupted",
+        "terminal_code": "strategy_no_progress",
+        "max_model_calls": 3,
+        "context_invalid_count": 2,
+        "board_actions_count": 0,
+        "policy_mutated": false
+      }
+    },
+    {
+      "id": "proposed-dangerous-route",
+      "position": "proposed_dangerous_route",
+      "description": "A valid replacement objective can remove the proposed incident",
+      "checkpoint_fixture": "tools/fixtures/strategy_decisions/proposed_dangerous_route.json",
+      "checkpoint_sha256": "e5ac7a8df039471f0568ebe1db8d6f7ae4979091238294dee05454b25be27821",
+      "actor_id": 5,
+      "target_id": 4,
+      "initial_facts": {
+        "contact": true,
+        "stage": "current_state"
+      },
+      "fake_responses": [
+        {
+          "kind": "set_policy",
+          "policy": {
+            "reserve_gold": 0,
+            "recruits": [],
+            "scouts": [
+              5
+            ],
+            "villages": [
+              {
+                "col": 5,
+                "row": 3
+              }
+            ],
+            "rally": null,
+            "holds": []
+          }
+        },
+        {
+          "kind": "set_policy",
+          "policy": {
+            "reserve_gold": 0,
+            "recruits": [],
+            "scouts": [],
+            "villages": [],
+            "rally": null,
+            "holds": []
+          }
+        },
+        {
+          "kind": "finish_turn"
+        }
+      ],
+      "expected": {
+        "terminal_class": "gameplay",
+        "incident_removed": true,
+        "replacement_objective_accepted": true
+      }
+    },
+    {
+      "id": "favorable-tactical-attack",
+      "position": "favorable_tactical_attack",
+      "description": "Selected legal attack commits; fixture-defined enemy HP reduction/kill is observed",
+      "checkpoint_fixture": "tools/fixtures/strategy_decisions/favorable_tactical_attack.json",
+      "checkpoint_sha256": "56c91294229d42b00e48036b078a7792f0fcd01e31188f6c3d184a3daeca7dd7",
+      "actor_id": 3,
+      "target_id": 4,
+      "initial_facts": {
+        "contact": true,
+        "enemy_hp": 8,
+        "favorable_attack": true
+      },
+      "fake_responses": [
+        {
+          "kind": "set_policy",
+          "policy": {
+            "reserve_gold": 0,
+            "recruits": [],
+            "scouts": [],
+            "villages": [],
+            "rally": null,
+            "holds": []
+          }
+        },
+        {
+          "kind": "choose",
+          "decision_id": "__FROM_PROMPT__",
+          "option_id": "attack_1",
+          "finish_turn": true
+        }
+      ],
+      "expected": {
+        "terminal_class": "gameplay",
+        "attack_executed": true,
+        "enemy_hp_reduced": true,
+        "defender_killed": true
+      }
+    },
+    {
+      "id": "withdrawal",
+      "position": "withdrawal",
+      "description": "Selected legal move lowers the fixture fully covered exposure measure without killing the recruiter",
+      "checkpoint_fixture": "tools/fixtures/strategy_decisions/withdrawal.json",
+      "checkpoint_sha256": "3b9f679a4d56beb2abed3b304b5ed54900ec9d8fa665245a6af5a398391fd59a",
+      "actor_id": 1,
+      "target_id": 3,
+      "initial_facts": {
+        "recruiter_in_danger": true,
+        "threatened_unit_id": 1
+      },
+      "fake_responses": [
+        {
+          "kind": "set_policy",
+          "policy": {
+            "reserve_gold": 0,
+            "recruits": [],
+            "scouts": [],
+            "villages": [],
+            "rally": null,
+            "holds": []
+          }
+        },
+        {
+          "kind": "choose",
+          "decision_id": "__FROM_PROMPT__",
+          "option_id": "relocate_1",
+          "finish_turn": true
+        }
+      ],
+      "expected": {
+        "terminal_class": "gameplay",
+        "relocation_executed": true,
+        "recruiter_survived": true,
+        "exposure_lowered": true
+      }
+    },
+    {
+      "id": "independent-scout-movement",
+      "position": "independent_scout_movement",
+      "description": "Scout advances its assigned objective before a model call; tactical incident remains visible",
+      "checkpoint_fixture": "tools/fixtures/strategy_decisions/independent_scout_movement.json",
+      "checkpoint_sha256": "2a38d032b32bc02ac783e7891c52b0c2d8e00972fd26cf928bc3cd777f3bfef5",
+      "actor_id": 3,
+      "target_id": 4,
+      "scout_id": 5,
+      "initial_facts": {
+        "contact": true,
+        "primary_actor_id": 3,
+        "distant_scout_id": 5
+      },
+      "fake_responses": [
+        {
+          "kind": "set_policy",
+          "policy": {
+            "reserve_gold": 0,
+            "recruits": [],
+            "scouts": [
+              5
+            ],
+            "villages": [
+              {
+                "col": 2,
+                "row": 4
+              }
+            ],
+            "rally": null,
+            "holds": []
+          }
+        },
+        {
+          "kind": "choose",
+          "decision_id": "__FROM_PROMPT__",
+          "option_id": "attack_1",
+          "finish_turn": true
+        }
+      ],
+      "expected": {
+        "terminal_class": "gameplay",
+        "independent_routine_move": true,
+        "tactical_incident_visible": true,
+        "tactical_option_executed": true
+      }
+    },
+    {
+      "id": "blocking-unit",
+      "position": "blocking_unit",
+      "description": "Automatic move is refused; no hidden Greedy sweep",
+      "checkpoint_fixture": "tools/fixtures/strategy_decisions/blocking_unit.json",
+      "checkpoint_sha256": "1866580a536490e7b0dfe3cc92f544a115d8a7f64bd2b7621cfd4eaa40a0cef7",
+      "actor_id": 5,
+      "target_id": null,
+      "initial_facts": {
+        "route_blocked": true
+      },
+      "fake_responses": [
+        {
+          "kind": "set_policy",
+          "policy": {
+            "reserve_gold": 0,
+            "recruits": [],
+            "scouts": [
+              5
+            ],
+            "villages": [
+              {
+                "col": 2,
+                "row": 4
+              }
+            ],
+            "rally": null,
+            "holds": []
+          }
+        },
+        {
+          "kind": "finish_turn"
+        }
+      ],
+      "expected": {
+        "terminal_class": "gameplay",
+        "move_refused": true,
+        "no_greedy_sweep": true
+      }
+    },
+    {
+      "id": "scouts-absent",
+      "position": "scouts_absent",
+      "description": "Structurally impossible village policy rejects before installation",
+      "checkpoint_fixture": "tools/fixtures/strategy_decisions/scouts_absent.json",
+      "checkpoint_sha256": "af3139e6acd422beba9e8edefa7b158f062f83e5d99a42aebb0483b0e5db28a1",
+      "actor_id": null,
+      "target_id": null,
+      "initial_facts": {
+        "scouts_available": 0,
+        "recruit_scouts_available": 0
+      },
+      "fake_responses": [
+        {
+          "kind": "set_policy",
+          "policy": {
+            "reserve_gold": 0,
+            "recruits": [],
+            "scouts": [],
+            "villages": [
+              {
+                "col": 2,
+                "row": 4
+              }
+            ],
+            "rally": null,
+            "holds": []
+          }
+        }
+      ],
+      "expected": {
+        "terminal_class": "model_invalid",
+        "policy_rejected_before_installation": true,
+        "board_actions_count": 0
+      }
+    },
+    {
+      "id": "resume-at-decision-boundary",
+      "position": "resume_at_decision_boundary",
+      "description": "No renewed allowance, stale option execution or duplicate action/recruitment",
+      "checkpoint_fixture": "tools/fixtures/strategy_decisions/resume_decision.json",
+      "checkpoint_sha256": "6631a8e50a5dee2699d3366a965fb7216e738c4685f1f671480c2ee27508b5b9",
+      "actor_id": 3,
+      "target_id": 4,
+      "allow_partial_turn_checkpoint": true,
+      "initial_facts": {
+        "accepted_partial_batches": 1,
+        "contact": true
+      },
+      "fake_responses": [
+        {
+          "kind": "set_policy",
+          "policy": {
+            "reserve_gold": 0,
+            "recruits": [],
+            "scouts": [],
+            "villages": [],
+            "rally": null,
+            "holds": []
+          }
+        },
+        {
+          "kind": "choose",
+          "decision_id": "__FROM_PROMPT__",
+          "option_id": "attack_1",
+          "finish_turn": true
+        }
+      ],
+      "expected": {
+        "terminal_class": "gameplay",
+        "no_renewed_allowance": true,
+        "attack_executed": true
+      }
+    }
+  ]
+}
