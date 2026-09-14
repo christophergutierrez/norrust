@@ -52,7 +52,7 @@ RESPONSE_KINDS = ("set_policy", "act", "finish_turn", "resign")
 ROUTINE_EXCEPTION_CODES = frozenset({
     "contact", "threat_unavailable", "promotion_pending",
     "recruitment_blocked", "no_executable_orders",
-    "unsafe_route", "invalid_assignment", "objectives_complete",
+    "unsafe_route", "route_unavailable", "invalid_assignment", "objectives_complete",
 })
 ROUTINE_ORIGIN = "routine"
 
@@ -944,7 +944,8 @@ def _strategy_context(state: Optional[dict[str, Any]], *, recruit_options: Any =
             str(state.get("state_revision", "unknown")) + "\nMAP_VILLAGES=" +
             village_text + "\nMAP_UNITS=" + unit_text + "\n" + body +
             "\nSTRATEGY_CONTEXT_UNTRUSTED_DATA_END\n"
-            "Respond with exactly one of set_policy, act, finish_turn, or resign.")
+            "Respond with exactly one of set_policy, act, finish_turn, or resign. Output one complete JSON "
+            "object only: no prose, markdown fences, or text before or after the JSON.")
 
 
 def _strategy_contract(recruitable_defs: Iterable[str] = ()) -> str:
@@ -955,7 +956,8 @@ def _strategy_contract(recruitable_defs: Iterable[str] = ()) -> str:
         "at your own finish, village ownership and income are engine facts. "
         "Routine code executes validated recruitment, scout, village, rally and no-sweep finish steps; "
         "it pauses on typed exceptions such as contact, promotion, blocked recruitment, or unavailable facts.\n"
-        "Return exactly one JSON object with kind set_policy, act, finish_turn, or resign. "
+        "Return exactly one complete JSON object with kind set_policy, act, finish_turn, or resign; "
+        "output no prose, markdown fences, or text before or after the JSON. "
         "A set_policy replaces the prior installation. Its policy has reserve_gold (integer), "
         "recruits (0-8 ordered entries, each exact def_id/count/role with count 1-32 and role scout or army), "
         "scouts (0-8 existing friendly integer IDs; existing plus new scout recruits <=8), "

@@ -87,6 +87,7 @@ except ImportError:  # pragma: no cover - direct script compatibility
 
 ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "Engage", "EndTurn", "Advance", "Resign",
            "DoneWithImportantMoves", "FinishWithGreedy", "MoveGroupToward"}
+MAX_STRATEGY_RECOVERED_SUFFIX_BYTES = 2048
 CHECKPOINT_REF_DIGEST_BYTES = 64
 
 
@@ -1048,6 +1049,47 @@ class ModelCallBudgetExhausted(RuntimeError):
 
 class PromptTooLarge(RuntimeError):
     """The fully assembled prompt cannot be sent under the configured cap."""
+
+
+def decode_strategy_response(text: str) -> tuple[Any, str | None]:
+    """Decode one strategy object, allowing one bounded trailing prose note.
+
+    Recovery is deliberately narrower than a general JSON extractor.  It is
+    entered only for the parser's ``Extra data`` error, then accepts exactly
+    one leading object followed by whitespace and plain prose.  The caller
+    still runs the normal strategy union and engine validators on the object.
+    """
+    try:
+        return json.loads(text), None
+    except json.JSONDecodeError as original:
+        if original.msg != "Extra data":
+            raise
+        if not isinstance(text, str):
+            raise
+        decoder = json.JSONDecoder()
+        offset = len(text) - len(text.lstrip())
+        try:
+            value, end = decoder.raw_decode(text, offset)
+        except json.JSONDecodeError:
+            raise original
+        if not isinstance(value, dict) or end >= len(text) or not text[end].isspace():
+            raise original
+        suffix = text[end:].strip()
+        if not suffix or len(suffix.encode("utf-8")) > MAX_STRATEGY_RECOVERED_SUFFIX_BYTES:
+            raise original
+        if any(char in suffix for char in "{}[]`"):
+            raise original
+        if any(ord(char) < 0x20 and char not in "\n\r\t" for char in suffix):
+            raise original
+        # A suffix that is itself a complete JSON value is ambiguous and must
+        # not be mistaken for a harmless note, even if it has extra text.
+        try:
+            decoder.raw_decode(suffix)
+        except json.JSONDecodeError:
+            pass
+        else:
+            raise original
+        return value, suffix
 
 
 def _raise_preview_query_error(response: Any, query: str) -> None:
@@ -6182,7 +6224,7 @@ def run(args: argparse.Namespace) -> int:
             if reply.usage is None:
                 metadata["usage_measured"] = False
             try:
-                decoded = json.loads(reply.text)
+                decoded, recovered_suffix = decode_strategy_response(reply.text)
             except (TypeError, ValueError) as exc:
                 if repair_attempted:
                     raise ModelResponseError(f"response is not valid JSON: {exc}") from exc
@@ -6192,6 +6234,12 @@ def run(args: argparse.Namespace) -> int:
                                    str(exc) + "). Return exactly one strategy response object.")
                 tool_context = ""
                 continue
+            if recovered_suffix is not None:
+                record({"type": "strategy_response_recovered",
+                        "request_id": reply.request_id,
+                        "prompt_hash": reply.prompt_hash,
+                        "suffix_bytes": len(recovered_suffix.encode("utf-8")),
+                        "suffix": recovered_suffix})
             # A valid JSON object without a strategy kind may be a read-only
             # inspection request. It is executed only at the current revision.
             if isinstance(decoded, dict) and tool_request_name(decoded) is not None:

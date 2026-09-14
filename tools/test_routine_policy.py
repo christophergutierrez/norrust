@@ -410,7 +410,7 @@ class ContactHandlingTests(unittest.TestCase):
         # 1's set. Handle them in the client loop's exception path." None of
         # Each reaches the model through the ordinary exception path exactly
         # like recruitment_blocked already does above.
-        for reason in ("unsafe_route", "invalid_assignment", "objectives_complete"):
+        for reason in ("unsafe_route", "route_unavailable", "invalid_assignment", "objectives_complete"):
             with self.subTest(reason=reason):
                 self.assertIn(reason, rp.ROUTINE_EXCEPTION_CODES)
                 installation = rp.install_policy(valid_stack1_policy())
