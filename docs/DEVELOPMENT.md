@@ -342,3 +342,11 @@ The suite covers the four-response union, contact and exposure exceptions,
 model-owned tactical provenance, one bounded response repair, revision-stale
 inspection recovery, and final-only boundaries. A skipped driver test is a
 coverage gap and does not constitute acceptance.
+
+For the strategy trial follow-up, the exact-progress benchmark is recorded in
+[the read-only benchmark artifact](experiments/strategy-trial-followup-exact-progress-2026-09-14.md).
+It resumes trial 3's revision-84 checkpoint, sends the complete installed
+policy and committed progress to the `routine_next` query, and records the
+source, binary, policy, progress and checkpoint hashes. Use the release binary
+from a source-matched build for launch examples; a debug build is useful for
+development checks but is not the launch artifact.

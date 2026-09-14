@@ -15,7 +15,7 @@ Read current source and docs, not a stale worker checkout or historical handoff.
 Record `git rev-parse HEAD` and `git status --short`, and build from that source:
 
 ```bash
-cargo build --lib --bin greedy_driver --bin dump_checkpoint --manifest-path norrust_core/Cargo.toml
+cargo build --release --lib --bin greedy_driver --bin dump_checkpoint --manifest-path norrust_core/Cargo.toml
 ```
 
 Keep source and settings fixed during the run. Use a new directory per game.
@@ -33,8 +33,10 @@ repository root. The heredoc prepares data; the final command launches the game.
 
 ```bash
 export NORRUST_TRIAL_ROOT="$PWD/tmp/glm-strategy-$(date -u +%Y%m%dT%H%M%SZ)"
+export NORRUST_RELEASE_DRIVER="$PWD/norrust_core/target/release/greedy_driver"
+test -x "$NORRUST_RELEASE_DRIVER"
 mkdir "$NORRUST_TRIAL_ROOT"
-cat > "$NORRUST_TRIAL_ROOT/requested-manifest.json" <<'JSON'
+cat > "$NORRUST_TRIAL_ROOT/requested-manifest.json" <<JSON
 {
   "experiment_kind": "matched",
   "cells": [{
@@ -42,8 +44,13 @@ cat > "$NORRUST_TRIAL_ROOT/requested-manifest.json" <<'JSON'
     "faction0": "undead", "faction1": "undead", "gold": 300,
     "llm_side": 0, "max_turns": 6,
     "model": "accounts/fireworks/models/glm-5p3-flash",
+    "driver": "$NORRUST_RELEASE_DRIVER",
     "decision_mode": "strategy", "action_encoding": "coordinates",
     "incremental_turns": true, "reasoning_effort": null,
+    "pricing": {"date": "2026-09-13", "rates": {
+      "input_per_million": 0.15, "cached_input_per_million": 0.03,
+      "output_per_million": 0.50, "reasoning_included_in_output": true
+    }},
     "budgets": {
       "max_game_total_tokens": 200000, "model_timeout": 900,
       "turn_timeout": 2100, "query_budget_seconds": 300,
@@ -69,8 +76,16 @@ owned-process stop facility at the 45-minute wall deadline. Existing output
 exhaustion rules still apply. It imports every available result into
 `recording/catalog.sqlite` and writes `recording/report.json`; inspect per-cell
 status because the reporting command can succeed while a game failed. Rates
-were intentionally omitted from this example: its cost stays unknown until a
-dated pricing object is supplied, as described in [MODEL_BAKEOFF.md](MODEL_BAKEOFF.md).
+are recorded in the manifest using the schema described in
+[MODEL_BAKEOFF.md](MODEL_BAKEOFF.md); the estimate remains unknown when the
+required usage fields are missing.
+
+The dated rates in this example are the existing 2026-09-13 Fireworks GLM-5.3
+Flash evidence: $0.15/M uncached input, $0.03/M cached input, and $0.50/M
+output, with `reasoning_included_in_output: true`. They produce an estimate
+when usage coverage is complete; they are neither an invoice nor a hard dollar
+cap. Recheck them read-only before any paid launch and leave cost unknown when
+the required usage fields are missing.
 
 Announce and persist the run path, source commit, command and tool session ID
 when launching. Wait using the client application's background-process facility;
