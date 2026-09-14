@@ -41,7 +41,8 @@ OFFLINE_DRIVER = model_bakeoff.DEFAULT_DRIVER
 PILOT_PRICING = {
     "date": "2026-09-13",
     "rates": {"input_per_million": 0.15, "cached_input_per_million": 0.03,
-               "output_per_million": 0.5},
+               "output_per_million": 0.5,
+               "reasoning_included_in_output": True},
 }
 
 

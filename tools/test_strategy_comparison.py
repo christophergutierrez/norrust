@@ -24,6 +24,7 @@ class StrategyManifestTests(unittest.TestCase):
         self.assertEqual(manifest["pilot_limits"]["seed"], 2038)
         self.assertEqual(manifest["pilot_limits"]["completed_engine_side_turns"], 6)
         self.assertEqual(manifest["pilot_limits"]["paid_cells_max"], 2)
+        self.assertTrue(manifest["pricing"]["rates"]["reasoning_included_in_output"])
 
     def test_strategy_fixed_argv_has_no_model_backend(self):
         manifest = strategy.load_prepared_pilot()

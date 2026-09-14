@@ -70,6 +70,21 @@ class BakeoffMetricsPricingTests(unittest.TestCase):
         self.assertIsNone(result["reasoning_tokens"])
         self.assertEqual(result["field_coverage"]["reasoning_tokens"]["unknown_calls"], 1)
 
+    def test_real_shaped_nullable_cache_write_has_known_cost(self):
+        usage = {
+            "input_tokens": 1000, "cached_input_tokens": 400,
+            "cache_write_input_tokens": None, "output_tokens": 200,
+            "reasoning_tokens": 150, "total_tokens": 1200,
+        }
+        rates = {"input_per_million": 0.15,
+                 "cached_input_per_million": 0.03,
+                 "output_per_million": 0.5,
+                 "reasoning_included_in_output": True}
+        self.assertAlmostEqual(bm.compute_call_cost(usage, custom_prices=rates), 0.000202, places=9)
+        aggregate = bm.aggregate_usage([{"call_id": "fireworks-1", **usage}], custom_prices=rates)
+        self.assertEqual(aggregate["cost_coverage"], "complete")
+        self.assertAlmostEqual(aggregate["known_cost"], 0.000202, places=9)
+
     def test_repeated_lifecycle_row_is_one_physical_call(self):
         calls = [{"game_id": "g", "call_id": "provider-1", "status": "dispatched",
                   "input_tokens": 100, "cached_input_tokens": 0, "output_tokens": None,
