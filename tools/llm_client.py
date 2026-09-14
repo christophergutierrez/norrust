@@ -906,7 +906,7 @@ def timeout_finish_orders(state: dict[str, Any], faction: int,
         if isinstance(hp, int) and isinstance(max_hp, int) and hp * 3 <= max_hp:
             held[unit_id] = "critically wounded"
             continue
-        if unit.get("moved") is False or unit.get("attacked") is False:
+        if not bool(unit.get("moved")) or not bool(unit.get("attacked")):
             eligible.append(unit_id)
     orders: list[dict[str, Any]] = []
     orders.append({"action": "FinishWithGreedy",
@@ -1144,75 +1144,58 @@ def query_validate_batch(exchange, orders: list[dict[str, Any]], state_revision:
 
 
 def concise_engine_rejection(orders: Any, validation: Any) -> str:
-    """Describe the first rejected authored action without hiding raw facts.
-
-    Driver validation is intentionally retained separately by callers.  This
-    bounded line is the model-facing index: it identifies the authored action,
-    all common involved unit IDs, its destination when present, and the engine
-    code/message without dumping the complete result array into the headline.
-    """
+    """Summarize failed authored orders while leaving the validation record intact."""
     if not isinstance(orders, list):
         orders = []
     if not isinstance(validation, dict):
         validation = {"error_message": str(validation)}
-    failed_index = validation.get("failed_index")
-    if not isinstance(failed_index, int) or isinstance(failed_index, bool):
-        failed_index = None
     results = validation.get("results")
-    if failed_index is None and isinstance(results, list):
-        failed_index = next((index for index, item in enumerate(results)
-                             if isinstance(item, dict) and item.get("ok") is False), None)
-    failed_order = (orders[failed_index] if failed_index is not None
-                    and 0 <= failed_index < len(orders) else None)
-    result = None
-    if isinstance(results, list) and failed_index is not None and 0 <= failed_index < len(results):
-        result = results[failed_index]
-    if not isinstance(result, dict):
-        result = {}
-    action = failed_order.get("action", "unknown") if isinstance(failed_order, dict) else "unknown"
-    identifiers: list[str] = []
-    if isinstance(failed_order, dict):
+    failures = []
+    if isinstance(results, list):
+        failures = [(index, item) for index, item in enumerate(results)
+                    if isinstance(item, dict) and item.get("ok") is False]
+    failed_index = validation.get("failed_index")
+    if (isinstance(failed_index, int) and not isinstance(failed_index, bool)
+            and failed_index >= 0 and all(index != failed_index for index, _ in failures)):
+        failures.append((failed_index, {}))
+    summaries = []
+    for index, result in failures[:8]:
+        result = result if isinstance(result, dict) else {}
+        order = orders[index] if 0 <= index < len(orders) and isinstance(orders[index], dict) else {}
+        action = order.get("action", "unknown")
+        details = [f"index={index}", f"action={action}"]
         for key in ("unit_id", "attacker_id", "defender_id", "target_id", "recruiter_id"):
-            value = failed_order.get(key)
+            value = order.get(key)
             if isinstance(value, int) and not isinstance(value, bool):
                 label = "unit" if key == "unit_id" else key.removesuffix("_id")
-                identifiers.append(f"{label}=U{value}")
-        unit_ids = failed_order.get("unit_ids")
+                details.append(f"{label}=U{value}")
+        unit_ids = order.get("unit_ids")
         if isinstance(unit_ids, list):
             values = [f"U{value}" for value in unit_ids
                       if isinstance(value, int) and not isinstance(value, bool)]
             if values:
-                identifiers.append("units=" + ",".join(values))
-        if action == "Engage" and isinstance(failed_order.get("steps"), list):
+                details.append("units=" + ",".join(values))
+        destination = None
+        if isinstance(order.get("col"), int) and isinstance(order.get("row"), int):
+            destination = f"({order['col']},{order['row']})"
+        elif isinstance(order.get("steps"), list):
             step_index = result.get("step_index")
-            if isinstance(step_index, int) and 0 <= step_index < len(failed_order["steps"]):
-                step = failed_order["steps"][step_index]
-                if isinstance(step, dict):
-                    value = step.get("attacker_id")
-                    if isinstance(value, int) and not isinstance(value, bool):
-                        identifiers.append(f"step_attacker=U{value}")
-    destination = None
-    if isinstance(failed_order, dict):
-        if isinstance(failed_order.get("col"), int) and isinstance(failed_order.get("row"), int):
-            destination = f"({failed_order['col']},{failed_order['row']})"
-        elif action == "Engage" and isinstance(result.get("nested"), dict):
-            nested = result["nested"]
-            if isinstance(nested.get("col"), int) and isinstance(nested.get("row"), int):
-                destination = f"({nested['col']},{nested['row']})"
-        elif isinstance(failed_order.get("steps"), list):
-            step_index = result.get("step_index")
-            if isinstance(step_index, int) and 0 <= step_index < len(failed_order["steps"]):
-                step = failed_order["steps"][step_index]
+            if isinstance(step_index, int) and 0 <= step_index < len(order["steps"]):
+                step = order["steps"][step_index]
                 if isinstance(step, dict) and isinstance(step.get("col"), int) and isinstance(step.get("row"), int):
                     destination = f"({step['col']},{step['row']})"
-    code = result.get("code", validation.get("error_code", validation.get("code", "unknown")))
-    message = result.get("message", validation.get("error_message", validation.get("message", "validation failed")))
-    details = [f"index={failed_index if failed_index is not None else 'unknown'}", f"action={action}"]
-    details.extend(identifiers)
-    if destination is not None:
-        details.append(f"destination={destination}")
-    details.append(f"error={code}: {message}")
-    return "ENGINE_REJECTION " + " ".join(details)
+        if destination is not None:
+            details.append(f"destination={destination}")
+        code = result.get("code", validation.get("error_code", validation.get("code", "unknown")))
+        message = result.get("message", validation.get("error_message", validation.get("message", "validation failed")))
+        details.append(f"error={code}: {message}")
+        summaries.append(" ".join(details))
+    omitted = max(0, len(failures) - 8)
+    if not summaries:
+        summaries.append("index=unknown action=unknown error=%s: %s" % (
+            validation.get("error_code", validation.get("code", "unknown")),
+            validation.get("error_message", validation.get("message", "validation failed"))))
+    return "ENGINE_REJECTION " + "; ".join(summaries) + (f" omitted_failures={omitted}" if omitted else "")
 
 
 def engine_validation_feedback(orders: Any, validation: Any) -> str:
@@ -2801,7 +2784,7 @@ def handoff_audit(state: dict[str, Any], orders: list[dict[str, Any]],
     healthy_idle = {unit["id"] for unit in units
                     if isinstance(unit.get("id"), int) and not unit.get("can_recruit")
                     and unit.get("hp", 0) * 3 > unit.get("max_hp", 1)
-                    and unit.get("moved") is False and unit.get("attacked") is False}
+                    and not unit.get("moved") and not unit.get("attacked")}
     available = set((coverage or {}).get("available", set()))
     actionable_idle = healthy_idle & available
     recruitment = state.get("tactical_surface", {}).get("recruitment", {})
@@ -4114,9 +4097,9 @@ def build_completion_audit_data(state: dict[str, Any], agenda: Optional[dict[str
     for u in state.get("units", []):
         if isinstance(u, dict) and u.get("faction") == active_faction:
             uid = u.get("id")
-            if uid is not None and u.get("moved") is False:
+            if uid is not None and not u.get("moved"):
                 movement_remaining.append(uid)
-            if uid is not None and u.get("attacked") is False:
+            if uid is not None and not u.get("attacked"):
                 attack_remaining.append(uid)
             if uid is not None and u.get("advancement_pending"):
                 promotions.append(uid)
@@ -4228,9 +4211,7 @@ def compact_observation(state: dict[str, Any], *, include_map: bool = True,
                                      include_terrain=include_map).splitlines())
     lines.append("units:")
     for unit in units:
-        flags = "moved=%s attacked=%s movement=%s" % (
-            unit.get("moved", "unknown"), unit.get("attacked", "unknown"),
-            unit.get("movement", "unknown"))
+        flags = "moved=%s attacked=%s" % (unit.get("moved", "unknown"), unit.get("attacked", "unknown"))
         terrain_name = terrain_at.get((unit.get("col"), unit.get("row")), "?")
         line = (f"  id={unit.get('id','?')} faction={unit.get('faction','?')} def={unit.get('def_id','?')} "
                 f"pos=({unit.get('col','?')},{unit.get('row','?')}) terrain={terrain_name} "
@@ -4652,7 +4633,7 @@ def _local_live_rows(state: dict[str, Any], entity_ids: list[int]) -> list[dict[
         if not isinstance(unit, dict):
             rows.append({"id": unit_id, "side": "unknown", "type": "unknown",
                          "position": "unknown", "hp": "unknown", "max_hp": "unknown",
-                         "moved": "unknown", "attacked": "unknown", "movement": "unknown", "poisoned": "unknown",
+                         "moved": "unknown", "attacked": "unknown", "poisoned": "unknown",
                          "slowed": "unknown", "promotion": "unknown", "profile_ref": "unknown"})
             continue
         def pair(col: str, row: str) -> list[Any] | str:
@@ -4668,7 +4649,6 @@ def _local_live_rows(state: dict[str, Any], entity_ids: list[int]) -> list[dict[
             "max_hp": unit.get("max_hp", "unknown"),
             "moved": unit.get("moved", "unknown"),
             "attacked": unit.get("attacked", "unknown"),
-            "movement": unit.get("movement", "unknown"),
             "poisoned": unit.get("poisoned", "unknown"),
             "slowed": unit.get("slowed", "unknown"),
             "promotion": promotion,
@@ -6429,6 +6409,7 @@ def run(args: argparse.Namespace) -> int:
                         record({"type": "strategy_batch_validation", "orders": submitted,
                                 "valid": False, "validation": copy.deepcopy(validation)})
                         raise ModelResponseError(
+                            "engine rejected strategy act: " +
                             engine_validation_feedback(submitted, validation))
                 if isinstance(parsed, ChooseResponse):
                     if isinstance(state, dict) and state.get("final_only") and not parsed.finish_turn:
@@ -6456,6 +6437,7 @@ def run(args: argparse.Namespace) -> int:
                         record({"type": "strategy_batch_validation", "orders": submitted,
                                 "valid": False, "validation": copy.deepcopy(validation)})
                         raise ModelResponseError(
+                            "engine rejected strategy choose: " +
                             engine_validation_feedback(submitted, validation))
                 return parsed, reply
             except (ModelResponseError, PolicyValidationError) as exc:
@@ -7399,12 +7381,6 @@ def run(args: argparse.Namespace) -> int:
                             prompt + "\nDRAFT_ACTIONS_UNTRUSTED_DATA_BEGIN:\n" + json.dumps(
                                 orders, sort_keys=True, separators=(",", ":")) +
                             "\nDRAFT_ACTIONS_UNTRUSTED_DATA_END\n" + repair_rationale +
-                            engine_validation_feedback(orders, {
-                                "failed_index": line.get("failed_index"),
-                                "results": line.get("results", []),
-                                "error_code": failure.get("code", "unknown"),
-                                "error_message": failure.get("message", "validation failed"),
-                            }) +
                             "ENGINE_ACTION_ERROR: " + json.dumps(
                                 failure, sort_keys=True, separators=(",", ":")
                             ) + "\nROLLBACK_NOTICE: the entire preceding action batch was rejected "
@@ -7962,10 +7938,7 @@ def run(args: argparse.Namespace) -> int:
                         final_reply = None
                         timeout_fallback = True
                         metadata["timeout_finishes"] += 1
-                        progress = state.get("turn_progress")
-                        if (isinstance(progress, dict)
-                                and progress.get("moved") == []
-                                and progress.get("attacked") == []):
+                        if not state.get("turn_progress", {}).get("moved") and not state.get("turn_progress", {}).get("attacked"):
                             metadata["timeout_fallback_only_turns"] += 1
                         record({"type": "timeout_fallback", "orders": orders,
                                 "message": str(first),
@@ -8410,10 +8383,16 @@ def run(args: argparse.Namespace) -> int:
                                 + "\nDRAFT_ACTIONS_UNTRUSTED_DATA_END\n"
                             )
                             error_block = (
-                                engine_validation_feedback(rejected_orders, rejected_error)
-                                + "ENGINE_ACTION_ERROR: "
-                                + json.dumps(rejected_error, sort_keys=True,
-                                             separators=(",", ":"), ensure_ascii=False)
+                                "ENGINE_ACTION_ERROR: "
+                                + json.dumps(
+                                    {
+                                        "code": "validate_batch_failed",
+                                        "failed_index": rejected_error.get("failed_index"),
+                                        "results": rejected_error.get("results"),
+                                    },
+                                    sort_keys=True,
+                                    separators=(",", ":"),
+                                )
                                 + "\n"
                             )
                         rejected_unit_id = None

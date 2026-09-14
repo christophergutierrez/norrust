@@ -100,6 +100,31 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn('"failed_index":0', feedback)
         self.assertIn('"results"', feedback)
 
+    def test_engine_rejection_lists_failed_orders_with_bounded_omission_count(self):
+        orders = [{"action": "Move", "unit_id": unit_id, "col": 4, "row": 6}
+                  for unit_id in range(5, 15)]
+        validation = {
+            "valid": False, "failed_index": 0,
+            "results": [{"ok": False, "code": "AlreadyMoved", "message": "unit already moved"}
+                        if unit_id in {5, 6, 7, 8} else
+                        {"ok": False, "code": "DestinationOccupied", "message": "destination is occupied"}
+                        if unit_id == 14 else {"ok": True}
+                        for unit_id in range(5, 15)],
+        }
+        line = concise_engine_rejection(orders, validation)
+        for unit_id in (5, 6, 7, 8, 14):
+            self.assertIn(f"unit=U{unit_id}", line)
+        self.assertIn("DestinationOccupied: destination is occupied", line)
+        self.assertIn("destination=(4,6)", line)
+
+        capped = {"valid": False, "failed_index": 0,
+                  "results": [{"ok": False, "code": "MoveError"} for _ in orders]}
+        capped_line = concise_engine_rejection(orders, capped)
+        self.assertIn("unit=U12", capped_line)
+        self.assertNotIn("unit=U13", capped_line)
+        self.assertNotIn("unit=U14", capped_line)
+        self.assertIn("omitted_failures=2", capped_line)
+
     def test_direct_resume_honors_accepted_stop_without_dispatch(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
