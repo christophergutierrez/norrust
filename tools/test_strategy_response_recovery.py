@@ -136,6 +136,24 @@ class StrategyResponseRecoveryDriverTests(unittest.TestCase):
                 self.assertEqual(sum(row.get('type') == 'strategy_response_repair' for row in rows), 1)
                 self.assertFalse(any(event.get('kind') == 'attack' for event in events(rows)))
 
+    def test_recovered_objects_still_use_schema_and_engine_validation(self):
+        cases = (
+            '{"kind":"act","actions":[],"finish_turn":false}\ninvalid shape note',
+            '{"kind":"act","actions":[{"action":"EndTurn"}],"finish_turn":false}\nillegal action note',
+        )
+        for invalid in cases:
+            with self.subTest(invalid=invalid):
+                result, rows, call_count = self._run(
+                    invalid, responses_after=['{"kind":"finish_turn"}'])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(call_count, '3')
+                self.assertEqual(sum(row.get('type') == 'strategy_response_recovered'
+                                     for row in rows), 1)
+                self.assertEqual(sum(row.get('type') == 'strategy_response_repair'
+                                     for row in rows), 1)
+                self.assertFalse(any(event.get('kind') in {'attack', 'move', 'recruit'}
+                                     for event in events(rows)))
+
     def test_provider_output_limit_retry_is_not_json_recovery(self):
         result, rows, call_count = self._run(
             '{"kind":"finish_turn"}', output_limit_first=True,
