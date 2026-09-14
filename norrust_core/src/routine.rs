@@ -753,7 +753,7 @@ pub fn routine_next(
                     };
                 };
                 return RoutineOutcome::Exception {
-                    reason: "unsafe_route",
+                    reason: "route_unavailable",
                     evidence: json!({"unit_id":id,"target":coord(village),"cause":"unreachable_or_no_legal_endpoint"}),
                 };
             }
@@ -803,7 +803,7 @@ pub fn routine_next(
     }
     if let Some(village) = unreachable_unassigned_village(state, policy, progress, side, &scouts) {
         return RoutineOutcome::Exception {
-            reason: "unsafe_route",
+            reason: "route_unavailable",
             evidence: json!({"target":coord(village),"cause":"unreachable_or_no_legal_endpoint"}),
         };
     }
@@ -1029,7 +1029,7 @@ pub fn routine_next(
                     continue;
                 }
                 return RoutineOutcome::Exception {
-                    reason: "unsafe_route",
+                    reason: "route_unavailable",
                     evidence: json!({"unit_id":id,"target":coord(rally),"cause":"unreachable_or_no_legal_endpoint"}),
                 };
             }
@@ -1618,7 +1618,7 @@ mod tests {
     }
 
     #[test]
-    fn unreachable_village_and_rally_are_typed_unsafe_routes() {
+    fn unreachable_village_and_rally_are_route_unavailable() {
         let registry = units();
         let (mut s, village) = village_state();
         let mut scout = Unit::from_def(2, registry.get("Ghost").unwrap(), 0);
@@ -1644,7 +1644,7 @@ mod tests {
         };
         assert!(matches!(
             routine_next(&s, 0, &village_policy, &assigned, &[], &registry),
-            RoutineOutcome::Exception { reason: "unsafe_route", evidence }
+            RoutineOutcome::Exception { reason: "route_unavailable", evidence }
                 if evidence["cause"] == "unreachable_or_no_legal_endpoint"
         ));
         let rally_policy = RoutinePolicy {
@@ -1660,7 +1660,7 @@ mod tests {
                 &[],
                 &registry
             ),
-            RoutineOutcome::Exception { reason: "unsafe_route", evidence }
+            RoutineOutcome::Exception { reason: "route_unavailable", evidence }
                 if evidence["cause"] == "unreachable_or_no_legal_endpoint"
         ));
     }
@@ -1685,6 +1685,31 @@ mod tests {
             shorter_outcome,
             RoutineOutcome::Action { action, reason: "rally", .. }
                 if action["unit_id"] == 2 && action["col"] == 6 && action["row"] == 2
+        ));
+    }
+
+    #[test]
+    fn reachable_but_dangerous_endpoint_reports_contact() {
+        let registry = units();
+        let mut s = state();
+        let rally = Hex::from_offset(6, 2);
+        let mut mover = Unit::from_def(2, registry.get("Skeleton").unwrap(), 0);
+        mover.movement = 1;
+        mover.attacks.clear();
+        s.place_unit(mover, Hex::from_offset(2, 2));
+        let mut enemy = Unit::from_def(9, registry.get("Skeleton Archer").unwrap(), 1);
+        enemy.movement = 0;
+        s.place_unit(enemy, Hex::from_offset(4, 3));
+        let p = RoutinePolicy {
+            rally: Some(rally),
+            ..policy(&[])
+        };
+        let outcome = routine_next(&s, 0, &p, &RoutineProgress::default(), &[], &registry);
+        assert!(matches!(
+            outcome,
+            RoutineOutcome::Exception { reason: "contact", evidence }
+                if evidence["stage"] == "proposed_destination"
+                    && evidence["unit_id"] == 2
         ));
     }
 
