@@ -1144,9 +1144,19 @@ fn handle_routine_next_query(
             action,
             progress_update,
             reason,
+            independent_move,
         } => {
+            let mut body = json!({
+                "result": "action",
+                "action": action,
+                "progress_update": progress_update,
+                "reason": reason,
+            });
+            if let Some(indep) = independent_move {
+                body["independent_move"] = indep;
+            }
             json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,
-                "body":{"result":"action","action":action,"progress_update":progress_update,"reason":reason}})
+                "body": body})
         }
         routine::RoutineOutcome::Finish { reason, progress_update } => {
             json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,

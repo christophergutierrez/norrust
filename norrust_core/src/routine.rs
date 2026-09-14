@@ -57,6 +57,7 @@ pub enum RoutineOutcome {
         action: Value,
         progress_update: Value,
         reason: &'static str,
+        independent_move: Option<Value>,
     },
     Finish {
         reason: &'static str,
@@ -350,12 +351,15 @@ fn next_recruit<'a>(
         .enumerate()
         .find(|(i, e)| recruited_done(progress, *i) < e.count)
 }
-fn coord(hex: Hex) -> Value {
+pub(crate) fn coord(hex: Hex) -> Value {
     let (col, row) = hex.to_offset();
     json!({"col":col,"row":row})
 }
-fn recruiter(unit: &Unit) -> bool {
+pub(crate) fn is_recruiter(unit: &Unit) -> bool {
     unit.can_recruit || unit.abilities.iter().any(|a| a == "leader")
+}
+fn recruiter(unit: &Unit) -> bool {
+    is_recruiter(unit)
 }
 fn scout_ids(policy: &RoutinePolicy, progress: &RoutineProgress) -> Vec<u32> {
     let mut ids = policy.scouts.clone();
@@ -430,7 +434,7 @@ pub struct CurrentContactFacts {
     pub coverage: &'static str,
 }
 
-fn current_contact(state: &GameState, side: u8) -> Result<Option<CurrentContactFacts>, TacticsError> {
+pub(crate) fn current_contact(state: &GameState, side: u8) -> Result<Option<CurrentContactFacts>, TacticsError> {
     let mut attack_friendly = Vec::new();
     let mut attack_enemy = Vec::new();
     for u in turn_tactics(state, side)? {
@@ -519,7 +523,7 @@ fn post_step_safe(state: &GameState, side: u8, action: Action) -> Result<bool, T
 /// Return legal endpoints on a shortest terrain-cost route, ordered from
 /// furthest to nearest. The engine permits occupied intermediate hexes; only
 /// the submitted endpoint must be empty.
-fn route_endpoints(state: &GameState, unit_id: u32, goals: &[Hex]) -> Vec<(Hex, bool)> {
+pub(crate) fn route_endpoints(state: &GameState, unit_id: u32, goals: &[Hex]) -> Vec<(Hex, bool)> {
     let Some(unit) = state.units.get(&unit_id) else {
         return Vec::new();
     };
@@ -723,7 +727,7 @@ fn unreachable_unassigned_village(
     }
     None
 }
-fn rally_goals(state: &GameState, rally: Hex) -> Vec<Hex> {
+pub(crate) fn rally_goals(state: &GameState, rally: Hex) -> Vec<Hex> {
     if !state.hex_to_unit.contains_key(&rally) {
         return vec![rally];
     }
@@ -790,6 +794,45 @@ pub fn routine_next(
     }
     match current_contact(state, side) {
         Ok(Some(facts)) => {
+            match crate::routine_independent::find_independent_move(
+                state, side, policy, progress, &scouts, &facts,
+            ) {
+                Ok(Some(indep)) => {
+                    let (col, row) = indep.candidate.destination.to_offset();
+                    let (obj_col, obj_row) = indep.candidate.objective_target.to_offset();
+                    let deferred_incident_key = json!({
+                        "reason": "contact",
+                        "stage": "current_state",
+                        "trigger": facts.trigger,
+                        "friendly_unit_ids": facts.friendly_unit_ids,
+                        "enemy_unit_ids": facts.enemy_unit_ids,
+                    });
+                    let independent_move_meta = json!({
+                        "policy_objective": {
+                            "type": indep.candidate.objective_kind,
+                            "target": {"col": obj_col, "row": obj_row},
+                        },
+                        "coverage": "complete",
+                        "pre_tactical_hash": indep.pre_tactical_hash,
+                        "post_tactical_hash": indep.post_tactical_hash,
+                        "deferred_incident_key": deferred_incident_key,
+                    });
+                    return RoutineOutcome::Action {
+                        action: json!({"action":"Move","unit_id":indep.candidate.unit_id,"col":col,"row":row}),
+                        progress_update: progress_update(indep.candidate.progress_effects),
+                        reason: indep.candidate.reason,
+                        independent_move: Some(independent_move_meta),
+                    };
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    return RoutineOutcome::Exception {
+                        reason: "threat_unavailable",
+                        evidence: json!({"stage":"current_state","detail":e.to_string()}),
+                    };
+                }
+            }
+
             return RoutineOutcome::Exception {
                 reason: "contact",
                 evidence: json!({
@@ -859,6 +902,7 @@ pub fn routine_next(
                             action: json!({"action":"Move","unit_id":id,"col":destination.to_offset().0,"row":destination.to_offset().1}),
                             progress_update: progress_update(effects),
                             reason: "village",
+                            independent_move: None,
                         };
                     }
                     Ok(false) => unsafe_destination = Some(destination),
@@ -973,6 +1017,7 @@ pub fn routine_next(
                                     action: json!({"action":"Move","unit_id":id,"col":destination.to_offset().0,"row":destination.to_offset().1}),
                                     progress_update: progress_update(Vec::new()),
                                     reason: "castle_capacity",
+                                    independent_move: None,
                                 }
                             }
                             Ok(false) => unsafe_destination = Some((id, destination)),
@@ -1080,6 +1125,7 @@ pub fn routine_next(
             action: json!({"action":"Recruit","def_id":entry.def_id,"col":placement.to_offset().0,"row":placement.to_offset().1}),
             progress_update: progress_update(vec![json!({"kind":"recruited","queue_index":index})]),
             reason: "recruit",
+            independent_move: None,
         };
     }
     if let Some(rally) = policy.rally {
@@ -1130,6 +1176,7 @@ pub fn routine_next(
                             action: json!({"action":"Move","unit_id":id,"col":destination.to_offset().0,"row":destination.to_offset().1}),
                             progress_update: progress_update(Vec::new()),
                             reason: "rally",
+                            independent_move: None,
                         }
                     }
                     Ok(false) => unsafe_destination = Some(destination),

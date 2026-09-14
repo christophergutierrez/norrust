@@ -562,6 +562,7 @@ class RoutineActionResult:
     action: dict[str, Any]
     progress_update: dict[str, Any]
     reason: str
+    independent_move: Optional[dict[str, Any]] = None
 
 
 @dataclass
@@ -593,8 +594,12 @@ def parse_routine_result(body: dict[str, Any]) -> Any:
     if kind == "action":
         if "action" not in body or "progress_update" not in body or "reason" not in body:
             raise ValueError("routine_next action result is missing required fields")
-        return RoutineActionResult(action=body["action"], progress_update=body["progress_update"],
-                                    reason=body["reason"])
+        return RoutineActionResult(
+            action=body["action"],
+            progress_update=body["progress_update"],
+            reason=body["reason"],
+            independent_move=body.get("independent_move"),
+        )
     if kind == "finish":
         if body.get("reason") not in {"no_remaining_routine_steps", "objectives_complete"}:
             raise ValueError("routine_next finish result has an unexpected reason")

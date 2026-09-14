@@ -6548,6 +6548,17 @@ def run(args: argparse.Namespace) -> int:
                                  progress_update=result.progress_update, finish=True)
                 return None
             if isinstance(result, RoutineActionResult):
+                if result.independent_move:
+                    durable({
+                        "type": "independent_routine_move",
+                        "state_revision": revision,
+                        "action": result.action,
+                        "policy_objective": result.independent_move.get("policy_objective"),
+                        "coverage": result.independent_move.get("coverage"),
+                        "pre_tactical_hash": result.independent_move.get("pre_tactical_hash"),
+                        "post_tactical_hash": result.independent_move.get("post_tactical_hash"),
+                        "deferred_incident_key": result.independent_move.get("deferred_incident_key"),
+                    })
                 if isinstance(state, dict) and state.get("final_only"):
                     # The engine has already chosen this routine step. At a
                     # final-only boundary preserve the routine progress by
