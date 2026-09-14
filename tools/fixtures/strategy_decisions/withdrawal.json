@@ -103,7 +103,7 @@
         "advancement_pending": false,
         "attacked": false,
         "can_recruit": false,
-        "col": 3,
+        "col": 6,
         "def_id": "Skeleton",
         "faction": 1,
         "hp": 34,

@@ -19,7 +19,7 @@ screening manifest.
    - Test: Selected legal attack commits; fixture-defined enemy HP reduction / kill is observed.
 
 4. **withdrawal** (`withdrawal.json`):
-   - Position: Recruiter 1 at (2,7) threatened by Enemy Skeleton 3 at (3,7).
+   - Position: Recruiter 1 at (2,7) threatened by Enemy Skeleton 3 at (6,7).
    - Test: Selected legal move lowers exposure measure without killing the recruiter.
 
 5. **independent-scout-movement** (`independent_scout_movement.json`):
@@ -47,5 +47,10 @@ the stdin prompt.
 ## Fireworks Screening Manifest
 
 `fireworks_screening_manifest.json` specifies the reviewable 16-cell screening schedule
-alternating Stack 3 baseline against Stack 4 candidate across the 4 contact positions with
+alternating pre-decision-controller baseline `cb9a85b` against the accepted candidate across the 4 contact positions with
 GLM Flash, dated pricing, 75k token caps, and a $1.20 USD conservative ceiling.
+
+The withdrawal fixture was corrected before paid screening: the old adjacent-enemy
+position had no lower-exposure endpoint. The replacement keeps the recruiter threatened
+and permits withdrawal. The paired scorer in `tools.strategy_screening` measures
+committed board effects equally for custom actions and engine-option selections.

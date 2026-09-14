@@ -144,7 +144,7 @@
       "position": "withdrawal",
       "description": "Selected legal move lowers the fixture fully covered exposure measure without killing the recruiter",
       "checkpoint_fixture": "tools/fixtures/strategy_decisions/withdrawal.json",
-      "checkpoint_sha256": "3b9f679a4d56beb2abed3b304b5ed54900ec9d8fa665245a6af5a398391fd59a",
+      "checkpoint_sha256": "c08305040f6ed42efd6ca4a4cb7709d00db008659082d9ae4c14c2a550863b28",
       "actor_id": 1,
       "target_id": 3,
       "initial_facts": {

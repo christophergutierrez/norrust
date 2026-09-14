@@ -115,8 +115,36 @@ class TestFixturePreconditions(unittest.TestCase):
     self.assertEqual(recruiter["col"], 2)
     self.assertEqual(recruiter["row"], 7)
     self.assertEqual(enemy["faction"], 1)
-    self.assertEqual(enemy["col"], 3)
+    self.assertEqual(enemy["col"], 6)
     self.assertEqual(enemy["row"], 7)
+
+  @unittest.skipUnless(DRIVER.is_file(), "build greedy_driver first")
+  def test_withdrawal_has_engine_proven_lower_exposure_destination(self):
+    case = self.cases_by_id["withdrawal"]
+    payload = json.loads((ROOT / case["checkpoint_fixture"]).read_text())
+    payload["board_path"] = payload["save_state"]["board_path"] = str(
+      ROOT / "scenarios" / payload["scenario"] / "board.toml")
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    with tempfile.TemporaryDirectory() as td:
+      checkpoint = Path(td) / ("checkpoint-" + hashlib.sha256(encoded).hexdigest() + ".json")
+      checkpoint.write_bytes(encoded)
+      command = [str(DRIVER), "--scenario", payload["scenario"], "--faction0", "undead",
+                 "--faction1", "undead", "--gold", "300", "--seed", str(payload["seed"]),
+                 "--llm-side", "0", "--max-turns", "1", "--incremental-turns",
+                 "--resume-checkpoint", str(checkpoint)]
+      query = {"action": "Query", "what": "inspect_unit", "unit_id": 1, "state_revision": 0}
+      result = subprocess.run(command, input=json.dumps(query) + "\n", text=True,
+                              capture_output=True, timeout=30, cwd=ROOT)
+    self.assertEqual(result.returncode, 0, result.stderr)
+    reply = next(json.loads(line) for line in result.stdout.splitlines()
+                 if json.loads(line).get("what") == "inspect_unit")
+    self.assertTrue(reply["ok"])
+    destinations = reply["body"]["destination_threats"]
+    current = next(d for d in destinations if d["current"])
+    self.assertGreater(current["max_incoming_sum"], 0)
+    self.assertTrue(any(d["max_incoming_sum"] < current["max_incoming_sum"]
+                        and d["open_max_incoming_sum"] < current["open_max_incoming_sum"]
+                        for d in destinations if not d["current"]))
 
   def test_independent_scout_fixture_preconditions(self):
     case = self.cases_by_id["independent-scout-movement"]

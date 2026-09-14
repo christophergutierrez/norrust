@@ -137,6 +137,16 @@ A 16-cell bounded Fireworks screening schedule is prepared at `tools/fixtures/st
 python3 -m tools.strategy_comparison screening-manifest --out /tmp/screening.json
 ```
 
+The architectural screening compares baseline `cb9a85b` with the accepted current
+candidate, both built in release mode. The manifest is a schedule: freeze exact
+source/driver hashes and prepare each cell through its source's maintained runner.
+Use `tools.strategy_screening.score_cell` and `summarize` for treatment-neutral
+board-effect scoring; custom actions and engine-option selections receive the
+same credit. Pin withdrawal destinations with the engine's projected threat
+query before launch. Selection alone does not prove reduced exposure. Keep failed
+cells in token medians, reject duplicate/missing pairs, and never interpret a
+prepared packet or fake transport as evidence of model quality.
+
 After a recorded pilot, regenerate the strategy report from saved cell status
 and the run-local catalog:
 

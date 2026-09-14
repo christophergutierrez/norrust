@@ -8,7 +8,11 @@ The checkpoint is
 `tmp/glm-strategy-20260914T213554Z/recording/glm-strategy/match.ckpt/4-84-model-702b5c92a8ec920e9f2ca3a1e35d288c4bac315b24ac1e9e507b8587b8a45fb2.json`.
 The catalog and archive establish revision 84 as the start of controlled
 turn 3. The installed policy is the `pol-f9e7f4ac4721` installation and its
-committed progress is the empty applied-step ledger with scout IDs 3, 4 and 5.
+committed progress contains scout IDs 3, 4 and 5 and one adopted empty-effect
+batch: `b01d2ccdd51140eab1024e4a20accce5:batch:25` at revision 64. The query
+projection omits the internal applied-step ledger; an empty effect list is not
+an empty ledger. Reconstructing with the installation, batch and revision proof
+produces the exact request hash below.
 The exact canonical payloads used by the query have these SHA-256 values:
 
 | Evidence | SHA-256 |
@@ -67,6 +71,15 @@ The process remained alive after each reply, the initial state hash was stable
 across all five runs, and the checkpoint hash was unchanged before and after
 the benchmark. These are the no-mutation checks.
 
+The integration review independently reconstructed that committed progress and
+issued the identical query twice in one release-driver process. Replies were
+byte-equivalent after JSON normalization, both at revision 84, in 4.357 and
+4.292 seconds. The checkpoint hash stayed unchanged. The reconstructed runtime,
+query, results and repeat recipe are preserved in
+`tmp/strategy-trial-followup/benchmark/`. These checks supplement the existing
+engine query-purity tests; stable initial snapshots alone would not demonstrate
+that a query leaves the live process unchanged.
+
 The original debug binary is
 `974f99068c8893d2cba5090f5bbb54794ad0584019f427d26ec86ab7834c7e94`.
 It reached the same revision-84 state in 91 ms, but did not answer the same
@@ -75,3 +88,13 @@ the prior ten-second query target for the debug build. The release result is
 within that target; the observed difference is consistent with the debug
 binary's unoptimized routine computation. This is a benchmark failure to keep
 visible before any paid launch, not an approximate replay or a widened budget.
+
+## Integrated candidate check
+
+After rebuilding the integrated release driver, the same reconstructed query
+returned the same independent move twice in one process in 5.025 and 4.972
+seconds, below the ten-second target. Both replies were identical at revision
+84 and the checkpoint hash remained unchanged. Candidate driver SHA-256:
+`f6b7eb914b308cc3678602fceb6d08fa87dc5867644a690e172f41a6f1069829`. The full query/reply and adoption proofs are in
+`tmp/strategy-trial-followup/benchmark/repeat-result.json`; the earlier binary
+check is preserved separately as `original-repeat-result.json`.

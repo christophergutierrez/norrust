@@ -1,6 +1,7 @@
 # Strategy trial follow-up
 
-Status: planned for immediate execution with Luna High workers.
+Status: Stack 1 implemented with Luna High workers; final frozen-source gate
+and Stack 2 screening pending.
 Baseline: `ed6b765e24fb9e519751c8c8f723b59c1896cdd3`.
 
 ## Objective and scope
@@ -42,6 +43,15 @@ Three workers may run in isolated worktrees from the baseline:
 
 The integration owner controls shared-file resolution, evaluation tooling,
 full gates, commits and final handoff. Do not edit another worker's files.
+
+Offline audit additions to Stack 1 (before paid outcomes): the paired scorer
+must accept useful custom actions equally with engine options. The original
+withdrawal fixture had no lower-exposure destination; move its enemy farther
+away while retaining a proved starting threat and update fixture hashes/tests.
+Also correct tactical-option expected incoming damage: fixed focus-fire slots
+for one/two/three attackers contain zero padding, so reading only the last slot
+can falsely report zero for a real one-attacker threat. Use the greatest
+supported expected focus damage with explicit semantics and regression coverage.
 
 Acceptance:
 
