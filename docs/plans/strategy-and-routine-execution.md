@@ -1,9 +1,12 @@
 # Strategy decisions with automatic routine execution
 
-Status: recovery plan for execution by **Luna High subagents**. Updating this
-plan does not launch workers or games. When asked to execute it, resume from
-section 0 and the work packets in section 8; do not restart Stack 1. Finish
-Stacks 2–4 and the existing bounded pilot. No wider model tournament is in scope.
+Status: **executed using Luna High subagents**. Stacks 2–4 and the bounded
+three-cell pilot are complete. The pilot missed its strategy efficiency target;
+it is not evidence to change the default mode. A narrow post-pilot budget-stop
+fix and pricing configuration correction also passed the full gate. See the
+[experiment record](../experiments/strategy-routine-pilot-2026-09-13.md).
+The recovery instructions below are preserved as execution history, not pending
+work. No further paid trials or wider model tournament were run.
 
 Original baseline: `956b027`; verified implementation resume point: `d71d733`.
 Recheck HEAD and local changes before implementation and preserve unrelated
@@ -39,8 +42,22 @@ explicitly matched at eight model responses, 64 inspections, 256 queries and
 64 partial batches per controlled turn. Post-run reporting uses
 `python3 -m tools.strategy_comparison pilot-report --run-dir RUN --out REPORT`.
 
-Resume at the bounded live pilot in R4, then R5 final experiment record.
-No paid pilot has started as of this acceptance commit.
+The bounded pilot subsequently ran as cohort `pilot-20260913T234758Z` on
+source `df17914`: fixed strategy stopped after its finite order (one controlled
+turn, zero model calls); strategy GLM reached 215,584 tokens after two controlled
+turns; focused GLM completed three turns at 224,088 tokens. Neither paid trial
+recorded a winner. Both owned three villages in their last renderable states;
+strategy's state is unfinished. All three games are in both catalogs. Derived
+paid cost totals $0.15268222; see the experiment record for pricing semantics.
+
+Post-pilot source `7f32c17` fixes the uncaught strategy token-limit exception
+(durable budget terminal, no extra dispatch) and the missing output/reasoning
+pricing flag. The final full gate passed 1,008 Python tests, all selected Rust
+suites and Lua checks (`tmp/strategy-exec/post-pilot-full-gate.log`). The
+original incomplete pilot archive remains unchanged; no paid rerun was made.
+The final experiment record and current `tmp/strategy-exec/HANDOFF.md` complete
+R5. Screening/playing-strength targets remain unmet or unproven, not pending
+implementation gates.
 The recovery tables below describe the original handoff, not current completion.
 
 ## 0. Verified recovery state — read before assigning work
