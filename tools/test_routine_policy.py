@@ -188,6 +188,54 @@ class PolicyValidationTests(unittest.TestCase):
         }
         self.assertIsNotNone(rp.validate_policy(with_scout, context))
 
+        with self.assertRaisesRegex(rp.PolicyValidationError, r"\[2\]"):
+            rp.validate_policy(
+                {**base, "villages": [{"col": 2, "row": 4}], "scouts": []},
+                context, known_live_scout_ids=[2])
+        err = None
+        try:
+            rp.validate_policy(
+                {**base, "villages": [{"col": 2, "row": 4}], "scouts": []},
+                context, known_live_scout_ids=None)
+        except rp.PolicyValidationError as exc:
+            err = str(exc)
+        self.assertIsNotNone(err)
+        self.assertNotIn("known live prior scout", err)
+
+    def test_coordinate_feedback_names_field_and_canonical_shape(self):
+        context = make_context()
+        base = valid_stack1_policy()
+        import re
+        with self.assertRaisesRegex(rp.PolicyValidationError,
+                                    r"policy.villages\[0\].*" + re.escape(rp.CANONICAL_COORD_JSON)):
+            rp.validate_policy({**base, "villages": [[2, 4]]}, context)
+        with self.assertRaisesRegex(rp.PolicyValidationError,
+                                    r"policy.rally.*" + re.escape(rp.CANONICAL_COORD_JSON)):
+            rp.validate_policy({**base, "rally": True}, context)
+        ok = rp.validate_policy(
+            {**base, "scouts": [2], "villages": [{"col": 2, "row": 4}],
+             "rally": {"col": 8, "row": 6}}, context)
+        self.assertEqual(ok["villages"], [{"col": 2, "row": 4}])
+        self.assertEqual(ok["rally"], {"col": 8, "row": 6})
+
+    def test_effective_scout_ids_filters_dead_and_unknown_roster(self):
+        policy = {**valid_stack1_policy(), "scouts": []}
+        progress = rp.RoutineProgress.fresh("pol-1", policy)
+        progress.scout_ids = [5, 9]
+        state = {
+            "active_faction": 0,
+            "units": [
+                {"id": 1, "faction": 0, "can_recruit": True},
+                {"id": 5, "faction": 0},
+                {"id": 9, "faction": 1},
+            ],
+        }
+        self.assertEqual(rp.effective_scout_ids(policy, progress, state), [5])
+        self.assertIsNone(rp.effective_scout_ids(policy, progress, {"units": "missing"}))
+        self.assertIsNone(rp.effective_scout_ids(policy, None, state))
+        self.assertIn(rp.CANONICAL_COORD_JSON, rp._strategy_contract())
+        self.assertIn("Syntax examples, not recommended objectives", rp._strategy_contract())
+
     def test_scouts_recruiters_excluded_and_bound_checked_before_execution(self):
         # An existing recruiter can never be named as a scout.
         with self.assertRaisesRegex(rp.PolicyValidationError, "cannot be a recruiter"):

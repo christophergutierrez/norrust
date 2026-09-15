@@ -705,6 +705,7 @@ def render_decision_brief(
   changes: Any = None,
   policy: Any = None,
   remaining: Any = None,
+  progress: Any = None,
   recruitable_defs: Any = (),
 ) -> str:
   """Render a decision-specific brief with applicable responses."""
@@ -889,6 +890,7 @@ def render_decision_brief(
       remaining=remaining,
       changes=changes,
       policy=policy,
+      progress=progress,
       allowed_kinds=packet.allowed_kinds,
       exception=exc_obj,
     )

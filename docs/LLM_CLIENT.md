@@ -358,6 +358,15 @@ is absent here. A policy is a validated structured set of executable orders —
 policy prose is never parsed or executed. Each recruit
 `count` is a finite total for that policy installation, not a per-turn purchase,
 and a replacement policy replaces all previous orders and remaining counts.
+Village and rally coordinates are objects with integer `col` and `row` (zero-based
+offsets), not two-element arrays. Syntax examples, not recommended objectives:
+`"villages":[{"col":2,"row":4}]` and `"rally":{"col":8,"row":6}`. Invalid
+coordinate feedback names the field and shows that object shape. Current
+`effective_scout_ids` lists live friendly IDs from the installed policy plus
+committed progress; it is not a silent carry-over into a replacement. A
+replacement that keeps villages must still name scouts or scout-role recruits
+explicitly. Repair text may list known live prior scout IDs the model may
+retain; those are not the only legal scouts.
 
 When tactical options are generated for current-state contact, the model may select one to
 three offered options with:

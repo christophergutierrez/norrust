@@ -47,6 +47,7 @@ try:
         NO_SWEEP_FINISH, parse_model_response, SetPolicyResponse,
         ActResponse, FinishTurnResponse, ResignResponse, ChooseResponse,
         validate_routine_policy, render_policy_brief, render_exception_brief,
+        effective_scout_ids,
         find_unreconstructable_routine_batch,
         pending_routine_commit, is_redundant_finish_turn, strategy_repair_guidance,
         CANONICAL_FINISH_TURN, CANONICAL_FINISH_TURN_JSON)
@@ -91,6 +92,7 @@ except ImportError:  # pragma: no cover - direct script compatibility
         NO_SWEEP_FINISH, parse_model_response, SetPolicyResponse,
         ActResponse, FinishTurnResponse, ResignResponse, ChooseResponse,
         validate_routine_policy, render_policy_brief, render_exception_brief,
+        effective_scout_ids,
         find_unreconstructable_routine_batch,
         pending_routine_commit, is_redundant_finish_turn, strategy_repair_guidance,
         CANONICAL_FINISH_TURN, CANONICAL_FINISH_TURN_JSON)
@@ -6488,7 +6490,12 @@ def run(args: argparse.Namespace) -> int:
                 if decision_packet is not None:
                     validate_response_context(parsed, decision_packet)
                 if isinstance(parsed, SetPolicyResponse) and policy_context is not None:
-                    parsed = SetPolicyResponse(validate_routine_policy(parsed.policy, policy_context))
+                    known = effective_scout_ids(
+                        strategy_installation.policy if strategy_installation is not None else None,
+                        strategy_progress, state if isinstance(state, dict) else None)
+                    parsed = SetPolicyResponse(validate_routine_policy(
+                        parsed.policy, policy_context,
+                        known_live_scout_ids=known if isinstance(known, list) else None))
                 if isinstance(parsed, ActResponse):
                     if strategy_effective_final_only and not parsed.finish_turn:
                         raise ModelResponseError("final_only strategy act must set finish_turn=true")
@@ -6628,7 +6635,9 @@ def run(args: argparse.Namespace) -> int:
                 brief = render_policy_brief(
                     0, context.recruitable_defs, state=state,
                     recruit_options=state.get("strategy_recruit_options") if isinstance(state, dict) else None,
-                    changes=continuity_entries[-2:] if continuity_entries else None)
+                    changes=continuity_entries[-2:] if continuity_entries else None,
+                    policy=strategy_installation.policy if strategy_installation is not None else None,
+                    progress=strategy_progress)
                 try:
                     parsed, reply = strategy_call_model(
                         brief, policy_context=context, decision_packet=initial_packet)
@@ -6803,6 +6812,7 @@ def run(args: argparse.Namespace) -> int:
                 changes=continuity_entries[-2:] if continuity_entries else None,
                 policy=strategy_installation.policy if strategy_installation is not None else None,
                 remaining=strategy_progress.remaining(strategy_installation.policy) if (strategy_progress and strategy_installation) else None,
+                progress=strategy_progress,
                 recruitable_defs=context.recruitable_defs,
             )
             try:

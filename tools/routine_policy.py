@@ -110,15 +110,34 @@ def _require_int(value: Any, where: str, *, minimum: Optional[int] = None,
     return value
 
 
+CANONICAL_VILLAGE_COORD = {"col": 2, "row": 4}
+CANONICAL_RALLY_COORD = {"col": 8, "row": 6}
+CANONICAL_COORD_JSON = json.dumps(CANONICAL_VILLAGE_COORD, separators=(",", ":"))
+CANONICAL_RALLY_JSON = json.dumps(CANONICAL_RALLY_COORD, separators=(",", ":"))
+
+
 def _require_coord(value: Any, where: str, bounds: Optional[tuple[int, int]] = None) -> tuple[int, int]:
-    if not isinstance(value, dict) or set(value) != {"col", "row"}:
-        raise PolicyValidationError(f"{where} must be an object with exactly col/row")
+    shape = (
+        f"{where} must be an object {CANONICAL_COORD_JSON} with integer col and row "
+        "(zero-based offsets); arrays are not accepted"
+    )
+    if not isinstance(value, dict):
+        raise PolicyValidationError(f"{shape}; got {type(value).__name__}")
+    extra = set(value) - {"col", "row"}
+    missing = {"col", "row"} - set(value)
+    if extra or missing:
+        detail = []
+        if missing:
+            detail.append("missing " + ", ".join(sorted(missing)))
+        if extra:
+            detail.append("unknown " + ", ".join(sorted(str(k) for k in extra)))
+        raise PolicyValidationError(f"{shape}; {'; '.join(detail)}")
     col = _require_int(value["col"], f"{where}.col", minimum=0)
     row = _require_int(value["row"], f"{where}.row", minimum=0)
     if bounds is not None:
         max_col, max_row = bounds
         if not (0 <= col < max_col and 0 <= row < max_row):
-            raise PolicyValidationError(f"{where} is out of bounds")
+            raise PolicyValidationError(f"{where} is out of bounds for 0<=col<{max_col}, 0<=row<{max_row}")
     return (col, row)
 
 
@@ -136,7 +155,8 @@ class ValidationContext:
     board_bounds: Optional[tuple[int, int]] = None
 
 
-def validate_policy(policy: Any, context: ValidationContext) -> dict[str, Any]:
+def validate_policy(policy: Any, context: ValidationContext, *,
+                    known_live_scout_ids: Optional[list[int]] = None) -> dict[str, Any]:
     """Validate a ``set_policy.policy`` object per the frozen contract.
 
     Returns a normalized (deep-copied, key-order-independent) policy dict on
@@ -210,8 +230,16 @@ def validate_policy(policy: Any, context: ValidationContext) -> dict[str, Any]:
         villages.append({"col": pair[0], "row": pair[1]})
 
     if villages and len(scouts) == 0 and new_scout_requests == 0:
-        raise PolicyValidationError(
-            "policy with villages must specify at least one scout or scout-role recruit")
+        message = (
+            "policy with villages must specify at least one scout or scout-role recruit"
+        )
+        if known_live_scout_ids:
+            message += (
+                "; known live prior scout ids you may explicitly retain: "
+                + json.dumps(list(known_live_scout_ids), separators=(",", ":"))
+                + " (not the only legal scouts)"
+            )
+        raise PolicyValidationError(message)
 
     rally_in = policy.get("rally")
     rally: Optional[dict[str, int]] = None
@@ -245,7 +273,8 @@ def validate_policy(policy: Any, context: ValidationContext) -> dict[str, Any]:
     }
 
 
-def validate_routine_policy(policy: Any, context: ValidationContext) -> dict[str, Any]:
+def validate_routine_policy(policy: Any, context: ValidationContext, *,
+                            known_live_scout_ids: Optional[list[int]] = None) -> dict[str, Any]:
     """Validate a ``set_policy.policy`` object against the full Stack 2 contract.
 
     Stack 1 additionally applied ``enforce_stack1_scope`` here to reject any
@@ -254,7 +283,51 @@ def validate_routine_policy(policy: Any, context: ValidationContext) -> dict[str
     policy fields"), so this is the single validation entry point for a
     routine policy installation.
     """
-    return validate_policy(policy, context)
+    return validate_policy(policy, context, known_live_scout_ids=known_live_scout_ids)
+
+
+def effective_scout_ids(
+    policy: Any,
+    progress: Any,
+    state: Optional[dict[str, Any]],
+) -> list[int] | None:
+    """Live scout IDs from installed policy plus committed progress.
+
+    Returns None when roster or progress proof is missing (unknown, not empty).
+    Filters to currently live friendlies on the authoritative roster.
+    """
+    if not isinstance(state, dict) or not isinstance(state.get("units"), list):
+        return None
+    progress_ids: list[int] | None = None
+    if isinstance(progress, RoutineProgress):
+        progress_ids = list(progress.scout_ids)
+    elif isinstance(progress, dict) and "scout_ids" in progress:
+        raw = progress.get("scout_ids")
+        if not isinstance(raw, list):
+            return None
+        progress_ids = [item for item in raw if isinstance(item, int) and not isinstance(item, bool)]
+    if progress_ids is None:
+        return None
+    policy_ids: list[int] = []
+    if isinstance(policy, dict) and isinstance(policy.get("scouts"), list):
+        policy_ids = [item for item in policy["scouts"]
+                      if isinstance(item, int) and not isinstance(item, bool)]
+    active = state.get("active_faction")
+    live_friendly: set[int] = set()
+    for unit in state["units"]:
+        if not isinstance(unit, dict) or unit.get("faction") != active:
+            continue
+        unit_id = unit.get("id")
+        if isinstance(unit_id, int) and not isinstance(unit_id, bool):
+            live_friendly.add(unit_id)
+    ordered: list[int] = []
+    seen: set[int] = set()
+    for unit_id in policy_ids + progress_ids:
+        if unit_id in seen or unit_id not in live_friendly:
+            continue
+        seen.add(unit_id)
+        ordered.append(unit_id)
+    return ordered
 
 
 # --------------------------------------------------------------------------
@@ -993,6 +1066,7 @@ def load_checked_in_policy(path: str, context: ValidationContext) -> dict[str, A
 def _strategy_context(state: Optional[dict[str, Any]], *, recruit_options: Any = None,
                       remaining: Any = None, changes: Any = None,
                       policy: Any = None,
+                      progress: Any = None,
                       exception: Optional[RoutineException] = None,
                       allowed_kinds: Optional[Iterable[str]] = None) -> str:
     """Render bounded, revision-pinned facts after the stable contract."""
@@ -1036,6 +1110,11 @@ def _strategy_context(state: Optional[dict[str, Any]], *, recruit_options: Any =
         # The exception request is stateless: repeat the installed objectives
         # and assignments instead of relying on the initial policy response.
         facts["installed_policy"] = policy
+        live_scouts = effective_scout_ids(policy, progress, state)
+        facts["effective_scout_ids"] = live_scouts if live_scouts is not None else "unknown"
+    elif progress is not None:
+        live_scouts = effective_scout_ids(policy, progress, state)
+        facts["effective_scout_ids"] = live_scouts if live_scouts is not None else "unknown"
     if changes is not None:
         facts["changes"] = changes
     if exception is not None:
@@ -1085,8 +1164,11 @@ def _strategy_contract(recruitable_defs: Iterable[str] = ()) -> str:
         "A set_policy replaces the prior installation. Its policy has reserve_gold (integer), "
         "recruits (0-8 ordered entries, each exact def_id/count/role with count 1-32 and role scout or army), "
         "scouts (0-8 existing friendly integer IDs; existing plus new scout recruits <=8), "
-        "villages (0-4 exact integer {col,row} coordinates), rally (one in-bounds integer {col,row} or null), and "
+        "villages (0-4 exact integer {col,row} objects), rally (one in-bounds integer {col,row} object or null), and "
         "holds (existing friendly integer IDs, with no scout overlap). Recruitable definitions: " + defs + ".\n"
+        "col and row are zero-based integer offsets. Syntax examples, not recommended objectives: "
+        '"villages":[' + CANONICAL_COORD_JSON + '] and "rally":' + CANONICAL_RALLY_JSON + ". "
+        "A two-element array is not a coordinate. "
         'Shape-only set_policy example (choose live definitions/IDs and nonempty objectives when needed): '
         '{"kind":"set_policy","policy":{"reserve_gold":0,"recruits":[],"scouts":[],"villages":[],"rally":null,"holds":[]}}\n'
         "An act has ordinary engine actions and finish_turn true or false on an ordinary state; "
@@ -1115,7 +1197,9 @@ def render_policy_brief(reserve_gold_default: int, recruitable_defs: Iterable[st
                         state: Optional[dict[str, Any]] = None,
                         recruit_options: Any = None,
                         remaining: Any = None,
-                        changes: Any = None) -> str:
+                        changes: Any = None,
+                        policy: Any = None,
+                        progress: Any = None) -> str:
     """Render the stable strategy contract and compact current facts."""
     return (
         _strategy_contract(recruitable_defs) +
@@ -1123,7 +1207,8 @@ def render_policy_brief(reserve_gold_default: int, recruitable_defs: Iterable[st
         "each recruit count is a finite total for this installation, and scouts/villages/holds "
         "must satisfy the current engine limits."
         + _strategy_context(state, recruit_options=recruit_options,
-                            remaining=remaining, changes=changes)
+                            remaining=remaining, changes=changes,
+                            policy=policy, progress=progress)
     )
 
 
@@ -1131,7 +1216,8 @@ def render_exception_brief(exception: RoutineException, remaining: list[dict[str
                            state: Optional[dict[str, Any]] = None,
                            recruit_options: Any = None,
                            changes: Any = None,
-                           policy: Any = None) -> str:
+                           policy: Any = None,
+                           progress: Any = None) -> str:
     """Render a typed exception with current revision-pinned facts."""
     return (
         _strategy_contract() +
@@ -1140,7 +1226,7 @@ def render_exception_brief(exception: RoutineException, remaining: list[dict[str
         "and cancels its old remaining work."
         + _strategy_context(state, recruit_options=recruit_options,
                             remaining=remaining, changes=changes,
-                            policy=policy,
+                            policy=policy, progress=progress,
                             exception=exception)
     )
 
