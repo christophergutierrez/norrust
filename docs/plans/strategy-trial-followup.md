@@ -1,8 +1,9 @@
 # Strategy trial follow-up
 
-Status: Stack 1 implemented with Luna High workers; final frozen-source gate
-and Stack 2 screening pending.
-Baseline: `ed6b765e24fb9e519751c8c8f723b59c1896cdd3`.
+Status: execution complete with Luna High workers. Stack 1 passed all gates;
+Stack 2 completed all 16 cells and missed the efficiency target. The conditional
+opening pair was therefore not launched. See the [acceptance record](../experiments/strategy-trial-followup-2026-09-14.md).
+Implementation starting point: `ed6b765e24fb9e519751c8c8f723b59c1896cdd3`.
 
 ## Objective and scope
 
@@ -75,8 +76,8 @@ Acceptance:
 
 ## Stack 2: validated paired screening, then honest findings
 
-Audit the prepared screening packet before dispatch. The current checked-in
-packet names `c80f408` as baseline, which would mostly compare implementation
+Audit the prepared screening packet before dispatch. Before this follow-up the
+packet named `c80f408` as baseline, which would mostly compare implementation
 against a later test/report commit. For the previously planned architectural
 comparison use `cb9a85b` versus the accepted Stack-1 candidate, both built release.
 Record this correction. Freeze exact source hashes, model, prompts, driver hashes,

@@ -173,8 +173,17 @@ policy attempt or identical contact incident is repeated at the same revision,
 the player is halted after one corrective follow-up with `budget_interrupted`
 and stop code `strategy_no_progress`.
 
-For authorized evaluation between Stack 3 baseline and Stack 4 candidate, a
-frozen 16-cell screening schedule is prepared at
-`tools/fixtures/strategy_decisions/fireworks_screening_manifest.json` under a
-$1.20 USD conservative cap, marked `model_evaluation_status: "pending_authorization"`
-until explicitly authorized by the operator.
+The reusable 16-cell screening template is
+`tools/fixtures/strategy_decisions/fireworks_screening_manifest.json`. Its
+prepared status describes the template; existing user authorization carries
+forward. Freeze the actual source and driver hashes for each execution. The
+1.2-million-token aggregate launch stop is soft: dated rates plus one possible
+in-flight context overshoot estimated $1.124288 exposure for the completed
+follow-up, not a hard dollar cap.
+
+The [completed follow-up](experiments/strategy-trial-followup-2026-09-14.md)
+compared pre-controller baseline `cb9a85b` with candidate `5d1a7b8`. Both met
+6/8 targets; candidate median tokens were about 5% higher, missing the required
+25% reduction. All 16 one-turn cells completed, costing an estimated $0.2052.
+The conditional opening pair was not launched. Do not describe this result as
+a full-game win or a demonstrated efficiency improvement.
