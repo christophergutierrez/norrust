@@ -9,7 +9,8 @@ Board: `scenarios/big_battle_6/board.toml`
 (`26366c43a231ef9f7244b24fb74fe5343792c2c26bc0366941a097ce3c7c4207`).
 
 Treatments: candidate-only at the Stack 2 commit. Do not claim a causal
-improvement versus an older driver without a paired cell.
+improvement versus an older driver without a paired cell. The two Fireworks
+cells use different checkpoints; launch each as its own one-cell bakeoff run.
 
 ## scout_opening
 

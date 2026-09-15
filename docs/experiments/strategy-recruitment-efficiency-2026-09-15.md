@@ -26,8 +26,33 @@ an impossible recruit.
 ## Live screen
 
 Template: `tools/fixtures/recruitment_efficiency/fireworks_candidate_manifest.json`.
-Two candidate-only cells, `accounts/fireworks/models/glm-5p3-flash`, one
-controlled turn, 100,000 tokens/cell, eight calls/turn, 500,000 aggregate stop.
-No baseline pair. Do not claim a causal improvement.
+The two cells use different checkpoints, so a single `matched` bakeoff run is
+rejected. Launch them as isolated one-cell manifests. Model
+`accounts/fireworks/models/glm-5p3-flash`, one controlled turn, 100,000
+tokens/cell, eight calls/turn, 500,000 aggregate stop. No baseline pair. Do not
+claim a causal improvement.
 
-Live result: not yet run when this file was first committed.
+Run path: `tmp/recruitment-efficiency-live-20260915T160000Z/`
+Source: `f880634e6306e59fad64342bb8fb66aabdef0d09`
+Driver SHA-256: `5fe667cca5c983477574c38dc0d86c2a72c55bc3dc5ca0613892728b6e1bad3e`
+Rates: 2026-09-13 Fireworks GLM-5.3 Flash ($0.15 / $0.03 / $0.50 per million,
+`reasoning_included_in_output: true`). Cache-write usage unknown.
+
+| Cell | Calls | Tokens in/out/reason/total | Est. cost | Repairs | Recruiter | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| safe-travel | 1 | 8175 / 6869 / 6729 / 15044 | $0.004661 | 0 | U1 48/48 | 14 `castle_capacity` moves, 16 routine recruits, 0 exceptions. One policy reply freed capacity. |
+| scout-replacement | 1 | 7383 / 1889 / 1722 / 9272 | $0.002052 | 0 | U1 48/48 | One initial policy with scout-role recruits; no later replacement, so missing-scout repair was not exercised. |
+
+Both cells: `terminal_class=gameplay`, `reason=max_turns`, exit 0, coverage complete
+except cache-write. Aggregate 2 calls, 24,316 tokens, about $0.0067. Under the
+500,000-token stop. No combat. This is not a ranking and not a proof that
+openings got cheaper.
+
+Catalog IDs:
+`recruitment-efficiency-live-recruitment-safe-travel-candidate:recruitment-safe-travel-candidate`
+`recruitment-efficiency-live-recruitment-scout-replacement-candidate:recruitment-scout-replacement-candidate`
+
+## Next experiment
+
+Contact-efficiency 8-cell screening remains outstanding. Do not substitute these
+openings for that evaluation.
