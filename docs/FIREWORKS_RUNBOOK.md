@@ -23,6 +23,10 @@ Check exact model availability read-only when needed; do not substitute a model
 or make an extra paid credit probe. Use dated model rates for cost estimates,
 with an explicit `reasoning_included_in_output` value. Missing usage remains
 unknown. A token ceiling permits one in-flight overshoot and is not a dollar cap.
+A strategy finish is `{"kind":"finish_turn"}`; `finish_turn` true or false belongs
+to `act`/`choose`. The redundant recorded object
+`{"kind":"finish_turn","finish_turn":true}` is accepted and normalized without a
+repair call. Do not treat that normalization as extra usage.
 
 ## Bounded recording without a paid observer
 

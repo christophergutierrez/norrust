@@ -48,7 +48,8 @@ try:
         ActResponse, FinishTurnResponse, ResignResponse, ChooseResponse,
         validate_routine_policy, render_policy_brief, render_exception_brief,
         find_unreconstructable_routine_batch,
-        pending_routine_commit)
+        pending_routine_commit, is_redundant_finish_turn, strategy_repair_guidance,
+        CANONICAL_FINISH_TURN, CANONICAL_FINISH_TURN_JSON)
     from .strategy_decision import (
         DecisionPacket,
         IncidentTracker,
@@ -90,7 +91,8 @@ except ImportError:  # pragma: no cover - direct script compatibility
         ActResponse, FinishTurnResponse, ResignResponse, ChooseResponse,
         validate_routine_policy, render_policy_brief, render_exception_brief,
         find_unreconstructable_routine_batch,
-        pending_routine_commit)
+        pending_routine_commit, is_redundant_finish_turn, strategy_repair_guidance,
+        CANONICAL_FINISH_TURN, CANONICAL_FINISH_TURN_JSON)
     from tools.strategy_decision import (
         DecisionPacket,
         IncidentTracker,
@@ -4044,7 +4046,9 @@ def strategy_live_state_footer(state: dict[str, Any], *, allow_tools: bool = Tru
             "STRATEGY_RESPONSE_INSTRUCTION_BEGIN\n"
             "Return exactly one JSON object with kind set_policy, act, finish_turn, or resign. "
             "Act actions contain ordinary actions only and never origin or a finishing action; "
-            "finish_turn may be true or false on ordinary states; final_only requires true." + tools +
+            "finish_turn may be true or false on ordinary states; final_only requires true. "
+            "The finish_turn boolean belongs to act and choose; a standalone finish is "
+            + CANONICAL_FINISH_TURN_JSON + "." + tools +
             "\nSTRATEGY_RESPONSE_INSTRUCTION_END")
 
 
@@ -6318,6 +6322,23 @@ def run(args: argparse.Namespace) -> int:
                     "turn": state.get("turn") if isinstance(state, dict) else None,
                     "state_revision": state.get("state_revision") if isinstance(state, dict) else None})
 
+        def note_finish_normalization(reply: ModelReply, payload: dict[str, Any]) -> None:
+            record({"type": "strategy_response_normalized",
+                    "request_id": reply.request_id,
+                    "prompt_hash": reply.prompt_hash,
+                    "from_keys": sorted(payload),
+                    "to": copy.deepcopy(CANONICAL_FINISH_TURN)})
+            backend_cache = reply.cache if isinstance(reply.cache, dict) else {}
+            request_state_path = backend_cache.get("request_state_path")
+            if isinstance(request_state_path, str) and request_state_path:
+                try:
+                    append_request_milestone(
+                        request_state_path, "normalized",
+                        from_keys=sorted(payload),
+                        canonical_kind="finish_turn")
+                except (OSError, ValueError):
+                    pass
+
         while True:
             if model_calls_this_turn >= metadata["max_model_calls_per_turn"]:
                 raise ModelCallBudgetExhausted("strategy logical response budget exhausted")
@@ -6439,6 +6460,8 @@ def run(args: argparse.Namespace) -> int:
                         raise ModelResponseError(
                             "engine rejected strategy choose: " +
                             engine_validation_feedback(submitted, validation))
+                if is_redundant_finish_turn(decoded):
+                    note_finish_normalization(reply, decoded)
                 return parsed, reply
             except (ModelResponseError, PolicyValidationError) as exc:
                 if decision_packet is not None and isinstance(exc, ContextualResponseError):
@@ -6459,9 +6482,8 @@ def run(args: argparse.Namespace) -> int:
                     current_prompt = (
                         prompt_text + "\nSTRATEGY_REPAIR_UNTRUSTED_DATA_BEGIN\n" +
                         reply.text + "\nSTRATEGY_REPAIR_UNTRUSTED_DATA_END\n" +
-                        f"The previous response was invalid: {exc}. "
-                        f"Applicable response kinds: {', '.join(decision_packet.allowed_kinds)}. "
-                        "Return one corrected strategy response now with only the defined fields.")
+                        strategy_repair_guidance(exc, decoded) +
+                        f" Applicable response kinds: {', '.join(decision_packet.allowed_kinds)}.")
                     tool_context = ""
                     continue
                 if repair_attempted:
@@ -6470,8 +6492,7 @@ def run(args: argparse.Namespace) -> int:
                 note_response_repair(exc, reply.text)
                 current_prompt = (prompt_text + "\nSTRATEGY_REPAIR_UNTRUSTED_DATA_BEGIN\n" +
                                    reply.text + "\nSTRATEGY_REPAIR_UNTRUSTED_DATA_END\n" +
-                                   "The previous response was invalid: " + str(exc) +
-                                   ". Return one corrected strategy response now with only the defined fields.")
+                                   strategy_repair_guidance(exc, decoded))
                 tool_context = ""
 
     def strategy_step() -> Optional[int]:

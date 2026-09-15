@@ -344,7 +344,15 @@ The model answers with a strict discriminated union on `kind`: `set_policy`,
 `choose`, `act`, `finish_turn`, or `resign`. Ordinary `act` and `choose` responses may set
 `finish_turn` either way; a `final_only` boundary requires `true`, and the
 client appends the empty `FinishWithGreedy` boundary to that one validated
-batch. There are no `decisions[]`, rule citations, risk/expected strings,
+batch. The `finish_turn` boolean belongs to `act` and `choose` only. A
+standalone finish is exactly `{"kind":"finish_turn"}`. The parser also accepts
+the one redundant recorded form `{"kind":"finish_turn","finish_turn":true}`
+(JSON boolean `true` only) and normalizes it to that canonical object. This is
+not a model call or repair: the original reply stays in `model_request.raw_output`,
+and a `strategy_response_normalized` record links the request ID and prompt hash
+to the accepted extra field. `false`, `null`, numbers, strings, action payloads,
+and other unknown keys still reject. Invalid finish feedback includes the
+canonical JSON object. Suffix recovery and this normalization stay distinct. There are no `decisions[]`, rule citations, risk/expected strings,
 intent, or agenda in this mode; `decisions[]` is the old annotation array and
 is absent here. A policy is a validated structured set of executable orders —
 policy prose is never parsed or executed. Each recruit

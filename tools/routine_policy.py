@@ -41,8 +41,18 @@ RECRUIT_ENTRY_FIELDS = {"def_id", "count", "role"}
 ACT_KEYS = {"kind", "actions", "finish_turn"}
 CHOOSE_KEYS = {"kind", "decision_id", "option_id", "finish_turn"}
 FINISH_TURN_KEYS = {"kind"}
+FINISH_TURN_REDUNDANT_KEYS = {"kind", "finish_turn"}
 RESIGN_KEYS = {"kind"}
 RESPONSE_KINDS = ("set_policy", "act", "choose", "finish_turn", "resign")
+CANONICAL_FINISH_TURN = {"kind": "finish_turn"}
+CANONICAL_FINISH_TURN_JSON = json.dumps(CANONICAL_FINISH_TURN, separators=(",", ":"))
+STRATEGY_RESPONSE_SHAPES = {
+    "set_policy": SET_POLICY_KEYS,
+    "act": ACT_KEYS,
+    "choose": CHOOSE_KEYS,
+    "finish_turn": FINISH_TURN_KEYS,
+    "resign": RESIGN_KEYS,
+}
 
 # The closed set of typed exceptions the routine_next contract can raise.
 # "unsafe_route", "invalid_assignment" and "objectives_complete" are Stack 2
@@ -778,6 +788,58 @@ class ResignResponse:
     pass
 
 
+def is_redundant_finish_turn(obj: Any) -> bool:
+    """True for the one accepted extra-field finish shape, before normalization."""
+    return (
+        isinstance(obj, dict)
+        and obj.get("kind") == "finish_turn"
+        and set(obj) == FINISH_TURN_REDUNDANT_KEYS
+        and obj.get("finish_turn") is True
+    )
+
+
+def _finish_turn_parse_error(obj: dict[str, Any]) -> str:
+    canonical = f"canonical finish object is {CANONICAL_FINISH_TURN_JSON}"
+    extra = set(obj) - FINISH_TURN_KEYS
+    if extra == {"finish_turn"}:
+        value = obj.get("finish_turn")
+        if value is False:
+            return (
+                "standalone finish_turn must omit finish_turn or set it to JSON "
+                f"boolean true, not false; {canonical}"
+            )
+        return (
+            "standalone finish_turn extra field must be the JSON boolean true; "
+            f"{canonical}"
+        )
+    if extra:
+        return (
+            f"response has unknown key(s): {', '.join(sorted(str(key) for key in extra))}; "
+            f"{canonical}"
+        )
+    return f"malformed finish_turn response; {canonical}"
+
+
+def _parse_finish_turn_response(obj: dict[str, Any]) -> FinishTurnResponse:
+    keys = set(obj)
+    if keys == FINISH_TURN_KEYS or is_redundant_finish_turn(obj):
+        return FinishTurnResponse()
+    raise ModelResponseError(_finish_turn_parse_error(obj))
+
+
+def strategy_repair_guidance(error: BaseException, decoded: Any | None = None) -> str:
+    """Kind-specific repair text generated from the shared response-shape table."""
+    message = f"The previous response was invalid: {error}."
+    kind = decoded.get("kind") if isinstance(decoded, dict) else None
+    if kind == "finish_turn":
+        message += f" The canonical finish object is {CANONICAL_FINISH_TURN_JSON}."
+    elif kind in STRATEGY_RESPONSE_SHAPES:
+        allowed = ",".join(sorted(STRATEGY_RESPONSE_SHAPES[kind]))
+        message += f" A valid {kind} response uses exactly these keys: {allowed}."
+    message += " Return one corrected strategy response now with only the defined fields."
+    return message
+
+
 def parse_model_response(obj: Any) -> Any:
     """Strictly parse a model response into one of the response forms.
 
@@ -835,8 +897,7 @@ def parse_model_response(obj: Any) -> Any:
                 raise ModelResponseError("response.finish_turn must be a boolean")
             return ChooseResponse(decision_id=decision_id, option_id=option_id, finish_turn=finish_turn)
         if kind == "finish_turn":
-            _require_keys(obj, FINISH_TURN_KEYS, FINISH_TURN_KEYS, "response")
-            return FinishTurnResponse()
+            return _parse_finish_turn_response(obj)
         # kind == "resign"
         _require_keys(obj, RESIGN_KEYS, RESIGN_KEYS, "response")
         return ResignResponse()
@@ -1015,7 +1076,10 @@ def _strategy_contract(recruitable_defs: Iterable[str] = ()) -> str:
         'Shape-only set_policy example (choose live definitions/IDs and nonempty objectives when needed): '
         '{"kind":"set_policy","policy":{"reserve_gold":0,"recruits":[],"scouts":[],"villages":[],"rally":null,"holds":[]}}\n'
         "An act has ordinary engine actions and finish_turn true or false on an ordinary state; "
-        "final_only requires true. Actions cannot contain a boundary or origin. Supported shapes include "
+        "final_only requires true. The finish_turn boolean belongs to act and choose only. "
+        "A standalone finish is exactly " + CANONICAL_FINISH_TURN_JSON +
+        "; do not add finish_turn or other keys. "
+        "Actions cannot contain a boundary or origin. Supported shapes include "
         '{"action":"Move","unit_id":1,"col":2,"row":3}, '
         '{"action":"Attack","attacker_id":1,"defender_id":2}, '
         '{"action":"Recruit","def_id":"Skeleton","col":2,"row":3}, '

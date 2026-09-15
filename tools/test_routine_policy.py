@@ -231,6 +231,43 @@ class ModelResponseParsingTests(unittest.TestCase):
         self.assertIsInstance(rp.parse_model_response({"kind": "finish_turn"}), rp.FinishTurnResponse)
         self.assertIsInstance(rp.parse_model_response({"kind": "resign"}), rp.ResignResponse)
 
+    def test_redundant_finish_turn_true_normalizes_without_second_path(self):
+        parsed = rp.parse_model_response({"kind": "finish_turn", "finish_turn": True})
+        self.assertIsInstance(parsed, rp.FinishTurnResponse)
+        self.assertTrue(rp.is_redundant_finish_turn({"kind": "finish_turn", "finish_turn": True}))
+        self.assertFalse(rp.is_redundant_finish_turn({"kind": "finish_turn"}))
+        self.assertEqual(rp.CANONICAL_FINISH_TURN_JSON, '{"kind":"finish_turn"}')
+
+    def test_finish_turn_rejects_false_null_types_payloads_and_unknown_keys(self):
+        cases = (
+            {"kind": "finish_turn", "finish_turn": False},
+            {"kind": "finish_turn", "finish_turn": None},
+            {"kind": "finish_turn", "finish_turn": 1},
+            {"kind": "finish_turn", "finish_turn": "true"},
+            {"kind": "finish_turn", "actions": [{"action": "Move", "unit_id": 1, "col": 2, "row": 3}]},
+            {"kind": "finish_turn", "extra": True},
+            {"kind": "finish_turn", "finish_turn": True, "extra": True},
+        )
+        for obj in cases:
+            with self.subTest(obj=obj):
+                with self.assertRaises(rp.ModelResponseError) as raised:
+                    rp.parse_model_response(obj)
+                self.assertIn(rp.CANONICAL_FINISH_TURN_JSON, str(raised.exception))
+                self.assertFalse(rp.is_redundant_finish_turn(obj))
+
+    def test_malformed_finish_repair_guidance_includes_canonical_object(self):
+        obj = {"kind": "finish_turn", "finish_turn": False}
+        with self.assertRaises(rp.ModelResponseError) as raised:
+            rp.parse_model_response(obj)
+        guidance = rp.strategy_repair_guidance(raised.exception, obj)
+        self.assertIn(rp.CANONICAL_FINISH_TURN_JSON, guidance)
+        self.assertIn("invalid", guidance)
+
+    def test_strategy_contract_shows_canonical_finish_and_boolean_owner(self):
+        contract = rp._strategy_contract()
+        self.assertIn(rp.CANONICAL_FINISH_TURN_JSON, contract)
+        self.assertIn("finish_turn boolean belongs to act and choose", contract)
+
     def test_choose_response_parsing(self):
         valid = {
             "kind": "choose",
