@@ -142,6 +142,168 @@ class IncidentTrackerTests(unittest.TestCase):
     tracker.record_ineffective(1, 64, "k1")
     self.assertFalse(tracker.can_attempt_correction(1, 64, "k1"))
 
+  def test_shared_correction_one_repair_not_three(self):
+    tracker = sd.IncidentTracker()
+    side_turn, revision, incident_key = 1, 64, "key-A"
+    tracker.observe_incident(side_turn, revision, incident_key)
+    tracker.record_correction(
+      side_turn, revision, incident_key, kind=sd.CORRECTION_KIND_SYNTAX)
+    self.assertTrue(tracker.can_attempt_correction(side_turn, revision, incident_key))
+    tracker.record_correction(
+      side_turn, revision, incident_key, kind=sd.CORRECTION_KIND_CONTEXT)
+    self.assertFalse(tracker.can_attempt_correction(side_turn, revision, incident_key))
+    tracker.record_correction(
+      side_turn, revision, incident_key, kind=sd.CORRECTION_KIND_SEMANTIC_REPEAT)
+    self.assertFalse(tracker.can_attempt_correction(side_turn, revision, incident_key))
+
+  def test_same_contact_key_after_commit_is_final_and_aba_does_not_renew(self):
+    tracker = sd.IncidentTracker()
+    evidence_a = {
+      "stage": "current_state",
+      "contact_actionability": "actionable",
+      "contact_state_key": "key-A",
+      "friendly_unit_ids": [6, 7],
+    }
+    evidence_b = {
+      "stage": "current_state",
+      "contact_actionability": "actionable",
+      "contact_state_key": "key-B",
+      "friendly_unit_ids": [6],
+    }
+    first = sd.build_decision_packet(
+      "contact", evidence_a, revision=110, game_id="g1", side_turn=3,
+      final_only=False, tracker=tracker)
+    self.assertFalse(first.final_only)
+    self.assertIsNone(first.closure_reason)
+    tracker.mark_contact_key_consumed("g1", 3, "key-A")
+
+    after_commit = sd.build_decision_packet(
+      "contact", evidence_a, revision=111, game_id="g1", side_turn=3,
+      final_only=False, tracker=tracker)
+    self.assertTrue(after_commit.final_only)
+    self.assertEqual(after_commit.closure_reason, sd.CLOSURE_REASON_REPEATED_CONTACT_KEY)
+
+    other = sd.build_decision_packet(
+      "contact", evidence_b, revision=112, game_id="g1", side_turn=3,
+      final_only=False, tracker=tracker)
+    self.assertFalse(other.final_only)
+    tracker.mark_contact_key_consumed("g1", 3, "key-B")
+
+    back_to_a = sd.build_decision_packet(
+      "contact", evidence_a, revision=113, game_id="g1", side_turn=3,
+      final_only=False, tracker=tracker)
+    self.assertTrue(back_to_a.final_only)
+    self.assertEqual(back_to_a.closure_reason, sd.CLOSURE_REASON_REPEATED_CONTACT_KEY)
+
+    new_turn = sd.build_decision_packet(
+      "contact", evidence_a, revision=200, game_id="g1", side_turn=4,
+      final_only=False, tracker=tracker)
+    self.assertFalse(new_turn.final_only)
+
+  def test_reconstruct_consumed_contact_key(self):
+    tracker = sd.IncidentTracker()
+    tracker.reconstruct_from_journal([
+      {
+        "type": "decision_packet",
+        "game_id": "g1",
+        "side_turn": 3,
+        "packet": {
+          "state_revision": 110,
+          "incident_key": "inc",
+          "contact_state_key": "key-A",
+          "evidence": {"stage": "current_state", "contact_state_key": "key-A"},
+        },
+      },
+      {
+        "type": "contact_key_consumed",
+        "game_id": "g1",
+        "side_turn": 3,
+        "contact_state_key": "key-A",
+      },
+    ])
+    self.assertTrue(tracker.contact_key_consumed("g1", 3, "key-A"))
+    self.assertFalse(tracker.contact_key_consumed("g1", 3, "key-B"))
+    self.assertTrue(
+      sd.effective_final_only(
+        False,
+        {"stage": "current_state", "contact_actionability": "actionable",
+         "contact_state_key": "key-A"},
+        tracker,
+        game_id="g1",
+        side_turn=3,
+      )
+    )
+
+
+class ContactClosureTests(unittest.TestCase):
+  def test_exhausted_evidence_forces_final_only_when_driver_false(self):
+    evidence = {
+      "stage": "current_state",
+      "trigger": "exposure",
+      "contact_actionability": "exhausted",
+      "contact_state_key": "key-exh",
+      "friendly_unit_ids": [6, 7],
+      "options": [
+        {
+          "option_id": "u9-relocate-1",
+          "category": "relocation",
+          "actor_id": 9,
+          "actions": [{"action": "Move", "unit_id": 9, "col": 1, "row": 1}],
+        },
+      ],
+    }
+    packet = sd.build_decision_packet(
+      "contact", evidence, revision=42, game_id="g1", side_turn=1, final_only=False)
+    self.assertTrue(packet.final_only)
+    self.assertEqual(packet.closure_reason, sd.CLOSURE_REASON_EXHAUSTED)
+    self.assertTrue(
+      sd.effective_final_only(False, evidence, game_id="g1", side_turn=1)
+    )
+    with self.assertRaises(sd.ContextualResponseError):
+      sd.validate_response_context(
+        SimpleNamespace(kind="act", actions=[{"action": "Recruit"}], finish_turn=False),
+        packet,
+      )
+    brief = sd.render_decision_brief(packet)
+    self.assertIn("CONTACT CLOSURE", brief)
+    self.assertIn("contact_actionability=exhausted", brief)
+    self.assertIn("act` plus finish_turn=true", brief)
+    self.assertIn("Option 'u9-relocate-1'", brief)
+    self.assertNotIn("impossible", brief.lower())
+    self.assertIn('"finish_turn":true', brief)
+
+  def test_unknown_actionability_does_not_force_final_only(self):
+    for actionability in ("unknown", "actionable", None, "ACTIONABLE"):
+      evidence = {
+        "stage": "current_state",
+        "contact_state_key": "key-u",
+        "friendly_unit_ids": [1],
+      }
+      if actionability is not None:
+        evidence["contact_actionability"] = actionability
+      packet = sd.build_decision_packet(
+        "contact", evidence, revision=8, game_id="g1", side_turn=1, final_only=False)
+      self.assertFalse(packet.final_only, actionability)
+      self.assertIsNone(packet.closure_reason)
+
+  def test_missing_key_cannot_close(self):
+    tracker = sd.IncidentTracker()
+    tracker.mark_contact_key_consumed("g1", 1, "other-key")
+    tracker.mark_contact_key_consumed("g1", 1, "")
+    tracker.mark_contact_key_consumed("g1", 1, None)
+    for evidence in (
+      {"stage": "current_state", "contact_actionability": "actionable"},
+      {"stage": "current_state", "contact_actionability": "unknown", "contact_state_key": ""},
+      {"stage": "current_state", "contact_actionability": "actionable", "contact_state_key": None},
+    ):
+      packet = sd.build_decision_packet(
+        "contact", evidence, revision=9, game_id="g1", side_turn=1,
+        final_only=False, tracker=tracker)
+      self.assertFalse(packet.final_only, evidence)
+      self.assertFalse(
+        sd.contact_closure_required(evidence, tracker, game_id="g1", side_turn=1)
+      )
+
 
 class TacticalOptionsTests(unittest.TestCase):
   def setUp(self):

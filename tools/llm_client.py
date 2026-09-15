@@ -4070,7 +4070,8 @@ def finalize_model_prompt(prompt: str, state: dict[str, Any], *, allow_tools: bo
     return value + "\n" + authoritative_live_state_reminder(state, allow_tools=allow_tools)
 
 
-def strategy_live_state_footer(state: dict[str, Any], *, allow_tools: bool = True) -> str:
+def strategy_live_state_footer(state: dict[str, Any], *, allow_tools: bool = True,
+                               final_only: Optional[bool] = None) -> str:
     """Return the volatile strategy anchor without ordinary annotations."""
     units = state.get("units", []) if isinstance(state, dict) else []
     friendly = [
@@ -4084,7 +4085,8 @@ def strategy_live_state_footer(state: dict[str, Any], *, allow_tools: bool = Tru
         "turn": state.get("turn", "unknown"),
         "active_faction": state.get("active_faction", "unknown"),
         "phase": state.get("time_of_day", "unknown"),
-        "final_only": state.get("final_only", False),
+        "final_only": (bool(final_only) if final_only is not None
+                       else bool(state.get("final_only", False))),
         "friendly_units": friendly,
     }
     tools = ("; optional read-only inspection requests at this revision use "
@@ -4105,7 +4107,8 @@ def strategy_live_state_footer(state: dict[str, Any], *, allow_tools: bool = Tru
             "\nSTRATEGY_RESPONSE_INSTRUCTION_END")
 
 
-def finalize_strategy_prompt(prompt: str, state: dict[str, Any], *, allow_tools: bool = True) -> str:
+def finalize_strategy_prompt(prompt: str, state: dict[str, Any], *, allow_tools: bool = True,
+                             final_only: Optional[bool] = None) -> str:
     """Place strategy live state last, without the ordinary response contract."""
     value = prompt.rstrip()
     marker = "\nSTRATEGY_LIVE_STATE_BEGIN\n"
@@ -4120,7 +4123,8 @@ def finalize_strategy_prompt(prompt: str, state: dict[str, Any], *, allow_tools:
         footer_end = value.find("\nSTRATEGY_RESPONSE_INSTRUCTION_END", start)
         if footer_end >= 0:
             value = value[:start].rstrip()
-    return value + "\n" + strategy_live_state_footer(state, allow_tools=allow_tools)
+    return value + "\n" + strategy_live_state_footer(
+        state, allow_tools=allow_tools, final_only=final_only)
 
 
 def build_completion_audit_data(state: dict[str, Any], agenda: Optional[dict[str, Any]] = None) -> dict[str, Any]:
@@ -5388,6 +5392,8 @@ def run(args: argparse.Namespace) -> int:
     strategy_pending_proven_revision: Optional[int] = None
     strategy_model_responses_this_turn = 0
     strategy_incident_tracker = IncidentTracker()
+    strategy_effective_final_only = False
+    strategy_active_packet: Optional[DecisionPacket] = None
     metadata = {"scenario": args.scenario, "faction0": args.faction0, "faction1": args.faction1,
                 "gold": args.gold, "seed": args.seed, "llm_side": args.llm_side,
                 "first_player": 0 if args.llm_side == 0 else 1,
@@ -5795,10 +5801,14 @@ def run(args: argparse.Namespace) -> int:
         # refreshes the sidecar measurement.
         refresh_game_budget()
         model_prompt = model_prompt.rstrip() + "\n" + game_budget_context(args, metadata)
-        finalizer = finalize_strategy_prompt if strategy_prompt else finalize_model_prompt
-        delivered_prompt = finalizer(
-            model_prompt, state if isinstance(state, dict) else {},
-            allow_tools=allow_tools)
+        if strategy_prompt:
+            delivered_prompt = finalize_strategy_prompt(
+                model_prompt, state if isinstance(state, dict) else {},
+                allow_tools=allow_tools, final_only=strategy_effective_final_only)
+        else:
+            delivered_prompt = finalize_model_prompt(
+                model_prompt, state if isinstance(state, dict) else {},
+                allow_tools=allow_tools)
         delivered_bytes = len(delivered_prompt.encode())
         delivered_regions = prompt_regions(delivered_prompt)
         metadata["max_observed_prompt_bytes"] = max(
@@ -6231,6 +6241,13 @@ def run(args: argparse.Namespace) -> int:
             pending_commit["option_action_ranges"] = copy.deepcopy(option_action_ranges)
         if proposal_source is not None:
             pending_commit["proposal_source"] = proposal_source
+        if strategy_active_packet is not None and strategy_active_packet.contact_state_key:
+            pending_commit["contact_state_key"] = strategy_active_packet.contact_state_key
+            pending_commit["contact_game_id"] = str(
+                metadata.get("game_id") or metadata.get("conversation_id") or "")
+            pending_commit["contact_side_turn"] = (
+                metadata.get("current_side_turn_id")
+                or (int(state.get("turn", 0)) if isinstance(state, dict) else 0))
 
         req_sub = {
             "type": "request_submitted", "batch_id": batch_id,
@@ -6405,7 +6422,7 @@ def run(args: argparse.Namespace) -> int:
             model_calls_this_turn += 1
             strategy_model_responses_this_turn += 1
             metadata["model_calls"] += 1
-            allow_tools = (not bool(isinstance(state, dict) and state.get("final_only"))
+            allow_tools = (not bool(strategy_effective_final_only)
                            and tool_calls_this_turn < metadata["max_tool_calls_per_turn"]
                            and model_calls_this_turn < metadata["max_model_calls_per_turn"])
             delivered = current_prompt + tool_context
@@ -6473,7 +6490,7 @@ def run(args: argparse.Namespace) -> int:
                 if isinstance(parsed, SetPolicyResponse) and policy_context is not None:
                     parsed = SetPolicyResponse(validate_routine_policy(parsed.policy, policy_context))
                 if isinstance(parsed, ActResponse):
-                    if isinstance(state, dict) and state.get("final_only") and not parsed.finish_turn:
+                    if strategy_effective_final_only and not parsed.finish_turn:
                         raise ModelResponseError("final_only strategy act must set finish_turn=true")
                     try:
                         act_orders = validate_orders(
@@ -6493,7 +6510,7 @@ def run(args: argparse.Namespace) -> int:
                             "engine rejected strategy act: " +
                             engine_validation_feedback(submitted, validation))
                 if isinstance(parsed, ChooseResponse):
-                    if isinstance(state, dict) and state.get("final_only") and not parsed.finish_turn:
+                    if strategy_effective_final_only and not parsed.finish_turn:
                         raise ModelResponseError("final_only strategy choose must set finish_turn=true")
                     if decision_packet is None:
                         raise ContextualResponseError("choose response received without active decision packet")
@@ -6556,6 +6573,7 @@ def run(args: argparse.Namespace) -> int:
         caller should resume the ordinary checkpoint/status/state read loop.
         """
         nonlocal strategy_installation, strategy_progress
+        nonlocal strategy_effective_final_only, strategy_active_packet
         while True:
             revision = int(state.get("state_revision", 0)) if isinstance(state, dict) else 0
             if strategy_installation is None:
@@ -6589,17 +6607,24 @@ def run(args: argparse.Namespace) -> int:
                     durable({"type": "query_error", **metadata})
                     return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
                 current_side_turn = int(state.get("turn", 0)) if isinstance(state, dict) else 0
+                contact_scope = metadata.get("current_side_turn_id") or current_side_turn
                 final_only = bool(isinstance(state, dict) and state.get("final_only"))
                 initial_packet = build_decision_packet(
                     "initial", {}, revision,
-                    game_id=metadata.get("game_id", ""),
+                    game_id=metadata.get("game_id") or metadata.get("conversation_id") or "",
                     side_turn=current_side_turn,
+                    contact_scope=contact_scope,
                     final_only=final_only,
+                    tracker=strategy_incident_tracker,
                 )
+                strategy_active_packet = initial_packet
+                strategy_effective_final_only = initial_packet.final_only
                 strategy_incident_tracker.observe_incident(
                     current_side_turn, revision, initial_packet.incident_key)
                 durable({"type": "decision_packet", "packet": initial_packet.to_dict(),
-                         "side_turn": current_side_turn, "state_revision": revision})
+                         "side_turn": current_side_turn, "state_revision": revision,
+                         "game_id": metadata.get("game_id") or metadata.get("conversation_id"),
+                         "contact_scope": contact_scope})
                 brief = render_policy_brief(
                     0, context.recruitable_defs, state=state,
                     recruit_options=state.get("strategy_recruit_options") if isinstance(state, dict) else None,
@@ -6630,7 +6655,7 @@ def run(args: argparse.Namespace) -> int:
                     strategy_submit_act([{"action": "Resign"}], revision, reply, finish_turn=False)
                     return None
                 if isinstance(parsed, ActResponse):
-                    if state.get("final_only") and not parsed.finish_turn:
+                    if strategy_effective_final_only and not parsed.finish_turn:
                         set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
                                      reason=TERMINAL_MODEL_INVALID, code="strategy_response_invalid",
                                      message="final_only strategy act must set finish_turn=true")
@@ -6732,13 +6757,18 @@ def run(args: argparse.Namespace) -> int:
                 durable({"type": "query_error", **metadata})
                 return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
             current_side_turn = int(state.get("turn", 0)) if isinstance(state, dict) else 0
+            contact_scope = metadata.get("current_side_turn_id") or current_side_turn
             final_only = bool(isinstance(state, dict) and state.get("final_only"))
             packet = build_decision_packet(
                 exc_result.reason, exc_result.evidence, revision,
-                game_id=metadata.get("game_id", ""),
+                game_id=metadata.get("game_id") or metadata.get("conversation_id") or "",
                 side_turn=current_side_turn,
+                contact_scope=contact_scope,
                 final_only=final_only,
+                tracker=strategy_incident_tracker,
             )
+            strategy_active_packet = packet
+            strategy_effective_final_only = packet.final_only
             durable({"type": "routine_exception", "reason": exc_result.reason,
                     "evidence": exc_result.evidence, "state_revision": revision})
 
@@ -6762,7 +6792,9 @@ def run(args: argparse.Namespace) -> int:
                     current_side_turn, revision, packet.incident_key)
 
             durable({"type": "decision_packet", "packet": packet.to_dict(),
-                     "side_turn": current_side_turn, "state_revision": revision})
+                     "side_turn": current_side_turn, "state_revision": revision,
+                     "game_id": metadata.get("game_id") or metadata.get("conversation_id"),
+                     "contact_scope": contact_scope})
 
             brief = render_decision_brief(
                 packet,
@@ -6816,7 +6848,7 @@ def run(args: argparse.Namespace) -> int:
                 strategy_submit_act(orders, revision, reply, finish_turn=parsed.finish_turn)
                 return None
             if isinstance(parsed, ChooseResponse):
-                if state.get("final_only") and not parsed.finish_turn:
+                if strategy_effective_final_only and not parsed.finish_turn:
                     set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
                                  reason=TERMINAL_MODEL_INVALID, code="strategy_response_invalid",
                                  message="final_only strategy choose must set finish_turn=true")
@@ -7306,6 +7338,16 @@ def run(args: argparse.Namespace) -> int:
                     # report the action boundary as uncertain.
                     check_stop_fence("after_checkpoint_before_batch_commit")
                     durable({"type": "batch_committed", **commit_details})
+                    contact_key = pending_commit.get("contact_state_key")
+                    if isinstance(contact_key, str) and contact_key:
+                        gid = pending_commit.get("contact_game_id") or ""
+                        st = pending_commit.get("contact_side_turn") or 0
+                        strategy_incident_tracker.mark_contact_key_consumed(gid, st, contact_key)
+                        durable({"type": "contact_key_consumed",
+                                 "game_id": gid, "side_turn": st,
+                                 "contact_state_key": contact_key,
+                                 "batch_id": pending_commit.get("batch_id"),
+                                 "decision_id": pending_commit.get("decision_id")})
                     request_state_path = pending_commit.get("request_state_path")
                     if isinstance(request_state_path, str) and request_state_path:
                         try:

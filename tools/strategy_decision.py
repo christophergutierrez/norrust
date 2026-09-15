@@ -51,6 +51,15 @@ ALLOWED_TACTICAL_WITH_OPTIONS = ["choose", "act", "finish_turn", "resign"]
 ALLOWED_TACTICAL = ["act", "finish_turn", "resign"]
 ALLOWED_PROMOTION = ["act", "resign"]
 
+CONTACT_ACTIONABILITY_ACTIONABLE = "actionable"
+CONTACT_ACTIONABILITY_EXHAUSTED = "exhausted"
+CONTACT_ACTIONABILITY_UNKNOWN = "unknown"
+CLOSURE_REASON_EXHAUSTED = "exhausted"
+CLOSURE_REASON_REPEATED_CONTACT_KEY = "repeated_contact_key"
+CORRECTION_KIND_SYNTAX = "syntax"
+CORRECTION_KIND_CONTEXT = "context"
+CORRECTION_KIND_SEMANTIC_REPEAT = "semantic_repeat"
+
 
 class ContextualResponseError(ModelResponseError):
   """A model response violated the decision context rules (e.g. set_policy on contact)."""
@@ -70,6 +79,8 @@ class DecisionPacket:
   options: list[dict[str, Any]]
   coverage: dict[str, str]
   final_only: bool = False
+  contact_state_key: Optional[str] = None
+  closure_reason: Optional[str] = None
 
   def to_dict(self) -> dict[str, Any]:
     return {
@@ -83,10 +94,14 @@ class DecisionPacket:
       "options": copy.deepcopy(self.options),
       "coverage": copy.deepcopy(self.coverage),
       "final_only": self.final_only,
+      "contact_state_key": self.contact_state_key,
+      "closure_reason": self.closure_reason,
     }
 
   @classmethod
   def from_dict(cls, data: dict[str, Any]) -> DecisionPacket:
+    raw_key = data.get("contact_state_key")
+    raw_reason = data.get("closure_reason")
     return cls(
       decision_id=str(data["decision_id"]),
       state_revision=int(data["state_revision"]),
@@ -98,6 +113,8 @@ class DecisionPacket:
       options=copy.deepcopy(data.get("options", [])),
       coverage=copy.deepcopy(data.get("coverage", {})),
       final_only=bool(data.get("final_only", False)),
+      contact_state_key=raw_key if isinstance(raw_key, str) and raw_key else None,
+      closure_reason=raw_reason if isinstance(raw_reason, str) and raw_reason else None,
     )
 
 
@@ -181,6 +198,96 @@ def compute_incident_key(
   return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def contact_state_key_from_evidence(evidence: dict[str, Any] | None) -> Optional[str]:
+  """Return the engine contact_state_key, or None when it cannot authorize closure."""
+  if not isinstance(evidence, dict):
+    return None
+  key = evidence.get("contact_state_key")
+  if isinstance(key, str) and key:
+    return key
+  return None
+
+
+def contact_actionability_from_evidence(evidence: dict[str, Any] | None) -> str:
+  """Return actionable|exhausted|unknown. Missing or invalid values are unknown."""
+  if not isinstance(evidence, dict):
+    return CONTACT_ACTIONABILITY_UNKNOWN
+  value = evidence.get("contact_actionability")
+  if value in (
+    CONTACT_ACTIONABILITY_ACTIONABLE,
+    CONTACT_ACTIONABILITY_EXHAUSTED,
+    CONTACT_ACTIONABILITY_UNKNOWN,
+  ):
+    return value
+  return CONTACT_ACTIONABILITY_UNKNOWN
+
+
+def contact_scope_key(
+  game_id: str | int,
+  side_turn: str | int,
+  contact_state_key: str,
+) -> tuple[str, str, str]:
+  """Scope a contact_state_key to (game_id, canonical controlled side-turn id, key)."""
+  return (str(game_id), str(side_turn), str(contact_state_key))
+
+
+def contact_closure_reason(
+  evidence: dict[str, Any] | None,
+  tracker: Optional["IncidentTracker"] = None,
+  *,
+  game_id: str | int = "",
+  side_turn: int = 0,
+  reason: str = "contact",
+) -> Optional[str]:
+  """Why this current-state contact packet must be final_only, or None.
+
+  Exhausted actionability closes on its own. A present contact_state_key
+  closes only after that key was marked consumed for a committed model
+  decision this controlled side-turn. Missing keys and unknown actionability
+  cannot authorize closure.
+  """
+  if reason != "contact" or not isinstance(evidence, dict):
+    return None
+  if str(evidence.get("stage", "")) != "current_state":
+    return None
+  if contact_actionability_from_evidence(evidence) == CONTACT_ACTIONABILITY_EXHAUSTED:
+    return CLOSURE_REASON_EXHAUSTED
+  key = contact_state_key_from_evidence(evidence)
+  if key is None or tracker is None:
+    return None
+  if tracker.contact_key_consumed(game_id, side_turn, key):
+    return CLOSURE_REASON_REPEATED_CONTACT_KEY
+  return None
+
+
+def contact_closure_required(
+  evidence: dict[str, Any] | None,
+  tracker: Optional["IncidentTracker"] = None,
+  *,
+  game_id: str | int = "",
+  side_turn: int = 0,
+  reason: str = "contact",
+) -> bool:
+  return contact_closure_reason(
+    evidence, tracker, game_id=game_id, side_turn=side_turn, reason=reason,
+  ) is not None
+
+
+def effective_final_only(
+  driver_final_only: bool,
+  evidence: dict[str, Any] | None,
+  tracker: Optional["IncidentTracker"] = None,
+  *,
+  game_id: str | int = "",
+  side_turn: int = 0,
+  reason: str = "contact",
+) -> bool:
+  """driver_final_only OR contact_closure_required. Do not mutate driver state."""
+  return bool(driver_final_only) or contact_closure_required(
+    evidence, tracker, game_id=game_id, side_turn=side_turn, reason=reason,
+  )
+
+
 def build_decision_packet(
   reason: str,
   evidence: dict[str, Any],
@@ -188,7 +295,9 @@ def build_decision_packet(
   *,
   game_id: str | int = "",
   side_turn: int = 0,
+  contact_scope: str | int | None = None,
   final_only: bool = False,
+  tracker: Optional["IncidentTracker"] = None,
   allowed_kinds_override: Optional[list[str]] = None,
   decision_id: Optional[str] = None,
 ) -> DecisionPacket:
@@ -236,6 +345,18 @@ def build_decision_packet(
     allowed = list(ALLOWED_ALL)
 
   incident_key = compute_incident_key(game_id, side_turn, reason, evidence)
+  contact_key = (
+    contact_state_key_from_evidence(evidence)
+    if reason == "contact" and evidence.get("stage") == "current_state"
+    else None
+  )
+  scope = contact_scope if contact_scope is not None else side_turn
+  closure_reason = contact_closure_reason(
+    evidence, tracker, game_id=game_id, side_turn=scope, reason=reason,
+  )
+  packet_final_only = bool(final_only) or closure_reason is not None
+  if tracker is not None and contact_key is not None:
+    tracker.observe_contact_decision(game_id, scope, contact_key)
 
   if reason == "threat_unavailable":
     coverage = {"facts": "unavailable", "options": "not_generated"}
@@ -257,7 +378,9 @@ def build_decision_packet(
     allowed_kinds=allowed,
     options=options,
     coverage=coverage,
-    final_only=final_only,
+    final_only=packet_final_only,
+    contact_state_key=contact_key,
+    closure_reason=closure_reason,
   )
 
 
@@ -329,7 +452,7 @@ def validate_response_context(response: Any, packet: DecisionPacket) -> None:
 
 
 class IncidentTracker:
-  """Tracks incidents and bounds ineffective responses per revision and incident."""
+  """Tracks incidents, contact-key allowance, and one shared correction budget."""
 
   def __init__(self) -> None:
     # revision -> set of incident_key encountered at that revision
@@ -338,6 +461,10 @@ class IncidentTracker:
     self.ineffective_counts: dict[tuple[int, int, str], int] = {}
     # (side_turn, revision, incident_key) -> count of total encounters
     self.encounter_counts: dict[tuple[int, int, str], int] = {}
+    # (game_id, side_turn, contact_state_key) -> issued decision-request count
+    self.contact_decision_counts: dict[tuple[str, int, str], int] = {}
+    # Consumed keys after a committed model decision this controlled side-turn.
+    self.consumed_contact_keys: set[tuple[str, int, str]] = set()
 
   def observe_incident(self, side_turn: int, revision: int, incident_key: str) -> bool:
     """Record encountering an incident at (side_turn, revision).
@@ -371,9 +498,66 @@ class IncidentTracker:
 
     At a fixed side-turn, revision, and incident, permit at most one corrective follow-up.
     Count == 1 allows the 1 correction. Count > 1 exceeds the allowance.
+    Syntax, context, and semantic-repeat share this counter.
     """
     key = (side_turn, revision, incident_key)
     return self.ineffective_counts.get(key, 0) <= 1
+
+  def record_correction(
+    self,
+    side_turn: int,
+    revision: int,
+    incident_key: str,
+    *,
+    kind: str,
+  ) -> int:
+    """Record a syntax, context, or semantic-repeat failure.
+
+    All kinds share the existing one-correction-per-incident counter.
+    """
+    _ = kind
+    return self.record_ineffective(side_turn, revision, incident_key)
+
+  def observe_contact_decision(
+    self,
+    game_id: str | int,
+    side_turn: int,
+    contact_state_key: str | None,
+  ) -> int:
+    """Count an issued decision request for this contact key. Does not consume it."""
+    key = contact_state_key_from_evidence({"contact_state_key": contact_state_key})
+    if key is None:
+      return 0
+    scope = contact_scope_key(game_id, side_turn, key)
+    self.contact_decision_counts[scope] = self.contact_decision_counts.get(scope, 0) + 1
+    return self.contact_decision_counts[scope]
+
+  def mark_contact_key_consumed(
+    self,
+    game_id: str | int,
+    side_turn: int,
+    contact_state_key: str | None,
+  ) -> None:
+    """Mark a key consumed after a model response commits work.
+
+    Successful inspections and routine independent movement must not call this.
+    Missing keys are ignored and cannot authorize later closure.
+    """
+    key = contact_state_key_from_evidence({"contact_state_key": contact_state_key})
+    if key is None:
+      return
+    self.consumed_contact_keys.add(contact_scope_key(game_id, side_turn, key))
+
+  def contact_key_consumed(
+    self,
+    game_id: str | int,
+    side_turn: int,
+    contact_state_key: str | None,
+  ) -> bool:
+    key = contact_state_key_from_evidence({"contact_state_key": contact_state_key})
+    if key is None:
+      return False
+    return contact_scope_key(game_id, side_turn, key) in self.consumed_contact_keys
 
   def reconstruct_from_journal(self, rows: list[dict[str, Any]]) -> None:
     """Reconstruct consumed allowances and encountered incidents from journal records."""
@@ -394,6 +578,11 @@ class IncidentTracker:
         st = row.get("side_turn", current_side_turn)
         if ikey:
           pending_incidents.append((st, rev, ikey))
+        evidence = packet.get("evidence") if isinstance(packet.get("evidence"), dict) else {}
+        ckey = packet.get("contact_state_key") or evidence.get("contact_state_key")
+        gid = row.get("game_id", "")
+        if ckey:
+          self.observe_contact_decision(gid, row.get("contact_scope", st), ckey)
       elif rtype == "policy_installed":
         for st, rev, ikey in pending_incidents:
           self.observe_incident(st, rev, ikey)
@@ -403,8 +592,18 @@ class IncidentTracker:
         ikey = row.get("incident_key", "")
         st = row.get("side_turn", current_side_turn)
         if ikey:
-          self.record_ineffective(st, rev, ikey)
+          kind = row.get("correction_kind", CORRECTION_KIND_CONTEXT)
+          if rtype == "incident_recurrence":
+            kind = row.get("correction_kind", CORRECTION_KIND_SEMANTIC_REPEAT)
+          self.record_correction(st, rev, ikey, kind=kind)
           self.observe_incident(st, rev, ikey)
+      elif rtype == "contact_key_consumed":
+        st = row.get("side_turn", current_side_turn)
+        self.mark_contact_key_consumed(
+          row.get("game_id", ""),
+          st,
+          row.get("contact_state_key"),
+        )
 
 
 def map_batch_failure_to_option(
@@ -533,6 +732,28 @@ def render_decision_brief(
           "This does not establish that every custom legal action by another unit is unavailable. "
           f"Tactical option enumeration coverage is {option_coverage}."
         )
+    if packet.final_only:
+      sections.append(
+        "This packet is final_only: act and choose must set finish_turn=true."
+      )
+    if packet.closure_reason == CLOSURE_REASON_EXHAUSTED:
+      sections.append(
+        "CONTACT CLOSURE: contact_actionability=exhausted; complete eligibility checks "
+        "found no executable offered move or attack for involved friendly units. "
+        "This does not establish that every custom rescue is unavailable. "
+        "Submit a final rescue with `act` plus finish_turn=true (or `choose` remaining "
+        "outside-actor options plus finish), finish immediately, or resign. "
+        "Do not recruit and request the same decision again."
+      )
+    elif packet.closure_reason == CLOSURE_REASON_REPEATED_CONTACT_KEY:
+      sections.append(
+        "CONTACT CLOSURE: this contact_state_key already received a committed model "
+        "decision this controlled side-turn. Remaining exposure is not a new deliberation. "
+        "This does not establish that every custom rescue is unavailable. "
+        "Submit a final rescue with `act` plus finish_turn=true (or `choose` remaining "
+        "outside-actor options plus finish), finish immediately, or resign. "
+        "Do not recruit and request the same decision again."
+      )
     sections.append(
       "If next-turn exposure of a custom destination is uncertain, use the existing "
       "destination inspection before acting."
@@ -556,6 +777,12 @@ def render_decision_brief(
         fact_parts.append(
           f"actors_truncated={json.dumps(bool(packet.evidence.get('actors_truncated')))}"
         )
+      if "contact_actionability" in packet.evidence:
+        fact_parts.append(
+          f"contact_actionability={contact_actionability_from_evidence(packet.evidence)}"
+        )
+      if packet.contact_state_key:
+        fact_parts.append(f"contact_state_key={packet.contact_state_key}")
       sections.append("Contact facts: " + ", ".join(fact_parts))
     if packet.options:
       opt_lines = [
@@ -620,7 +847,7 @@ def render_decision_brief(
         "kind": "choose",
         "decision_id": packet.decision_id,
         "option_ids": example_ids or ["<option_id>"],
-        "finish_turn": False,
+        "finish_turn": bool(packet.final_only),
       }
       opt_lines.append(
         "To choose, respond with: " + json.dumps(example, separators=(",", ":"))

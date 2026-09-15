@@ -284,15 +284,64 @@ class StrategyRoutineStack3Tests(unittest.TestCase):
             self.assertEqual(len(packets), 1)
             packet = packets[0]
             self.assertEqual(packet["evidence"]["friendly_unit_ids"], [3])
-            self.assertEqual(packet["evidence"]["actor_ids"], [])
+            self.assertNotIn("3", [str(a) for a in packet["evidence"].get("actor_ids", [])])
             self.assertNotIn("primary_actor_id", packet["evidence"])
-            self.assertEqual(packet["evidence"]["options"], [])
-            self.assertEqual(packet["evidence"]["options_empty_reason"], "no_executable_options")
-            self.assertEqual(packet["coverage"]["options"], "complete")
-            self.assertNotIn("choose", packet["allowed_kinds"])
+            self.assertEqual(packet["evidence"].get("contact_actionability"), "exhausted")
+            self.assertTrue(packet["final_only"])
+            self.assertIn(packet["coverage"]["options"], ("complete", "truncated"))
             prompt_text = "\n".join(prompts(prompt_log))
-            self.assertIn('"options_empty_reason":"no_executable_options"', prompt_text)
-            self.assertIn('"options":[]', prompt_text)
+            compact = prompt_text.replace(" ", "")
+            self.assertIn('"final_only":true', compact)
+
+    def test_exhausted_contact_rejects_bare_recruit_without_finish(self):
+        recruit = {"action": "Recruit", "def_id": "Walking Corpse", "col": 1, "row": 7}
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            checkpoint, _, backend, prompt_log = prepare(
+                root, "contact.json", [
+                    policy(),
+                    {"kind": "act", "actions": [recruit], "finish_turn": False},
+                    {"kind": "finish_turn"},
+                ])
+            data = json.loads(checkpoint.read_text())
+            exhausted = next(unit for unit in data["save_state"]["units"] if unit["id"] == 3)
+            exhausted.update(moved=True, attacked=True)
+            encoded = json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
+            checkpoint = root / ("checkpoint-" + hashlib.sha256(encoded).hexdigest() + ".json")
+            checkpoint.write_bytes(encoded)
+            log = root / "exhausted-recruit.ndjson"
+            result = launch(root, log, checkpoint, backend)
+            assert_success(self, result, log)
+            rows = records(log)
+            self.assertTrue(any(row.get("type") == "strategy_response_repair" for row in rows))
+            self.assertFalse(any(
+                event.get("kind") == "recruit" for event in events(rows)))
+            self.assertTrue(any(
+                row.get("type") == "forwarded_orders"
+                and any(order.get("action") == "FinishWithGreedy" for order in row.get("orders", []))
+                for row in rows))
+
+    def test_unrelated_recruit_repeat_makes_next_contact_packet_final_only(self):
+        recruit = {"action": "Recruit", "def_id": "Walking Corpse", "col": 1, "row": 7}
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            checkpoint, _, backend, prompt_log = prepare(
+                root, "contact.json", [
+                    policy(),
+                    {"kind": "act", "actions": [recruit], "finish_turn": False},
+                    {"kind": "finish_turn"},
+                ])
+            log = root / "repeat-key.ndjson"
+            result = launch(root, log, checkpoint, backend)
+            assert_success(self, result, log)
+            rows = records(log)
+            packets = [row["packet"] for row in rows if row.get("type") == "decision_packet"
+                       and row.get("packet", {}).get("decision_kind") == "tactical"]
+            self.assertGreaterEqual(len(packets), 2)
+            self.assertFalse(packets[0]["final_only"])
+            self.assertTrue(packets[1]["final_only"])
+            self.assertEqual(packets[0].get("contact_state_key"), packets[1].get("contact_state_key"))
+            self.assertTrue(any(row.get("type") == "contact_key_consumed" for row in rows))
 
     def test_ordinary_act_false_is_accepted_without_hidden_finish(self):
         with tempfile.TemporaryDirectory() as td:

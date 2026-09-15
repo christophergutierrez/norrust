@@ -1,19 +1,26 @@
 //! Read-only deterministic selection for the strategy `routine_next` query.
 //! Selection never mutates live state; the driver submits returned actions.
 
+use crate::combat::tod_label;
 use crate::game_state::{
     apply_action, apply_recruit, legal_recruitment_placements, Action, GameState,
 };
 use crate::hex::Hex;
 use crate::loader::Registry;
 use crate::pathfinding::{find_path, get_zoc_hexes};
-use crate::routine_decision::{generate_tactical_options, TacticalOption};
+use crate::routine_decision::{
+    actionability_from_flags, generate_outside_helper_options, generate_tactical_options,
+    involved_option_flags, ContactActionability, TacticalOption,
+};
 use crate::schema::UnitDef;
 use crate::tactics::{
-    recruiter_threats_after_end_turn, turn_tactics, unit_threats_after_end_turn, TacticsError,
+    recruiter_threats_after_end_turn, turn_tactics, unit_threats_after_end_turn, RecruiterThreats,
+    TacticsError, ThreatSurface, UnitThreatSummary, UnitThreatSurface,
 };
 use crate::unit::Unit;
+use serde::Serialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -435,6 +442,164 @@ pub struct CurrentContactFacts {
     pub options_truncated: bool,
     pub options_empty_reason: Option<String>,
     pub coverage: &'static str,
+    pub contact_actionability: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contact_state_key: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ContactUnitKey {
+    id: u32,
+    col: i32,
+    row: i32,
+    hp: u32,
+    moved: bool,
+    attacked: bool,
+    advancement_pending: bool,
+    poisoned: bool,
+    slowed: bool,
+}
+
+#[derive(Serialize)]
+struct ContactStateKeyPayload<'a> {
+    active_side: u8,
+    combat_phase: &'a str,
+    sides_acted_this_round: u8,
+    trigger: &'a str,
+    friendlies: Vec<ContactUnitKey>,
+    enemies: Vec<ContactUnitKey>,
+    unit_threats: Vec<&'a UnitThreatSummary>,
+    recruiter_threats: Vec<&'a RecruiterThreats>,
+    involved_actionability: &'a [(u32, bool)],
+}
+
+fn contact_unit_key(state: &GameState, id: u32) -> Option<ContactUnitKey> {
+    let unit = state.units.get(&id)?;
+    let hex = state.positions.get(&id)?;
+    let (col, row) = hex.to_offset();
+    Some(ContactUnitKey {
+        id,
+        col,
+        row,
+        hp: unit.hp,
+        moved: unit.moved,
+        attacked: unit.attacked,
+        advancement_pending: unit.advancement_pending,
+        poisoned: unit.poisoned,
+        slowed: unit.slowed,
+    })
+}
+
+fn contact_state_key(
+    state: &GameState,
+    side: u8,
+    trigger: &str,
+    friendly_unit_ids: &[u32],
+    enemy_unit_ids: &[u32],
+    unit_surface: &UnitThreatSurface,
+    recruiter_surface: &ThreatSurface,
+    involved_actionability: &[(u32, bool)],
+) -> Option<String> {
+    let mut friendlies = Vec::with_capacity(friendly_unit_ids.len());
+    for &id in friendly_unit_ids {
+        friendlies.push(contact_unit_key(state, id)?);
+    }
+    let mut enemies = Vec::with_capacity(enemy_unit_ids.len());
+    for &id in enemy_unit_ids {
+        enemies.push(contact_unit_key(state, id)?);
+    }
+
+    let involved: HashSet<u32> = friendly_unit_ids.iter().copied().collect();
+    let unit_threats: Vec<&UnitThreatSummary> = unit_surface
+        .units
+        .iter()
+        .filter(|summary| involved.contains(&summary.unit_id))
+        .collect();
+    if unit_threats.len() != friendly_unit_ids.len() {
+        return None;
+    }
+
+    let mut recruiter_threats: Vec<&RecruiterThreats> = recruiter_surface
+        .recruiters
+        .iter()
+        .filter(|summary| involved.contains(&summary.recruiter_id))
+        .collect();
+    recruiter_threats.sort_by_key(|summary| summary.recruiter_id);
+    for &id in friendly_unit_ids {
+        let unit = state.units.get(&id)?;
+        if unit.can_recruit
+            && !recruiter_threats
+                .iter()
+                .any(|summary| summary.recruiter_id == id)
+        {
+            return None;
+        }
+    }
+
+    let payload = ContactStateKeyPayload {
+        active_side: side,
+        combat_phase: tod_label(state.turn),
+        sides_acted_this_round: state.sides_acted_this_round,
+        trigger,
+        friendlies,
+        enemies,
+        unit_threats,
+        recruiter_threats,
+        involved_actionability,
+    };
+    let bytes = serde_json::to_vec(&payload).ok()?;
+    Some(format!("{:x}", Sha256::digest(&bytes)))
+}
+
+fn contact_exception_evidence(facts: &CurrentContactFacts) -> Value {
+    let mut evidence = json!({
+        "stage": "current_state",
+        "trigger": facts.trigger,
+        "friendly_unit_ids": facts.friendly_unit_ids,
+        "enemy_unit_ids": facts.enemy_unit_ids,
+        "actor_ids": facts.actor_ids,
+        "eligible_actor_count": facts.eligible_actor_count,
+        "actors_truncated": facts.actors_truncated,
+        "options": facts.options,
+        "options_truncated": facts.options_truncated,
+        "options_empty_reason": facts.options_empty_reason,
+        "coverage": facts.coverage,
+        "contact_actionability": facts.contact_actionability,
+    });
+    if let Some(key) = &facts.contact_state_key {
+        evidence["contact_state_key"] = json!(key);
+    }
+    evidence
+}
+
+/// Classify involved-unit actionability and emit a key only when every required
+/// fact is present. Incomplete facts are unknown and never exhausted.
+pub(crate) fn classify_contact_state(
+    state: &GameState,
+    side: u8,
+    trigger: &str,
+    friendly_unit_ids: &[u32],
+    enemy_unit_ids: &[u32],
+    unit_surface: &UnitThreatSurface,
+    recruiter_surface: &ThreatSurface,
+) -> (ContactActionability, Option<String>) {
+    let Some(flags) = involved_option_flags(state, friendly_unit_ids) else {
+        return (ContactActionability::Unknown, None);
+    };
+    let key = contact_state_key(
+        state,
+        side,
+        trigger,
+        friendly_unit_ids,
+        enemy_unit_ids,
+        unit_surface,
+        recruiter_surface,
+        &flags,
+    );
+    if key.is_none() {
+        return (ContactActionability::Unknown, None);
+    }
+    (actionability_from_flags(&flags), key)
 }
 
 pub(crate) fn current_contact(
@@ -456,15 +621,17 @@ pub(crate) fn current_contact(
         }
     }
 
+    let unit_surface = unit_threats_after_end_turn(state, side)?;
+    let recruiter_surface = recruiter_threats_after_end_turn(state, side)?;
     let mut exposure_friendly = Vec::new();
     let mut exposure_enemy = Vec::new();
-    for u in unit_threats_after_end_turn(state, side)?.units {
+    for u in &unit_surface.units {
         if u.distinct_attacker_count > 0 || u.open_distinct_attacker_count > 0 {
             exposure_friendly.push(u.unit_id);
-            exposure_enemy.extend(u.attacker_ids);
+            exposure_enemy.extend(u.attacker_ids.iter().copied());
         }
     }
-    for r in recruiter_threats_after_end_turn(state, side)?.recruiters {
+    for r in &recruiter_surface.recruiters {
         if r.distinct_attacker_count > 0 || r.open_distinct_attacker_count > 0 {
             exposure_friendly.push(r.recruiter_id);
             for t in &r.threats {
@@ -501,7 +668,24 @@ pub(crate) fn current_contact(
     enemy_unit_ids.sort_unstable();
     enemy_unit_ids.dedup();
 
-    let tactical_decision = generate_tactical_options(state, side)?;
+    let (actionability, contact_state_key) = classify_contact_state(
+        state,
+        side,
+        trigger,
+        &friendly_unit_ids,
+        &enemy_unit_ids,
+        &unit_surface,
+        &recruiter_surface,
+    );
+
+    let tactical_decision = match actionability {
+        ContactActionability::Exhausted => {
+            generate_outside_helper_options(state, side, &friendly_unit_ids)?
+        }
+        ContactActionability::Actionable | ContactActionability::Unknown => {
+            generate_tactical_options(state, side)?
+        }
+    };
 
     Ok(Some(CurrentContactFacts {
         trigger,
@@ -514,6 +698,8 @@ pub(crate) fn current_contact(
         options_truncated: tactical_decision.options_truncated,
         options_empty_reason: tactical_decision.options_empty_reason,
         coverage: "complete",
+        contact_actionability: actionability.as_str(),
+        contact_state_key,
     }))
 }
 fn post_step_safe(state: &GameState, side: u8, action: Action) -> Result<bool, TacticsError> {
@@ -847,19 +1033,7 @@ pub fn routine_next(
 
             return RoutineOutcome::Exception {
                 reason: "contact",
-                evidence: json!({
-                    "stage": "current_state",
-                    "trigger": facts.trigger,
-                    "friendly_unit_ids": facts.friendly_unit_ids,
-                    "enemy_unit_ids": facts.enemy_unit_ids,
-                    "actor_ids": facts.actor_ids,
-                    "eligible_actor_count": facts.eligible_actor_count,
-                    "actors_truncated": facts.actors_truncated,
-                    "options": facts.options,
-                    "options_truncated": facts.options_truncated,
-                    "options_empty_reason": facts.options_empty_reason,
-                    "coverage": facts.coverage,
-                }),
+                evidence: contact_exception_evidence(&facts),
             };
         }
         Ok(None) => {}
@@ -1934,6 +2108,8 @@ mod tests {
                 assert_eq!(evidence["coverage"], "complete");
                 assert_eq!(evidence["friendly_unit_ids"], json!([1, 3]));
                 assert_eq!(evidence["enemy_unit_ids"], json!([7]));
+                assert_eq!(evidence["contact_actionability"], "actionable");
+                assert!(evidence["contact_state_key"].as_str().unwrap().len() == 64);
                 assert!(
                     evidence["trigger"] == "attack"
                         || evidence["trigger"] == "exposure"

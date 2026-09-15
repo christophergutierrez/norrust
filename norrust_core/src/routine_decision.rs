@@ -65,6 +65,23 @@ pub struct TacticalDecisionFacts {
     pub options_empty_reason: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContactActionability {
+    Actionable,
+    Exhausted,
+    Unknown,
+}
+
+impl ContactActionability {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Actionable => "actionable",
+            Self::Exhausted => "exhausted",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 const MAX_SELECTED_ACTORS: usize = 3;
 
 struct ActorGeneratedOptions {
@@ -72,7 +89,10 @@ struct ActorGeneratedOptions {
     truncated: bool,
 }
 
-fn has_executable_attack(state: &GameState, actor_id: u32) -> Result<bool, TacticsError> {
+pub(crate) fn has_executable_attack(
+    state: &GameState,
+    actor_id: u32,
+) -> Result<bool, TacticsError> {
     let actor = state
         .units
         .get(&actor_id)
@@ -138,7 +158,10 @@ fn has_executable_attack(state: &GameState, actor_id: u32) -> Result<bool, Tacti
     Ok(false)
 }
 
-fn has_executable_relocation(state: &GameState, actor_id: u32) -> Result<bool, TacticsError> {
+pub(crate) fn has_executable_relocation(
+    state: &GameState,
+    actor_id: u32,
+) -> Result<bool, TacticsError> {
     let actor = state
         .units
         .get(&actor_id)
@@ -163,9 +186,58 @@ fn has_executable_relocation(state: &GameState, actor_id: u32) -> Result<bool, T
     Ok(false)
 }
 
-fn has_executable_options(state: &GameState, actor_id: u32) -> Result<bool, TacticsError> {
+pub(crate) fn has_executable_options(
+    state: &GameState,
+    actor_id: u32,
+) -> Result<bool, TacticsError> {
     // Moving is cheaper to establish and remains available after an attack.
     Ok(has_executable_relocation(state, actor_id)? || has_executable_attack(state, actor_id)?)
+}
+
+/// Per-involved-unit executable-option flags, before any option menu is built.
+/// Missing units or legality errors are incomplete facts, not exhaustion.
+pub(crate) fn involved_option_flags(
+    state: &GameState,
+    involved_ids: &[u32],
+) -> Option<Vec<(u32, bool)>> {
+    let mut flags = Vec::with_capacity(involved_ids.len());
+    for &id in involved_ids {
+        match has_executable_options(state, id) {
+            Ok(actionable) => flags.push((id, actionable)),
+            Err(_) => return None,
+        }
+    }
+    Some(flags)
+}
+
+pub(crate) fn actionability_from_flags(flags: &[(u32, bool)]) -> ContactActionability {
+    if flags.iter().any(|(_, actionable)| *actionable) {
+        ContactActionability::Actionable
+    } else {
+        ContactActionability::Exhausted
+    }
+}
+
+/// Friendlies not in `involved_ids` that still have an executable move or attack.
+pub(crate) fn select_outside_helpers(
+    state: &GameState,
+    side: u8,
+    involved_ids: &[u32],
+) -> Result<Vec<u32>, TacticsError> {
+    let involved: HashSet<u32> = involved_ids.iter().copied().collect();
+    let mut candidates: Vec<u32> = state
+        .units
+        .iter()
+        .filter_map(|(&id, unit)| (unit.faction == side && !involved.contains(&id)).then_some(id))
+        .collect();
+    candidates.sort_unstable();
+    let mut helpers = Vec::new();
+    for actor_id in candidates {
+        if has_executable_options(state, actor_id)? {
+            helpers.push(actor_id);
+        }
+    }
+    Ok(helpers)
 }
 
 /// Enumerate eligible friendly actors once, in priority order:
@@ -242,22 +314,15 @@ fn empty_tactical_facts() -> TacticalDecisionFacts {
     }
 }
 
-/// Generate at most 4 bounded tactical options (up to 2 attacks, up to 2 relocations)
-/// for each of at most three selected eligible actors.
-pub fn generate_tactical_options(
+fn generate_options_for_selected_actors(
     state: &GameState,
-    side: u8,
+    selected: impl IntoIterator<Item = u32>,
+    eligible_actor_count: u32,
 ) -> Result<TacticalDecisionFacts, TacticsError> {
-    let eligible = select_eligible_actors(state, side)?;
-    let eligible_actor_count = eligible.len() as u32;
-    if eligible.is_empty() {
-        return Ok(empty_tactical_facts());
-    }
-
     let mut actor_ids = Vec::new();
     let mut options = Vec::new();
     let mut options_truncated = false;
-    for actor_id in eligible.iter().copied().take(MAX_SELECTED_ACTORS) {
+    for actor_id in selected.into_iter().take(MAX_SELECTED_ACTORS) {
         let generated = generate_actor_options(state, actor_id)?;
         if generated.options.is_empty() {
             continue;
@@ -283,6 +348,34 @@ pub fn generate_tactical_options(
         options,
         options_truncated,
     })
+}
+
+/// Generate at most 4 bounded tactical options (up to 2 attacks, up to 2 relocations)
+/// for each of at most three selected eligible actors.
+pub fn generate_tactical_options(
+    state: &GameState,
+    side: u8,
+) -> Result<TacticalDecisionFacts, TacticsError> {
+    let eligible = select_eligible_actors(state, side)?;
+    let eligible_actor_count = eligible.len() as u32;
+    if eligible.is_empty() {
+        return Ok(empty_tactical_facts());
+    }
+    generate_options_for_selected_actors(state, eligible, eligible_actor_count)
+}
+
+/// Stack 2 menus for outside helpers when every involved unit is exhausted.
+pub(crate) fn generate_outside_helper_options(
+    state: &GameState,
+    side: u8,
+    involved_ids: &[u32],
+) -> Result<TacticalDecisionFacts, TacticsError> {
+    let helpers = select_outside_helpers(state, side, involved_ids)?;
+    let eligible_actor_count = helpers.len() as u32;
+    if helpers.is_empty() {
+        return Ok(empty_tactical_facts());
+    }
+    generate_options_for_selected_actors(state, helpers, eligible_actor_count)
 }
 
 fn generate_actor_options(
@@ -544,6 +637,7 @@ mod tests {
     use crate::board::{Board, Tile};
     use crate::loader::Registry;
     use crate::schema::UnitDef;
+    use crate::tactics::{recruiter_threats_after_end_turn, unit_threats_after_end_turn};
     use crate::unit::Unit;
     use std::path::PathBuf;
 
@@ -738,16 +832,21 @@ mod tests {
             .any(|option| option.category == "relocation"));
     }
 
+    fn exhaust_unit(unit: &mut Unit) {
+        unit.moved = true;
+        unit.attacked = true;
+    }
+
     #[test]
     fn all_exhausted_contact_has_explicit_empty_options_reason_and_complete_coverage() {
         let registry = units();
         let mut s = large_test_state();
+        exhaust_unit(s.units.get_mut(&1).unwrap());
         for (friendly_id, enemy_id, friendly_hex, enemy_hex) in
             [(5, 7, (15, 14), (15, 15)), (6, 8, (18, 14), (18, 15))]
         {
             let mut friendly = Unit::from_def(friendly_id, registry.get("Skeleton").unwrap(), 0);
-            friendly.moved = true;
-            friendly.attacked = true;
+            exhaust_unit(&mut friendly);
             s.place_unit(friendly, Hex::from_offset(friendly_hex.0, friendly_hex.1));
             let enemy = Unit::from_def(enemy_id, registry.get("Skeleton").unwrap(), 1);
             s.place_unit(enemy, Hex::from_offset(enemy_hex.0, enemy_hex.1));
@@ -755,6 +854,7 @@ mod tests {
 
         let facts = crate::routine::current_contact(&s, 0).unwrap().unwrap();
         assert_eq!(facts.friendly_unit_ids, vec![5, 6]);
+        assert!(!facts.friendly_unit_ids.contains(&1));
         assert!(facts.actor_ids.is_empty());
         assert_eq!(facts.eligible_actor_count, 0);
         assert!(!facts.actors_truncated);
@@ -765,6 +865,157 @@ mod tests {
         );
         assert!(!facts.options_truncated);
         assert_eq!(facts.coverage, "complete");
+        assert_eq!(facts.contact_actionability, "exhausted");
+        assert!(facts.contact_state_key.as_ref().unwrap().len() == 64);
+    }
+
+    #[test]
+    fn exhausted_involved_preserves_outside_helper_options() {
+        let registry = units();
+        let mut s = large_test_state();
+        exhaust_unit(s.units.get_mut(&1).unwrap());
+        for (friendly_id, enemy_id, friendly_hex, enemy_hex) in
+            [(5, 7, (15, 14), (15, 15)), (6, 8, (18, 14), (18, 15))]
+        {
+            let mut friendly = Unit::from_def(friendly_id, registry.get("Skeleton").unwrap(), 0);
+            exhaust_unit(&mut friendly);
+            s.place_unit(friendly, Hex::from_offset(friendly_hex.0, friendly_hex.1));
+            let enemy = Unit::from_def(enemy_id, registry.get("Skeleton").unwrap(), 1);
+            s.place_unit(enemy, Hex::from_offset(enemy_hex.0, enemy_hex.1));
+        }
+        let helper = Unit::from_def(20, registry.get("Ghost").unwrap(), 0);
+        s.place_unit(helper, Hex::from_offset(24, 24));
+
+        let facts = crate::routine::current_contact(&s, 0).unwrap().unwrap();
+        assert_eq!(facts.friendly_unit_ids, vec![5, 6]);
+        assert!(!facts.friendly_unit_ids.contains(&20));
+        assert_eq!(facts.contact_actionability, "exhausted");
+        assert_eq!(facts.actor_ids, vec![20]);
+        assert_eq!(facts.eligible_actor_count, 1);
+        assert!(!facts.actors_truncated);
+        assert!(!facts.options.is_empty());
+        assert!(facts.options.iter().all(|option| option.actor_id == 20));
+        assert!(facts
+            .options
+            .iter()
+            .any(|option| option.category == "relocation"));
+        assert_eq!(facts.options_empty_reason, None);
+        assert!(facts.contact_state_key.is_some());
+    }
+
+    #[test]
+    fn unknown_actionability_when_involved_facts_are_incomplete() {
+        let registry = units();
+        let mut s = large_test_state();
+        let friendly = Unit::from_def(5, registry.get("Skeleton").unwrap(), 0);
+        s.place_unit(friendly, Hex::from_offset(15, 14));
+        let enemy = Unit::from_def(7, registry.get("Skeleton").unwrap(), 1);
+        s.place_unit(enemy, Hex::from_offset(15, 15));
+
+        let complete = crate::routine::current_contact(&s, 0).unwrap().unwrap();
+        assert_eq!(complete.contact_actionability, "actionable");
+        assert!(complete.contact_state_key.is_some());
+
+        assert!(involved_option_flags(&s, &[999]).is_none());
+        let unit_surface = unit_threats_after_end_turn(&s, 0).unwrap();
+        let recruiter_surface = recruiter_threats_after_end_turn(&s, 0).unwrap();
+        let (actionability, key) = crate::routine::classify_contact_state(
+            &s,
+            0,
+            complete.trigger,
+            &[999],
+            &complete.enemy_unit_ids,
+            &unit_surface,
+            &recruiter_surface,
+        );
+        assert_eq!(actionability.as_str(), "unknown");
+        assert_eq!(key, None);
+        assert_ne!(actionability.as_str(), "exhausted");
+    }
+
+    #[test]
+    fn contact_state_key_ignores_unrelated_remote_recruit() {
+        let registry = units();
+        let mut s = large_test_state();
+        exhaust_unit(s.units.get_mut(&1).unwrap());
+        let mut friendly = Unit::from_def(5, registry.get("Skeleton").unwrap(), 0);
+        exhaust_unit(&mut friendly);
+        s.place_unit(friendly, Hex::from_offset(15, 14));
+        let enemy = Unit::from_def(7, registry.get("Skeleton").unwrap(), 1);
+        s.place_unit(enemy, Hex::from_offset(15, 15));
+
+        let before = crate::routine::current_contact(&s, 0).unwrap().unwrap();
+        assert_eq!(before.contact_actionability, "exhausted");
+        let before_key = before.contact_state_key.clone().unwrap();
+
+        let remote = Unit::from_def(20, registry.get("Ghost").unwrap(), 0);
+        s.place_unit(remote, Hex::from_offset(24, 24));
+        s.gold[0] += 50;
+        s.state_revision += 1;
+
+        let after = crate::routine::current_contact(&s, 0).unwrap().unwrap();
+        assert_eq!(after.contact_actionability, "exhausted");
+        assert_eq!(after.friendly_unit_ids, before.friendly_unit_ids);
+        assert_eq!(
+            after.contact_state_key.as_deref(),
+            Some(before_key.as_str())
+        );
+        assert!(after.actor_ids.contains(&20));
+        assert!(after.options.iter().any(|option| option.actor_id == 20));
+    }
+
+    #[test]
+    fn contact_state_key_changes_with_involved_situation() {
+        let registry = units();
+        let mut s = large_test_state();
+        let friendly = Unit::from_def(5, registry.get("Skeleton").unwrap(), 0);
+        s.place_unit(friendly, Hex::from_offset(15, 14));
+        let enemy = Unit::from_def(7, registry.get("Skeleton").unwrap(), 1);
+        s.place_unit(enemy, Hex::from_offset(15, 15));
+
+        let base = crate::routine::current_contact(&s, 0).unwrap().unwrap();
+        let base_key = base.contact_state_key.clone().unwrap();
+        assert_eq!(base.contact_actionability, "actionable");
+
+        let mut hp_state = s.clone();
+        hp_state.units.get_mut(&5).unwrap().hp = 1;
+        let hp_key = crate::routine::current_contact(&hp_state, 0)
+            .unwrap()
+            .unwrap()
+            .contact_state_key
+            .unwrap();
+        assert_ne!(hp_key, base_key);
+
+        let mut moved_state = s.clone();
+        let from = *moved_state.positions.get(&5).unwrap();
+        let dest = Hex::from_offset(14, 14);
+        moved_state.positions.insert(5, dest);
+        moved_state.hex_to_unit.remove(&from);
+        moved_state.hex_to_unit.insert(dest, 5);
+        let pos_key = crate::routine::current_contact(&moved_state, 0)
+            .unwrap()
+            .unwrap()
+            .contact_state_key
+            .unwrap();
+        assert_ne!(pos_key, base_key);
+
+        let mut extra_enemy = s.clone();
+        let new_enemy = Unit::from_def(9, registry.get("Skeleton").unwrap(), 1);
+        extra_enemy.place_unit(new_enemy, Hex::from_offset(16, 14));
+        let extra = crate::routine::current_contact(&extra_enemy, 0)
+            .unwrap()
+            .unwrap();
+        assert_ne!(extra.contact_state_key.as_deref(), Some(base_key.as_str()));
+        assert!(extra.enemy_unit_ids.contains(&9));
+
+        let mut threat_state = s.clone();
+        threat_state.units.get_mut(&7).unwrap().hp = 1;
+        let threat_key = crate::routine::current_contact(&threat_state, 0)
+            .unwrap()
+            .unwrap()
+            .contact_state_key
+            .unwrap();
+        assert_ne!(threat_key, base_key);
     }
 
     #[test]

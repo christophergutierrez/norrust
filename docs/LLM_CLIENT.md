@@ -376,7 +376,15 @@ with at most four options each. `actor_ids` is that selected list; `eligible_act
 the uncapped pool; `actors_truncated` is true when the pool exceeded three. A candidate with
 no offered action is skipped; `moved=true` still permits a legal attack, and `attacked=true`
 still permits a legal relocation. Contact facts retain all threatened unit IDs, including
-exhausted units. An empty `options` array carries
+exhausted units. Engine evidence also reports `contact_actionability`
+(`actionable`, `exhausted`, or `unknown`) and a `contact_state_key` over the
+involved situation. `exhausted` means no involved friendly has an executable
+offered move or attack before menu caps; it is not a proof that no outside unit
+can rescue them. Unknown or missing keys cannot close the decision. When
+contact is exhausted, or the same key returns after a committed model decision
+in this controlled turn, the packet is `final_only`: the model may still
+inspect, choose or submit a final rescue, finish, or resign, but cannot merely
+recruit and request the same decision again. An empty `options` array carries
 `options_empty_reason: "no_executable_options"` when no eligible actor has an
 executable action in this bounded menu. That reason describes offered tactical options only;
 other units may still accept custom legal actions. `coverage.options` describes enumeration

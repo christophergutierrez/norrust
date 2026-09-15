@@ -655,6 +655,8 @@ mod tests {
             options_truncated: false,
             options_empty_reason: None,
             coverage: "complete",
+            contact_actionability: "actionable",
+            contact_state_key: None,
         };
 
         // Recruiter is in danger -> find_independent_move MUST return None
@@ -705,6 +707,8 @@ mod tests {
             options_truncated: false,
             options_empty_reason: None,
             coverage: "complete",
+            contact_actionability: "actionable",
+            contact_state_key: None,
         };
 
         let result = find_independent_move(&s, 0, &policy, &progress, &scouts, &contact_facts);
@@ -764,6 +768,8 @@ mod tests {
             options_truncated: false,
             options_empty_reason: None,
             coverage: "complete",
+            contact_actionability: "actionable",
+            contact_state_key: None,
         };
 
         // Scout 3 has an attack opportunity, so it must NOT be moved independently
@@ -819,6 +825,8 @@ mod tests {
             options_truncated: false,
             options_empty_reason: None,
             coverage: "complete",
+            contact_actionability: "actionable",
+            contact_state_key: None,
         };
 
         // Scout 3 moving away would expose recruiter (or scout 3 is already threatened by e2) -> refused!
