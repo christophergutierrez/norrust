@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "experiment_kind": "matched",
+  "status": "prepared_not_run",
+  "model_evaluation_status": "pending_live",
+  "objective": "Two candidate-only Fireworks cells for recruitment-efficiency Stack 4 after skipping Stack 3. No baseline comparison and no causal improvement claim.",
+  "screening_targets": [
+    "Zero format or missing-scout repairs on the scout-replacement cell when the model retains live scout IDs.",
+    "At most one model reply to free the first usable vacancy on the safe-travel cell, followed by the finite requested recruit.",
+    "Recruiter 1 survives. Explicit finish is valid execution but not successful capacity relief."
+  ],
+  "pricing": {
+    "date": "2026-09-13",
+    "provider": "Fireworks",
+    "model": "accounts/fireworks/models/glm-5p3-flash",
+    "rates": {
+      "input_per_million": 0.15,
+      "cached_input_per_million": 0.03,
+      "output_per_million": 0.5,
+      "reasoning_included_in_output": true
+    }
+  },
+  "cells": [
+    {
+      "id": "recruitment-safe-travel-candidate",
+      "position_id": "safe-travel",
+      "treatment": "candidate",
+      "checkpoint_fixture": "tools/fixtures/recruitment_efficiency/safe_travel.json",
+      "checkpoint_sha256": "251e699ec468c947029961bf25b1a5f33b0ceb1fa079c487e4491e2212a2eca8",
+      "scenario": "big_battle_6",
+      "seed": 9211,
+      "faction0": "undead",
+      "faction1": "undead",
+      "llm_side": 0,
+      "gold": 300,
+      "max_turns": 1,
+      "model": "accounts/fireworks/models/glm-5p3-flash",
+      "decision_mode": "strategy",
+      "action_encoding": "coordinates",
+      "incremental_turns": true,
+      "success_predicate": {
+        "recruiter_alive": true,
+        "completed_side_turns_at_least": 1
+      },
+      "budgets": {
+        "max_game_total_tokens": 100000,
+        "max_model_calls_per_turn": 8,
+        "max_partial_batches_per_turn": 64,
+        "max_queries_per_turn": 256,
+        "query_budget_seconds": 300,
+        "turn_timeout": 900,
+        "model_timeout": 300
+      },
+      "pricing": {
+        "date": "2026-09-13",
+        "provider": "Fireworks",
+        "model": "accounts/fireworks/models/glm-5p3-flash",
+        "rates": {
+          "input_per_million": 0.15,
+          "cached_input_per_million": 0.03,
+          "output_per_million": 0.5,
+          "reasoning_included_in_output": true
+        }
+      },
+      "extra_client_args": ["--max-output-tokens", "131072"],
+      "backend": {
+        "kind": "command",
+        "command": "python3 -m tools.fireworks_backend --stream --model accounts/fireworks/models/glm-5p3-flash"
+      },
+      "status": "prepared_not_run"
+    },
+    {
+      "id": "recruitment-scout-replacement-candidate",
+      "position_id": "scout-opening",
+      "treatment": "candidate",
+      "checkpoint_fixture": "tools/fixtures/strategy_routine/stack3/blocked_objective.json",
+      "checkpoint_sha256": "dd2f46e47df04f5071300b9e495463b587b02695159d9bfe1b8e2dd17f481d70",
+      "scenario": "big_battle_6",
+      "seed": 9211,
+      "faction0": "undead",
+      "faction1": "undead",
+      "llm_side": 0,
+      "gold": 300,
+      "max_turns": 1,
+      "model": "accounts/fireworks/models/glm-5p3-flash",
+      "decision_mode": "strategy",
+      "action_encoding": "coordinates",
+      "incremental_turns": true,
+      "success_predicate": {
+        "recruiter_alive": true,
+        "completed_side_turns_at_least": 1
+      },
+      "budgets": {
+        "max_game_total_tokens": 100000,
+        "max_model_calls_per_turn": 8,
+        "max_partial_batches_per_turn": 64,
+        "max_queries_per_turn": 256,
+        "query_budget_seconds": 300,
+        "turn_timeout": 900,
+        "model_timeout": 300
+      },
+      "pricing": {
+        "date": "2026-09-13",
+        "provider": "Fireworks",
+        "model": "accounts/fireworks/models/glm-5p3-flash",
+        "rates": {
+          "input_per_million": 0.15,
+          "cached_input_per_million": 0.03,
+          "output_per_million": 0.5,
+          "reasoning_included_in_output": true
+        }
+      },
+      "extra_client_args": ["--max-output-tokens", "131072"],
+      "backend": {
+        "kind": "command",
+        "command": "python3 -m tools.fireworks_backend --stream --model accounts/fireworks/models/glm-5p3-flash"
+      },
+      "status": "prepared_not_run"
+    }
+  ]
+}
