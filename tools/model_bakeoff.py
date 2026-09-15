@@ -623,7 +623,7 @@ def evaluate_objective(records: list[dict[str, Any]], predicate: Any, llm_side: 
     if not isinstance(predicate, dict) or not predicate:
         return None
     allowed = {"friendly_unit_min", "enemy_unit_min", "recruiter_alive", "units_at",
-               "alive_units", "absent_units", "owned_villages", "completed_side_turns_at_least"}
+               "units_within", "alive_units", "absent_units", "owned_villages", "completed_side_turns_at_least"}
     if set(predicate) - allowed:
         raise ManifestError("unknown success predicate fields")
     state = _final_state(records)
@@ -644,6 +644,29 @@ def evaluate_objective(records: list[dict[str, Any]], predicate: Any, llm_side: 
     for wanted in predicate.get("units_at", []):
         unit = units.get(wanted["unit_id"], {})
         checks.append(unit.get("col") == wanted["col"] and unit.get("row") == wanted["row"])
+    if "units_within" in predicate:
+        units_within_value = predicate["units_within"]
+        if not isinstance(units_within_value, list):
+            raise ManifestError("invalid units_within predicate")
+        for entry in units_within_value:
+            if not isinstance(entry, dict):
+                raise ManifestError("invalid units_within predicate")
+            unit_id = entry.get("unit_id")
+            if not isinstance(unit_id, int) or isinstance(unit_id, bool):
+                raise ManifestError("invalid units_within predicate")
+            positions = entry.get("positions")
+            if not isinstance(positions, list) or not positions:
+                raise ManifestError("invalid units_within predicate")
+            for pos in positions:
+                if not isinstance(pos, dict) or not isinstance(pos.get("col"), int) or not isinstance(pos.get("row"), int):
+                    raise ManifestError("invalid units_within predicate")
+            unit = units.get(unit_id)
+            if unit is None:
+                checks.append(False)
+            else:
+                unit_col = unit.get("col")
+                unit_row = unit.get("row")
+                checks.append(any(p.get("col") == unit_col and p.get("row") == unit_row for p in positions))
     if "owned_villages" in predicate:
         owners = {(t["col"], t["row"]): t.get("owner") for t in state.get("terrain", [])
                   if isinstance(t, dict) and "col" in t and "row" in t}

@@ -47,9 +47,12 @@ The report separates first committed action, first useful action, and final task
 success. A forwarded proposal is not proof of execution; a corresponding engine
 event with the model source must exist. A Greedy sweep alone cannot satisfy a
 model-authored useful-action predicate. Success predicates are conjunctions of
-factual final-state requirements: named units alive/absent/at coordinates, named
+factual final-state requirements: named units alive/absent/at coordinates,
+`units_within` (alive unit on any of several listed hexes), named
 village ownership, recruiter survival, and completed side-turn count. Missing
-facts remain unknown. Budget interruptions (`terminal_class: budget_interrupted`,
+facts remain unknown. An OR-of-outcomes movement task (safe stop or policy
+change) is not a bakeoff conjunction: keep those facts in screening targets
+and evaluate them from the catalog after import. Budget interruptions (`terminal_class: budget_interrupted`,
 client exit 3), invalid model responses, infrastructure failures, caps, and
 gameplay results are separate outcomes. Budget stops preserve no winner and are
 never automatically resumed.

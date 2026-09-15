@@ -460,5 +460,194 @@ class SupervisorContractTests(unittest.TestCase):
             self.assertTrue(any(row.get("type") == "observer_interrupted" for row in rows))
 
 
+class EvaluateObjectiveTests(unittest.TestCase):
+    """Test evaluate_objective predicate evaluation."""
+
+    def _make_records_with_final_state(self, units: list[dict]) -> list[dict]:
+        """Create records with a final state containing the given units."""
+        return [
+            {"type": "metadata"},
+            {"type": "terminal", "reason": "winner", "winner": 0,
+             "state": {"units": units, "terrain": [], "village_owners": []}},
+        ]
+
+    def test_units_at_single_position_passes(self):
+        """A unit at the specified position passes."""
+        records = self._make_records_with_final_state([
+            {"id": 1, "col": 5, "row": 3, "hp": 10, "max_hp": 20, "faction": 0},
+        ])
+        predicate = {"units_at": [{"unit_id": 1, "col": 5, "row": 3}]}
+        result = bakeoff.evaluate_objective(records, predicate, llm_side=0)
+        self.assertTrue(result)
+
+    def test_units_at_wrong_position_fails(self):
+        """A unit at a different position fails."""
+        records = self._make_records_with_final_state([
+            {"id": 1, "col": 5, "row": 3, "hp": 10, "max_hp": 20, "faction": 0},
+        ])
+        predicate = {"units_at": [{"unit_id": 1, "col": 6, "row": 4}]}
+        result = bakeoff.evaluate_objective(records, predicate, llm_side=0)
+        self.assertFalse(result)
+
+    def test_units_within_one_of_two_positions_passes(self):
+        """A unit at one of the listed positions passes."""
+        records = self._make_records_with_final_state([
+            {"id": 1, "col": 5, "row": 3, "hp": 10, "max_hp": 20, "faction": 0},
+        ])
+        predicate = {"units_within": [{"unit_id": 1, "positions": [
+            {"col": 5, "row": 3},
+            {"col": 6, "row": 4},
+        ]}]}
+        result = bakeoff.evaluate_objective(records, predicate, llm_side=0)
+        self.assertTrue(result)
+
+    def test_units_within_different_position_fails(self):
+        """A unit at an unlisted position fails."""
+        records = self._make_records_with_final_state([
+            {"id": 1, "col": 10, "row": 10, "hp": 10, "max_hp": 20, "faction": 0},
+        ])
+        predicate = {"units_within": [{"unit_id": 1, "positions": [
+            {"col": 5, "row": 3},
+            {"col": 6, "row": 4},
+        ]}]}
+        result = bakeoff.evaluate_objective(records, predicate, llm_side=0)
+        self.assertFalse(result)
+
+    def test_units_within_dead_unit_fails(self):
+        """A dead unit (hp 0) fails the units_within check."""
+        records = self._make_records_with_final_state([
+            {"id": 1, "col": 5, "row": 3, "hp": 0, "max_hp": 20, "faction": 0},
+        ])
+        predicate = {"units_within": [{"unit_id": 1, "positions": [
+            {"col": 5, "row": 3},
+        ]}]}
+        result = bakeoff.evaluate_objective(records, predicate, llm_side=0)
+        self.assertFalse(result)
+
+    def test_units_within_absent_unit_fails(self):
+        """A missing unit fails the units_within check."""
+        records = self._make_records_with_final_state([
+            {"id": 1, "col": 5, "row": 3, "hp": 10, "max_hp": 20, "faction": 0},
+        ])
+        predicate = {"units_within": [{"unit_id": 999, "positions": [
+            {"col": 5, "row": 3},
+        ]}]}
+        result = bakeoff.evaluate_objective(records, predicate, llm_side=0)
+        self.assertFalse(result)
+
+    def test_units_within_with_recruiter_alive_conjunction(self):
+        """units_within works in conjunction with recruiter_alive."""
+        records = self._make_records_with_final_state([
+            {"id": 1, "col": 5, "row": 3, "hp": 10, "max_hp": 20, "faction": 0, "can_recruit": True},
+            {"id": 2, "col": 6, "row": 4, "hp": 8, "max_hp": 15, "faction": 0, "can_recruit": False},
+        ])
+        predicate = {
+            "units_within": [{"unit_id": 1, "positions": [{"col": 5, "row": 3}]}],
+            "recruiter_alive": True,
+        }
+        result = bakeoff.evaluate_objective(records, predicate, llm_side=0)
+        self.assertTrue(result)
+
+    def test_units_within_with_completed_side_turns_conjunction(self):
+        """units_within works in conjunction with completed_side_turns_at_least."""
+        records = [
+            {"type": "metadata"},
+            {"type": "driver", "line": {"type": "game_end", "side_turns": 10}},
+            {"type": "terminal", "reason": "max_turns", "winner": None,
+             "state": {"units": [
+                {"id": 1, "col": 5, "row": 3, "hp": 10, "max_hp": 20, "faction": 0},
+             ], "terrain": [], "village_owners": []}},
+        ]
+        predicate = {
+            "units_within": [{"unit_id": 1, "positions": [{"col": 5, "row": 3}]}],
+            "completed_side_turns_at_least": 8,
+        }
+        result = bakeoff.evaluate_objective(records, predicate, llm_side=0)
+        self.assertTrue(result)
+
+    def test_units_within_not_a_list_raises_error(self):
+        """Raises ManifestError if units_within is not a list."""
+        records = self._make_records_with_final_state([
+            {"id": 1, "col": 5, "row": 3, "hp": 10, "max_hp": 20, "faction": 0},
+        ])
+        predicate = {"units_within": {"unit_id": 1}}
+        with self.assertRaises(bakeoff.ManifestError) as ctx:
+            bakeoff.evaluate_objective(records, predicate, llm_side=0)
+        self.assertIn("invalid units_within predicate", str(ctx.exception))
+
+    def test_units_within_entry_not_dict_raises_error(self):
+        """Raises ManifestError if an entry is not a dict."""
+        records = self._make_records_with_final_state([
+            {"id": 1, "col": 5, "row": 3, "hp": 10, "max_hp": 20, "faction": 0},
+        ])
+        predicate = {"units_within": ["not a dict"]}
+        with self.assertRaises(bakeoff.ManifestError) as ctx:
+            bakeoff.evaluate_objective(records, predicate, llm_side=0)
+        self.assertIn("invalid units_within predicate", str(ctx.exception))
+
+    def test_units_within_bool_unit_id_raises_error(self):
+        """Raises ManifestError if unit_id is a bool (even though bool is int in Python)."""
+        records = self._make_records_with_final_state([
+            {"id": 1, "col": 5, "row": 3, "hp": 10, "max_hp": 20, "faction": 0},
+        ])
+        predicate = {"units_within": [{"unit_id": True, "positions": [{"col": 5, "row": 3}]}]}
+        with self.assertRaises(bakeoff.ManifestError) as ctx:
+            bakeoff.evaluate_objective(records, predicate, llm_side=0)
+        self.assertIn("invalid units_within predicate", str(ctx.exception))
+
+    def test_units_within_missing_positions_raises_error(self):
+        """Raises ManifestError if positions is missing."""
+        records = self._make_records_with_final_state([
+            {"id": 1, "col": 5, "row": 3, "hp": 10, "max_hp": 20, "faction": 0},
+        ])
+        predicate = {"units_within": [{"unit_id": 1}]}
+        with self.assertRaises(bakeoff.ManifestError) as ctx:
+            bakeoff.evaluate_objective(records, predicate, llm_side=0)
+        self.assertIn("invalid units_within predicate", str(ctx.exception))
+
+    def test_units_within_positions_not_list_raises_error(self):
+        """Raises ManifestError if positions is not a list."""
+        records = self._make_records_with_final_state([
+            {"id": 1, "col": 5, "row": 3, "hp": 10, "max_hp": 20, "faction": 0},
+        ])
+        predicate = {"units_within": [{"unit_id": 1, "positions": {"col": 5, "row": 3}}]}
+        with self.assertRaises(bakeoff.ManifestError) as ctx:
+            bakeoff.evaluate_objective(records, predicate, llm_side=0)
+        self.assertIn("invalid units_within predicate", str(ctx.exception))
+
+    def test_units_within_empty_positions_raises_error(self):
+        """Raises ManifestError if positions is empty."""
+        records = self._make_records_with_final_state([
+            {"id": 1, "col": 5, "row": 3, "hp": 10, "max_hp": 20, "faction": 0},
+        ])
+        predicate = {"units_within": [{"unit_id": 1, "positions": []}]}
+        with self.assertRaises(bakeoff.ManifestError) as ctx:
+            bakeoff.evaluate_objective(records, predicate, llm_side=0)
+        self.assertIn("invalid units_within predicate", str(ctx.exception))
+
+    def test_units_within_position_missing_row_raises_error(self):
+        """Raises ManifestError if a position is missing row."""
+        records = self._make_records_with_final_state([
+            {"id": 1, "col": 5, "row": 3, "hp": 10, "max_hp": 20, "faction": 0},
+        ])
+        predicate = {"units_within": [{"unit_id": 1, "positions": [{"col": 5}]}]}
+        with self.assertRaises(bakeoff.ManifestError) as ctx:
+            bakeoff.evaluate_objective(records, predicate, llm_side=0)
+        self.assertIn("invalid units_within predicate", str(ctx.exception))
+
+    def test_units_at_behavior_unchanged(self):
+        """Ensure units_at behavior is not changed."""
+        records = self._make_records_with_final_state([
+            {"id": 1, "col": 5, "row": 3, "hp": 10, "max_hp": 20, "faction": 0},
+            {"id": 2, "col": 6, "row": 4, "hp": 8, "max_hp": 15, "faction": 0},
+        ])
+        predicate = {"units_at": [
+            {"unit_id": 1, "col": 5, "row": 3},
+            {"unit_id": 2, "col": 6, "row": 4},
+        ]}
+        result = bakeoff.evaluate_objective(records, predicate, llm_side=0)
+        self.assertTrue(result)
+
+
 if __name__ == "__main__":
     unittest.main()
