@@ -417,6 +417,13 @@ def render_decision_brief(
         "moves no units and cannot clear the current-board pause. You must submit tactical action "
         f"orders (`act`), `finish_turn`, or `resign`. Applicable responses: {', '.join(packet.allowed_kinds)}."
       )
+      if packet.evidence.get("options_empty_reason") == "no_executable_options":
+        option_coverage = packet.coverage.get("options", "unknown")
+        sections.append(
+          "No eligible primary actor has an executable action in this bounded tactical menu. "
+          "This does not establish that every custom legal action by another unit is unavailable. "
+          f"Tactical option enumeration coverage is {option_coverage}."
+        )
     if packet.evidence:
       trigger = packet.evidence.get("trigger", "unspecified")
       friendly = packet.evidence.get("friendly_unit_ids", [])
@@ -445,25 +452,43 @@ def render_decision_brief(
             act_descs.append(json.dumps(a))
         actions_summary = "; ".join(act_descs)
         forecast_str = ""
-        if "combat_forecast" in opt and opt["combat_forecast"] is not None:
-          fc = opt["combat_forecast"]
-          dmg = fc.get("expected_damage_tenths", [0, 0])
-          bps = fc.get("outcome_bps", [0, 0])
-          forecast_str = (
-            f" | Forecast: expected damage dealt={dmg[0]/10.0:.1f}, counter={dmg[1]/10.0:.1f}; "
-            f"kill prob={bps[0]/100.0:.1f}%, death prob={bps[1]/100.0:.1f}% (estimates, not guarantees)"
-          )
+        fc = opt.get("forecast")
+        if isinstance(fc, dict):
+          forecast_parts = []
+          dealt = fc.get("expected_damage_dealt_tenths")
+          received = fc.get("expected_damage_received_tenths")
+          kill_chance = fc.get("kill_chance_bps")
+          outcome = fc.get("outcome_bps")
+          if isinstance(dealt, int) and not isinstance(dealt, bool):
+            forecast_parts.append(f"expected damage dealt={dealt / 10.0:.1f}")
+          if isinstance(received, int) and not isinstance(received, bool):
+            forecast_parts.append(f"expected counter damage={received / 10.0:.1f}")
+          if isinstance(kill_chance, int) and not isinstance(kill_chance, bool):
+            forecast_parts.append(f"kill chance={kill_chance / 100.0:.1f}%")
+          if (isinstance(outcome, list) and len(outcome) == 3
+              and isinstance(outcome[2], int) and not isinstance(outcome[2], bool)):
+            forecast_parts.append(f"attacker loss chance={outcome[2] / 100.0:.1f}%")
+          if forecast_parts:
+            forecast_str = " | Forecast: " + "; ".join(forecast_parts) + " (estimates, not guarantees)"
         exposure_str = ""
-        if "exposure" in opt and opt["exposure"] is not None:
-          exp = opt["exposure"]
-          exp_dmg = exp.get("projected_incoming_damage_tenths", 0) / 10.0
-          threatened = exp.get("threatened", False)
-          attackers = exp.get("attacker_count", 0)
-          exposure_str = (
-            f" | Exposure: threatened={threatened}, attackers={attackers}, "
-            f"projected incoming damage={exp_dmg:.1f}"
-          )
-        cost_str = f" | Cost: {opt.get('cost')}" if "cost" in opt and opt.get("cost") is not None else ""
+        exp = opt.get("exposure")
+        if isinstance(exp, dict):
+          exposure_parts = []
+          attackers = exp.get("distinct_attacker_count")
+          max_damage = exp.get("max_incoming_damage")
+          expected_damage = exp.get("expected_incoming_damage_tenths")
+          if isinstance(attackers, int) and not isinstance(attackers, bool):
+            exposure_parts.append(f"attackers={attackers}")
+          if isinstance(max_damage, int) and not isinstance(max_damage, bool):
+            exposure_parts.append(f"max incoming damage={max_damage}")
+          if isinstance(expected_damage, int) and not isinstance(expected_damage, bool):
+            exposure_parts.append(f"expected incoming damage={expected_damage / 10.0:.1f}")
+          if exposure_parts:
+            exposure_str = " | Exposure: " + ", ".join(exposure_parts)
+        movement_cost = opt.get("movement_cost")
+        cost_str = (f" | Cost: {movement_cost}"
+                    if isinstance(movement_cost, int) and not isinstance(movement_cost, bool)
+                    else "")
         opt_lines.append(f"  - Option {oid!r} ({cat}): [{actions_summary}]{cost_str}{forecast_str}{exposure_str}")
       opt_lines.append(
         f"To choose an option, respond with: "

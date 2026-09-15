@@ -359,6 +359,15 @@ option strictly from the issued packet, validates the actions against the curren
 and submits them transactionally with `proposal_source: "engine_option"` while preserving
 model authorship (`source: "llm"`). Option IDs alone never authorize execution. Custom
 `act` orders, read-only inspections, `finish_turn`, and `resign` remain available escape paths.
+The engine chooses the lowest-ID threatened recruiter with an executable offered action,
+then the lowest-ID threatened friendly unit with one, then the lowest-ID unit with an
+executable attack. A candidate with no offered action is skipped; `moved=true` still permits
+a legal attack, and `attacked=true` still permits a legal relocation. Contact facts retain
+all threatened unit IDs, including exhausted units. An empty `options` array carries
+`options_empty_reason: "no_executable_options"` when no eligible primary actor has an
+executable action in this bounded menu. That reason describes offered tactical options only;
+other units may still accept custom legal actions. `coverage.options` describes enumeration
+coverage independently and remains `complete` for a genuinely empty menu.
 
 The initial policy and exception briefs repeat the compact live map, both-side
 unit identities, economy and recruit costs. Exception briefs also repeat the

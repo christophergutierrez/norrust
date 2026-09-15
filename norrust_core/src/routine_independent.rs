@@ -645,6 +645,7 @@ mod tests {
             primary_actor_id: Some(1),
             options: Vec::new(),
             options_truncated: false,
+            options_empty_reason: None,
             coverage: "complete",
         };
 
@@ -688,6 +689,7 @@ mod tests {
             primary_actor_id: Some(2),
             options: Vec::new(),
             options_truncated: false,
+            options_empty_reason: None,
             coverage: "complete",
         };
 
@@ -740,6 +742,7 @@ mod tests {
             primary_actor_id: Some(2),
             options: Vec::new(),
             options_truncated: false,
+            options_empty_reason: None,
             coverage: "complete",
         };
 
@@ -788,6 +791,7 @@ mod tests {
             primary_actor_id: Some(2),
             options: Vec::new(),
             options_truncated: false,
+            options_empty_reason: None,
             coverage: "complete",
         };
 

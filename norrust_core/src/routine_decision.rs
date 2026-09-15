@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::game_state::{
-    apply_action, legal_moves_with_costs, Action, ActionError, GameState,
+    apply_action, legal_moves_with_costs, legal_targets, Action, ActionError, GameState,
 };
 use crate::hex::Hex;
 use crate::tactics::{
@@ -55,12 +55,111 @@ pub struct TacticalDecisionFacts {
     pub primary_actor_id: Option<u32>,
     pub options: Vec<TacticalOption>,
     pub options_truncated: bool,
+    /// Present only when no primary actor has an executable offered action.
+    /// Availability is independent of tactical-option enumeration coverage.
+    pub options_empty_reason: Option<String>,
+}
+
+fn has_executable_attack(state: &GameState, actor_id: u32) -> Result<bool, TacticsError> {
+    let actor = state
+        .units
+        .get(&actor_id)
+        .ok_or(ActionError::UnitNotFound(actor_id))?;
+    if actor.faction != state.active_faction || actor.attacked {
+        return Ok(false);
+    }
+    let current = *state
+        .positions
+        .get(&actor_id)
+        .ok_or(ActionError::UnitNotFound(actor_id))?;
+
+    // A unit that already moved can still attack from its current hex.
+    for defender_id in legal_targets(state, actor_id, current)? {
+        let mut sim = state.clone();
+        if apply_action(
+            &mut sim,
+            Action::Attack {
+                attacker_id: actor_id,
+                defender_id,
+            },
+        )
+        .is_ok()
+        {
+            return Ok(true);
+        }
+    }
+    if actor.moved {
+        return Ok(false);
+    }
+
+    // Stop at the first executable move/attack pair. Eligibility does not
+    // build forecasts or exposure-ranked menus for every threatened unit.
+    let destinations = legal_moves_with_costs(state, actor_id)?;
+    for destination in destinations.keys().copied() {
+        let mut sim = state.clone();
+        if apply_action(
+            &mut sim,
+            Action::Move {
+                unit_id: actor_id,
+                destination,
+            },
+        )
+        .is_err()
+        {
+            continue;
+        }
+        for defender_id in legal_targets(&sim, actor_id, destination)? {
+            let mut attack_sim = sim.clone();
+            if apply_action(
+                &mut attack_sim,
+                Action::Attack {
+                    attacker_id: actor_id,
+                    defender_id,
+                },
+            )
+            .is_ok()
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn has_executable_relocation(state: &GameState, actor_id: u32) -> Result<bool, TacticsError> {
+    let actor = state
+        .units
+        .get(&actor_id)
+        .ok_or(ActionError::UnitNotFound(actor_id))?;
+    if actor.faction != state.active_faction || actor.moved {
+        return Ok(false);
+    }
+    for destination in legal_moves_with_costs(state, actor_id)?.keys().copied() {
+        let mut sim = state.clone();
+        if apply_action(
+            &mut sim,
+            Action::Move {
+                unit_id: actor_id,
+                destination,
+            },
+        )
+        .is_ok()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn has_executable_options(state: &GameState, actor_id: u32) -> Result<bool, TacticsError> {
+    // Moving is cheaper to establish and remains available after an attack.
+    Ok(has_executable_relocation(state, actor_id)? || has_executable_attack(state, actor_id)?)
 }
 
 /// Choose one primary friendly actor deterministically:
-/// 1. Threatened recruiter first (lowest ID if multiple)
-/// 2. Lowest-ID threatened friendly unit
-/// 3. Lowest-ID unit with an attack opportunity
+/// 1. Lowest-ID threatened recruiter with an executable tactical option
+/// 2. Lowest-ID threatened friendly unit with an executable tactical option
+/// 3. Lowest-ID unit with an executable attack opportunity
 pub fn select_primary_actor(
     state: &GameState,
     side: u8,
@@ -73,9 +172,11 @@ pub fn select_primary_actor(
         .filter(|r| r.distinct_attacker_count > 0 || r.open_distinct_attacker_count > 0)
         .map(|r| r.recruiter_id)
         .collect();
-    if !threatened_recruiters.is_empty() {
-        threatened_recruiters.sort_unstable();
-        return Ok(Some(threatened_recruiters[0]));
+    threatened_recruiters.sort_unstable();
+    for actor_id in threatened_recruiters {
+        if has_executable_options(state, actor_id)? {
+            return Ok(Some(actor_id));
+        }
     }
 
     // 2. Lowest-ID threatened friendly unit
@@ -86,25 +187,24 @@ pub fn select_primary_actor(
         .filter(|u| u.distinct_attacker_count > 0 || u.open_distinct_attacker_count > 0)
         .map(|u| u.unit_id)
         .collect();
-    if !threatened_units.is_empty() {
-        threatened_units.sort_unstable();
-        return Ok(Some(threatened_units[0]));
+    threatened_units.sort_unstable();
+    for actor_id in threatened_units {
+        if has_executable_options(state, actor_id)? {
+            return Ok(Some(actor_id));
+        }
     }
 
     // 3. Lowest-ID unit with an attack opportunity
-    let mut attack_units: Vec<u32> = Vec::new();
-    for (&id, unit) in &state.units {
-        if unit.faction == side && !unit.attacked {
-            if let Ok(tactics) = unit_tactics(state, id) {
-                if tactics.origins.iter().any(|o| !o.engagements.is_empty()) {
-                    attack_units.push(id);
-                }
-            }
+    let mut attack_units: Vec<u32> = state
+        .units
+        .iter()
+        .filter_map(|(&id, unit)| (unit.faction == side && !unit.attacked).then_some(id))
+        .collect();
+    attack_units.sort_unstable();
+    for actor_id in attack_units {
+        if has_executable_attack(state, actor_id)? {
+            return Ok(Some(actor_id));
         }
-    }
-    if !attack_units.is_empty() {
-        attack_units.sort_unstable();
-        return Ok(Some(attack_units[0]));
     }
 
     Ok(None)
@@ -121,6 +221,7 @@ pub fn generate_tactical_options(
             primary_actor_id: None,
             options: Vec::new(),
             options_truncated: false,
+            options_empty_reason: Some("no_executable_options".to_string()),
         });
     };
 
@@ -369,6 +470,9 @@ pub fn generate_tactical_options(
 
     Ok(TacticalDecisionFacts {
         primary_actor_id: Some(actor_id),
+        options_empty_reason: options
+            .is_empty()
+            .then(|| "no_executable_options".to_string()),
         options,
         options_truncated,
     })
@@ -437,20 +541,30 @@ mod tests {
         let registry = units();
         let mut s = test_state();
 
-        // Friendly unit 3 at (4, 4)
-        let f3 = Unit::from_def(3, registry.get("Skeleton").unwrap(), 0);
-        s.place_unit(f3, Hex::from_offset(4, 4));
+        // Lower-ID friendly unit 2 and its attacker.
+        let f2 = Unit::from_def(2, registry.get("Skeleton").unwrap(), 0);
+        s.place_unit(f2, Hex::from_offset(4, 4));
 
-        // Enemy threatening recruiter 1: placed at (1, 2)
+        // A second threatened recruiter has a higher ID than unit 2.
+        let second_keep = Hex::from_offset(8, 1);
+        s.board.set_tile(second_keep, Tile::new("keep"));
+        for hex in second_keep.neighbors() {
+            if s.board.contains(hex) {
+                s.board.set_tile(hex, Tile::new("castle"));
+            }
+        }
+        let mut second_recruiter = Unit::from_def(50, registry.get("Dark Sorcerer").unwrap(), 0);
+        second_recruiter.can_recruit = true;
+        s.place_unit(second_recruiter, second_keep);
         let e1 = Unit::from_def(7, registry.get("Skeleton").unwrap(), 1);
-        s.place_unit(e1, Hex::from_offset(1, 2));
+        s.place_unit(e1, Hex::from_offset(8, 2));
 
-        // Enemy threatening unit 3: placed at (4, 5)
+        // Enemy threatening lower-ID unit 2: placed at (4, 5)
         let e2 = Unit::from_def(8, registry.get("Skeleton").unwrap(), 1);
         s.place_unit(e2, Hex::from_offset(4, 5));
 
         let actor = select_primary_actor(&s, 0).unwrap();
-        assert_eq!(actor, Some(1), "threatened recruiter must take priority");
+        assert_eq!(actor, Some(50), "recruiter priority beats lower-ID friends");
     }
 
     #[test]
@@ -477,6 +591,87 @@ mod tests {
 
         let actor = select_primary_actor(&s, 0).unwrap();
         assert_eq!(actor, Some(2), "lowest-ID threatened unit must be chosen");
+    }
+
+    #[test]
+    fn exhausted_low_id_threatened_unit_is_skipped_without_dropping_threat_facts() {
+        let registry = units();
+        let mut s = large_test_state();
+
+        let mut exhausted = Unit::from_def(5, registry.get("Skeleton").unwrap(), 0);
+        exhausted.moved = true;
+        s.place_unit(exhausted, Hex::from_offset(15, 14));
+        let actionable = Unit::from_def(6, registry.get("Skeleton").unwrap(), 0);
+        s.place_unit(actionable, Hex::from_offset(18, 14));
+
+        let first_enemy = Unit::from_def(7, registry.get("Skeleton").unwrap(), 1);
+        // Close enough to threaten after moving, but not a standing target
+        // for the moved unit on the current board.
+        s.place_unit(first_enemy, Hex::from_offset(15, 17));
+        let second_enemy = Unit::from_def(8, registry.get("Skeleton").unwrap(), 1);
+        s.place_unit(second_enemy, Hex::from_offset(18, 15));
+
+        let facts = crate::routine::current_contact(&s, 0).unwrap().unwrap();
+        assert_eq!(facts.friendly_unit_ids, vec![5, 6]);
+        assert_eq!(facts.primary_actor_id, Some(6));
+        assert!(!facts.options.is_empty());
+        assert_eq!(facts.options_empty_reason, None);
+    }
+
+    #[test]
+    fn moved_threatened_unit_with_adjacent_attack_remains_eligible() {
+        let registry = units();
+        let mut s = large_test_state();
+        let mut moved = Unit::from_def(2, registry.get("Skeleton").unwrap(), 0);
+        moved.moved = true;
+        s.place_unit(moved, Hex::from_offset(15, 14));
+        let enemy = Unit::from_def(7, registry.get("Skeleton").unwrap(), 1);
+        s.place_unit(enemy, Hex::from_offset(15, 15));
+
+        let facts = generate_tactical_options(&s, 0).unwrap();
+        assert_eq!(facts.primary_actor_id, Some(2));
+        assert!(facts.options.iter().any(|option| option.category == "attack"));
+        assert!(!facts.options.is_empty());
+    }
+
+    #[test]
+    fn attacked_threatened_unit_with_remaining_move_remains_eligible() {
+        let registry = units();
+        let mut s = large_test_state();
+        let mut attacked = Unit::from_def(2, registry.get("Skeleton").unwrap(), 0);
+        attacked.attacked = true;
+        s.place_unit(attacked, Hex::from_offset(15, 14));
+        let enemy = Unit::from_def(7, registry.get("Skeleton").unwrap(), 1);
+        s.place_unit(enemy, Hex::from_offset(15, 15));
+
+        let facts = generate_tactical_options(&s, 0).unwrap();
+        assert_eq!(facts.primary_actor_id, Some(2));
+        assert!(facts.options.iter().any(|option| option.category == "relocation"));
+    }
+
+    #[test]
+    fn all_exhausted_contact_has_explicit_empty_options_reason_and_complete_coverage() {
+        let registry = units();
+        let mut s = large_test_state();
+        for (friendly_id, enemy_id, friendly_hex, enemy_hex) in [
+            (5, 7, (15, 14), (15, 15)),
+            (6, 8, (18, 14), (18, 15)),
+        ] {
+            let mut friendly = Unit::from_def(friendly_id, registry.get("Skeleton").unwrap(), 0);
+            friendly.moved = true;
+            friendly.attacked = true;
+            s.place_unit(friendly, Hex::from_offset(friendly_hex.0, friendly_hex.1));
+            let enemy = Unit::from_def(enemy_id, registry.get("Skeleton").unwrap(), 1);
+            s.place_unit(enemy, Hex::from_offset(enemy_hex.0, enemy_hex.1));
+        }
+
+        let facts = crate::routine::current_contact(&s, 0).unwrap().unwrap();
+        assert_eq!(facts.friendly_unit_ids, vec![5, 6]);
+        assert_eq!(facts.primary_actor_id, None);
+        assert!(facts.options.is_empty());
+        assert_eq!(facts.options_empty_reason.as_deref(), Some("no_executable_options"));
+        assert!(!facts.options_truncated);
+        assert_eq!(facts.coverage, "complete");
     }
 
     #[test]

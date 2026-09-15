@@ -431,6 +431,7 @@ pub struct CurrentContactFacts {
     pub primary_actor_id: Option<u32>,
     pub options: Vec<TacticalOption>,
     pub options_truncated: bool,
+    pub options_empty_reason: Option<String>,
     pub coverage: &'static str,
 }
 
@@ -501,6 +502,7 @@ pub(crate) fn current_contact(state: &GameState, side: u8) -> Result<Option<Curr
         primary_actor_id: tactical_decision.primary_actor_id,
         options: tactical_decision.options,
         options_truncated: tactical_decision.options_truncated,
+        options_empty_reason: tactical_decision.options_empty_reason,
         coverage: "complete",
     }))
 }
@@ -843,6 +845,7 @@ pub fn routine_next(
                     "primary_actor_id": facts.primary_actor_id,
                     "options": facts.options,
                     "options_truncated": facts.options_truncated,
+                    "options_empty_reason": facts.options_empty_reason,
                     "coverage": facts.coverage,
                 }),
             };

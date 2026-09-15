@@ -220,6 +220,78 @@ class StrategyRoutineStack3Tests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_exhausted_low_id_is_skipped_by_real_driver_and_contact_facts_remain(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            checkpoint, _, backend, prompt_log = prepare(
+                root, "contact.json", [policy(), {"kind": "finish_turn"}])
+            data = json.loads(checkpoint.read_text())
+            exhausted = next(unit for unit in data["save_state"]["units"] if unit["id"] == 3)
+            exhausted.update(moved=True, attacked=True)
+            next_unit = dict(exhausted, id=5, col=12, moved=False, attacked=False)
+            data["save_state"]["units"].append(next_unit)
+            data["save_state"]["next_unit_id"] = 6
+            data["next_id"] = 6
+            encoded = json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
+            checkpoint = root / ("checkpoint-" + hashlib.sha256(encoded).hexdigest() + ".json")
+            checkpoint.write_bytes(encoded)
+
+            log = root / "exhausted-actor.ndjson"
+            result = launch(root, log, checkpoint, backend)
+            assert_success(self, result, log)
+            rows = records(log)
+            packets = [row["packet"] for row in rows if row.get("type") == "decision_packet"
+                       and row.get("packet", {}).get("decision_kind") == "tactical"]
+            self.assertEqual(len(packets), 1)
+            packet = packets[0]
+            self.assertEqual(packet["evidence"]["friendly_unit_ids"], [3, 5])
+            self.assertEqual(packet["evidence"]["primary_actor_id"], 5)
+            self.assertTrue(packet["options"])
+            prompt_text = "\n".join(prompts(prompt_log))
+            self.assertIn('"friendly_unit_ids":[3,5]', prompt_text)
+            self.assertIn('"primary_actor_id":5', prompt_text)
+            relocation = next(option for option in packet["options"]
+                              if option["category"] == "relocation")
+            self.assertIn(f"Cost: {relocation['movement_cost']}", prompt_text)
+            self.assertIn(
+                f"attackers={relocation['exposure']['distinct_attacker_count']}", prompt_text)
+            self.assertIn(
+                f"max incoming damage={relocation['exposure']['max_incoming_damage']}", prompt_text)
+            self.assertIn(
+                "expected incoming damage=" + format(
+                    relocation["exposure"]["expected_incoming_damage_tenths"] / 10.0, ".1f"),
+                prompt_text)
+
+    def test_empty_tactical_menu_reason_reaches_real_driver_brief_as_complete(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            checkpoint, _, backend, prompt_log = prepare(
+                root, "contact.json", [policy(), {"kind": "finish_turn"}])
+            data = json.loads(checkpoint.read_text())
+            exhausted = next(unit for unit in data["save_state"]["units"] if unit["id"] == 3)
+            exhausted.update(moved=True, attacked=True)
+            encoded = json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
+            checkpoint = root / ("checkpoint-" + hashlib.sha256(encoded).hexdigest() + ".json")
+            checkpoint.write_bytes(encoded)
+
+            log = root / "empty-menu.ndjson"
+            result = launch(root, log, checkpoint, backend)
+            assert_success(self, result, log)
+            rows = records(log)
+            packets = [row["packet"] for row in rows if row.get("type") == "decision_packet"
+                       and row.get("packet", {}).get("decision_kind") == "tactical"]
+            self.assertEqual(len(packets), 1)
+            packet = packets[0]
+            self.assertEqual(packet["evidence"]["friendly_unit_ids"], [3])
+            self.assertIsNone(packet["evidence"]["primary_actor_id"])
+            self.assertEqual(packet["evidence"]["options"], [])
+            self.assertEqual(packet["evidence"]["options_empty_reason"], "no_executable_options")
+            self.assertEqual(packet["coverage"]["options"], "complete")
+            self.assertNotIn("choose", packet["allowed_kinds"])
+            prompt_text = "\n".join(prompts(prompt_log))
+            self.assertIn('"options_empty_reason":"no_executable_options"', prompt_text)
+            self.assertIn('"options":[]', prompt_text)
+
     def test_ordinary_act_false_is_accepted_without_hidden_finish(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

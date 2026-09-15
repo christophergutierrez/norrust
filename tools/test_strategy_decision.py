@@ -150,23 +150,25 @@ class TacticalOptionsTests(unittest.TestCase):
         "option_id": "attack_1",
         "category": "attack",
         "actor_id": 1,
-        "actions": [{"action": "Attack", "unit_id": 1, "target_id": 5, "weapon_index": 0}],
-        "combat_forecast": {
-          "expected_damage_tenths": [120, 30],
-          "outcome_bps": [5000, 100],
+        "actions": [{"action": "Attack", "attacker_id": 1, "defender_id": 5}],
+        "forecast": {
+          "kill_chance_bps": 6500,
+          "expected_damage_dealt_tenths": 120,
+          "expected_damage_received_tenths": 30,
+          "outcome_bps": [6500, 2000, 1500],
         },
         "coverage": "complete",
       },
       {
         "option_id": "relocate_1",
-        "category": "relocate",
+        "category": "relocation",
         "actor_id": 1,
-        "actions": [{"action": "Move", "unit_id": 1, "to_row": 3, "to_col": 4}],
-        "cost": 2,
+        "actions": [{"action": "Move", "unit_id": 1, "col": 4, "row": 3}],
+        "movement_cost": 2,
         "exposure": {
-          "threatened": False,
-          "projected_incoming_damage_tenths": 0,
-          "attacker_count": 0,
+          "distinct_attacker_count": 3,
+          "max_incoming_damage": 48,
+          "expected_incoming_damage_tenths": 84,
         },
         "coverage": "complete",
       },
@@ -212,6 +214,30 @@ class TacticalOptionsTests(unittest.TestCase):
     packet = sd.build_decision_packet("contact", evidence, revision=42)
     self.assertEqual(packet.allowed_kinds, ["act", "finish_turn", "resign"])
     self.assertNotIn("choose", packet.allowed_kinds)
+
+  def test_empty_options_reason_reaches_brief_without_changing_coverage(self):
+    evidence = {
+      "stage": "current_state",
+      "trigger": "exposure",
+      "friendly_unit_ids": [5, 6],
+      "primary_actor_id": None,
+      "options": [],
+      "options_truncated": False,
+      "options_empty_reason": "no_executable_options",
+      "coverage": "complete",
+    }
+    packet = sd.build_decision_packet("contact", evidence, revision=98)
+    brief = sd.render_decision_brief(
+      packet,
+      state={"state_revision": 98, "units": []},
+    )
+
+    self.assertEqual(packet.coverage["options"], "complete")
+    self.assertEqual(packet.evidence["options_empty_reason"], "no_executable_options")
+    self.assertIn('"options_empty_reason":"no_executable_options"', brief)
+    self.assertIn('"friendly_unit_ids":[5,6]', brief)
+    self.assertIn("No eligible primary actor has an executable action", brief)
+    self.assertIn("option enumeration coverage is complete", brief)
 
   def test_choose_response_validation_success(self):
     packet = sd.build_decision_packet(
@@ -308,7 +334,12 @@ class TacticalOptionsTests(unittest.TestCase):
     self.assertIn("Option 'attack_1'", brief)
     self.assertIn("Option 'relocate_1'", brief)
     self.assertIn("Forecast:", brief)
+    self.assertIn("expected damage dealt=12.0", brief)
+    self.assertIn("attacker loss chance=15.0%", brief)
     self.assertIn("Exposure:", brief)
+    self.assertIn("attackers=3", brief)
+    self.assertIn("expected incoming damage=8.4", brief)
+    self.assertIn("Cost: 2", brief)
     self.assertIn('"kind": "choose"', brief)
     self.assertIn('"decision_id": "dec-abc"', brief)
 
