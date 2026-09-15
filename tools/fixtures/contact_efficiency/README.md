@@ -1,7 +1,7 @@
 # Contact-efficiency evaluation fixtures
 
-Synthetic boundary positions for Stack 4 of
-`docs/plans/strategy-contact-efficiency.md`. They are not Trial 6 archives.
+Synthetic boundary positions for multi-actor choices and exhausted-contact
+closure in the strategy harness. They are not Trial 6 archives.
 Usage produced through fake transport is synthetic.
 
 Board: `scenarios/big_battle_6/board.toml`

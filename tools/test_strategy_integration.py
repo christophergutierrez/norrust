@@ -1,5 +1,4 @@
-"""Real-driver gate tests for strategy mode (Stack 1 of
-docs/plans/strategy-and-routine-execution.md).
+"""Real-driver gate tests for the strategy contract in docs/LLM_CLIENT.md.
 
 Modeled on tools/test_movement_integration.py: every test here drives the
 REAL ``python -m tools.llm_client`` entrypoint against the REAL built

@@ -83,8 +83,8 @@ metadata, and exports the recording internally when **Watch** is selected. Use
 Up/Down and Enter, or the on-screen controls; Escape returns from playback to
 the browser (or the menu when launched directly from a bundle). Page Up/Down and
 Previous/Next switch pages; the mouse wheel moves selection. The manual launcher
-remains useful for diagnostics. Browser and replay duration/model labeling still
-have known gaps documented in [the browser review](experiments/recorded-game-browser-review.md).
+remains useful for diagnostics. See [GAME_HISTORY.md](GAME_HISTORY.md) for
+recorded identity, boundary counts, and missing-evidence semantics.
 
 The browser shows timestamps through whole seconds and a compact **Gold/Turns**
 column: `50/15` means 50 starting gold and 15 turns played. Turn counts come from

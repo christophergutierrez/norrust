@@ -263,7 +263,7 @@ class PromptCacheAcceptanceTests(unittest.TestCase):
         baseline = json.loads(gzip.decompress(FIXTURE.read_bytes()))
         # Re-rendered for the cumulative stack 1/2/annotation contract changes.
         # Stored cases, historical prefix ratchet, layout checks, and growth
-        # budget are preserved; see docs/experiments/glm-decision-efficiency.md.
+        # budget are preserved in the checked-in baseline fixture.
         self.assertEqual(baseline["source_commit"],
                          'bdb5dcf+glm-followup-stack1+glm-followup-stack2+glm-followup-annotation-final-contract')
         for compact in (True, False):

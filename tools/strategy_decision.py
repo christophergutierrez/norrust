@@ -1,9 +1,8 @@
-"""Decision packet routing, incident tracking, contextual validation, and briefs.
+"""Decision packets, incident tracking, contextual validation and strategy briefs.
 
-This module implements the decision routing and contextual validation layer for
-strategy-mode play (Stack 1 of docs/plans/strategy-decision-boundaries.md).
-It is self-contained and transport-neutral. tools/llm_client.py owns dispatch,
-durable logging, and execution.
+The response and execution contract is documented in docs/LLM_CLIENT.md.
+This module is transport-neutral; tools.llm_client owns dispatch, durable
+logging and execution.
 """
 from __future__ import annotations
 

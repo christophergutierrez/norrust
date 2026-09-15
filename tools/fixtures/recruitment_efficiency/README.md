@@ -1,9 +1,9 @@
 # Recruitment-efficiency evaluation fixtures
 
-Synthetic boundary positions for Stack 4 of
-`docs/plans/strategy-recruitment-efficiency.md`. They are not Trial 7 archives.
-Usage produced through fake transport is synthetic. Stack 3 model-owned
-displacement was skipped; there is no capacity-choice menu to compare.
+Synthetic boundary positions for recruitment capacity and effective scout
+assignments in the strategy harness. They are not Trial 7 archives.
+Usage produced through fake transport is synthetic. Capacity relief uses
+ordinary policy-authorized travel; there is no capacity-choice menu to compare.
 
 Board: `scenarios/big_battle_6/board.toml`
 (`26366c43a231ef9f7244b24fb74fe5343792c2c26bc0366941a097ce3c7c4207`).

@@ -1,19 +1,7 @@
-"""Contract tests for tools/routine_policy.py and its Stack 1/2 wiring into
-tools/llm_client.py.
+"""Contract tests for routine policy validation, progress and client wiring.
 
-Per the plan (docs/plans/strategy-and-routine-execution.md, "Stack 1" and
-"Stack 2"), the Rust `routine_next` driver query does not exist yet in this
-worktree. Every test here drives the client contract with a scripted/faked
-exchange and backend rather than a live model or the real Rust routine
-executor. Tests that will only pass once the Rust half lands are marked
-explicitly below.
-
-Stack 2 enables the scouts/villages/rally/holds fields that Stack 1 scoped
-to empty/null via `enforce_stack1_scope`. That function is removed (plan
-section "Stack 2": "Remove that scope gate"); `test_stack1_scope_rejects_
-nonempty_future_fields_explicitly` from Stack 1 was replaced with
-`test_stack2_enables_previously_scoped_fields`, which asserts the opposite
-(these fields are now accepted) -- see PolicyValidationTests below.
+Scripted exchanges and backends exercise the client contract without a paid
+model. Real-driver execution is covered by the strategy integration suites.
 """
 from __future__ import annotations
 

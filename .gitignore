@@ -23,7 +23,11 @@ Thumbs.db
 # Paul planning framework (local only)
 .paul/
 
+# Local plans, handoffs, experiment reports, logs, and other task artifacts
 tmp/
+# Prevent task artifacts from being recreated in maintained documentation
+/docs/plans/
+/docs/experiments/
 
 # Local history catalog and SQLite sidecars
 /.norrust_history/

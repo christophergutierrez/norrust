@@ -1,5 +1,12 @@
 # Norrust task routing
 
+Keep implementation plans, task handoffs, progress notes, experiment results,
+benchmark output, and run logs under ignored `tmp/`. Do not force-add them to
+Git or create `docs/plans/` or `docs/experiments/`. Maintained documentation in
+`docs/` describes current behavior and reusable procedures; it must not depend
+on local task artifacts. Reusable test fixtures and their instructions belong
+in `tools/fixtures/` and remain tracked.
+
 For a request to play headless Norrust games, read `docs/LLM_CLIENT.md` first.
 Use its client-generated prompt and supported backend examples.
 For the Fireworks operator walkthrough, follow `docs/FIREWORKS_RUNBOOK.md`

@@ -9,6 +9,12 @@
 
 ## Repository Layout
 
+Keep task plans, handoffs, experiment reports, benchmark output, and logs under
+ignored `tmp/`. Do not force-add them. `docs/` contains maintained behavior and
+reusable procedures; `tools/fixtures/` contains reproducible test inputs and
+their instructions. Promote lasting findings into the relevant maintained
+document rather than linking it to a local task report.
+
 ```
 norrust/
 ├── norrust_core/    # Rust library — simulation core + C ABI bridge
@@ -326,7 +332,7 @@ resume, and idempotent SQLite import. Build `greedy_driver` before running these
 tests; skipped driver tests do not constitute acceptance. The full
 `python3 -m tools.fast_check` builds the driver and runs them.
 
-The live query/effects contract is documented in the strategy execution plan.
+The live query/effects contract is documented in [LLM_CLIENT.md](LLM_CLIENT.md).
 Policy progress belongs to a durable installation and batch; its applied-step
 ledger is recovery metadata and must not be sent to the model or planner.
 
@@ -343,10 +349,9 @@ model-owned tactical provenance, one bounded response repair, revision-stale
 inspection recovery, and final-only boundaries. A skipped driver test is a
 coverage gap and does not constitute acceptance.
 
-For the strategy trial follow-up, the exact-progress benchmark is recorded in
-[the read-only benchmark artifact](experiments/strategy-trial-followup-exact-progress-2026-09-14.md).
-It resumes trial 3's revision-84 checkpoint, sends the complete installed
-policy and committed progress to the `routine_next` query, and records the
-source, binary, policy, progress and checkpoint hashes. Use the release binary
+For an exact-progress benchmark, resume the recorded checkpoint and send its
+complete installed policy and committed progress to the `routine_next` query.
+Record source, binary, policy, progress and checkpoint hashes, query timings,
+and unchanged-checkpoint proof under `tmp/`. Use the release binary
 from a source-matched build for launch examples; a debug build is useful for
 development checks but is not the launch artifact.

@@ -246,7 +246,8 @@ Gold/Turns column reads the engine ending from the selected page's archives;
 missing ending evidence remains unknown (see [counting conventions](REPLAY.md)). Outcome
 classification and complete recording coverage remain pending browser work; the
 browser labels explicit budget interruptions as `Budget interrupted` with
-neutral side colors. See [the browser review](experiments/recorded-game-browser-review.md).
+neutral side colors. Missing runtime model identity or ending evidence must
+remain unknown; display labels are not proof of either.
 
 A model concession is stored with termination reason `resignation` and the
 opponent as winner. The `Resign` action remains attributed to the model; it does

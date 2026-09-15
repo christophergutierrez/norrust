@@ -1,19 +1,9 @@
-"""Strategy-mode policy validation, routine progress, exceptions and rendering.
+"""Strategy-mode policy validation, committed progress, exceptions and rendering.
 
-This module implements the client half of the frozen `routine_next` contract
-described in `docs/plans/strategy-and-routine-execution.md` (sections 3-6,
-"Stack 1" and "Stack 2"). It is deliberately self-contained: it does not
-import ``tools.llm_client`` so the two modules can be developed and tested in
-isolation by separate workers. ``tools/llm_client.py`` imports from here.
-
-Stack 2 enables the remaining policy fields (``scouts``, ``villages``,
-``rally``, ``holds``) that Stack 1 kept scoped to empty/null. The full
-per-field bounds in ``validate_policy`` (distinct existing friendly ids, at
-most 8 scouts including new-scout-recruit totals, at most 4 villages, one
-in-bounds rally or null, held ids excluded from scouts) are enforced exactly
-as before; only the additional Stack-1-only scope gate (``enforce_stack1_scope``)
-has been removed. Model invocation remains provider-neutral; Stack 3 supplies
-compact strategy prompts and the tactical exception path.
+The client-side routine contract is documented in docs/LLM_CLIENT.md.
+This module stays independent of tools.llm_client, which owns model dispatch
+and durable execution. Policy validation covers recruitment, scouts, villages,
+rally and holds; progress records adopted engine effects for resume.
 """
 from __future__ import annotations
 

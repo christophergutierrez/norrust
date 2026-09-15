@@ -181,13 +181,11 @@ The reusable 16-cell screening template is
 `tools/fixtures/strategy_decisions/fireworks_screening_manifest.json`. Its
 prepared status describes the template; existing user authorization carries
 forward. Freeze the actual source and driver hashes for each execution. The
-1.2-million-token aggregate launch stop is soft: dated rates plus one possible
-in-flight context overshoot estimated $1.124288 exposure for the completed
-follow-up, not a hard dollar cap.
+1.2-million-token aggregate launch stop is soft: one in-flight call can cross
+the threshold. Estimate cost from the run's dated rates; the token stop is not
+a hard dollar cap.
 
-The [completed follow-up](experiments/strategy-trial-followup-2026-09-14.md)
-compared pre-controller baseline `cb9a85b` with candidate `5d1a7b8`. Both met
-6/8 targets; candidate median tokens were about 5% higher, missing the required
-25% reduction. All 16 one-turn cells completed, costing an estimated $0.2052.
-The conditional opening pair was not launched. Do not describe this result as
-a full-game win or a demonstrated efficiency improvement.
+Store experiment-specific manifests, results and handoffs under ignored `tmp/`.
+Use committed fixtures to reproduce the intended situation, then record actual
+source and driver hashes for the run. A screening result or turn-cap completion
+does not establish a full-game win or a demonstrated efficiency improvement.
