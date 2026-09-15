@@ -67,7 +67,7 @@ class EffectiveScoutAndCoordinateTests(unittest.TestCase):
             ],
             "scouts": [],
             "villages": [{"col": 2, "row": 4}],
-            "rally": {"col": 12, "row": 7},
+            "rally": None,
             "holds": [],
         }
         with tempfile.TemporaryDirectory() as td:
@@ -98,7 +98,7 @@ class EffectiveScoutAndCoordinateTests(unittest.TestCase):
                 "print(json.dumps({'text':json.dumps(resp)}))\n",
                 encoding="utf-8")
             log = root / "effective-scouts.ndjson"
-            result = launch(root, log, checkpoint, backend, turns=1, maximum=8)
+            result = launch(root, log, checkpoint, backend, turns=1, maximum=64)
             assert_success(self, result, log)
             rows = records(log)
             recruits = [event for event in events(rows) if event.get("kind") == "recruit"]

@@ -950,6 +950,66 @@ class StrategyPolicyFixedInstallTests(unittest.TestCase):
         self.assertIn("strategy", result.stderr)
 
 
+class CapacityReliefBriefTests(unittest.TestCase):
+    def test_no_route_endpoint_names_rally_and_policy_change(self):
+        exception = rp.RoutineException(
+            reason="recruitment_blocked",
+            evidence={
+                "cause": "no_placement_hex",
+                "def_id": "Skeleton",
+                "capacity_relief": {
+                    "status": "no_route_endpoint",
+                    "rally": {"col": 12, "row": 7},
+                    "eligible_unit_ids": [10, 11],
+                    "checked_unit_ids": [10, 11],
+                    "coverage": "complete",
+                },
+            },
+        )
+        brief = rp.render_exception_brief(exception, [])
+        self.assertIn("rally 12,7", brief)
+        self.assertIn("10,11", brief)
+        self.assertIn("Changing the rally", brief)
+        self.assertNotIn("unreachable", brief.lower())
+
+    def test_unknown_relief_is_not_unsafe_or_unreachable(self):
+        exception = rp.RoutineException(
+            reason="recruitment_blocked",
+            evidence={
+                "cause": "no_placement_hex",
+                "capacity_relief": {
+                    "status": "unknown",
+                    "rally": {"col": 8, "row": 6},
+                    "eligible_unit_ids": [4],
+                    "checked_unit_ids": [4],
+                    "coverage": "complete",
+                },
+            },
+        )
+        brief = rp.render_exception_brief(exception, [])
+        self.assertIn("unknown", brief)
+        self.assertNotIn("unsafe", brief.lower())
+        self.assertNotIn("unreachable", brief.lower())
+
+    def test_no_rally_names_absence(self):
+        exception = rp.RoutineException(
+            reason="recruitment_blocked",
+            evidence={
+                "cause": "no_placement_hex",
+                "capacity_relief": {
+                    "status": "no_rally",
+                    "rally": None,
+                    "eligible_unit_ids": [9],
+                    "checked_unit_ids": [],
+                    "coverage": "complete",
+                },
+            },
+        )
+        brief = rp.render_exception_brief(exception, [])
+        self.assertIn("No rally is installed", brief)
+        self.assertIn("9", brief)
+
+
 # ---------------------------------------------------------------------------
 # The real-driver Stack 1 gate (scripted policy recruits and finishes with
 # zero further backend calls; two-turn recruitment without double-buying;

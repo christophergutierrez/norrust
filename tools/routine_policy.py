@@ -1212,6 +1212,60 @@ def render_policy_brief(reserve_gold_default: int, recruitable_defs: Iterable[st
     )
 
 
+def _capacity_relief_line(evidence: Any) -> str:
+    """One short castle-capacity explanation. Unknown is not unsafe or unreachable."""
+    if not isinstance(evidence, dict) or evidence.get("cause") != "no_placement_hex":
+        return ""
+    relief = evidence.get("capacity_relief")
+    if not isinstance(relief, dict):
+        return ""
+    status = relief.get("status", "unknown")
+    if status not in ("no_rally", "no_eligible_unit", "no_route_endpoint",
+                      "no_safe_endpoint", "mixed_blockers", "unknown"):
+        status = "unknown"
+    rally = relief.get("rally", "unknown") if "rally" in relief else "unknown"
+    if rally is None:
+        rally_text = "none"
+    elif isinstance(rally, dict):
+        rally_text = f"{rally.get('col', 'unknown')},{rally.get('row', 'unknown')}"
+    else:
+        rally_text = "unknown"
+    ids = relief.get("eligible_unit_ids")
+    if not isinstance(ids, list):
+        ids = relief.get("checked_unit_ids")
+    id_text = ",".join(str(item) for item in ids) if isinstance(ids, list) and ids else "none"
+    if status == "no_rally":
+        return (
+            f"Castle recruitment has no placement hex. No rally is installed, so ordinary army "
+            f"travel cannot free a tile. Eligible castle units: {id_text}."
+        )
+    if status == "no_eligible_unit":
+        return (
+            f"Castle recruitment has no placement hex. Rally {rally_text} has no eligible unmoved "
+            "army unit on a recruiting castle tile (scouts, holds, and recruiters stay put)."
+        )
+    if status == "no_route_endpoint":
+        return (
+            f"Castle recruitment has no placement hex. Ordinary army travel toward rally "
+            f"{rally_text} found no usable route endpoint for units {id_text}. Changing the rally "
+            "is an available set_policy response."
+        )
+    if status == "no_safe_endpoint":
+        return (
+            f"Castle recruitment has no placement hex. Travel toward rally {rally_text} found "
+            f"endpoints for units {id_text} that were not safe."
+        )
+    if status == "mixed_blockers":
+        return (
+            f"Castle recruitment has no placement hex. Ordinary army travel toward rally "
+            f"{rally_text} was blocked by mixed per-unit causes for units {id_text}."
+        )
+    return (
+        f"Castle recruitment has no placement hex. Capacity relief is unknown. Rally {rally_text}; "
+        f"units {id_text}."
+    )
+
+
 def render_exception_brief(exception: RoutineException, remaining: list[dict[str, Any]], *,
                            state: Optional[dict[str, Any]] = None,
                            recruit_options: Any = None,
@@ -1219,8 +1273,14 @@ def render_exception_brief(exception: RoutineException, remaining: list[dict[str
                            policy: Any = None,
                            progress: Any = None) -> str:
     """Render a typed exception with current revision-pinned facts."""
+    relief = ""
+    if exception.reason == "recruitment_blocked":
+        line = _capacity_relief_line(exception.evidence)
+        if line:
+            relief = line + " "
     return (
         _strategy_contract() +
+        relief +
         "Routine execution paused on a typed engine exception. The exception facts and current state "
         "below are authoritative; missing values remain unknown. set_policy replaces the installation "
         "and cancels its old remaining work."

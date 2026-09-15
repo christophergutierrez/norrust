@@ -20,6 +20,7 @@ try:
     RoutineException,
     strategy_context,
     _strategy_contract,
+    _capacity_relief_line,
     SetPolicyResponse,
     ActResponse,
     FinishTurnResponse,
@@ -32,6 +33,7 @@ except ImportError:
     RoutineException,
     strategy_context,
     _strategy_contract,
+    _capacity_relief_line,
     SetPolicyResponse,
     ActResponse,
     FinishTurnResponse,
@@ -854,6 +856,14 @@ def render_decision_brief(
         "To choose, respond with: " + json.dumps(example, separators=(",", ":"))
       )
       sections.append("\n".join(opt_lines))
+  elif packet.reason == "recruitment_blocked":
+    relief = _capacity_relief_line(packet.evidence)
+    if relief:
+      sections.append(relief)
+    sections.append(
+      "POLICY DECISION REQUIRED: Routine execution requires policy direction. Submit `set_policy` "
+      f"to define objectives, or submit manual actions. Applicable responses: {', '.join(packet.allowed_kinds)}."
+    )
   elif packet.reason in ("unsafe_route", "route_unavailable"):
     sections.append(
       "ROUTE / OBJECTIVE DECISION REQUIRED: A proposed routine movement encounters an obstacle, "

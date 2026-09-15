@@ -3,7 +3,8 @@
 
 use crate::combat::tod_label;
 use crate::game_state::{
-    apply_action, apply_recruit, legal_recruitment_placements, Action, GameState,
+    apply_action, apply_recruit, legal_moves_with_costs, legal_recruitment_placements, Action,
+    GameState,
 };
 use crate::hex::Hex;
 use crate::loader::Registry;
@@ -361,6 +362,79 @@ fn next_recruit<'a>(
 pub(crate) fn coord(hex: Hex) -> Value {
     let (col, row) = hex.to_offset();
     json!({"col":col,"row":row})
+}
+
+fn rally_coord(rally: Option<Hex>) -> Value {
+    rally.map(coord).unwrap_or(Value::Null)
+}
+
+fn capacity_relief(
+    status: &'static str,
+    rally: Option<Hex>,
+    eligible: &[u32],
+    checked: &[u32],
+    coverage: &'static str,
+    unit_causes: Option<Vec<Value>>,
+    omitted: Option<usize>,
+) -> Value {
+    let mut body = json!({
+        "status": status,
+        "rally": rally_coord(rally),
+        "eligible_unit_ids": eligible,
+        "checked_unit_ids": checked,
+        "coverage": coverage,
+    });
+    if let Some(causes) = unit_causes {
+        body["unit_causes"] = Value::Array(causes);
+    }
+    if let Some(count) = omitted {
+        body["omitted"] = json!(count);
+    }
+    body
+}
+
+fn castle_travel_ids(state: &GameState, side: u8, scouts: &[u32], policy: &RoutinePolicy) -> Vec<u32> {
+    let mut ids: Vec<u32> = state
+        .units
+        .iter()
+        .filter_map(|(id, unit)| {
+            let position = state.positions.get(id)?;
+            (unit.faction == side
+                && !unit.moved
+                && !recruiter(unit)
+                && !scouts.contains(id)
+                && !policy.holds.contains(id)
+                && state
+                    .board
+                    .tile_at(*position)
+                    .is_some_and(|tile| tile.terrain_id == "castle"))
+            .then_some(*id)
+        })
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+fn moved_castle_travel_exists(
+    state: &GameState,
+    side: u8,
+    scouts: &[u32],
+    policy: &RoutinePolicy,
+) -> bool {
+    state.units.iter().any(|(id, unit)| {
+        let Some(position) = state.positions.get(id) else {
+            return false;
+        };
+        unit.faction == side
+            && unit.moved
+            && !recruiter(unit)
+            && !scouts.contains(id)
+            && !policy.holds.contains(id)
+            && state
+                .board
+                .tile_at(*position)
+                .is_some_and(|tile| tile.terrain_id == "castle")
+    })
 }
 pub(crate) fn is_recruiter(unit: &Unit) -> bool {
     unit.can_recruit || unit.abilities.iter().any(|a| a == "leader")
@@ -721,6 +795,11 @@ fn post_step_safe(state: &GameState, side: u8, action: Action) -> Result<bool, T
 /// Return legal endpoints on a shortest terrain-cost route, ordered from
 /// furthest to nearest. The engine permits occupied intermediate hexes; only
 /// the submitted endpoint must be empty.
+///
+/// When that shortest-path prefix has no empty in-budget stop (own units can
+/// occupy every hex the unit can reach along it), fall back to a legal empty
+/// hex that strictly reduces remaining path cost to a goal. Callers still
+/// exclude scouts, holds, recruiters, and already-moved units.
 pub(crate) fn route_endpoints(state: &GameState, unit_id: u32, goals: &[Hex]) -> Vec<(Hex, bool)> {
     let Some(unit) = state.units.get(&unit_id) else {
         return Vec::new();
@@ -763,6 +842,41 @@ pub(crate) fn route_endpoints(state: &GameState, unit_id: u32, goals: &[Hex]) ->
             };
             if !state.hex_to_unit.contains_key(endpoint) {
                 candidates.push((*endpoint, cost, total));
+            }
+        }
+    }
+    if candidates.is_empty() {
+        if let Ok(legal) = legal_moves_with_costs(state, unit_id) {
+            for &goal in goals {
+                let Some((_, start_remaining)) = find_path(
+                    &state.board,
+                    &unit.movement_costs,
+                    1,
+                    start,
+                    goal,
+                    u32::MAX / 4,
+                    &zoc,
+                    false,
+                ) else {
+                    continue;
+                };
+                for (hex, move_cost) in &legal {
+                    let Some((_, remaining)) = find_path(
+                        &state.board,
+                        &unit.movement_costs,
+                        1,
+                        *hex,
+                        goal,
+                        u32::MAX / 4,
+                        &zoc,
+                        false,
+                    ) else {
+                        continue;
+                    };
+                    if remaining < start_remaining {
+                        candidates.push((*hex, *move_cost, remaining));
+                    }
+                }
             }
         }
     }
@@ -1170,34 +1284,28 @@ pub fn routine_next(
             // A full keep may be relieved only by ordinary army travel. This
             // is deliberately below recruitment in the priority order and
             // never vacates a scout, hold, or recruiter implicitly.
+            let eligible = castle_travel_ids(state, side, &scouts, policy);
+            let mut checked: Vec<u32> = Vec::new();
+            let mut unit_causes: Vec<(u32, &'static str)> = Vec::new();
             if let Some(rally) = policy.rally {
-                let mut vacatable: Vec<u32> = state
-                    .units
-                    .iter()
-                    .filter_map(|(id, unit)| {
-                        let position = state.positions.get(id)?;
-                        (unit.faction == side
-                            && !unit.moved
-                            && !recruiter(unit)
-                            && !scouts.contains(id)
-                            && !policy.holds.contains(id)
-                            && state
-                                .board
-                                .tile_at(*position)
-                                .is_some_and(|tile| tile.terrain_id == "castle"))
-                        .then_some(*id)
-                    })
-                    .collect();
-                vacatable.sort_unstable();
                 let goals = rally_goals(state, rally);
                 let mut unsafe_destination = None;
-                for id in vacatable {
-                    for (destination, arrived) in route_endpoints(state, id, &goals) {
+                for id in &eligible {
+                    checked.push(*id);
+                    let endpoints = route_endpoints(state, *id, &goals);
+                    if endpoints.is_empty() {
+                        unit_causes.push((*id, "no_route_endpoint"));
+                        continue;
+                    }
+                    let mut saw_step = false;
+                    let mut saw_unsafe = false;
+                    for (destination, arrived) in endpoints {
                         if arrived {
                             continue;
                         }
+                        saw_step = true;
                         let action = Action::Move {
-                            unit_id: id,
+                            unit_id: *id,
                             destination,
                         };
                         match post_step_safe(state, side, action) {
@@ -1209,7 +1317,10 @@ pub fn routine_next(
                                     independent_move: None,
                                 }
                             }
-                            Ok(false) => unsafe_destination = Some((id, destination)),
+                            Ok(false) => {
+                                saw_unsafe = true;
+                                unsafe_destination = Some((*id, destination));
+                            }
                             Err(error) => {
                                 return RoutineOutcome::Exception {
                                     reason: "threat_unavailable",
@@ -1218,6 +1329,11 @@ pub fn routine_next(
                             }
                         }
                     }
+                    if saw_unsafe {
+                        unit_causes.push((*id, "no_safe_endpoint"));
+                    } else if !saw_step {
+                        unit_causes.push((*id, "no_route_endpoint"));
+                    }
                 }
                 if let Some((id, destination)) = unsafe_destination {
                     return RoutineOutcome::Exception {
@@ -1225,29 +1341,56 @@ pub fn routine_next(
                         evidence: json!({"stage":"proposed_destination","unit_id":id,"destination":coord(destination)}),
                     };
                 }
-                if state.units.iter().any(|(id, unit)| {
-                    let Some(position) = state.positions.get(id) else {
-                        return false;
-                    };
-                    unit.faction == side
-                        && unit.moved
-                        && !recruiter(unit)
-                        && !scouts.contains(id)
-                        && !policy.holds.contains(id)
-                        && state
-                            .board
-                            .tile_at(*position)
-                            .is_some_and(|tile| tile.terrain_id == "castle")
-                }) {
+                if moved_castle_travel_exists(state, side, &scouts, policy) {
                     return RoutineOutcome::Finish {
                         reason: "no_remaining_routine_steps",
                         progress_update: progress_update(Vec::new()),
                     };
                 }
             }
+            let status = if policy.rally.is_none() {
+                "no_rally"
+            } else if eligible.is_empty() {
+                "no_eligible_unit"
+            } else {
+                let distinct: HashSet<&'static str> =
+                    unit_causes.iter().map(|(_, cause)| *cause).collect();
+                if distinct.len() > 1 {
+                    "mixed_blockers"
+                } else if distinct.contains("no_safe_endpoint") {
+                    "no_safe_endpoint"
+                } else if distinct.contains("no_route_endpoint") || distinct.is_empty() {
+                    "no_route_endpoint"
+                } else {
+                    "unknown"
+                }
+            };
+            let mixed = status == "mixed_blockers";
+            let causes = if mixed {
+                Some(
+                    unit_causes
+                        .iter()
+                        .map(|(id, cause)| json!({"unit_id": id, "status": cause}))
+                        .collect(),
+                )
+            } else {
+                None
+            };
             return RoutineOutcome::Exception {
                 reason: "recruitment_blocked",
-                evidence: json!({"def_id":entry.def_id,"cause":"no_placement_hex"}),
+                evidence: json!({
+                    "def_id": entry.def_id,
+                    "cause": "no_placement_hex",
+                    "capacity_relief": capacity_relief(
+                        status,
+                        policy.rally,
+                        &eligible,
+                        &checked,
+                        "complete",
+                        causes,
+                        None,
+                    ),
+                }),
             };
         };
         let mut clone = state.clone();
@@ -1806,13 +1949,17 @@ mod tests {
             &["Skeleton".into()],
             &registry,
         );
-        assert!(matches!(
-            outcome,
-            RoutineOutcome::Exception {
-                reason: "recruitment_blocked",
-                ..
+        match outcome {
+            RoutineOutcome::Exception { reason, evidence } => {
+                assert_eq!(reason, "recruitment_blocked");
+                assert_eq!(evidence["cause"], "no_placement_hex");
+                assert_eq!(evidence["capacity_relief"]["status"], "no_eligible_unit");
+                assert_eq!(evidence["capacity_relief"]["rally"], json!({"col":7,"row":6}));
+                assert_eq!(evidence["capacity_relief"]["eligible_unit_ids"], json!([]));
+                assert_eq!(evidence["capacity_relief"]["coverage"], "complete");
             }
-        ));
+            other => panic!("expected recruitment_blocked, got {other:?}"),
+        }
         assert_eq!(s.positions, before);
     }
 
@@ -2117,6 +2264,173 @@ mod tests {
                 );
             }
             other => panic!("expected contact exception, got {other:?}"),
+        }
+    }
+
+    fn fill_keep_castles(s: &mut GameState, registry: &Registry<UnitDef>, start_id: u32) -> Vec<u32> {
+        let keep = Hex::from_offset(1, 1);
+        let mut id = start_id;
+        let mut ids = Vec::new();
+        for castle in keep.neighbors() {
+            if s.board.contains(castle)
+                && s.hex_to_unit.get(&castle).is_none()
+                && s.board
+                    .tile_at(castle)
+                    .is_some_and(|tile| tile.terrain_id == "castle")
+            {
+                s.place_unit(
+                    Unit::from_def(id, registry.get("Skeleton").unwrap(), 0),
+                    castle,
+                );
+                ids.push(id);
+                id += 1;
+            }
+        }
+        ids
+    }
+
+    #[test]
+    fn no_rally_reports_capacity_relief_without_auto_vacate() {
+        let registry = units();
+        let mut s = state();
+        let ids = fill_keep_castles(&mut s, &registry, 10);
+        assert!(!ids.is_empty());
+        let before = s.positions.clone();
+        let p = policy(&[("Skeleton", 1, "army")]);
+        match routine_next(
+            &s,
+            0,
+            &p,
+            &RoutineProgress::default(),
+            &["Skeleton".into()],
+            &registry,
+        ) {
+            RoutineOutcome::Exception { reason, evidence } => {
+                assert_eq!(reason, "recruitment_blocked");
+                assert_eq!(evidence["cause"], "no_placement_hex");
+                assert_eq!(evidence["capacity_relief"]["status"], "no_rally");
+                assert_eq!(evidence["capacity_relief"]["rally"], Value::Null);
+                assert_eq!(evidence["capacity_relief"]["eligible_unit_ids"], json!(ids));
+                assert_eq!(evidence["capacity_relief"]["checked_unit_ids"], json!([]));
+            }
+            other => panic!("expected recruitment_blocked, got {other:?}"),
+        }
+        assert_eq!(s.positions, before);
+    }
+
+    #[test]
+    fn unreachable_rally_reports_no_route_endpoint() {
+        let registry = units();
+        let mut s = state();
+        fill_keep_castles(&mut s, &registry, 10);
+        for unit in s.units.values_mut() {
+            unit.movement_costs.insert("void".into(), 99);
+        }
+        for r in 0..8 {
+            for c in 5..10 {
+                s.board.set_tile(Hex::from_offset(c, r), Tile::new("void"));
+            }
+        }
+        let rally = Hex::from_offset(8, 4);
+        let mut p = policy(&[("Skeleton", 1, "army")]);
+        p.rally = Some(rally);
+        match routine_next(
+            &s,
+            0,
+            &p,
+            &RoutineProgress::default(),
+            &["Skeleton".into()],
+            &registry,
+        ) {
+            RoutineOutcome::Exception { reason, evidence } => {
+                assert_eq!(reason, "recruitment_blocked");
+                assert_eq!(evidence["cause"], "no_placement_hex");
+                assert_eq!(evidence["capacity_relief"]["status"], "no_route_endpoint");
+                assert_eq!(evidence["capacity_relief"]["rally"], json!({"col":8,"row":4}));
+                assert_eq!(evidence["capacity_relief"]["coverage"], "complete");
+                assert!(!evidence["capacity_relief"]["eligible_unit_ids"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty());
+            }
+            other => panic!("expected recruitment_blocked, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn safe_rally_route_frees_capacity_without_a_model_call() {
+        let registry = units();
+        let mut s = state();
+        let ids = fill_keep_castles(&mut s, &registry, 10);
+        let mut p = policy(&[("Skeleton", 1, "army")]);
+        p.rally = Some(Hex::from_offset(8, 6));
+        match routine_next(
+            &s,
+            0,
+            &p,
+            &RoutineProgress::default(),
+            &["Skeleton".into()],
+            &registry,
+        ) {
+            RoutineOutcome::Action {
+                action,
+                reason: "castle_capacity",
+                ..
+            } => {
+                assert_eq!(action["action"], "Move");
+                let unit_id = action["unit_id"].as_u64().unwrap() as u32;
+                assert!(ids.contains(&unit_id));
+                let dest = Hex::from_offset(
+                    action["col"].as_i64().unwrap() as i32,
+                    action["row"].as_i64().unwrap() as i32,
+                );
+                assert_ne!(
+                    s.board.tile_at(dest).map(|tile| tile.terrain_id.as_str()),
+                    Some("castle")
+                );
+            }
+            other => panic!("expected castle_capacity move, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn jammed_shortest_path_still_steps_toward_rally() {
+        let registry = units();
+        let mut s = state();
+        let ids = fill_keep_castles(&mut s, &registry, 10);
+        let mut blocker = 40;
+        for col in 3..8 {
+            let hex = Hex::from_offset(col, 1);
+            let mut unit = Unit::from_def(blocker, registry.get("Skeleton").unwrap(), 0);
+            unit.moved = true;
+            s.place_unit(unit, hex);
+            blocker += 1;
+        }
+        let mut p = policy(&[("Skeleton", 1, "army")]);
+        p.rally = Some(Hex::from_offset(9, 1));
+        match routine_next(
+            &s,
+            0,
+            &p,
+            &RoutineProgress::default(),
+            &["Skeleton".into()],
+            &registry,
+        ) {
+            RoutineOutcome::Action {
+                action,
+                reason: "castle_capacity",
+                ..
+            } => {
+                let unit_id = action["unit_id"].as_u64().unwrap() as u32;
+                assert!(ids.contains(&unit_id));
+                let dest = Hex::from_offset(
+                    action["col"].as_i64().unwrap() as i32,
+                    action["row"].as_i64().unwrap() as i32,
+                );
+                let start = s.positions[&unit_id];
+                assert!(dest.distance(Hex::from_offset(9, 1)) < start.distance(Hex::from_offset(9, 1)));
+            }
+            other => panic!("expected castle_capacity detour, got {other:?}"),
         }
     }
 }
