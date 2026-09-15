@@ -1,0 +1,798 @@
+{
+  "schema_version": 1,
+  "purpose": "Shared Python/Rust agreement cases for strategy village scout capacity (proposed-movement Stack 1). Frozen before implementation; do not edit in a worker.",
+  "semantics": {
+    "required_assignments": "distinct listed villages that are not completed, not owned by the controlled side (all listed villages when ownership is unknown), and not currently in scout_assignments",
+    "scout_capacity": "effective live eligible scouts (policy.scouts plus progress.scout_ids; not held, not recruiter) that have no scout assignment, plus remaining scout-role recruits (count minus recruited done for that queue index); a moved scout still counts",
+    "ok": "required_assignments <= scout_capacity",
+    "fresh": "progress null means a fresh installation: no assignments, completions or recruits",
+    "rust_cause": "fresh installation -> insufficient_scout_capacity; any committed progress -> scout_capacity_exhausted (runtime evidence, no claim about original impossibility)"
+  },
+  "cases": [
+    {
+      "name": "fresh_four_unowned_two_scout_recruits",
+      "applies": [
+        "python_validation",
+        "python_capacity_helper",
+        "rust"
+      ],
+      "villages": [
+        {
+          "col": 2,
+          "row": 4
+        },
+        {
+          "col": 5,
+          "row": 3
+        },
+        {
+          "col": 6,
+          "row": 11
+        },
+        {
+          "col": 18,
+          "row": 10
+        }
+      ],
+      "owned": [],
+      "units": [
+        {
+          "id": 1,
+          "faction": 0,
+          "recruiter": true,
+          "moved": false
+        }
+      ],
+      "policy": {
+        "scouts": [],
+        "recruits": [
+          {
+            "def_id": "Vampire Bat",
+            "count": 2,
+            "role": "scout"
+          },
+          {
+            "def_id": "Skeleton",
+            "count": 4,
+            "role": "army"
+          }
+        ],
+        "holds": []
+      },
+      "progress": null,
+      "expected": {
+        "required_assignments": 4,
+        "scout_capacity": 2,
+        "ok": false,
+        "python_error_contains": "required_assignments=4 scout_capacity=2",
+        "rust_reason": "no_executable_orders",
+        "rust_cause": "insufficient_scout_capacity"
+      }
+    },
+    {
+      "name": "fresh_four_scout_recruits",
+      "applies": [
+        "python_validation",
+        "python_capacity_helper",
+        "rust"
+      ],
+      "villages": [
+        {
+          "col": 2,
+          "row": 4
+        },
+        {
+          "col": 5,
+          "row": 3
+        },
+        {
+          "col": 6,
+          "row": 11
+        },
+        {
+          "col": 18,
+          "row": 10
+        }
+      ],
+      "owned": [],
+      "units": [
+        {
+          "id": 1,
+          "faction": 0,
+          "recruiter": true,
+          "moved": false
+        }
+      ],
+      "policy": {
+        "scouts": [],
+        "recruits": [
+          {
+            "def_id": "Vampire Bat",
+            "count": 4,
+            "role": "scout"
+          }
+        ],
+        "holds": []
+      },
+      "progress": null,
+      "expected": {
+        "required_assignments": 4,
+        "scout_capacity": 4,
+        "ok": true
+      }
+    },
+    {
+      "name": "fresh_two_targets_two_recruits",
+      "applies": [
+        "python_validation",
+        "python_capacity_helper",
+        "rust"
+      ],
+      "villages": [
+        {
+          "col": 6,
+          "row": 11
+        },
+        {
+          "col": 18,
+          "row": 10
+        }
+      ],
+      "owned": [],
+      "units": [
+        {
+          "id": 1,
+          "faction": 0,
+          "recruiter": true,
+          "moved": false
+        }
+      ],
+      "policy": {
+        "scouts": [],
+        "recruits": [
+          {
+            "def_id": "Vampire Bat",
+            "count": 2,
+            "role": "scout"
+          }
+        ],
+        "holds": []
+      },
+      "progress": null,
+      "expected": {
+        "required_assignments": 2,
+        "scout_capacity": 2,
+        "ok": true
+      }
+    },
+    {
+      "name": "two_owned_two_explicit_scouts",
+      "applies": [
+        "python_validation",
+        "python_capacity_helper",
+        "rust"
+      ],
+      "villages": [
+        {
+          "col": 2,
+          "row": 4
+        },
+        {
+          "col": 5,
+          "row": 3
+        },
+        {
+          "col": 6,
+          "row": 11
+        },
+        {
+          "col": 18,
+          "row": 10
+        }
+      ],
+      "owned": [
+        {
+          "col": 2,
+          "row": 4
+        },
+        {
+          "col": 5,
+          "row": 3
+        }
+      ],
+      "units": [
+        {
+          "id": 1,
+          "faction": 0,
+          "recruiter": true,
+          "moved": false
+        },
+        {
+          "id": 3,
+          "faction": 0,
+          "recruiter": false,
+          "moved": false
+        },
+        {
+          "id": 4,
+          "faction": 0,
+          "recruiter": false,
+          "moved": false
+        }
+      ],
+      "policy": {
+        "scouts": [
+          3,
+          4
+        ],
+        "recruits": [],
+        "holds": []
+      },
+      "progress": null,
+      "expected": {
+        "required_assignments": 2,
+        "scout_capacity": 2,
+        "ok": true
+      }
+    },
+    {
+      "name": "all_owned_zero_scouts",
+      "applies": [
+        "python_validation",
+        "python_capacity_helper",
+        "rust"
+      ],
+      "villages": [
+        {
+          "col": 2,
+          "row": 4
+        },
+        {
+          "col": 5,
+          "row": 3
+        }
+      ],
+      "owned": [
+        {
+          "col": 2,
+          "row": 4
+        },
+        {
+          "col": 5,
+          "row": 3
+        }
+      ],
+      "units": [
+        {
+          "id": 1,
+          "faction": 0,
+          "recruiter": true,
+          "moved": false
+        }
+      ],
+      "policy": {
+        "scouts": [],
+        "recruits": [],
+        "holds": []
+      },
+      "progress": null,
+      "expected": {
+        "required_assignments": 0,
+        "scout_capacity": 0,
+        "ok": true
+      }
+    },
+    {
+      "name": "ownership_unknown_counts_every_listed_village",
+      "applies": [
+        "python_validation",
+        "python_capacity_helper"
+      ],
+      "villages": [
+        {
+          "col": 2,
+          "row": 4
+        },
+        {
+          "col": 5,
+          "row": 3
+        }
+      ],
+      "owned": null,
+      "units": [
+        {
+          "id": 1,
+          "faction": 0,
+          "recruiter": true,
+          "moved": false
+        },
+        {
+          "id": 3,
+          "faction": 0,
+          "recruiter": false,
+          "moved": false
+        }
+      ],
+      "policy": {
+        "scouts": [
+          3
+        ],
+        "recruits": [],
+        "holds": []
+      },
+      "progress": null,
+      "expected": {
+        "required_assignments": 2,
+        "scout_capacity": 1,
+        "ok": false,
+        "ownership_known": false,
+        "python_error_contains": "required_assignments=2 scout_capacity=1"
+      }
+    },
+    {
+      "name": "explicit_scout_plus_future_recruits",
+      "applies": [
+        "python_validation",
+        "python_capacity_helper",
+        "rust"
+      ],
+      "villages": [
+        {
+          "col": 2,
+          "row": 4
+        },
+        {
+          "col": 5,
+          "row": 3
+        },
+        {
+          "col": 6,
+          "row": 11
+        },
+        {
+          "col": 18,
+          "row": 10
+        }
+      ],
+      "owned": [],
+      "units": [
+        {
+          "id": 1,
+          "faction": 0,
+          "recruiter": true,
+          "moved": false
+        },
+        {
+          "id": 3,
+          "faction": 0,
+          "recruiter": false,
+          "moved": false
+        }
+      ],
+      "policy": {
+        "scouts": [
+          3
+        ],
+        "recruits": [
+          {
+            "def_id": "Vampire Bat",
+            "count": 3,
+            "role": "scout"
+          }
+        ],
+        "holds": []
+      },
+      "progress": null,
+      "expected": {
+        "required_assignments": 4,
+        "scout_capacity": 4,
+        "ok": true
+      }
+    },
+    {
+      "name": "progressed_completed_scouts_stay_assigned_trial8_rev92",
+      "applies": [
+        "python_capacity_helper",
+        "rust"
+      ],
+      "villages": [
+        {
+          "col": 2,
+          "row": 4
+        },
+        {
+          "col": 5,
+          "row": 3
+        },
+        {
+          "col": 6,
+          "row": 11
+        },
+        {
+          "col": 18,
+          "row": 10
+        }
+      ],
+      "owned": [
+        {
+          "col": 2,
+          "row": 4
+        },
+        {
+          "col": 5,
+          "row": 3
+        }
+      ],
+      "units": [
+        {
+          "id": 1,
+          "faction": 0,
+          "recruiter": true,
+          "moved": false
+        },
+        {
+          "id": 3,
+          "faction": 0,
+          "recruiter": false,
+          "moved": false
+        },
+        {
+          "id": 4,
+          "faction": 0,
+          "recruiter": false,
+          "moved": false
+        }
+      ],
+      "policy": {
+        "scouts": [],
+        "recruits": [
+          {
+            "def_id": "Vampire Bat",
+            "count": 2,
+            "role": "scout"
+          },
+          {
+            "def_id": "Skeleton",
+            "count": 5,
+            "role": "army"
+          }
+        ],
+        "holds": []
+      },
+      "progress": {
+        "recruited": [
+          {
+            "queue_index": 0,
+            "done": 2
+          }
+        ],
+        "scout_ids": [
+          3,
+          4
+        ],
+        "scout_assignments": [
+          {
+            "unit_id": 3,
+            "col": 2,
+            "row": 4
+          },
+          {
+            "unit_id": 4,
+            "col": 5,
+            "row": 3
+          }
+        ],
+        "completed_villages": [
+          {
+            "col": 2,
+            "row": 4
+          },
+          {
+            "col": 5,
+            "row": 3
+          }
+        ]
+      },
+      "expected": {
+        "required_assignments": 2,
+        "scout_capacity": 0,
+        "ok": false,
+        "rust_reason": "no_executable_orders",
+        "rust_cause": "scout_capacity_exhausted"
+      }
+    },
+    {
+      "name": "progressed_assigned_pending_targets_keep_their_scouts",
+      "applies": [
+        "python_capacity_helper",
+        "rust"
+      ],
+      "villages": [
+        {
+          "col": 6,
+          "row": 11
+        },
+        {
+          "col": 18,
+          "row": 10
+        }
+      ],
+      "owned": [],
+      "units": [
+        {
+          "id": 1,
+          "faction": 0,
+          "recruiter": true,
+          "moved": false
+        },
+        {
+          "id": 3,
+          "faction": 0,
+          "recruiter": false,
+          "moved": false
+        },
+        {
+          "id": 4,
+          "faction": 0,
+          "recruiter": false,
+          "moved": false
+        }
+      ],
+      "policy": {
+        "scouts": [],
+        "recruits": [
+          {
+            "def_id": "Vampire Bat",
+            "count": 2,
+            "role": "scout"
+          }
+        ],
+        "holds": []
+      },
+      "progress": {
+        "recruited": [
+          {
+            "queue_index": 0,
+            "done": 2
+          }
+        ],
+        "scout_ids": [
+          3,
+          4
+        ],
+        "scout_assignments": [
+          {
+            "unit_id": 3,
+            "col": 6,
+            "row": 11
+          },
+          {
+            "unit_id": 4,
+            "col": 18,
+            "row": 10
+          }
+        ],
+        "completed_villages": []
+      },
+      "expected": {
+        "required_assignments": 0,
+        "scout_capacity": 0,
+        "ok": true
+      }
+    },
+    {
+      "name": "recruited_scout_not_double_counted",
+      "applies": [
+        "python_capacity_helper",
+        "rust"
+      ],
+      "villages": [
+        {
+          "col": 2,
+          "row": 4
+        },
+        {
+          "col": 5,
+          "row": 3
+        },
+        {
+          "col": 6,
+          "row": 11
+        }
+      ],
+      "owned": [],
+      "units": [
+        {
+          "id": 1,
+          "faction": 0,
+          "recruiter": true,
+          "moved": false
+        },
+        {
+          "id": 3,
+          "faction": 0,
+          "recruiter": false,
+          "moved": false
+        }
+      ],
+      "policy": {
+        "scouts": [],
+        "recruits": [
+          {
+            "def_id": "Vampire Bat",
+            "count": 2,
+            "role": "scout"
+          }
+        ],
+        "holds": []
+      },
+      "progress": {
+        "recruited": [
+          {
+            "queue_index": 0,
+            "done": 1
+          }
+        ],
+        "scout_ids": [
+          3
+        ],
+        "scout_assignments": [],
+        "completed_villages": []
+      },
+      "expected": {
+        "required_assignments": 3,
+        "scout_capacity": 2,
+        "ok": false,
+        "rust_reason": "no_executable_orders",
+        "rust_cause": "scout_capacity_exhausted"
+      }
+    },
+    {
+      "name": "spent_unassigned_scout_still_counts",
+      "applies": [
+        "python_validation",
+        "python_capacity_helper",
+        "rust"
+      ],
+      "villages": [
+        {
+          "col": 6,
+          "row": 11
+        }
+      ],
+      "owned": [],
+      "units": [
+        {
+          "id": 1,
+          "faction": 0,
+          "recruiter": true,
+          "moved": false
+        },
+        {
+          "id": 3,
+          "faction": 0,
+          "recruiter": false,
+          "moved": true
+        }
+      ],
+      "policy": {
+        "scouts": [
+          3
+        ],
+        "recruits": [],
+        "holds": []
+      },
+      "progress": null,
+      "expected": {
+        "required_assignments": 1,
+        "scout_capacity": 1,
+        "ok": true
+      }
+    },
+    {
+      "name": "dead_listed_scout_uses_existing_identity_handling",
+      "applies": [
+        "rust"
+      ],
+      "villages": [
+        {
+          "col": 6,
+          "row": 11
+        },
+        {
+          "col": 18,
+          "row": 10
+        }
+      ],
+      "owned": [],
+      "units": [
+        {
+          "id": 1,
+          "faction": 0,
+          "recruiter": true,
+          "moved": false
+        },
+        {
+          "id": 3,
+          "faction": 0,
+          "recruiter": false,
+          "moved": false
+        }
+      ],
+      "policy": {
+        "scouts": [
+          3,
+          4
+        ],
+        "recruits": [],
+        "holds": []
+      },
+      "progress": null,
+      "expected": {
+        "rust_cause": "dead_or_foreign_unit",
+        "rust_reason_must_not_be_capacity": true
+      }
+    },
+    {
+      "name": "held_recruited_scout_excluded_from_capacity",
+      "applies": [
+        "python_capacity_helper",
+        "rust"
+      ],
+      "villages": [
+        {
+          "col": 6,
+          "row": 11
+        }
+      ],
+      "owned": [],
+      "units": [
+        {
+          "id": 1,
+          "faction": 0,
+          "recruiter": true,
+          "moved": false
+        },
+        {
+          "id": 3,
+          "faction": 0,
+          "recruiter": false,
+          "moved": false
+        }
+      ],
+      "policy": {
+        "scouts": [],
+        "recruits": [
+          {
+            "def_id": "Vampire Bat",
+            "count": 1,
+            "role": "scout"
+          }
+        ],
+        "holds": [
+          3
+        ]
+      },
+      "progress": {
+        "recruited": [
+          {
+            "queue_index": 0,
+            "done": 1
+          }
+        ],
+        "scout_ids": [
+          3
+        ],
+        "scout_assignments": [],
+        "completed_villages": []
+      },
+      "expected": {
+        "required_assignments": 1,
+        "scout_capacity": 0,
+        "ok": false,
+        "rust_reason": "no_executable_orders",
+        "rust_cause": "scout_capacity_exhausted"
+      }
+    }
+  ]
+}

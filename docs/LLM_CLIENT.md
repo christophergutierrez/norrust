@@ -368,6 +368,19 @@ replacement that keeps villages must still name scouts or scout-role recruits
 explicitly. Repair text may list known live prior scout IDs the model may
 retain; those are not the only legal scouts.
 
+A scout assigned to a listed village stays assigned after capture until the
+policy is replaced, so each scout completes at most one listed village per
+installation. Installation validation compares `required_assignments` (distinct
+listed villages not already owned by the controlled side) with `scout_capacity`
+(explicitly listed eligible scouts plus scout-role recruit counts) and rejects the
+policy before any recruit or move when required exceeds capacity; the message
+states both numbers. Villages already owned need no scout, so an all-owned list
+with zero scouts is valid. Ownership comes from the engine's per-tile `owner`; when
+it is missing, ownership is unknown and every listed village is counted as pending,
+which the message states. Briefs show `village_scout_capacity` for the installed
+policy and committed progress, or `"unknown"`. This is a cardinality check only:
+it does not prove reachability, affordability or survival.
+
 When tactical options are generated for current-state contact, the model may select one to
 three offered options with:
 `{"kind": "choose", "decision_id": "...", "option_ids": ["u6-relocate-2","u7-relocate-1"], "finish_turn": false}`.
@@ -466,7 +479,7 @@ or stage instead of inferring a tactical response from the word "route":
 | `contact` | `stage: current_state`, `proposed_destination`, `proposed_placement`, or `proposed_placement_recruiter`; relevant unit/destination facts | Current or projected attack exposure requires model judgment. When `current_state`, includes bounded tactical options. |
 | `threat_unavailable` | `stage` and `detail` | Required threat facts could not be evaluated; missing is not zero. |
 | `recruitment_blocked` | `unknown_definition`, `not_recruitable`, `insufficient_gold_no_income`, `no_placement_hex`, or `placement_rejected` | Inspect the named recruitment constraint. Routine code does not auto-vacate a castle. For `no_placement_hex`, `capacity_relief` reports the ordinary army-travel attempt: `no_rally`, `no_eligible_unit`, `no_route_endpoint`, `no_safe_endpoint`, `mixed_blockers`, or `unknown`. `no_route_endpoint` is not proof the rally is permanently unreachable; changing the rally remains an available `set_policy` response. Unknown is not unsafe. Historical archives without `capacity_relief` leave that attempt unknown. |
-| `no_executable_orders` | `village_requires_scout` or `no_scout_available_for_village` | Selected village work lacks an eligible scout. |
+| `no_executable_orders` | `insufficient_scout_capacity` or `scout_capacity_exhausted`, with `required_assignments`, `scout_capacity` and `villages` | Pending unassigned listed villages exceed unassigned eligible scouts plus remaining scout-role recruits. `insufficient_scout_capacity` applies before any committed progress; `scout_capacity_exhausted` is runtime evidence (for example scouts still assigned to completed villages, or a lost scout) and does not claim the original policy was impossible. Identity and assignment checks, a pending promotion, and live current-board contact all take precedence over this exception; while capacity is insufficient, routine code attempts no independent movement during contact and returns no scout travel, recruitment or rally step. |
 | `promotion_pending` | `unit_ids` | The model must choose advancement. |
 | `invalid_assignment` | `cause` and relevant unit/village facts | Identity, progress, objective, eligibility, or assignment consistency failed. |
 | `objectives_complete` | `policy_complete: true` | The finite orders completed. A fixed-policy player stops; it does not invent another policy. |

@@ -143,6 +143,140 @@ class ValidationContext:
     recruiter_ids: frozenset[int] = field(default_factory=frozenset)
     village_coords: frozenset[tuple[int, int]] = field(default_factory=frozenset)
     board_bounds: Optional[tuple[int, int]] = None
+    # None means village ownership by the controlled side is unknown -- every
+    # listed village then counts as pending (Stack 1 frozen contract). Never
+    # inferred as an empty owned set to make an old test context pass.
+    owned_village_coords: Optional[frozenset[tuple[int, int]]] = None
+
+
+def _progress_fields(progress: Any) -> tuple[dict[int, int], list[int], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Normalize ``progress`` (a ``RoutineProgress``, its dict form, or None).
+
+    ``progress=None`` means a fresh installation: no assignments, completions
+    or recruits (plan section "Stack 1"/frozen contract).
+    """
+    if progress is None:
+        return {}, [], [], []
+    if isinstance(progress, RoutineProgress):
+        return (dict(progress.recruited), list(progress.scout_ids),
+                copy.deepcopy(progress.scout_assignments), copy.deepcopy(progress.completed_villages))
+    if isinstance(progress, dict):
+        recruited: dict[int, int] = {}
+        for entry in progress.get("recruited") or []:
+            if (isinstance(entry, dict) and isinstance(entry.get("queue_index"), int)
+                    and not isinstance(entry.get("queue_index"), bool)):
+                recruited[entry["queue_index"]] = int(entry.get("done", 0))
+        scout_ids = [item for item in (progress.get("scout_ids") or [])
+                     if isinstance(item, int) and not isinstance(item, bool)]
+        scout_assignments = [a for a in (progress.get("scout_assignments") or []) if isinstance(a, dict)]
+        completed_villages = [v for v in (progress.get("completed_villages") or []) if isinstance(v, dict)]
+        return recruited, scout_ids, scout_assignments, completed_villages
+    raise ValueError("progress must be a RoutineProgress, a dict, or None")
+
+
+def village_scout_capacity(
+    policy: Any,
+    progress: Any,
+    *,
+    owned_village_coords: Optional[frozenset[tuple[int, int]]] = None,
+    live_friendly_ids: Iterable[int] = (),
+    recruiter_ids: Iterable[int] = (),
+) -> dict[str, Any]:
+    """Required village-scout assignments versus effective scout capacity.
+
+    Pure and state-independent beyond the caller-supplied facts (Stack 1
+    frozen contract). ``progress=None`` means a fresh installation. Movement
+    state never affects capacity -- a scout that has already spent its
+    movement still counts as capacity for future turns.
+
+    ``required_assignments`` -- distinct listed villages that are not
+    completed, not owned by the controlled side (when ownership is known),
+    and not already the target of a progress scout assignment. When
+    ``owned_village_coords`` is None, ownership is unknown and no village is
+    excluded as owned.
+
+    ``scout_capacity`` -- effective live eligible scouts (policy scouts union
+    progress scout ids; live per ``live_friendly_ids``; excluding
+    ``recruiter_ids`` and any id listed in ``policy.holds``) that currently
+    have no scout assignment, plus remaining scout-role recruits (requested
+    count minus recruited done for that queue index, floored at zero). A
+    recruited unit is never counted both as live capacity and as a future
+    recruit.
+    """
+    policy = policy if isinstance(policy, dict) else {}
+
+    village_coords: list[tuple[int, int]] = []
+    seen_villages: set[tuple[int, int]] = set()
+    for coord in policy.get("villages") or []:
+        if not isinstance(coord, dict):
+            continue
+        col, row = coord.get("col"), coord.get("row")
+        if (not isinstance(col, int) or isinstance(col, bool)
+                or not isinstance(row, int) or isinstance(row, bool)):
+            continue
+        pair = (col, row)
+        if pair not in seen_villages:
+            seen_villages.add(pair)
+            village_coords.append(pair)
+
+    recruited, progress_scout_ids, scout_assignments, completed_villages = _progress_fields(progress)
+
+    completed_set = {
+        (v["col"], v["row"]) for v in completed_villages
+        if isinstance(v.get("col"), int) and not isinstance(v.get("col"), bool)
+        and isinstance(v.get("row"), int) and not isinstance(v.get("row"), bool)
+    }
+    assigned_village_set = {
+        (a["col"], a["row"]) for a in scout_assignments
+        if isinstance(a.get("col"), int) and not isinstance(a.get("col"), bool)
+        and isinstance(a.get("row"), int) and not isinstance(a.get("row"), bool)
+    }
+    assigned_scout_ids = {
+        a["unit_id"] for a in scout_assignments
+        if isinstance(a.get("unit_id"), int) and not isinstance(a.get("unit_id"), bool)
+    }
+
+    ownership_known = owned_village_coords is not None
+    owned = owned_village_coords if owned_village_coords is not None else frozenset()
+
+    required_assignments = 0
+    for pair in village_coords:
+        if pair in completed_set:
+            continue
+        if ownership_known and pair in owned:
+            continue
+        if pair in assigned_village_set:
+            continue
+        required_assignments += 1
+
+    live_ids = set(live_friendly_ids)
+    recruiter_id_set = set(recruiter_ids)
+    held_id_set = {u for u in (policy.get("holds") or [])
+                   if isinstance(u, int) and not isinstance(u, bool)}
+    policy_scout_ids = [u for u in (policy.get("scouts") or [])
+                        if isinstance(u, int) and not isinstance(u, bool)]
+    candidate_scouts = set(policy_scout_ids) | set(progress_scout_ids)
+    eligible_scouts = {uid for uid in candidate_scouts
+                       if uid in live_ids and uid not in recruiter_id_set
+                       and uid not in held_id_set}
+    unassigned_scouts = eligible_scouts - assigned_scout_ids
+
+    remaining_scout_recruits = 0
+    for index, entry in enumerate(policy.get("recruits") or []):
+        if not isinstance(entry, dict) or entry.get("role") != "scout":
+            continue
+        count = entry.get("count")
+        if not isinstance(count, int) or isinstance(count, bool):
+            continue
+        remaining_scout_recruits += max(0, count - recruited.get(index, 0))
+
+    scout_capacity = len(unassigned_scouts) + remaining_scout_recruits
+
+    return {
+        "required_assignments": required_assignments,
+        "scout_capacity": scout_capacity,
+        "ownership_known": ownership_known,
+    }
 
 
 def validate_policy(policy: Any, context: ValidationContext, *,
@@ -219,9 +353,25 @@ def validate_policy(policy: Any, context: ValidationContext, *,
         seen_villages.add(pair)
         villages.append({"col": pair[0], "row": pair[1]})
 
-    if villages and len(scouts) == 0 and new_scout_requests == 0:
+    capacity = village_scout_capacity(
+        {"scouts": scouts, "villages": villages, "recruits": recruits},
+        None,
+        owned_village_coords=context.owned_village_coords,
+        live_friendly_ids=context.friendly_unit_ids,
+        recruiter_ids=context.recruiter_ids,
+    )
+    if capacity["required_assignments"] > capacity["scout_capacity"]:
         message = (
-            "policy with villages must specify at least one scout or scout-role recruit"
+            "policy village workload exceeds scout capacity: "
+            f"required_assignments={capacity['required_assignments']} "
+            f"scout_capacity={capacity['scout_capacity']}"
+        )
+        if not capacity["ownership_known"]:
+            message += " (village ownership unknown: every listed village counted as pending)"
+        message += (
+            "; a scout assigned to a listed village stays assigned after capture until "
+            "policy replacement; reduce pending villages, name eligible scouts explicitly, "
+            "or request more scout-role recruits"
         )
         if known_live_scout_ids:
             message += (
@@ -318,6 +468,70 @@ def effective_scout_ids(
         seen.add(unit_id)
         ordered.append(unit_id)
     return ordered
+
+
+def _village_scout_capacity_fact(
+    policy: Any,
+    progress: Any,
+    state: Optional[dict[str, Any]],
+) -> Any:
+    """Render the ``village_scout_capacity`` brief fact from live state.
+
+    Derives ``owned_village_coords``, ``live_friendly_ids`` and
+    ``recruiter_ids`` from the same authoritative roster/terrain and
+    controlled side (``active_faction``) used by ``effective_scout_ids``.
+    Never invents ownership: if any village tile lacks an integer ``owner``,
+    ownership is unknown and this returns the string ``"unknown"``, matching
+    ``effective_scout_ids``'s missing-roster/progress-proof handling.
+    """
+    if not isinstance(policy, dict) or not isinstance(state, dict):
+        return "unknown"
+    units = state.get("units")
+    if not isinstance(units, list):
+        return "unknown"
+    active = state.get("active_faction")
+    live_friendly_ids: set[int] = set()
+    recruiter_ids: set[int] = set()
+    for unit in units:
+        if not isinstance(unit, dict) or unit.get("faction") != active:
+            continue
+        unit_id = unit.get("id")
+        if not isinstance(unit_id, int) or isinstance(unit_id, bool):
+            continue
+        live_friendly_ids.add(unit_id)
+        if unit.get("can_recruit"):
+            recruiter_ids.add(unit_id)
+
+    terrain = state.get("terrain")
+    if not isinstance(terrain, list):
+        return "unknown"
+    owned: set[tuple[int, int]] = set()
+    for tile in terrain:
+        if not isinstance(tile, dict) or tile.get("terrain_id") != "village":
+            continue
+        col, row = tile.get("col"), tile.get("row")
+        if (not isinstance(col, int) or isinstance(col, bool)
+                or not isinstance(row, int) or isinstance(row, bool)):
+            return "unknown"
+        owner = tile.get("owner")
+        if isinstance(owner, bool) or not isinstance(owner, int):
+            # A village tile without a known integer owner makes ownership
+            # of the controlled side's workload unknown outright -- never
+            # invented as an empty owned set (plan section 4/frozen contract).
+            return "unknown"
+        if owner == active:
+            owned.add((col, row))
+
+    capacity = village_scout_capacity(
+        policy, progress,
+        owned_village_coords=frozenset(owned),
+        live_friendly_ids=frozenset(live_friendly_ids),
+        recruiter_ids=frozenset(recruiter_ids),
+    )
+    return {
+        "required_assignments": capacity["required_assignments"],
+        "scout_capacity": capacity["scout_capacity"],
+    }
 
 
 # --------------------------------------------------------------------------
@@ -1102,9 +1316,11 @@ def _strategy_context(state: Optional[dict[str, Any]], *, recruit_options: Any =
         facts["installed_policy"] = policy
         live_scouts = effective_scout_ids(policy, progress, state)
         facts["effective_scout_ids"] = live_scouts if live_scouts is not None else "unknown"
+        facts["village_scout_capacity"] = _village_scout_capacity_fact(policy, progress, state)
     elif progress is not None:
         live_scouts = effective_scout_ids(policy, progress, state)
         facts["effective_scout_ids"] = live_scouts if live_scouts is not None else "unknown"
+        facts["village_scout_capacity"] = "unknown"
     if changes is not None:
         facts["changes"] = changes
     if exception is not None:
@@ -1155,7 +1371,11 @@ def _strategy_contract(recruitable_defs: Iterable[str] = ()) -> str:
         "recruits (0-8 ordered entries, each exact def_id/count/role with count 1-32 and role scout or army), "
         "scouts (0-8 existing friendly integer IDs; existing plus new scout recruits <=8), "
         "villages (0-4 exact integer {col,row} objects), rally (one in-bounds integer {col,row} object or null), and "
-        "holds (existing friendly integer IDs, with no scout overlap). Recruitable definitions: " + defs + ".\n"
+        "holds (existing friendly integer IDs, with no scout overlap). "
+        "Each scout assigned to a listed village stays assigned after capture until the policy "
+        "is replaced, so provide at least as many scouts (explicit IDs plus scout-role recruit "
+        "counts) as listed villages you do not already own. "
+        "Recruitable definitions: " + defs + ".\n"
         "col and row are zero-based integer offsets. Syntax examples, not recommended objectives: "
         '"villages":[' + CANONICAL_COORD_JSON + '] and "rally":' + CANONICAL_RALLY_JSON + ". "
         "A two-element array is not a coordinate. "

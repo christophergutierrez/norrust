@@ -202,16 +202,6 @@ pub fn parse_policy(policy: &Value) -> Result<RoutinePolicy, PolicyRejected> {
     if unique_villages.len() != villages.len() {
         return Err(reject("villages must contain distinct coordinates"));
     }
-    let scout_requests: u32 = recruits
-        .iter()
-        .filter(|r| r.role == "scout")
-        .map(|r| r.count)
-        .sum();
-    if !villages.is_empty() && scouts.is_empty() && scout_requests == 0 {
-        return Err(reject(
-            "policy with villages must specify at least one scout or scout-role recruit",
-        ));
-    }
     let rally = match object.get("rally") {
         None | Some(Value::Null) => None,
         Some(v) => Some(parse_coordinate(Some(v), "rally")?),
@@ -502,6 +492,86 @@ fn validate_identity(
         return Err(json!({"cause":"completed_village_not_selected","village":coord(*village)}));
     }
     Ok(scouts)
+}
+
+/// Compute the village workload against scout capacity (Stack 1 contract).
+///
+/// `required_assignments` = distinct `policy.villages` that are not in
+/// `progress.completed_villages`, not owned by `side` in
+/// `state.village_owners`, and not the village of any
+/// `progress.scout_assignments` entry.
+///
+/// `scout_capacity` = effective live eligible scouts (`scout_ids(policy,
+/// progress)` filtered to live units of `side`, excluding `policy.holds` and
+/// recruiters) that have no entry in `progress.scout_assignments`, plus
+/// remaining scout-role recruits (`count - recruited_done` per queue index,
+/// saturating). A scout that has already moved still counts. A recruited unit
+/// is never counted both as live capacity and as a remaining recruit.
+fn village_scout_capacity(
+    state: &GameState,
+    policy: &RoutinePolicy,
+    progress: &RoutineProgress,
+    side: u8,
+) -> (u32, u32) {
+    let completed: HashSet<Hex> = progress.completed_villages.iter().copied().collect();
+    let assigned_villages: HashSet<Hex> = progress
+        .scout_assignments
+        .iter()
+        .map(|a| a.village)
+        .collect();
+    let required_assignments = policy
+        .villages
+        .iter()
+        .filter(|village| {
+            !completed.contains(village)
+                && state.village_owners.get(village).copied() != Some(side as i8)
+                && !assigned_villages.contains(village)
+        })
+        .count() as u32;
+
+    let assigned_units: HashSet<u32> = progress
+        .scout_assignments
+        .iter()
+        .map(|a| a.unit_id)
+        .collect();
+    let live_unassigned_scouts = scout_ids(policy, progress)
+        .into_iter()
+        .filter(|id| {
+            state
+                .units
+                .get(id)
+                .is_some_and(|unit| unit.faction == side && state.positions.contains_key(id))
+                && !policy.holds.contains(id)
+                && !state.units.get(id).is_some_and(recruiter)
+                && !assigned_units.contains(id)
+        })
+        .count() as u32;
+    let remaining_recruits: u32 = policy
+        .recruits
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.role == "scout")
+        .map(|(index, entry)| entry.count.saturating_sub(recruited_done(progress, index)))
+        .sum();
+
+    (
+        required_assignments,
+        live_unassigned_scouts + remaining_recruits,
+    )
+}
+
+/// Cause label for an insufficient-capacity exception: distinguishes a fresh
+/// installation (no committed recruits, scout assignments or completions)
+/// from capacity lost/consumed during execution.
+fn village_scout_capacity_cause(progress: &RoutineProgress) -> &'static str {
+    let fresh = progress.recruited.iter().all(|entry| entry.done == 0)
+        && progress.scout_assignments.is_empty()
+        && progress.completed_villages.is_empty();
+    if fresh {
+        "insufficient_scout_capacity"
+    } else {
+        "scout_capacity_exhausted"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -1093,6 +1163,14 @@ pub fn routine_next(
             }
         }
     };
+    // Computed once and reused by both the current-contact gate below (which
+    // must not offer an independent routine move when capacity is already
+    // insufficient) and the post-contact capacity exit. Threat/promotion
+    // checks must still take priority over the capacity exception itself, so
+    // this does not return early.
+    let (required_assignments, scout_capacity) =
+        village_scout_capacity(state, policy, progress, side);
+    let capacity_sufficient = required_assignments <= scout_capacity;
     let pending: Vec<u32> = state
         .units
         .iter()
@@ -1106,42 +1184,44 @@ pub fn routine_next(
     }
     match current_contact(state, side) {
         Ok(Some(facts)) => {
-            match crate::routine_independent::find_independent_move(
-                state, side, policy, progress, &scouts, &facts,
-            ) {
-                Ok(Some(indep)) => {
-                    let (col, row) = indep.candidate.destination.to_offset();
-                    let (obj_col, obj_row) = indep.candidate.objective_target.to_offset();
-                    let deferred_incident_key = json!({
-                        "reason": "contact",
-                        "stage": "current_state",
-                        "trigger": facts.trigger,
-                        "friendly_unit_ids": facts.friendly_unit_ids,
-                        "enemy_unit_ids": facts.enemy_unit_ids,
-                    });
-                    let independent_move_meta = json!({
-                        "policy_objective": {
-                            "type": indep.candidate.objective_kind,
-                            "target": {"col": obj_col, "row": obj_row},
-                        },
-                        "coverage": "complete",
-                        "pre_tactical_hash": indep.pre_tactical_hash,
-                        "post_tactical_hash": indep.post_tactical_hash,
-                        "deferred_incident_key": deferred_incident_key,
-                    });
-                    return RoutineOutcome::Action {
-                        action: json!({"action":"Move","unit_id":indep.candidate.unit_id,"col":col,"row":row}),
-                        progress_update: progress_update(indep.candidate.progress_effects),
-                        reason: indep.candidate.reason,
-                        independent_move: Some(independent_move_meta),
-                    };
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    return RoutineOutcome::Exception {
-                        reason: "threat_unavailable",
-                        evidence: json!({"stage":"current_state","detail":e.to_string()}),
-                    };
+            if capacity_sufficient {
+                match crate::routine_independent::find_independent_move(
+                    state, side, policy, progress, &scouts, &facts,
+                ) {
+                    Ok(Some(indep)) => {
+                        let (col, row) = indep.candidate.destination.to_offset();
+                        let (obj_col, obj_row) = indep.candidate.objective_target.to_offset();
+                        let deferred_incident_key = json!({
+                            "reason": "contact",
+                            "stage": "current_state",
+                            "trigger": facts.trigger,
+                            "friendly_unit_ids": facts.friendly_unit_ids,
+                            "enemy_unit_ids": facts.enemy_unit_ids,
+                        });
+                        let independent_move_meta = json!({
+                            "policy_objective": {
+                                "type": indep.candidate.objective_kind,
+                                "target": {"col": obj_col, "row": obj_row},
+                            },
+                            "coverage": "complete",
+                            "pre_tactical_hash": indep.pre_tactical_hash,
+                            "post_tactical_hash": indep.post_tactical_hash,
+                            "deferred_incident_key": deferred_incident_key,
+                        });
+                        return RoutineOutcome::Action {
+                            action: json!({"action":"Move","unit_id":indep.candidate.unit_id,"col":col,"row":row}),
+                            progress_update: progress_update(indep.candidate.progress_effects),
+                            reason: indep.candidate.reason,
+                            independent_move: Some(independent_move_meta),
+                        };
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        return RoutineOutcome::Exception {
+                            reason: "threat_unavailable",
+                            evidence: json!({"stage":"current_state","detail":e.to_string()}),
+                        };
+                    }
                 }
             }
 
@@ -1157,6 +1237,17 @@ pub fn routine_next(
                 evidence: json!({"stage":"current_state","detail":e.to_string()}),
             };
         }
+    }
+    if !capacity_sufficient {
+        return RoutineOutcome::Exception {
+            reason: "no_executable_orders",
+            evidence: json!({
+                "cause": village_scout_capacity_cause(progress),
+                "required_assignments": required_assignments,
+                "scout_capacity": scout_capacity,
+                "villages": policy.villages.iter().map(|v| coord(*v)).collect::<Vec<_>>(),
+            }),
+        };
     }
     if progress.policy_complete {
         return RoutineOutcome::Exception {
@@ -1529,49 +1620,6 @@ pub fn routine_next(
             return RoutineOutcome::Exception {
                 reason: "unsafe_route",
                 evidence: json!({"unit_id":id,"target":coord(rally),"cause":"no_safe_endpoint"}),
-            };
-        }
-    }
-    let pending_village = policy.villages.iter().any(|village| {
-        progress
-            .completed_villages
-            .iter()
-            .all(|done| done != village)
-            && state.village_owners.get(village).copied() != Some(side as i8)
-    });
-    if pending_village && scouts.is_empty() {
-        return RoutineOutcome::Exception {
-            reason: "no_executable_orders",
-            evidence: json!({"cause":"village_requires_scout","villages":policy.villages.iter().map(|v|coord(*v)).collect::<Vec<_>>() }),
-        };
-    }
-    if pending_village {
-        let assigned_ids: HashSet<u32> = progress
-            .scout_assignments
-            .iter()
-            .map(|assignment| assignment.unit_id)
-            .collect();
-        let unassigned_unspent = scouts.iter().any(|id| {
-            !assigned_ids.contains(id)
-                && !policy.holds.contains(id)
-                && !state.units.get(id).is_some_and(recruiter)
-                && state.units.get(id).is_some_and(|unit| !unit.moved)
-        });
-        let unassigned_spent = scouts.iter().any(|id| {
-            !assigned_ids.contains(id)
-                && !policy.holds.contains(id)
-                && !state.units.get(id).is_some_and(recruiter)
-                && state.units.get(id).is_some_and(|unit| unit.moved)
-        });
-        let assigned_pending = progress.scout_assignments.iter().any(|assignment| {
-            !progress.completed_villages.contains(&assignment.village)
-                && state.village_owners.get(&assignment.village).copied() != Some(side as i8)
-        });
-        let standing_capture = !finish_effects(state, policy, side).is_empty();
-        if !unassigned_unspent && !unassigned_spent && !assigned_pending && !standing_capture {
-            return RoutineOutcome::Exception {
-                reason: "no_executable_orders",
-                evidence: json!({"cause":"no_scout_available_for_village","villages":policy.villages.iter().map(|v|coord(*v)).collect::<Vec<_>>() }),
             };
         }
     }
@@ -2201,9 +2249,14 @@ mod tests {
     }
 
     #[test]
-    fn village_policy_requires_scout_or_scout_recruit() {
-        // Zero scouts and zero scout recruits with villages rejects.
-        let invalid = json!({
+    fn village_policy_no_longer_requires_scout_structurally() {
+        // Stack 1: the blanket "villages require a scout or scout-role
+        // recruit" structural rule is removed from parse_policy. Whether a
+        // policy has enough scout capacity for its villages is now a
+        // state-aware check in `village_scout_capacity`/`routine_next`, not
+        // a parse-time rejection. Zero scouts and zero scout-role recruits
+        // with villages listed now parses successfully.
+        let no_scouts_no_recruits = json!({
             "reserve_gold": 0,
             "recruits": [{"def_id": "Skeleton", "count": 1, "role": "army"}],
             "scouts": [],
@@ -2211,9 +2264,9 @@ mod tests {
             "rally": null,
             "holds": []
         });
-        assert!(parse_policy(&invalid).is_err());
+        assert!(parse_policy(&no_scouts_no_recruits).is_ok());
 
-        // Scout recruit allows villages even with empty initial scouts.
+        // Scout recruit still allows villages with empty initial scouts.
         let with_recruit = json!({
             "reserve_gold": 0,
             "recruits": [{"def_id": "Ghost", "count": 1, "role": "scout"}],
@@ -2224,7 +2277,7 @@ mod tests {
         });
         assert!(parse_policy(&with_recruit).is_ok());
 
-        // Existing scout allows villages with empty recruits.
+        // Existing scout still allows villages with empty recruits.
         let with_scout = json!({
             "reserve_gold": 0,
             "recruits": [],
@@ -2431,6 +2484,310 @@ mod tests {
                 assert!(dest.distance(Hex::from_offset(9, 1)) < start.distance(Hex::from_offset(9, 1)));
             }
             other => panic!("expected castle_capacity detour, got {other:?}"),
+        }
+    }
+
+    // Stack 1: shared Python/Rust agreement fixture for village-scout
+    // capacity. Frozen by the integrator; never edit the JSON file. Run
+    // every case whose `applies` array contains "rust".
+    fn scout_capacity_fixture() -> Value {
+        serde_json::from_str(include_str!(
+            "../../tools/fixtures/proposed_movement/scout_capacity_cases.json"
+        ))
+        .expect("fixture must be valid JSON")
+    }
+
+    fn capacity_case_state(case: &Value) -> (GameState, RoutinePolicy, RoutineProgress) {
+        let mut b = Board::new(30, 20);
+        for r in 0..20 {
+            for c in 0..30 {
+                b.set_tile(Hex::from_offset(c, r), Tile::new("flat"));
+            }
+        }
+        let village_hex = |v: &Value| {
+            Hex::from_offset(
+                v["col"].as_i64().unwrap() as i32,
+                v["row"].as_i64().unwrap() as i32,
+            )
+        };
+        for v in case["villages"].as_array().unwrap() {
+            b.set_tile(village_hex(v), Tile::new("village"));
+        }
+        let mut s = GameState::new(b);
+        s.gold = [1000, 1000];
+        for owned in case["owned"].as_array().unwrap_or(&Vec::new()) {
+            s.village_owners.insert(village_hex(owned), 0);
+        }
+        for unit in case["units"].as_array().unwrap() {
+            let id = unit["id"].as_u64().unwrap() as u32;
+            let faction = unit["faction"].as_u64().unwrap() as u8;
+            let recruiter = unit["recruiter"].as_bool().unwrap_or(false);
+            let moved = unit["moved"].as_bool().unwrap_or(false);
+            let mut u = Unit::new(id, "Fixture", 10, faction);
+            u.can_recruit = recruiter;
+            u.moved = moved;
+            // Units are placed off in col 0, distinct per id, clear of every
+            // fixture village (all fixture villages have col >= 2).
+            s.place_unit(u, Hex::from_offset(0, id as i32));
+        }
+        let policy_json = &case["policy"];
+        let mut villages_json = Vec::new();
+        for v in case["villages"].as_array().unwrap() {
+            villages_json.push(json!({"col": v["col"], "row": v["row"]}));
+        }
+        let policy = parse_policy(&json!({
+            "reserve_gold": 0,
+            "recruits": policy_json["recruits"],
+            "scouts": policy_json["scouts"],
+            "villages": villages_json,
+            "rally": null,
+            "holds": policy_json["holds"],
+        }))
+        .expect("fixture policy must parse");
+        let progress = if case["progress"].is_null() {
+            RoutineProgress::default()
+        } else {
+            let p = &case["progress"];
+            let recruited = p["recruited"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| RecruitProgress {
+                    queue_index: r["queue_index"].as_u64().unwrap() as usize,
+                    done: r["done"].as_u64().unwrap() as u32,
+                })
+                .collect();
+            let scout_ids = p["scout_ids"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_u64().unwrap() as u32)
+                .collect();
+            let scout_assignments = p["scout_assignments"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| ScoutAssignment {
+                    unit_id: a["unit_id"].as_u64().unwrap() as u32,
+                    village: village_hex(a),
+                })
+                .collect();
+            let completed_villages = p["completed_villages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(village_hex)
+                .collect();
+            RoutineProgress {
+                installation_id: None,
+                recruited,
+                scout_ids,
+                scout_assignments,
+                completed_villages,
+                policy_complete: false,
+                parse_issue: None,
+            }
+        };
+        (s, policy, progress)
+    }
+
+    #[test]
+    fn scout_capacity_fixture_agreement() {
+        let registry = units();
+        let fixture = scout_capacity_fixture();
+        let cases = fixture["cases"].as_array().unwrap();
+        let mut ran = 0;
+        for case in cases {
+            let applies: Vec<&str> = case["applies"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            if !applies.contains(&"rust") {
+                continue;
+            }
+            ran += 1;
+            let name = case["name"].as_str().unwrap();
+            let (state, policy, progress) = capacity_case_state(case);
+            let expected = &case["expected"];
+
+            if name == "dead_listed_scout_uses_existing_identity_handling" {
+                let outcome = routine_next(
+                    &state,
+                    0,
+                    &policy,
+                    &progress,
+                    &["Vampire Bat".into(), "Skeleton".into()],
+                    &registry,
+                );
+                match outcome {
+                    RoutineOutcome::Exception { reason, evidence } => {
+                        // Existing identity handling reports this via
+                        // reason "invalid_assignment" (validate_identity),
+                        // not the capacity reason "no_executable_orders".
+                        assert_eq!(
+                            reason, "invalid_assignment",
+                            "case {name}: expected the existing identity-validation \
+                             reason string 'invalid_assignment'"
+                        );
+                        assert_ne!(
+                            reason, "no_executable_orders",
+                            "case {name}: must not be a capacity cause"
+                        );
+                        assert_eq!(
+                            evidence["cause"], expected["rust_cause"],
+                            "case {name}: cause mismatch"
+                        );
+                    }
+                    other => panic!("case {name}: expected Exception, got {other:?}"),
+                }
+                continue;
+            }
+
+            let (required, capacity) = village_scout_capacity(&state, &policy, &progress, 0);
+            if let Some(expected_required) = expected.get("required_assignments") {
+                assert_eq!(
+                    required as u64,
+                    expected_required.as_u64().unwrap(),
+                    "case {name}: required_assignments mismatch"
+                );
+            }
+            if let Some(expected_capacity) = expected.get("scout_capacity") {
+                assert_eq!(
+                    capacity as u64,
+                    expected_capacity.as_u64().unwrap(),
+                    "case {name}: scout_capacity mismatch"
+                );
+            }
+
+            let outcome = routine_next(
+                &state,
+                0,
+                &policy,
+                &progress,
+                &["Vampire Bat".into(), "Skeleton".into()],
+                &registry,
+            );
+            let ok = expected["ok"].as_bool().unwrap();
+            if ok {
+                if let RoutineOutcome::Exception { reason, .. } = &outcome {
+                    assert_ne!(
+                        *reason, "no_executable_orders",
+                        "case {name}: expected no capacity exception, got {outcome:?}"
+                    );
+                }
+            } else {
+                match outcome {
+                    RoutineOutcome::Exception { reason, evidence } => {
+                        assert_eq!(
+                            reason,
+                            expected["rust_reason"].as_str().unwrap(),
+                            "case {name}: reason mismatch"
+                        );
+                        assert_eq!(
+                            evidence["cause"], expected["rust_cause"],
+                            "case {name}: cause mismatch"
+                        );
+                        assert_eq!(
+                            evidence["required_assignments"].as_u64().unwrap(),
+                            required as u64
+                        );
+                        assert_eq!(
+                            evidence["scout_capacity"].as_u64().unwrap(),
+                            capacity as u64
+                        );
+                    }
+                    other => panic!("case {name}: expected no_executable_orders, got {other:?}"),
+                }
+            }
+        }
+        assert!(
+            ran >= 11,
+            "expected at least 11 rust-tagged cases, ran {ran}"
+        );
+    }
+
+    // Ordering regressions: capacity loss during execution must not mask
+    // higher-priority safety checks (promotion, live current-board contact),
+    // but must still be caught before any new routine step (scout travel,
+    // recruitment, rally) once those checks are clear.
+    fn insufficient_capacity_policy() -> RoutinePolicy {
+        // Two unowned villages, zero scouts, zero scout-role recruits:
+        // required_assignments=2, scout_capacity=0.
+        RoutinePolicy {
+            villages: vec![Hex::from_offset(5, 4), Hex::from_offset(6, 5)],
+            scouts: Vec::new(),
+            ..policy(&[])
+        }
+    }
+
+    fn insufficient_capacity_board() -> GameState {
+        let mut s = state();
+        for v in [Hex::from_offset(5, 4), Hex::from_offset(6, 5)] {
+            s.board.set_tile(v, Tile::new("village"));
+        }
+        s
+    }
+
+    #[test]
+    fn promotion_pending_takes_precedence_over_insufficient_capacity() {
+        let registry = units();
+        let mut s = insufficient_capacity_board();
+        let mut veteran = Unit::from_def(5, registry.get("Fighter").unwrap(), 0);
+        veteran.advancement_pending = true;
+        s.place_unit(veteran, Hex::from_offset(2, 2));
+        let p = insufficient_capacity_policy();
+        assert!(matches!(
+            routine_next(&s, 0, &p, &RoutineProgress::default(), &[], &registry),
+            RoutineOutcome::Exception { reason: "promotion_pending", evidence }
+                if evidence["unit_ids"] == json!([5])
+        ));
+    }
+
+    #[test]
+    fn live_current_contact_takes_precedence_over_insufficient_capacity_and_suppresses_independent_move(
+    ) {
+        let registry = units();
+        let mut s = insufficient_capacity_board();
+        // Same friendly/enemy adjacency as
+        // `current_state_contact_emits_deterministic_facts`, which reliably
+        // yields a current-state contact exception.
+        let friendly = Unit::from_def(3, registry.get("Skeleton").unwrap(), 0);
+        s.place_unit(friendly, Hex::from_offset(3, 3));
+        let enemy = Unit::from_def(7, registry.get("Skeleton").unwrap(), 1);
+        s.place_unit(enemy, Hex::from_offset(3, 4));
+        let p = insufficient_capacity_policy();
+        match routine_next(&s, 0, &p, &RoutineProgress::default(), &[], &registry) {
+            RoutineOutcome::Exception { reason, evidence } => {
+                assert_eq!(reason, "contact");
+                assert_eq!(evidence["stage"], "current_state");
+                assert_ne!(reason, "no_executable_orders");
+            }
+            other => panic!(
+                "expected the existing current-state contact exception \
+                 (capacity insufficiency must not be masked by an \
+                 independent move), got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn insufficient_capacity_blocks_routine_steps_when_no_promotion_or_contact() {
+        let registry = units();
+        let s = insufficient_capacity_board();
+        let p = insufficient_capacity_policy();
+        match routine_next(&s, 0, &p, &RoutineProgress::default(), &[], &registry) {
+            RoutineOutcome::Exception { reason, evidence } => {
+                assert_eq!(reason, "no_executable_orders");
+                assert_eq!(evidence["cause"], "insufficient_scout_capacity");
+                assert_eq!(evidence["required_assignments"], 2);
+                assert_eq!(evidence["scout_capacity"], 0);
+            }
+            other => panic!(
+                "expected no_executable_orders capacity exception \
+                 (no scout/recruit/rally action should be returned), got {other:?}"
+            ),
         }
     }
 }

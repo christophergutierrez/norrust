@@ -5,7 +5,9 @@ model. Real-driver execution is covered by the strategy integration suites.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -158,7 +160,14 @@ class PolicyValidationTests(unittest.TestCase):
     def test_village_policy_requires_scout_or_scout_recruit(self):
         context = make_context()
         base = valid_stack1_policy()
-        with self.assertRaisesRegex(rp.PolicyValidationError, "must specify at least one scout or scout-role recruit"):
+        with self.assertRaisesRegex(
+                rp.PolicyValidationError,
+                r"policy village workload exceeds scout capacity: "
+                r"required_assignments=1 scout_capacity=0"
+                r".*village ownership unknown: every listed village counted as pending"
+                r".*a scout assigned to a listed village stays assigned after capture "
+                r"until policy replacement; reduce pending villages, name eligible scouts "
+                r"explicitly, or request more scout-role recruits"):
             rp.validate_policy({**base, "villages": [{"col": 2, "row": 4}], "scouts": []}, context)
 
         with_recruit = {
@@ -996,6 +1005,217 @@ class CapacityReliefBriefTests(unittest.TestCase):
         brief = rp.render_exception_brief(exception, [])
         self.assertIn("No rally is installed", brief)
         self.assertIn("9", brief)
+
+
+class VillageScoutCapacityBriefTests(unittest.TestCase):
+    def test_policy_brief_states_the_scout_retention_rule(self):
+        brief = rp.render_policy_brief(0, ["Skeleton"])
+        self.assertIn(
+            "Each scout assigned to a listed village stays assigned after capture "
+            "until the policy is replaced, so provide at least as many scouts "
+            "(explicit IDs plus scout-role recruit counts) as listed villages you "
+            "do not already own.",
+            brief)
+
+    def test_exception_brief_reports_village_scout_capacity_fact(self):
+        state = {
+            "state_revision": 5, "turn": 1, "active_faction": 0,
+            "cols": 20, "rows": 20,
+            "terrain": [
+                {"col": 2, "row": 4, "terrain_id": "village", "owner": 0},
+                {"col": 5, "row": 3, "terrain_id": "village", "owner": 1},
+            ],
+            "units": [
+                {"id": 1, "faction": 0, "can_recruit": True},
+                {"id": 3, "faction": 0, "can_recruit": False},
+            ],
+        }
+        policy = {**valid_stack1_policy(), "scouts": [3],
+                  "villages": [{"col": 2, "row": 4}, {"col": 5, "row": 3}]}
+        progress = rp.RoutineProgress.fresh("pol-1", policy)
+        exception = rp.RoutineException(reason="contact", evidence={})
+        brief = rp.render_exception_brief(exception, [], state=state, policy=policy, progress=progress)
+        marker = "STRATEGY_CONTEXT_UNTRUSTED_DATA_BEGIN"
+        facts_line = brief.split(marker, 1)[1]
+        facts = json.loads([line for line in facts_line.splitlines() if line.startswith("{")][0])
+        # (2,4) is owned by the controlled side; (5,3) is not and has no
+        # assigned scout beyond unit 3, which is already the sole eligible
+        # scout accounted for.
+        self.assertEqual(facts["village_scout_capacity"],
+                         {"required_assignments": 1, "scout_capacity": 1})
+
+    def test_village_scout_capacity_fact_unknown_without_owner_field(self):
+        state = {
+            "state_revision": 5, "turn": 1, "active_faction": 0,
+            "cols": 20, "rows": 20,
+            "terrain": [{"col": 2, "row": 4, "terrain_id": "village"}],  # no "owner"
+            "units": [{"id": 1, "faction": 0, "can_recruit": True}],
+        }
+        policy = {**valid_stack1_policy(), "villages": [{"col": 2, "row": 4}]}
+        progress = rp.RoutineProgress.fresh("pol-1", policy)
+        exception = rp.RoutineException(reason="contact", evidence={})
+        brief = rp.render_exception_brief(exception, [], state=state, policy=policy, progress=progress)
+        marker = "STRATEGY_CONTEXT_UNTRUSTED_DATA_BEGIN"
+        facts_line = brief.split(marker, 1)[1]
+        facts = json.loads([line for line in facts_line.splitlines() if line.startswith("{")][0])
+        self.assertEqual(facts["village_scout_capacity"], "unknown")
+
+
+class InvalidStructureStillRejectsAlongsideCapacityTests(unittest.TestCase):
+    """Structural rejections (coords/IDs/holds) fire independent of capacity,
+    including when the same policy would otherwise pass or fail the new
+    state-aware village/scout capacity rule."""
+
+    def test_bad_coordinate_shape_rejects_even_with_sufficient_capacity(self):
+        context = make_context()
+        base = valid_stack1_policy()
+        with self.assertRaisesRegex(rp.PolicyValidationError, "must be an object"):
+            rp.validate_policy(
+                {**base, "villages": [[2, 4]], "scouts": [2]}, context)
+
+    def test_unknown_unit_id_rejects_even_with_no_villages(self):
+        context = make_context()
+        base = valid_stack1_policy()
+        with self.assertRaisesRegex(rp.PolicyValidationError, "not an existing friendly unit id"):
+            rp.validate_policy({**base, "scouts": [999]}, context)
+        with self.assertRaisesRegex(rp.PolicyValidationError, "not an existing friendly unit id"):
+            rp.validate_policy({**base, "holds": [999]}, context)
+
+    def test_hold_overlapping_scout_rejects_even_when_villages_all_owned(self):
+        # All-owned villages with zero required assignments would otherwise
+        # pass capacity; the hold/scout overlap check must still fire.
+        context = make_context(owned_village_coords=frozenset({(2, 4)}))
+        base = valid_stack1_policy()
+        with self.assertRaisesRegex(rp.PolicyValidationError, "overlaps a scout"):
+            rp.validate_policy(
+                {**base, "villages": [{"col": 2, "row": 4}], "scouts": [2], "holds": [2]},
+                context)
+
+
+def _load_scout_capacity_fixture():
+    path = ROOT / "tools" / "fixtures" / "proposed_movement" / "scout_capacity_cases.json"
+    data = path.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    expected_digest = "77c199c2c2bfe1d382e9c35056546aac221b919207aaeaee170183f9753fc998"
+    if digest != expected_digest:
+        raise AssertionError(
+            f"scout_capacity_cases.json sha256 mismatch: got {digest}, "
+            f"expected {expected_digest} (fixture must never be edited by a worker)")
+    return json.loads(data)
+
+
+class HeldScoutExcludedFromCapacityTests(unittest.TestCase):
+    """policy.holds must exclude a scout from capacity, matching Rust's
+    parse_policy filter on policy.holds (integration review follow-up)."""
+
+    def _capacity(self, *, holds):
+        policy = {
+            "scouts": [],
+            "villages": [{"col": 6, "row": 11}],
+            "recruits": [{"def_id": "Vampire Bat", "count": 1, "role": "scout"}],
+            "holds": holds,
+        }
+        progress = {
+            "recruited": [{"queue_index": 0, "done": 1}],
+            "scout_ids": [3],
+            "scout_assignments": [],
+            "completed_villages": [],
+        }
+        return rp.village_scout_capacity(
+            policy, progress,
+            owned_village_coords=frozenset(),
+            live_friendly_ids=frozenset({1, 3}),
+            recruiter_ids=frozenset({1}),
+        )
+
+    def test_held_scout_excluded_from_capacity(self):
+        result = self._capacity(holds=[3])
+        self.assertEqual(result["required_assignments"], 1)
+        self.assertEqual(result["scout_capacity"], 0)
+
+    def test_same_scout_counts_when_not_held(self):
+        result = self._capacity(holds=[])
+        self.assertEqual(result["required_assignments"], 1)
+        self.assertEqual(result["scout_capacity"], 1)
+
+
+class ScoutCapacityFixtureTests(unittest.TestCase):
+    """Shared Python/Rust agreement cases (Stack 1 frozen contract)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fixture = _load_scout_capacity_fixture()
+
+    def _context_for(self, case):
+        units = case["units"]
+        friendly_ids = frozenset(u["id"] for u in units)
+        recruiter_ids = frozenset(u["id"] for u in units if u.get("recruiter"))
+        village_coords = frozenset((v["col"], v["row"]) for v in case["villages"])
+        owned = case["owned"]
+        owned_village_coords = (
+            None if owned is None else frozenset((v["col"], v["row"]) for v in owned))
+        def_ids = frozenset(entry["def_id"] for entry in case["policy"]["recruits"])
+        return rp.ValidationContext(
+            recruitable_defs=def_ids,
+            friendly_unit_ids=friendly_ids,
+            recruiter_ids=recruiter_ids,
+            village_coords=village_coords,
+            board_bounds=None,
+            owned_village_coords=owned_village_coords,
+        )
+
+    def _policy_dict(self, case):
+        return {
+            "reserve_gold": 0,
+            "recruits": case["policy"]["recruits"],
+            "scouts": case["policy"]["scouts"],
+            "villages": case["villages"],
+            "rally": None,
+            "holds": case["policy"].get("holds", []),
+        }
+
+    def test_python_capacity_helper_cases(self):
+        for case in self.fixture["cases"]:
+            if "python_capacity_helper" not in case["applies"]:
+                continue
+            with self.subTest(case=case["name"]):
+                units = case["units"]
+                live_friendly_ids = frozenset(u["id"] for u in units)
+                recruiter_ids = frozenset(u["id"] for u in units if u.get("recruiter"))
+                owned = case["owned"]
+                owned_village_coords = (
+                    None if owned is None else frozenset((v["col"], v["row"]) for v in owned))
+                policy = {"scouts": case["policy"]["scouts"],
+                          "villages": case["villages"],
+                          "recruits": case["policy"]["recruits"],
+                          "holds": case["policy"].get("holds", [])}
+                result = rp.village_scout_capacity(
+                    policy, case["progress"],
+                    owned_village_coords=owned_village_coords,
+                    live_friendly_ids=live_friendly_ids,
+                    recruiter_ids=recruiter_ids,
+                )
+                expected = case["expected"]
+                self.assertEqual(result["required_assignments"], expected["required_assignments"])
+                self.assertEqual(result["scout_capacity"], expected["scout_capacity"])
+                self.assertEqual(result["ownership_known"], expected.get("ownership_known", True))
+
+    def test_python_validation_cases(self):
+        for case in self.fixture["cases"]:
+            if "python_validation" not in case["applies"]:
+                continue
+            with self.subTest(case=case["name"]):
+                context = self._context_for(case)
+                policy = self._policy_dict(case)
+                expected = case["expected"]
+                if expected["ok"]:
+                    normalized = rp.validate_routine_policy(policy, context)
+                    self.assertIsNotNone(normalized)
+                else:
+                    with self.assertRaisesRegex(
+                            rp.PolicyValidationError,
+                            re.escape(expected["python_error_contains"])):
+                        rp.validate_routine_policy(policy, context)
 
 
 # ---------------------------------------------------------------------------

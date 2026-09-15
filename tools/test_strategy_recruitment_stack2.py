@@ -1,6 +1,7 @@
 """Real-driver coverage for castle-capacity relief diagnostics and travel."""
 from __future__ import annotations
 
+import copy
 import json
 import select
 import subprocess
@@ -223,13 +224,19 @@ class RecruitmentCapacityReliefTests(unittest.TestCase):
     def test_archive_revision_18_now_steps_toward_rally(self):
         if not ARCHIVE_18.is_file():
             self.skipTest("trial 7 revision-18 checkpoint is not in this checkout")
+        # Trial 7's recorded policy listed four villages for two scout recruits,
+        # which scout-capacity validation now stops (see the test below). Keep
+        # the castle-capacity relief coverage on the same checkpoint and progress
+        # with a satisfiable policy: only the two villages already assigned.
+        policy = copy.deepcopy(POLICY_18)
+        policy["villages"] = [{"col": 2, "row": 4}, {"col": 5, "row": 3}]
         times = []
         body = None
         for _ in range(3):
             started = time.perf_counter()
             reply = query_driver(ARCHIVE_18, {
                 "action": "Query", "what": "routine_next",
-                "state_revision": 18, "policy": POLICY_18, "progress": PROGRESS_18,
+                "state_revision": 18, "policy": policy, "progress": PROGRESS_18,
             })
             times.append(time.perf_counter() - started)
             self.assertTrue(reply.get("ok"), reply)
@@ -239,6 +246,24 @@ class RecruitmentCapacityReliefTests(unittest.TestCase):
             self.assertEqual(body.get("action", {}).get("action"), "Move")
             self.assertIn(body.get("action", {}).get("unit_id"), [9, 10, 11, 12, 13, 14])
         self.assertLess(max(times), 10.0, times)
+
+    def test_archive_revision_18_recorded_policy_now_stops_on_scout_capacity(self):
+        if not ARCHIVE_18.is_file():
+            self.skipTest("trial 7 revision-18 checkpoint is not in this checkout")
+        # Both scout recruits are committed and assigned, so villages (6,11) and
+        # (18,10) can never receive a scout under this installation.
+        reply = query_driver(ARCHIVE_18, {
+            "action": "Query", "what": "routine_next",
+            "state_revision": 18, "policy": POLICY_18, "progress": PROGRESS_18,
+        })
+        self.assertTrue(reply.get("ok"), reply)
+        body = reply.get("body")
+        self.assertEqual(body.get("result"), "exception")
+        self.assertEqual(body.get("reason"), "no_executable_orders")
+        evidence = body.get("evidence", {})
+        self.assertEqual(evidence.get("cause"), "scout_capacity_exhausted")
+        self.assertEqual(evidence.get("required_assignments"), 2)
+        self.assertEqual(evidence.get("scout_capacity"), 0)
 
 
 if __name__ == "__main__":

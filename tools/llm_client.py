@@ -6090,10 +6090,21 @@ def run(args: argparse.Namespace) -> int:
             if isinstance(u, dict) and u.get("faction") == args.llm_side
             and isinstance(u.get("id"), int) and not isinstance(u.get("id"), bool)
             and u.get("can_recruit"))
-        village_coords = frozenset(
-            (t["col"], t["row"]) for t in (state.get("terrain", []) if isinstance(state, dict) else [])
+        village_tiles = [
+            t for t in (state.get("terrain", []) if isinstance(state, dict) else [])
             if isinstance(t, dict) and t.get("terrain_id") == "village"
-            and isinstance(t.get("col"), int) and isinstance(t.get("row"), int))
+            and isinstance(t.get("col"), int) and isinstance(t.get("row"), int)]
+        village_coords = frozenset((t["col"], t["row"]) for t in village_tiles)
+        # Ownership is known only when every village tile carries an integer
+        # owner from the engine. Missing ownership is unknown -- never treated
+        # as unowned or owned -- so scout-capacity validation counts every
+        # listed village as pending and says so.
+        if village_tiles and all(isinstance(t.get("owner"), int) and not isinstance(t.get("owner"), bool)
+                                 for t in village_tiles):
+            owned_village_coords = frozenset(
+                (t["col"], t["row"]) for t in village_tiles if t["owner"] == args.llm_side)
+        else:
+            owned_village_coords = None
         bounds = None
         if isinstance(state, dict) and isinstance(state.get("cols"), int) and isinstance(state.get("rows"), int):
             bounds = (state["cols"], state["rows"])
@@ -6116,7 +6127,7 @@ def run(args: argparse.Namespace) -> int:
         state["tactical_surface"] = surface
         return ValidationContext(recruitable_defs=recruitable, friendly_unit_ids=friendly_ids,
                                  recruiter_ids=recruiter_ids, village_coords=village_coords,
-                                 board_bounds=bounds)
+                                 owned_village_coords=owned_village_coords, board_bounds=bounds)
 
     def strategy_install(policy: dict[str, Any], *, source_request_id: Optional[str],
                          source_kind: str) -> None:
