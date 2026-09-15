@@ -3986,9 +3986,21 @@ def finalize_model_prompt(prompt: str, state: dict[str, Any], *, allow_tools: bo
     return value + "\n" + authoritative_live_state_reminder(state, allow_tools=allow_tools)
 
 
-def strategy_live_state_footer(state: dict[str, Any], *, allow_tools: bool = True,
-                               final_only: Optional[bool] = None) -> str:
-    """Return the volatile strategy anchor without ordinary annotations."""
+def format_allowed_kinds(kinds: list[str]) -> str:
+    """Join packet kinds for a response instruction: a, b, or c."""
+    names = [kind for kind in kinds if isinstance(kind, str) and kind]
+    if not names:
+        raise ValueError("decision packet has no allowed_kinds")
+    if len(names) == 1:
+        return names[0]
+    if len(names) == 2:
+        return f"{names[0]} or {names[1]}"
+    return ", ".join(names[:-1]) + f", or {names[-1]}"
+
+
+def strategy_live_state_footer(state: dict[str, Any], *, packet: DecisionPacket,
+                               allow_tools: bool = True) -> str:
+    """Return the volatile strategy anchor from the issued packet only."""
     units = state.get("units", []) if isinstance(state, dict) else []
     friendly = [
         {key: unit.get(key, "unknown") for key in
@@ -4001,31 +4013,43 @@ def strategy_live_state_footer(state: dict[str, Any], *, allow_tools: bool = Tru
         "turn": state.get("turn", "unknown"),
         "active_faction": state.get("active_faction", "unknown"),
         "phase": state.get("time_of_day", "unknown"),
-        "final_only": (bool(final_only) if final_only is not None
-                       else bool(state.get("final_only", False))),
+        "final_only": bool(packet.final_only),
         "friendly_units": friendly,
     }
-    tools = ("; optional read-only inspection requests at this revision use "
+    tools = (" Optional read-only inspection requests at this revision use "
              '{"tool":"inspect_target","unit_id":N,"purpose":"..."}, '
              '{"tool":"inspect_targets","unit_ids":[N,...],"purpose":"..."}, '
              '{"tool":"inspect_units","unit_ids":[N,...],"purpose":"..."}, or '
-             '{"tool":"inspect_hex","col":N,"row":N,"phase":"current|next_opponent_turn"}'
-             if allow_tools else "; no inspection is available at this boundary")
+             '{"tool":"inspect_hex","col":N,"row":N,"phase":"current|next_opponent_turn"}.'
+             if allow_tools else " No inspection is available at this boundary.")
+    kinds = list(packet.allowed_kinds)
+    instruction = [f"Return exactly one JSON object with kind {format_allowed_kinds(kinds)}."]
+    act_or_choose = [kind for kind in ("act", "choose") if kind in kinds]
+    if act_or_choose:
+        instruction.append(
+            "Act actions contain ordinary actions only and never origin or a finishing action.")
+        owners = " and ".join(act_or_choose)
+        if packet.final_only:
+            instruction.append(f"final_only requires finish_turn true on {owners}.")
+        else:
+            instruction.append(f"finish_turn may be true or false on {owners}.")
+        instruction.append(f"The finish_turn boolean belongs to {owners}.")
+    if "finish_turn" in kinds:
+        instruction.append(
+            "A standalone finish is " + CANONICAL_FINISH_TURN_JSON + ".")
     return ("STRATEGY_LIVE_STATE_BEGIN\n" +
             json.dumps(live, sort_keys=True, separators=(",", ":")) +
             "\nSTRATEGY_LIVE_STATE_END\n"
             "STRATEGY_RESPONSE_INSTRUCTION_BEGIN\n"
-            "Return exactly one JSON object with kind set_policy, act, finish_turn, or resign. "
-            "Act actions contain ordinary actions only and never origin or a finishing action; "
-            "finish_turn may be true or false on ordinary states; final_only requires true. "
-            "The finish_turn boolean belongs to act and choose; a standalone finish is "
-            + CANONICAL_FINISH_TURN_JSON + "." + tools +
+            + " ".join(instruction) + tools +
             "\nSTRATEGY_RESPONSE_INSTRUCTION_END")
 
 
-def finalize_strategy_prompt(prompt: str, state: dict[str, Any], *, allow_tools: bool = True,
-                             final_only: Optional[bool] = None) -> str:
-    """Place strategy live state last, without the ordinary response contract."""
+def finalize_strategy_prompt(prompt: str, state: dict[str, Any], *, packet: DecisionPacket,
+                             allow_tools: bool = True) -> str:
+    """Place strategy live state last from the issued packet, not a global union."""
+    if packet is None:
+        raise RuntimeError("strategy request lacks an issued decision packet")
     value = prompt.rstrip()
     marker = "\nSTRATEGY_LIVE_STATE_BEGIN\n"
     start = value.rfind(marker)
@@ -4040,7 +4064,7 @@ def finalize_strategy_prompt(prompt: str, state: dict[str, Any], *, allow_tools:
         if footer_end >= 0:
             value = value[:start].rstrip()
     return value + "\n" + strategy_live_state_footer(
-        state, allow_tools=allow_tools, final_only=final_only)
+        state, packet=packet, allow_tools=allow_tools)
 
 
 def build_completion_audit_data(state: dict[str, Any], agenda: Optional[dict[str, Any]] = None) -> dict[str, Any]:
@@ -5718,9 +5742,11 @@ def run(args: argparse.Namespace) -> int:
         refresh_game_budget()
         model_prompt = model_prompt.rstrip() + "\n" + game_budget_context(args, metadata)
         if strategy_prompt:
+            if strategy_active_packet is None:
+                raise RuntimeError("strategy request lacks an issued decision packet")
             delivered_prompt = finalize_strategy_prompt(
                 model_prompt, state if isinstance(state, dict) else {},
-                allow_tools=allow_tools, final_only=strategy_effective_final_only)
+                packet=strategy_active_packet, allow_tools=allow_tools)
         else:
             delivered_prompt = finalize_model_prompt(
                 model_prompt, state if isinstance(state, dict) else {},

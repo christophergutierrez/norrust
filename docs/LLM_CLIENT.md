@@ -341,11 +341,16 @@ ambiguous responses still use the existing bounded repair path. Observer
 responses and other decision modes retain their own parsing contracts.
 
 The model answers with a strict discriminated union on `kind`: `set_policy`,
-`choose`, `act`, `finish_turn`, or `resign`. Ordinary `act` and `choose` responses may set
-`finish_turn` either way; a `final_only` boundary requires `true`, and the
+`choose`, `act`, `finish_turn`, or `resign`. The issued decision packet's
+`allowed_kinds` and `final_only` are the source of truth for the live
+`STRATEGY_RESPONSE_INSTRUCTION`; schema text may describe every kind but must
+not advertise an unavailable kind as a valid answer to the current request.
+Ordinary `act` and `choose` responses may set
+`finish_turn` either way when those shapes are allowed; a `final_only` boundary requires `true`, and the
 client appends the empty `FinishWithGreedy` boundary to that one validated
 batch. The `finish_turn` boolean belongs to `act` and `choose` only. A
-standalone finish is exactly `{"kind":"finish_turn"}`. The parser also accepts
+standalone finish is exactly `{"kind":"finish_turn"}` when `finish_turn` is
+permitted. The parser also accepts
 the one redundant recorded form `{"kind":"finish_turn","finish_turn":true}`
 (JSON boolean `true` only) and normalizes it to that canonical object. This is
 not a model call or repair: the original reply stays in `model_request.raw_output`,
@@ -501,7 +506,8 @@ with strictly validated applicable responses:
 | Initial policy or completed objectives | `policy` | `set_policy`, `act`, `finish_turn`, `resign` | Model directs routine execution or takes tactical control. |
 | `contact` (`stage: current_state`) with options | `tactical` | `choose`, `act`, `finish_turn`, `resign` | Model may choose an offered tactical option, author custom orders, end the turn, or resign. |
 | `contact` (`stage: current_state`) no options | `tactical` | `act`, `finish_turn`, `resign` | Current board contact pause cannot be cleared by policy edits; requires tactical action. |
-| Proposed movement contact / `unsafe_route` | `policy` | `set_policy`, `act`, `finish_turn`, `resign` | Replacing the policy objective can avoid the hazardous destination. |
+| Proposed movement contact with a generated menu | `policy` | `set_policy`, `act`, `finish_turn`, `resign`, `choose` | Resolve the named blocked step first: choose an offered option, author a legal action, or change policy for that step. Preserve unrelated objectives unless they need to change. A risky legal option is allowed; the menu is not an instruction to take it. |
+| Proposed movement contact without a menu / `unsafe_route` | `policy` | `set_policy`, `act`, `finish_turn`, `resign` | Replacing the policy objective can avoid the hazardous destination. |
 | `recruitment_blocked`, `route_unavailable`, `invalid_assignment` | `policy` | `set_policy`, `act`, `finish_turn`, `resign` | Policy adjustment can redirect routine tasks. |
 | `promotion_pending` | `promotion` | `act`, `resign` | Unit must submit legal `Advance` action; engine rejects ending turn during promotion. |
 | `threat_unavailable` | `facts_unavailable` | `act`, `finish_turn`, `resign` | Manual actions required when threat calculations cannot be completed. |

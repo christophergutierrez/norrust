@@ -717,6 +717,28 @@ def _group_options_by_actor(options: list[dict[str, Any]]) -> list[tuple[Any, li
   return groups
 
 
+def _proposed_movement_guidance(packet: DecisionPacket) -> str:
+  """Address the named blocked step without advertising unavailable kinds."""
+  allowed = packet.allowed_kinds
+  alternatives = []
+  if "choose" in allowed:
+    alternatives.append("Choose an offered option")
+  if "act" in allowed:
+    alternatives.append("author a legal action")
+  if "set_policy" in allowed:
+    alternatives.append("make a policy change that addresses this step")
+  parts = ["Resolve the named blocked step first."]
+  if alternatives:
+    if len(alternatives) == 1:
+      parts.append(alternatives[0] + ".")
+    else:
+      parts.append(", ".join(alternatives[:-1]) + ", or " + alternatives[-1] + ".")
+  parts.append("Preserve unrelated objectives unless they need to change.")
+  if "choose" in allowed:
+    parts.append("A risky legal option is allowed; the menu is not an instruction to take it.")
+  return " ".join(parts)
+
+
 def render_decision_brief(
   packet: DecisionPacket,
   *,
@@ -754,26 +776,38 @@ def render_decision_brief(
           f"Tactical option enumeration coverage is {option_coverage}."
         )
     if packet.final_only:
+      closers = [kind for kind in ("act", "choose") if kind in packet.allowed_kinds]
+      if closers:
+        sections.append(
+          "This packet is final_only: " + " and ".join(closers)
+          + " must set finish_turn=true."
+        )
+    if packet.closure_reason in (CLOSURE_REASON_EXHAUSTED, CLOSURE_REASON_REPEATED_CONTACT_KEY):
+      if packet.closure_reason == CLOSURE_REASON_EXHAUSTED:
+        cause = (
+          "CONTACT CLOSURE: contact_actionability=exhausted; complete eligibility checks "
+          "found no executable offered move or attack for involved friendly units. "
+        )
+      else:
+        cause = (
+          "CONTACT CLOSURE: this contact_state_key already received a committed model "
+          "decision this controlled side-turn. Remaining exposure is not a new deliberation. "
+        )
+      actions = []
+      if "act" in packet.allowed_kinds:
+        actions.append("a custom legal rescue with `act` plus finish_turn=true")
+      if "choose" in packet.allowed_kinds:
+        actions.append("`choose` remaining issued options plus finish")
+      if "finish_turn" in packet.allowed_kinds:
+        actions.append("finish immediately")
+      if "resign" in packet.allowed_kinds:
+        actions.append("resign")
+      action_text = ("; ".join(actions) + ". ") if actions else ""
       sections.append(
-        "This packet is final_only: act and choose must set finish_turn=true."
-      )
-    if packet.closure_reason == CLOSURE_REASON_EXHAUSTED:
-      sections.append(
-        "CONTACT CLOSURE: contact_actionability=exhausted; complete eligibility checks "
-        "found no executable offered move or attack for involved friendly units. "
-        "This does not establish that every custom rescue is unavailable. "
-        "Submit a final rescue with `act` plus finish_turn=true (or `choose` remaining "
-        "outside-actor options plus finish), finish immediately, or resign. "
-        "Do not recruit and request the same decision again."
-      )
-    elif packet.closure_reason == CLOSURE_REASON_REPEATED_CONTACT_KEY:
-      sections.append(
-        "CONTACT CLOSURE: this contact_state_key already received a committed model "
-        "decision this controlled side-turn. Remaining exposure is not a new deliberation. "
-        "This does not establish that every custom rescue is unavailable. "
-        "Submit a final rescue with `act` plus finish_turn=true (or `choose` remaining "
-        "outside-actor options plus finish), finish immediately, or resign. "
-        "Do not recruit and request the same decision again."
+        cause
+        + "This does not establish that every custom rescue is unavailable. "
+        + action_text
+        + "Do not recruit and request the same decision again."
       )
     sections.append(
       "If next-turn exposure of a custom destination is uncertain, use the existing "
@@ -874,30 +908,32 @@ def render_decision_brief(
         "To choose, respond with: " + json.dumps(example, separators=(",", ":"))
       )
       sections.append("\n".join(opt_lines))
-  elif packet.reason == "contact" and packet.options:
+  elif packet.reason == "contact" and packet.evidence.get("stage") != "current_state":
     dest_line = _contact_destination_line(packet.evidence)
     if dest_line:
       sections.append(dest_line)
     options_line = _contact_proposed_options_line(packet.evidence)
     if options_line:
       sections.append(options_line)
-    example_ids = [
-      opt.get("option_id") for opt in packet.options
-      if isinstance(opt, dict) and isinstance(opt.get("option_id"), str)
-    ][:2]
-    example = {
-      "kind": "choose",
-      "decision_id": packet.decision_id,
-      "option_ids": example_ids or ["<option_id>"],
-      "finish_turn": bool(packet.final_only),
-    }
+    sections.append(_proposed_movement_guidance(packet))
     sections.append(
-      "A rejected proposed routine move is not current-board contact: set_policy can "
-      "change the objective or list the unit in holds. You may also `choose` one offered "
-      f"option for the flagged unit, `act`, `finish_turn`, or `resign`. "
-      f"Applicable responses: {', '.join(packet.allowed_kinds)}. "
-      "To choose, respond with: " + json.dumps(example, separators=(",", ":"))
+      "A rejected proposed routine move is not current-board contact. "
+      f"Applicable responses: {', '.join(packet.allowed_kinds)}."
     )
+    if "choose" in packet.allowed_kinds and packet.options:
+      example_ids = [
+        opt.get("option_id") for opt in packet.options
+        if isinstance(opt, dict) and isinstance(opt.get("option_id"), str)
+      ][:2]
+      example = {
+        "kind": "choose",
+        "decision_id": packet.decision_id,
+        "option_ids": example_ids or ["<option_id>"],
+        "finish_turn": bool(packet.final_only),
+      }
+      sections.append(
+        "To choose, respond with: " + json.dumps(example, separators=(",", ":"))
+      )
   elif packet.reason == "recruitment_blocked":
     relief = _capacity_relief_line(packet.evidence)
     if relief:

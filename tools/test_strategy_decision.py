@@ -775,6 +775,20 @@ class ProposedDestinationMenuRoutingTests(unittest.TestCase):
     self.assertIn("choose", packet.allowed_kinds)
     self.assertIn("u8-proceed-1", brief)
     self.assertIn("u8-safe-1", brief)
+    self.assertIn("Resolve the named blocked step first", brief)
+    self.assertIn("A risky legal option is allowed", brief)
+    self.assertIn("issued decision packet", brief)
+
+  def test_empty_menu_contact_brief_does_not_advertise_choose(self):
+    packet = sd.build_decision_packet(
+      "contact",
+      {"stage": "current_state", "trigger": "exposure", "friendly_unit_ids": [5],
+       "enemy_unit_ids": [20], "options": []},
+      revision=3)
+    brief = sd.render_decision_brief(packet)
+    self.assertNotIn("choose", packet.allowed_kinds)
+    self.assertNotIn("`choose`", brief)
+    self.assertIn("Applicable responses: act, finish_turn, resign", brief)
 
   def test_two_options_for_same_actor_rejected(self):
     packet = sd.build_decision_packet(

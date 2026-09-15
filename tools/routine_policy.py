@@ -1375,6 +1375,7 @@ def _strategy_contract(recruitable_defs: Iterable[str] = ()) -> str:
         "a missing field stays unknown and must not be treated as false or zero. A routine result of finish is a "
         "finishing boundary and does not imply additional legal movement actions.\n"
         "Return exactly one complete JSON object with kind set_policy, act, choose, finish_turn, or resign; "
+        "the issued decision packet and STRATEGY_RESPONSE_INSTRUCTION list the kinds valid for this request; "
         "output no prose, markdown fences, or text before or after the JSON. "
         "A set_policy replaces the prior installation. Its policy has reserve_gold (integer), "
         "recruits (0-8 ordered entries, each exact def_id/count/role with count 1-32 and role scout or army), "
