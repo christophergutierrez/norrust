@@ -225,8 +225,8 @@ class ModelResponseParsingTests(unittest.TestCase):
                                      "finish_turn": True}),
             rp.ActResponse)
         self.assertIsInstance(
-            rp.parse_model_response({"kind": "choose", "decision_id": "dec-1", "option_id": "opt-1",
-                                     "finish_turn": False}),
+            rp.parse_model_response({"kind": "choose", "decision_id": "dec-1",
+                                     "option_ids": ["opt-1"], "finish_turn": False}),
             rp.ChooseResponse)
         self.assertIsInstance(rp.parse_model_response({"kind": "finish_turn"}), rp.FinishTurnResponse)
         self.assertIsInstance(rp.parse_model_response({"kind": "resign"}), rp.ResignResponse)
@@ -267,24 +267,34 @@ class ModelResponseParsingTests(unittest.TestCase):
         contract = rp._strategy_contract()
         self.assertIn(rp.CANONICAL_FINISH_TURN_JSON, contract)
         self.assertIn("finish_turn boolean belongs to act and choose", contract)
+        self.assertIn(
+            '{"kind":"choose","decision_id":"dec-issued",'
+            '"option_ids":["u6-relocate-2","u7-relocate-1"],"finish_turn":false}',
+            contract,
+        )
+        self.assertEqual(rp.CHOOSE_KEYS, {"kind", "decision_id", "option_ids", "finish_turn"})
+        self.assertEqual(rp.STRATEGY_RESPONSE_SHAPES["choose"], rp.CHOOSE_KEYS)
 
     def test_choose_response_parsing(self):
         valid = {
             "kind": "choose",
             "decision_id": "dec-123",
-            "option_id": "attack_1",
+            "option_ids": ["u6-relocate-2", "u7-relocate-1"],
             "finish_turn": False,
         }
         res = rp.parse_model_response(valid)
         self.assertIsInstance(res, rp.ChooseResponse)
         self.assertEqual(res.decision_id, "dec-123")
-        self.assertEqual(res.option_id, "attack_1")
+        self.assertEqual(res.option_ids, ["u6-relocate-2", "u7-relocate-1"])
         self.assertFalse(res.finish_turn)
 
         res2 = rp.parse_model_response({**valid, "finish_turn": True})
         self.assertTrue(res2.finish_turn)
 
-        for key in ("decision_id", "option_id", "finish_turn"):
+        single = rp.parse_model_response({**valid, "option_ids": ["u6-relocate-2"]})
+        self.assertEqual(single.option_ids, ["u6-relocate-2"])
+
+        for key in ("decision_id", "option_ids", "finish_turn"):
             bad = dict(valid)
             del bad[key]
             with self.subTest(missing=key):
@@ -296,8 +306,25 @@ class ModelResponseParsingTests(unittest.TestCase):
 
         with self.assertRaises(rp.ModelResponseError):
             rp.parse_model_response({**valid, "decision_id": ""})
+        with self.assertRaisesRegex(rp.ModelResponseError, "option_id is not accepted"):
+            rp.parse_model_response({
+                "kind": "choose",
+                "decision_id": "dec-123",
+                "option_id": "u6-relocate-2",
+                "finish_turn": False,
+            })
+        with self.assertRaisesRegex(rp.ModelResponseError, "option_id is not accepted"):
+            rp.parse_model_response({**valid, "option_id": "u6-relocate-2"})
         with self.assertRaises(rp.ModelResponseError):
-            rp.parse_model_response({**valid, "option_id": ""})
+            rp.parse_model_response({**valid, "option_ids": []})
+        with self.assertRaises(rp.ModelResponseError):
+            rp.parse_model_response({**valid, "option_ids": ["a", "b", "c", "d"]})
+        with self.assertRaises(rp.ModelResponseError):
+            rp.parse_model_response({**valid, "option_ids": ["u6-relocate-2", "u6-relocate-2"]})
+        with self.assertRaises(rp.ModelResponseError):
+            rp.parse_model_response({**valid, "option_ids": [""]})
+        with self.assertRaises(rp.ModelResponseError):
+            rp.parse_model_response({**valid, "option_ids": "u6-relocate-2"})
 
         with self.assertRaises(rp.ModelResponseError):
             rp.parse_model_response({**valid, "finish_turn": "true"})

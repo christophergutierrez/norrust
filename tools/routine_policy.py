@@ -39,7 +39,7 @@ SET_POLICY_KEYS = {"kind", "policy"}
 POLICY_FIELDS = {"reserve_gold", "recruits", "scouts", "villages", "rally", "holds"}
 RECRUIT_ENTRY_FIELDS = {"def_id", "count", "role"}
 ACT_KEYS = {"kind", "actions", "finish_turn"}
-CHOOSE_KEYS = {"kind", "decision_id", "option_id", "finish_turn"}
+CHOOSE_KEYS = {"kind", "decision_id", "option_ids", "finish_turn"}
 FINISH_TURN_KEYS = {"kind"}
 FINISH_TURN_REDUNDANT_KEYS = {"kind", "finish_turn"}
 RESIGN_KEYS = {"kind"}
@@ -774,7 +774,7 @@ class ActResponse:
 @dataclass
 class ChooseResponse:
     decision_id: str
-    option_id: str
+    option_ids: list[str]
     finish_turn: bool = False
 
 
@@ -885,17 +885,31 @@ def parse_model_response(obj: Any) -> Any:
                 raise ModelResponseError("response.finish_turn must be a boolean")
             return ActResponse(actions=list(actions), finish_turn=finish_turn)
         if kind == "choose":
+            if "option_id" in obj:
+                raise ModelResponseError(
+                    "response.option_id is not accepted; use option_ids with 1 to 3 distinct issued IDs")
             _require_keys(obj, CHOOSE_KEYS, CHOOSE_KEYS, "response")
             decision_id = obj["decision_id"]
             if not isinstance(decision_id, str) or not decision_id.strip():
                 raise ModelResponseError("response.decision_id must be a non-empty string")
-            option_id = obj["option_id"]
-            if not isinstance(option_id, str) or not option_id.strip():
-                raise ModelResponseError("response.option_id must be a non-empty string")
+            option_ids = obj["option_ids"]
+            if not isinstance(option_ids, list):
+                raise ModelResponseError("response.option_ids must be a list")
+            if not (1 <= len(option_ids) <= 3):
+                raise ModelResponseError("response.option_ids must contain 1 to 3 entries")
+            parsed_ids: list[str] = []
+            for index, option_id in enumerate(option_ids):
+                if not isinstance(option_id, str) or not option_id.strip():
+                    raise ModelResponseError(
+                        f"response.option_ids[{index}] must be a non-empty string")
+                parsed_ids.append(option_id)
+            if len(set(parsed_ids)) != len(parsed_ids):
+                raise ModelResponseError("response.option_ids must be distinct")
             finish_turn = obj["finish_turn"]
             if not isinstance(finish_turn, bool):
                 raise ModelResponseError("response.finish_turn must be a boolean")
-            return ChooseResponse(decision_id=decision_id, option_id=option_id, finish_turn=finish_turn)
+            return ChooseResponse(
+                decision_id=decision_id, option_ids=parsed_ids, finish_turn=finish_turn)
         if kind == "finish_turn":
             return _parse_finish_turn_response(obj)
         # kind == "resign"
@@ -1066,7 +1080,7 @@ def _strategy_contract(recruitable_defs: Iterable[str] = ()) -> str:
         "movement is the unit's engine movement allowance, not remaining points and not a count of legal moves; "
         "a missing field stays unknown and must not be treated as false or zero. A routine result of finish is a "
         "finishing boundary and does not imply additional legal movement actions.\n"
-        "Return exactly one complete JSON object with kind set_policy, act, finish_turn, or resign; "
+        "Return exactly one complete JSON object with kind set_policy, act, choose, finish_turn, or resign; "
         "output no prose, markdown fences, or text before or after the JSON. "
         "A set_policy replaces the prior installation. Its policy has reserve_gold (integer), "
         "recruits (0-8 ordered entries, each exact def_id/count/role with count 1-32 and role scout or army), "
@@ -1077,6 +1091,8 @@ def _strategy_contract(recruitable_defs: Iterable[str] = ()) -> str:
         '{"kind":"set_policy","policy":{"reserve_gold":0,"recruits":[],"scouts":[],"villages":[],"rally":null,"holds":[]}}\n'
         "An act has ordinary engine actions and finish_turn true or false on an ordinary state; "
         "final_only requires true. The finish_turn boolean belongs to act and choose only. "
+        "A choose selects 1 to 3 distinct issued option_ids (at most one per actor; array order is execution order): "
+        '{"kind":"choose","decision_id":"dec-issued","option_ids":["u6-relocate-2","u7-relocate-1"],"finish_turn":false}. '
         "A standalone finish is exactly " + CANONICAL_FINISH_TURN_JSON +
         "; do not add finish_turn or other keys. "
         "Actions cannot contain a boundary or origin. Supported shapes include "

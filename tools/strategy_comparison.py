@@ -792,12 +792,15 @@ def decision_archive_attribution(records: list[dict[str, Any]], *,
   forwarded_rows = [item for item in records if item.get("type") == "forwarded_orders"]
   option_selections = sum(
     1 for item in forwarded_rows
-    if item.get("proposal_source") == "engine_option" or item.get("option_id") is not None
+    if item.get("proposal_source") == "engine_option"
+    or item.get("option_id") is not None
+    or item.get("option_ids")
   )
   custom_acts = sum(
     1 for item in forwarded_rows
     if item.get("proposal_source") != "engine_option"
     and item.get("option_id") is None
+    and not item.get("option_ids")
     and bool(item.get("orders"))
   )
 
@@ -891,7 +894,11 @@ def decision_archive_attribution(records: list[dict[str, Any]], *,
     )
 
   relocation_selected = any(
-    item.get("type") == "forwarded_orders" and str(item.get("option_id", "")).startswith("relocate")
+    item.get("type") == "forwarded_orders"
+    and (
+      str(item.get("option_id", "")).startswith("relocate")
+      or any(str(oid).find("relocate") >= 0 for oid in (item.get("option_ids") or []))
+    )
     for item in records
   )
   tactical_progress = (attacks > 0 and damage_dealt > 0) or (moves > 0 and relocation_selected)
@@ -1031,7 +1038,14 @@ def _decision_matrix_predicates(case: dict[str, Any],
     predicates["relocation_committed"] = (
       attribution["option_selections"] >= 1
       and attribution["actual_board_effects"]["moves"] >= 1
-      and any(r.get("type") == "forwarded_orders" and str(r.get("option_id", "")).startswith("relocate") for r in records)
+      and any(
+        r.get("type") == "forwarded_orders"
+        and (
+          str(r.get("option_id", "")).startswith("relocate")
+          or any(str(oid).find("relocate") >= 0 for oid in (r.get("option_ids") or []))
+        )
+        for r in records
+      )
     )
     predicates["recruiter_survived"] = (
       attribution["actual_board_effects"]["units_killed"] == 0

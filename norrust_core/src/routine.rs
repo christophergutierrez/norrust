@@ -428,14 +428,19 @@ pub struct CurrentContactFacts {
     pub trigger: &'static str,
     pub friendly_unit_ids: Vec<u32>,
     pub enemy_unit_ids: Vec<u32>,
-    pub primary_actor_id: Option<u32>,
+    pub actor_ids: Vec<u32>,
+    pub eligible_actor_count: u32,
+    pub actors_truncated: bool,
     pub options: Vec<TacticalOption>,
     pub options_truncated: bool,
     pub options_empty_reason: Option<String>,
     pub coverage: &'static str,
 }
 
-pub(crate) fn current_contact(state: &GameState, side: u8) -> Result<Option<CurrentContactFacts>, TacticsError> {
+pub(crate) fn current_contact(
+    state: &GameState,
+    side: u8,
+) -> Result<Option<CurrentContactFacts>, TacticsError> {
     let mut attack_friendly = Vec::new();
     let mut attack_enemy = Vec::new();
     for u in turn_tactics(state, side)? {
@@ -485,7 +490,10 @@ pub(crate) fn current_contact(state: &GameState, side: u8) -> Result<Option<Curr
         (false, false) => unreachable!(),
     };
 
-    let mut friendly_unit_ids: Vec<u32> = attack_friendly.into_iter().chain(exposure_friendly).collect();
+    let mut friendly_unit_ids: Vec<u32> = attack_friendly
+        .into_iter()
+        .chain(exposure_friendly)
+        .collect();
     friendly_unit_ids.sort_unstable();
     friendly_unit_ids.dedup();
 
@@ -499,7 +507,9 @@ pub(crate) fn current_contact(state: &GameState, side: u8) -> Result<Option<Curr
         trigger,
         friendly_unit_ids,
         enemy_unit_ids,
-        primary_actor_id: tactical_decision.primary_actor_id,
+        actor_ids: tactical_decision.actor_ids,
+        eligible_actor_count: tactical_decision.eligible_actor_count,
+        actors_truncated: tactical_decision.actors_truncated,
         options: tactical_decision.options,
         options_truncated: tactical_decision.options_truncated,
         options_empty_reason: tactical_decision.options_empty_reason,
@@ -842,7 +852,9 @@ pub fn routine_next(
                     "trigger": facts.trigger,
                     "friendly_unit_ids": facts.friendly_unit_ids,
                     "enemy_unit_ids": facts.enemy_unit_ids,
-                    "primary_actor_id": facts.primary_actor_id,
+                    "actor_ids": facts.actor_ids,
+                    "eligible_actor_count": facts.eligible_actor_count,
+                    "actors_truncated": facts.actors_truncated,
                     "options": facts.options,
                     "options_truncated": facts.options_truncated,
                     "options_empty_reason": facts.options_empty_reason,

@@ -48,11 +48,11 @@ def policy(kind: str = "set_policy", value: dict | None = None) -> dict:
     return {"kind": kind, "policy": copy.deepcopy(value or EMPTY_POLICY)}
 
 
-def choose(option_id: str, *, finish: bool = False, decision_id: str = "__FROM_PROMPT__") -> dict:
+def choose(*option_ids: str, finish: bool = False, decision_id: str = "__FROM_PROMPT__") -> dict:
     return {
         "kind": "choose",
         "decision_id": decision_id,
-        "option_id": option_id,
+        "option_ids": list(option_ids),
         "finish_turn": finish,
     }
 
@@ -108,9 +108,9 @@ def prepare(root: Path, fixture: str, responses: list[dict], *,
         raw_response = responses[min(index, len(responses) - 1)]
         response = dict(raw_response)
         if response.get("kind") == "choose" and response.get("decision_id") == "__FROM_PROMPT__":
-            match = re.search(r'"decision_id": "([^"]+)"', prompt)
-            if match:
-                response["decision_id"] = match.group(1)
+            issued = [m for m in re.findall(r'"decision_id":\\s*"([^"]+)"', prompt) if m != "dec-issued"]
+            if issued:
+                response["decision_id"] = issued[-1]
         print(json.dumps({{'text': json.dumps(response, separators=(',', ':'))}}))
     """).lstrip(), encoding="utf-8")
     return checkpoint, response_file, backend, prompt_log
@@ -156,7 +156,7 @@ class TestStrategyStack3Integration(unittest.TestCase):
             }
             responses = [
                 policy("set_policy", init_policy),
-                choose("attack_1", finish=True),
+                choose("u3-attack-1", finish=True),
             ]
             checkpoint, _, backend, prompt_log = prepare(
                 root, "contact.json", responses, extra_units=[extra_scout],
@@ -208,7 +208,7 @@ class TestStrategyStack3Integration(unittest.TestCase):
             }
             responses = [
                 policy("set_policy", init_policy),
-                choose("relocate_1", finish=True),
+                choose("u1-relocate-1", finish=True),
             ]
             checkpoint, _, backend, prompt_log = prepare(
                 root, "recruiter_danger.json", responses, extra_units=[extra_scout],

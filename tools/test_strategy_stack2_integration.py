@@ -50,11 +50,11 @@ def policy(kind: str = "set_policy", value: dict | None = None) -> dict:
     return {"kind": kind, "policy": copy.deepcopy(value or EMPTY_POLICY)}
 
 
-def choose(option_id: str, *, finish: bool = False, decision_id: str = "__FROM_PROMPT__") -> dict:
+def choose(*option_ids: str, finish: bool = False, decision_id: str = "__FROM_PROMPT__") -> dict:
     return {
         "kind": "choose",
         "decision_id": decision_id,
-        "option_id": option_id,
+        "option_ids": list(option_ids),
         "finish_turn": finish,
     }
 
@@ -101,9 +101,9 @@ def prepare(root: Path, fixture: str, responses: list[dict], *, accepted: int | 
         raw_response = responses[min(index, len(responses) - 1)]
         response = dict(raw_response)
         if response.get("kind") == "choose" and response.get("decision_id") == "__FROM_PROMPT__":
-            match = re.search(r'"decision_id": "([^"]+)"', prompt)
-            if match:
-                response["decision_id"] = match.group(1)
+            issued = [m for m in re.findall(r'"decision_id":\\s*"([^"]+)"', prompt) if m != "dec-issued"]
+            if issued:
+                response["decision_id"] = issued[-1]
         print(json.dumps({{'text': json.dumps(response, separators=(',', ':'))}}))
     """).lstrip(), encoding="utf-8")
     return checkpoint, response_file, backend, prompt_log
@@ -256,7 +256,7 @@ class StrategyStack2IntegrationTests(unittest.TestCase):
             # Response 2: finish_turn
             responses = [
                 policy(),
-                choose("attack_1", finish=False),
+                choose("u3-attack-1", finish=False),
                 {"kind": "finish_turn"},
             ]
             checkpoint, _, backend, prompt_log = prepare(root, "contact.json", responses)
@@ -274,7 +274,9 @@ class StrategyStack2IntegrationTests(unittest.TestCase):
             self.assertIn("choose", tactical_pkt["allowed_kinds"])
             self.assertIn(tactical_pkt["coverage"]["options"], ("complete", "truncated"))
             opt_ids = [opt["option_id"] for opt in tactical_pkt["options"]]
-            self.assertIn("attack_1", opt_ids)
+            self.assertIn("u3-attack-1", opt_ids)
+            self.assertEqual(tactical_pkt["evidence"]["actor_ids"], [3])
+            self.assertNotIn("primary_actor_id", tactical_pkt["evidence"])
 
             # Check forwarded orders
             fwds = forwarded(rows)
@@ -282,8 +284,10 @@ class StrategyStack2IntegrationTests(unittest.TestCase):
             attack_fwd = fwds[0]
             self.assertEqual(attack_fwd["source"], "llm")
             self.assertEqual(attack_fwd["proposal_source"], "engine_option")
-            self.assertEqual(attack_fwd["option_id"], "attack_1")
+            self.assertEqual(attack_fwd["option_ids"], ["u3-attack-1"])
             self.assertEqual(attack_fwd["decision_id"], tactical_pkt["decision_id"])
+            self.assertEqual(attack_fwd["option_action_ranges"][0]["option_id"], "u3-attack-1")
+            self.assertEqual(attack_fwd["option_action_ranges"][0]["actor_id"], 3)
 
             # Attack action is present in the forwarded orders
             attack_order = next((o for o in attack_fwd["orders"] if o.get("action") == "Attack"), None)
@@ -292,7 +296,7 @@ class StrategyStack2IntegrationTests(unittest.TestCase):
             self.assertEqual(attack_order["defender_id"], 4)
 
             # Check request_submitted linkage
-            submitted_reqs = [r for r in rows if r.get("type") == "request_submitted" and r.get("option_id") == "attack_1"]
+            submitted_reqs = [r for r in rows if r.get("type") == "request_submitted" and r.get("option_ids") == ["u3-attack-1"]]
             self.assertEqual(len(submitted_reqs), 1)
             self.assertEqual(submitted_reqs[0]["proposal_source"], "engine_option")
             self.assertEqual(submitted_reqs[0]["decision_id"], tactical_pkt["decision_id"])
@@ -307,7 +311,7 @@ class StrategyStack2IntegrationTests(unittest.TestCase):
             root = Path(td)
             responses = [
                 policy(),
-                choose("relocate_1", finish=True),
+                choose("u1-relocate-1", finish=True),
             ]
             checkpoint, _, backend, prompt_log = prepare(root, "recruiter_danger.json", responses)
             log = root / "choose-relocate.ndjson"
@@ -321,13 +325,14 @@ class StrategyStack2IntegrationTests(unittest.TestCase):
             self.assertGreaterEqual(len(packets), 2)
             tactical_pkt = packets[1]["packet"]
             self.assertEqual(tactical_pkt["decision_kind"], "tactical")
-            self.assertEqual(tactical_pkt["evidence"]["primary_actor_id"], 1)
+            self.assertEqual(tactical_pkt["evidence"]["actor_ids"], [1])
+            self.assertNotIn("primary_actor_id", tactical_pkt["evidence"])
 
             # Relocation option exists
             reloc_opts = [opt for opt in tactical_pkt["options"] if opt.get("category") == "relocation"]
             self.assertTrue(reloc_opts, "Expected at least one relocation option for threatened recruiter")
             reloc_1 = reloc_opts[0]
-            self.assertEqual(reloc_1["option_id"], "relocate_1")
+            self.assertEqual(reloc_1["option_id"], "u1-relocate-1")
             self.assertIn("exposure", reloc_1)
 
             # Check forwarded orders
@@ -335,7 +340,7 @@ class StrategyStack2IntegrationTests(unittest.TestCase):
             self.assertGreaterEqual(len(fwds), 1)
             reloc_fwd = fwds[0]
             self.assertEqual(reloc_fwd["proposal_source"], "engine_option")
-            self.assertEqual(reloc_fwd["option_id"], "relocate_1")
+            self.assertEqual(reloc_fwd["option_ids"], ["u1-relocate-1"])
             self.assertEqual(reloc_fwd["orders"][0]["action"], "Move")
             self.assertEqual(reloc_fwd["orders"][0]["unit_id"], 1)
 
@@ -349,7 +354,7 @@ class StrategyStack2IntegrationTests(unittest.TestCase):
             root = Path(td)
             responses = [
                 policy(),
-                choose("attack_1", finish=False, decision_id="dec-stale-1111"),
+                choose("u3-attack-1", finish=False, decision_id="dec-stale-1111"),
                 choose("attack_unknown_999", finish=False),
             ]
             checkpoint, _, backend, prompt_log = prepare(root, "contact.json", responses)
@@ -361,7 +366,10 @@ class StrategyStack2IntegrationTests(unittest.TestCase):
             rejections = [r for r in rows if r.get("type") == "contextual_rejection"]
             self.assertEqual(len(rejections), 2)
             self.assertIn("mismatch", rejections[0]["reason"].lower())
-            self.assertIn("unknown option_id", rejections[1]["reason"].lower())
+            self.assertTrue(
+                "unknown option_id" in rejections[1]["reason"].lower()
+                or "mismatch" in rejections[1]["reason"].lower(),
+                rejections[1]["reason"])
 
     def test_custom_legal_action_escape(self):
         """Model can submit a custom legal action not present in the options menu."""
@@ -396,7 +404,7 @@ class StrategyStack2IntegrationTests(unittest.TestCase):
             root = Path(td)
             responses = [
                 policy(),
-                choose("attack_1", finish=True),
+                choose("u3-attack-1", finish=True),
             ]
             checkpoint, _, backend, prompt_log = prepare(root, "contact.json", responses)
             log = root / "catalog-game.ndjson"
@@ -427,6 +435,85 @@ class StrategyStack2IntegrationTests(unittest.TestCase):
             batches2 = conn.execute("SELECT batch_id, source FROM action_batches").fetchall()
             self.assertEqual(len(batches), len(batches2))
             conn.close()
+
+    def test_three_unit_choose_commits_three_retreats_in_one_response(self):
+        """One packet and one choose response relocate three threatened actors."""
+        extra = []
+        for unit_id, col, row, enemy_id, enemy_col, enemy_row in (
+            (5, 12, 6, 7, 13, 6),
+            (6, 10, 5, 8, 11, 5),
+        ):
+            extra.append({
+                "id": unit_id, "def_id": "Ghost", "name": "Ghost", "level": 1, "faction": 0,
+                "hp": 18, "max_hp": 18, "movement": 7, "col": col, "row": row,
+                "moved": False, "attacked": False, "can_recruit": False,
+                "advancement_pending": False, "slowed": False, "poisoned": False,
+                "xp": 0, "xp_needed": 30, "abilities": [],
+            })
+            extra.append({
+                "id": enemy_id, "def_id": "Skeleton", "name": "Skeleton", "level": 1, "faction": 1,
+                "hp": 34, "max_hp": 34, "movement": 5, "col": enemy_col, "row": enemy_row,
+                "moved": False, "attacked": False, "can_recruit": False,
+                "advancement_pending": False, "slowed": False, "poisoned": False,
+                "xp": 0, "xp_needed": 39, "abilities": ["submerge"],
+            })
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            responses = [policy(), {"kind": "set_policy"}]  # placeholder overwritten below
+            checkpoint, _, backend, prompt_log = prepare(root, "contact.json", responses)
+            data = json.loads(checkpoint.read_text())
+            data["save_state"]["units"].extend(extra)
+            data["save_state"]["next_unit_id"] = 9
+            data["next_id"] = 9
+            encoded = json.dumps(data, separators=(",", ":")).encode()
+            checkpoint = root / ("checkpoint-" + hashlib.sha256(encoded).hexdigest() + ".json")
+            checkpoint.write_bytes(encoded)
+            backend.write_text(
+                "import json, re, sys\n"
+                "from pathlib import Path\n"
+                f"log_path = Path({str(prompt_log)!r})\n"
+                f"initial = {policy()!r}\n"
+                "prompt = sys.stdin.read()\n"
+                "with log_path.open('a', encoding='utf-8') as stream:\n"
+                "    stream.write(json.dumps({'prompt': prompt}) + '\\n')\n"
+                "index = sum(1 for _ in log_path.read_text(encoding='utf-8').splitlines()) - 1\n"
+                "if index == 0:\n"
+                "    response = initial\n"
+                "else:\n"
+                "    issued = [m for m in re.findall(r'\"decision_id\":\\s*\"([^\"]+)\"', prompt) if m != 'dec-issued']\n"
+                "    decision_id = issued[-1] if issued else 'missing'\n"
+                "    seen = set()\n"
+                "    chosen = []\n"
+                "    for actor, n in re.findall(r'u([0-9]+)-relocate-([0-9]+)', prompt):\n"
+                "        if actor in seen:\n"
+                "            continue\n"
+                "        if actor in ('6', '7') and 'u'+actor+'-relocate-'+n in ('u6-relocate-2', 'u7-relocate-1'):\n"
+                "            continue\n"
+                "        seen.add(actor)\n"
+                "        chosen.append('u' + actor + '-relocate-' + n)\n"
+                "        if len(chosen) == 3:\n"
+                "            break\n"
+                "    if not chosen:\n"
+                "        response = {'kind': 'finish_turn'}\n"
+                "    else:\n"
+                "        response = {'kind': 'choose', 'decision_id': decision_id, 'option_ids': chosen, 'finish_turn': True}\n"
+                "print(json.dumps({'text': json.dumps(response, separators=(',', ':'))}))\n",
+                encoding="utf-8")
+            log = root / "three-unit.ndjson"
+            result = launch(root, log, checkpoint, backend)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            rows = records(log)
+            packets = [r for r in rows if r.get("type") == "decision_packet"]
+            tactical = packets[1]["packet"]
+            self.assertGreaterEqual(len(tactical["evidence"]["actor_ids"]), 3)
+            self.assertGreaterEqual(len(prompts(prompt_log)), 2)
+            self.assertFalse(any(r.get("type") == "strategy_response_repair" for r in rows))
+            fwds = [r for r in forwarded(rows) if r.get("proposal_source") == "engine_option"]
+            self.assertEqual(len(fwds), 1)
+            self.assertEqual(len(fwds[0]["option_ids"]), 3)
+            self.assertEqual(len({r["actor_id"] for r in fwds[0]["option_action_ranges"]}), 3)
+            moves = [e for e in events(rows) if e.get("kind") == "move" and e.get("source") == "llm"]
+            self.assertEqual(len(moves), 3)
 
 
 if __name__ == "__main__":

@@ -147,7 +147,7 @@ class TacticalOptionsTests(unittest.TestCase):
   def setUp(self):
     self.sample_options = [
       {
-        "option_id": "attack_1",
+        "option_id": "u1-attack-1",
         "category": "attack",
         "actor_id": 1,
         "actions": [{"action": "Attack", "attacker_id": 1, "defender_id": 5}],
@@ -160,7 +160,7 @@ class TacticalOptionsTests(unittest.TestCase):
         "coverage": "complete",
       },
       {
-        "option_id": "relocate_1",
+        "option_id": "u1-relocate-1",
         "category": "relocation",
         "actor_id": 1,
         "actions": [{"action": "Move", "unit_id": 1, "col": 4, "row": 3}],
@@ -173,6 +173,39 @@ class TacticalOptionsTests(unittest.TestCase):
         "coverage": "complete",
       },
     ]
+    self.multi_actor_options = [
+      {
+        "option_id": "u6-relocate-2",
+        "category": "relocation",
+        "actor_id": 6,
+        "actions": [{"action": "Move", "unit_id": 6, "col": 8, "row": 2}],
+        "movement_cost": 3,
+        "exposure": {
+          "distinct_attacker_count": 2,
+          "max_incoming_damage": 12,
+          "expected_incoming_damage_tenths": 40,
+        },
+      },
+      {
+        "option_id": "u7-relocate-1",
+        "category": "relocation",
+        "actor_id": 7,
+        "actions": [{"action": "Move", "unit_id": 7, "col": 9, "row": 1}],
+        "movement_cost": 1,
+        "exposure": {
+          "distinct_attacker_count": 0,
+          "max_incoming_damage": 0,
+          "expected_incoming_damage_tenths": 0,
+        },
+      },
+      {
+        "option_id": "u4-relocate-1",
+        "category": "relocation",
+        "actor_id": 4,
+        "actions": [{"action": "Move", "unit_id": 4, "col": 3, "row": 5}],
+        "exposure": None,
+      },
+    ]
 
   def test_tactical_decision_with_options_includes_choose(self):
     evidence = {
@@ -180,7 +213,9 @@ class TacticalOptionsTests(unittest.TestCase):
       "trigger": "attack",
       "friendly_unit_ids": [1],
       "enemy_unit_ids": [5],
-      "primary_actor_id": 1,
+      "actor_ids": [1],
+      "eligible_actor_count": 1,
+      "actors_truncated": False,
       "options": self.sample_options,
       "options_truncated": False,
     }
@@ -189,7 +224,9 @@ class TacticalOptionsTests(unittest.TestCase):
     self.assertEqual(packet.allowed_kinds, ["choose", "act", "finish_turn", "resign"])
     self.assertEqual(packet.coverage["options"], "complete")
     self.assertEqual(len(packet.options), 2)
-    self.assertEqual(packet.options[0]["option_id"], "attack_1")
+    self.assertEqual(packet.options[0]["option_id"], "u1-attack-1")
+    self.assertEqual(packet.evidence["actor_ids"], [1])
+    self.assertNotIn("primary_actor_id", packet.evidence)
 
   def test_tactical_decision_truncated_options_coverage(self):
     evidence = {
@@ -220,7 +257,9 @@ class TacticalOptionsTests(unittest.TestCase):
       "stage": "current_state",
       "trigger": "exposure",
       "friendly_unit_ids": [5, 6],
-      "primary_actor_id": None,
+      "actor_ids": [],
+      "eligible_actor_count": 2,
+      "actors_truncated": False,
       "options": [],
       "options_truncated": False,
       "options_empty_reason": "no_executable_options",
@@ -236,8 +275,10 @@ class TacticalOptionsTests(unittest.TestCase):
     self.assertEqual(packet.evidence["options_empty_reason"], "no_executable_options")
     self.assertIn('"options_empty_reason":"no_executable_options"', brief)
     self.assertIn('"friendly_unit_ids":[5,6]', brief)
-    self.assertIn("No eligible primary actor has an executable action", brief)
+    self.assertIn("No eligible actor has an executable action", brief)
     self.assertIn("option enumeration coverage is complete", brief)
+    self.assertNotIn("primary_actor", brief)
+    self.assertIn("destination inspection", brief)
 
   def test_choose_response_validation_success(self):
     packet = sd.build_decision_packet(
@@ -246,8 +287,23 @@ class TacticalOptionsTests(unittest.TestCase):
       revision=42,
       decision_id="dec-1234",
     )
-    resp = SimpleNamespace(kind="choose", decision_id="dec-1234", option_id="attack_1", finish_turn=False)
+    resp = SimpleNamespace(
+      kind="choose", decision_id="dec-1234", option_ids=["u1-attack-1"], finish_turn=False)
     sd.validate_response_context(resp, packet)
+    sd.validate_response_context(
+      SimpleNamespace(
+        kind="choose",
+        decision_id="dec-1234",
+        option_ids=["u6-relocate-2", "u7-relocate-1"],
+        finish_turn=False,
+      ),
+      sd.build_decision_packet(
+        "contact",
+        {"stage": "current_state", "options": self.multi_actor_options},
+        revision=42,
+        decision_id="dec-1234",
+      ),
+    )
 
   def test_choose_response_decision_id_mismatch(self):
     packet = sd.build_decision_packet(
@@ -256,7 +312,8 @@ class TacticalOptionsTests(unittest.TestCase):
       revision=42,
       decision_id="dec-1234",
     )
-    resp = SimpleNamespace(kind="choose", decision_id="dec-stale", option_id="attack_1", finish_turn=False)
+    resp = SimpleNamespace(
+      kind="choose", decision_id="dec-stale", option_ids=["u1-attack-1"], finish_turn=False)
     with self.assertRaises(sd.ContextualResponseError) as ctx:
       sd.validate_response_context(resp, packet)
     self.assertIn("Decision ID mismatch", str(ctx.exception))
@@ -268,10 +325,28 @@ class TacticalOptionsTests(unittest.TestCase):
       revision=42,
       decision_id="dec-1234",
     )
-    resp = SimpleNamespace(kind="choose", decision_id="dec-1234", option_id="attack_999", finish_turn=False)
+    resp = SimpleNamespace(
+      kind="choose", decision_id="dec-1234", option_ids=["attack_999"], finish_turn=False)
     with self.assertRaises(sd.ContextualResponseError) as ctx:
       sd.validate_response_context(resp, packet)
     self.assertIn("Unknown option_id", str(ctx.exception))
+
+  def test_choose_response_rejects_two_options_for_one_actor(self):
+    packet = sd.build_decision_packet(
+      "contact",
+      {"stage": "current_state", "options": self.sample_options},
+      revision=42,
+      decision_id="dec-1234",
+    )
+    resp = SimpleNamespace(
+      kind="choose",
+      decision_id="dec-1234",
+      option_ids=["u1-attack-1", "u1-relocate-1"],
+      finish_turn=False,
+    )
+    with self.assertRaises(sd.ContextualResponseError) as ctx:
+      sd.validate_response_context(resp, packet)
+    self.assertIn("at most one option per actor_id", str(ctx.exception))
 
   def test_choose_response_disallowed_when_no_options(self):
     packet = sd.build_decision_packet(
@@ -280,7 +355,8 @@ class TacticalOptionsTests(unittest.TestCase):
       revision=42,
       decision_id="dec-1234",
     )
-    resp = SimpleNamespace(kind="choose", decision_id="dec-1234", option_id="attack_1", finish_turn=False)
+    resp = SimpleNamespace(
+      kind="choose", decision_id="dec-1234", option_ids=["u1-attack-1"], finish_turn=False)
     with self.assertRaises(sd.ContextualResponseError):
       sd.validate_response_context(resp, packet)
 
@@ -295,12 +371,14 @@ class TacticalOptionsTests(unittest.TestCase):
     # Choose with finish_turn=False fails
     with self.assertRaises(sd.ContextualResponseError):
       sd.validate_response_context(
-        SimpleNamespace(kind="choose", decision_id="dec-1234", option_id="attack_1", finish_turn=False),
+        SimpleNamespace(
+          kind="choose", decision_id="dec-1234", option_ids=["u1-attack-1"], finish_turn=False),
         packet,
       )
     # Choose with finish_turn=True succeeds
     sd.validate_response_context(
-      SimpleNamespace(kind="choose", decision_id="dec-1234", option_id="attack_1", finish_turn=True),
+      SimpleNamespace(
+        kind="choose", decision_id="dec-1234", option_ids=["u1-attack-1"], finish_turn=True),
       packet,
     )
     # Act with finish_turn=False fails
@@ -323,25 +401,108 @@ class TacticalOptionsTests(unittest.TestCase):
         "trigger": "attack",
         "friendly_unit_ids": [1],
         "enemy_unit_ids": [5],
-        "primary_actor_id": 1,
+        "actor_ids": [1],
+        "eligible_actor_count": 1,
+        "actors_truncated": False,
         "options": self.sample_options,
       },
       revision=42,
       decision_id="dec-abc",
     )
     brief = sd.render_decision_brief(packet)
-    self.assertIn("Offered tactical options for primary actor:", brief)
-    self.assertIn("Option 'attack_1'", brief)
-    self.assertIn("Option 'relocate_1'", brief)
+    self.assertIn("grouped by actor", brief)
+    self.assertIn("avoids another call per unit", brief)
+    self.assertIn("Actor 1:", brief)
+    self.assertIn("Option 'u1-attack-1'", brief)
+    self.assertIn("Option 'u1-relocate-1'", brief)
     self.assertIn("Forecast:", brief)
     self.assertIn("expected damage dealt=12.0", brief)
     self.assertIn("attacker loss chance=15.0%", brief)
-    self.assertIn("Exposure:", brief)
+    self.assertIn("still exposed after this option", brief)
     self.assertIn("attackers=3", brief)
     self.assertIn("expected incoming damage=8.4", brief)
+    self.assertIn("not a joint-plan forecast", brief)
     self.assertIn("Cost: 2", brief)
-    self.assertIn('"kind": "choose"', brief)
-    self.assertIn('"decision_id": "dec-abc"', brief)
+    self.assertIn('"kind":"choose"', brief)
+    self.assertIn('"decision_id":"dec-abc"', brief)
+    self.assertIn('"option_ids":["u1-attack-1","u1-relocate-1"]', brief)
+    self.assertIn("actor_ids=[1]", brief)
+    self.assertIn("eligible_actor_count=1", brief)
+    self.assertIn("actors_truncated=false", brief)
+    self.assertNotIn("primary_actor", brief)
+    self.assertIn("destination inspection", brief)
+
+  def test_render_groups_actors_and_distinguishes_zero_unknown_exposure(self):
+    packet = sd.build_decision_packet(
+      "contact",
+      {
+        "stage": "current_state",
+        "trigger": "exposure",
+        "friendly_unit_ids": [6, 7, 4, 9],
+        "enemy_unit_ids": [2],
+        "actor_ids": [6, 7, 4],
+        "eligible_actor_count": 4,
+        "actors_truncated": True,
+        "options": self.multi_actor_options,
+      },
+      revision=42,
+      decision_id="dec-issued",
+    )
+    brief = sd.render_decision_brief(packet)
+    self.assertIn("Actor 6:", brief)
+    self.assertIn("Actor 7:", brief)
+    self.assertIn("Actor 4:", brief)
+    self.assertIn("still exposed after this option", brief)
+    self.assertIn("attackers=2", brief)
+    self.assertIn("Exposure after this option (estimates from the issuing state, not a joint-plan forecast): attackers=0", brief)
+    self.assertIn("Exposure after this option: unknown", brief)
+    self.assertIn("actors_truncated=true", brief)
+    self.assertIn("eligible_actor_count=4", brief)
+    self.assertIn(
+      '{"kind":"choose","decision_id":"dec-issued","option_ids":["u6-relocate-2","u7-relocate-1"],"finish_turn":false}',
+      brief,
+    )
+
+  def test_map_batch_failure_to_option(self):
+    options = self.multi_actor_options
+    concatenated = (
+      options[0]["actions"]
+      + options[1]["actions"]
+      + [{"action": "FinishWithGreedy", "groups": [], "holds": []}]
+    )
+    self.assertEqual(
+      sd.map_batch_failure_to_option(options, concatenated, 0),
+      {"option_id": "u6-relocate-2", "actor_id": 6},
+    )
+    self.assertEqual(
+      sd.map_batch_failure_to_option(options, concatenated, 1),
+      {"option_id": "u7-relocate-1", "actor_id": 7},
+    )
+    self.assertIsNone(sd.map_batch_failure_to_option(options, concatenated, 2))
+    two_action = [
+      {
+        "option_id": "u1-attack-1",
+        "actor_id": 1,
+        "actions": [
+          {"action": "Move", "unit_id": 1, "col": 4, "row": 3},
+          {"action": "Attack", "attacker_id": 1, "defender_id": 5},
+        ],
+      },
+      {
+        "option_id": "u2-relocate-1",
+        "actor_id": 2,
+        "actions": [{"action": "Move", "unit_id": 2, "col": 1, "row": 1}],
+      },
+    ]
+    concat = two_action[0]["actions"] + two_action[1]["actions"]
+    self.assertEqual(
+      sd.map_batch_failure_to_option(two_action, concat, 1),
+      {"option_id": "u1-attack-1", "actor_id": 1},
+    )
+    self.assertEqual(
+      sd.map_batch_failure_to_option(two_action, concat, 2),
+      {"option_id": "u2-relocate-1", "actor_id": 2},
+    )
 
 
 if __name__ == "__main__":

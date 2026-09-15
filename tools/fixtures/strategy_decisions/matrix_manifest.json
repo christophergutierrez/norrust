@@ -128,7 +128,7 @@
         {
           "kind": "choose",
           "decision_id": "__FROM_PROMPT__",
-          "option_id": "attack_1",
+          "option_ids": ["u3-attack-1"],
           "finish_turn": true
         }
       ],
@@ -166,7 +166,7 @@
         {
           "kind": "choose",
           "decision_id": "__FROM_PROMPT__",
-          "option_id": "relocate_1",
+          "option_ids": ["u1-relocate-1"],
           "finish_turn": true
         }
       ],
@@ -213,7 +213,7 @@
         {
           "kind": "choose",
           "decision_id": "__FROM_PROMPT__",
-          "option_id": "attack_1",
+          "option_ids": ["u3-attack-1"],
           "finish_turn": true
         }
       ],
@@ -328,7 +328,7 @@
         {
           "kind": "choose",
           "decision_id": "__FROM_PROMPT__",
-          "option_id": "attack_1",
+          "option_ids": ["u3-attack-1"],
           "finish_turn": true
         }
       ],

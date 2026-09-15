@@ -245,11 +245,12 @@ class StrategyRoutineStack3Tests(unittest.TestCase):
             self.assertEqual(len(packets), 1)
             packet = packets[0]
             self.assertEqual(packet["evidence"]["friendly_unit_ids"], [3, 5])
-            self.assertEqual(packet["evidence"]["primary_actor_id"], 5)
+            self.assertEqual(packet["evidence"]["actor_ids"], [5])
+            self.assertNotIn("primary_actor_id", packet["evidence"])
             self.assertTrue(packet["options"])
             prompt_text = "\n".join(prompts(prompt_log))
             self.assertIn('"friendly_unit_ids":[3,5]', prompt_text)
-            self.assertIn('"primary_actor_id":5', prompt_text)
+            self.assertIn('"actor_ids":[5]', prompt_text)
             relocation = next(option for option in packet["options"]
                               if option["category"] == "relocation")
             self.assertIn(f"Cost: {relocation['movement_cost']}", prompt_text)
@@ -283,7 +284,8 @@ class StrategyRoutineStack3Tests(unittest.TestCase):
             self.assertEqual(len(packets), 1)
             packet = packets[0]
             self.assertEqual(packet["evidence"]["friendly_unit_ids"], [3])
-            self.assertIsNone(packet["evidence"]["primary_actor_id"])
+            self.assertEqual(packet["evidence"]["actor_ids"], [])
+            self.assertNotIn("primary_actor_id", packet["evidence"])
             self.assertEqual(packet["evidence"]["options"], [])
             self.assertEqual(packet["evidence"]["options_empty_reason"], "no_executable_options")
             self.assertEqual(packet["coverage"]["options"], "complete")

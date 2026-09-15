@@ -45,9 +45,10 @@ def main(argv: list[str] | None = None) -> int:
   response = dict(raw_response)
 
   if response.get("kind") == "choose" and response.get("decision_id") == "__FROM_PROMPT__":
-    match = re.search(r'"decision_id":\s*"([^"]+)"', prompt)
-    if match:
-      response["decision_id"] = match.group(1)
+    issued = [match for match in re.findall(r'"decision_id":\s*"([^"]+)"', prompt)
+              if match != "dec-issued"]
+    if issued:
+      response["decision_id"] = issued[-1]
 
   response_text = json.dumps(response, separators=(",", ":"))
   reply = {

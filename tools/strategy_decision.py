@@ -214,9 +214,10 @@ def build_decision_packet(
   else:
     decision_kind = DECISION_KIND_POLICY
 
-  # Extract options from evidence if tactical
+  # Extract options from evidence if tactical. Keep the engine's flat array;
+  # do not synthesize a grouped copy or rewrite option IDs.
   raw_options = evidence.get("options")
-  options = list(raw_options) if isinstance(raw_options, list) else []
+  options = copy.deepcopy(raw_options) if isinstance(raw_options, list) else []
   options_truncated = bool(evidence.get("options_truncated", False))
 
   # Determine allowed_kinds
@@ -286,21 +287,38 @@ def validate_response_context(response: Any, packet: DecisionPacket) -> None:
     )
 
   if kind == "choose":
-    resp_did = getattr(response, "decision_id", response.get("decision_id") if isinstance(response, dict) else None)
+    resp_did = getattr(response, "decision_id", None)
+    if resp_did is None and isinstance(response, dict):
+      resp_did = response.get("decision_id")
     if resp_did != packet.decision_id:
       raise ContextualResponseError(
         f"Decision ID mismatch: expected {packet.decision_id!r}, got {resp_did!r}"
       )
-    resp_oid = getattr(response, "option_id", response.get("option_id") if isinstance(response, dict) else None)
-    valid_oids = [
-      opt["option_id"] for opt in packet.options
+    resp_oids = getattr(response, "option_ids", None)
+    if resp_oids is None and isinstance(response, dict):
+      resp_oids = response.get("option_ids")
+    if not isinstance(resp_oids, list):
+      raise ContextualResponseError("choose response is missing option_ids")
+    valid_opts = {
+      opt["option_id"]: opt
+      for opt in packet.options
       if isinstance(opt, dict) and "option_id" in opt
-    ]
-    if resp_oid not in valid_oids:
-      raise ContextualResponseError(
-        f"Unknown option_id {resp_oid!r}. Available options: {valid_oids}"
-      )
-    finish_turn = getattr(response, "finish_turn", response.get("finish_turn") if isinstance(response, dict) else False)
+    }
+    seen_actors: set[Any] = set()
+    for option_id in resp_oids:
+      if option_id not in valid_opts:
+        raise ContextualResponseError(
+          f"Unknown option_id {option_id!r}. Available options: {list(valid_opts)}"
+        )
+      actor_id = valid_opts[option_id].get("actor_id")
+      if actor_id in seen_actors:
+        raise ContextualResponseError(
+          f"at most one option per actor_id; actor {actor_id!r} selected twice"
+        )
+      seen_actors.add(actor_id)
+    finish_turn = getattr(response, "finish_turn", None)
+    if finish_turn is None and isinstance(response, dict):
+      finish_turn = response.get("finish_turn", False)
     if packet.final_only and not finish_turn:
       raise ContextualResponseError("final_only strategy choose must set finish_turn=true")
 
@@ -389,6 +407,97 @@ class IncidentTracker:
           self.observe_incident(st, rev, ikey)
 
 
+def map_batch_failure_to_option(
+  options: list[dict[str, Any]],
+  concatenated_actions: list[dict[str, Any]],
+  failed_index: int,
+) -> Optional[dict[str, Any]]:
+  """Map an engine batch failure index onto the covering option_id and actor_id.
+
+  ``options`` is the issued packet's flat option list. ``concatenated_actions``
+  is the submitted action list in execution order (selected option actions,
+  optionally followed by an appended no-sweep finish). ``failed_index`` is the
+  engine action index. Returns ``{"option_id": ..., "actor_id": ...}`` or
+  ``None`` when the index is unmapped (including an appended finish).
+  """
+  if (not isinstance(failed_index, int) or isinstance(failed_index, bool)
+      or failed_index < 0 or not isinstance(concatenated_actions, list)):
+    return None
+  remaining = [opt for opt in options if isinstance(opt, dict)]
+  offset = 0
+  while offset < len(concatenated_actions):
+    match: Optional[dict[str, Any]] = None
+    match_len = 0
+    for opt in remaining:
+      acts = opt.get("actions")
+      if not isinstance(acts, list) or not acts:
+        continue
+      n = len(acts)
+      if concatenated_actions[offset:offset + n] == acts:
+        match = opt
+        match_len = n
+        break
+    if match is None:
+      return None
+    if offset <= failed_index < offset + match_len:
+      return {"option_id": match.get("option_id"), "actor_id": match.get("actor_id")}
+    offset += match_len
+    remaining = [opt for opt in remaining if opt is not match]
+  return None
+
+
+def _int_fact(value: Any) -> Optional[int]:
+  if isinstance(value, int) and not isinstance(value, bool):
+    return value
+  return None
+
+
+def _format_option_exposure(option: dict[str, Any]) -> str:
+  """Render destination exposure. Nonzero, zero, and unknown stay distinct."""
+  if "exposure" not in option:
+    return ""
+  exp = option.get("exposure")
+  if not isinstance(exp, dict):
+    return " | Exposure after this option: unknown"
+  attackers = _int_fact(exp.get("distinct_attacker_count"))
+  max_damage = _int_fact(exp.get("max_incoming_damage"))
+  expected_tenths = _int_fact(exp.get("expected_incoming_damage_tenths"))
+  if attackers is None and max_damage is None and expected_tenths is None:
+    return " | Exposure after this option: unknown"
+  nonzero = (
+    (attackers is not None and attackers > 0)
+    or (max_damage is not None and max_damage > 0)
+    or (expected_tenths is not None and expected_tenths > 0)
+  )
+  parts: list[str] = []
+  if attackers is not None:
+    parts.append(f"attackers={attackers}")
+  if max_damage is not None:
+    parts.append(f"max incoming damage={max_damage}")
+  if expected_tenths is not None:
+    parts.append(f"expected incoming damage={expected_tenths / 10.0:.1f}")
+  estimate = "estimates from the issuing state, not a joint-plan forecast"
+  facts = ", ".join(parts)
+  if nonzero:
+    return f" | still exposed after this option | Exposure ({estimate}): {facts}"
+  return f" | Exposure after this option ({estimate}): {facts}"
+
+
+def _group_options_by_actor(options: list[dict[str, Any]]) -> list[tuple[Any, list[dict[str, Any]]]]:
+  groups: list[tuple[Any, list[dict[str, Any]]]] = []
+  index: dict[Any, int] = {}
+  for opt in options:
+    if not isinstance(opt, dict):
+      continue
+    actor = opt.get("actor_id")
+    if actor not in index:
+      index[actor] = len(groups)
+      groups.append((actor, [opt]))
+    else:
+      groups[index[actor]][1].append(opt)
+  return groups
+
+
 def render_decision_brief(
   packet: DecisionPacket,
   *,
@@ -420,79 +529,101 @@ def render_decision_brief(
       if packet.evidence.get("options_empty_reason") == "no_executable_options":
         option_coverage = packet.coverage.get("options", "unknown")
         sections.append(
-          "No eligible primary actor has an executable action in this bounded tactical menu. "
+          "No eligible actor has an executable action in this bounded tactical menu. "
           "This does not establish that every custom legal action by another unit is unavailable. "
           f"Tactical option enumeration coverage is {option_coverage}."
         )
+    sections.append(
+      "If next-turn exposure of a custom destination is uncertain, use the existing "
+      "destination inspection before acting."
+    )
     if packet.evidence:
       trigger = packet.evidence.get("trigger", "unspecified")
       friendly = packet.evidence.get("friendly_unit_ids", [])
       enemy = packet.evidence.get("enemy_unit_ids", [])
-      primary = packet.evidence.get("primary_actor_id")
-      primary_str = f", primary_actor={primary}" if primary is not None else ""
-      sections.append(
-        f"Contact facts: trigger={trigger}, friendly_units={friendly}, enemy_units={enemy}{primary_str}"
-      )
+      fact_parts = [
+        f"trigger={trigger}",
+        f"friendly_units={friendly}",
+        f"enemy_units={enemy}",
+      ]
+      actor_ids = packet.evidence.get("actor_ids")
+      if actor_ids is not None:
+        fact_parts.append(f"actor_ids={actor_ids}")
+      eligible_count = packet.evidence.get("eligible_actor_count")
+      if eligible_count is not None:
+        fact_parts.append(f"eligible_actor_count={eligible_count}")
+      if "actors_truncated" in packet.evidence:
+        fact_parts.append(
+          f"actors_truncated={json.dumps(bool(packet.evidence.get('actors_truncated')))}"
+        )
+      sections.append("Contact facts: " + ", ".join(fact_parts))
     if packet.options:
-      opt_lines = ["Offered tactical options for primary actor:"]
-      for opt in packet.options:
-        oid = opt.get("option_id")
-        cat = opt.get("category")
-        acts = opt.get("actions", [])
-        act_descs = []
-        for a in acts:
-          act_name = a.get("action")
-          if act_name == "Move":
-            act_descs.append(f"Move({a.get('unit_id')} -> ({a.get('col', a.get('to_col'))}, {a.get('row', a.get('to_row'))}))")
-          elif act_name == "Attack":
-            att_id = a.get("attacker_id", a.get("unit_id"))
-            def_id = a.get("defender_id", a.get("target_id"))
-            act_descs.append(f"Attack({att_id} -> {def_id})")
-          else:
-            act_descs.append(json.dumps(a))
-        actions_summary = "; ".join(act_descs)
-        forecast_str = ""
-        fc = opt.get("forecast")
-        if isinstance(fc, dict):
-          forecast_parts = []
-          dealt = fc.get("expected_damage_dealt_tenths")
-          received = fc.get("expected_damage_received_tenths")
-          kill_chance = fc.get("kill_chance_bps")
-          outcome = fc.get("outcome_bps")
-          if isinstance(dealt, int) and not isinstance(dealt, bool):
-            forecast_parts.append(f"expected damage dealt={dealt / 10.0:.1f}")
-          if isinstance(received, int) and not isinstance(received, bool):
-            forecast_parts.append(f"expected counter damage={received / 10.0:.1f}")
-          if isinstance(kill_chance, int) and not isinstance(kill_chance, bool):
-            forecast_parts.append(f"kill chance={kill_chance / 100.0:.1f}%")
-          if (isinstance(outcome, list) and len(outcome) == 3
-              and isinstance(outcome[2], int) and not isinstance(outcome[2], bool)):
-            forecast_parts.append(f"attacker loss chance={outcome[2] / 100.0:.1f}%")
-          if forecast_parts:
-            forecast_str = " | Forecast: " + "; ".join(forecast_parts) + " (estimates, not guarantees)"
-        exposure_str = ""
-        exp = opt.get("exposure")
-        if isinstance(exp, dict):
-          exposure_parts = []
-          attackers = exp.get("distinct_attacker_count")
-          max_damage = exp.get("max_incoming_damage")
-          expected_damage = exp.get("expected_incoming_damage_tenths")
-          if isinstance(attackers, int) and not isinstance(attackers, bool):
-            exposure_parts.append(f"attackers={attackers}")
-          if isinstance(max_damage, int) and not isinstance(max_damage, bool):
-            exposure_parts.append(f"max incoming damage={max_damage}")
-          if isinstance(expected_damage, int) and not isinstance(expected_damage, bool):
-            exposure_parts.append(f"expected incoming damage={expected_damage / 10.0:.1f}")
-          if exposure_parts:
-            exposure_str = " | Exposure: " + ", ".join(exposure_parts)
-        movement_cost = opt.get("movement_cost")
-        cost_str = (f" | Cost: {movement_cost}"
-                    if isinstance(movement_cost, int) and not isinstance(movement_cost, bool)
-                    else "")
-        opt_lines.append(f"  - Option {oid!r} ({cat}): [{actions_summary}]{cost_str}{forecast_str}{exposure_str}")
+      opt_lines = [
+        "Offered tactical options, grouped by actor from the flat issued list. "
+        "Selecting several options in one choose response avoids another call per unit."
+      ]
+      for actor_id, actor_opts in _group_options_by_actor(packet.options):
+        opt_lines.append(f"Actor {actor_id}:")
+        for opt in actor_opts:
+          oid = opt.get("option_id")
+          cat = opt.get("category")
+          acts = opt.get("actions", [])
+          act_descs = []
+          for a in acts:
+            if not isinstance(a, dict):
+              act_descs.append(json.dumps(a))
+              continue
+            act_name = a.get("action")
+            if act_name == "Move":
+              act_descs.append(
+                f"Move({a.get('unit_id')} -> ({a.get('col', a.get('to_col'))}, {a.get('row', a.get('to_row'))}))"
+              )
+            elif act_name == "Attack":
+              att_id = a.get("attacker_id", a.get("unit_id"))
+              def_id = a.get("defender_id", a.get("target_id"))
+              act_descs.append(f"Attack({att_id} -> {def_id})")
+            else:
+              act_descs.append(json.dumps(a))
+          actions_summary = "; ".join(act_descs)
+          forecast_str = ""
+          fc = opt.get("forecast")
+          if isinstance(fc, dict):
+            forecast_parts = []
+            dealt = fc.get("expected_damage_dealt_tenths")
+            received = fc.get("expected_damage_received_tenths")
+            kill_chance = fc.get("kill_chance_bps")
+            outcome = fc.get("outcome_bps")
+            if isinstance(dealt, int) and not isinstance(dealt, bool):
+              forecast_parts.append(f"expected damage dealt={dealt / 10.0:.1f}")
+            if isinstance(received, int) and not isinstance(received, bool):
+              forecast_parts.append(f"expected counter damage={received / 10.0:.1f}")
+            if isinstance(kill_chance, int) and not isinstance(kill_chance, bool):
+              forecast_parts.append(f"kill chance={kill_chance / 100.0:.1f}%")
+            if (isinstance(outcome, list) and len(outcome) == 3
+                and isinstance(outcome[2], int) and not isinstance(outcome[2], bool)):
+              forecast_parts.append(f"attacker loss chance={outcome[2] / 100.0:.1f}%")
+            if forecast_parts:
+              forecast_str = " | Forecast: " + "; ".join(forecast_parts) + " (estimates, not guarantees)"
+          exposure_str = _format_option_exposure(opt)
+          movement_cost = opt.get("movement_cost")
+          cost_str = (f" | Cost: {movement_cost}"
+                      if isinstance(movement_cost, int) and not isinstance(movement_cost, bool)
+                      else "")
+          opt_lines.append(
+            f"  - Option {oid!r} ({cat}): [{actions_summary}]{cost_str}{forecast_str}{exposure_str}"
+          )
+      example_ids = [
+        opt.get("option_id") for opt in packet.options
+        if isinstance(opt, dict) and isinstance(opt.get("option_id"), str)
+      ][:2]
+      example = {
+        "kind": "choose",
+        "decision_id": packet.decision_id,
+        "option_ids": example_ids or ["<option_id>"],
+        "finish_turn": False,
+      }
       opt_lines.append(
-        f"To choose an option, respond with: "
-        f'{{"kind": "choose", "decision_id": "{packet.decision_id}", "option_id": "<option_id>", "finish_turn": false}}'
+        "To choose, respond with: " + json.dumps(example, separators=(",", ":"))
       )
       sections.append("\n".join(opt_lines))
   elif packet.reason in ("unsafe_route", "route_unavailable"):

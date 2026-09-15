@@ -359,23 +359,29 @@ policy prose is never parsed or executed. Each recruit
 `count` is a finite total for that policy installation, not a per-turn purchase,
 and a replacement policy replaces all previous orders and remaining counts.
 
-When tactical options are generated for current-state contact, the model may select an
-offered option with strict four-key JSON:
-`{"kind": "choose", "decision_id": "...", "option_id": "...", "finish_turn": false}`.
-No extra keys or omitted fields are permitted. The Python controller expands the chosen
-option strictly from the issued packet, validates the actions against the current revision,
-and submits them transactionally with `proposal_source: "engine_option"` while preserving
-model authorship (`source: "llm"`). Option IDs alone never authorize execution. Custom
+When tactical options are generated for current-state contact, the model may select one to
+three offered options with:
+`{"kind": "choose", "decision_id": "...", "option_ids": ["u6-relocate-2","u7-relocate-1"], "finish_turn": false}`.
+`option_ids` are unique in the issued packet, at most one per actor, and execute in array
+order. The old singular `option_id` field is rejected. No extra keys or omitted fields are
+permitted. The Python controller expands every ID strictly from the durably issued packet,
+validates the concatenated actions against the current revision as one batch, and submits
+them transactionally with `proposal_source: "engine_option"` while preserving model
+authorship (`source: "llm"`). Option IDs alone never authorize execution. A conflicting
+combination is rejected atomically; engine errors map back to option ID and actor. Custom
 `act` orders, read-only inspections, `finish_turn`, and `resign` remain available escape paths.
-The engine chooses the lowest-ID threatened recruiter with an executable offered action,
-then the lowest-ID threatened friendly unit with one, then the lowest-ID unit with an
-executable attack. A candidate with no offered action is skipped; `moved=true` still permits
-a legal attack, and `attacked=true` still permits a legal relocation. Contact facts retain
-all threatened unit IDs, including exhausted units. An empty `options` array carries
-`options_empty_reason: "no_executable_options"` when no eligible primary actor has an
+The engine enumerates eligible actors once: threatened recruiters by ID, other threatened
+friendlies by ID, then remaining friendlies with executable attacks by ID, at most three,
+with at most four options each. `actor_ids` is that selected list; `eligible_actor_count` is
+the uncapped pool; `actors_truncated` is true when the pool exceeded three. A candidate with
+no offered action is skipped; `moved=true` still permits a legal attack, and `attacked=true`
+still permits a legal relocation. Contact facts retain all threatened unit IDs, including
+exhausted units. An empty `options` array carries
+`options_empty_reason: "no_executable_options"` when no eligible actor has an
 executable action in this bounded menu. That reason describes offered tactical options only;
 other units may still accept custom legal actions. `coverage.options` describes enumeration
-coverage independently and remains `complete` for a genuinely empty menu.
+coverage independently and remains `complete` for a genuinely empty menu. Nonzero destination
+exposure is labeled `still exposed after this option` using issuing-state estimates.
 
 The initial policy and exception briefs repeat the compact live map, both-side
 unit identities, economy and recruit costs. Exception briefs also repeat the

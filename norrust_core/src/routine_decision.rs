@@ -1,6 +1,6 @@
 //! Bounded tactical choices for current-state contact decisions.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -52,12 +52,24 @@ pub struct TacticalOption {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TacticalDecisionFacts {
-    pub primary_actor_id: Option<u32>,
+    /// Selected actor IDs in priority order, length 0–3.
+    pub actor_ids: Vec<u32>,
+    /// Distinct eligible actors before the three-actor cap.
+    pub eligible_actor_count: u32,
+    /// True iff `eligible_actor_count` exceeds `actor_ids.len()`.
+    pub actors_truncated: bool,
     pub options: Vec<TacticalOption>,
     pub options_truncated: bool,
-    /// Present only when no primary actor has an executable offered action.
+    /// Present only when no selected actor has an executable offered action.
     /// Availability is independent of tactical-option enumeration coverage.
     pub options_empty_reason: Option<String>,
+}
+
+const MAX_SELECTED_ACTORS: usize = 3;
+
+struct ActorGeneratedOptions {
+    options: Vec<TacticalOption>,
+    truncated: bool,
 }
 
 fn has_executable_attack(state: &GameState, actor_id: u32) -> Result<bool, TacticsError> {
@@ -156,15 +168,17 @@ fn has_executable_options(state: &GameState, actor_id: u32) -> Result<bool, Tact
     Ok(has_executable_relocation(state, actor_id)? || has_executable_attack(state, actor_id)?)
 }
 
-/// Choose one primary friendly actor deterministically:
-/// 1. Lowest-ID threatened recruiter with an executable tactical option
-/// 2. Lowest-ID threatened friendly unit with an executable tactical option
-/// 3. Lowest-ID unit with an executable attack opportunity
-pub fn select_primary_actor(
-    state: &GameState,
-    side: u8,
-) -> Result<Option<u32>, TacticsError> {
-    // 1. Threatened recruiters
+/// Enumerate eligible friendly actors once, in priority order:
+/// 1. Threatened recruiters by ID
+/// 2. Other threatened friendlies by ID
+/// 3. Remaining friendlies with executable attack opportunities by ID
+///
+/// Actors are deduplicated. Eligibility uses legality helpers and does not
+/// generate forecasts or ranked menus for every unit.
+pub fn select_eligible_actors(state: &GameState, side: u8) -> Result<Vec<u32>, TacticsError> {
+    let mut eligible = Vec::new();
+    let mut seen = HashSet::new();
+
     let recruiter_surface = recruiter_threats_after_end_turn(state, side)?;
     let mut threatened_recruiters: Vec<u32> = recruiter_surface
         .recruiters
@@ -174,12 +188,14 @@ pub fn select_primary_actor(
         .collect();
     threatened_recruiters.sort_unstable();
     for actor_id in threatened_recruiters {
+        if !seen.insert(actor_id) {
+            continue;
+        }
         if has_executable_options(state, actor_id)? {
-            return Ok(Some(actor_id));
+            eligible.push(actor_id);
         }
     }
 
-    // 2. Lowest-ID threatened friendly unit
     let unit_surface = unit_threats_after_end_turn(state, side)?;
     let mut threatened_units: Vec<u32> = unit_surface
         .units
@@ -189,12 +205,14 @@ pub fn select_primary_actor(
         .collect();
     threatened_units.sort_unstable();
     for actor_id in threatened_units {
+        if !seen.insert(actor_id) {
+            continue;
+        }
         if has_executable_options(state, actor_id)? {
-            return Ok(Some(actor_id));
+            eligible.push(actor_id);
         }
     }
 
-    // 3. Lowest-ID unit with an attack opportunity
     let mut attack_units: Vec<u32> = state
         .units
         .iter()
@@ -202,29 +220,75 @@ pub fn select_primary_actor(
         .collect();
     attack_units.sort_unstable();
     for actor_id in attack_units {
+        if !seen.insert(actor_id) {
+            continue;
+        }
         if has_executable_attack(state, actor_id)? {
-            return Ok(Some(actor_id));
+            eligible.push(actor_id);
         }
     }
 
-    Ok(None)
+    Ok(eligible)
+}
+
+fn empty_tactical_facts() -> TacticalDecisionFacts {
+    TacticalDecisionFacts {
+        actor_ids: Vec::new(),
+        eligible_actor_count: 0,
+        actors_truncated: false,
+        options: Vec::new(),
+        options_truncated: false,
+        options_empty_reason: Some("no_executable_options".to_string()),
+    }
 }
 
 /// Generate at most 4 bounded tactical options (up to 2 attacks, up to 2 relocations)
-/// for the deterministically selected primary actor.
+/// for each of at most three selected eligible actors.
 pub fn generate_tactical_options(
     state: &GameState,
     side: u8,
 ) -> Result<TacticalDecisionFacts, TacticsError> {
-    let Some(actor_id) = select_primary_actor(state, side)? else {
-        return Ok(TacticalDecisionFacts {
-            primary_actor_id: None,
-            options: Vec::new(),
-            options_truncated: false,
-            options_empty_reason: Some("no_executable_options".to_string()),
-        });
-    };
+    let eligible = select_eligible_actors(state, side)?;
+    let eligible_actor_count = eligible.len() as u32;
+    if eligible.is_empty() {
+        return Ok(empty_tactical_facts());
+    }
 
+    let mut actor_ids = Vec::new();
+    let mut options = Vec::new();
+    let mut options_truncated = false;
+    for actor_id in eligible.iter().copied().take(MAX_SELECTED_ACTORS) {
+        let generated = generate_actor_options(state, actor_id)?;
+        if generated.options.is_empty() {
+            continue;
+        }
+        options_truncated |= generated.truncated;
+        options.extend(generated.options);
+        actor_ids.push(actor_id);
+    }
+
+    if actor_ids.is_empty() {
+        return Ok(TacticalDecisionFacts {
+            eligible_actor_count,
+            actors_truncated: eligible_actor_count > 0,
+            ..empty_tactical_facts()
+        });
+    }
+
+    Ok(TacticalDecisionFacts {
+        actors_truncated: eligible_actor_count as usize > actor_ids.len(),
+        actor_ids,
+        eligible_actor_count,
+        options_empty_reason: None,
+        options,
+        options_truncated,
+    })
+}
+
+fn generate_actor_options(
+    state: &GameState,
+    actor_id: u32,
+) -> Result<ActorGeneratedOptions, TacticsError> {
     let actor = state
         .units
         .get(&actor_id)
@@ -440,7 +504,7 @@ pub fn generate_tactical_options(
 
     for (i, atk) in top_attacks.into_iter().enumerate() {
         options.push(TacticalOption {
-            option_id: format!("attack_{}", i + 1),
+            option_id: format!("u{actor_id}-attack-{}", i + 1),
             category: "attack".to_string(),
             actor_id,
             target_id: Some(atk.2),
@@ -455,7 +519,7 @@ pub fn generate_tactical_options(
 
     for (i, reloc) in top_relocations.into_iter().enumerate() {
         options.push(TacticalOption {
-            option_id: format!("relocate_{}", i + 1),
+            option_id: format!("u{actor_id}-relocate-{}", i + 1),
             category: "relocation".to_string(),
             actor_id,
             target_id: None,
@@ -468,13 +532,9 @@ pub fn generate_tactical_options(
         });
     }
 
-    Ok(TacticalDecisionFacts {
-        primary_actor_id: Some(actor_id),
-        options_empty_reason: options
-            .is_empty()
-            .then(|| "no_executable_options".to_string()),
+    Ok(ActorGeneratedOptions {
         options,
-        options_truncated,
+        truncated: options_truncated,
     })
 }
 
@@ -563,8 +623,17 @@ mod tests {
         let e2 = Unit::from_def(8, registry.get("Skeleton").unwrap(), 1);
         s.place_unit(e2, Hex::from_offset(4, 5));
 
-        let actor = select_primary_actor(&s, 0).unwrap();
-        assert_eq!(actor, Some(50), "recruiter priority beats lower-ID friends");
+        let actors = select_eligible_actors(&s, 0).unwrap();
+        assert_eq!(
+            actors.first().copied(),
+            Some(50),
+            "recruiter priority beats lower-ID friends"
+        );
+        let facts = generate_tactical_options(&s, 0).unwrap();
+        assert_eq!(facts.actor_ids.first().copied(), Some(50));
+        assert!(!facts.actor_ids.is_empty());
+        assert_eq!(facts.eligible_actor_count as usize, actors.len());
+        assert_eq!(facts.actors_truncated, actors.len() > facts.actor_ids.len());
     }
 
     #[test]
@@ -589,8 +658,16 @@ mod tests {
         let e2 = Unit::from_def(8, registry.get("Skeleton").unwrap(), 1);
         s.place_unit(e2, Hex::from_offset(18, 15));
 
-        let actor = select_primary_actor(&s, 0).unwrap();
-        assert_eq!(actor, Some(2), "lowest-ID threatened unit must be chosen");
+        let actors = select_eligible_actors(&s, 0).unwrap();
+        assert_eq!(
+            actors.first().copied(),
+            Some(2),
+            "lowest-ID threatened unit must be chosen"
+        );
+        let facts = generate_tactical_options(&s, 0).unwrap();
+        assert_eq!(facts.actor_ids, vec![2, 4]);
+        assert_eq!(facts.eligible_actor_count, 2);
+        assert!(!facts.actors_truncated);
     }
 
     #[test]
@@ -613,7 +690,9 @@ mod tests {
 
         let facts = crate::routine::current_contact(&s, 0).unwrap().unwrap();
         assert_eq!(facts.friendly_unit_ids, vec![5, 6]);
-        assert_eq!(facts.primary_actor_id, Some(6));
+        assert_eq!(facts.actor_ids, vec![6]);
+        assert_eq!(facts.eligible_actor_count, 1);
+        assert!(!facts.actors_truncated);
         assert!(!facts.options.is_empty());
         assert_eq!(facts.options_empty_reason, None);
     }
@@ -629,8 +708,13 @@ mod tests {
         s.place_unit(enemy, Hex::from_offset(15, 15));
 
         let facts = generate_tactical_options(&s, 0).unwrap();
-        assert_eq!(facts.primary_actor_id, Some(2));
-        assert!(facts.options.iter().any(|option| option.category == "attack"));
+        assert_eq!(facts.actor_ids, vec![2]);
+        assert_eq!(facts.eligible_actor_count, 1);
+        assert!(!facts.actors_truncated);
+        assert!(facts
+            .options
+            .iter()
+            .any(|option| option.category == "attack"));
         assert!(!facts.options.is_empty());
     }
 
@@ -645,18 +729,22 @@ mod tests {
         s.place_unit(enemy, Hex::from_offset(15, 15));
 
         let facts = generate_tactical_options(&s, 0).unwrap();
-        assert_eq!(facts.primary_actor_id, Some(2));
-        assert!(facts.options.iter().any(|option| option.category == "relocation"));
+        assert_eq!(facts.actor_ids, vec![2]);
+        assert_eq!(facts.eligible_actor_count, 1);
+        assert!(!facts.actors_truncated);
+        assert!(facts
+            .options
+            .iter()
+            .any(|option| option.category == "relocation"));
     }
 
     #[test]
     fn all_exhausted_contact_has_explicit_empty_options_reason_and_complete_coverage() {
         let registry = units();
         let mut s = large_test_state();
-        for (friendly_id, enemy_id, friendly_hex, enemy_hex) in [
-            (5, 7, (15, 14), (15, 15)),
-            (6, 8, (18, 14), (18, 15)),
-        ] {
+        for (friendly_id, enemy_id, friendly_hex, enemy_hex) in
+            [(5, 7, (15, 14), (15, 15)), (6, 8, (18, 14), (18, 15))]
+        {
             let mut friendly = Unit::from_def(friendly_id, registry.get("Skeleton").unwrap(), 0);
             friendly.moved = true;
             friendly.attacked = true;
@@ -667,9 +755,14 @@ mod tests {
 
         let facts = crate::routine::current_contact(&s, 0).unwrap().unwrap();
         assert_eq!(facts.friendly_unit_ids, vec![5, 6]);
-        assert_eq!(facts.primary_actor_id, None);
+        assert!(facts.actor_ids.is_empty());
+        assert_eq!(facts.eligible_actor_count, 0);
+        assert!(!facts.actors_truncated);
         assert!(facts.options.is_empty());
-        assert_eq!(facts.options_empty_reason.as_deref(), Some("no_executable_options"));
+        assert_eq!(
+            facts.options_empty_reason.as_deref(),
+            Some("no_executable_options")
+        );
         assert!(!facts.options_truncated);
         assert_eq!(facts.coverage, "complete");
     }
@@ -700,8 +793,17 @@ mod tests {
         e2.hp = 100;
         s.place_unit(e2, Hex::from_offset(18, 15));
 
-        let actor = select_primary_actor(&s, 0).unwrap();
-        assert_eq!(actor, Some(3), "lowest-ID unit with attack opportunity must be chosen");
+        let actors = select_eligible_actors(&s, 0).unwrap();
+        assert_eq!(
+            actors.first().copied(),
+            Some(3),
+            "lowest-ID unit with attack opportunity must be chosen"
+        );
+        let facts = generate_tactical_options(&s, 0).unwrap();
+        assert_eq!(facts.actor_ids.first().copied(), Some(3));
+        assert!(!facts.actor_ids.is_empty());
+        assert_eq!(facts.eligible_actor_count as usize, actors.len());
+        assert_eq!(facts.actors_truncated, actors.len() > facts.actor_ids.len());
     }
 
     #[test]
@@ -718,17 +820,48 @@ mod tests {
         s.place_unit(e1, Hex::from_offset(4, 5));
 
         let facts = generate_tactical_options(&s, 0).unwrap();
-        assert!(facts.primary_actor_id.is_some());
-        assert!(facts.options.len() <= 4);
+        assert!(!facts.actor_ids.is_empty());
+        assert!(facts.actor_ids.len() <= 3);
+        assert!(facts.options.len() <= 4 * facts.actor_ids.len());
 
-        let attack_count = facts.options.iter().filter(|o| o.category == "attack").count();
-        let reloc_count = facts.options.iter().filter(|o| o.category == "relocation").count();
-        assert!(attack_count <= 2, "at most 2 attack options");
-        assert!(reloc_count <= 2, "at most 2 relocation options");
+        for actor_id in &facts.actor_ids {
+            let actor_options: Vec<_> = facts
+                .options
+                .iter()
+                .filter(|o| o.actor_id == *actor_id)
+                .collect();
+            assert!(actor_options.len() <= 4);
+            let attack_count = actor_options
+                .iter()
+                .filter(|o| o.category == "attack")
+                .count();
+            let reloc_count = actor_options
+                .iter()
+                .filter(|o| o.category == "relocation")
+                .count();
+            assert!(attack_count <= 2, "at most 2 attack options per actor");
+            assert!(reloc_count <= 2, "at most 2 relocation options per actor");
+        }
 
-        // Options must have deterministic IDs
+        let mut seen_ids = HashSet::new();
         for opt in &facts.options {
-            assert!(opt.option_id.starts_with("attack_") || opt.option_id.starts_with("relocate_"));
+            assert!(
+                seen_ids.insert(opt.option_id.clone()),
+                "option IDs must be unique in the packet"
+            );
+            match opt.category.as_str() {
+                "attack" => {
+                    assert!(opt
+                        .option_id
+                        .starts_with(&format!("u{}-attack-", opt.actor_id)));
+                }
+                "relocation" => {
+                    assert!(opt
+                        .option_id
+                        .starts_with(&format!("u{}-relocate-", opt.actor_id)));
+                }
+                other => panic!("unexpected option category: {other}"),
+            }
             assert_eq!(opt.coverage, "complete");
         }
     }
@@ -747,14 +880,21 @@ mod tests {
             }
 
             let facts = generate_tactical_options(&s, 0).unwrap();
-            let exposures: Vec<u32> = facts.options.iter()
+            let exposures: Vec<u32> = facts
+                .options
+                .iter()
                 .filter(|option| option.category == "relocation")
                 .filter_map(|option| option.exposure.as_ref())
                 .map(|exposure| exposure.expected_incoming_damage_tenths)
                 .collect();
-            assert!(!exposures.is_empty(), "attacker_count={attacker_count} produced no relocation");
-            assert!(exposures.iter().any(|value| *value > 0),
-                    "attacker_count={attacker_count} lost all supported expected damage: {exposures:?}");
+            assert!(
+                !exposures.is_empty(),
+                "attacker_count={attacker_count} produced no relocation"
+            );
+            assert!(
+                exposures.iter().any(|value| *value > 0),
+                "attacker_count={attacker_count} lost all supported expected damage: {exposures:?}"
+            );
         }
     }
 
@@ -771,7 +911,10 @@ mod tests {
         let facts1 = generate_tactical_options(&s, 0).unwrap();
         let facts2 = generate_tactical_options(&s, 0).unwrap();
 
-        assert_eq!(facts1, facts2, "repeated queries at same state must return identical options");
+        assert_eq!(
+            facts1, facts2,
+            "repeated queries at same state must return identical options"
+        );
 
         // Verify each option's actions are executable on cloned state
         for opt in &facts1.options {
@@ -783,20 +926,29 @@ mod tests {
                         let unit_id = act_val["unit_id"].as_u64().unwrap() as u32;
                         let col = act_val["col"].as_i64().unwrap() as i32;
                         let row = act_val["row"].as_i64().unwrap() as i32;
-                        let res = apply_action(&mut sim, Action::Move {
-                            unit_id,
-                            destination: Hex::from_offset(col, row),
-                        });
+                        let res = apply_action(
+                            &mut sim,
+                            Action::Move {
+                                unit_id,
+                                destination: Hex::from_offset(col, row),
+                            },
+                        );
                         assert!(res.is_ok(), "Move action in option must be legal: {res:?}");
                     }
                     "Attack" => {
                         let attacker_id = act_val["attacker_id"].as_u64().unwrap() as u32;
                         let defender_id = act_val["defender_id"].as_u64().unwrap() as u32;
-                        let res = apply_action(&mut sim, Action::Attack {
-                            attacker_id,
-                            defender_id,
-                        });
-                        assert!(res.is_ok(), "Attack action in option must be legal: {res:?}");
+                        let res = apply_action(
+                            &mut sim,
+                            Action::Attack {
+                                attacker_id,
+                                defender_id,
+                            },
+                        );
+                        assert!(
+                            res.is_ok(),
+                            "Attack action in option must be legal: {res:?}"
+                        );
                     }
                     other => panic!("unexpected action in option: {other}"),
                 }
@@ -824,8 +976,57 @@ mod tests {
         s.place_unit(enemy, Hex::from_offset(10, 11));
 
         let facts = generate_tactical_options(&s, 0).unwrap();
-        assert_eq!(facts.primary_actor_id, Some(2));
-        assert!(facts.options_truncated, "high movement unit must trigger options_truncated");
+        assert_eq!(facts.actor_ids, vec![2]);
+        assert_eq!(facts.eligible_actor_count, 1);
+        assert!(!facts.actors_truncated);
+        assert!(
+            facts.options_truncated,
+            "high movement unit must trigger options_truncated"
+        );
         assert!(facts.options.iter().any(|o| o.category == "relocation"));
+    }
+
+    #[test]
+    fn four_eligible_actors_select_three_and_truncate() {
+        let registry = units();
+        let mut s = large_test_state();
+        for (friendly_id, enemy_id, col) in [(2, 12, 10), (3, 13, 12), (4, 14, 14), (5, 15, 16)] {
+            let friendly = Unit::from_def(friendly_id, registry.get("Skeleton").unwrap(), 0);
+            s.place_unit(friendly, Hex::from_offset(col, 14));
+            let enemy = Unit::from_def(enemy_id, registry.get("Skeleton").unwrap(), 1);
+            s.place_unit(enemy, Hex::from_offset(col, 15));
+        }
+
+        let eligible = select_eligible_actors(&s, 0).unwrap();
+        assert_eq!(eligible, vec![2, 3, 4, 5]);
+
+        let facts = generate_tactical_options(&s, 0).unwrap();
+        assert_eq!(facts.actor_ids, vec![2, 3, 4]);
+        assert_eq!(facts.eligible_actor_count, 4);
+        assert!(facts.actors_truncated);
+        assert!(facts.options.len() <= 12);
+        assert!(facts.options.iter().all(|option| option.actor_id != 5));
+        assert_eq!(facts.options_empty_reason, None);
+
+        let mut seen_ids = HashSet::new();
+        for opt in &facts.options {
+            assert!(facts.actor_ids.contains(&opt.actor_id));
+            assert!(seen_ids.insert(opt.option_id.clone()));
+            assert!(
+                opt.option_id
+                    .starts_with(&format!("u{}-attack-", opt.actor_id))
+                    || opt
+                        .option_id
+                        .starts_with(&format!("u{}-relocate-", opt.actor_id))
+            );
+        }
+        for actor_id in &facts.actor_ids {
+            let count = facts
+                .options
+                .iter()
+                .filter(|option| option.actor_id == *actor_id)
+                .count();
+            assert!(count > 0 && count <= 4);
+        }
     }
 }

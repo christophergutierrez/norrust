@@ -56,7 +56,8 @@ try:
         ContextualResponseError,
         build_decision_packet,
         validate_response_context,
-        render_decision_brief)
+        render_decision_brief,
+        map_batch_failure_to_option)
 except ImportError:  # pragma: no cover - direct script compatibility
     # Running `python tools/llm_client.py` puts only the tools directory on
     # sys.path. Import the package modules from the repository root so their
@@ -99,7 +100,8 @@ except ImportError:  # pragma: no cover - direct script compatibility
         ContextualResponseError,
         build_decision_packet,
         validate_response_context,
-        render_decision_brief)
+        render_decision_brief,
+        map_batch_failure_to_option)
 
 ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "Engage", "EndTurn", "Advance", "Resign",
            "DoneWithImportantMoves", "FinishWithGreedy", "MoveGroupToward"}
@@ -1198,6 +1200,57 @@ def concise_engine_rejection(orders: Any, validation: Any) -> str:
             validation.get("error_code", validation.get("code", "unknown")),
             validation.get("error_message", validation.get("message", "validation failed"))))
     return "ENGINE_REJECTION " + "; ".join(summaries) + (f" omitted_failures={omitted}" if omitted else "")
+
+
+STRATEGY_BATCH_ACTION_LIMIT = 256
+
+
+def resolve_choose_batch(parsed: ChooseResponse, packet: DecisionPacket, *,
+                         no_recruit_macro: bool) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Expand issued option IDs into one ordered action list and provenance ranges."""
+    by_id = {
+        opt.get("option_id"): opt
+        for opt in packet.options
+        if isinstance(opt, dict) and isinstance(opt.get("option_id"), str)
+    }
+    submitted: list[dict[str, Any]] = []
+    ranges: list[dict[str, Any]] = []
+    for option_id in parsed.option_ids:
+        selected = by_id.get(option_id)
+        if selected is None:
+            raise ContextualResponseError(f"unknown option_id: {option_id!r}")
+        try:
+            orders = validate_orders(
+                json.dumps({"actions": selected.get("actions", [])}),
+                no_recruit_macro, require_end_turn=False)
+        except ValueError as exc:
+            raise ModelResponseError(str(exc)) from exc
+        start = len(submitted)
+        submitted.extend(orders)
+        ranges.append({
+            "option_id": option_id,
+            "actor_id": selected.get("actor_id"),
+            "start": start,
+            "end": len(submitted),
+        })
+    extra = 1 if parsed.finish_turn else 0
+    if len(submitted) + extra > STRATEGY_BATCH_ACTION_LIMIT:
+        raise ModelResponseError(
+            f"action batch exceeds {STRATEGY_BATCH_ACTION_LIMIT} objects")
+    return submitted, ranges
+
+
+def choose_validation_feedback(orders: Any, validation: Any, packet: DecisionPacket) -> str:
+    """Engine rejection text plus option/actor mapping for the failed index."""
+    message = engine_validation_feedback(orders, validation)
+    failed_index = validation.get("failed_index") if isinstance(validation, dict) else None
+    mapped = map_batch_failure_to_option(packet.options, orders, failed_index)
+    if mapped is None:
+        return message
+    return (
+        message
+        + f" option_id={mapped.get('option_id')!r} actor_id={mapped.get('actor_id')!r}"
+    )
 
 
 def engine_validation_feedback(orders: Any, validation: Any) -> str:
@@ -6145,7 +6198,8 @@ def run(args: argparse.Namespace) -> int:
     def strategy_submit_act(orders: list[dict[str, Any]], revision: int,
                             reply: ModelReply, *, finish_turn: bool,
                             decision_id: Optional[str] = None,
-                            option_id: Optional[str] = None,
+                            option_ids: Optional[list[str]] = None,
+                            option_action_ranges: Optional[list[dict[str, Any]]] = None,
                             proposal_source: Optional[str] = None) -> None:
         """Submit a model-owned tactical batch through ordinary execution."""
         nonlocal batch_sequence, pending_action, pending_commit, pending_finish_kind
@@ -6171,8 +6225,10 @@ def run(args: argparse.Namespace) -> int:
         }
         if decision_id is not None:
             pending_commit["decision_id"] = decision_id
-        if option_id is not None:
-            pending_commit["option_id"] = option_id
+        if option_ids is not None:
+            pending_commit["option_ids"] = list(option_ids)
+        if option_action_ranges is not None:
+            pending_commit["option_action_ranges"] = copy.deepcopy(option_action_ranges)
         if proposal_source is not None:
             pending_commit["proposal_source"] = proposal_source
 
@@ -6184,8 +6240,10 @@ def run(args: argparse.Namespace) -> int:
         }
         if decision_id is not None:
             req_sub["decision_id"] = decision_id
-        if option_id is not None:
-            req_sub["option_id"] = option_id
+        if option_ids is not None:
+            req_sub["option_ids"] = list(option_ids)
+        if option_action_ranges is not None:
+            req_sub["option_action_ranges"] = copy.deepcopy(option_action_ranges)
         if proposal_source is not None:
             req_sub["proposal_source"] = proposal_source
         durable(req_sub)
@@ -6204,8 +6262,10 @@ def run(args: argparse.Namespace) -> int:
         }
         if decision_id is not None:
             fwd["decision_id"] = decision_id
-        if option_id is not None:
-            fwd["option_id"] = option_id
+        if option_ids is not None:
+            fwd["option_ids"] = list(option_ids)
+        if option_action_ranges is not None:
+            fwd["option_action_ranges"] = copy.deepcopy(option_action_ranges)
         if proposal_source is not None:
             fwd["proposal_source"] = proposal_source
         durable(fwd)
@@ -6437,18 +6497,8 @@ def run(args: argparse.Namespace) -> int:
                         raise ModelResponseError("final_only strategy choose must set finish_turn=true")
                     if decision_packet is None:
                         raise ContextualResponseError("choose response received without active decision packet")
-                    selected_option = next(
-                        (opt for opt in decision_packet.options if opt.get("option_id") == parsed.option_id),
-                        None
-                    )
-                    if selected_option is None:
-                        raise ContextualResponseError(f"unknown option_id: {parsed.option_id!r}")
-                    try:
-                        opt_orders = validate_orders(
-                            json.dumps({"actions": selected_option.get("actions", [])}),
-                            args.no_recruit_macro, require_end_turn=False)
-                    except ValueError as exc:
-                        raise ModelResponseError(str(exc)) from exc
+                    opt_orders, option_action_ranges = resolve_choose_batch(
+                        parsed, decision_packet, no_recruit_macro=args.no_recruit_macro)
                     submitted = list(opt_orders)
                     if parsed.finish_turn:
                         submitted.append(copy.deepcopy(NO_SWEEP_FINISH))
@@ -6459,7 +6509,8 @@ def run(args: argparse.Namespace) -> int:
                                 "valid": False, "validation": copy.deepcopy(validation)})
                         raise ModelResponseError(
                             "engine rejected strategy choose: " +
-                            engine_validation_feedback(submitted, validation))
+                            choose_validation_feedback(submitted, validation, decision_packet))
+                    parsed.option_action_ranges = option_action_ranges
                 if is_redundant_finish_turn(decoded):
                     note_finish_normalization(reply, decoded)
                 return parsed, reply
@@ -6771,20 +6822,16 @@ def run(args: argparse.Namespace) -> int:
                                  message="final_only strategy choose must set finish_turn=true")
                     durable({"type": "terminal", **metadata})
                     return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
-                selected_option = next(
-                    (opt for opt in packet.options if opt.get("option_id") == parsed.option_id),
-                    None
-                )
-                if selected_option is None:
+                try:
+                    orders, option_action_ranges = resolve_choose_batch(
+                        parsed, packet, no_recruit_macro=args.no_recruit_macro)
+                except ContextualResponseError as exc:
                     set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
                                  reason=TERMINAL_MODEL_INVALID, code="strategy_response_invalid",
-                                 message=f"unknown option_id: {parsed.option_id!r}")
+                                 message=str(exc))
                     durable({"type": "terminal", **metadata})
                     return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
-                try:
-                    orders = validate_orders(json.dumps({"actions": selected_option.get("actions", [])}),
-                                             args.no_recruit_macro, require_end_turn=False)
-                except ValueError as exc:
+                except ModelResponseError as exc:
                     set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
                                  reason=TERMINAL_MODEL_INVALID, code="strategy_act_invalid",
                                  message=str(exc))
@@ -6794,7 +6841,8 @@ def run(args: argparse.Namespace) -> int:
                     orders, revision, reply,
                     finish_turn=parsed.finish_turn,
                     decision_id=parsed.decision_id,
-                    option_id=parsed.option_id,
+                    option_ids=list(parsed.option_ids),
+                    option_action_ranges=option_action_ranges,
                     proposal_source="engine_option",
                 )
                 return None

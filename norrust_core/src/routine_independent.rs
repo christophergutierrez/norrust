@@ -446,7 +446,11 @@ pub fn evaluate_candidate(
 
     // 3. Moving unit after the move: no attack opportunity from new hex, no threats
     if let Ok(tactics_after) = unit_tactics(&clone, u) {
-        if tactics_after.origins.iter().any(|o| !o.engagements.is_empty()) {
+        if tactics_after
+            .origins
+            .iter()
+            .any(|o| !o.engagements.is_empty())
+        {
             return Ok(None);
         }
     } else {
@@ -550,9 +554,11 @@ pub fn find_independent_move(
 ) -> Result<Option<IndependentMoveExecution>, TacticsError> {
     // Check recruiter danger first: if recruiter has any threat, return None immediately!
     let recruiter_surface = recruiter_threats_after_end_turn(state, side)?;
-    if recruiter_surface.recruiters.iter().any(|r| {
-        r.distinct_attacker_count > 0 || r.open_distinct_attacker_count > 0
-    }) {
+    if recruiter_surface
+        .recruiters
+        .iter()
+        .any(|r| r.distinct_attacker_count > 0 || r.open_distinct_attacker_count > 0)
+    {
         return Ok(None);
     }
 
@@ -582,11 +588,11 @@ pub fn find_independent_move(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use crate::board::{Board, Tile};
     use crate::loader::Registry;
     use crate::schema::UnitDef;
     use crate::unit::Unit;
+    use std::path::PathBuf;
 
     fn units() -> Registry<UnitDef> {
         Registry::load_from_dir(
@@ -642,7 +648,9 @@ mod tests {
             trigger: "exposure",
             friendly_unit_ids: vec![1],
             enemy_unit_ids: vec![10],
-            primary_actor_id: Some(1),
+            actor_ids: vec![1],
+            eligible_actor_count: 1,
+            actors_truncated: false,
             options: Vec::new(),
             options_truncated: false,
             options_empty_reason: None,
@@ -652,7 +660,10 @@ mod tests {
         // Recruiter is in danger -> find_independent_move MUST return None
         let result = find_independent_move(&s, 0, &policy, &progress, &scouts, &contact_facts);
         assert!(result.is_ok());
-        assert!(result.unwrap().is_none(), "Recruiter danger must preclude distant movement");
+        assert!(
+            result.unwrap().is_none(),
+            "Recruiter danger must preclude distant movement"
+        );
     }
 
     #[test]
@@ -668,7 +679,8 @@ mod tests {
         s.place_unit(e1, Hex::from_offset(5, 6));
 
         // Distant scout at (20, 20) with village target at (24, 24)
-        s.board.set_tile(Hex::from_offset(24, 24), Tile::new("village"));
+        s.board
+            .set_tile(Hex::from_offset(24, 24), Tile::new("village"));
         let f3 = Unit::from_def(3, registry.get("Ghost").unwrap(), 0);
         s.place_unit(f3, Hex::from_offset(20, 20));
 
@@ -686,7 +698,9 @@ mod tests {
             trigger: "exposure",
             friendly_unit_ids: vec![2],
             enemy_unit_ids: vec![10],
-            primary_actor_id: Some(2),
+            actor_ids: vec![2],
+            eligible_actor_count: 1,
+            actors_truncated: false,
             options: Vec::new(),
             options_truncated: false,
             options_empty_reason: None,
@@ -696,7 +710,10 @@ mod tests {
         let result = find_independent_move(&s, 0, &policy, &progress, &scouts, &contact_facts);
         assert!(result.is_ok());
         let indep = result.unwrap();
-        assert!(indep.is_some(), "Distant scout should be permitted to advance independently");
+        assert!(
+            indep.is_some(),
+            "Distant scout should be permitted to advance independently"
+        );
         let execution = indep.unwrap();
         assert_eq!(execution.candidate.unit_id, 3);
         assert_eq!(execution.candidate.reason, "village");
@@ -723,7 +740,8 @@ mod tests {
         let e2 = Unit::from_def(11, registry.get("Skeleton").unwrap(), 1);
         s.place_unit(e2, Hex::from_offset(10, 11));
 
-        s.board.set_tile(Hex::from_offset(24, 24), Tile::new("village"));
+        s.board
+            .set_tile(Hex::from_offset(24, 24), Tile::new("village"));
 
         let policy = RoutinePolicy {
             reserve_gold: 0,
@@ -739,7 +757,9 @@ mod tests {
             trigger: "attack_and_exposure",
             friendly_unit_ids: vec![2, 3],
             enemy_unit_ids: vec![10, 11],
-            primary_actor_id: Some(2),
+            actor_ids: vec![2],
+            eligible_actor_count: 1,
+            actors_truncated: false,
             options: Vec::new(),
             options_truncated: false,
             options_empty_reason: None,
@@ -749,7 +769,10 @@ mod tests {
         // Scout 3 has an attack opportunity, so it must NOT be moved independently
         let result = find_independent_move(&s, 0, &policy, &progress, &scouts, &contact_facts);
         assert!(result.is_ok());
-        assert!(result.unwrap().is_none(), "Unit with attack opportunity must not move independently");
+        assert!(
+            result.unwrap().is_none(),
+            "Unit with attack opportunity must not move independently"
+        );
     }
 
     #[test]
@@ -772,7 +795,8 @@ mod tests {
         let e2 = Unit::from_def(11, registry.get("Skeleton").unwrap(), 1);
         s.place_unit(e2, Hex::from_offset(0, 2));
 
-        s.board.set_tile(Hex::from_offset(24, 24), Tile::new("village"));
+        s.board
+            .set_tile(Hex::from_offset(24, 24), Tile::new("village"));
 
         let policy = RoutinePolicy {
             reserve_gold: 0,
@@ -788,7 +812,9 @@ mod tests {
             trigger: "exposure",
             friendly_unit_ids: vec![2, 3],
             enemy_unit_ids: vec![10, 11],
-            primary_actor_id: Some(2),
+            actor_ids: vec![2],
+            eligible_actor_count: 1,
+            actors_truncated: false,
             options: Vec::new(),
             options_truncated: false,
             options_empty_reason: None,
@@ -798,7 +824,10 @@ mod tests {
         // Scout 3 moving away would expose recruiter (or scout 3 is already threatened by e2) -> refused!
         let result = find_independent_move(&s, 0, &policy, &progress, &scouts, &contact_facts);
         assert!(result.is_ok());
-        assert!(result.unwrap().is_none(), "Move that exposes recruiter or is threatened must be refused");
+        assert!(
+            result.unwrap().is_none(),
+            "Move that exposes recruiter or is threatened must be refused"
+        );
     }
 
     #[test]
@@ -830,7 +859,11 @@ mod tests {
         let progress = RoutineProgress::default();
 
         let candidates = collect_candidate_moves(&s, 0, &policy, &progress, &scout_ids);
-        assert!(candidates.len() <= 8, "Candidates must be capped at 8, got {}", candidates.len());
+        assert!(
+            candidates.len() <= 8,
+            "Candidates must be capped at 8, got {}",
+            candidates.len()
+        );
         assert_eq!(candidates.len(), 8);
     }
 }
