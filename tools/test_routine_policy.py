@@ -1356,6 +1356,146 @@ class ProposedDestinationContactBriefTests(unittest.TestCase):
         self.assertNotIn("Proposed routine move", brief)
 
 
+class ProposedMoveMenuBriefTests(unittest.TestCase):
+    """Stack 3: the bounded choose menu rendered alongside the causal line.
+
+    Evidence shape is the frozen wire example from the Stack 3 plan section
+    ("The Rust menu you will receive"): a proceed_with_exposure option and a
+    safe_alternative option for the same flagged actor, plus options_truncated
+    and safe_search.
+    """
+
+    def _menu_evidence(self, *, advances_proceed=True, advances_safe=False,
+                        safe_search=None, options_truncated=False):
+        return {
+            "stage": "proposed_destination", "unit_id": 8, "destination": {"col": 10, "row": 8},
+            "options": [
+                {
+                    "option_id": "u8-proceed-1", "category": "proceed_with_exposure",
+                    "actor_id": 8, "target_id": None,
+                    "actions": [{"action": "Move", "unit_id": 8, "col": 10, "row": 8}],
+                    "movement_cost": 3, "destination": {"col": 10, "row": 8}, "forecast": None,
+                    "exposure": {"distinct_attacker_count": 5, "max_incoming_damage": 30,
+                                 "expected_incoming_damage_tenths": 180},
+                    "coverage": "complete", "advances_objective": advances_proceed,
+                },
+                {
+                    "option_id": "u8-safe-1", "category": "safe_alternative",
+                    "actor_id": 8, "target_id": None,
+                    "actions": [{"action": "Move", "unit_id": 8, "col": 7, "row": 8}],
+                    "movement_cost": 2, "destination": {"col": 7, "row": 8}, "forecast": None,
+                    "exposure": {"distinct_attacker_count": 0, "max_incoming_damage": 0,
+                                 "expected_incoming_damage_tenths": 0},
+                    "coverage": "complete", "advances_objective": advances_safe,
+                },
+            ],
+            "options_truncated": options_truncated,
+            "safe_search": safe_search or {
+                "candidates_considered": 12, "candidates_evaluated": 12,
+                "safe_found": 1, "status": "complete",
+            },
+        }
+
+    def test_frozen_wire_example_renders_both_options(self):
+        exception = rp.RoutineException(reason="contact", evidence=self._menu_evidence())
+        brief = rp.render_exception_brief(exception, [])
+        self.assertIn("Offered proposed-move choices for the flagged unit", brief)
+        self.assertIn(
+            "Option 'u8-proceed-1' (proceed with exposure): destination=(10,8) movement_cost=3",
+            brief)
+        self.assertIn(
+            "proceeds with the projected exposure above (attackers=5 "
+            "max_incoming_damage=30HP expected_incoming_damage=18HP)",
+            brief)
+        self.assertIn("advances toward the objective", brief)
+        self.assertIn(
+            "Option 'u8-safe-1' (safe alternative): destination=(7,8) movement_cost=2",
+            brief)
+        self.assertIn("passes the whole-board projected safety check", brief)
+        self.assertIn("does NOT advance toward the objective", brief)
+        self.assertIn("finish_turn leaves the unit in place and ends the whole "
+                       "controlled turn", brief)
+        self.assertIn("set_policy can instead list the unit in holds", brief)
+
+    def test_advances_objective_missing_is_unknown(self):
+        evidence = self._menu_evidence()
+        evidence["options"][0]["advances_objective"] = None
+        exception = rp.RoutineException(reason="contact", evidence=evidence)
+        brief = rp.render_exception_brief(exception, [])
+        self.assertIn("progress toward the objective unknown", brief)
+
+    def test_advances_objective_key_absent_is_unknown(self):
+        evidence = self._menu_evidence()
+        del evidence["options"][0]["advances_objective"]
+        exception = rp.RoutineException(reason="contact", evidence=evidence)
+        brief = rp.render_exception_brief(exception, [])
+        self.assertIn("progress toward the objective unknown", brief)
+
+    def test_safe_search_zero_found_names_bounded_search_caveat(self):
+        evidence = self._menu_evidence(safe_search={
+            "candidates_considered": 16, "candidates_evaluated": 16,
+            "safe_found": 0, "status": "complete",
+        })
+        exception = rp.RoutineException(reason="contact", evidence=evidence)
+        brief = rp.render_exception_brief(exception, [])
+        self.assertIn("No safe alternative was found within the bounded local search", brief)
+        self.assertIn("not proof that no safe move exists", brief)
+
+    def test_safe_search_truncated_names_the_bound(self):
+        evidence = self._menu_evidence(safe_search={
+            "candidates_considered": 16, "candidates_evaluated": 10,
+            "safe_found": 0, "status": "truncated",
+        })
+        exception = rp.RoutineException(reason="contact", evidence=evidence)
+        brief = rp.render_exception_brief(exception, [])
+        self.assertIn("stopped before evaluating every remaining", brief)
+
+    def test_safe_search_incomplete_error_names_the_failure(self):
+        evidence = self._menu_evidence(safe_search={
+            "candidates_considered": 16, "candidates_evaluated": 4,
+            "safe_found": 0, "status": "incomplete_error",
+        })
+        exception = rp.RoutineException(reason="contact", evidence=evidence)
+        brief = rp.render_exception_brief(exception, [])
+        self.assertIn("stopped on a calculation error", brief)
+
+    def test_missing_option_fields_render_unknown_not_zero(self):
+        evidence = self._menu_evidence()
+        del evidence["options"][0]["destination"]
+        del evidence["options"][0]["movement_cost"]
+        del evidence["options"][0]["exposure"]["max_incoming_damage"]
+        exception = rp.RoutineException(reason="contact", evidence=evidence)
+        brief = rp.render_exception_brief(exception, [])
+        self.assertIn("destination=unknown movement_cost=unknown", brief)
+        self.assertIn("max_incoming_damage=unknown", brief)
+        self.assertNotIn("max_incoming_damage=0", brief)
+
+    def test_no_options_renders_no_menu(self):
+        evidence = {"stage": "proposed_destination", "unit_id": 8,
+                    "destination": {"col": 10, "row": 8}, "options": []}
+        exception = rp.RoutineException(reason="contact", evidence=evidence)
+        brief = rp.render_exception_brief(exception, [])
+        self.assertNotIn("Offered proposed-move choices", brief)
+
+    def test_current_state_stage_never_renders_menu(self):
+        evidence = {"stage": "current_state", "options": [
+            {"option_id": "x", "category": "proceed_with_exposure", "actor_id": 1,
+             "actions": [], "movement_cost": 1, "destination": {"col": 0, "row": 0},
+             "exposure": {}, "advances_objective": True},
+        ]}
+        exception = rp.RoutineException(reason="contact", evidence=evidence)
+        brief = rp.render_exception_brief(exception, [])
+        self.assertNotIn("Offered proposed-move choices", brief)
+
+    def test_menu_composes_alongside_causal_line(self):
+        evidence = ProposedDestinationContactBriefTests._frozen_evidence(self)
+        evidence.update(self._menu_evidence())
+        exception = rp.RoutineException(reason="contact", evidence=evidence)
+        brief = rp.render_exception_brief(exception, [])
+        self.assertIn("Proposed routine move U8 -> (10,8) toward rally (10,7)", brief)
+        self.assertIn("Offered proposed-move choices for the flagged unit", brief)
+
+
 # ---------------------------------------------------------------------------
 # The real-driver Stack 1 gate (scripted policy recruits and finishes with
 # zero further backend calls; two-turn recruitment without double-buying;

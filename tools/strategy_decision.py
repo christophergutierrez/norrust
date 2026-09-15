@@ -20,6 +20,8 @@ try:
     strategy_context,
     _strategy_contract,
     _capacity_relief_line,
+    _contact_destination_line,
+    _contact_proposed_options_line,
     SetPolicyResponse,
     ActResponse,
     FinishTurnResponse,
@@ -33,6 +35,8 @@ except ImportError:
     strategy_context,
     _strategy_contract,
     _capacity_relief_line,
+    _contact_destination_line,
+    _contact_proposed_options_line,
     SetPolicyResponse,
     ActResponse,
     FinishTurnResponse,
@@ -51,6 +55,11 @@ ALLOWED_ALL = ["set_policy", "act", "finish_turn", "resign"]
 ALLOWED_TACTICAL_WITH_OPTIONS = ["choose", "act", "finish_turn", "resign"]
 ALLOWED_TACTICAL = ["act", "finish_turn", "resign"]
 ALLOWED_PROMOTION = ["act", "resign"]
+# Stack 3: a rejected proposed_destination move with a generated bounded menu
+# stays decision_kind policy (set_policy/act/finish_turn/resign remain legal;
+# this is not current-board contact and consumes no contact_state_key) but
+# additionally permits choose over the flagged actor's offered options.
+ALLOWED_POLICY_WITH_CHOOSE = ["set_policy", "act", "finish_turn", "resign", "choose"]
 
 CONTACT_ACTIONABILITY_ACTIONABLE = "actionable"
 CONTACT_ACTIONABILITY_EXHAUSTED = "exhausted"
@@ -342,6 +351,11 @@ def build_decision_packet(
     allowed = list(ALLOWED_PROMOTION)
   elif decision_kind == DECISION_KIND_FACTS_UNAVAILABLE:
     allowed = list(ALLOWED_TACTICAL)
+  elif decision_kind == DECISION_KIND_POLICY and reason == "contact" and options:
+    # proposed_destination (or another non-current_state contact stage) with
+    # a generated bounded menu: keep every policy response legal and add
+    # choose. Empty options leave ALLOWED_ALL exactly as today.
+    allowed = list(ALLOWED_POLICY_WITH_CHOOSE)
   else:
     allowed = list(ALLOWED_ALL)
 
@@ -362,6 +376,11 @@ def build_decision_packet(
   if reason == "threat_unavailable":
     coverage = {"facts": "unavailable", "options": "not_generated"}
   elif decision_kind == DECISION_KIND_TACTICAL:
+    coverage = {
+      "facts": "complete",
+      "options": "truncated" if options_truncated else "complete",
+    }
+  elif decision_kind == DECISION_KIND_POLICY and reason == "contact" and options:
     coverage = {
       "facts": "complete",
       "options": "truncated" if options_truncated else "complete",
@@ -855,6 +874,30 @@ def render_decision_brief(
         "To choose, respond with: " + json.dumps(example, separators=(",", ":"))
       )
       sections.append("\n".join(opt_lines))
+  elif packet.reason == "contact" and packet.options:
+    dest_line = _contact_destination_line(packet.evidence)
+    if dest_line:
+      sections.append(dest_line)
+    options_line = _contact_proposed_options_line(packet.evidence)
+    if options_line:
+      sections.append(options_line)
+    example_ids = [
+      opt.get("option_id") for opt in packet.options
+      if isinstance(opt, dict) and isinstance(opt.get("option_id"), str)
+    ][:2]
+    example = {
+      "kind": "choose",
+      "decision_id": packet.decision_id,
+      "option_ids": example_ids or ["<option_id>"],
+      "finish_turn": bool(packet.final_only),
+    }
+    sections.append(
+      "A rejected proposed routine move is not current-board contact: set_policy can "
+      "change the objective or list the unit in holds. You may also `choose` one offered "
+      f"option for the flagged unit, `act`, `finish_turn`, or `resign`. "
+      f"Applicable responses: {', '.join(packet.allowed_kinds)}. "
+      "To choose, respond with: " + json.dumps(example, separators=(",", ":"))
+    )
   elif packet.reason == "recruitment_blocked":
     relief = _capacity_relief_line(packet.evidence)
     if relief:

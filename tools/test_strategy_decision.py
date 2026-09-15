@@ -667,5 +667,124 @@ class TacticalOptionsTests(unittest.TestCase):
     )
 
 
+class ProposedDestinationMenuRoutingTests(unittest.TestCase):
+  """Stack 3: a rejected proposed_destination move with a generated bounded
+  menu keeps decision_kind policy and every ALLOWED_ALL response legal, and
+  additionally permits choose over the flagged actor's offered options. No
+  contact key is derived for this stage, even if evidence wrongly carries one."""
+
+  def _menu_options(self):
+    return [
+      {
+        "option_id": "u8-proceed-1", "category": "proceed_with_exposure",
+        "actor_id": 8, "target_id": None,
+        "actions": [{"action": "Move", "unit_id": 8, "col": 10, "row": 8}],
+        "movement_cost": 3, "destination": {"col": 10, "row": 8}, "forecast": None,
+        "exposure": {"distinct_attacker_count": 5, "max_incoming_damage": 30,
+                     "expected_incoming_damage_tenths": 180},
+        "coverage": "complete", "advances_objective": True,
+      },
+      {
+        "option_id": "u8-safe-1", "category": "safe_alternative",
+        "actor_id": 8, "target_id": None,
+        "actions": [{"action": "Move", "unit_id": 8, "col": 7, "row": 8}],
+        "movement_cost": 2, "destination": {"col": 7, "row": 8}, "forecast": None,
+        "exposure": {"distinct_attacker_count": 0, "max_incoming_damage": 0,
+                     "expected_incoming_damage_tenths": 0},
+        "coverage": "complete", "advances_objective": False,
+      },
+    ]
+
+  def _menu_evidence(self, **overrides):
+    evidence = {
+      "stage": "proposed_destination",
+      "unit_id": 8,
+      "destination": {"col": 10, "row": 8},
+      "options": self._menu_options(),
+      "options_truncated": False,
+      "safe_search": {"candidates_considered": 12, "candidates_evaluated": 12,
+                       "safe_found": 1, "status": "complete"},
+    }
+    evidence.update(overrides)
+    return evidence
+
+  def test_menu_allows_choose_plus_every_policy_response(self):
+    packet = sd.build_decision_packet("contact", self._menu_evidence(), revision=125)
+    self.assertEqual(packet.decision_kind, sd.DECISION_KIND_POLICY)
+    self.assertEqual(
+      set(packet.allowed_kinds),
+      {"set_policy", "act", "finish_turn", "resign", "choose"},
+    )
+    self.assertEqual(len(packet.options), 2)
+
+  def test_truncated_options_report_truncated_coverage(self):
+    packet = sd.build_decision_packet(
+      "contact", self._menu_evidence(options_truncated=True), revision=125)
+    self.assertEqual(packet.coverage["options"], "truncated")
+
+  def test_empty_options_stay_allowed_all_without_choose(self):
+    packet = sd.build_decision_packet(
+      "contact", self._menu_evidence(options=[]), revision=125)
+    self.assertEqual(packet.decision_kind, sd.DECISION_KIND_POLICY)
+    self.assertEqual(packet.allowed_kinds, sd.ALLOWED_ALL)
+    self.assertNotIn("choose", packet.allowed_kinds)
+
+  def test_no_contact_key_derived_for_proposed_destination(self):
+    packet = sd.build_decision_packet("contact", self._menu_evidence(), revision=125)
+    self.assertIsNone(packet.contact_state_key)
+    self.assertIsNone(packet.closure_reason)
+    self.assertFalse(packet.final_only)
+
+  def test_no_contact_key_even_if_evidence_wrongly_carries_one(self):
+    evidence = self._menu_evidence(contact_state_key="rogue-key")
+    packet = sd.build_decision_packet("contact", evidence, revision=125)
+    self.assertIsNone(packet.contact_state_key)
+
+  def test_choosing_proceed_option_passes_contextual_validation(self):
+    packet = sd.build_decision_packet(
+      "contact", self._menu_evidence(), revision=125, decision_id="dec-menu-1")
+    response = SimpleNamespace(
+      kind="choose", decision_id="dec-menu-1", option_ids=["u8-proceed-1"], finish_turn=False)
+    sd.validate_response_context(response, packet)
+
+  def test_choosing_safe_option_passes_contextual_validation(self):
+    packet = sd.build_decision_packet(
+      "contact", self._menu_evidence(), revision=125, decision_id="dec-menu-1")
+    response = SimpleNamespace(
+      kind="choose", decision_id="dec-menu-1", option_ids=["u8-safe-1"], finish_turn=False)
+    sd.validate_response_context(response, packet)
+
+  def test_set_policy_still_allowed_for_menu_packet(self):
+    packet = sd.build_decision_packet(
+      "contact", self._menu_evidence(), revision=125, decision_id="dec-menu-1")
+    sd.validate_response_context(SimpleNamespace(kind="set_policy"), packet)
+
+  def test_unknown_option_id_rejected(self):
+    packet = sd.build_decision_packet(
+      "contact", self._menu_evidence(), revision=125, decision_id="dec-menu-1")
+    response = SimpleNamespace(
+      kind="choose", decision_id="dec-menu-1", option_ids=["not-a-real-option"], finish_turn=False)
+    with self.assertRaises(sd.ContextualResponseError):
+      sd.validate_response_context(response, packet)
+
+  def test_brief_includes_choose_example_with_packet_decision_id(self):
+    packet = sd.build_decision_packet(
+      "contact", self._menu_evidence(), revision=125, decision_id="dec-menu-1")
+    brief = sd.render_decision_brief(packet)
+    self.assertIn('"decision_id":"dec-menu-1"', brief.replace(" ", ""))
+    self.assertIn("choose", packet.allowed_kinds)
+    self.assertIn("u8-proceed-1", brief)
+    self.assertIn("u8-safe-1", brief)
+
+  def test_two_options_for_same_actor_rejected(self):
+    packet = sd.build_decision_packet(
+      "contact", self._menu_evidence(), revision=125, decision_id="dec-menu-1")
+    response = SimpleNamespace(
+      kind="choose", decision_id="dec-menu-1",
+      option_ids=["u8-proceed-1", "u8-safe-1"], finish_turn=False)
+    with self.assertRaises(sd.ContextualResponseError):
+      sd.validate_response_context(response, packet)
+
+
 if __name__ == "__main__":
   unittest.main()

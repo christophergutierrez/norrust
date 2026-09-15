@@ -11,7 +11,8 @@ use crate::loader::Registry;
 use crate::pathfinding::{find_path, get_zoc_hexes};
 use crate::routine_decision::{
     actionability_from_flags, generate_outside_helper_options, generate_tactical_options,
-    involved_option_flags, ContactActionability, TacticalOption,
+    involved_option_flags, ContactActionability, CoordinateOffset, TacticalExposureFacts,
+    TacticalOption,
 };
 use crate::schema::UnitDef;
 use crate::tactics::{
@@ -976,6 +977,196 @@ fn projected_recruiter_json(recruiter: &RecruiterThreats) -> Value {
     })
 }
 
+/// Bound on local legal-move candidates considered as safe alternatives for
+/// a rejected routine move.
+const MAX_LOCAL_CANDIDATES: usize = 16;
+
+/// Bounded menu offered alongside a rejected routine move: the exact
+/// rejected-but-legal move (`proceed_with_exposure`) plus at most two proven
+/// safe alternative stops, along with the local safe-search bookkeeping.
+struct ContactMenu {
+    options: Vec<TacticalOption>,
+    options_truncated: bool,
+    safe_search: Value,
+}
+
+/// Terrain-cost path distance from `from` to `to` for `unit`, or `None` when
+/// no path exists.
+fn path_distance(state: &GameState, unit: &Unit, from: Hex, to: Hex, zoc: &HashSet<Hex>) -> Option<u32> {
+    find_path(
+        &state.board,
+        &unit.movement_costs,
+        1,
+        from,
+        to,
+        u32::MAX / 4,
+        zoc,
+        false,
+    )
+    .map(|(_, total)| total)
+}
+
+fn zero_exposure() -> TacticalExposureFacts {
+    TacticalExposureFacts {
+        distinct_attacker_count: 0,
+        max_incoming_damage: 0,
+        expected_incoming_damage_tenths: 0,
+    }
+}
+
+/// Build the bounded `proceed_with_exposure` + `safe_alternative` menu for a
+/// rejected routine move. `evaluated_stops` must include every shortest-route
+/// stop already evaluated unsafe for `mover_id` (the rejected stop included);
+/// these are excluded from the local safe-alternative search, which never
+/// repeats that route search. Never fabricates safety: a `TacticsError`
+/// during the local search stops the search and reports `incomplete_error`.
+fn build_contact_menu(
+    state: &GameState,
+    side: u8,
+    mover_id: u32,
+    rejected_stop: Hex,
+    evaluated_stops: &[Hex],
+    objective_target: Option<Hex>,
+    rejected_threats: &ProjectedThreats,
+) -> ContactMenu {
+    let legal = legal_moves_with_costs(state, mover_id).unwrap_or_default();
+    let (rej_col, rej_row) = rejected_stop.to_offset();
+    let movement_cost = legal.get(&rejected_stop).copied().unwrap_or(0);
+
+    let proceed_exposure = rejected_threats
+        .exposed_units
+        .iter()
+        .find(|u| u.unit_id == mover_id)
+        .map(|u| TacticalExposureFacts {
+            distinct_attacker_count: u.distinct_attacker_count,
+            max_incoming_damage: u.max_incoming_sum,
+            expected_incoming_damage_tenths: u
+                .focus_expected_damage_tenths
+                .iter()
+                .copied()
+                .max()
+                .unwrap_or(0),
+        })
+        .unwrap_or_else(zero_exposure);
+
+    let mut options = Vec::with_capacity(3);
+    options.push(TacticalOption {
+        option_id: format!("u{mover_id}-proceed-1"),
+        category: "proceed_with_exposure".to_string(),
+        actor_id: mover_id,
+        target_id: None,
+        actions: vec![json!({"action":"Move","unit_id":mover_id,"col":rej_col,"row":rej_row})],
+        movement_cost,
+        destination: Some(CoordinateOffset {
+            col: rej_col,
+            row: rej_row,
+        }),
+        forecast: None,
+        exposure: Some(proceed_exposure),
+        coverage: "complete".to_string(),
+        advances_objective: Some(true),
+    });
+
+    let current = state.positions.get(&mover_id).copied();
+    let unit = state.units.get(&mover_id);
+
+    let mut excluded: HashSet<Hex> = evaluated_stops.iter().copied().collect();
+    excluded.insert(rejected_stop);
+    if let Some(c) = current {
+        excluded.insert(c);
+    }
+
+    let mut candidates: Vec<(Hex, u32)> = legal
+        .iter()
+        .filter(|(h, _)| !excluded.contains(h))
+        .map(|(h, c)| (*h, *c))
+        .collect();
+    candidates.sort_by_key(|(h, cost)| {
+        let (c, r) = h.to_offset();
+        (*cost, r, c)
+    });
+
+    let candidates_considered = candidates.len();
+    let truncated_by_count = candidates_considered > MAX_LOCAL_CANDIDATES;
+    candidates.truncate(MAX_LOCAL_CANDIDATES);
+
+    let zoc = unit.map(|u| get_zoc_hexes(state, u.faction));
+    let current_distance = match (current, objective_target, unit, &zoc) {
+        (Some(c), Some(target), Some(u), Some(z)) => path_distance(state, u, c, target, z),
+        _ => None,
+    };
+
+    let mut safe_hexes: Vec<(Hex, u32)> = Vec::new();
+    let mut evaluated_count = 0usize;
+    let mut status: &'static str = "complete";
+    for (hex, cost) in &candidates {
+        evaluated_count += 1;
+        let action = Action::Move {
+            unit_id: mover_id,
+            destination: *hex,
+        };
+        match project_move_safety(state, side, action) {
+            Ok(threats) if threats.safe => {
+                safe_hexes.push((*hex, *cost));
+                if safe_hexes.len() == 2 {
+                    break;
+                }
+            }
+            Ok(_) => {}
+            Err(_) => {
+                status = "incomplete_error";
+                break;
+            }
+        }
+    }
+    if status != "incomplete_error" {
+        let remaining_in_bound = evaluated_count < candidates.len();
+        status = if truncated_by_count || remaining_in_bound {
+            "truncated"
+        } else {
+            "complete"
+        };
+    }
+    let safe_found = safe_hexes.len();
+
+    for (i, (hex, cost)) in safe_hexes.into_iter().take(2).enumerate() {
+        let (col, row) = hex.to_offset();
+        let advances_objective = match (objective_target, unit, &zoc) {
+            (Some(target), Some(u), Some(z)) => {
+                match (current_distance, path_distance(state, u, hex, target, z)) {
+                    (Some(cur), Some(cand)) => Some(cand < cur),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        options.push(TacticalOption {
+            option_id: format!("u{mover_id}-safe-{}", i + 1),
+            category: "safe_alternative".to_string(),
+            actor_id: mover_id,
+            target_id: None,
+            actions: vec![json!({"action":"Move","unit_id":mover_id,"col":col,"row":row})],
+            movement_cost: cost,
+            destination: Some(CoordinateOffset { col, row }),
+            forecast: None,
+            exposure: Some(zero_exposure()),
+            coverage: "complete".to_string(),
+            advances_objective,
+        });
+    }
+
+    ContactMenu {
+        options,
+        options_truncated: truncated_by_count,
+        safe_search: json!({
+            "candidates_considered": candidates_considered,
+            "candidates_evaluated": evaluated_count,
+            "safe_found": safe_found,
+            "status": status,
+        }),
+    }
+}
+
 /// Build the enriched `contact`/`proposed_destination` evidence for a rejected
 /// routine move from the verdict/evidence produced by `project_move_safety`.
 /// Never adds `contact_state_key` or `contact_actionability`: their presence
@@ -986,6 +1177,7 @@ fn proposed_destination_evidence(
     objective_kind: &'static str,
     objective_target: Option<Hex>,
     evidence: &ProjectedThreats,
+    menu: &ContactMenu,
 ) -> Value {
     let mut units: Vec<&UnitThreatSummary> = evidence.exposed_units.iter().collect();
     units.sort_by_key(|u| u.unit_id);
@@ -1020,6 +1212,9 @@ fn proposed_destination_evidence(
             "units_listed": units_listed,
             "units_omitted": units_omitted,
         },
+        "options": menu.options,
+        "options_truncated": menu.options_truncated,
+        "safe_search": menu.safe_search,
     })
 }
 
@@ -1438,6 +1633,7 @@ pub fn routine_next(
                 };
             }
             let mut unsafe_move: Option<(Hex, ProjectedThreats)> = None;
+            let mut evaluated_stops: Vec<Hex> = Vec::new();
             for (destination, arrived) in endpoints {
                 if arrived {
                     effects.extend(finish_effects(state, policy, side));
@@ -1460,7 +1656,10 @@ pub fn routine_next(
                             independent_move: None,
                         };
                     }
-                    Ok(evidence) => unsafe_move = Some((destination, evidence)),
+                    Ok(evidence) => {
+                        evaluated_stops.push(destination);
+                        unsafe_move = Some((destination, evidence));
+                    }
                     Err(e) => {
                         return RoutineOutcome::Exception {
                             reason: "threat_unavailable",
@@ -1470,6 +1669,15 @@ pub fn routine_next(
                 }
             }
             if let Some((destination, evidence)) = unsafe_move {
+                let menu = build_contact_menu(
+                    state,
+                    side,
+                    id,
+                    destination,
+                    &evaluated_stops,
+                    Some(village),
+                    &evidence,
+                );
                 return RoutineOutcome::Exception {
                     reason: "contact",
                     evidence: proposed_destination_evidence(
@@ -1478,6 +1686,7 @@ pub fn routine_next(
                         "village",
                         Some(village),
                         &evidence,
+                        &menu,
                     ),
                 };
             }
@@ -1548,6 +1757,7 @@ pub fn routine_next(
             if let Some(rally) = policy.rally {
                 let goals = rally_goals(state, rally);
                 let mut unsafe_move: Option<(u32, Hex, ProjectedThreats)> = None;
+                let mut unsafe_move_stops: Vec<Hex> = Vec::new();
                 for id in &eligible {
                     checked.push(*id);
                     let endpoints = route_endpoints(state, *id, &goals);
@@ -1557,6 +1767,7 @@ pub fn routine_next(
                     }
                     let mut saw_step = false;
                     let mut saw_unsafe = false;
+                    let mut evaluated_stops: Vec<Hex> = Vec::new();
                     for (destination, arrived) in endpoints {
                         if arrived {
                             continue;
@@ -1577,7 +1788,9 @@ pub fn routine_next(
                             }
                             Ok(evidence) => {
                                 saw_unsafe = true;
+                                evaluated_stops.push(destination);
                                 unsafe_move = Some((*id, destination, evidence));
+                                unsafe_move_stops = evaluated_stops.clone();
                             }
                             Err(error) => {
                                 return RoutineOutcome::Exception {
@@ -1594,6 +1807,15 @@ pub fn routine_next(
                     }
                 }
                 if let Some((id, destination, evidence)) = unsafe_move {
+                    let menu = build_contact_menu(
+                        state,
+                        side,
+                        id,
+                        destination,
+                        &unsafe_move_stops,
+                        Some(rally),
+                        &evidence,
+                    );
                     return RoutineOutcome::Exception {
                         reason: "contact",
                         evidence: proposed_destination_evidence(
@@ -1602,6 +1824,7 @@ pub fn routine_next(
                             "castle_capacity",
                             Some(rally),
                             &evidence,
+                            &menu,
                         ),
                     };
                 }
@@ -1758,6 +1981,7 @@ pub fn routine_next(
                 };
             }
             let mut unsafe_move: Option<(Hex, ProjectedThreats)> = None;
+            let mut evaluated_stops: Vec<Hex> = Vec::new();
             for (destination, arrived) in endpoints {
                 if arrived {
                     continue;
@@ -1775,7 +1999,10 @@ pub fn routine_next(
                             independent_move: None,
                         }
                     }
-                    Ok(evidence) => unsafe_move = Some((destination, evidence)),
+                    Ok(evidence) => {
+                        evaluated_stops.push(destination);
+                        unsafe_move = Some((destination, evidence));
+                    }
                     Err(e) => {
                         return RoutineOutcome::Exception {
                             reason: "threat_unavailable",
@@ -1785,6 +2012,15 @@ pub fn routine_next(
                 }
             }
             if let Some((destination, evidence)) = unsafe_move {
+                let menu = build_contact_menu(
+                    state,
+                    side,
+                    id,
+                    destination,
+                    &evaluated_stops,
+                    Some(rally),
+                    &evidence,
+                );
                 return RoutineOutcome::Exception {
                     reason: "contact",
                     evidence: proposed_destination_evidence(
@@ -1793,6 +2029,7 @@ pub fn routine_next(
                         "rally",
                         Some(rally),
                         &evidence,
+                        &menu,
                     ),
                 };
             }
@@ -3335,5 +3572,393 @@ mod tests {
             ),
             before
         );
+        assert_eq!(first, second);
+    }
+
+    fn dummy_threats() -> ProjectedThreats {
+        ProjectedThreats {
+            safe: false,
+            projected_time_of_day: "day",
+            exposed_units: Vec::new(),
+            exposed_recruiters: Vec::new(),
+        }
+    }
+
+    fn open_board(size: i32) -> Board {
+        let mut b = Board::new(size as u32, size as u32);
+        for r in 0..size {
+            for c in 0..size {
+                b.set_tile(Hex::from_offset(c, r), Tile::new("flat"));
+            }
+        }
+        b
+    }
+
+    #[test]
+    fn village_exit_menu_offers_proceed_and_safe_alternative_matching_exception() {
+        let registry = units();
+        let mut s = state();
+        let village = Hex::from_offset(6, 2);
+        s.board.set_tile(village, Tile::new("village"));
+        let mut mover = Unit::from_def(2, registry.get("Skeleton").unwrap(), 0);
+        mover.movement = 1;
+        mover.attacks.clear();
+        s.place_unit(mover, Hex::from_offset(2, 2));
+        let mut enemy = Unit::from_def(9, registry.get("Skeleton Archer").unwrap(), 1);
+        enemy.movement = 0;
+        s.place_unit(enemy, Hex::from_offset(4, 3));
+        let p = RoutinePolicy {
+            scouts: vec![2],
+            villages: vec![village],
+            ..policy(&[])
+        };
+        let outcome = routine_next(&s, 0, &p, &RoutineProgress::default(), &[], &registry);
+        match outcome {
+            RoutineOutcome::Exception {
+                reason: "contact",
+                evidence,
+            } => {
+                let options = evidence["options"].as_array().unwrap();
+                assert!(!options.is_empty());
+                assert_eq!(options[0]["category"], "proceed_with_exposure");
+                assert_eq!(options[0]["actions"][0], evidence["proposed_action"]);
+                assert!(evidence.get("contact_state_key").is_none());
+                assert!(evidence.get("contact_actionability").is_none());
+                assert!(evidence["safe_search"]["candidates_considered"].is_number());
+                assert!(evidence["safe_search"]["safe_found"].is_number());
+                let has_alternative = options
+                    .iter()
+                    .any(|o| o["category"] == "safe_alternative");
+                if has_alternative {
+                    for opt in options.iter().filter(|o| o["category"] == "safe_alternative") {
+                        let action = &opt["actions"][0];
+                        let dest = Hex::from_offset(
+                            action["col"].as_i64().unwrap() as i32,
+                            action["row"].as_i64().unwrap() as i32,
+                        );
+                        let verdict =
+                            project_move_safety(&s, 0, Action::Move { unit_id: 2, destination: dest })
+                                .unwrap();
+                        assert!(verdict.safe);
+                        assert_ne!(dest, Hex::from_offset(2, 2));
+                    }
+                }
+            }
+            other => panic!("expected contact with a bounded menu, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn safe_alternatives_exclude_current_rejected_and_evaluated_route_stops() {
+        let registry = units();
+        let mut s = state();
+        let village = Hex::from_offset(8, 2);
+        s.board.set_tile(village, Tile::new("village"));
+        let mut mover = Unit::from_def(2, registry.get("Skeleton").unwrap(), 0);
+        mover.movement = 2;
+        mover.attacks.clear();
+        s.place_unit(mover, Hex::from_offset(2, 2));
+        // Archer covers both shortest-route stops toward the village but not
+        // the mover's current hex, and not every local candidate: a genuine
+        // safe alternative must remain.
+        let mut enemy = Unit::from_def(9, registry.get("Skeleton Archer").unwrap(), 1);
+        enemy.movement = 0;
+        s.place_unit(enemy, Hex::from_offset(5, 2));
+        let p = RoutinePolicy {
+            scouts: vec![2],
+            villages: vec![village],
+            ..policy(&[])
+        };
+        let outcome = routine_next(&s, 0, &p, &RoutineProgress::default(), &[], &registry);
+        match outcome {
+            RoutineOutcome::Exception {
+                reason: "contact",
+                evidence,
+            } => {
+                let rejected = (
+                    evidence["destination"]["col"].as_i64().unwrap() as i32,
+                    evidence["destination"]["row"].as_i64().unwrap() as i32,
+                );
+                let options = evidence["options"].as_array().unwrap();
+                for opt in options.iter().filter(|o| o["category"] == "safe_alternative") {
+                    let action = &opt["actions"][0];
+                    let dest = (
+                        action["col"].as_i64().unwrap() as i32,
+                        action["row"].as_i64().unwrap() as i32,
+                    );
+                    assert_ne!(dest, (2, 2));
+                    assert_ne!(dest, rejected);
+                    let verdict = project_move_safety(
+                        &s,
+                        0,
+                        Action::Move {
+                            unit_id: 2,
+                            destination: Hex::from_offset(dest.0, dest.1),
+                        },
+                    )
+                    .unwrap();
+                    assert!(verdict.safe);
+                }
+            }
+            other => panic!("expected contact with a bounded menu, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn no_safe_alternative_yields_proceed_only_option() {
+        let registry = units();
+        let b = open_board(3);
+        let mut s = GameState::new(b);
+        s.gold = [1000, 1000];
+        let mut mover = Unit::from_def(2, registry.get("Skeleton").unwrap(), 0);
+        mover.movement = 1;
+        mover.attacks.clear();
+        s.place_unit(mover, Hex::from_offset(0, 0));
+        let mut enemy = Unit::from_def(9, registry.get("Skeleton Archer").unwrap(), 1);
+        enemy.movement = 0;
+        s.place_unit(enemy, Hex::from_offset(1, 1));
+        let legal: Vec<Hex> = legal_moves_with_costs(&s, 2).unwrap().into_keys().collect();
+        assert!(!legal.is_empty(), "fixture must offer at least one legal move");
+        let rejected_stop = legal[0];
+        let menu = build_contact_menu(
+            &s,
+            0,
+            2,
+            rejected_stop,
+            &[rejected_stop],
+            None,
+            &dummy_threats(),
+        );
+        assert_eq!(menu.options.len(), 1);
+        assert_eq!(menu.options[0].category, "proceed_with_exposure");
+        assert_eq!(menu.safe_search["safe_found"], 0);
+        assert_eq!(menu.safe_search["status"], "complete");
+    }
+
+    #[test]
+    fn local_search_truncates_above_sixteen_candidates() {
+        let registry = units();
+        let b = open_board(21);
+        let mut s = GameState::new(b);
+        s.gold = [1000, 1000];
+        let mut mover = Unit::from_def(2, registry.get("Skeleton").unwrap(), 0);
+        mover.movement = 5;
+        mover.attacks.clear();
+        s.place_unit(mover, Hex::from_offset(10, 10));
+        let legal: Vec<Hex> = legal_moves_with_costs(&s, 2).unwrap().into_keys().collect();
+        assert!(legal.len() > 16, "fixture must exceed the local search bound");
+        let rejected_stop = legal[0];
+        let menu = build_contact_menu(
+            &s,
+            0,
+            2,
+            rejected_stop,
+            &[rejected_stop],
+            None,
+            &dummy_threats(),
+        );
+        assert!(menu.options_truncated);
+        assert_eq!(menu.safe_search["status"], "truncated");
+        let evaluated = menu.safe_search["candidates_evaluated"].as_u64().unwrap();
+        assert!(evaluated <= 16);
+        let considered = menu.safe_search["candidates_considered"]
+            .as_u64()
+            .unwrap();
+        assert!(considered > 16);
+        assert_eq!(menu.safe_search["safe_found"], 2);
+        assert_eq!(evaluated, 2, "search must stop after two proven-safe hexes");
+        assert_eq!(menu.options.len(), 3);
+    }
+
+    #[test]
+    fn local_search_stops_after_two_safe_hexes() {
+        let registry = units();
+        let b = open_board(8);
+        let mut s = GameState::new(b);
+        s.gold = [1000, 1000];
+        let mut mover = Unit::from_def(2, registry.get("Skeleton").unwrap(), 0);
+        mover.movement = 2;
+        mover.attacks.clear();
+        s.place_unit(mover, Hex::from_offset(3, 3));
+        let rejected_stop = Hex::from_offset(4, 3);
+        let menu = build_contact_menu(
+            &s,
+            0,
+            2,
+            rejected_stop,
+            &[rejected_stop],
+            None,
+            &dummy_threats(),
+        );
+        assert_eq!(menu.options.iter().filter(|o| o.category == "safe_alternative").count(), 2);
+        assert_eq!(menu.safe_search["safe_found"], 2);
+        let evaluated = menu.safe_search["candidates_evaluated"].as_u64().unwrap();
+        let considered = menu.safe_search["candidates_considered"].as_u64().unwrap();
+        assert!(considered > 2);
+        assert_eq!(evaluated, 2);
+        assert_eq!(menu.safe_search["status"], "truncated");
+    }
+
+    #[test]
+    fn advances_objective_true_when_alternative_is_closer() {
+        let registry = units();
+        let b = open_board(21);
+        let mut s = GameState::new(b);
+        s.gold = [1000, 1000];
+        let start = Hex::from_offset(10, 10);
+        let target = Hex::from_offset(10, 0);
+        let mut mover = Unit::from_def(2, registry.get("Skeleton").unwrap(), 0);
+        mover.movement = 1;
+        mover.attacks.clear();
+        s.place_unit(mover, start);
+        let neighbors = start.neighbors();
+        let toward = *neighbors
+            .iter()
+            .min_by_key(|h| h.distance(target))
+            .unwrap();
+        // Block every other neighbor so `toward` is the only legal candidate.
+        let mut next_id = 100;
+        for h in neighbors {
+            if h != toward {
+                let mut blocker = Unit::from_def(next_id, registry.get("Skeleton").unwrap(), 0);
+                blocker.attacks.clear();
+                s.place_unit(blocker, h);
+                next_id += 1;
+            }
+        }
+        let rejected_stop = Hex::from_offset(999, 999);
+        let menu = build_contact_menu(&s, 0, 2, rejected_stop, &[], Some(target), &dummy_threats());
+        let alt = menu
+            .options
+            .iter()
+            .find(|o| o.category == "safe_alternative")
+            .expect("the unblocked neighbor toward the target must be offered");
+        let dest = alt.destination.unwrap();
+        assert_eq!(Hex::from_offset(dest.col, dest.row), toward);
+        assert_eq!(alt.advances_objective, Some(true));
+    }
+
+    #[test]
+    fn advances_objective_false_when_alternative_is_not_closer() {
+        let registry = units();
+        let b = open_board(21);
+        let mut s = GameState::new(b);
+        s.gold = [1000, 1000];
+        let start = Hex::from_offset(10, 10);
+        let target = Hex::from_offset(10, 0);
+        let mut mover = Unit::from_def(2, registry.get("Skeleton").unwrap(), 0);
+        mover.movement = 1;
+        mover.attacks.clear();
+        s.place_unit(mover, start);
+        let neighbors = start.neighbors();
+        let away = *neighbors
+            .iter()
+            .max_by_key(|h| h.distance(target))
+            .unwrap();
+        let mut next_id = 100;
+        for h in neighbors {
+            if h != away {
+                let mut blocker = Unit::from_def(next_id, registry.get("Skeleton").unwrap(), 0);
+                blocker.attacks.clear();
+                s.place_unit(blocker, h);
+                next_id += 1;
+            }
+        }
+        let rejected_stop = Hex::from_offset(999, 999);
+        let menu = build_contact_menu(&s, 0, 2, rejected_stop, &[], Some(target), &dummy_threats());
+        let alt = menu
+            .options
+            .iter()
+            .find(|o| o.category == "safe_alternative")
+            .expect("the unblocked neighbor away from the target must be offered");
+        let dest = alt.destination.unwrap();
+        assert_eq!(Hex::from_offset(dest.col, dest.row), away);
+        assert_eq!(alt.advances_objective, Some(false));
+    }
+
+    #[test]
+    fn advances_objective_none_without_objective_target() {
+        let registry = units();
+        let b = open_board(21);
+        let mut s = GameState::new(b);
+        s.gold = [1000, 1000];
+        let start = Hex::from_offset(10, 10);
+        let mut mover = Unit::from_def(2, registry.get("Skeleton").unwrap(), 0);
+        mover.movement = 1;
+        mover.attacks.clear();
+        s.place_unit(mover, start);
+        let neighbors = start.neighbors();
+        let free = neighbors[0];
+        let mut next_id = 100;
+        for h in neighbors.iter().skip(1) {
+            let mut blocker = Unit::from_def(next_id, registry.get("Skeleton").unwrap(), 0);
+            blocker.attacks.clear();
+            s.place_unit(blocker, *h);
+            next_id += 1;
+        }
+        let rejected_stop = Hex::from_offset(999, 999);
+        let menu = build_contact_menu(&s, 0, 2, rejected_stop, &[], None, &dummy_threats());
+        let alt = menu
+            .options
+            .iter()
+            .find(|o| o.category == "safe_alternative")
+            .expect("the unblocked neighbor must be offered");
+        let dest = alt.destination.unwrap();
+        assert_eq!(Hex::from_offset(dest.col, dest.row), free);
+        assert_eq!(alt.advances_objective, None);
+    }
+
+    #[test]
+    fn current_state_options_serialize_without_advances_objective() {
+        let registry = units();
+        let mut s = state();
+        let mut mover = Unit::from_def(2, registry.get("Skeleton").unwrap(), 0);
+        mover.attacks.clear();
+        s.place_unit(mover, Hex::from_offset(3, 3));
+        let enemy = Unit::from_def(9, registry.get("Skeleton Archer").unwrap(), 1);
+        s.place_unit(enemy, Hex::from_offset(3, 5));
+        let facts = generate_tactical_options(&s, 0).unwrap();
+        assert!(!facts.options.is_empty());
+        let wire = serde_json::to_value(&facts.options).unwrap();
+        for option in wire.as_array().unwrap() {
+            assert!(
+                option.get("advances_objective").is_none(),
+                "current-state option must omit advances_objective on the wire: {option:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn contact_menu_query_meets_time_budget() {
+        let registry = units();
+        let mut s = state();
+        let village = Hex::from_offset(6, 2);
+        s.board.set_tile(village, Tile::new("village"));
+        let mut mover = Unit::from_def(2, registry.get("Skeleton").unwrap(), 0);
+        mover.movement = 1;
+        mover.attacks.clear();
+        s.place_unit(mover, Hex::from_offset(2, 2));
+        let mut enemy = Unit::from_def(9, registry.get("Skeleton Archer").unwrap(), 1);
+        enemy.movement = 0;
+        s.place_unit(enemy, Hex::from_offset(4, 3));
+        let p = RoutinePolicy {
+            scouts: vec![2],
+            villages: vec![village],
+            ..policy(&[])
+        };
+        for i in 0..3 {
+            let start = std::time::Instant::now();
+            let outcome = routine_next(&s, 0, &p, &RoutineProgress::default(), &[], &registry);
+            let elapsed = start.elapsed();
+            eprintln!("contact_menu_query_meets_time_budget run {i}: {elapsed:?}");
+            assert!(elapsed.as_secs_f64() <= 10.0, "run {i} took {elapsed:?}");
+            assert!(matches!(
+                outcome,
+                RoutineOutcome::Exception {
+                    reason: "contact",
+                    ..
+                }
+            ));
+        }
     }
 }

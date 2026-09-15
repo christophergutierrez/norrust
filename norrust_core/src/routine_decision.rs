@@ -48,6 +48,12 @@ pub struct TacticalOption {
     pub forecast: Option<TacticalCombatForecast>,
     pub exposure: Option<TacticalExposureFacts>,
     pub coverage: String,
+    /// Whether this option's destination reduces terrain-cost path distance
+    /// to the active objective target. `None` when the objective target is
+    /// unknown or unreachable. Absent from the wire format when `None`, so
+    /// current-state options (which never set this) serialize unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub advances_objective: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -607,6 +613,7 @@ fn generate_actor_options(
             forecast: Some(atk.7),
             exposure: None,
             coverage: "complete".to_string(),
+            advances_objective: None,
         });
     }
 
@@ -622,6 +629,7 @@ fn generate_actor_options(
             forecast: None,
             exposure: Some(reloc.7),
             coverage: "complete".to_string(),
+            advances_objective: None,
         });
     }
 

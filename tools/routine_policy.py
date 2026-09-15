@@ -17,11 +17,11 @@ from typing import Any, Iterable, Optional
 try:
     from .threat_render import (
         _readable_whole_hp, _readable_threat_count, _readable_lethal_attackers,
-        _readable_focus)
+        _readable_focus, _readable_hp_tenths)
 except ImportError:  # pragma: no cover - direct script compatibility
     from tools.threat_render import (
         _readable_whole_hp, _readable_threat_count, _readable_lethal_attackers,
-        _readable_focus)
+        _readable_focus, _readable_hp_tenths)
 
 # --------------------------------------------------------------------------
 # Constants from the frozen contract (plan section 4).
@@ -1631,6 +1631,104 @@ def _contact_destination_line(evidence: Any) -> str:
     )
 
 
+_PROPOSED_OPTION_CATEGORY_LABELS = {
+    "proceed_with_exposure": "proceed with exposure",
+    "safe_alternative": "safe alternative",
+}
+
+
+def _contact_proposed_option_line(option: Any) -> Optional[str]:
+    """Render one Stack 3 proposed-move menu option.
+
+    Missing fields render as ``unknown``, never ``0`` (plan section
+    "Stack 3"). Numbers come only from ``tools/threat_render.py`` helpers.
+    """
+    if not isinstance(option, dict):
+        return None
+    option_id = option.get("option_id", "unknown")
+    category = option.get("category")
+    category_text = _PROPOSED_OPTION_CATEGORY_LABELS.get(
+        category, str(category) if category is not None else "unknown")
+    destination = option.get("destination")
+    destination_text = _readable_coord(destination) if isinstance(destination, dict) else "unknown"
+    movement_cost = option.get("movement_cost")
+    cost_text = (str(movement_cost)
+                 if isinstance(movement_cost, int) and not isinstance(movement_cost, bool)
+                 else "unknown")
+
+    if category == "proceed_with_exposure":
+        exposure = option.get("exposure")
+        exposure = exposure if isinstance(exposure, dict) else {}
+        exposure_text = (
+            f"attackers={_readable_threat_count(exposure, 'distinct_attacker_count')} "
+            f"max_incoming_damage={_readable_whole_hp(exposure.get('max_incoming_damage'))} "
+            f"expected_incoming_damage={_readable_hp_tenths(exposure.get('expected_incoming_damage_tenths'))}"
+        )
+        effect_text = f"proceeds with the projected exposure above ({exposure_text})"
+    elif category == "safe_alternative":
+        effect_text = "passes the whole-board projected safety check"
+    else:
+        effect_text = "unknown effect"
+
+    advances = option.get("advances_objective")
+    if advances is True:
+        advances_text = "advances toward the objective"
+    elif advances is False:
+        advances_text = "does NOT advance toward the objective"
+    else:
+        advances_text = "progress toward the objective unknown"
+
+    return (
+        f"Option {option_id!r} ({category_text}): destination={destination_text} "
+        f"movement_cost={cost_text}; {effect_text}; {advances_text}"
+    )
+
+
+def _safe_search_line(safe_search: Any) -> str:
+    """Explain the bounded local safe-alternative search's status, if any."""
+    if not isinstance(safe_search, dict):
+        return ""
+    status = safe_search.get("status")
+    safe_found = safe_search.get("safe_found")
+    if (status == "complete" and isinstance(safe_found, int)
+            and not isinstance(safe_found, bool) and safe_found == 0):
+        return ("No safe alternative was found within the bounded local search "
+                "(this is not proof that no safe move exists).")
+    if status == "truncated":
+        return ("The bounded local search stopped before evaluating every remaining "
+                "candidate (at most 16 are considered; search stops after two proven-safe hexes).")
+    if status == "incomplete_error":
+        return "The search stopped on a calculation error."
+    return ""
+
+
+def _contact_proposed_options_line(evidence: Any) -> str:
+    """Render the Stack 3 bounded proposed-move choice menu, if offered.
+
+    Only fires alongside a non-empty ``options`` list on proposed-move
+    contact evidence; current-state contact never carries this menu.
+    """
+    if not isinstance(evidence, dict) or evidence.get("stage") == "current_state":
+        return ""
+    options = evidence.get("options")
+    if not isinstance(options, list) or not options:
+        return ""
+    lines = ["Offered proposed-move choices for the flagged unit (choose 1 to 3):"]
+    for option in options:
+        line = _contact_proposed_option_line(option)
+        if line:
+            lines.append("  - " + line)
+    search_line = _safe_search_line(evidence.get("safe_search"))
+    if search_line:
+        lines.append(search_line)
+    lines.append(
+        "No hold option is offered: finish_turn leaves the unit in place and ends the whole "
+        "controlled turn; set_policy can instead list the unit in holds, which lasts until the "
+        "policy is replaced, not just this turn."
+    )
+    return "\n".join(lines)
+
+
 def render_exception_brief(exception: RoutineException, remaining: list[dict[str, Any]], *,
                            state: Optional[dict[str, Any]] = None,
                            recruit_options: Any = None,
@@ -1644,9 +1742,15 @@ def render_exception_brief(exception: RoutineException, remaining: list[dict[str
         if line:
             relief = line + " "
     elif exception.reason == "contact":
+        parts = []
         line = _contact_destination_line(exception.evidence)
         if line:
-            relief = line + " "
+            parts.append(line)
+        options_line = _contact_proposed_options_line(exception.evidence)
+        if options_line:
+            parts.append(options_line)
+        if parts:
+            relief = " ".join(parts) + " "
     return (
         _strategy_contract() +
         relief +
