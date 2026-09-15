@@ -1218,6 +1218,144 @@ class ScoutCapacityFixtureTests(unittest.TestCase):
                         rp.validate_routine_policy(policy, context)
 
 
+class ProposedDestinationContactBriefTests(unittest.TestCase):
+    """Stack 2: the causal line for rejected contact/proposed_destination moves.
+
+    Evidence shape and field names are frozen in
+    tmp/proposed-movement-exec/STACK2-CONTRACT.md.
+    """
+
+    def _frozen_evidence(self):
+        return {
+            "stage": "proposed_destination", "unit_id": 8, "destination": {"col": 10, "row": 8},
+            "proposed_action": {"action": "Move", "unit_id": 8, "col": 10, "row": 8},
+            "objective": {"kind": "rally", "target": {"col": 10, "row": 7}},
+            "projected_threats": {
+                "projected_time_of_day": "Day",
+                "units": [{
+                    "unit_id": 9, "is_mover": False, "hp": 31, "col": 10, "row": 7,
+                    "attacker_ids_any_view": [21, 23, 24, 25],
+                    "occupied": {
+                        "distinct_attacker_count": 4, "max_incoming_sum": 28,
+                        "lethal_attackers_needed": None, "origins_conflict": False,
+                        "focus_kill_bps": [0, 0, 0],
+                        "focus_expected_damage_tenths": [60, 110, 150],
+                    },
+                    "open": {
+                        "distinct_attacker_count": 4, "max_incoming_sum": 28,
+                        "lethal_attackers_needed": None, "origins_conflict": False,
+                    },
+                    "views": "both",
+                }],
+                "recruiters": [],
+            },
+            "coverage": {"facts": "complete", "units_listed": 1, "units_omitted": 0},
+        }
+
+    def test_frozen_wire_example_non_mover_exposed(self):
+        exception = rp.RoutineException(reason="contact", evidence=self._frozen_evidence())
+        brief = rp.render_exception_brief(exception, [])
+        self.assertIn("Proposed routine move U8 -> (10,8) toward rally (10,7)", brief)
+        self.assertIn("U9 (not the mover)", brief)
+        self.assertIn("occupied attackers=4 max_sum=28HP", brief)
+        self.assertIn("not proven jointly achievable", brief)
+        self.assertIn("null (unreachable under supplied maximum volleys)", brief)
+        self.assertIn("focus=(damage_from_1=6HP,damage_from_2=11HP,damage_from_3=15HP)", brief)
+        self.assertIn("open attackers=4 max_sum=28HP", brief)
+        self.assertIn("attackers(any view)=21,23,24,25", brief)
+
+    def test_mover_exposed_has_no_non_mover_note(self):
+        evidence = self._frozen_evidence()
+        evidence["projected_threats"]["units"][0]["unit_id"] = 8
+        evidence["projected_threats"]["units"][0]["is_mover"] = True
+        exception = rp.RoutineException(reason="contact", evidence=evidence)
+        brief = rp.render_exception_brief(exception, [])
+        self.assertIn("U8 occupied attackers=4", brief)
+        self.assertNotIn("(not the mover)", brief)
+
+    def test_recruiter_exposed_named_and_not_duplicated(self):
+        evidence = self._frozen_evidence()
+        evidence["projected_threats"]["units"] = []
+        # Engine shape (routine.rs projected_recruiter_json): per-view facts nest
+        # under occupied/open like units, attacker_max_damage sits inside each
+        # view, and recruiters carry no attacker_ids_any_view.
+        evidence["projected_threats"]["recruiters"] = [{
+            "recruiter_id": 3, "hp": 40, "col": 5, "row": 5,
+            "occupied": {
+                "distinct_attacker_count": 2, "max_incoming_sum": 20,
+                "lethal_attackers_needed": 2, "origins_conflict": False,
+                "attacker_max_damage": [{"attacker_id": 11, "max_damage": 10},
+                                         {"attacker_id": 12, "max_damage": 10}],
+                "focus_kill_bps": [0, 2500, 0], "focus_expected_damage_tenths": [70, 140, 0],
+            },
+            "open": {
+                "distinct_attacker_count": 1, "max_incoming_sum": 10,
+                "lethal_attackers_needed": None, "origins_conflict": False,
+                "attacker_max_damage": [{"attacker_id": 11, "max_damage": 10}],
+            },
+            "views": "both",
+        }]
+        exception = rp.RoutineException(reason="contact", evidence=evidence)
+        brief = rp.render_exception_brief(exception, [])
+        self.assertIn("Recruiter U3 occupied attackers=2 max_sum=20HP", brief)
+        self.assertIn("U11:10HP", brief)
+        self.assertIn("open attackers=1 max_sum=10HP", brief)
+        self.assertNotIn("attackers(any view)", brief)
+        self.assertEqual(brief.count("Recruiter U3"), 1)
+
+    def test_open_only_view_is_labelled(self):
+        evidence = self._frozen_evidence()
+        evidence["projected_threats"]["units"][0]["views"] = "open_only"
+        exception = rp.RoutineException(reason="contact", evidence=evidence)
+        brief = rp.render_exception_brief(exception, [])
+        self.assertIn("(open-only)", brief)
+        self.assertNotIn("occupied attackers", brief)
+
+    def test_occupied_only_view_is_labelled(self):
+        evidence = self._frozen_evidence()
+        evidence["projected_threats"]["units"][0]["views"] = "occupied_only"
+        exception = rp.RoutineException(reason="contact", evidence=evidence)
+        brief = rp.render_exception_brief(exception, [])
+        self.assertIn("(occupied-only)", brief)
+        self.assertNotIn("open attackers", brief)
+
+    def test_missing_forecast_slots_stay_unknown_not_zero(self):
+        evidence = self._frozen_evidence()
+        evidence["projected_threats"]["units"][0]["occupied"]["focus_expected_damage_tenths"] = None
+        del evidence["projected_threats"]["units"][0]["occupied"]["lethal_attackers_needed"]
+        exception = rp.RoutineException(reason="contact", evidence=evidence)
+        brief = rp.render_exception_brief(exception, [])
+        self.assertIn("focus=(unknown)", brief)
+        self.assertIn("lethal=unknown", brief)
+        self.assertNotIn("focus=(damage_from_1=0HP", brief)
+
+    def test_null_objective_target_reads_unknown_target(self):
+        evidence = self._frozen_evidence()
+        evidence["objective"]["target"] = None
+        exception = rp.RoutineException(reason="contact", evidence=evidence)
+        brief = rp.render_exception_brief(exception, [])
+        self.assertIn("toward rally unknown target", brief)
+
+    def test_units_omitted_reported(self):
+        evidence = self._frozen_evidence()
+        evidence["coverage"]["units_omitted"] = 2
+        exception = rp.RoutineException(reason="contact", evidence=evidence)
+        brief = rp.render_exception_brief(exception, [])
+        self.assertIn("2 unit(s) omitted", brief)
+
+    def test_legacy_minimal_evidence_unchanged(self):
+        evidence = {"stage": "proposed_destination", "unit_id": 8, "destination": {"col": 10, "row": 8}}
+        exception = rp.RoutineException(reason="contact", evidence=evidence)
+        brief = rp.render_exception_brief(exception, [])
+        self.assertNotIn("Proposed routine move", brief)
+        self.assertIn("Routine execution paused on a typed engine exception", brief)
+
+    def test_non_contact_reason_unaffected(self):
+        exception = rp.RoutineException(reason="promotion_pending", evidence={"stage": "proposed_destination"})
+        brief = rp.render_exception_brief(exception, [])
+        self.assertNotIn("Proposed routine move", brief)
+
+
 # ---------------------------------------------------------------------------
 # The real-driver Stack 1 gate (scripted policy recruits and finishes with
 # zero further backend calls; two-turn recruitment without double-buying;
@@ -1228,6 +1366,52 @@ class ScoutCapacityFixtureTests(unittest.TestCase):
 # Python-only contract (validation, progress, response parsing) with a
 # scripted FakeExchange/backend and needs no driver process.
 # ---------------------------------------------------------------------------
+
+
+class ProposedDestinationRealOutputRenderingTests(unittest.TestCase):
+    """Render actual Rust routine_next evidence, not a hand-built packet."""
+
+    FIXTURE = Path(__file__).parent / "fixtures" / "proposed_movement" / "rev125_proposed_destination_evidence.json"
+
+    def test_trial8_revision125_real_evidence_renders_causal_line(self):
+        data = json.loads(self.FIXTURE.read_text())
+        line = rp._contact_destination_line(data["evidence"])
+        self.assertIn("Proposed routine move U8 -> (10,8) toward rally (10,7)", line)
+        self.assertIn("projected, not current board", line)
+        self.assertIn("U8 occupied attackers=5", line)
+        self.assertNotIn("U8 (not the mover)", line)
+        self.assertIn("open attackers=5", line)
+        self.assertIn("attackers(any view)=21,23,24,25,31", line)
+        self.assertIn("not proven jointly achievable", line)
+        self.assertNotIn("unknown", line)
+
+    def test_real_evidence_carries_no_contact_closure_keys(self):
+        evidence = json.loads(self.FIXTURE.read_text())["evidence"]
+        self.assertNotIn("contact_state_key", evidence)
+        self.assertNotIn("contact_actionability", evidence)
+
+    def test_recruiter_exposure_uses_nested_engine_shape(self):
+        evidence = {
+            "stage": "proposed_destination", "unit_id": 5, "destination": {"col": 3, "row": 4},
+            "proposed_action": {"action": "Move", "unit_id": 5, "col": 3, "row": 4},
+            "objective": {"kind": "castle_capacity", "target": {"col": 8, "row": 6}},
+            "projected_threats": {"projected_time_of_day": "Day", "units": [], "recruiters": [{
+                "recruiter_id": 1, "hp": 48, "col": 2, "row": 7,
+                "occupied": {"distinct_attacker_count": 2, "max_incoming_sum": 17,
+                             "lethal_attackers_needed": None, "origins_conflict": False,
+                             "attacker_max_damage": [{"attacker_id": 21, "max_damage": 9},
+                                                     {"attacker_id": 23, "max_damage": 8}],
+                             "focus_kill_bps": [0, 0, 0], "focus_expected_damage_tenths": [55, 90, 0]},
+                "open": {"distinct_attacker_count": 0, "max_incoming_sum": 0,
+                         "lethal_attackers_needed": None, "origins_conflict": False,
+                         "attacker_max_damage": []},
+                "views": "occupied_only"}]},
+            "coverage": {"facts": "complete", "units_listed": 0, "units_omitted": 0}}
+        line = rp._contact_destination_line(evidence)
+        self.assertIn("Recruiter U1 occupied attackers=2 max_sum=17HP", line)
+        self.assertIn("max_single_attacker_damage=(U21:9HP,U23:8HP)", line)
+        self.assertIn("(occupied-only)", line)
+        self.assertNotIn("attackers(any view)", line)
 
 
 if __name__ == "__main__":

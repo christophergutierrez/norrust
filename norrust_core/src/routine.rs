@@ -846,20 +846,181 @@ pub(crate) fn current_contact(
         contact_state_key,
     }))
 }
-fn post_step_safe(state: &GameState, side: u8, action: Action) -> Result<bool, TacticsError> {
+/// Bound on friendly (non-recruiter) units rendered in projected-threat
+/// evidence for a rejected routine move.
+const MAX_PROJECTED_UNITS: usize = 8;
+
+/// Verdict and full evidence for one proposed legal Move, computed from a
+/// single post-move projected clone. This is the only safety algorithm: a
+/// caller that only needs the verdict reads `.safe`; a caller that must
+/// explain a rejected move renders `.exposed_units`/`.exposed_recruiters`.
+struct ProjectedThreats {
+    safe: bool,
+    projected_time_of_day: &'static str,
+    /// Non-recruiter friendlies with a nonzero attacker count in either view.
+    exposed_units: Vec<UnitThreatSummary>,
+    /// Recruiters with a nonzero attacker count in either view. A recruiter
+    /// never also appears in `exposed_units`.
+    exposed_recruiters: Vec<RecruiterThreats>,
+}
+
+/// Clone `state`, apply the proposed Move once, and read every projected
+/// threat to `side` from that single post-move clone.
+fn project_move_safety(
+    state: &GameState,
+    side: u8,
+    action: Action,
+) -> Result<ProjectedThreats, TacticsError> {
     let mut clone = state.clone();
     apply_action(&mut clone, action)?;
-    if unit_threats_after_end_turn(&clone, side)?
+    let unit_surface = unit_threats_after_end_turn(&clone, side)?;
+    let recruiter_surface = recruiter_threats_after_end_turn(&clone, side)?;
+
+    let unsafe_unit = unit_surface
         .units
         .iter()
-        .any(|u| u.distinct_attacker_count > 0 || u.open_distinct_attacker_count > 0)
-    {
-        return Ok(false);
-    }
-    Ok(!recruiter_threats_after_end_turn(&clone, side)?
+        .any(|u| u.distinct_attacker_count > 0 || u.open_distinct_attacker_count > 0);
+    let unsafe_recruiter = recruiter_surface
         .recruiters
         .iter()
-        .any(|u| u.distinct_attacker_count > 0 || u.open_distinct_attacker_count > 0))
+        .any(|r| r.distinct_attacker_count > 0 || r.open_distinct_attacker_count > 0);
+    let recruiter_ids: HashSet<u32> = recruiter_surface
+        .recruiters
+        .iter()
+        .map(|r| r.recruiter_id)
+        .collect();
+    let projected_time_of_day = unit_surface.projected_time_of_day;
+
+    let exposed_units = unit_surface
+        .units
+        .into_iter()
+        .filter(|u| !recruiter_ids.contains(&u.unit_id))
+        .filter(|u| u.distinct_attacker_count > 0 || u.open_distinct_attacker_count > 0)
+        .collect();
+    let exposed_recruiters = recruiter_surface
+        .recruiters
+        .into_iter()
+        .filter(|r| r.distinct_attacker_count > 0 || r.open_distinct_attacker_count > 0)
+        .collect();
+
+    Ok(ProjectedThreats {
+        safe: !unsafe_unit && !unsafe_recruiter,
+        projected_time_of_day,
+        exposed_units,
+        exposed_recruiters,
+    })
+}
+
+/// "both" | "occupied_only" | "open_only" for one unit/recruiter's exposure.
+fn threat_views(occupied_count: u32, open_count: u32) -> &'static str {
+    match (occupied_count > 0, open_count > 0) {
+        (true, true) => "both",
+        (true, false) => "occupied_only",
+        (false, true) => "open_only",
+        (false, false) => "occupied_only",
+    }
+}
+
+fn projected_unit_json(mover_id: u32, unit: &UnitThreatSummary) -> Value {
+    json!({
+        "unit_id": unit.unit_id,
+        "is_mover": unit.unit_id == mover_id,
+        "hp": unit.hp,
+        "col": unit.col,
+        "row": unit.row,
+        "attacker_ids_any_view": unit.attacker_ids,
+        "occupied": {
+            "distinct_attacker_count": unit.distinct_attacker_count,
+            "max_incoming_sum": unit.max_incoming_sum,
+            "lethal_attackers_needed": unit.lethal_attackers_needed,
+            "origins_conflict": unit.origins_conflict,
+            "focus_kill_bps": unit.focus_kill_bps,
+            "focus_expected_damage_tenths": unit.focus_expected_damage_tenths,
+        },
+        "open": {
+            "distinct_attacker_count": unit.open_distinct_attacker_count,
+            "max_incoming_sum": unit.open_max_incoming_sum,
+            "lethal_attackers_needed": unit.open_lethal_attackers_needed,
+            "origins_conflict": unit.open_origins_conflict,
+        },
+        "views": threat_views(unit.distinct_attacker_count, unit.open_distinct_attacker_count),
+    })
+}
+
+fn projected_recruiter_json(recruiter: &RecruiterThreats) -> Value {
+    json!({
+        "recruiter_id": recruiter.recruiter_id,
+        "hp": recruiter.hp,
+        "col": recruiter.col,
+        "row": recruiter.row,
+        "occupied": {
+            "distinct_attacker_count": recruiter.distinct_attacker_count,
+            "max_incoming_sum": recruiter.max_incoming_sum,
+            "lethal_attackers_needed": recruiter.lethal_attackers_needed,
+            "origins_conflict": recruiter.origins_conflict,
+            "attacker_max_damage": recruiter.attacker_max_damage,
+            "focus_kill_bps": recruiter.focus_kill_bps,
+            "focus_expected_damage_tenths": recruiter.focus_expected_damage_tenths,
+        },
+        "open": {
+            "distinct_attacker_count": recruiter.open_distinct_attacker_count,
+            "max_incoming_sum": recruiter.open_max_incoming_sum,
+            "lethal_attackers_needed": recruiter.open_lethal_attackers_needed,
+            "origins_conflict": recruiter.open_origins_conflict,
+            "attacker_max_damage": recruiter.open_attacker_max_damage,
+        },
+        "views": threat_views(
+            recruiter.distinct_attacker_count,
+            recruiter.open_distinct_attacker_count,
+        ),
+    })
+}
+
+/// Build the enriched `contact`/`proposed_destination` evidence for a rejected
+/// routine move from the verdict/evidence produced by `project_move_safety`.
+/// Never adds `contact_state_key` or `contact_actionability`: their presence
+/// would make a client consume a contact key and apply final-only closure.
+fn proposed_destination_evidence(
+    mover_id: u32,
+    destination: Hex,
+    objective_kind: &'static str,
+    objective_target: Option<Hex>,
+    evidence: &ProjectedThreats,
+) -> Value {
+    let mut units: Vec<&UnitThreatSummary> = evidence.exposed_units.iter().collect();
+    units.sort_by_key(|u| u.unit_id);
+    let units_listed = units.len().min(MAX_PROJECTED_UNITS);
+    let units_omitted = units.len().saturating_sub(units_listed);
+    let rendered_units: Vec<Value> = units
+        .into_iter()
+        .take(MAX_PROJECTED_UNITS)
+        .map(|u| projected_unit_json(mover_id, u))
+        .collect();
+    let mut recruiters: Vec<&RecruiterThreats> = evidence.exposed_recruiters.iter().collect();
+    recruiters.sort_by_key(|r| r.recruiter_id);
+    let rendered_recruiters: Vec<Value> =
+        recruiters.into_iter().map(projected_recruiter_json).collect();
+    let (col, row) = destination.to_offset();
+    json!({
+        "stage": "proposed_destination",
+        "unit_id": mover_id,
+        "destination": coord(destination),
+        "proposed_action": {"action":"Move","unit_id":mover_id,"col":col,"row":row},
+        "objective": {
+            "kind": objective_kind,
+            "target": rally_coord(objective_target),
+        },
+        "projected_threats": {
+            "projected_time_of_day": evidence.projected_time_of_day,
+            "units": rendered_units,
+            "recruiters": rendered_recruiters,
+        },
+        "coverage": {
+            "facts": "complete",
+            "units_listed": units_listed,
+            "units_omitted": units_omitted,
+        },
+    })
 }
 
 /// Return legal endpoints on a shortest terrain-cost route, ordered from
@@ -1276,7 +1437,7 @@ pub fn routine_next(
                     evidence: json!({"unit_id":id,"target":coord(village),"cause":"unreachable_or_no_legal_endpoint"}),
                 };
             }
-            let mut unsafe_destination = None;
+            let mut unsafe_move: Option<(Hex, ProjectedThreats)> = None;
             for (destination, arrived) in endpoints {
                 if arrived {
                     effects.extend(finish_effects(state, policy, side));
@@ -1289,8 +1450,8 @@ pub fn routine_next(
                     unit_id: id,
                     destination,
                 };
-                match post_step_safe(state, side, action) {
-                    Ok(true) => {
+                match project_move_safety(state, side, action) {
+                    Ok(evidence) if evidence.safe => {
                         effects.shrink_to_fit();
                         return RoutineOutcome::Action {
                             action: json!({"action":"Move","unit_id":id,"col":destination.to_offset().0,"row":destination.to_offset().1}),
@@ -1299,7 +1460,7 @@ pub fn routine_next(
                             independent_move: None,
                         };
                     }
-                    Ok(false) => unsafe_destination = Some(destination),
+                    Ok(evidence) => unsafe_move = Some((destination, evidence)),
                     Err(e) => {
                         return RoutineOutcome::Exception {
                             reason: "threat_unavailable",
@@ -1308,10 +1469,16 @@ pub fn routine_next(
                     }
                 }
             }
-            if let Some(destination) = unsafe_destination {
+            if let Some((destination, evidence)) = unsafe_move {
                 return RoutineOutcome::Exception {
                     reason: "contact",
-                    evidence: json!({"stage":"proposed_destination","unit_id":id,"destination":coord(destination)}),
+                    evidence: proposed_destination_evidence(
+                        id,
+                        destination,
+                        "village",
+                        Some(village),
+                        &evidence,
+                    ),
                 };
             }
             return RoutineOutcome::Exception {
@@ -1380,7 +1547,7 @@ pub fn routine_next(
             let mut unit_causes: Vec<(u32, &'static str)> = Vec::new();
             if let Some(rally) = policy.rally {
                 let goals = rally_goals(state, rally);
-                let mut unsafe_destination = None;
+                let mut unsafe_move: Option<(u32, Hex, ProjectedThreats)> = None;
                 for id in &eligible {
                     checked.push(*id);
                     let endpoints = route_endpoints(state, *id, &goals);
@@ -1399,8 +1566,8 @@ pub fn routine_next(
                             unit_id: *id,
                             destination,
                         };
-                        match post_step_safe(state, side, action) {
-                            Ok(true) => {
+                        match project_move_safety(state, side, action) {
+                            Ok(evidence) if evidence.safe => {
                                 return RoutineOutcome::Action {
                                     action: json!({"action":"Move","unit_id":id,"col":destination.to_offset().0,"row":destination.to_offset().1}),
                                     progress_update: progress_update(Vec::new()),
@@ -1408,9 +1575,9 @@ pub fn routine_next(
                                     independent_move: None,
                                 }
                             }
-                            Ok(false) => {
+                            Ok(evidence) => {
                                 saw_unsafe = true;
-                                unsafe_destination = Some((*id, destination));
+                                unsafe_move = Some((*id, destination, evidence));
                             }
                             Err(error) => {
                                 return RoutineOutcome::Exception {
@@ -1426,10 +1593,16 @@ pub fn routine_next(
                         unit_causes.push((*id, "no_route_endpoint"));
                     }
                 }
-                if let Some((id, destination)) = unsafe_destination {
+                if let Some((id, destination, evidence)) = unsafe_move {
                     return RoutineOutcome::Exception {
                         reason: "contact",
-                        evidence: json!({"stage":"proposed_destination","unit_id":id,"destination":coord(destination)}),
+                        evidence: proposed_destination_evidence(
+                            id,
+                            destination,
+                            "castle_capacity",
+                            Some(rally),
+                            &evidence,
+                        ),
                     };
                 }
                 if moved_castle_travel_exists(state, side, &scouts, policy) {
@@ -1584,7 +1757,7 @@ pub fn routine_next(
                     evidence: json!({"unit_id":id,"target":coord(rally),"cause":"unreachable_or_no_legal_endpoint"}),
                 };
             }
-            let mut unsafe_destination = None;
+            let mut unsafe_move: Option<(Hex, ProjectedThreats)> = None;
             for (destination, arrived) in endpoints {
                 if arrived {
                     continue;
@@ -1593,8 +1766,8 @@ pub fn routine_next(
                     unit_id: id,
                     destination,
                 };
-                match post_step_safe(state, side, action) {
-                    Ok(true) => {
+                match project_move_safety(state, side, action) {
+                    Ok(evidence) if evidence.safe => {
                         return RoutineOutcome::Action {
                             action: json!({"action":"Move","unit_id":id,"col":destination.to_offset().0,"row":destination.to_offset().1}),
                             progress_update: progress_update(Vec::new()),
@@ -1602,7 +1775,7 @@ pub fn routine_next(
                             independent_move: None,
                         }
                     }
-                    Ok(false) => unsafe_destination = Some(destination),
+                    Ok(evidence) => unsafe_move = Some((destination, evidence)),
                     Err(e) => {
                         return RoutineOutcome::Exception {
                             reason: "threat_unavailable",
@@ -1611,10 +1784,16 @@ pub fn routine_next(
                     }
                 }
             }
-            if let Some(destination) = unsafe_destination {
+            if let Some((destination, evidence)) = unsafe_move {
                 return RoutineOutcome::Exception {
                     reason: "contact",
-                    evidence: json!({"stage":"proposed_destination","unit_id":id,"destination":coord(destination)}),
+                    evidence: proposed_destination_evidence(
+                        id,
+                        destination,
+                        "rally",
+                        Some(rally),
+                        &evidence,
+                    ),
                 };
             }
             return RoutineOutcome::Exception {
@@ -2789,5 +2968,372 @@ mod tests {
                  (no scout/recruit/rally action should be returned), got {other:?}"
             ),
         }
+    }
+
+    // -- Stack 2: projected-threat evidence for rejected routine moves --
+
+    #[test]
+    fn threat_views_labels_each_combination() {
+        assert_eq!(threat_views(1, 1), "both");
+        assert_eq!(threat_views(1, 0), "occupied_only");
+        assert_eq!(threat_views(0, 1), "open_only");
+    }
+
+    #[test]
+    fn project_move_safety_is_safe_when_no_projected_threat_exists() {
+        let registry = units();
+        let mut s = state();
+        let mut mover = Unit::from_def(2, registry.get("Skeleton").unwrap(), 0);
+        mover.attacks.clear();
+        s.place_unit(mover, Hex::from_offset(2, 2));
+        let action = Action::Move {
+            unit_id: 2,
+            destination: Hex::from_offset(3, 2),
+        };
+        let evidence = project_move_safety(&s, 0, action).unwrap();
+        assert!(evidence.safe);
+        assert!(evidence.exposed_units.is_empty());
+        assert!(evidence.exposed_recruiters.is_empty());
+    }
+
+    #[test]
+    fn project_move_safety_reports_mover_exposure() {
+        let registry = units();
+        let mut s = state();
+        let mut mover = Unit::from_def(2, registry.get("Skeleton").unwrap(), 0);
+        mover.attacks.clear();
+        s.place_unit(mover, Hex::from_offset(2, 2));
+        let mut enemy = Unit::from_def(9, registry.get("Skeleton Archer").unwrap(), 1);
+        enemy.movement = 0;
+        s.place_unit(enemy, Hex::from_offset(4, 3));
+        let action = Action::Move {
+            unit_id: 2,
+            destination: Hex::from_offset(3, 2),
+        };
+        let evidence = project_move_safety(&s, 0, action).unwrap();
+        assert!(!evidence.safe);
+        assert!(evidence.exposed_recruiters.is_empty());
+        let mover_summary = evidence
+            .exposed_units
+            .iter()
+            .find(|u| u.unit_id == 2)
+            .expect("mover must be listed as exposed");
+        assert!(
+            mover_summary.distinct_attacker_count > 0
+                || mover_summary.open_distinct_attacker_count > 0
+        );
+    }
+
+    #[test]
+    fn other_friendly_exposure_names_that_unit_not_the_safe_mover() {
+        let registry = units();
+        let mut s = state();
+        let mut mover = Unit::from_def(2, registry.get("Skeleton").unwrap(), 0);
+        mover.attacks.clear();
+        s.place_unit(mover, Hex::from_offset(8, 6));
+        let mut bystander = Unit::from_def(5, registry.get("Skeleton").unwrap(), 0);
+        bystander.attacks.clear();
+        s.place_unit(bystander, Hex::from_offset(3, 2));
+        let mut enemy = Unit::from_def(9, registry.get("Skeleton Archer").unwrap(), 1);
+        enemy.movement = 0;
+        s.place_unit(enemy, Hex::from_offset(4, 3));
+        let action = Action::Move {
+            unit_id: 2,
+            destination: Hex::from_offset(8, 5),
+        };
+        let evidence = project_move_safety(&s, 0, action).unwrap();
+        assert!(!evidence.safe);
+        assert!(evidence.exposed_units.iter().all(|u| u.unit_id != 2));
+        assert!(evidence.exposed_units.iter().any(|u| u.unit_id == 5));
+    }
+
+    #[test]
+    fn recruiter_exposure_appears_only_under_recruiters_not_units() {
+        let registry = units();
+        // `state()` places a can_recruit leader (id 1) on the keep at (1,1).
+        let mut s = state();
+        let mut mover = Unit::from_def(2, registry.get("Skeleton").unwrap(), 0);
+        mover.attacks.clear();
+        s.place_unit(mover, Hex::from_offset(8, 6));
+        let mut enemy = Unit::from_def(9, registry.get("Skeleton Archer").unwrap(), 1);
+        enemy.movement = 0;
+        s.place_unit(enemy, Hex::from_offset(2, 2));
+        let action = Action::Move {
+            unit_id: 2,
+            destination: Hex::from_offset(8, 5),
+        };
+        let evidence = project_move_safety(&s, 0, action).unwrap();
+        assert!(!evidence.safe);
+        assert!(evidence.exposed_units.iter().all(|u| u.unit_id != 1));
+        assert!(evidence
+            .exposed_recruiters
+            .iter()
+            .any(|r| r.recruiter_id == 1));
+    }
+
+    #[test]
+    fn open_only_exposure_is_labeled_open_only() {
+        use crate::schema::AttackDef;
+        let mut board = Board::new(2, 7);
+        for row in 0..7 {
+            for col in 0..2 {
+                board.set_tile(Hex::from_offset(col, row), Tile::new("flat"));
+            }
+        }
+        let mut s = GameState::new_seeded(board, 5001);
+        s.place_unit(Unit::new(5, "target", 20, 0), Hex::from_offset(0, 5));
+        s.place_unit(Unit::new(3, "screen", 20, 0), Hex::from_offset(0, 2));
+        let mut mover = Unit::new(2, "mover", 10, 0);
+        mover.movement = 1;
+        mover.movement_costs.insert("flat".into(), 1);
+        s.place_unit(mover, Hex::from_offset(1, 6));
+        let mut archer = Unit::new(9, "adept", 20, 1);
+        archer.movement = 3;
+        archer.movement_costs.insert("flat".into(), 1);
+        archer.attacks.push(AttackDef {
+            id: "bolt".into(),
+            name: "bolt".into(),
+            damage: 10,
+            strikes: 2,
+            attack_type: "arcane".into(),
+            range: "ranged".into(),
+            specials: Vec::new(),
+        });
+        s.place_unit(archer, Hex::from_offset(0, 0));
+
+        // The mover's own step is unrelated to the screened column and stays safe.
+        let action = Action::Move {
+            unit_id: 2,
+            destination: Hex::from_offset(1, 5),
+        };
+        let evidence = project_move_safety(&s, 0, action).unwrap();
+        assert!(!evidence.safe);
+        let target = evidence
+            .exposed_units
+            .iter()
+            .find(|u| u.unit_id == 5)
+            .expect("screened target must be reported exposed via the open view");
+        assert_eq!(target.distinct_attacker_count, 0);
+        assert!(target.open_distinct_attacker_count > 0);
+        assert_eq!(
+            threat_views(
+                target.distinct_attacker_count,
+                target.open_distinct_attacker_count
+            ),
+            "open_only"
+        );
+    }
+
+    #[test]
+    fn village_exit_contact_carries_projected_threats_and_objective() {
+        let registry = units();
+        let mut s = state();
+        let village = Hex::from_offset(6, 2);
+        s.board.set_tile(village, Tile::new("village"));
+        let mut mover = Unit::from_def(2, registry.get("Skeleton").unwrap(), 0);
+        mover.movement = 1;
+        mover.attacks.clear();
+        s.place_unit(mover, Hex::from_offset(2, 2));
+        let mut enemy = Unit::from_def(9, registry.get("Skeleton Archer").unwrap(), 1);
+        enemy.movement = 0;
+        s.place_unit(enemy, Hex::from_offset(4, 3));
+        let p = RoutinePolicy {
+            scouts: vec![2],
+            villages: vec![village],
+            ..policy(&[])
+        };
+        let outcome = routine_next(&s, 0, &p, &RoutineProgress::default(), &[], &registry);
+        match outcome {
+            RoutineOutcome::Exception {
+                reason: "contact",
+                evidence,
+            } => {
+                assert_eq!(evidence["stage"], "proposed_destination");
+                assert_eq!(evidence["unit_id"], 2);
+                assert_eq!(
+                    evidence["objective"],
+                    json!({"kind":"village","target":coord(village)})
+                );
+                assert_eq!(evidence["proposed_action"]["action"], "Move");
+                assert_eq!(evidence["proposed_action"]["unit_id"], 2);
+                let unit_list = evidence["projected_threats"]["units"].as_array().unwrap();
+                assert!(unit_list
+                    .iter()
+                    .any(|u| u["unit_id"] == 2 && u["is_mover"] == true));
+                assert_eq!(evidence["projected_threats"]["recruiters"], json!([]));
+                assert!(evidence.get("contact_state_key").is_none());
+                assert!(evidence.get("contact_actionability").is_none());
+            }
+            other => panic!("expected contact with projected threats, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn castle_capacity_exit_contact_carries_projected_threats_and_objective() {
+        let registry = units();
+        // A larger board than the keep's immediate castle ring so the enemy
+        // can sit out of its distance-2 ranged reach of every currently
+        // placed friendly (no current-state contact) while still reaching
+        // both single-step travel endpoints once the traveler steps toward
+        // them (a genuine projected, not current, danger).
+        let mut board = Board::new(4, 3);
+        for row in 0..3 {
+            for col in 0..4 {
+                board.set_tile(Hex::from_offset(col, row), Tile::new("flat"));
+            }
+        }
+        let keep = Hex::from_offset(0, 0);
+        board.set_tile(keep, Tile::new("keep"));
+        for castle in [Hex::from_offset(1, 0), Hex::from_offset(0, 1)] {
+            board.set_tile(castle, Tile::new("castle"));
+        }
+        let mut s = GameState::new_seeded(board, 5100);
+        s.gold = [1000, 1000];
+        let mut leader = Unit::from_def(1, registry.get("Fighter").unwrap(), 0);
+        leader.can_recruit = true;
+        leader.attacks.clear();
+        s.place_unit(leader, keep);
+        let mut blocker = Unit::from_def(3, registry.get("Fighter").unwrap(), 0);
+        blocker.attacks.clear();
+        s.place_unit(blocker, Hex::from_offset(0, 1));
+        let mut traveler = Unit::from_def(2, registry.get("Fighter").unwrap(), 0);
+        traveler.movement = 1;
+        traveler.attacks.clear();
+        s.place_unit(traveler, Hex::from_offset(1, 0));
+        let mut enemy = Unit::from_def(9, registry.get("Skeleton Archer").unwrap(), 1);
+        enemy.movement = 0;
+        s.place_unit(enemy, Hex::from_offset(3, 1));
+        let rally = Hex::from_offset(2, 2);
+        let p = RoutinePolicy {
+            rally: Some(rally),
+            holds: vec![3],
+            ..policy(&[("Skeleton", 1, "army")])
+        };
+        let outcome = routine_next(
+            &s,
+            0,
+            &p,
+            &RoutineProgress::default(),
+            &["Skeleton".into()],
+            &registry,
+        );
+        match outcome {
+            RoutineOutcome::Exception {
+                reason: "contact",
+                evidence,
+            } => {
+                assert_eq!(evidence["stage"], "proposed_destination");
+                assert_eq!(evidence["unit_id"], 2);
+                assert_eq!(
+                    evidence["objective"],
+                    json!({"kind":"castle_capacity","target":coord(rally)})
+                );
+                assert_eq!(evidence["proposed_action"]["action"], "Move");
+                assert_eq!(evidence["proposed_action"]["unit_id"], 2);
+                let unit_list = evidence["projected_threats"]["units"].as_array().unwrap();
+                assert!(unit_list.iter().any(|u| u["unit_id"] == 2));
+                assert!(evidence.get("contact_state_key").is_none());
+                assert!(evidence.get("contact_actionability").is_none());
+            }
+            other => panic!("expected contact with projected threats, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rally_exit_contact_carries_projected_threats_and_objective() {
+        let registry = units();
+        let mut s = state();
+        let rally = Hex::from_offset(6, 2);
+        let mut mover = Unit::from_def(2, registry.get("Skeleton").unwrap(), 0);
+        mover.movement = 1;
+        mover.attacks.clear();
+        s.place_unit(mover, Hex::from_offset(2, 2));
+        let mut enemy = Unit::from_def(9, registry.get("Skeleton Archer").unwrap(), 1);
+        enemy.movement = 0;
+        s.place_unit(enemy, Hex::from_offset(4, 3));
+        let p = RoutinePolicy {
+            rally: Some(rally),
+            ..policy(&[])
+        };
+        let outcome = routine_next(&s, 0, &p, &RoutineProgress::default(), &[], &registry);
+        match outcome {
+            RoutineOutcome::Exception {
+                reason: "contact",
+                evidence,
+            } => {
+                assert_eq!(evidence["stage"], "proposed_destination");
+                assert_eq!(evidence["unit_id"], 2);
+                assert_eq!(
+                    evidence["objective"],
+                    json!({"kind":"rally","target":coord(rally)})
+                );
+                assert_eq!(evidence["proposed_action"]["action"], "Move");
+                assert_eq!(evidence["proposed_action"]["unit_id"], 2);
+                let unit_list = evidence["projected_threats"]["units"].as_array().unwrap();
+                assert!(unit_list
+                    .iter()
+                    .any(|u| u["unit_id"] == 2 && u["is_mover"] == true));
+                assert_eq!(evidence["projected_threats"]["recruiters"], json!([]));
+                assert!(evidence.get("contact_state_key").is_none());
+                assert!(evidence.get("contact_actionability").is_none());
+            }
+            other => panic!("expected contact with projected threats, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn repeated_contact_query_leaves_state_unchanged() {
+        let registry = units();
+        let mut s = state();
+        let village = Hex::from_offset(6, 2);
+        s.board.set_tile(village, Tile::new("village"));
+        let mut mover = Unit::from_def(2, registry.get("Skeleton").unwrap(), 0);
+        mover.movement = 1;
+        mover.attacks.clear();
+        s.place_unit(mover, Hex::from_offset(2, 2));
+        let mut enemy = Unit::from_def(9, registry.get("Skeleton Archer").unwrap(), 1);
+        enemy.movement = 0;
+        s.place_unit(enemy, Hex::from_offset(4, 3));
+        let p = RoutinePolicy {
+            scouts: vec![2],
+            villages: vec![village],
+            ..policy(&[])
+        };
+        let digest = |state: &GameState| format!("{:x}", Sha256::digest(format!("{state:?}")));
+        let before = (
+            s.rng.state(),
+            s.next_unit_id,
+            s.state_revision,
+            s.gold,
+            s.units.len(),
+            digest(&s),
+        );
+        let first = routine_next(&s, 0, &p, &RoutineProgress::default(), &[], &registry);
+        let second = routine_next(&s, 0, &p, &RoutineProgress::default(), &[], &registry);
+        assert!(matches!(
+            first,
+            RoutineOutcome::Exception {
+                reason: "contact",
+                ..
+            }
+        ));
+        assert!(matches!(
+            second,
+            RoutineOutcome::Exception {
+                reason: "contact",
+                ..
+            }
+        ));
+        assert_eq!(
+            (
+                s.rng.state(),
+                s.next_unit_id,
+                s.state_revision,
+                s.gold,
+                s.units.len(),
+                digest(&s),
+            ),
+            before
+        );
     }
 }

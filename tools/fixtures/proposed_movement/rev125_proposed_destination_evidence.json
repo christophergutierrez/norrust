@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "source": "exact read-only replay of trial 8 (glm-strategy-release-20260915T160542Z) revision 125",
+  "checkpoint": "4-125-partial-dfdd4abc8e91a5211d1373d02f9fc8e84dc9eceef193271ae0b370ea14dd2f12.json",
+  "installation_id": "pol-46e0ee3aece6",
+  "adopted_progress_records": 10,
+  "driver_sha256": "8ae1eb77b71a2fd56b2af6d4d90604a3968d8ae7f7625a6f44782564b2c489a6",
+  "note": "Real Rust routine_next exception output; the original archive stays untracked and unmodified.",
+  "reason": "contact",
+  "evidence": {
+    "coverage": {
+      "facts": "complete",
+      "units_listed": 1,
+      "units_omitted": 0
+    },
+    "destination": {
+      "col": 10,
+      "row": 8
+    },
+    "objective": {
+      "kind": "rally",
+      "target": {
+        "col": 10,
+        "row": 7
+      }
+    },
+    "projected_threats": {
+      "projected_time_of_day": "Day",
+      "recruiters": [],
+      "units": [
+        {
+          "attacker_ids_any_view": [
+            21,
+            23,
+            24,
+            25,
+            31
+          ],
+          "col": 10,
+          "hp": 34,
+          "is_mover": true,
+          "occupied": {
+            "distinct_attacker_count": 5,
+            "focus_expected_damage_tenths": [
+              36,
+              72,
+              108
+            ],
+            "focus_kill_bps": [
+              0,
+              0,
+              0
+            ],
+            "lethal_attackers_needed": null,
+            "max_incoming_sum": 30,
+            "origins_conflict": true
+          },
+          "open": {
+            "distinct_attacker_count": 5,
+            "lethal_attackers_needed": null,
+            "max_incoming_sum": 30,
+            "origins_conflict": true
+          },
+          "row": 8,
+          "unit_id": 8,
+          "views": "both"
+        }
+      ]
+    },
+    "proposed_action": {
+      "action": "Move",
+      "col": 10,
+      "row": 8,
+      "unit_id": 8
+    },
+    "stage": "proposed_destination",
+    "unit_id": 8
+  }
+}

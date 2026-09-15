@@ -14,6 +14,15 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
 
+try:
+    from .threat_render import (
+        _readable_whole_hp, _readable_threat_count, _readable_lethal_attackers,
+        _readable_focus)
+except ImportError:  # pragma: no cover - direct script compatibility
+    from tools.threat_render import (
+        _readable_whole_hp, _readable_threat_count, _readable_lethal_attackers,
+        _readable_focus)
+
 # --------------------------------------------------------------------------
 # Constants from the frozen contract (plan section 4).
 # --------------------------------------------------------------------------
@@ -1476,6 +1485,152 @@ def _capacity_relief_line(evidence: Any) -> str:
     )
 
 
+def _readable_coord(point: Any) -> str:
+    """Render a {"col":..,"row":..} point, or explain why it is unavailable."""
+    if point is None:
+        return "unknown target"
+    if not isinstance(point, dict):
+        return "unknown"
+    return f"({point.get('col', 'unknown')},{point.get('row', 'unknown')})"
+
+
+def _attacker_max_damage_text(items: Any) -> str:
+    """Render a RecruiterThreats attacker_max_damage list as U<id>:<max>HP pairs."""
+    if not isinstance(items, list) or not items:
+        return "unknown"
+    rendered = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        rendered.append(
+            f"U{item.get('attacker_id', 'unknown')}:{_readable_whole_hp(item.get('max_damage'))}")
+    return ",".join(rendered) if rendered else "unknown"
+
+
+def _contact_unit_exposure_line(unit: dict[str, Any]) -> Optional[str]:
+    """Render one UnitThreatSummary-shaped exposure entry for the causal brief."""
+    if not isinstance(unit, dict):
+        return None
+    uid = unit.get("unit_id", "unknown")
+    mover_note = "" if unit.get("is_mover") is True else " (not the mover)"
+    occupied = unit.get("occupied") if isinstance(unit.get("occupied"), dict) else {}
+    open_view = unit.get("open") if isinstance(unit.get("open"), dict) else {}
+    occupied_text = (
+        f"occupied attackers={_readable_threat_count(occupied, 'distinct_attacker_count')} "
+        f"max_sum={_readable_whole_hp(occupied.get('max_incoming_sum'))} "
+        "(sum of single-attack maxima, not proven jointly achievable) "
+        f"lethal={_readable_lethal_attackers(occupied)} "
+        f"focus=({_readable_focus(occupied.get('focus_expected_damage_tenths'), damage=True)})"
+    )
+    open_text = (
+        f"open attackers={_readable_threat_count(open_view, 'distinct_attacker_count')} "
+        f"max_sum={_readable_whole_hp(open_view.get('max_incoming_sum'))}"
+    )
+    views = unit.get("views")
+    if views == "occupied_only":
+        segment = occupied_text + " (occupied-only)"
+    elif views == "open_only":
+        segment = open_text + " (open-only)"
+    else:
+        segment = occupied_text + "; " + open_text
+    ids = unit.get("attacker_ids_any_view")
+    ids_text = (",".join(str(item) for item in ids)
+                if isinstance(ids, list) and ids else "unknown")
+    return f"U{uid}{mover_note} {segment}; attackers(any view)={ids_text}"
+
+
+def _contact_recruiter_exposure_line(recruiter: dict[str, Any]) -> Optional[str]:
+    """Render one projected recruiter exposure entry for the causal brief.
+
+    The engine nests per-view facts under ``occupied`` and ``open`` exactly as it
+    does for units, with ``attacker_max_damage`` inside each view. Recruiters carry
+    no ``attacker_ids_any_view``; that suffix is rendered only when present.
+    """
+    if not isinstance(recruiter, dict):
+        return None
+    rid = recruiter.get("recruiter_id", "unknown")
+    occupied = recruiter.get("occupied") if isinstance(recruiter.get("occupied"), dict) else {}
+    open_view = recruiter.get("open") if isinstance(recruiter.get("open"), dict) else {}
+    occupied_text = (
+        f"occupied attackers={_readable_threat_count(occupied, 'distinct_attacker_count')} "
+        f"max_sum={_readable_whole_hp(occupied.get('max_incoming_sum'))} "
+        "(sum of single-attack maxima, not proven jointly achievable) "
+        f"lethal={_readable_lethal_attackers(occupied)} "
+        f"max_single_attacker_damage=({_attacker_max_damage_text(occupied.get('attacker_max_damage'))}) "
+        f"focus=({_readable_focus(occupied.get('focus_expected_damage_tenths'), damage=True)})"
+    )
+    open_text = (
+        f"open attackers={_readable_threat_count(open_view, 'distinct_attacker_count')} "
+        f"max_sum={_readable_whole_hp(open_view.get('max_incoming_sum'))} "
+        f"max_single_attacker_damage=({_attacker_max_damage_text(open_view.get('attacker_max_damage'))})"
+    )
+    views = recruiter.get("views")
+    if views == "occupied_only":
+        segment = occupied_text + " (occupied-only)"
+    elif views == "open_only":
+        segment = open_text + " (open-only)"
+    else:
+        segment = occupied_text + "; " + open_text
+    ids = recruiter.get("attacker_ids_any_view")
+    ids_text = ("; attackers(any view)=" + ",".join(str(item) for item in ids)
+                if isinstance(ids, list) and ids else "")
+    return f"Recruiter U{rid} {segment}{ids_text}"
+
+
+def _contact_destination_line(evidence: Any) -> str:
+    """Render the causal explanation for a rejected proposed_destination move.
+
+    Only fires for the enriched evidence shape (STACK2-CONTRACT frozen wire
+    example): a ``projected_threats`` block with ``units``/``recruiters``.
+    The legacy minimal evidence (only ``unit_id`` and ``destination``, no
+    ``projected_threats``) renders no line here, unchanged from today.
+    """
+    if not isinstance(evidence, dict) or evidence.get("stage") != "proposed_destination":
+        return ""
+    threats = evidence.get("projected_threats")
+    if not isinstance(threats, dict):
+        return ""
+    unit_id = evidence.get("unit_id", "unknown")
+    destination = evidence.get("destination")
+    destination_text = _readable_coord(destination) if isinstance(destination, dict) else "unknown"
+    objective = evidence.get("objective")
+    if isinstance(objective, dict):
+        objective_kind = objective.get("kind", "unknown")
+        objective_target_text = _readable_coord(objective.get("target"))
+    else:
+        objective_kind = "unknown"
+        objective_target_text = "unknown target"
+
+    parts: list[str] = []
+    units = threats.get("units")
+    if isinstance(units, list):
+        for unit in units:
+            line = _contact_unit_exposure_line(unit)
+            if line:
+                parts.append(line)
+    recruiters = threats.get("recruiters")
+    if isinstance(recruiters, list):
+        for recruiter in recruiters:
+            line = _contact_recruiter_exposure_line(recruiter)
+            if line:
+                parts.append(line)
+    if not parts:
+        return ""
+
+    coverage = evidence.get("coverage")
+    omitted_text = ""
+    if isinstance(coverage, dict):
+        omitted = coverage.get("units_omitted")
+        if isinstance(omitted, int) and not isinstance(omitted, bool) and omitted > 0:
+            omitted_text = f" ({omitted} unit(s) omitted from this rendered list)"
+
+    return (
+        f"Proposed routine move U{unit_id} -> {destination_text} toward {objective_kind} "
+        f"{objective_target_text} would leave these units attackable on the next opponent "
+        "turn (projected, not current board): " + "; ".join(parts) + omitted_text
+    )
+
+
 def render_exception_brief(exception: RoutineException, remaining: list[dict[str, Any]], *,
                            state: Optional[dict[str, Any]] = None,
                            recruit_options: Any = None,
@@ -1486,6 +1641,10 @@ def render_exception_brief(exception: RoutineException, remaining: list[dict[str
     relief = ""
     if exception.reason == "recruitment_blocked":
         line = _capacity_relief_line(exception.evidence)
+        if line:
+            relief = line + " "
+    elif exception.reason == "contact":
+        line = _contact_destination_line(exception.evidence)
         if line:
             relief = line + " "
     return (
