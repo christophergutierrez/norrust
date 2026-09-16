@@ -456,8 +456,13 @@ result is a finishing boundary, so it cannot be counted as an additional move.
 When an engine validation rejects an authored batch, repair feedback names the
 offending authored index, involved unit IDs, destination, and engine error in a
 compact line. The complete validation result remains in the untrusted feedback
-and audit record. Rejection is transactional: no earlier action in that batch
-commits, and the corrected response is validated from the unchanged revision.
+and audit record. The driver's read-only validation replay is sequential and
+marks `committed: false`; a `DestinationOccupied` result identifies whether the
+occupant came from an earlier proposed action (with its zero-based index) or
+from the original live state. Rejection is transactional: no earlier action in
+that batch commits, and the corrected response is validated from the unchanged
+revision. A recruit moved away during the same replay frees its castle hex for
+a later recruit.
 
 Automatic turn completion uses `FinishWithGreedy` with empty `groups` and
 `holds`, which is verified to perform no friendly sweep. Plain `EndTurn`

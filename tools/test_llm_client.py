@@ -125,6 +125,81 @@ class ClientValidationTests(unittest.TestCase):
         self.assertNotIn("unit=U14", capped_line)
         self.assertIn("omitted_failures=2", capped_line)
 
+    def test_engine_rejection_explains_sequential_occupancy_and_atomic_rollback(self):
+        # The archived Luna failure: the final recruit reused (2,6), which
+        # the earlier Skeleton recruit at index 2 had filled.
+        orders = [
+            {"action": "Move", "unit_id": 8, "col": 6, "row": 3},
+            {"action": "Move", "unit_id": 5, "col": 4, "row": 7},
+            {"action": "Recruit", "def_id": "Skeleton", "col": 2, "row": 6},
+            {"action": "Move", "unit_id": 3, "col": 3, "row": 7},
+            {"action": "Move", "unit_id": 3, "col": 1, "row": 7},
+            {"action": "Move", "unit_id": 3, "col": 2, "row": 8},
+            {"action": "Move", "unit_id": 3, "col": 3, "row": 8},
+            {"action": "Recruit", "def_id": "Ghost", "col": 2, "row": 6},
+        ]
+        validation = {
+            "valid": False, "committed": False, "replay": "read_only_atomic",
+            "failed_index": 7,
+            "results": [
+                *([{"ok": True}] * 7),
+                {"ok": False, "code": "DestinationOccupied",
+                 "message": "destination is occupied",
+                 "occupancy": {
+                     "cause": "earlier_proposed_action",
+                     "earlier_action_index": 2,
+                     "occupied_by": {"unit_id": 10},
+                     "originally_occupied": False,
+                 }},
+            ],
+        }
+        line = concise_engine_rejection(orders, validation)
+        self.assertIn("ENGINE_REJECTION indices are zero-based", line)
+        self.assertIn("index=7 action=Recruit", line)
+        self.assertIn("occupied_by=U10", line)
+        self.assertIn("earlier proposed action index=2 (zero-based)", line)
+        feedback = engine_validation_feedback(orders, validation)
+        self.assertIn("committed=false", feedback)
+        self.assertIn("no prefix action committed", feedback)
+
+        # Changing only that recruit's destination to the tile filled by the
+        # preceding Skeleton move produces the same diagnostic with index 6.
+        repaired_orders = [*orders[:-1],
+                           {"action": "Recruit", "def_id": "Ghost", "col": 3, "row": 8}]
+        repaired_validation = {
+            "valid": False, "committed": False, "replay": "read_only_atomic",
+            "failed_index": 7,
+            "results": [*([{"ok": True}] * 7),
+                        {"ok": False, "code": "DestinationOccupied",
+                         "message": "destination is occupied",
+                         "occupancy": {
+                             "cause": "earlier_proposed_action",
+                             "earlier_action_index": 6,
+                             "occupied_by": {"unit_id": 3},
+                             "originally_occupied": False,
+                         }}],
+        }
+        repaired_line = concise_engine_rejection(repaired_orders, repaired_validation)
+        self.assertIn("index=7 action=Recruit", repaired_line)
+        self.assertIn("earlier proposed action index=6 (zero-based)", repaired_line)
+
+        original = {
+            "valid": False, "committed": False, "failed_index": 0,
+            "results": [{"ok": False, "code": "DestinationOccupied",
+                          "message": "destination is occupied",
+                          "occupancy": {"cause": "original_live_state",
+                                        "occupied_by": {"unit_id": 1},
+                                        "originally_occupied": True}}],
+        }
+        original_line = concise_engine_rejection(
+            [{"action": "Move", "unit_id": 1, "col": 2, "row": 7}], original)
+        self.assertIn("cause=original live state", original_line)
+        self.assertNotIn("earlier proposed action", original_line)
+
+        preflight = {"valid": False, "error_code": "parse",
+                     "error_message": "invalid action shape", "results": []}
+        self.assertIn("did not commit this proposal", engine_validation_feedback([], preflight))
+
     def test_direct_resume_honors_accepted_stop_without_dispatch(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

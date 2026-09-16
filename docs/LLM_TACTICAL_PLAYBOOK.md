@@ -74,6 +74,8 @@ recruiter safety, contested combat, and irreversible losses.
   unused movement: consider attack then retreat; verify live movement flags and
   legal destinations. Refresh after consequential results; batch
   known-dependency work.
+  Batches are sequential and atomic; repair rejected batches.
+  Recruits occupy their hexes until moved.
 - **T7.** Before finishing: affordable recruits, unfinished assignments,
   useful idle units, exposed recruiter? Resolve or explain consequential
   omissions. Distinguish remaining movement and attack flags from actual

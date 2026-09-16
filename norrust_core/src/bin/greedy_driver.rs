@@ -10,7 +10,7 @@
 //! target/debug/greedy_driver --scenario big_battle_6 \
 //!   --faction0 undead --faction1 undead --gold 300 --seed 42
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, Read, Write};
@@ -1572,6 +1572,99 @@ struct BatchExecution {
     pre_end_recruitment_remaining: Option<bool>,
 }
 
+/// Record which authored order most recently changed each occupied hex in the
+/// private replay state.  This is deliberately derived from the engine's
+/// reverse occupancy index after each successful order; it is not a second
+/// legality simulator.
+fn record_occupancy_changes(
+    before: &HashMap<Hex, u32>,
+    after: &HashMap<Hex, u32>,
+    order_index: usize,
+    provenance: &mut HashMap<Hex, usize>,
+) {
+    let mut touched = HashSet::new();
+    touched.extend(before.keys().copied());
+    touched.extend(after.keys().copied());
+    for hex in touched {
+        if before.get(&hex) == after.get(&hex) {
+            continue;
+        }
+        if after.contains_key(&hex) {
+            provenance.insert(hex, order_index);
+        } else {
+            provenance.remove(&hex);
+        }
+    }
+}
+
+/// Attach engine-replay evidence to a destination occupancy failure.  The
+/// baseline and provenance maps describe the exact clone being replayed, so a
+/// repair can distinguish a live occupant from one placed by an earlier
+/// proposed order while preserving the original ActionError code.
+fn add_occupancy_failure_detail(
+    result: &mut Value,
+    order: &Value,
+    error_code: &str,
+    state: &GameState,
+    initial_occupants: &HashMap<Hex, u32>,
+    provenance: &HashMap<Hex, usize>,
+) {
+    if error_code != "DestinationOccupied"
+        || !matches!(
+            order.get("action").and_then(Value::as_str),
+            Some("Move") | Some("Recruit")
+        )
+    {
+        return;
+    }
+    let destination = match (
+        order.get("col").and_then(Value::as_i64),
+        order.get("row").and_then(Value::as_i64),
+    ) {
+        (Some(col), Some(row)) => Hex::from_offset(col as i32, row as i32),
+        _ => return,
+    };
+    let Some(&occupied_by) = state.hex_to_unit.get(&destination) else {
+        return;
+    };
+    let (col, row) = destination.to_offset();
+    let earlier_action_index = provenance.get(&destination).copied();
+    let cause = if earlier_action_index.is_some() {
+        "earlier_proposed_action"
+    } else if initial_occupants.contains_key(&destination) {
+        "original_live_state"
+    } else {
+        "unknown"
+    };
+    let mut occupancy = json!({
+        "destination": {"col": col, "row": row},
+        "occupied_by": {"unit_id": occupied_by},
+        "cause": cause,
+        "originally_occupied": initial_occupants.contains_key(&destination),
+    });
+    if let Some(index) = earlier_action_index {
+        occupancy["earlier_action_index"] = json!(index);
+    }
+    if let Some(def_id) = state.units.get(&occupied_by).map(|unit| unit.def_id.clone()) {
+        occupancy["occupied_by"]["def_id"] = json!(def_id);
+    }
+    result["occupancy"] = occupancy;
+    let message = if let Some(index) = earlier_action_index {
+        format!(
+            "destination is occupied by unit U{} from earlier proposed action index {} (zero-based); batch replay is sequential",
+            occupied_by, index
+        )
+    } else if initial_occupants.contains_key(&destination) {
+        format!(
+            "destination is occupied by unit U{} in the original live state",
+            occupied_by
+        )
+    } else {
+        format!("destination is occupied by unit U{}", occupied_by)
+    };
+    result["message"] = json!(message);
+}
+
 /// Apply one model batch to an isolated state. The commit path and the
 /// read-only validation query deliberately share this executor so validation
 /// cannot approve a batch with different sequential semantics.
@@ -1603,7 +1696,10 @@ fn execute_model_batch(
     // (for example NotAdjacent) instead of receiving a misleading
     // UnitNotFound for the attacker.
     let mut nested_failure: Option<Value> = None;
-    for order in orders {
+    let initial_occupants = state.hex_to_unit.clone();
+    let mut occupancy_provenance = HashMap::new();
+    let mut replay_tainted = false;
+    for (order_index, order) in orders.iter().enumerate() {
         let action_name = order.get("action").and_then(Value::as_str);
         let conditional_on_survival = !sample_attacks
             && ["unit_id", "attacker_id", "defender_id"]
@@ -1631,6 +1727,7 @@ fn execute_model_batch(
                 | Some("MoveGroupToward")
         );
         let events_len_before = events.len();
+        let occupancy_before_order = state.hex_to_unit.clone();
         let result = match action_name {
             // Read-only validate_batch accepts resignation without advancing state.
             // Live resignation is handled by the protocol before this executor.
@@ -1862,6 +1959,12 @@ fn execute_model_batch(
                     &mut events,
                 ) {
                     Ok(recruited) => {
+                        record_occupancy_changes(
+                            &occupancy_before_order,
+                            &state.hex_to_unit,
+                            order_index,
+                            &mut occupancy_provenance,
+                        );
                         results.push(json!({"ok":true,"requested":count,"recruited":recruited,"partial":(recruited as u64) < count}));
                         delegated_order_indices.extend(std::iter::repeat(None).take(
                             events.len().saturating_sub(events_len_before),
@@ -2096,6 +2199,12 @@ fn execute_model_batch(
         match result {
             Ok(mut produced) => {
                 events.append(&mut produced);
+                record_occupancy_changes(
+                    &occupancy_before_order,
+                    &state.hex_to_unit,
+                    order_index,
+                    &mut occupancy_provenance,
+                );
                 delegated_order_indices.extend(std::iter::repeat(
                     if is_delegating_order { Some(results.len()) } else { None },
                 ).take(events.len().saturating_sub(events_len_before)));
@@ -2146,10 +2255,32 @@ fn execute_model_batch(
                                           .cloned()
                                           .unwrap_or_else(|| Value::String(error.to_string())));
                     }
+                    if !replay_tainted {
+                        add_occupancy_failure_detail(
+                            &mut detail,
+                            order,
+                            error.code(),
+                            &state,
+                            &initial_occupants,
+                            &occupancy_provenance,
+                        );
+                    }
                     results.push(detail);
                 } else {
-                    results.push(json!({"ok":false,"code":error.code(),"message":error.to_string()}));
+                    let mut detail = json!({"ok":false,"code":error.code(),"message":error.to_string()});
+                    if !replay_tainted {
+                        add_occupancy_failure_detail(
+                            &mut detail,
+                            order,
+                            error.code(),
+                            &state,
+                            &initial_occupants,
+                            &occupancy_provenance,
+                        );
+                    }
+                    results.push(detail);
                 }
+                replay_tainted = true;
                 if !sample_attacks {
                     break;
                 }
@@ -3093,7 +3224,8 @@ fn interactive_protocol_game(mut c: Config) {
                             .iter()
                             .position(|result| result.get("ok") == Some(&Value::Bool(false)));
                         json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,
-                            "body":{"valid":valid,"results":execution.results,"failed_index":failed_index}})
+                            "body":{"valid":valid,"results":execution.results,"failed_index":failed_index,
+                                "committed":false,"replay":"read_only_atomic"}})
                     }
                 }
                 "preview_batch" => {
@@ -3906,7 +4038,7 @@ fn interactive_protocol_game(mut c: Config) {
         }
         let finish_kind = completed_finish_kind(&orders, did_end);
         let mut status = json!({"type":"status","ok":true,"results":results,
-            "state_revision":state.state_revision});
+            "committed":batch_succeeded,"state_revision":state.state_revision});
         if let Some(finish_kind) = finish_kind {
             status["finish_kind"] = json!(finish_kind);
         }

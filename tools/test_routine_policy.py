@@ -317,6 +317,9 @@ class ModelResponseParsingTests(unittest.TestCase):
             '"option_ids":["u6-relocate-2","u7-relocate-1"],"finish_turn":false}',
             contract,
         )
+        self.assertIn("replayed sequentially on an engine clone", contract)
+        self.assertIn("whole batch is discarded", contract)
+        self.assertIn("zero-based index", contract)
         self.assertEqual(rp.CHOOSE_KEYS, {"kind", "decision_id", "option_ids", "finish_turn"})
         self.assertEqual(rp.STRATEGY_RESPONSE_SHAPES["choose"], rp.CHOOSE_KEYS)
 

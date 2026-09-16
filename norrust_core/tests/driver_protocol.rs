@@ -601,6 +601,76 @@ fn undead_recruitment_is_roster_gated_and_valid_recruitment_still_works() {
 }
 
 #[test]
+fn destination_occupancy_feedback_identifies_replay_cause_and_transaction() {
+    let validation = run_driver(
+        &[
+            "--scenario", "big_battle_6", "--faction0", "undead",
+            "--faction1", "undead", "--gold", "300", "--max-turns", "4",
+        ],
+        r#"{"action":"Query","what":"validate_batch","state_revision":0,"orders":[{"action":"Recruit","def_id":"Skeleton","col":2,"row":6},{"action":"Recruit","def_id":"Skeleton","col":2,"row":6},{"action":"EndTurn"}]}
+"#,
+    );
+    let body = validation
+        .iter()
+        .find(|line| line["what"] == "validate_batch")
+        .expect("validation response");
+    assert_eq!(body["body"]["valid"], false);
+    assert_eq!(body["body"]["committed"], false);
+    assert_eq!(body["body"]["replay"], "read_only_atomic");
+    let failed = &body["body"]["results"][1];
+    assert_eq!(failed["code"], "DestinationOccupied");
+    assert_eq!(failed["occupancy"]["cause"], "earlier_proposed_action");
+    assert_eq!(failed["occupancy"]["earlier_action_index"], 0);
+    assert_eq!(failed["occupancy"]["occupied_by"]["unit_id"], 3);
+    assert_eq!(failed["occupancy"]["originally_occupied"], false);
+
+    let rejected = run_driver(
+        &[
+            "--scenario", "big_battle_6", "--faction0", "undead",
+            "--faction1", "undead", "--gold", "300", "--max-turns", "4",
+        ],
+        "[{\"action\":\"Recruit\",\"def_id\":\"Skeleton\",\"col\":2,\"row\":6},{\"action\":\"Recruit\",\"def_id\":\"Skeleton\",\"col\":2,\"row\":6},{\"action\":\"EndTurn\"}]\n",
+    );
+    let status = rejected
+        .iter()
+        .find(|line| line["type"] == "status")
+        .expect("rejected status");
+    assert_eq!(status["committed"], false);
+    assert_eq!(status["state_revision"], 0);
+    assert!(!rejected.iter().any(|line| line["type"] == "events"));
+
+    let valid_reuse = run_driver(
+        &[
+            "--scenario", "big_battle_6", "--faction0", "undead",
+            "--faction1", "undead", "--gold", "300", "--max-turns", "4",
+        ],
+        "[{\"action\":\"Recruit\",\"def_id\":\"Skeleton\",\"col\":2,\"row\":6},{\"action\":\"Move\",\"unit_id\":3,\"col\":3,\"row\":6},{\"action\":\"Recruit\",\"def_id\":\"Skeleton\",\"col\":2,\"row\":6},{\"action\":\"EndTurn\"}]\n",
+    );
+    let status = valid_reuse
+        .iter()
+        .find(|line| line["type"] == "status")
+        .expect("valid reuse status");
+    assert_eq!(status["committed"], true);
+    assert_eq!(status["results"].as_array().unwrap().iter().all(|r| r["ok"] == true), true);
+
+    let original = run_driver(
+        &[
+            "--scenario", "big_battle_6", "--faction0", "undead",
+            "--faction1", "undead", "--gold", "300", "--max-turns", "4",
+        ],
+        r#"{"action":"Query","what":"validate_batch","state_revision":0,"orders":[{"action":"Move","unit_id":1,"col":2,"row":7},{"action":"EndTurn"}]}
+"#,
+    );
+    let original_body = original
+        .iter()
+        .find(|line| line["what"] == "validate_batch")
+        .expect("original occupancy response");
+    let original_failed = &original_body["body"]["results"][0];
+    assert_eq!(original_failed["occupancy"]["cause"], "original_live_state");
+    assert!(original_failed["occupancy"].get("earlier_action_index").is_none());
+}
+
+#[test]
 fn rust_action_shape_rejects_wrong_scalars_and_batch_count_overflow() {
     let lines = run_driver(
         &[

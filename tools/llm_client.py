@@ -1153,6 +1153,8 @@ def query_validate_batch(exchange, orders: list[dict[str, Any]], state_revision:
         # infrastructure failures. Let the bounded repair path handle them.
         return {"valid": False, "failed_index": response.get("failed_index"),
                 "results": response.get("results", []),
+                "committed": response.get("committed"),
+                "replay": response.get("replay"),
                 "error_code": response.get("code"),
                 "error_message": response.get("message", "validation failed")}
     if not isinstance(response, dict) or not response.get("ok") or "body" not in response:
@@ -1204,6 +1206,21 @@ def concise_engine_rejection(orders: Any, validation: Any) -> str:
                     destination = f"({step['col']},{step['row']})"
         if destination is not None:
             details.append(f"destination={destination}")
+        occupancy = result.get("occupancy")
+        if isinstance(occupancy, dict):
+            occupied_by = occupancy.get("occupied_by")
+            if isinstance(occupied_by, dict) and isinstance(occupied_by.get("unit_id"), int):
+                details.append(f"occupied_by=U{occupied_by['unit_id']}")
+            cause = occupancy.get("cause")
+            earlier_index = occupancy.get("earlier_action_index")
+            if (cause == "earlier_proposed_action"
+                    and isinstance(earlier_index, int)
+                    and not isinstance(earlier_index, bool)):
+                details.append(
+                    f"cause=earlier proposed action index={earlier_index} (zero-based); "
+                    "replay is sequential")
+            elif cause == "original_live_state":
+                details.append("cause=original live state")
         code = result.get("code", validation.get("error_code", validation.get("code", "unknown")))
         message = result.get("message", validation.get("error_message", validation.get("message", "validation failed")))
         details.append(f"error={code}: {message}")
@@ -1213,7 +1230,8 @@ def concise_engine_rejection(orders: Any, validation: Any) -> str:
         summaries.append("index=unknown action=unknown error=%s: %s" % (
             validation.get("error_code", validation.get("code", "unknown")),
             validation.get("error_message", validation.get("message", "validation failed"))))
-    return "ENGINE_REJECTION " + "; ".join(summaries) + (f" omitted_failures={omitted}" if omitted else "")
+    return ("ENGINE_REJECTION indices are zero-based; " + "; ".join(summaries)
+            + (f" omitted_failures={omitted}" if omitted else ""))
 
 
 STRATEGY_BATCH_ACTION_LIMIT = 256
@@ -1272,7 +1290,17 @@ def engine_validation_feedback(orders: Any, validation: Any) -> str:
     if not isinstance(validation, dict):
         validation = {"error_message": str(validation)}
     raw = json.dumps(validation, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return (concise_engine_rejection(orders, validation) +
+    replayed = validation.get("replay") == "read_only_atomic"
+    rollback_notice = (
+        "BATCH_ROLLBACK: validate_batch replayed the proposal sequentially on "
+        "a private engine clone; committed=false means the entire proposed "
+        "batch was discarded and no prefix action committed. Repair from the "
+        "unchanged live state.\n"
+        if replayed else
+        "VALIDATION_NOTICE: the driver did not commit this proposal; repair "
+        "from the unchanged live state.\n"
+    )
+    return (concise_engine_rejection(orders, validation) + "\n" + rollback_notice +
             "\nENGINE_VALIDATION_UNTRUSTED_DATA_BEGIN\n" + raw +
             "\nENGINE_VALIDATION_UNTRUSTED_DATA_END\n")
 
@@ -8413,6 +8441,8 @@ def run(args: argparse.Namespace) -> int:
                         return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
                     record({"type": "batch_validation", "orders": orders,
                             "valid": validation.get("valid"),
+                            "committed": validation.get("committed"),
+                            "replay": validation.get("replay"),
                             "results": validation.get("results"),
                             "failed_index": validation.get("failed_index")})
                     repair_tool_context = ""
@@ -8451,6 +8481,8 @@ def run(args: argparse.Namespace) -> int:
                                 exchange, orders, int(state.get("state_revision", 0)))
                             record({"type": "batch_validation", "orders": orders,
                                     "valid": validation.get("valid"),
+                                    "committed": validation.get("committed"),
+                                    "replay": validation.get("replay"),
                                     "results": validation.get("results"),
                                     "failed_index": validation.get("failed_index"),
                                     "repair": True, "reason": "partial_limit_finish"})
@@ -8636,6 +8668,7 @@ def run(args: argparse.Namespace) -> int:
                                           "results": [], "parse_error": str(repair_error)}
                             record({"type": "batch_validation", "orders": [],
                                     "valid": False, "failed_index": None,
+                                    "committed": None, "replay": None,
                                     "results": [], "parse_error": str(repair_error),
                                     "repair": True})
                             rejected_raw_text = repaired.text
@@ -8657,6 +8690,8 @@ def run(args: argparse.Namespace) -> int:
                             exchange, orders, int(state.get("state_revision", 0)))
                         record({"type": "batch_validation", "orders": orders,
                                 "valid": validation.get("valid"),
+                                "committed": validation.get("committed"),
+                                "replay": validation.get("replay"),
                                 "results": validation.get("results"),
                                 "failed_index": validation.get("failed_index"),
                                 "repair": True})

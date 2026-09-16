@@ -1404,7 +1404,11 @@ def _strategy_contract(recruitable_defs: Iterable[str] = ()) -> str:
         '{"action":"Recruit","def_id":"Skeleton","col":2,"row":3}, '
         '{"action":"Advance","unit_id":1,"target_index":0}, and '
         '{"action":"Engage","target_id":2,"steps":[{"attacker_id":1,"col":2,"row":3}]}; '
-        "replace example IDs/definition with values in LIVE_STATE and current options.\n"
+        "replace example IDs/definition with values in LIVE_STATE and current options. "
+        "A submitted action batch is replayed sequentially on an engine clone, so a later recruit sees earlier "
+        "recruits until one is moved away; if any action is rejected, the whole batch is discarded and the live "
+        "state is unchanged. Occupancy feedback names an earlier proposed action with a zero-based index when "
+        "that caused the conflict, or names the original live occupant.\n"
         "When enabled, optional read-only inspections use one of these complete objects: "
         '{"tool":"inspect_target","unit_id":1,"purpose":"check target"}, '
         '{"tool":"inspect_targets","unit_ids":[1],"purpose":"check targets"}, '
