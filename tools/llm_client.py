@@ -52,6 +52,7 @@ try:
         NO_SWEEP_FINISH, parse_model_response, SetPolicyResponse,
         ActResponse, FinishTurnResponse, ResignResponse, ChooseResponse,
         validate_routine_policy, render_policy_brief, render_exception_brief,
+        render_strategy_fixed_prefix,
         effective_scout_ids,
         find_unreconstructable_routine_batch,
         pending_routine_commit, is_redundant_finish_turn, strategy_repair_guidance,
@@ -102,6 +103,7 @@ except ImportError:  # pragma: no cover - direct script compatibility
         NO_SWEEP_FINISH, parse_model_response, SetPolicyResponse,
         ActResponse, FinishTurnResponse, ResignResponse, ChooseResponse,
         validate_routine_policy, render_policy_brief, render_exception_brief,
+        render_strategy_fixed_prefix,
         effective_scout_ids,
         find_unreconstructable_routine_batch,
         pending_routine_commit, is_redundant_finish_turn, strategy_repair_guidance,
@@ -4777,7 +4779,25 @@ def local_execution_projection(state: dict[str, Any], local_context: dict[str, A
 
 def prompt_regions(prompt: str) -> dict[str, Any]:
     """Return byte sizes and hashes for the explicit prompt regions."""
+    strat_marker = "STRATEGY_FIXED_PREFIX_BEGIN\n"
+    strat_start = prompt.find(strat_marker)
+    if strat_start >= 0:
+        strat_end = "\nSTRATEGY_FIXED_PREFIX_END"
+        strat_stop = prompt.find(strat_end, strat_start + len(strat_marker))
+        if strat_stop >= 0:
+            fixed_prefix = prompt[:strat_stop + len(strat_end)]
+            fixed_bytes = len(fixed_prefix.encode("utf-8"))
+            return {
+                "prompt_layout_version": "strategy_layout_v1",
+                "fixed_prefix_bytes": fixed_bytes,
+                "fixed_prefix_sha256": hashlib.sha256(fixed_prefix.encode("utf-8")).hexdigest(),
+                "preamble_bytes": None,
+                "turn_card_bytes": None,
+                "tool_result_bytes": None,
+            }
+
     marker = "\nBOARD_UNTRUSTED_DATA_BEGIN:\n"
+    has_board = marker in prompt
     preamble, _, remainder = prompt.partition(marker)
     options = "\nOPTION_PAYLOADS_UNTRUSTED_DATA_BEGIN:\n"
     _, _, after_board = remainder.partition("\nBOARD_UNTRUSTED_DATA_END\n")
@@ -4786,16 +4806,20 @@ def prompt_regions(prompt: str) -> dict[str, Any]:
     fixed_marker = "\nPROMPT_FIXED_CONTEXT_BEGIN\n"
     fixed_end = "\nPROMPT_FIXED_CONTEXT_END"
     fixed_start = prompt.find(fixed_marker)
+    if fixed_start < 0 and prompt.startswith("PROMPT_FIXED_CONTEXT_BEGIN\n"):
+        fixed_start = 0
     fixed_stop = prompt.find(fixed_end, fixed_start + len(fixed_marker)) if fixed_start >= 0 else -1
-    fixed_prefix = (prompt[:fixed_stop + len(fixed_end)] if fixed_start >= 0 and fixed_stop >= 0 else preamble)
     known_layout = fixed_start >= 0 and fixed_stop >= 0
-    fixed_bytes = len(fixed_prefix.encode()) if known_layout else None
-    return {"prompt_layout_version": "prompt_layout_v2" if known_layout else None,
-            "fixed_prefix_bytes": fixed_bytes,
-            "fixed_prefix_sha256": hashlib.sha256(fixed_prefix.encode()).hexdigest() if known_layout else None,
-            "preamble_bytes": len(preamble.encode()),
-            "turn_card_bytes": len((marker + remainder[:remainder.find("\nBOARD_UNTRUSTED_DATA_END\n") + len("\nBOARD_UNTRUSTED_DATA_END\n")]).encode()),
-            "tool_result_bytes": len((options + tool_result).encode()) if options in after_board else 0}
+    fixed_prefix = (prompt[:fixed_stop + len(fixed_end)] if known_layout else preamble)
+    fixed_bytes = len(fixed_prefix.encode("utf-8")) if known_layout else None
+    return {
+        "prompt_layout_version": "prompt_layout_v2" if known_layout else None,
+        "fixed_prefix_bytes": fixed_bytes,
+        "fixed_prefix_sha256": hashlib.sha256(fixed_prefix.encode("utf-8")).hexdigest() if known_layout else None,
+        "preamble_bytes": len(preamble.encode("utf-8")) if has_board else None,
+        "turn_card_bytes": len((marker + remainder[:remainder.find("\nBOARD_UNTRUSTED_DATA_END\n") + len("\nBOARD_UNTRUSTED_DATA_END\n")]).encode("utf-8")) if has_board else None,
+        "tool_result_bytes": len((options + tool_result).encode("utf-8")) if (has_board and options in after_board) else (0 if has_board else None),
+    }
 
 
 def game_budget_context(args: Any, metadata: dict[str, Any]) -> str:

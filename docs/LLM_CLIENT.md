@@ -41,7 +41,15 @@ within it; use concise conditional tactics and avoid repeated checklists.
 Prompt layout `prompt_layout_v2` keeps canonical rules first, followed by fixed
 match facts, geometry-only terrain, and available unit types. History and live
 board data follow those sections. `V-` marks a village in geometry; ownership
-and occupancy remain live mappings. Maintained transports receive the complete
+and occupancy remain live mappings.
+Strategy prompt layout `strategy_layout_v1` packages the stable strategy contract,
+recruitable definitions, and immutable scenario geometry (dimensions, scenario name,
+and terrain tiles without village ownership) inside `STRATEGY_FIXED_PREFIX_BEGIN`
+and `STRATEGY_FIXED_PREFIX_END`. Dynamic state facts (revision, turn, phase, gold,
+villages and live owners, compact units, policy, threats) follow the prefix, with
+the packet-specific decision guidance and offered options near the end, volatile
+game token budget context, and the authoritative live footer last.
+Maintained transports receive the complete
 assembled prompt unchanged. Request records include fixed-prefix UTF-8 bytes
 and a hash; these show cache eligibility, never a provider hit. Offline byte
 comparisons use `python3 -m tools.prompt_cache_report --archive PATH`.

@@ -1311,10 +1311,11 @@ def _strategy_context(state: Optional[dict[str, Any]], *, recruit_options: Any =
         "phase": state.get("time_of_day", "unknown"),
         "map": {key: state.get(key, "unknown") for key in ("cols", "rows")},
         "gold": state.get("gold", "unknown"),
-        "terrain": ([{key: tile.get(key, "unknown") for key in ("col", "row", "terrain_id", "owner")}
-                     for tile in terrain] if isinstance(terrain, list) else "unknown"),
+        "villages": villages,
         "units": compact_units,
     }
+    if "village_owners" in state:
+        facts["village_owners"] = state["village_owners"]
     if recruit_options is not None:
         facts["recruit_options"] = recruit_options
     if remaining is not None:
@@ -1413,6 +1414,45 @@ def _strategy_contract(recruitable_defs: Iterable[str] = ()) -> str:
     )
 
 
+def render_strategy_fixed_prefix(state: Optional[dict[str, Any]] = None,
+                                 recruitable_defs: Iterable[str] = ()) -> str:
+    """Render the stable strategy contract and static scenario geometry prefix.
+
+    Village ownership and live state deliberately live after this block.
+    """
+    contract = _strategy_contract(recruitable_defs)
+    static_map: dict[str, Any] = {}
+    if isinstance(state, dict):
+        for key in ("cols", "rows", "scenario"):
+            if key in state and state[key] is not None:
+                static_map[key] = state[key]
+        terrain = state.get("terrain")
+        if isinstance(terrain, list):
+            sorted_tiles = sorted(
+                [tile for tile in terrain if isinstance(tile, dict)],
+                key=lambda t: (
+                    t.get("col") if isinstance(t.get("col"), int) else -1,
+                    t.get("row") if isinstance(t.get("row"), int) else -1,
+                ),
+            )
+            static_map["terrain"] = [
+                {k: v for k, v in tile.items() if k != "owner"}
+                for tile in sorted_tiles
+            ]
+        elif terrain is not None:
+            static_map["terrain"] = terrain
+
+    geo_json = json.dumps(static_map, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return (
+        "STRATEGY_FIXED_PREFIX_BEGIN\n"
+        + contract
+        + "STRATEGY_MAP_GEOMETRY_BEGIN\n"
+        + geo_json
+        + "\nSTRATEGY_MAP_GEOMETRY_END\n"
+        "STRATEGY_FIXED_PREFIX_END\n"
+    )
+
+
 def render_policy_brief(reserve_gold_default: int, recruitable_defs: Iterable[str], *,
                         state: Optional[dict[str, Any]] = None,
                         recruit_options: Any = None,
@@ -1421,15 +1461,17 @@ def render_policy_brief(reserve_gold_default: int, recruitable_defs: Iterable[st
                         policy: Any = None,
                         progress: Any = None) -> str:
     """Render the stable strategy contract and compact current facts."""
-    return (
-        _strategy_contract(recruitable_defs) +
+    prefix = render_strategy_fixed_prefix(state, recruitable_defs)
+    context = _strategy_context(state, recruit_options=recruit_options,
+                                remaining=remaining, changes=changes,
+                                policy=policy, progress=progress,
+                                allowed_kinds=["set_policy", "act", "finish_turn", "resign"])
+    guidance = (
         "Select the initial policy with {\"kind\":\"set_policy\",\"policy\":{...}}; "
         "each recruit count is a finite total for this installation, and scouts/villages/holds "
         "must satisfy the current engine limits."
-        + _strategy_context(state, recruit_options=recruit_options,
-                            remaining=remaining, changes=changes,
-                            policy=policy, progress=progress)
     )
+    return f"{prefix}{context}\n{guidance}"
 
 
 def _capacity_relief_line(evidence: Any) -> str:
@@ -1735,7 +1777,8 @@ def render_exception_brief(exception: RoutineException, remaining: list[dict[str
                            recruit_options: Any = None,
                            changes: Any = None,
                            policy: Any = None,
-                           progress: Any = None) -> str:
+                           progress: Any = None,
+                           recruitable_defs: Iterable[str] = ()) -> str:
     """Render a typed exception with current revision-pinned facts."""
     relief = ""
     if exception.reason == "recruitment_blocked":
@@ -1752,17 +1795,18 @@ def render_exception_brief(exception: RoutineException, remaining: list[dict[str
             parts.append(options_line)
         if parts:
             relief = " ".join(parts) + " "
-    return (
-        _strategy_contract() +
+    prefix = render_strategy_fixed_prefix(state, recruitable_defs)
+    context = _strategy_context(state, recruit_options=recruit_options,
+                                remaining=remaining, changes=changes,
+                                policy=policy, progress=progress,
+                                exception=exception)
+    guidance = (
         relief +
         "Routine execution paused on a typed engine exception. The exception facts and current state "
         "below are authoritative; missing values remain unknown. set_policy replaces the installation "
         "and cancels its old remaining work."
-        + _strategy_context(state, recruit_options=recruit_options,
-                            remaining=remaining, changes=changes,
-                            policy=policy, progress=progress,
-                            exception=exception)
     )
+    return f"{prefix}{context}\n{guidance}"
 
 
 # --------------------------------------------------------------------------

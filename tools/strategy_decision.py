@@ -19,6 +19,7 @@ try:
     RoutineException,
     strategy_context,
     _strategy_contract,
+    render_strategy_fixed_prefix,
     _capacity_relief_line,
     _contact_destination_line,
     _contact_proposed_options_line,
@@ -34,6 +35,7 @@ except ImportError:
     RoutineException,
     strategy_context,
     _strategy_contract,
+    render_strategy_fixed_prefix,
     _capacity_relief_line,
     _contact_destination_line,
     _contact_proposed_options_line,
@@ -760,7 +762,25 @@ def render_decision_brief(
   recruitable_defs: Any = (),
 ) -> str:
   """Render a decision-specific brief with applicable responses."""
-  sections: list[str] = [_strategy_contract(recruitable_defs)]
+  prefix = render_strategy_fixed_prefix(state, recruitable_defs)
+
+  exc_obj = (
+    RoutineException(packet.reason, packet.evidence)
+    if packet.reason != "initial"
+    else None
+  )
+  context = strategy_context(
+    state,
+    recruit_options=recruit_options,
+    remaining=remaining,
+    changes=changes,
+    policy=policy,
+    progress=progress,
+    allowed_kinds=packet.allowed_kinds,
+    exception=exc_obj,
+  )
+
+  sections: list[str] = []
 
   # Specific Guidance
   if packet.decision_kind == DECISION_KIND_TACTICAL:
@@ -982,23 +1002,5 @@ def render_decision_brief(
       f"to define objectives, or submit manual actions. Applicable responses: {', '.join(packet.allowed_kinds)}."
     )
 
-  # Append context block
-  exc_obj = (
-    RoutineException(packet.reason, packet.evidence)
-    if packet.reason != "initial"
-    else None
-  )
-  sections.append(
-    strategy_context(
-      state,
-      recruit_options=recruit_options,
-      remaining=remaining,
-      changes=changes,
-      policy=policy,
-      progress=progress,
-      allowed_kinds=packet.allowed_kinds,
-      exception=exc_obj,
-    )
-  )
-
-  return "\n".join(sections)
+  guidance_text = "\n".join(sections)
+  return f"{prefix}{context}\n{guidance_text}"
