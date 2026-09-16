@@ -11,7 +11,10 @@ import sqlite3
 import tempfile
 import unittest
 
+from pathlib import Path
+
 from .game_history import open_history
+from .game_token_budget import measured_game_budget
 from .llm_client import (
     finalize_strategy_prompt,
     game_budget_context,
@@ -265,6 +268,66 @@ class StrategyCacheLayoutTests(unittest.TestCase):
             self.assertEqual(report["calls"][0]["layout"], "strategy_layout_v1")
             groups = report["cache_usage"]["groups"]
             self.assertTrue(any(g["layout"] == "strategy_layout_v1" for g in groups))
+
+    def test_cache_accounting_fake_transport(self):
+        """Acceptance check for cache accounting: hit, zero, missing, affinity, ceiling."""
+        with tempfile.NamedTemporaryFile(suffix=".ndjson") as tmp:
+            sidecar = Path(tmp.name)
+            game_id = "game-cache-acc"
+            # 1. Measured hit: input=1000, cached=800, output=100, total=1100
+            call1 = {
+                "game_id": game_id, "call_id": "c1", "request_id": "r1",
+                "call_role": "player", "transport": "fireworks_chat_completions",
+                "requested_affinity": "game-session-1",
+                "prompt_layout_version": "strategy_layout_v1",
+                "input_tokens": 1000, "cached_input_tokens": 800,
+                "output_tokens": 100, "total_tokens": 1100,
+                "cache_write_input_tokens": None,  # preserve cache-write unknowns
+                "status": "completed",
+            }
+            # 2. Measured zero: input=1000, cached=0, output=50, total=1050
+            call2 = {
+                "game_id": game_id, "call_id": "c2", "request_id": "r2",
+                "call_role": "player", "transport": "fireworks_chat_completions",
+                "requested_affinity": "game-session-1",  # stable affinity
+                "prompt_layout_version": "strategy_layout_v1",
+                "input_tokens": 1000, "cached_input_tokens": 0,
+                "output_tokens": 50, "total_tokens": 1050,
+                "cache_write_input_tokens": None,
+                "status": "completed",
+            }
+            # 3. Missing cached field: input=500, cached=None, output=20, total=520
+            call3 = {
+                "game_id": game_id, "call_id": "c3", "request_id": "r3",
+                "call_role": "player", "transport": "fireworks_chat_completions",
+                "requested_affinity": "game-session-1",
+                "prompt_layout_version": "strategy_layout_v1",
+                "input_tokens": 500, "cached_input_tokens": None,
+                "output_tokens": 20, "total_tokens": 520,
+                "cache_write_input_tokens": None,
+                "status": "completed",
+            }
+            # 4. Changed game identity call
+            call_other = {
+                "game_id": "other-game", "call_id": "c_other", "request_id": "r_other",
+                "call_role": "player", "transport": "fireworks_chat_completions",
+                "requested_affinity": "other-session",
+                "prompt_layout_version": "strategy_layout_v1",
+                "input_tokens": 500, "cached_input_tokens": 200,
+                "output_tokens": 50, "total_tokens": 550,
+                "status": "completed",
+            }
+
+            with open(sidecar, "w") as f:
+                for c in (call1, call2, call3, call_other):
+                    f.write(json.dumps(c) + "\n")
+
+            # Check measured_game_budget
+            budget = measured_game_budget(sidecar, game_id, {"r1", "r2", "r3"})
+            # Total tokens: 1100 + 1050 + 520 = 2670.
+            # Cached tokens (800) did NOT reduce the 2670 total ceiling spend!
+            self.assertEqual(budget["cumulative_game_total_tokens"], 2670)
+            self.assertTrue(budget["game_token_limit_enforced"])
 
 
 if __name__ == "__main__":

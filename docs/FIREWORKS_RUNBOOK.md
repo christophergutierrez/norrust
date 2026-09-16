@@ -184,14 +184,16 @@ usage sidecar; do not invent a native Claude/Codex player binding or ask the
 player to estimate tokens. Operator host spending is separate.
 
 Inspect SQLite first, then review the final `match.watchdog/review.json` and
-necessary archive evidence once. Report completed controlled turns, terminal
-reason, winner only if proven, villages/recruiter survival, model versus routine
-actions, recoveries/repairs/exceptions, and measured input/output/reasoning/cache
-with coverage, aggregate-only requests and unassigned calls. Cost must count
-cached input once and must not add reasoning twice. Preserve unknown cache-write
-usage; it does not automatically prevent a cost estimate when those tokens are
-not a separate billing dimension. A cap is not a win. A counterfactual saved
-repair is not a measured rerun. Do not add a rescue/control game outside scope.
+necessary archive evidence once. Final reports must cover:
+- Requested versus reported reasoning effort (`low`, `high`, `max`, or unknown).
+- Prompt layout version (`strategy_layout_v1`, `prompt_layout_v2`, or legacy/unknown) and fixed-prefix UTF-8 bytes and SHA-256 hash.
+- Completed controlled player turns versus engine side-turns, terminal reason, and winner only if proven.
+- Villages, income, recruiter survival, and model versus routine actions.
+- Recoveries, repairs, and exceptions.
+- Physical calls versus logical requests, and measured input, cached input, output, and reasoning tokens (included in output).
+- Input/output cost separation: compute uncached input, cached input, and output independently at dated rates; count cached input once and do not double-count reasoning. Preserve unknown cache-write usage.
+- Measured model elapsed time versus engine execution time.
+A fake cache test or layout alignment does not establish live provider support or savings; only provider-reported cached tokens establish a hit. A cap is not a win. A counterfactual saved repair is not a measured rerun. Do not add a rescue/control game outside scope.
 
 Current strategy response and route semantics are in
 [Strategy mode](LLM_CLIENT.md#strategy-mode). Historical runs retain their old
