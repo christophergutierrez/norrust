@@ -224,28 +224,6 @@ pub(crate) fn actionability_from_flags(flags: &[(u32, bool)]) -> ContactActionab
     }
 }
 
-/// Friendlies not in `involved_ids` that still have an executable move or attack.
-pub(crate) fn select_outside_helpers(
-    state: &GameState,
-    side: u8,
-    involved_ids: &[u32],
-) -> Result<Vec<u32>, TacticsError> {
-    let involved: HashSet<u32> = involved_ids.iter().copied().collect();
-    let mut candidates: Vec<u32> = state
-        .units
-        .iter()
-        .filter_map(|(&id, unit)| (unit.faction == side && !involved.contains(&id)).then_some(id))
-        .collect();
-    candidates.sort_unstable();
-    let mut helpers = Vec::new();
-    for actor_id in candidates {
-        if has_executable_options(state, actor_id)? {
-            helpers.push(actor_id);
-        }
-    }
-    Ok(helpers)
-}
-
 /// Enumerate eligible friendly actors once, in priority order:
 /// 1. Threatened recruiters by ID
 /// 2. Other threatened friendlies by ID
@@ -309,6 +287,20 @@ pub fn select_eligible_actors(state: &GameState, side: u8) -> Result<Vec<u32>, T
     Ok(eligible)
 }
 
+/// Offered menu for proven exhausted current-state contact: no automatic
+/// outside-unit rescue search. Empty actor IDs describe this menu, not the
+/// army's legal movers. Custom `act` remains available in Python.
+pub(crate) fn exhausted_contact_menu_facts() -> TacticalDecisionFacts {
+    TacticalDecisionFacts {
+        actor_ids: Vec::new(),
+        eligible_actor_count: 0,
+        actors_truncated: false,
+        options: Vec::new(),
+        options_truncated: false,
+        options_empty_reason: Some("exhausted_contact_no_automatic_rescue_menu".to_string()),
+    }
+}
+
 fn empty_tactical_facts() -> TacticalDecisionFacts {
     TacticalDecisionFacts {
         actor_ids: Vec::new(),
@@ -368,20 +360,6 @@ pub fn generate_tactical_options(
         return Ok(empty_tactical_facts());
     }
     generate_options_for_selected_actors(state, eligible, eligible_actor_count)
-}
-
-/// Stack 2 menus for outside helpers when every involved unit is exhausted.
-pub(crate) fn generate_outside_helper_options(
-    state: &GameState,
-    side: u8,
-    involved_ids: &[u32],
-) -> Result<TacticalDecisionFacts, TacticsError> {
-    let helpers = select_outside_helpers(state, side, involved_ids)?;
-    let eligible_actor_count = helpers.len() as u32;
-    if helpers.is_empty() {
-        return Ok(empty_tactical_facts());
-    }
-    generate_options_for_selected_actors(state, helpers, eligible_actor_count)
 }
 
 fn generate_actor_options(
@@ -869,7 +847,7 @@ mod tests {
         assert!(facts.options.is_empty());
         assert_eq!(
             facts.options_empty_reason.as_deref(),
-            Some("no_executable_options")
+            Some("exhausted_contact_no_automatic_rescue_menu")
         );
         assert!(!facts.options_truncated);
         assert_eq!(facts.coverage, "complete");
@@ -878,7 +856,7 @@ mod tests {
     }
 
     #[test]
-    fn exhausted_involved_preserves_outside_helper_options() {
+    fn exhausted_involved_does_not_enumerate_outside_helpers() {
         let registry = units();
         let mut s = large_test_state();
         exhaust_unit(s.units.get_mut(&1).unwrap());
@@ -898,17 +876,65 @@ mod tests {
         assert_eq!(facts.friendly_unit_ids, vec![5, 6]);
         assert!(!facts.friendly_unit_ids.contains(&20));
         assert_eq!(facts.contact_actionability, "exhausted");
-        assert_eq!(facts.actor_ids, vec![20]);
-        assert_eq!(facts.eligible_actor_count, 1);
+        assert!(facts.actor_ids.is_empty());
+        assert_eq!(facts.eligible_actor_count, 0);
         assert!(!facts.actors_truncated);
-        assert!(!facts.options.is_empty());
-        assert!(facts.options.iter().all(|option| option.actor_id == 20));
+        assert!(facts.options.is_empty());
+        assert!(!facts.options_truncated);
+        assert_eq!(
+            facts.options_empty_reason.as_deref(),
+            Some("exhausted_contact_no_automatic_rescue_menu")
+        );
+        assert_ne!(
+            facts.options_empty_reason.as_deref(),
+            Some("no_executable_options")
+        );
+        assert!(facts.contact_state_key.is_some());
+    }
+
+    #[test]
+    fn recruiter_with_adjacent_attack_remains_actionable() {
+        let registry = units();
+        let mut s = large_test_state();
+        let keep = Hex::from_offset(0, 0);
+        s.units.remove(&1);
+        s.positions.remove(&1);
+        s.hex_to_unit.remove(&keep);
+        let mut recruiter = Unit::from_def(1, registry.get("Dark Sorcerer").unwrap(), 0);
+        recruiter.can_recruit = true;
+        s.place_unit(recruiter, keep);
+        let enemy = Unit::from_def(7, registry.get("Skeleton").unwrap(), 1);
+        s.place_unit(enemy, Hex::from_offset(1, 0));
+        let facts = crate::routine::current_contact(&s, 0).unwrap().unwrap();
+        assert_eq!(facts.contact_actionability, "actionable");
+        assert!(facts.actor_ids.contains(&1));
         assert!(facts
             .options
             .iter()
-            .any(|option| option.category == "relocation"));
-        assert_eq!(facts.options_empty_reason, None);
-        assert!(facts.contact_state_key.is_some());
+            .any(|option| option.actor_id == 1 && option.category == "attack"));
+    }
+
+    #[test]
+    fn move_plus_attack_option_is_offered() {
+        let registry = units();
+        let mut s = large_test_state();
+        let friendly = Unit::from_def(5, registry.get("Skeleton").unwrap(), 0);
+        s.place_unit(friendly, Hex::from_offset(15, 13));
+        let enemy = Unit::from_def(7, registry.get("Skeleton").unwrap(), 1);
+        s.place_unit(enemy, Hex::from_offset(15, 15));
+        let facts = generate_tactical_options(&s, 0).unwrap();
+        assert!(facts.options.iter().any(|option| {
+            let has_move = option.actions.iter().any(|action| {
+                action.get("action").and_then(Value::as_str) == Some("Move")
+                    && action.get("unit_id").and_then(Value::as_u64) == Some(5)
+            });
+            let has_attack = option.actions.iter().any(|action| {
+                action.get("action").and_then(Value::as_str) == Some("Attack")
+                    && action.get("attacker_id").and_then(Value::as_u64) == Some(5)
+                    && action.get("defender_id").and_then(Value::as_u64) == Some(7)
+            });
+            has_move && has_attack
+        }));
     }
 
     #[test]
@@ -968,8 +994,12 @@ mod tests {
             after.contact_state_key.as_deref(),
             Some(before_key.as_str())
         );
-        assert!(after.actor_ids.contains(&20));
-        assert!(after.options.iter().any(|option| option.actor_id == 20));
+        assert!(after.actor_ids.is_empty());
+        assert!(after.options.is_empty());
+        assert_eq!(
+            after.options_empty_reason.as_deref(),
+            Some("exhausted_contact_no_automatic_rescue_menu")
+        );
     }
 
     #[test]

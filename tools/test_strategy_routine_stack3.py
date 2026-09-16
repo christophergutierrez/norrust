@@ -288,10 +288,14 @@ class StrategyRoutineStack3Tests(unittest.TestCase):
             self.assertNotIn("primary_actor_id", packet["evidence"])
             self.assertEqual(packet["evidence"].get("contact_actionability"), "exhausted")
             self.assertTrue(packet["final_only"])
-            self.assertIn(packet["coverage"]["options"], ("complete", "truncated"))
+            self.assertEqual(
+                packet["evidence"].get("options_empty_reason"),
+                "exhausted_contact_no_automatic_rescue_menu")
+            self.assertEqual(packet["coverage"]["options"], "not_generated")
             prompt_text = "\n".join(prompts(prompt_log))
             compact = prompt_text.replace(" ", "")
             self.assertIn('"final_only":true', compact)
+            self.assertIn("No automatic rescue menu was generated", prompt_text)
 
     def test_exhausted_contact_rejects_bare_recruit_without_finish(self):
         recruit = {"action": "Recruit", "def_id": "Walking Corpse", "col": 1, "row": 7}

@@ -442,6 +442,32 @@ class TacticalOptionsTests(unittest.TestCase):
     self.assertNotIn("primary_actor", brief)
     self.assertIn("destination inspection", brief)
 
+  def test_exhausted_ungenerated_menu_brief_and_coverage(self):
+    evidence = {
+      "stage": "current_state",
+      "trigger": "exposure",
+      "friendly_unit_ids": [5],
+      "enemy_unit_ids": [20],
+      "actor_ids": [],
+      "eligible_actor_count": 0,
+      "actors_truncated": False,
+      "options": [],
+      "options_truncated": False,
+      "options_empty_reason": "exhausted_contact_no_automatic_rescue_menu",
+      "coverage": "complete",
+      "contact_actionability": "exhausted",
+      "contact_state_key": "a" * 64,
+    }
+    packet = sd.build_decision_packet("contact", evidence, revision=12)
+    self.assertEqual(packet.coverage["options"], "not_generated")
+    self.assertTrue(packet.final_only)
+    self.assertNotIn("choose", packet.allowed_kinds)
+    brief = sd.render_decision_brief(packet)
+    self.assertIn("No automatic rescue menu was generated", brief)
+    self.assertNotIn("impossible", brief.lower())
+    self.assertNotIn("`choose`", brief)
+    self.assertIn("custom legal rescue", brief)
+
   def test_choose_response_validation_success(self):
     packet = sd.build_decision_packet(
       "contact",

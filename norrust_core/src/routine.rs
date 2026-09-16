@@ -10,7 +10,7 @@ use crate::hex::Hex;
 use crate::loader::Registry;
 use crate::pathfinding::{find_path, get_zoc_hexes};
 use crate::routine_decision::{
-    actionability_from_flags, generate_outside_helper_options, generate_tactical_options,
+    actionability_from_flags, exhausted_contact_menu_facts, generate_tactical_options,
     involved_option_flags, ContactActionability, CoordinateOffset, TacticalExposureFacts,
     TacticalOption,
 };
@@ -824,9 +824,7 @@ pub(crate) fn current_contact(
     );
 
     let tactical_decision = match actionability {
-        ContactActionability::Exhausted => {
-            generate_outside_helper_options(state, side, &friendly_unit_ids)?
-        }
+        ContactActionability::Exhausted => exhausted_contact_menu_facts(),
         ContactActionability::Actionable | ContactActionability::Unknown => {
             generate_tactical_options(state, side)?
         }

@@ -376,10 +376,13 @@ def build_decision_packet(
   if reason == "threat_unavailable":
     coverage = {"facts": "unavailable", "options": "not_generated"}
   elif decision_kind == DECISION_KIND_TACTICAL:
-    coverage = {
-      "facts": "complete",
-      "options": "truncated" if options_truncated else "complete",
-    }
+    if evidence.get("options_empty_reason") == "exhausted_contact_no_automatic_rescue_menu":
+      coverage = {"facts": "complete", "options": "not_generated"}
+    else:
+      coverage = {
+        "facts": "complete",
+        "options": "truncated" if options_truncated else "complete",
+      }
   elif decision_kind == DECISION_KIND_POLICY and reason == "contact" and options:
     coverage = {
       "facts": "complete",
@@ -768,7 +771,15 @@ def render_decision_brief(
         "moves no units and cannot clear the current-board pause. You must submit tactical action "
         f"orders (`act`), `finish_turn`, or `resign`. Applicable responses: {', '.join(packet.allowed_kinds)}."
       )
-      if packet.evidence.get("options_empty_reason") == "no_executable_options":
+      empty_reason = packet.evidence.get("options_empty_reason")
+      if empty_reason == "exhausted_contact_no_automatic_rescue_menu":
+        sections.append(
+          "Involved units cannot act. No automatic rescue menu was generated. "
+          "This does not establish that every custom legal rescue is unavailable. "
+          "You may submit a custom legal rescue with `act` plus finish_turn=true, "
+          "finish, or resign."
+        )
+      elif empty_reason == "no_executable_options":
         option_coverage = packet.coverage.get("options", "unknown")
         sections.append(
           "No eligible actor has an executable action in this bounded tactical menu. "

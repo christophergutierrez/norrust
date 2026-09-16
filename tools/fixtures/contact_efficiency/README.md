@@ -23,16 +23,17 @@ Predicates after one controlled turn:
 
 ## exhausted_helper.json
 
-Involved Skeleton 3 has already moved and attacked. Ghost 5 at (2,5) remains
-an outside helper. Contact is exhausted for involved units.
+Involved Skeleton 3 has already moved and attacked. Ghost 5 at (2,5) is an
+outside unit. Contact is exhausted for involved units. No automatic helper
+menu is generated.
 
 Predicates:
 
 - requested controlled turn completes
 - recruiter 1 survives
 - unit 3 survives
-- a legal outside-unit rescue or an explicit finish occurs; bare recruit
-  without finish must not spend gold
+- an explicit finish or a custom legal act occurs; bare recruit without
+  finish must not spend gold
 
 Treatments: Stack 1 baseline `b1461d0495c3f4daabc27d2570549b04616b119d` vs
 Stack 3 candidate `fe3663d2b6d2abcedfcfbf2a8fee0a26f552887b`.

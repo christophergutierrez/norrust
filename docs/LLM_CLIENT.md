@@ -407,15 +407,21 @@ exhausted units. Engine evidence also reports `contact_actionability`
 (`actionable`, `exhausted`, or `unknown`) and a `contact_state_key` over the
 involved situation. `exhausted` means no involved friendly has an executable
 offered move or attack before menu caps; it is not a proof that no outside unit
-can rescue them. Unknown or missing keys cannot close the decision. When
+can rescue them. Proven exhausted contact does not enumerate outside-unit helper
+menus. The offered menu is empty with
+`options_empty_reason: "exhausted_contact_no_automatic_rescue_menu"` and
+`coverage.options: "not_generated"`. Empty `actor_ids` describe that ungenerated
+menu, not every legal mover. Unknown or missing keys cannot close the decision. When
 contact is exhausted, or the same key returns after a committed model decision
 in this controlled turn, the packet is `final_only`: the model may still
-inspect, choose or submit a final rescue, finish, or resign, but cannot merely
-recruit and request the same decision again. An empty `options` array carries
-`options_empty_reason: "no_executable_options"` when no eligible actor has an
-executable action in this bounded menu. That reason describes offered tactical options only;
+inspect, submit a custom legal rescue with `act` plus `finish_turn=true`,
+finish, or resign, but cannot merely
+recruit and request the same decision again. `choose` is advertised only when
+the packet still has issued options. An empty `options` array carries
+`options_empty_reason: "no_executable_options"` when a menu was enumerated and
+no eligible actor has an executable offered action. That reason describes offered tactical options only;
 other units may still accept custom legal actions. `coverage.options` describes enumeration
-coverage independently and remains `complete` for a genuinely empty menu. Nonzero destination
+coverage independently and remains `complete` for a genuinely empty enumerated menu. Nonzero destination
 exposure is labeled `still exposed after this option` using issuing-state estimates.
 
 The initial policy and exception briefs repeat the compact live map, both-side
@@ -505,7 +511,7 @@ with strictly validated applicable responses:
 | --- | --- | --- | --- |
 | Initial policy or completed objectives | `policy` | `set_policy`, `act`, `finish_turn`, `resign` | Model directs routine execution or takes tactical control. |
 | `contact` (`stage: current_state`) with options | `tactical` | `choose`, `act`, `finish_turn`, `resign` | Model may choose an offered tactical option, author custom orders, end the turn, or resign. |
-| `contact` (`stage: current_state`) no options | `tactical` | `act`, `finish_turn`, `resign` | Current board contact pause cannot be cleared by policy edits; requires tactical action. |
+| `contact` (`stage: current_state`) no options | `tactical` | `act`, `finish_turn`, `resign` | Current board contact pause cannot be cleared by policy edits. Exhausted contact does not generate an automatic rescue menu; custom `act` remains legal. |
 | Proposed movement contact with a generated menu | `policy` | `set_policy`, `act`, `finish_turn`, `resign`, `choose` | Resolve the named blocked step first: choose an offered option, author a legal action, or change policy for that step. Preserve unrelated objectives unless they need to change. A risky legal option is allowed; the menu is not an instruction to take it. |
 | Proposed movement contact without a menu / `unsafe_route` | `policy` | `set_policy`, `act`, `finish_turn`, `resign` | Replacing the policy objective can avoid the hazardous destination. |
 | `recruitment_blocked`, `route_unavailable`, `invalid_assignment` | `policy` | `set_policy`, `act`, `finish_turn`, `resign` | Policy adjustment can redirect routine tasks. |
