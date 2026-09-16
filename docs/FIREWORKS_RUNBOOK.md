@@ -123,6 +123,28 @@ This experimental setting screens for reduced reasoning token expenditure and
 latency during tactical contact decisions. Do not label it proven until paired
 screening or full-game evaluation confirms tactical quality and token efficiency.
 
+## Strategy decision quality screening
+
+Before committing to a full game with an experimental effort setting, screen
+decision quality across three frozen acceptance positions using paired cells
+(explicit `low` vs explicit `high` effort):
+
+1. **Initial 300-gold allocation** (`tools/fixtures/acceptance_scenarios/initial_allocation`):
+   Authorizes at least 200 gold of affordable recruitment in the 300-gold opening
+   with `reserve_gold <= 100`, feasible scout coverage, and adequate army size.
+2. **Completed small queue with idle gold** (`tools/fixtures/acceptance_scenarios/completed_queue`):
+   Valid replenishment reaches actual routine recruit commits during remote contact
+   (`replenished`), or explicit saving is reported as a behavioral choice (`saved`).
+3. **Pre-charge recruiter decision** (`tools/fixtures/acceptance_scenarios/precharge_recruiter`):
+   Chosen action retains recruiter survival through the frozen opponent continuation;
+   a legal but losing advance (e.g. charging into fatal hexes) fails.
+
+Offline verification runs via `python3 -m unittest tools.test_strategy_quality`.
+Evaluation predicates and cell scoring are defined in `tools.strategy_quality`.
+Selection rule: select `low` only if all three acceptance gates pass; otherwise
+prefer `high` if it passes. If neither passes, stop after findings rather than
+adding effort levels or seeds.
+
 ## Occasional inspection and stopping
 
 The cell directory is `$NORRUST_TRIAL_ROOT/recording/glm-strategy`. Read its compact

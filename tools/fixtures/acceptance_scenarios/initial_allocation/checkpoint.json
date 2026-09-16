@@ -1,0 +1,108 @@
+{
+  "version": 1,
+  "save_state": {
+    "board_path": "__SCENARIO_BOARD__",
+    "rng_state": 4477,
+    "turn": 1,
+    "active_faction": 0,
+    "sides_acted_this_round": 0,
+    "gold": [
+      300,
+      300
+    ],
+    "units": [
+      {
+        "id": 1,
+        "def_id": "Dark Sorcerer",
+        "faction": 0,
+        "col": 2,
+        "row": 7,
+        "hp": 48,
+        "max_hp": 48,
+        "xp": 0,
+        "xp_needed": 110,
+        "advancement_pending": false,
+        "moved": false,
+        "attacked": false,
+        "poisoned": false,
+        "slowed": false,
+        "abilities": [
+          "leader"
+        ],
+        "level": 2,
+        "can_recruit": true
+      },
+      {
+        "id": 2,
+        "def_id": "Dark Sorcerer",
+        "faction": 1,
+        "col": 21,
+        "row": 6,
+        "hp": 48,
+        "max_hp": 48,
+        "xp": 0,
+        "xp_needed": 110,
+        "advancement_pending": false,
+        "moved": false,
+        "attacked": false,
+        "poisoned": false,
+        "slowed": false,
+        "abilities": [
+          "leader"
+        ],
+        "level": 2,
+        "can_recruit": true
+      }
+    ],
+    "next_unit_id": 3,
+    "trigger_zones_fired": [],
+    "village_owners": [],
+    "dialogue_fired": [],
+    "had_recruiter": [
+      true,
+      true
+    ],
+    "state_revision": 0,
+    "faction_ids": [
+      "undead",
+      "undead"
+    ],
+    "recruit_ids": [
+      [
+        "Dark Adept",
+        "Ghost",
+        "Ghoul",
+        "Skeleton",
+        "Skeleton Archer",
+        "Vampire Bat",
+        "Walking Corpse"
+      ],
+      [
+        "Dark Adept",
+        "Ghost",
+        "Ghoul",
+        "Skeleton",
+        "Skeleton Archer",
+        "Vampire Bat",
+        "Walking Corpse"
+      ]
+    ]
+  },
+  "side_turns": 0,
+  "next_id": 3,
+  "accepted_partial_batches": 0,
+  "max_partial_batches_per_turn": 64,
+  "boundary": "model",
+  "pending_opponent_turn": false,
+  "scenario": "big_battle_6",
+  "faction0": "undead",
+  "faction1": "undead",
+  "llm_side": 0,
+  "starting_gold": 300,
+  "seed": 4477,
+  "max_turns": 60,
+  "disable_recruit_batch": false,
+  "incremental_turns": true,
+  "board_path": "__SCENARIO_BOARD__",
+  "board_sha256": "26366c43a231ef9f7244b24fb74fe5343792c2c26bc0366941a097ce3c7c4207"
+}
