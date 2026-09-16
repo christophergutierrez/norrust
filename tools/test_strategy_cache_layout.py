@@ -322,12 +322,54 @@ class StrategyCacheLayoutTests(unittest.TestCase):
                 for c in (call1, call2, call3, call_other):
                     f.write(json.dumps(c) + "\n")
 
-            # Check measured_game_budget
             budget = measured_game_budget(sidecar, game_id, {"r1", "r2", "r3"})
-            # Total tokens: 1100 + 1050 + 520 = 2670.
-            # Cached tokens (800) did NOT reduce the 2670 total ceiling spend!
             self.assertEqual(budget["cumulative_game_total_tokens"], 2670)
             self.assertTrue(budget["game_token_limit_enforced"])
+
+    def test_delivered_prompts_doctrine_profiles_and_economic_summary(self):
+        """Authoritative definitions provide accurate profiles in prefix; economic summary is in suffix."""
+        defs = ("Dark Adept", "Skeleton")
+        init_packet = build_decision_packet("initial", {}, revision=1, decision_id="dec-init")
+        init_brief = render_policy_brief(0, defs, state=self.state)
+        init_prompt = finalize_strategy_prompt(init_brief, self.state, packet=init_packet)
+
+        contact_evidence = {
+            "stage": "current_state",
+            "trigger": "exposure",
+            "friendly_unit_ids": [2],
+            "enemy_unit_ids": [5],
+            "actor_ids": [2],
+            "options": [{"option_id": "u2-move-1", "category": "safe_alternative",
+                         "actions": [{"action": "Move", "unit_id": 2, "col": 0, "row": 0}]}],
+        }
+        contact_packet = build_decision_packet("contact", contact_evidence, revision=1, decision_id="dec-contact")
+        contact_brief = render_decision_brief(contact_packet, state=self.state, recruitable_defs=defs)
+        contact_prompt = finalize_strategy_prompt(contact_brief, self.state, packet=contact_packet)
+
+        for prompt in (init_prompt, contact_prompt):
+            regions = prompt_regions(prompt)
+            prefix_bytes = regions["fixed_prefix_bytes"]
+            prefix_text = prompt[:prefix_bytes]
+            suffix_text = prompt[prefix_bytes:]
+
+            # In prefix: doctrine
+            self.assertIn("Strategy doctrine:", prefix_text)
+            self.assertIn("Recruiter survival outranks an attractive isolated exchange", prefix_text)
+            # In prefix: accurate recruit profiles from data/units/
+            self.assertIn("Dark Adept (cost=16 hp=28 mov=5 align=chaotic", prefix_text)
+            self.assertIn("chill wave", prefix_text)
+            self.assertIn("Skeleton (cost=15 hp=34 mov=5 align=chaotic", prefix_text)
+            self.assertIn("axe", prefix_text)
+            self.assertIn("res=[", prefix_text)
+
+            # In suffix: dynamic economic summary
+            self.assertIn("ECONOMIC_SUMMARY:", suffix_text)
+            self.assertIn("friendly_units=", suffix_text)
+            self.assertIn("enemy_units=", suffix_text)
+            self.assertIn("gold=", suffix_text)
+            self.assertIn("unreserved=", suffix_text)
+            self.assertIn("queue_remaining=", suffix_text)
+            self.assertIn("recruitment_possible=", suffix_text)
 
 
 if __name__ == "__main__":

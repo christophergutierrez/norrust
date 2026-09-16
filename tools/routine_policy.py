@@ -1226,7 +1226,7 @@ def static_recruitable_defs(units_dir: str = "data/units") -> frozenset[str]:
     import tomllib
     from pathlib import Path
 
-    root = Path(units_dir)
+    root = _resolve_units_dir(units_dir)
     ids: set[str] = set()
     if not root.is_dir():
         return frozenset()
@@ -1242,6 +1242,102 @@ def static_recruitable_defs(units_dir: str = "data/units") -> frozenset[str]:
         if isinstance(unit_id, str) and unit_id:
             ids.add(unit_id)
     return frozenset(ids)
+
+
+def _resolve_units_dir(units_dir: str | Any = None) -> Any:
+    from pathlib import Path
+    if units_dir is not None:
+        p = Path(units_dir)
+        if p.is_dir():
+            return p
+    default_p = Path("data/units")
+    if default_p.is_dir():
+        return default_p
+    repo_p = Path(__file__).resolve().parent.parent / "data" / "units"
+    if repo_p.is_dir():
+        return repo_p
+    return default_p
+
+
+_UNIT_DEF_CACHE: dict[str, Any] = {}
+
+
+def get_unit_def(def_id: str, units_dir: Any = None) -> Optional[dict[str, Any]]:
+    """Retrieve authoritative unit definition dict from data/units/."""
+    if def_id in _UNIT_DEF_CACHE and units_dir is None:
+        return _UNIT_DEF_CACHE[def_id]
+    import tomllib
+    root = _resolve_units_dir(units_dir)
+    if not root.is_dir():
+        return None
+    for toml_path in root.rglob("*.toml"):
+        if toml_path.name == "sprite.toml":
+            continue
+        try:
+            with toml_path.open("rb") as handle:
+                data = tomllib.load(handle)
+        except (OSError, tomllib.TOMLDecodeError):
+            continue
+        uid = data.get("id")
+        if isinstance(uid, str) and uid:
+            if units_dir is None:
+                _UNIT_DEF_CACHE[uid] = data
+            if uid == def_id:
+                return data
+    if units_dir is None:
+        _UNIT_DEF_CACHE[def_id] = None
+    return None
+
+
+def format_recruit_profile(def_id: str, unit_data: Optional[dict[str, Any]] = None) -> str:
+    """Compact single-unit profile from authoritative definition."""
+    if unit_data is None:
+        unit_data = get_unit_def(def_id)
+    if not isinstance(unit_data, dict):
+        return f"{def_id} (profile unknown)"
+    cost = unit_data.get("cost", "unknown")
+    hp = unit_data.get("max_hp", "unknown")
+    mov = unit_data.get("movement", "unknown")
+    align = unit_data.get("alignment", "unknown")
+    attacks_list = []
+    for a in unit_data.get("attacks", []):
+        if not isinstance(a, dict):
+            continue
+        name = a.get("name")
+        dmg = a.get("damage")
+        strikes = a.get("strikes")
+        rng = a.get("range")
+        atype = a.get("attack_type")
+        specials = a.get("specials")
+        spec_str = f" ({','.join(specials)})" if specials else ""
+        name_prefix = f"{name} " if name else ""
+        attacks_list.append(f"{name_prefix}{dmg}x{strikes} {rng} {atype}{spec_str}")
+    attacks_str = "; ".join(attacks_list) if attacks_list else "none"
+
+    resistances = unit_data.get("resistances")
+    if isinstance(resistances, dict):
+        res_non_zero = {k: v for k, v in resistances.items() if isinstance(v, (int, float)) and v != 0}
+        res_str = ",".join(f"{k}:{v:+d}%" for k, v in sorted(res_non_zero.items())) if res_non_zero else "none"
+    else:
+        res_str = "unknown"
+
+    abilities = unit_data.get("abilities")
+    if isinstance(abilities, list):
+        ab_str = ",".join(str(ab) for ab in abilities) if abilities else "none"
+    else:
+        ab_str = "unknown"
+
+    return (
+        f"{def_id} (cost={cost} hp={hp} mov={mov} align={align} "
+        f"attacks=[{attacks_str}] res=[{res_str}] abilities=[{ab_str}])"
+    )
+
+
+def format_recruit_profiles(recruitable_defs: Iterable[str]) -> str:
+    sorted_defs = sorted(recruitable_defs)
+    if not sorted_defs:
+        return "none"
+    return "; ".join(format_recruit_profile(d) for d in sorted_defs)
 
 
 def load_checked_in_policy(path: str, context: ValidationContext) -> dict[str, Any]:
@@ -1293,6 +1389,194 @@ def _strategy_context(state: Optional[dict[str, Any]], *, recruit_options: Any =
     ] if isinstance(terrain, list) else "unknown"
     units = state.get("units")
     # A missing roster is unknown; an empty list is an authoritative empty
+def compute_economic_summary(
+    state: Optional[dict[str, Any]],
+    *,
+    policy: Optional[dict[str, Any]] = None,
+    progress: Any = None,
+    remaining: Any = None,
+    recruit_options: Any = None,
+) -> dict[str, Any]:
+    """Derive a compact economic summary from existing facts."""
+    if not isinstance(state, dict):
+        return {
+            "friendly_units": "unknown",
+            "enemy_units": "unknown",
+            "gold": "unknown",
+            "reserve_gold": 0,
+            "unreserved_gold": "unknown",
+            "queue_remaining": "unknown",
+            "queue_status": "unknown",
+            "legal_placements": "unknown",
+            "recruitment_possible": "unknown",
+            "status_detail": "unknown",
+        }
+
+    side = state.get("active_faction")
+    if not isinstance(side, int):
+        side = 0
+
+    units = state.get("units")
+    if isinstance(units, list):
+        friendly_units = sum(1 for u in units if isinstance(u, dict) and u.get("faction") == side
+                             and (not isinstance(u.get("hp"), int) or u.get("hp") > 0))
+        enemy_units = sum(1 for u in units if isinstance(u, dict) and u.get("faction") != side
+                          and (not isinstance(u.get("hp"), int) or u.get("hp") > 0))
+        friendly_recruiters = [u for u in units if isinstance(u, dict) and u.get("faction") == side
+                               and u.get("can_recruit")
+                               and (not isinstance(u.get("hp"), int) or u.get("hp") > 0)]
+    else:
+        friendly_units = "unknown"
+        enemy_units = "unknown"
+        friendly_recruiters = []
+
+    raw_gold = state.get("gold")
+    if isinstance(raw_gold, list) and len(raw_gold) > side and isinstance(raw_gold[side], int):
+        current_gold = raw_gold[side]
+    elif isinstance(raw_gold, int):
+        current_gold = raw_gold
+    else:
+        current_gold = "unknown"
+
+    reserve_gold = (policy.get("reserve_gold", 0)
+                    if isinstance(policy, dict) and isinstance(policy.get("reserve_gold"), int)
+                    else 0)
+
+    if isinstance(current_gold, int):
+        unreserved_gold = max(0, current_gold - reserve_gold)
+    else:
+        unreserved_gold = "unknown"
+
+    # Queue remaining
+    if remaining is not None and isinstance(remaining, list):
+        queue_remaining = sum(item.get("remaining", 0) for item in remaining if isinstance(item, dict))
+        queue_status = "completed" if queue_remaining == 0 else "active"
+    elif progress is not None and policy is not None and hasattr(progress, "remaining"):
+        rem = progress.remaining(policy)
+        queue_remaining = sum(item.get("remaining", 0) for item in rem)
+        queue_status = "completed" if queue_remaining == 0 else "active"
+    elif policy is not None and isinstance(policy.get("recruits"), list):
+        queue_remaining = sum(r.get("count", 0) for r in policy.get("recruits", []) if isinstance(r, dict))
+        queue_status = "completed" if queue_remaining == 0 else "active"
+    else:
+        queue_remaining = "unknown"
+        queue_status = "unknown"
+
+    # Placement availability and recruiter readiness
+    legal_placements = "unknown"
+    side_can_place = None
+    min_cost = 8
+    if isinstance(recruit_options, dict):
+        hexes = recruit_options.get("placement_hexes")
+        if isinstance(hexes, list):
+            legal_placements = len(hexes)
+            side_can_place = recruit_options.get("side_can_place", len(hexes) > 0)
+        options = recruit_options.get("options")
+        if isinstance(options, list):
+            costs = [opt.get("cost") for opt in options if isinstance(opt, dict) and isinstance(opt.get("cost"), int)]
+            if costs:
+                min_cost = min(costs)
+
+    # Check recruiter eligibility
+    recruiter_eligible = "unknown"
+    if not friendly_recruiters:
+        recruiter_eligible = False
+    else:
+        terrain = state.get("terrain")
+        if isinstance(terrain, list):
+            keep_coords = {(t.get("col"), t.get("row")) for t in terrain if isinstance(t, dict) and t.get("terrain_id") == "keep"}
+            recruiter_eligible = any((u.get("col"), u.get("row")) in keep_coords for u in friendly_recruiters)
+        else:
+            recruiter_eligible = True
+
+    # Recruitment possible and status detail
+    if recruiter_eligible is False:
+        recruitment_possible = False
+        status_detail = "no_eligible_recruiter"
+    elif legal_placements == 0 or (isinstance(recruit_options, dict) and recruit_options.get("placement_hexes") == []):
+        recruitment_possible = False
+        status_detail = "no_placement"
+    elif isinstance(current_gold, int) and current_gold < min_cost:
+        recruitment_possible = False
+        status_detail = "no_budget"
+    elif isinstance(unreserved_gold, int) and unreserved_gold < min_cost:
+        recruitment_possible = False
+        status_detail = "no_unreserved_budget"
+    elif queue_status == "completed":
+        recruitment_possible = True
+        status_detail = "finished_queue"
+    elif queue_status == "active":
+        recruitment_possible = True
+        status_detail = "available"
+    elif isinstance(unreserved_gold, int) and unreserved_gold >= min_cost and legal_placements != 0 and recruiter_eligible is not False:
+        recruitment_possible = True
+        status_detail = "available"
+    else:
+        recruitment_possible = "unknown"
+        status_detail = "unknown"
+
+    return {
+        "friendly_units": friendly_units,
+        "enemy_units": enemy_units,
+        "gold": current_gold,
+        "reserve_gold": reserve_gold,
+        "unreserved_gold": unreserved_gold,
+        "queue_remaining": queue_remaining,
+        "queue_status": queue_status,
+        "legal_placements": legal_placements,
+        "recruitment_possible": recruitment_possible,
+        "status_detail": status_detail,
+    }
+
+
+def format_economic_summary_line(summary: dict[str, Any]) -> str:
+    """Format single-line compact human-readable economic summary."""
+    parts = [
+        f"friendly_units={summary.get('friendly_units')}",
+        f"enemy_units={summary.get('enemy_units')}",
+        f"gold={summary.get('gold')}",
+        f"reserve={summary.get('reserve_gold')}",
+        f"unreserved={summary.get('unreserved_gold')}",
+        f"queue_remaining={summary.get('queue_remaining')}",
+        f"legal_placements={summary.get('legal_placements')}",
+    ]
+    possible = summary.get("recruitment_possible")
+    detail = summary.get("status_detail")
+    if detail == "finished_queue":
+        rec_str = f"recruitment_possible=true (queue completed; {summary.get('unreserved_gold')} unreserved gold available for recruitment)"
+    elif detail == "no_budget":
+        rec_str = f"recruitment_possible=false (no budget: gold={summary.get('gold')})"
+    elif detail == "no_unreserved_budget":
+        rec_str = f"recruitment_possible=false (no unreserved budget: unreserved={summary.get('unreserved_gold')})"
+    elif detail == "no_placement":
+        rec_str = "recruitment_possible=false (no placement hexes available)"
+    elif detail == "no_eligible_recruiter":
+        rec_str = "recruitment_possible=false (no eligible recruiter on keep)"
+    elif possible is True:
+        rec_str = "recruitment_possible=true"
+    elif possible is False:
+        rec_str = "recruitment_possible=false"
+    else:
+        rec_str = "recruitment_possible=unknown"
+    parts.append(rec_str)
+    return "ECONOMIC_SUMMARY: " + " ".join(parts)
+
+
+def _strategy_context(state: Optional[dict[str, Any]] = None,
+                      recruit_options: Any = None,
+                      remaining: Any = None,
+                      changes: Any = None,
+                      policy: Any = None,
+                      progress: Any = None,
+                      allowed_kinds: Optional[list[str]] = None,
+                      exception: Optional[RoutineException] = None) -> str:
+    """Format the dynamic state context passed after the stable prefix."""
+    if not isinstance(state, dict):
+        state = {}
+    villages = [tile for tile in (state.get("terrain") or [])
+                if isinstance(tile, dict) and tile.get("terrain_id") == "village"]
+    units = state.get("units")
+    # In fog or partial views, missing units does not mean an empty friendly
     # roster.  Keep that distinction in both the JSON facts and the readable
     # index below.
     compact_units: list[dict[str, Any]] | str = "unknown"
@@ -1304,6 +1588,9 @@ def _strategy_context(state: Optional[dict[str, Any]], *, recruit_options: Any =
             compact_units.append({key: unit.get(key, "unknown") for key in
                              ("id", "faction", "def_id", "col", "row", "hp", "max_hp",
                               "moved", "attacked", "movement", "can_recruit")})
+    economic_summary = compute_economic_summary(
+        state, policy=policy, progress=progress, remaining=remaining, recruit_options=recruit_options
+    )
     facts: dict[str, Any] = {
         "revision": state.get("state_revision", "unknown"),
         "turn": state.get("turn", "unknown"),
@@ -1311,6 +1598,7 @@ def _strategy_context(state: Optional[dict[str, Any]], *, recruit_options: Any =
         "phase": state.get("time_of_day", "unknown"),
         "map": {key: state.get(key, "unknown") for key in ("cols", "rows")},
         "gold": state.get("gold", "unknown"),
+        "economic_summary": economic_summary,
         "villages": villages,
         "units": compact_units,
     }
@@ -1350,11 +1638,13 @@ def _strategy_context(state: Optional[dict[str, Any]], *, recruit_options: Any =
         f"moved={item.get('moved', 'unknown')} attacked={item.get('attacked', 'unknown')} "
         f"movement={item.get('movement', 'unknown')}"
         for item in compact_units if isinstance(compact_units, list)) or "unknown"
+    econ_line = format_economic_summary_line(economic_summary)
     allowed_str = (", ".join(allowed_kinds) if allowed_kinds is not None
                    else "set_policy, act, finish_turn, or resign")
     return ("\nSTRATEGY_CONTEXT_UNTRUSTED_DATA_BEGIN\nstate_revision=" +
             str(state.get("state_revision", "unknown")) + "\nMAP_VILLAGES=" +
-            village_text + "\nMAP_UNITS=" + unit_text + "\n" + body +
+            village_text + "\nMAP_UNITS=" + unit_text + "\n" +
+            econ_line + "\n" + body +
             "\nSTRATEGY_CONTEXT_UNTRUSTED_DATA_END\n"
             f"Respond with exactly one of {allowed_str}. Output one complete JSON "
             "object only: no prose, markdown fences, or text before or after the JSON.")
@@ -1366,11 +1656,22 @@ strategy_context = _strategy_context
 def _strategy_contract(recruitable_defs: Iterable[str] = ()) -> str:
     """Stable prefix shared by initial and exception requests."""
     defs = ", ".join(sorted(recruitable_defs)) or "see current recruit_options"
+    profiles = format_recruit_profiles(recruitable_defs)
+    doctrine = (
+        "Strategy doctrine:\n"
+        "1. Recruiter survival outranks an attractive isolated exchange. Never expose your recruiter to lethal retaliation or subsequent multi-attacker focus.\n"
+        "2. In combat, judge enemy response on the next turn, not just immediate retaliation during the strike exchange.\n"
+        "3. Maintain army strength: idle unreserved gold and an undersized force relative to the enemy warrant recruitment review.\n"
+        "4. Expand village assignments when feasible to secure steady income and board presence.\n"
+        "5. A choice menu provides possible legal options, not a recommended turn plan; choosing an option executes only that option.\n"
+        "6. Recruitment counts in policy are finite totals per installation, not recurring targets. Movement and attack allowances reset each turn.\n"
+    )
     return (
         "Strategy objective: defeat the enemy recruiter while keeping your recruiter alive; "
         "at your own finish, village ownership and income are engine facts. "
         "Routine code executes validated recruitment, scout, village, rally and no-sweep finish steps; "
         "it pauses on typed exceptions such as contact, promotion, blocked recruitment, or unavailable facts.\n"
+        + doctrine +
         "In LIVE_STATE and the current facts, moved and attacked are authoritative engine flags. "
         "movement is the unit's engine movement allowance, not remaining points and not a count of legal moves; "
         "a missing field stays unknown and must not be treated as false or zero. A routine result of finish is a "
@@ -1387,6 +1688,7 @@ def _strategy_contract(recruitable_defs: Iterable[str] = ()) -> str:
         "is replaced, so provide at least as many scouts (explicit IDs plus scout-role recruit "
         "counts) as listed villages you do not already own. "
         "Recruitable definitions: " + defs + ".\n"
+        "Recruit profiles: " + profiles + ".\n"
         "col and row are zero-based integer offsets. Syntax examples, not recommended objectives: "
         '"villages":[' + CANONICAL_COORD_JSON + '] and "rally":' + CANONICAL_RALLY_JSON + ". "
         "A two-element array is not a coordinate. "

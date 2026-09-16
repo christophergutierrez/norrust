@@ -1556,6 +1556,101 @@ class ProposedDestinationRealOutputRenderingTests(unittest.TestCase):
         self.assertIn("(occupied-only)", line)
         self.assertNotIn("attackers(any view)", line)
 
+    def test_strategy_doctrine_present_and_compact(self):
+        contract = rp._strategy_contract(["Dark Adept", "Skeleton"])
+        self.assertIn("Strategy doctrine:", contract)
+        self.assertIn("Recruiter survival outranks an attractive isolated exchange", contract)
+        self.assertIn("judge enemy response", contract)
+        self.assertIn("idle unreserved gold and an undersized force", contract)
+        self.assertIn("Expand village assignments", contract)
+        self.assertIn("choice menu provides possible legal options, not a recommended turn plan", contract)
+        self.assertIn("finite totals per installation", contract)
+
+        # Doctrine word count verification: <= 150 words
+        doc_start = contract.index("Strategy doctrine:")
+        doc_end = contract.index("In LIVE_STATE and the current facts")
+        doctrine_words = contract[doc_start:doc_end].split()
+        self.assertLessEqual(len(doctrine_words), 150)
+
+    def test_recruit_profiles_authoritative_and_accurate(self):
+        profile = rp.format_recruit_profile("Dark Adept")
+        self.assertIn("Dark Adept", profile)
+        self.assertIn("cost=16", profile)
+        self.assertIn("hp=28", profile)
+        self.assertIn("mov=5", profile)
+        self.assertIn("align=chaotic", profile)
+        self.assertIn("chill wave", profile)
+        self.assertIn("10x2 ranged cold", profile)
+        self.assertIn("shadow wave", profile)
+        self.assertIn("7x2 ranged arcane", profile)
+        self.assertIn("res=[arcane:-10%]", profile)
+
+        unknown_profile = rp.format_recruit_profile("NonExistentCreature")
+        self.assertEqual(unknown_profile, "NonExistentCreature (profile unknown)")
+
+    def test_economic_summary_turn_3_shape(self):
+        state = {
+            "turn": 3, "gold": [211, 50], "active_faction": 0, "state_revision": 12,
+            "units": [{"id": 1, "faction": 0, "can_recruit": True, "col": 2, "row": 7, "hp": 48}] +
+                     [{"id": i, "faction": 0, "can_recruit": False, "col": i, "row": 5, "hp": 30} for i in range(2, 9)] +
+                     [{"id": 10 + i, "faction": 1, "can_recruit": False, "col": 10 + i, "row": 5, "hp": 30} for i in range(20)],
+        }
+        policy = {"reserve_gold": 0, "recruits": [{"def_id": "Skeleton", "count": 7, "role": "army"}]}
+        remaining = []
+        recruit_options = {
+            "side_can_place": True,
+            "placement_hexes": [{"col": 2, "row": 8}, {"col": 3, "row": 7}],
+            "options": [{"def_id": "Skeleton", "cost": 15, "affordable": True}],
+        }
+        summary = rp.compute_economic_summary(state, policy=policy, remaining=remaining, recruit_options=recruit_options)
+        self.assertEqual(summary["friendly_units"], 8)
+        self.assertEqual(summary["enemy_units"], 20)
+        self.assertEqual(summary["gold"], 211)
+        self.assertEqual(summary["reserve_gold"], 0)
+        self.assertEqual(summary["unreserved_gold"], 211)
+        self.assertEqual(summary["queue_remaining"], 0)
+        self.assertEqual(summary["queue_status"], "completed")
+        self.assertEqual(summary["legal_placements"], 2)
+        self.assertTrue(summary["recruitment_possible"])
+        self.assertEqual(summary["status_detail"], "finished_queue")
+
+        line = rp.format_economic_summary_line(summary)
+        self.assertIn("friendly_units=8", line)
+        self.assertIn("enemy_units=20", line)
+        self.assertIn("gold=211", line)
+        self.assertIn("unreserved=211", line)
+        self.assertIn("queue_remaining=0", line)
+        self.assertIn("recruitment_possible=true", line)
+        self.assertIn("queue completed; 211 unreserved gold available for recruitment", line)
+
+    def test_economic_summary_blockers_distinguished(self):
+        base_state = {
+            "turn": 1, "gold": [5, 100], "active_faction": 0,
+            "units": [{"id": 1, "faction": 0, "can_recruit": True, "col": 2, "row": 7, "hp": 48}],
+        }
+        recruit_options = {
+            "side_can_place": True,
+            "placement_hexes": [{"col": 2, "row": 8}],
+            "options": [{"def_id": "Skeleton", "cost": 15, "affordable": False}],
+        }
+        # 1. No budget
+        s_budget = rp.compute_economic_summary(base_state, recruit_options=recruit_options)
+        self.assertFalse(s_budget["recruitment_possible"])
+        self.assertEqual(s_budget["status_detail"], "no_budget")
+
+        # 2. No placement
+        base_state["gold"] = [100, 100]
+        recruit_options_no_place = {"side_can_place": False, "placement_hexes": [], "options": recruit_options["options"]}
+        s_place = rp.compute_economic_summary(base_state, recruit_options=recruit_options_no_place)
+        self.assertFalse(s_place["recruitment_possible"])
+        self.assertEqual(s_place["status_detail"], "no_placement")
+
+        # 3. No eligible recruiter
+        no_recruiter_state = {"turn": 1, "gold": [100, 100], "active_faction": 0, "units": []}
+        s_rec = rp.compute_economic_summary(no_recruiter_state, recruit_options={"side_can_place": False, "placement_hexes": []})
+        self.assertFalse(s_rec["recruitment_possible"])
+        self.assertEqual(s_rec["status_detail"], "no_eligible_recruiter")
+
 
 if __name__ == "__main__":
     unittest.main()
