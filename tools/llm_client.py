@@ -1221,6 +1221,22 @@ def concise_engine_rejection(orders: Any, validation: Any) -> str:
                     "replay is sequential")
             elif cause == "original_live_state":
                 details.append("cause=original live state")
+        target_info = result.get("target")
+        if isinstance(target_info, dict):
+            target_unit = target_info.get("unit_id")
+            if isinstance(target_unit, int) and not isinstance(target_unit, bool):
+                role = target_info.get("role", "target")
+                details.append(f"{role}=U{target_unit}")
+            cause = target_info.get("cause")
+            earlier_index = target_info.get("earlier_action_index")
+            if (cause == "earlier_simulated_kill"
+                    and isinstance(earlier_index, int)
+                    and not isinstance(earlier_index, bool)):
+                details.append(
+                    f"cause=earlier proposed action index={earlier_index} (zero-based) simulated kill; "
+                    "replay is sequential")
+            elif cause == "original_live_state_missing":
+                details.append("cause=original live state missing")
         code = result.get("code", validation.get("error_code", validation.get("code", "unknown")))
         message = result.get("message", validation.get("error_message", validation.get("message", "validation failed")))
         details.append(f"error={code}: {message}")

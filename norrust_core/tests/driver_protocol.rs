@@ -671,6 +671,29 @@ fn destination_occupancy_feedback_identifies_replay_cause_and_transaction() {
 }
 
 #[test]
+fn absent_target_feedback_reports_original_live_state_missing() {
+    let absent = run_driver(
+        &[
+            "--scenario", "big_battle_6", "--faction0", "undead",
+            "--faction1", "undead", "--gold", "300", "--max-turns", "4",
+        ],
+        r#"{"action":"Query","what":"validate_batch","state_revision":0,"orders":[{"action":"Attack","attacker_id":1,"defender_id":999},{"action":"EndTurn"}]}
+"#,
+    );
+    let absent_body = absent
+        .iter()
+        .find(|line| line["what"] == "validate_batch")
+        .expect("absent validation response");
+    assert_eq!(absent_body["body"]["valid"], false);
+    let absent_failed = &absent_body["body"]["results"][0];
+    assert_eq!(absent_failed["code"], "UnitNotFound");
+    assert_eq!(absent_failed["target"]["cause"], "original_live_state_missing");
+    assert_eq!(absent_failed["target"]["originally_present"], false);
+    assert_eq!(absent_failed["target"]["unit_id"], 999);
+    assert!(absent_failed["message"].as_str().unwrap().contains("target U999 was not found in the original live state"));
+}
+
+#[test]
 fn rust_action_shape_rejects_wrong_scalars_and_batch_count_overflow() {
     let lines = run_driver(
         &[

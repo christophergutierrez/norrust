@@ -459,7 +459,10 @@ compact line. The complete validation result remains in the untrusted feedback
 and audit record. The driver's read-only validation replay is sequential and
 marks `committed: false`; a `DestinationOccupied` result identifies whether the
 occupant came from an earlier proposed action (with its zero-based index) or
-from the original live state. Rejection is transactional: no earlier action in
+from the original live state. Similarly, a target rejection (`UnitNotFound`)
+identifies whether the unit was killed by an earlier proposed action in the
+sequential batch (naming its index) or was missing from the original live state.
+Rejection is transactional: no earlier action in
 that batch commits, and the corrected response is validated from the unchanged
 revision. A recruit moved away during the same replay frees its castle hex for
 a later recruit.

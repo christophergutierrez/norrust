@@ -739,6 +739,124 @@ def _group_options_by_actor(options: list[dict[str, Any]]) -> list[tuple[Any, li
   return groups
 
 
+def _get_option_destinations(opt: dict[str, Any]) -> set[tuple[int, int]]:
+  dests: set[tuple[int, int]] = set()
+  for a in opt.get("actions", []):
+    if not isinstance(a, dict):
+      continue
+    act_name = a.get("action")
+    if act_name == "Move":
+      c = a.get("col", a.get("to_col"))
+      r = a.get("row", a.get("to_row"))
+      if isinstance(c, int) and isinstance(r, int) and not isinstance(c, bool) and not isinstance(r, bool):
+        dests.add((c, r))
+    elif act_name == "Engage":
+      steps = a.get("steps")
+      if isinstance(steps, list) and steps:
+        last = steps[-1]
+        if isinstance(last, dict):
+          c = last.get("col")
+          r = last.get("row")
+          if isinstance(c, int) and isinstance(r, int) and not isinstance(c, bool) and not isinstance(r, bool):
+            dests.add((c, r))
+  return dests
+
+
+def _get_option_targets(opt: dict[str, Any]) -> set[int]:
+  targets: set[int] = set()
+  for a in opt.get("actions", []):
+    if not isinstance(a, dict):
+      continue
+    act_name = a.get("action")
+    if act_name in ("Attack", "Engage"):
+      tgt = a.get("defender_id", a.get("target_id"))
+      if isinstance(tgt, int) and not isinstance(tgt, bool):
+        targets.add(tgt)
+  return targets
+
+
+def _format_option_compatibility_notes(options: list[dict[str, Any]]) -> list[str]:
+  dest_actors: dict[tuple[int, int], set[Any]] = {}
+  target_actors: dict[int, set[Any]] = {}
+  for opt in options:
+    if not isinstance(opt, dict):
+      continue
+    actor = opt.get("actor_id")
+    for dest in _get_option_destinations(opt):
+      dest_actors.setdefault(dest, set()).add(actor)
+    for tgt in _get_option_targets(opt):
+      target_actors.setdefault(tgt, set()).add(actor)
+
+  notes: list[str] = []
+  for (c, r), actors in sorted(dest_actors.items()):
+    valid_actors = [act for act in actors if act is not None]
+    if len(valid_actors) > 1:
+      actors_str = ", ".join(f"Actor {act}" for act in sorted(valid_actors))
+      notes.append(
+        f"  - Shared destination ({c},{r}) across {actors_str}: two units cannot occupy the same "
+        "hex at end of turn; subsequent move will fail unless destination is vacated."
+      )
+
+  for tgt, actors in sorted(target_actors.items()):
+    valid_actors = [act for act in actors if act is not None]
+    if len(valid_actors) > 1:
+      actors_str = ", ".join(f"Actor {act}" for act in sorted(valid_actors))
+      notes.append(
+        f"  - Shared target U{tgt} across {actors_str}: multi-attack is supported if target "
+        "survives, but subsequent attack will fail if target is killed earlier in batch."
+      )
+  return notes
+
+
+def _build_choose_example(packet: DecisionPacket) -> Optional[dict[str, Any]]:
+  if "choose" not in packet.allowed_kinds or not packet.options:
+    return None
+
+  grouped = _group_options_by_actor(packet.options)
+  if not grouped:
+    return None
+
+  if len(grouped) >= 2:
+    actor1, opts1 = grouped[0]
+    actor2, opts2 = grouped[1]
+    for opt1 in opts1:
+      if not (isinstance(opt1, dict) and isinstance(opt1.get("option_id"), str)):
+        continue
+      dest1 = _get_option_destinations(opt1)
+      tgt1 = _get_option_targets(opt1)
+      for opt2 in opts2:
+        if not (isinstance(opt2, dict) and isinstance(opt2.get("option_id"), str)):
+          continue
+        dest2 = _get_option_destinations(opt2)
+        tgt2 = _get_option_targets(opt2)
+        if not (dest1 & dest2) and not (tgt1 & tgt2):
+          return {
+            "kind": "choose",
+            "decision_id": packet.decision_id,
+            "option_ids": [opt1["option_id"], opt2["option_id"]],
+            "finish_turn": bool(packet.final_only),
+          }
+
+  first_opt = None
+  for _, opts in grouped:
+    for opt in opts:
+      if isinstance(opt, dict) and isinstance(opt.get("option_id"), str):
+        first_opt = opt
+        break
+    if first_opt:
+      break
+
+  if not first_opt:
+    return None
+
+  return {
+    "kind": "choose",
+    "decision_id": packet.decision_id,
+    "option_ids": [first_opt["option_id"]],
+    "finish_turn": bool(packet.final_only),
+  }
+
+
 def _proposed_movement_guidance(packet: DecisionPacket) -> str:
   """Address the named blocked step without advertising unavailable kinds."""
   allowed = packet.allowed_kinds
@@ -910,7 +1028,10 @@ def render_decision_brief(
     if packet.options:
       opt_lines = [
         "Offered tactical options, grouped by actor from the flat issued list. "
-        "Selecting several options in one choose response avoids another call per unit."
+        "Each option is individually valid against the current board. "
+        "Selecting several options in one choose response avoids another call per unit "
+        "and executes them sequentially in listed order as an atomic batch "
+        "(at most one option per actor; rollback occurs if any action fails)."
       ]
       recruiter_ids = set()
       recruiter_hps = {}
@@ -974,19 +1095,15 @@ def render_decision_brief(
           opt_lines.append(
             f"  - Option {oid!r} ({cat}): [{actions_summary}]{cost_str}{forecast_str}{exposure_str}"
           )
-      example_ids = [
-        opt.get("option_id") for opt in packet.options
-        if isinstance(opt, dict) and isinstance(opt.get("option_id"), str)
-      ][:2]
-      example = {
-        "kind": "choose",
-        "decision_id": packet.decision_id,
-        "option_ids": example_ids or ["<option_id>"],
-        "finish_turn": bool(packet.final_only),
-      }
-      opt_lines.append(
-        "To choose, respond with: " + json.dumps(example, separators=(",", ":"))
-      )
+      compat_notes = _format_option_compatibility_notes(packet.options)
+      if compat_notes:
+        opt_lines.append("Option compatibility notes:")
+        opt_lines.extend(compat_notes)
+      example = _build_choose_example(packet)
+      if example is not None:
+        opt_lines.append(
+          "To choose, respond with: " + json.dumps(example, separators=(",", ":"))
+        )
       sections.append("\n".join(opt_lines))
   elif packet.reason == "contact" and packet.evidence.get("stage") != "current_state":
     dest_line = _contact_destination_line(packet.evidence)
@@ -1000,17 +1117,8 @@ def render_decision_brief(
       "A rejected proposed routine move is not current-board contact. "
       f"Applicable responses: {', '.join(packet.allowed_kinds)}."
     )
-    if "choose" in packet.allowed_kinds and packet.options:
-      example_ids = [
-        opt.get("option_id") for opt in packet.options
-        if isinstance(opt, dict) and isinstance(opt.get("option_id"), str)
-      ][:2]
-      example = {
-        "kind": "choose",
-        "decision_id": packet.decision_id,
-        "option_ids": example_ids or ["<option_id>"],
-        "finish_turn": bool(packet.final_only),
-      }
+    example = _build_choose_example(packet)
+    if example is not None:
       sections.append(
         "To choose, respond with: " + json.dumps(example, separators=(",", ":"))
       )

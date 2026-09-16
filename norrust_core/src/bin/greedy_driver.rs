@@ -1665,6 +1665,87 @@ fn add_occupancy_failure_detail(
     result["message"] = json!(message);
 }
 
+/// Attach engine-replay evidence to a missing unit/target failure.
+/// Distinguishes a target killed by an earlier proposed action during
+/// sequential batch replay from a unit ID absent in the original live state.
+fn add_dead_target_failure_detail(
+    result: &mut Value,
+    order: &Value,
+    error_code: &str,
+    error: &norrust_core::game_state::ActionError,
+    initial_units: &HashSet<u32>,
+    killed_units: &HashMap<u32, usize>,
+) {
+    if error_code != "UnitNotFound" {
+        return;
+    }
+    let missing_id = match error {
+        norrust_core::game_state::ActionError::UnitNotFound(id) => Some(*id),
+        _ => order
+            .get("defender_id")
+            .or_else(|| order.get("target_id"))
+            .or_else(|| order.get("attacker_id"))
+            .or_else(|| order.get("unit_id"))
+            .and_then(Value::as_u64)
+            .map(|id| id as u32),
+    };
+    let Some(missing_id) = missing_id else {
+        return;
+    };
+    let target_in_order = order
+        .get("defender_id")
+        .or_else(|| order.get("target_id"))
+        .and_then(Value::as_u64)
+        .map(|id| id as u32);
+    let attacker_in_order = order
+        .get("attacker_id")
+        .or_else(|| order.get("unit_id"))
+        .and_then(Value::as_u64)
+        .map(|id| id as u32);
+
+    let is_target = target_in_order == Some(missing_id);
+    let is_attacker = attacker_in_order == Some(missing_id);
+    if !is_target && !is_attacker {
+        return;
+    }
+
+    let earlier_action_index = killed_units.get(&missing_id).copied();
+    let cause = if earlier_action_index.is_some() {
+        "earlier_simulated_kill"
+    } else if !initial_units.contains(&missing_id) {
+        "original_live_state_missing"
+    } else {
+        "unknown"
+    };
+
+    let role = if is_target { "target" } else { "unit" };
+    let mut target_obj = json!({
+        "unit_id": missing_id,
+        "role": role,
+        "cause": cause,
+        "originally_present": initial_units.contains(&missing_id),
+    });
+    if let Some(index) = earlier_action_index {
+        target_obj["earlier_action_index"] = json!(index);
+    }
+    result["target"] = target_obj;
+
+    let message = if let Some(index) = earlier_action_index {
+        format!(
+            "{} U{} was killed by earlier proposed action index {} (zero-based); batch replay is sequential",
+            role, missing_id, index
+        )
+    } else if !initial_units.contains(&missing_id) {
+        format!(
+            "{} U{} was not found in the original live state",
+            role, missing_id
+        )
+    } else {
+        format!("{} U{} was not found", role, missing_id)
+    };
+    result["message"] = json!(message);
+}
+
 /// Apply one model batch to an isolated state. The commit path and the
 /// read-only validation query deliberately share this executor so validation
 /// cannot approve a batch with different sequential semantics.
@@ -1697,6 +1778,9 @@ fn execute_model_batch(
     // UnitNotFound for the attacker.
     let mut nested_failure: Option<Value> = None;
     let initial_occupants = state.hex_to_unit.clone();
+    let initial_units: HashSet<u32> = state.units.keys().copied().collect();
+    let mut known_units = initial_units.clone();
+    let mut killed_units = HashMap::new();
     let mut occupancy_provenance = HashMap::new();
     let mut replay_tainted = false;
     for (order_index, order) in orders.iter().enumerate() {
@@ -1965,6 +2049,7 @@ fn execute_model_batch(
                             order_index,
                             &mut occupancy_provenance,
                         );
+                        known_units.extend(state.units.keys().copied());
                         results.push(json!({"ok":true,"requested":count,"recruited":recruited,"partial":(recruited as u64) < count}));
                         delegated_order_indices.extend(std::iter::repeat(None).take(
                             events.len().saturating_sub(events_len_before),
@@ -2205,6 +2290,12 @@ fn execute_model_batch(
                     order_index,
                     &mut occupancy_provenance,
                 );
+                for &unit_id in &known_units {
+                    if !state.units.contains_key(&unit_id) && !killed_units.contains_key(&unit_id) {
+                        killed_units.insert(unit_id, order_index);
+                    }
+                }
+                known_units.extend(state.units.keys().copied());
                 delegated_order_indices.extend(std::iter::repeat(
                     if is_delegating_order { Some(results.len()) } else { None },
                 ).take(events.len().saturating_sub(events_len_before)));
@@ -2242,6 +2333,12 @@ fn execute_model_batch(
             }
             Err(error) => {
                 if let Some(mut detail) = nested_failure.take() {
+                    let code = detail.as_object()
+                        .and_then(|obj| obj.get("nested"))
+                        .and_then(|nested| nested.get("code"))
+                        .and_then(Value::as_str)
+                        .unwrap_or(error.code())
+                        .to_string();
                     if let Some(object) = detail.as_object_mut() {
                         object.insert("ok".into(), Value::Bool(false));
                         object.insert("code".into(),
@@ -2259,11 +2356,23 @@ fn execute_model_batch(
                         add_occupancy_failure_detail(
                             &mut detail,
                             order,
-                            error.code(),
+                            &code,
                             &state,
                             &initial_occupants,
                             &occupancy_provenance,
                         );
+                        if let Some(target) = detail.get("nested").and_then(|nested| nested.get("target")).cloned() {
+                            detail["target"] = target;
+                        } else {
+                            add_dead_target_failure_detail(
+                                &mut detail,
+                                order,
+                                &code,
+                                &error,
+                                &initial_units,
+                                &killed_units,
+                            );
+                        }
                     }
                     results.push(detail);
                 } else {
@@ -2276,6 +2385,14 @@ fn execute_model_batch(
                             &state,
                             &initial_occupants,
                             &occupancy_provenance,
+                        );
+                        add_dead_target_failure_detail(
+                            &mut detail,
+                            order,
+                            error.code(),
+                            &error,
+                            &initial_units,
+                            &killed_units,
                         );
                     }
                     results.push(detail);
@@ -5121,5 +5238,126 @@ mod tests {
             "holds":[],
         })];
         assert!(!is_routine_empty_finish("routine", &model_finish));
+    }
+
+    #[test]
+    fn dead_target_feedback_identifies_simulated_kill_and_original_absence() {
+        let (mut state, factions, units) = quiet_stack1_fixture(300);
+        let fighter_def = units.get("Skeleton").expect("Skeleton def");
+        let attacker_hex = Hex::from_offset(5, 5);
+        let target_hex = Hex::from_offset(5, 6);
+        let second_attacker_hex = Hex::from_offset(6, 6);
+
+        let mut attacker = Unit::from_def(10, fighter_def, 0);
+        attacker.attacks = vec![norrust_core::schema::AttackDef {
+            id: "strike".into(),
+            name: "strike".into(),
+            damage: 100,
+            strikes: 10,
+            attack_type: "blade".into(),
+            range: "melee".into(),
+            specials: Vec::new(),
+        }];
+        state.place_unit(attacker, attacker_hex);
+
+        let mut target = Unit::from_def(20, fighter_def, 1);
+        target.hp = 1;
+        target.max_hp = 1;
+        state.place_unit(target, target_hex);
+
+        let second_attacker = Unit::from_def(11, fighter_def, 0);
+        state.place_unit(second_attacker, second_attacker_hex);
+
+        // Batch 1: Order 0 kills target 20, Order 1 attacks dead target 20
+        let orders = vec![
+            json!({"action":"Attack","attacker_id":10,"defender_id":20}),
+            json!({"action":"Attack","attacker_id":11,"defender_id":20}),
+        ];
+        let execution = execute_model_batch(
+            state.clone(),
+            state.next_unit_id,
+            &orders,
+            0,
+            &factions,
+            &units,
+            false,
+            true,
+        );
+        assert_eq!(execution.results[0]["ok"], json!(true));
+        assert_eq!(execution.results[1]["ok"], json!(false));
+        assert_eq!(execution.results[1]["code"], json!("UnitNotFound"));
+        assert_eq!(execution.results[1]["target"]["cause"], json!("earlier_simulated_kill"));
+        assert_eq!(execution.results[1]["target"]["earlier_action_index"], json!(0));
+        assert_eq!(execution.results[1]["target"]["unit_id"], json!(20));
+        assert_eq!(execution.results[1]["target"]["originally_present"], json!(true));
+        assert!(execution.results[1]["message"].as_str().unwrap().contains("killed by earlier proposed action index 0"));
+
+        // Batch 2: Attack a unit that never existed
+        let absent_orders = vec![
+            json!({"action":"Attack","attacker_id":10,"defender_id":999}),
+        ];
+        let absent_exec = execute_model_batch(
+            state.clone(),
+            state.next_unit_id,
+            &absent_orders,
+            0,
+            &factions,
+            &units,
+            false,
+            true,
+        );
+        assert_eq!(absent_exec.results[0]["ok"], json!(false));
+        assert_eq!(absent_exec.results[0]["code"], json!("UnitNotFound"));
+        assert_eq!(absent_exec.results[0]["target"]["cause"], json!("original_live_state_missing"));
+        assert_eq!(absent_exec.results[0]["target"]["originally_present"], json!(false));
+        assert_eq!(absent_exec.results[0]["target"]["unit_id"], json!(999));
+        assert!(absent_exec.results[0]["message"].as_str().unwrap().contains("not found in the original live state"));
+
+        // Batch 3: Two attacks against a surviving target both succeed
+        let mut tank = Unit::from_def(30, fighter_def, 1);
+        tank.hp = 100;
+        tank.max_hp = 100;
+        state.place_unit(tank, Hex::from_offset(5, 4));
+
+        let mut weak_att1 = Unit::from_def(40, fighter_def, 0);
+        weak_att1.attacks = vec![norrust_core::schema::AttackDef {
+            id: "scratch1".into(),
+            name: "scratch1".into(),
+            damage: 1,
+            strikes: 1,
+            attack_type: "blade".into(),
+            range: "melee".into(),
+            specials: Vec::new(),
+        }];
+        state.place_unit(weak_att1, Hex::from_offset(4, 4));
+
+        let mut weak_att2 = Unit::from_def(41, fighter_def, 0);
+        weak_att2.attacks = vec![norrust_core::schema::AttackDef {
+            id: "scratch2".into(),
+            name: "scratch2".into(),
+            damage: 1,
+            strikes: 1,
+            attack_type: "blade".into(),
+            range: "melee".into(),
+            specials: Vec::new(),
+        }];
+        state.place_unit(weak_att2, Hex::from_offset(6, 4));
+
+        let survive_orders = vec![
+            json!({"action":"Attack","attacker_id":40,"defender_id":30}),
+            json!({"action":"Attack","attacker_id":41,"defender_id":30}),
+        ];
+        let survive_exec = execute_model_batch(
+            state.clone(),
+            state.next_unit_id,
+            &survive_orders,
+            0,
+            &factions,
+            &units,
+            false,
+            true,
+        );
+        assert_eq!(survive_exec.results[0]["ok"], json!(true));
+        assert_eq!(survive_exec.results[1]["ok"], json!(true));
     }
 }

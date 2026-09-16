@@ -640,7 +640,7 @@ class TacticalOptionsTests(unittest.TestCase):
     self.assertIn("Cost: 2", brief)
     self.assertIn('"kind":"choose"', brief)
     self.assertIn('"decision_id":"dec-abc"', brief)
-    self.assertIn('"option_ids":["u1-attack-1","u1-relocate-1"]', brief)
+    self.assertIn('"option_ids":["u1-attack-1"]', brief)
     self.assertIn("actor_ids=[1]", brief)
     self.assertIn("eligible_actor_count=1", brief)
     self.assertIn("actors_truncated=false", brief)
