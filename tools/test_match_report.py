@@ -253,6 +253,103 @@ class ReportTests(unittest.TestCase):
             "requests": 1, "first_attempt_valid": 1, "repaired": 0,
             "unresolved": 0, "total_attempts": 1})
 
+    def test_strategy_repairs_and_physical_calls_counted(self):
+        records = [
+            {"type": "metadata", "llm_side": 0},
+            {"type": "model", "call": 1},
+            {"type": "model", "call": 2},
+            {"type": "strategy_response_repair", "error": "engine rejected strategy act: destination occupied"},
+            {"type": "model", "call": 3},
+            {"type": "strategy_response_repair", "error": "unit not found"},
+            {"type": "strategy_batch_validation", "valid": False},
+            {"type": "strategy_batch_validation", "valid": False},
+        ]
+        records.extend({"type": "model", "call": i} for i in range(4, 12))
+        records.append({"type": "terminal", "terminal_class": "gameplay", "reason": "winner", "winner": 1})
+        report = classify(records)
+        self.assertEqual(report["repairs"], 2)
+        self.assertEqual(report["strategy_repairs"], 2)
+        self.assertEqual(report["rejected_strategy_proposals"], 2)
+        self.assertEqual(report["physical_calls"], 11)
+        self.assertEqual(report["model_calls"], 11)
+        self.assertEqual(report["terminal_class"], "gameplay")
+        self.assertEqual(report["repair_breakdown"], {"engine_rejection": 2})
+
+    def test_terminal_partial_side_turn_opponent_winner_explained(self):
+        events = []
+        for turn in range(1, 7):
+            events.append({"kind": "end_turn", "source": "model", "ended_faction": 0, "active_faction": 1, "turn": turn})
+            if turn < 6:
+                events.append({"kind": "end_turn", "source": "greedy", "ended_faction": 1, "active_faction": 0, "turn": turn})
+        records = [
+            {"type": "metadata", "llm_side": 0, "finish_telemetry_available": True},
+            {"type": "driver", "line": {"type": "events", "events": events}},
+            {"type": "driver", "line": {"type": "game_end", "side_turns": 12, "winner": 1}},
+            {"type": "terminal", "terminal_class": "gameplay", "reason": "winner", "winner": 1},
+        ]
+        report = classify(records)
+        self.assertFalse(report["accounting_mismatch"])
+        self.assertEqual(report["completed_engine_turns"], 11)
+        self.assertEqual(report["completed_model_turns"], 6)
+        self.assertEqual(report["completed_opponent_turns"], 5)
+        self.assertEqual(report["terminal_partial_side_turn"], {
+            "side_turn": 12,
+            "side": 1,
+            "owner": "opponent",
+            "reason": "winner",
+        })
+
+    def test_terminal_partial_side_turn_controlled_winner_explained(self):
+        events = []
+        for turn in range(1, 6):
+            events.append({"kind": "end_turn", "source": "model", "ended_faction": 0, "active_faction": 1, "turn": turn})
+            events.append({"kind": "end_turn", "source": "greedy", "ended_faction": 1, "active_faction": 0, "turn": turn})
+        records = [
+            {"type": "metadata", "llm_side": 0, "finish_telemetry_available": True},
+            {"type": "driver", "line": {"type": "events", "events": events}},
+            {"type": "driver", "line": {"type": "game_end", "side_turns": 11, "winner": 0}},
+            {"type": "terminal", "terminal_class": "gameplay", "reason": "winner", "winner": 0},
+        ]
+        report = classify(records)
+        self.assertFalse(report["accounting_mismatch"])
+        self.assertEqual(report["completed_engine_turns"], 10)
+        self.assertEqual(report["completed_model_turns"], 5)
+        self.assertEqual(report["completed_opponent_turns"], 5)
+        self.assertEqual(report["terminal_partial_side_turn"], {
+            "side_turn": 11,
+            "side": 0,
+            "owner": "controlled",
+            "reason": "winner",
+        })
+
+    def test_missing_or_duplicate_boundaries_still_raise_mismatch(self):
+        events = [
+            {"kind": "end_turn", "source": "model", "ended_faction": 0, "active_faction": 1, "turn": 1},
+            {"kind": "end_turn", "source": "greedy", "ended_faction": 1, "active_faction": 0, "turn": 1},
+        ]
+        records = [
+            {"type": "metadata", "llm_side": 0, "finish_telemetry_available": True},
+            {"type": "driver", "line": {"type": "events", "events": events}},
+            {"type": "driver", "line": {"type": "game_end", "side_turns": 8, "winner": 1}},
+            {"type": "terminal", "terminal_class": "gameplay", "reason": "winner", "winner": 1},
+        ]
+        report = classify(records)
+        self.assertTrue(report["accounting_mismatch"])
+        self.assertIn("terminal_side_turns_vs_generated_end_turns", report["accounting_mismatch_reasons"])
+
+    def test_repair_discrepancy_reported(self):
+        records = [
+            {"type": "metadata", "repairs": 0},
+            {"type": "strategy_response_repair", "error": "syntax error"},
+            {"type": "terminal", "terminal_class": "gameplay"},
+        ]
+        report = classify(records)
+        self.assertEqual(report["repairs"], 1)
+        self.assertEqual(report["repair_discrepancy"], {
+            "metadata_repairs": 0,
+            "proven_repairs": 1,
+        })
+
 
 if __name__ == "__main__":
     unittest.main()

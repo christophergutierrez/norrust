@@ -324,13 +324,45 @@ def classify(records: list[dict[str, Any]],
                 unit = event.get("unit") or event.get("dead") or {}
                 faction = unit.get("faction") if isinstance(unit, dict) else event.get("faction", "unknown")
                 deaths[str(faction)] += 1
-    resolved_side_turns = None
     terminal_reason = terminal.get("reason") or terminal.get("termination_reason")
+    has_winner = (
+        terminal_reason == "winner"
+        or (isinstance(terminal.get("winner"), int) and terminal.get("winner") in (0, 1))
+        or any(
+            isinstance(ge.get("winner"), int) and ge.get("winner") in (0, 1)
+            for ge in events if ge.get("type") in ("game_end", "state")
+        )
+    )
+
+    terminal_partial_side_turn = None
+    if driver_side_turns and generated_end_turns and driver_side_turns[-1] == generated_end_turns + 1 and has_winner:
+        if controlled_side in (0, 1):
+            if generated_model_end_turns == generated_opponent_end_turns + 1:
+                partial_side = 1 - controlled_side
+                partial_owner = "opponent"
+            elif generated_model_end_turns == generated_opponent_end_turns:
+                partial_side = controlled_side
+                partial_owner = "controlled"
+            else:
+                partial_side = None
+                partial_owner = "unknown"
+        else:
+            partial_side = None
+            partial_owner = "unknown"
+
+        terminal_partial_side_turn = {
+            "side_turn": driver_side_turns[-1],
+            "side": partial_side,
+            "owner": partial_owner,
+            "reason": terminal_reason or "winner",
+        }
+
+    resolved_side_turns = None
     if driver_side_turns:
         resolved_side_turns = driver_side_turns[-1]
     elif generated_end_turns:
         # A winner can terminate during an action before emitting EndTurn.
-        resolved_side_turns = generated_end_turns + (1 if terminal_reason == "winner" else 0)
+        resolved_side_turns = generated_end_turns + (1 if has_winner else 0)
     if resolved_side_turns is not None:
         completed_side_turns = resolved_side_turns
     else:
@@ -341,13 +373,64 @@ def classify(records: list[dict[str, Any]],
                           and isinstance(item.get("turns"), int)), None)
 
     mismatch_reasons = []
-    if driver_side_turns and generated_end_turns and driver_side_turns[-1] != generated_end_turns:
-        mismatch_reasons.append("terminal_side_turns_vs_generated_end_turns")
+    if driver_side_turns and generated_end_turns:
+        if driver_side_turns[-1] != generated_end_turns:
+            if terminal_partial_side_turn is None or driver_side_turns[-1] != generated_end_turns + 1:
+                mismatch_reasons.append("terminal_side_turns_vs_generated_end_turns")
     if (telemetry_available and boundaries
             and generated_model_end_turns < len(boundaries)
+            and (terminal_partial_side_turn is None or terminal_partial_side_turn.get("owner") != "controlled")
             and terminal_reason != "winner"):
         mismatch_reasons.append("accepted_boundaries_vs_generated_end_turns")
+
     failure = next((item for item in reversed(records) if item.get("type") == "model_error"), {})
+    model_records = [item for item in records if item.get("type") == "model"]
+    explicit_physical_calls = len(model_records) if model_records else None
+    reported_model_calls = terminal.get("model_calls", failure.get("model_calls"))
+    effective_model_calls = explicit_physical_calls if explicit_physical_calls is not None else reported_model_calls
+
+    strategy_repairs = [item for item in records if item.get("type") == "strategy_response_repair"]
+    action_repairs = [item for item in records if item.get("type") == "action_repair"]
+    draft_repairs = [item for item in records if item.get("type") == "draft_review_repair"]
+    general_repairs = [item for item in records if item.get("type") == "repair" and item.get("type") != "turn_boundary"]
+    explicit_repairs = len(strategy_repairs) + len(action_repairs) + len(draft_repairs) + len(general_repairs)
+
+    repair_breakdown = Counter()
+    for r in strategy_repairs:
+        err = str(r.get("error", "")).lower()
+        if any(k in err for k in ("engine rejected", "destinationoccupied", "destination occupied", "unitnotfound", "unit not found", "target killed", "invalid action")):
+            repair_breakdown["engine_rejection"] += 1
+        elif "json" in err or "decode" in err:
+            repair_breakdown["schema_error"] += 1
+        elif "inspection" in err or "tool" in err:
+            repair_breakdown["inspection_error"] += 1
+        elif "contextual" in err:
+            repair_breakdown["contextual_rejection"] += 1
+        else:
+            repair_breakdown["other_strategy_repair"] += 1
+    if action_repairs:
+        repair_breakdown["action_repair"] += len(action_repairs)
+    if draft_repairs:
+        repair_breakdown["draft_review_repair"] += len(draft_repairs)
+    if general_repairs:
+        repair_breakdown["general_repair"] += len(general_repairs)
+
+    metadata_repairs = metadata.get("repairs") if "repairs" in metadata else metadata.get("draft_review_repairs")
+    repair_discrepancy = None
+    if metadata_repairs is not None and explicit_repairs > 0 and metadata_repairs != explicit_repairs:
+        repair_discrepancy = {
+            "metadata_repairs": metadata_repairs,
+            "proven_repairs": explicit_repairs,
+        }
+    total_repairs = explicit_repairs if (explicit_repairs > 0 or metadata_repairs is None) else metadata_repairs
+
+    rejected_strategy_proposals = [
+        item for item in records
+        if (item.get("type") == "strategy_batch_validation" and item.get("valid") is False)
+        or item.get("type") == "contextual_rejection"
+    ]
+    rejected_proposals_count = len(rejected_strategy_proposals)
+
     classified_class = terminal_class(terminal) or terminal_class(failure)
     if not classified_class and failure:
         classified_class = "model_invalid"
@@ -370,13 +453,25 @@ def classify(records: list[dict[str, Any]],
         "resigned_side": terminal.get("resigned_side"),
         "completed_side_turns": completed_side_turns,
         "resolved_side_turns": resolved_side_turns,
+        "completed_engine_turns": generated_end_turns,
+        "completed_model_turns": generated_model_end_turns,
+        "completed_opponent_turns": generated_opponent_end_turns,
+        "terminal_partial_side_turn": terminal_partial_side_turn,
         "model_turns": model_turns,
         "engine_rounds": engine_rounds,
         "accepted_event_batches": len(accepted),
         "attacks_by_source": dict(attacks),
         "deaths_by_faction": dict(deaths),
         "unique_movers": len(moved),
-        "model_calls": terminal.get("model_calls", failure.get("model_calls")),
+        "model_calls": effective_model_calls,
+        "physical_calls": explicit_physical_calls,
+        "repairs": total_repairs,
+        "strategy_repairs": len(strategy_repairs),
+        "rejected_strategy_proposals": rejected_proposals_count,
+        "repair_breakdown": dict(repair_breakdown),
+        "repair_discrepancy": repair_discrepancy,
+        "accounting_mismatch": bool(mismatch_reasons),
+        "accounting_mismatch_reasons": mismatch_reasons,
         "tool_calls": terminal.get("queries"),
         "handoff_reviews": len(handoff_reviews),
         "handoff_outcomes": dict(Counter(item.get("outcome", "unknown") for item in handoff_reviews)),
@@ -470,8 +565,8 @@ def classify(records: list[dict[str, Any]],
     })
     completed_model_turns = len(boundaries)
     report["model_calls_per_completed_model_turn"] = (
-        terminal.get("model_calls") / completed_model_turns
-        if completed_model_turns and isinstance(terminal.get("model_calls"), (int, float))
+        report["model_calls"] / completed_model_turns
+        if completed_model_turns and isinstance(report.get("model_calls"), (int, float))
         else None
     )
     return report

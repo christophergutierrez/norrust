@@ -5448,6 +5448,7 @@ def run(args: argparse.Namespace) -> int:
                 "attack_opportunity_unit_turns": 0, "planned_attack_unit_turns": 0,
                 "draft_reviews": 0, "draft_revisions": 0, "draft_confirmations": 0,
                 "draft_review_repairs": 0, "draft_review_inspections": 0,
+                "repairs": 0, "strategy_repairs": 0, "rejected_strategy_proposals": 0,
                 "timeout_finishes": 0,
                 "partial_limit_finishes": 0,
                 "focused_operation_rejections": 0,
@@ -5488,6 +5489,7 @@ def run(args: argparse.Namespace) -> int:
             for key in ("queries", "model_orders", "model_calls", "rejected_batches",
                         "rejected_action_items", "draft_reviews", "draft_revisions",
                         "draft_confirmations", "draft_review_repairs", "draft_review_inspections",
+                        "repairs", "strategy_repairs", "rejected_strategy_proposals",
                         "transport_retries",
                         "attack_opportunity_unit_turns", "planned_attack_unit_turns",
                         "handle_choices_used", "coordinate_fallbacks", "choice_handles_authored",
@@ -6399,6 +6401,8 @@ def run(args: argparse.Namespace) -> int:
             # Keep the bounded repair visible in the durable transcript.  The
             # engine action-repair path has its own record; strategy responses
             # need the same evidence when validation happens before dispatch.
+            metadata["repairs"] = int(metadata.get("repairs", 0)) + 1
+            metadata["strategy_repairs"] = int(metadata.get("strategy_repairs", 0)) + 1
             record({"type": "strategy_response_repair",
                     "error": str(error), "raw_output": raw_output,
                     "turn": state.get("turn") if isinstance(state, dict) else None,
@@ -6514,6 +6518,8 @@ def run(args: argparse.Namespace) -> int:
                     validation = query_validate_batch(
                         exchange, submitted, int(state.get("state_revision", 0)))
                     if validation.get("valid") is not True:
+                        metadata["rejected_batches"] = int(metadata.get("rejected_batches", 0)) + 1
+                        metadata["rejected_strategy_proposals"] = int(metadata.get("rejected_strategy_proposals", 0)) + 1
                         record({"type": "strategy_batch_validation", "orders": submitted,
                                 "valid": False, "validation": copy.deepcopy(validation)})
                         raise ModelResponseError(
@@ -6532,6 +6538,8 @@ def run(args: argparse.Namespace) -> int:
                     validation = query_validate_batch(
                         exchange, submitted, int(state.get("state_revision", 0)))
                     if validation.get("valid") is not True:
+                        metadata["rejected_batches"] = int(metadata.get("rejected_batches", 0)) + 1
+                        metadata["rejected_strategy_proposals"] = int(metadata.get("rejected_strategy_proposals", 0)) + 1
                         record({"type": "strategy_batch_validation", "orders": submitted,
                                 "valid": False, "validation": copy.deepcopy(validation)})
                         raise ModelResponseError(
@@ -6546,6 +6554,7 @@ def run(args: argparse.Namespace) -> int:
                     current_side_turn = state.get("turn") if isinstance(state, dict) else 0
                     strategy_incident_tracker.record_ineffective(
                         current_side_turn, decision_packet.state_revision, decision_packet.incident_key)
+                    metadata["rejected_strategy_proposals"] = int(metadata.get("rejected_strategy_proposals", 0)) + 1
                     durable({"type": "contextual_rejection",
                              "incident_key": decision_packet.incident_key,
                              "state_revision": decision_packet.state_revision,
@@ -7521,6 +7530,7 @@ def run(args: argparse.Namespace) -> int:
                                                       purpose="repair")
                             final_reply = repaired
                             enforce_usage(repaired, args)
+                            metadata["repairs"] = int(metadata.get("repairs", 0)) + 1
                             record({"type": "action_repair", "call": metadata["model_calls"],
                                     "prompt_hash": repaired.prompt_hash,
                                     "prompt_bytes": repaired.prompt_bytes,
@@ -8274,6 +8284,7 @@ def run(args: argparse.Namespace) -> int:
                                             model_calls_this_turn += 1
                                             metadata["model_calls"] += 1
                                             metadata["draft_review_repairs"] += 1
+                                            metadata["repairs"] = int(metadata.get("repairs", 0)) + 1
                                             repaired_review = complete_model(
                                                 repair_prompt, allow_tools=False, purpose="repair")
                                             final_reply = repaired_review
@@ -8362,6 +8373,7 @@ def run(args: argparse.Namespace) -> int:
                             final_reply = repaired_review
                             enforce_usage(repaired_review, args)
                             metadata["draft_review_repairs"] += 1
+                            metadata["repairs"] = int(metadata.get("repairs", 0)) + 1
                             record({"type": "draft_review_repair",
                                     "call": metadata["model_calls"],
                                     "review_id": active_review_id,
@@ -8558,6 +8570,7 @@ def run(args: argparse.Namespace) -> int:
                             repaired = complete_model(repair_prompt, purpose="repair")
                             final_reply = repaired
                             enforce_usage(repaired, args)
+                            metadata["repairs"] = int(metadata.get("repairs", 0)) + 1
                             record({"type": "action_repair", "call": metadata["model_calls"],
                                     "attempt": model_calls_this_turn,
                                     "prompt_hash": repaired.prompt_hash,

@@ -403,7 +403,7 @@ def extract_telemetry(records: list[dict[str, Any]]) -> dict[str, Any]:
                 active_task_observations += 1
         elif rtype == "repair" and r.get("validation_error"):
             selection_validation_failures += 1
-        elif rtype == "batch_validation" and r.get("valid") is False:
+        elif rtype in ("batch_validation", "strategy_batch_validation") and r.get("valid") is False:
             selection_validation_failures += 1
         elif rtype == "driver":
             line = r.get("line") or {}

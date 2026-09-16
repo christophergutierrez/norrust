@@ -615,6 +615,22 @@ def recruiter_status(records: list[dict[str, Any]]) -> dict[str, Any]:
             "col": unit.get("col"), "row": unit.get("row"),
             "alive": isinstance(hp, int) and hp > 0,
         })
+    for faction in (0, 1):
+        if not result[f"side{faction}"]:
+            for item in reversed(records):
+                st = item if item.get("type") == "state" else (item.get("line") if item.get("type") == "driver" and isinstance(item.get("line"), dict) else None)
+                if isinstance(st, dict) and isinstance(st.get("units"), list):
+                    recruiter = next((u for u in st["units"] if isinstance(u, dict) and u.get("faction") == faction and u.get("can_recruit")), None)
+                    if recruiter:
+                        result[f"side{faction}"].append({
+                            "unit_id": recruiter.get("id"),
+                            "hp": 0,
+                            "max_hp": recruiter.get("max_hp"),
+                            "col": recruiter.get("col"),
+                            "row": recruiter.get("row"),
+                            "alive": False,
+                        })
+                        break
     return result
 
 

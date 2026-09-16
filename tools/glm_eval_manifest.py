@@ -244,7 +244,7 @@ def _count_driver_inspection_queries(records: list[dict[str, Any]]) -> int:
 def _count_repairs(records: list[dict[str, Any]]) -> int:
     """Count recorded model repair attempts, including review repairs."""
     return sum(1 for item in records
-               if item.get("type") in {"repair", "action_repair", "draft_review_repair"})
+               if item.get("type") in {"repair", "action_repair", "draft_review_repair", "strategy_response_repair"})
 
 
 def _frozen_fingerprint(cell: dict[str, Any]) -> dict[str, Any]:

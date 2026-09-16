@@ -188,8 +188,8 @@ necessary archive evidence once. Final reports must cover:
 - Requested versus reported reasoning effort (`low`, `high`, `max`, or unknown).
 - Prompt layout version (`strategy_layout_v1`, `prompt_layout_v2`, or legacy/unknown) and fixed-prefix UTF-8 bytes and SHA-256 hash.
 - Completed controlled player turns versus engine side-turns, terminal reason, and winner only if proven.
-- Villages, income, recruiter survival, and model versus routine actions.
-- Recoveries, repairs, and exceptions.
+- Villages, income, recruiter survival (including terminal recruiter position col/row and last model action if fallen), and model versus routine actions.
+- Recoveries, repairs (distinguishing schema errors, engine rejections, and context rejections), and exceptions.
 - Physical calls versus logical requests, and measured input, cached input, output, and reasoning tokens (included in output).
 - Input/output cost separation: compute uncached input, cached input, and output independently at dated rates; count cached input once and do not double-count reasoning. Preserve unknown cache-write usage.
 - Measured model elapsed time versus engine execution time.
