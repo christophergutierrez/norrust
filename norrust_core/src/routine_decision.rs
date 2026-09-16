@@ -362,6 +362,48 @@ pub fn generate_tactical_options(
     generate_options_for_selected_actors(state, eligible, eligible_actor_count)
 }
 
+fn compute_origin_exposure(
+    state: &GameState,
+    actor_id: u32,
+    origin_hex: Hex,
+) -> Result<Option<TacticalExposureFacts>, TacticsError> {
+    let mut sim = state.clone();
+    let current_pos = state.positions.get(&actor_id).copied();
+    if current_pos != Some(origin_hex) {
+        if apply_action(
+            &mut sim,
+            Action::Move {
+                unit_id: actor_id,
+                destination: origin_hex,
+            },
+        )
+        .is_err()
+        {
+            return Ok(None);
+        }
+    }
+    if apply_action(&mut sim, Action::EndTurn).is_err() {
+        return Ok(None);
+    }
+    let summary = match target_threats_in_projected(&sim, actor_id, false)? {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+    let distinct_attackers = summary.distinct_attacker_count;
+    let max_incoming = summary.max_incoming_sum;
+    let expected_incoming = summary
+        .focus_expected_damage_tenths
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(0);
+    Ok(Some(TacticalExposureFacts {
+        distinct_attacker_count: distinct_attackers,
+        max_incoming_damage: max_incoming,
+        expected_incoming_damage_tenths: expected_incoming,
+    }))
+}
+
 fn generate_actor_options(
     state: &GameState,
     actor_id: u32,
@@ -461,6 +503,7 @@ fn generate_actor_options(
                         outcome_bps: engagement.forecast.outcome_bps,
                         expected_damage_tenths: engagement.forecast.expected_damage_tenths,
                     },
+                    origin_hex,
                 ));
             }
         }
@@ -579,7 +622,22 @@ fn generate_actor_options(
     // --- Combine into up to 4 options ---
     let mut options = Vec::with_capacity(top_attacks.len() + top_relocations.len());
 
+    let is_recruiter = crate::routine::is_recruiter(actor);
+    let mut origin_exposure_cache: HashMap<Hex, Option<TacticalExposureFacts>> = HashMap::new();
+
     for (i, atk) in top_attacks.into_iter().enumerate() {
+        let exposure = if is_recruiter {
+            let origin_hex = atk.8;
+            if let Some(cached) = origin_exposure_cache.get(&origin_hex) {
+                cached.clone()
+            } else {
+                let computed = compute_origin_exposure(state, actor_id, origin_hex)?;
+                origin_exposure_cache.insert(origin_hex, computed.clone());
+                computed
+            }
+        } else {
+            None
+        };
         options.push(TacticalOption {
             option_id: format!("u{actor_id}-attack-{}", i + 1),
             category: "attack".to_string(),
@@ -589,7 +647,7 @@ fn generate_actor_options(
             movement_cost: atk.6,
             destination: None,
             forecast: Some(atk.7),
-            exposure: None,
+            exposure,
             coverage: "complete".to_string(),
             advances_objective: None,
         });
@@ -908,10 +966,15 @@ mod tests {
         let facts = crate::routine::current_contact(&s, 0).unwrap().unwrap();
         assert_eq!(facts.contact_actionability, "actionable");
         assert!(facts.actor_ids.contains(&1));
-        assert!(facts
+        let atk_opt = facts
             .options
             .iter()
-            .any(|option| option.actor_id == 1 && option.category == "attack"));
+            .find(|option| option.actor_id == 1 && option.category == "attack")
+            .unwrap();
+        assert!(atk_opt.exposure.is_some());
+        let exposure = atk_opt.exposure.as_ref().unwrap();
+        assert_eq!(exposure.distinct_attacker_count, 1);
+        assert!(exposure.max_incoming_damage > 0);
     }
 
     #[test]

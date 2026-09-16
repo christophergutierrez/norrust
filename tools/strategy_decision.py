@@ -684,7 +684,12 @@ def _int_fact(value: Any) -> Optional[int]:
   return None
 
 
-def _format_option_exposure(option: dict[str, Any]) -> str:
+def _format_option_exposure(
+  option: dict[str, Any],
+  *,
+  is_recruiter: bool = False,
+  recruiter_hp: Optional[tuple[int, int]] = None,
+) -> str:
   """Render destination exposure. Nonzero, zero, and unknown stay distinct."""
   if "exposure" not in option:
     return ""
@@ -710,8 +715,12 @@ def _format_option_exposure(option: dict[str, Any]) -> str:
     parts.append(f"expected incoming damage={expected_tenths / 10.0:.1f}")
   estimate = "estimates from the issuing state, not a joint-plan forecast"
   facts = ", ".join(parts)
+  prefix = ""
+  if is_recruiter and nonzero:
+    hp_str = f" (HP {recruiter_hp[0]}/{recruiter_hp[1]})" if recruiter_hp else ""
+    prefix = f" | HIGH STAKES RECRUITER DANGER: Recruiter{hp_str} exposed to enemy next turn"
   if nonzero:
-    return f" | still exposed after this option | Exposure ({estimate}): {facts}"
+    return f"{prefix} | still exposed after this option | Exposure ({estimate}): {facts}"
   return f" | Exposure after this option ({estimate}): {facts}"
 
 
@@ -821,6 +830,26 @@ def render_decision_brief(
           "This packet is final_only: " + " and ".join(closers)
           + " must set finish_turn=true."
         )
+    if packet.final_only or packet.closure_reason:
+      recruiter_threats = []
+      pt = packet.evidence.get("projected_threats")
+      if isinstance(pt, dict) and "recruiters" in pt:
+        for r in pt.get("recruiters", []):
+          if isinstance(r, dict):
+            recruiter_threats.append(r)
+      elif isinstance(state, dict):
+        exp = state.get("tactical_surface", {}).get("exposure", {})
+        if isinstance(exp, dict) and "recruiters" in exp:
+          for r in exp.get("recruiters", []):
+            if isinstance(r, dict):
+              recruiter_threats.append(r)
+      for rt in recruiter_threats:
+        rid = rt.get("recruiter_id", rt.get("unit_id"))
+        att_cnt = rt.get("distinct_attacker_count", len(rt.get("attackers", [])))
+        sections.append(
+          f"RECRUITER EXPOSURE SUMMARY: Recruiter {rid} is exposed to enemy attacks on next turn "
+          f"({att_cnt} projected attackers). This is informational; finish_turn leaves the unit in place."
+        )
     if packet.closure_reason in (CLOSURE_REASON_EXHAUSTED, CLOSURE_REASON_REPEATED_CONTACT_KEY):
       if packet.closure_reason == CLOSURE_REASON_EXHAUSTED:
         cause = (
@@ -883,8 +912,20 @@ def render_decision_brief(
         "Offered tactical options, grouped by actor from the flat issued list. "
         "Selecting several options in one choose response avoids another call per unit."
       ]
+      recruiter_ids = set()
+      recruiter_hps = {}
+      if isinstance(state, dict):
+        for u in state.get("units", []):
+          if isinstance(u, dict) and u.get("can_recruit"):
+            uid = u.get("id")
+            if isinstance(uid, int):
+              recruiter_ids.add(uid)
+              recruiter_hps[uid] = (u.get("hp", 0), u.get("max_hp", u.get("hp", 0)))
       for actor_id, actor_opts in _group_options_by_actor(packet.options):
-        opt_lines.append(f"Actor {actor_id}:")
+        is_rec = actor_id in recruiter_ids
+        rec_hp = recruiter_hps.get(actor_id)
+        actor_label = f"Actor {actor_id}" + (f" (Recruiter, HP {rec_hp[0]}/{rec_hp[1]})" if is_rec and rec_hp else "") + ":"
+        opt_lines.append(actor_label)
         for opt in actor_opts:
           oid = opt.get("option_id")
           cat = opt.get("category")
@@ -922,10 +963,10 @@ def render_decision_brief(
               forecast_parts.append(f"kill chance={kill_chance / 100.0:.1f}%")
             if (isinstance(outcome, list) and len(outcome) == 3
                 and isinstance(outcome[2], int) and not isinstance(outcome[2], bool)):
-              forecast_parts.append(f"attacker loss chance={outcome[2] / 100.0:.1f}%")
+              forecast_parts.append(f"immediate exchange attacker loss chance={outcome[2] / 100.0:.1f}%")
             if forecast_parts:
-              forecast_str = " | Forecast: " + "; ".join(forecast_parts) + " (estimates, not guarantees)"
-          exposure_str = _format_option_exposure(opt)
+              forecast_str = " | Forecast: immediate exchange only (not enemy next-turn survival); " + "; ".join(forecast_parts) + " (estimates, not guarantees)"
+          exposure_str = _format_option_exposure(opt, is_recruiter=is_rec, recruiter_hp=rec_hp)
           movement_cost = opt.get("movement_cost")
           cost_str = (f" | Cost: {movement_cost}"
                       if isinstance(movement_cost, int) and not isinstance(movement_cost, bool)

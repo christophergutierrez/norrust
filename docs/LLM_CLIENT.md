@@ -536,7 +536,7 @@ with strictly validated applicable responses:
 Tactical options for current-state contact offer up to four bounded alternatives for a single
 deterministically chosen primary actor (threatened recruiter first, then lowest-ID threatened friendly unit,
 then lowest-ID unit with an attack opportunity):
-- Up to two legal attack options (ranked by target kill probability, then expected damage, then coordinate tie-breaks).
+- Up to two legal attack options (ranked by target kill probability, then expected damage, then coordinate tie-breaks). For recruiter actors, attack options carry conservative next-opponent exposure computed from the attack origin (retaining the target); options exposing the recruiter to enemy next-turn retaliation are surfaced with prominent high-stakes warnings. Combat forecasts explicitly apply to the immediate exchange only and do not guarantee enemy next-turn survival.
 - Up to two legal relocation options (evaluating at most 16 endpoints, ranked by lower projected incoming damage, movement cost, and coordinates).
 - Coverage is reported as `{"facts": "complete", "options": "complete"}` or `{"facts": "complete", "options": "truncated"}` when relocation endpoints exceeded 16.
 
