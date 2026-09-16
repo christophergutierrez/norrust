@@ -172,10 +172,25 @@ labels and parsing behavior; evaluate the source commit that actually ran.
 
 During contact decisions, the strategy model may either pick an offered tactical
 choice (`choose`) or author custom coordinates orders (`act`). Routine execution
-continues independent movement for units uninvolved in contact. If an invalid
-policy attempt or identical contact incident is repeated at the same revision,
-the player is halted after one corrective follow-up with `budget_interrupted`
-and stop code `strategy_no_progress`.
+continues independent movement for units uninvolved in contact. The issued
+`DecisionPacket` is authoritative for permitted response kinds and final-only
+requirements in the delivered prompt footer; `choose` is advertised only when the
+packet allows it. For exhausted contact where involved units cannot act, automatic
+outside-unit helper menus are not generated (`options_empty_reason:
+exhausted_contact_no_automatic_rescue_menu`, coverage `not_generated`). Custom
+actions (`act`), finish, or resign remain permitted; an empty menu is not proof
+that every rescue is impossible. If an invalid policy attempt or identical contact
+incident is repeated at the same revision, the player is halted after one
+corrective follow-up with `budget_interrupted` and stop code `strategy_no_progress`.
+
+When screening or testing from synthetic strategy fixtures, bootstrap with
+`--strategy-policy` (zero paid calls, zero board actions) to produce an authentic
+model-boundary checkpoint and companion parent audit log. Resuming that checkpoint
+with its parent log restores installed policy and ensures the target decision
+(e.g., proposed destination or exhausted contact) is presented at the first model
+call, rather than falling back to an initial policy request. Run a fake-transport
+preflight to verify the exact packet stage, permissions, and menu expectations
+before paid dispatch.
 
 The reusable 16-cell screening template is
 `tools/fixtures/strategy_decisions/fireworks_screening_manifest.json`. Its

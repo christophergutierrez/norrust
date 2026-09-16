@@ -29,7 +29,11 @@ sidecar, and optional host session. Existing game logs cannot be overwritten:
 use a new run directory for another attempt. `--only-cell ID` supports independent
 cell execution; reports retain unrun cells in their denominators. Checkpoint
 branches require a model side-turn boundary and become new games with fresh
-budgets. The original checkpoint is copied byte-for-byte, its digest is checked,
+budgets. The `checkpoint` manifest field points to an authentic model-boundary
+checkpoint with an existing companion parent audit log (such as one produced by
+`--strategy-policy` bootstrap), preserving restored policy and context. By contrast,
+`checkpoint_fixture` copies only a standalone board checkpoint starting at initial
+policy. The original checkpoint is copied byte-for-byte, its digest is checked,
 and only a prepared copy gets local board paths. Current source, driver, guide,
 transport, checkpoint hashes, and resolved settings are recorded. Mismatched
 comparisons are rejected before execution.
