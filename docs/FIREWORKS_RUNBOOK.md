@@ -96,6 +96,33 @@ when launching. Wait using the client application's background-process facility;
 do not repeatedly read the full archive or stream to fill the wait. The child
 game and automatic deadline do not need an LLM to poll each move.
 
+### Reasoning effort selection
+
+Fireworks GLM-5.3-Flash supports explicit `reasoning_effort` settings: `"low"`,
+`"high"`, or `"max"`. When `reasoning_effort` is omitted or `null`, the model
+documents an effective default of `max`. Configure explicit effort at the manifest
+cell level (`"reasoning_effort": "low"`) or via `llm_client`'s `--reasoning-effort`
+flag. Do not pass `--reasoning-effort` inside `--model-command`; `fireworks_backend`
+enforces this precedence and rejects conflicting arguments before network dispatch.
+Unsupported values (such as `"medium"`) fail preflight before making calls.
+
+The requested effort flows through client request context, match logs, and SQLite
+catalog fields (`game_players.reasoning_requested` and
+`model_calls.requested_reasoning_effort`). The provider's actual reported effort
+is tracked separately in `reasoning_reported`; unless the provider explicitly
+returns the effective setting in usage or headers, reported effort remains
+unknown (`null`), not assumed equal to requested.
+
+An experimental low-effort configuration example:
+
+```json
+    "reasoning_effort": "low",
+```
+
+This experimental setting screens for reduced reasoning token expenditure and
+latency during tactical contact decisions. Do not label it proven until paired
+screening or full-game evaluation confirms tactical quality and token efficiency.
+
 ## Occasional inspection and stopping
 
 The cell directory is `$NORRUST_TRIAL_ROOT/recording/glm-strategy`. Read its compact

@@ -312,7 +312,6 @@ def build_decision_packet(
   decision_id: Optional[str] = None,
 ) -> DecisionPacket:
   """Build a structured DecisionPacket for the given reason and evidence."""
-  did = decision_id or f"dec-{uuid.uuid4().hex[:12]}"
   rev = int(revision)
 
   # Route decision_kind
@@ -360,6 +359,13 @@ def build_decision_packet(
     allowed = list(ALLOWED_ALL)
 
   incident_key = compute_incident_key(game_id, side_turn, reason, evidence)
+
+  if decision_id:
+    did = decision_id
+  else:
+    counter = tracker.ineffective_counts.get((side_turn, rev, incident_key), 0) if tracker is not None else 0
+    did_seed = f"{side_turn}:{rev}:{reason}:{counter}:{json.dumps(evidence, sort_keys=True, default=str)}"
+    did = f"dec-{hashlib.sha256(did_seed.encode('utf-8')).hexdigest()[:12]}"
   contact_key = (
     contact_state_key_from_evidence(evidence)
     if reason == "contact" and evidence.get("stage") == "current_state"

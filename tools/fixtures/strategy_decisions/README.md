@@ -38,6 +38,10 @@ screening manifest.
    - Position: Mid-turn checkpoint with 1 partial batch committed and pending contact decision.
    - Test: Clean resume; no renewed allowance, stale option execution, or duplicate actions.
 
+9. **difficult-contact** (`difficult_contact.json`):
+   - Position: Mid-game full front-line clash (42 units, turn 3, 10 tactical options across units 6, 8, 10).
+   - Test: Complex multi-actor contact decision matching the high-reasoning full-game boundary.
+
 ## Deterministic Fake Transport
 
 `fake_transport.py` executes canned responses for these matrix positions without contacting
