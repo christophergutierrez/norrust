@@ -340,7 +340,7 @@ fn recruited_done(progress: &RoutineProgress, queue_index: usize) -> u32 {
         .map(|p| p.done)
         .sum()
 }
-fn next_recruit<'a>(
+pub(crate) fn next_recruit<'a>(
     policy: &'a RoutinePolicy,
     progress: &RoutineProgress,
 ) -> Option<(usize, &'a RecruitEntry)> {
@@ -1566,6 +1566,43 @@ pub fn routine_next(
                             action: json!({"action":"Move","unit_id":indep.candidate.unit_id,"col":col,"row":row}),
                             progress_update: progress_update(indep.candidate.progress_effects),
                             reason: indep.candidate.reason,
+                            independent_move: Some(independent_move_meta),
+                        };
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        return RoutineOutcome::Exception {
+                            reason: "threat_unavailable",
+                            evidence: json!({"stage":"current_state","detail":e.to_string()}),
+                        };
+                    }
+                }
+                match crate::routine_independent::find_independent_recruit(
+                    state, side, policy, progress, recruit_ids, units, &facts,
+                ) {
+                    Ok(Some(indep)) => {
+                        let (col, row) = indep.placement.to_offset();
+                        let deferred_incident_key = json!({
+                            "reason": "contact",
+                            "stage": "current_state",
+                            "trigger": facts.trigger,
+                            "friendly_unit_ids": facts.friendly_unit_ids,
+                            "enemy_unit_ids": facts.enemy_unit_ids,
+                        });
+                        let independent_move_meta = json!({
+                            "policy_objective": {
+                                "type": "recruit",
+                                "target": {"col": col, "row": row},
+                            },
+                            "coverage": "complete",
+                            "pre_tactical_hash": indep.pre_tactical_hash,
+                            "post_tactical_hash": indep.post_tactical_hash,
+                            "deferred_incident_key": deferred_incident_key,
+                        });
+                        return RoutineOutcome::Action {
+                            action: json!({"action":"Recruit","def_id":indep.def_id,"col":col,"row":row}),
+                            progress_update: progress_update(vec![json!({"kind":"recruited","queue_index":indep.candidate_index})]),
+                            reason: "recruit",
                             independent_move: Some(independent_move_meta),
                         };
                     }

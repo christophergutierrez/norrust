@@ -62,6 +62,33 @@ class DecisionRoutingTests(unittest.TestCase):
     packet = sd.build_decision_packet("initial", evidence, revision=0)
     self.assertEqual(packet.allowed_kinds, ["set_policy", "act", "finish_turn", "resign"])
 
+  def test_recruitment_review_routes_to_policy_and_renders_guidance(self):
+    evidence = {
+      "queue_complete": True,
+      "gold": 211,
+      "reserve_gold": 0,
+      "unreserved_gold": 211,
+      "placement_count": 3,
+      "current_contact": {"present": True},
+    }
+    packet = sd.build_decision_packet("recruitment_review", evidence, revision=5)
+    self.assertEqual(packet.decision_kind, sd.DECISION_KIND_POLICY)
+    self.assertEqual(packet.allowed_kinds, ["set_policy", "act", "finish_turn", "resign"])
+    sd.validate_response_context(SimpleNamespace(kind="set_policy"), packet)
+    sd.validate_response_context(SimpleNamespace(kind="act"), packet)
+    sd.validate_response_context(SimpleNamespace(kind="finish_turn"), packet)
+    sd.validate_response_context(SimpleNamespace(kind="resign"), packet)
+
+    brief = sd.render_decision_brief(packet)
+    self.assertIn("ECONOMIC RECONSIDERATION", brief)
+    self.assertIn("Notice: Remote enemy contact is present", brief)
+
+    # Key canonicalization ignores extra fields
+    ev2 = {**evidence, "message": "ignored", "extra": "stuff"}
+    k1 = sd.compute_incident_key("g1", 3, "recruitment_review", evidence)
+    k2 = sd.compute_incident_key("g1", 3, "recruitment_review", ev2)
+    self.assertEqual(k1, k2)
+
   def test_incident_key_canonicalization_ignores_prose_and_ids(self):
     ev1 = {
       "stage": "current_state",

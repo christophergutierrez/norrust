@@ -5386,6 +5386,8 @@ def run(args: argparse.Namespace) -> int:
     strategy_incident_tracker = IncidentTracker()
     strategy_effective_final_only = False
     strategy_active_packet: Optional[DecisionPacket] = None
+    strategy_economic_reviews_resolved: set[int] = set()
+    strategy_economic_reviews_checked: set[int] = set()
     metadata = {"scenario": args.scenario, "faction0": args.faction0, "faction1": args.faction1,
                 "gold": args.gold, "seed": args.seed, "llm_side": args.llm_side,
                 "first_player": 0 if args.llm_side == 0 else 1,
@@ -5579,6 +5581,9 @@ def run(args: argparse.Namespace) -> int:
                     strategy_progress = None
         if strategy_mode and parent_records:
             strategy_incident_tracker.reconstruct_from_journal(parent_records)
+            for r in parent_records:
+                if r.get("type") == "recruitment_review_resolved" and isinstance(r.get("side_turn"), int):
+                    strategy_economic_reviews_resolved.add(r["side_turn"])
         continuity_entries = replay_committed_continuity(parent_records)
         if resume_log:
             if resume_event_line is not None:
@@ -6593,8 +6598,12 @@ def run(args: argparse.Namespace) -> int:
         """
         nonlocal strategy_installation, strategy_progress
         nonlocal strategy_effective_final_only, strategy_active_packet
+        nonlocal state
         while True:
             revision = int(state.get("state_revision", 0)) if isinstance(state, dict) else 0
+            current_side_turn = int(state.get("turn", 0)) if isinstance(state, dict) else 0
+            contact_scope = metadata.get("current_side_turn_id") or current_side_turn
+            final_only = bool(isinstance(state, dict) and state.get("final_only"))
             if strategy_installation is None:
                 if strategy_fixed:
                     try:
@@ -6612,6 +6621,7 @@ def run(args: argparse.Namespace) -> int:
                             "fixed_policy_invalid", f"--strategy-policy file is invalid: {exc}")
                     strategy_install(policy, source_request_id=str(args.strategy_policy),
                                      source_kind="fixed_file")
+                    strategy_economic_reviews_checked.add(current_side_turn)
                     continue
                 if strategy_model_responses_this_turn >= metadata["max_model_calls_per_turn"]:
                     return emit_budget_interrupted(
@@ -6625,9 +6635,6 @@ def run(args: argparse.Namespace) -> int:
                                  message=str(exc))
                     durable({"type": "query_error", **metadata})
                     return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
-                current_side_turn = int(state.get("turn", 0)) if isinstance(state, dict) else 0
-                contact_scope = metadata.get("current_side_turn_id") or current_side_turn
-                final_only = bool(isinstance(state, dict) and state.get("final_only"))
                 initial_packet = build_decision_packet(
                     "initial", {}, revision,
                     game_id=metadata.get("game_id") or metadata.get("conversation_id") or "",
@@ -6668,6 +6675,7 @@ def run(args: argparse.Namespace) -> int:
                 if isinstance(parsed, SetPolicyResponse):
                     strategy_install(parsed.policy, source_request_id=reply.request_id,
                                      source_kind="model")
+                    strategy_economic_reviews_checked.add(current_side_turn)
                     continue
                 if isinstance(parsed, FinishTurnResponse):
                     strategy_submit_act([], revision, reply, finish_turn=True)
@@ -6698,6 +6706,177 @@ def run(args: argparse.Namespace) -> int:
                             message="initial strategy response must be set_policy, finish_turn, or resign")
                 durable({"type": "terminal", **metadata})
                 return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
+
+            if (strategy_installation is not None
+                and not strategy_fixed
+                and current_side_turn not in strategy_economic_reviews_resolved
+                and current_side_turn not in strategy_economic_reviews_checked):
+                total_requested = sum(entry.get("count", 0) for entry in strategy_installation.policy.get("recruits", []))
+                queue_remaining = (
+                    sum(entry["remaining"] for entry in strategy_progress.remaining(strategy_installation.policy))
+                    if strategy_progress is not None else 0
+                )
+                if total_requested == 0 or queue_remaining > 0:
+                    strategy_economic_reviews_checked.add(current_side_turn)
+                else:
+                    try:
+                        options_reply = exchange({"action": "Query", "what": "recruit_options", "state_revision": revision})
+                        _require_query_revision(options_reply, revision, "recruit_options")
+                        surface = query_tactical_surface(exchange, revision, require_revision=True)
+                    except RuntimeError:
+                        options_reply = None
+                        surface = None
+
+                    if options_reply is None or surface is None or not options_reply.get("ok"):
+                        strategy_economic_reviews_checked.add(current_side_turn)
+                    else:
+                        state = dict(state)
+                        state["tactical_surface"] = surface
+                        options_body = options_reply.get("body", {})
+                        state["strategy_recruit_options"] = copy.deepcopy(options_body)
+
+                        tactical_units = surface.get("units", [])
+                        exposure = surface.get("exposure", {}).get("units", [])
+                        has_contact = any(
+                            isinstance(u, dict) and u.get("actions") for u in tactical_units
+                        ) or any(
+                            isinstance(u, dict) and (u.get("distinct_attacker_count", 0) > 0 or u.get("open_distinct_attacker_count", 0) > 0)
+                            for u in exposure
+                        )
+
+                        recruiter_ids = {
+                            u["id"] for u in state.get("units", [])
+                            if isinstance(u, dict) and u.get("faction") == args.llm_side and u.get("can_recruit")
+                        }
+                        recruiter_threatened = any(
+                            isinstance(u, dict) and u.get("unit_id") in recruiter_ids
+                            and (u.get("distinct_attacker_count", 0) > 0 or u.get("open_distinct_attacker_count", 0) > 0)
+                            for u in exposure
+                        )
+
+                        placement_hexes = options_body.get("placement_hexes", [])
+                        side_can_place = bool(options_body.get("side_can_place"))
+                        reserve = strategy_installation.policy.get("reserve_gold", 0)
+                        current_gold = state.get("gold", [0, 0])[args.llm_side]
+                        avail_gold = current_gold - reserve
+                        options = options_body.get("options", [])
+                        affordable = any(
+                            isinstance(opt, dict) and opt.get("cost", 0) <= avail_gold
+                            for opt in options
+                        )
+
+                        if (has_contact and not recruiter_threatened and side_can_place
+                            and placement_hexes and affordable):
+                            if strategy_model_responses_this_turn >= metadata["max_model_calls_per_turn"]:
+                                return emit_budget_interrupted(
+                                    "model_calls_budget_exhausted",
+                                    "model decision call budget exhausted for this side turn")
+                            try:
+                                context = strategy_validation_context(exchange)
+                            except RuntimeError as exc:
+                                set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
+                                             reason="infrastructure_failure", code="strategy_facts_unavailable",
+                                             message=str(exc))
+                                durable({"type": "query_error", **metadata})
+                                return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
+
+                            evidence = {
+                                "queue_complete": True,
+                                "gold": current_gold,
+                                "reserve_gold": reserve,
+                                "unreserved_gold": max(0, avail_gold),
+                                "placement_count": len(placement_hexes),
+                                "current_contact": {"present": True},
+                            }
+                            packet = build_decision_packet(
+                                "recruitment_review",
+                                evidence,
+                                revision,
+                                game_id=metadata.get("game_id") or metadata.get("conversation_id") or "",
+                                side_turn=current_side_turn,
+                                contact_scope=contact_scope,
+                                final_only=final_only,
+                                tracker=strategy_incident_tracker,
+                            )
+                            strategy_active_packet = packet
+                            strategy_effective_final_only = packet.final_only
+                            strategy_incident_tracker.observe_incident(
+                                current_side_turn, revision, packet.incident_key)
+                            durable({"type": "decision_packet", "packet": packet.to_dict(),
+                                     "side_turn": current_side_turn, "state_revision": revision,
+                                     "game_id": metadata.get("game_id") or metadata.get("conversation_id"),
+                                     "contact_scope": contact_scope})
+
+                            brief = render_decision_brief(
+                                packet,
+                                state=state,
+                                recruit_options=state.get("strategy_recruit_options"),
+                                changes=continuity_entries[-2:] if continuity_entries else None,
+                                policy=strategy_installation.policy,
+                                remaining=0,
+                                progress=strategy_progress,
+                                recruitable_defs=context.recruitable_defs,
+                            )
+                            try:
+                                parsed, reply = strategy_call_model(
+                                    brief, policy_context=context, decision_packet=packet)
+                            except ModelCallBudgetExhausted as exc:
+                                return emit_budget_interrupted("model_calls_budget_exhausted", str(exc))
+                            except ContextualResponseError as exc:
+                                return emit_budget_interrupted("strategy_no_progress", str(exc))
+                            except RuntimeError as exc:
+                                return strategy_model_runtime_failure(exc)
+                            except (ModelResponseError, PolicyValidationError) as exc:
+                                set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
+                                             reason=TERMINAL_MODEL_INVALID, code="strategy_response_invalid",
+                                             message=str(exc))
+                                durable({"type": "terminal", **metadata})
+                                return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
+
+                            durable({
+                                "type": "recruitment_review_resolved",
+                                "side_turn": current_side_turn,
+                                "state_revision": revision,
+                                "decision_id": packet.decision_id,
+                            })
+                            strategy_economic_reviews_resolved.add(current_side_turn)
+
+                            if isinstance(parsed, SetPolicyResponse):
+                                strategy_install(parsed.policy, source_request_id=reply.request_id,
+                                                 source_kind="model")
+                                continue
+                            if isinstance(parsed, FinishTurnResponse):
+                                strategy_submit_act([], revision, reply, finish_turn=True)
+                                return None
+                            if isinstance(parsed, ResignResponse):
+                                strategy_submit_act([{"action": "Resign"}], revision, reply, finish_turn=False)
+                                return None
+                            if isinstance(parsed, ActResponse):
+                                if strategy_effective_final_only and not parsed.finish_turn:
+                                    set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
+                                                 reason=TERMINAL_MODEL_INVALID, code="strategy_response_invalid",
+                                                 message="final_only strategy act must set finish_turn=true")
+                                    durable({"type": "terminal", **metadata})
+                                    return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
+                                try:
+                                    orders = validate_orders(json.dumps({"actions": parsed.actions}),
+                                                             args.no_recruit_macro, require_end_turn=False)
+                                except ValueError as exc:
+                                    set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
+                                                 reason=TERMINAL_MODEL_INVALID, code="strategy_act_invalid",
+                                                 message=str(exc))
+                                    durable({"type": "terminal", **metadata})
+                                    return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
+                                strategy_submit_act(orders, revision, reply, finish_turn=parsed.finish_turn)
+                                return None
+                            set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
+                                         reason=TERMINAL_MODEL_INVALID, code="strategy_response_invalid",
+                                         message="recruitment_review strategy response must be set_policy, act, finish_turn, or resign")
+                            durable({"type": "terminal", **metadata})
+                            return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
+                        else:
+                            if not recruiter_threatened:
+                                strategy_economic_reviews_checked.add(current_side_turn)
 
             query = build_routine_query(revision, strategy_installation.policy, strategy_progress)
             try:

@@ -6,9 +6,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::game_state::{apply_action, Action, GameState};
+use crate::game_state::{apply_action, apply_recruit, Action, GameState};
 use crate::hex::Hex;
 use crate::pathfinding::{find_path, get_zoc_hexes};
+use crate::unit::Unit;
 use crate::routine::{
     current_contact, is_recruiter, rally_goals, route_endpoints, CurrentContactFacts,
     RoutinePolicy, RoutineProgress,
@@ -30,6 +31,15 @@ pub struct CandidateIndependentMove {
 #[derive(Debug, Clone)]
 pub struct IndependentMoveExecution {
     pub candidate: CandidateIndependentMove,
+    pub pre_tactical_hash: String,
+    pub post_tactical_hash: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct IndependentRecruitExecution {
+    pub candidate_index: usize,
+    pub def_id: String,
+    pub placement: Hex,
     pub pre_tactical_hash: String,
     pub post_tactical_hash: String,
 }
@@ -580,6 +590,219 @@ pub fn find_independent_move(
                 post_tactical_hash: post_hash,
             }));
         }
+    }
+
+    Ok(None)
+}
+
+pub fn find_independent_recruit(
+    state: &GameState,
+    side: u8,
+    policy: &RoutinePolicy,
+    progress: &RoutineProgress,
+    recruit_ids: &[String],
+    units: &crate::loader::Registry<crate::schema::UnitDef>,
+    contact_facts: &CurrentContactFacts,
+) -> Result<Option<IndependentRecruitExecution>, TacticsError> {
+    let pre_sig = compute_tactical_signature(state, side)?;
+
+    // 1. Recruiter must be on keep, have 0 threats, and not be in contact facts
+    let Some((&recruiter_id, _)) = state
+        .units
+        .iter()
+        .find(|(_, u)| u.faction == side && is_recruiter(u))
+    else {
+        return Ok(None);
+    };
+    let Some(&keep_hex) = state.positions.get(&recruiter_id) else {
+        return Ok(None);
+    };
+    if state
+        .board
+        .tile_at(keep_hex)
+        .map(|t| t.terrain_id.as_str())
+        != Some("keep")
+    {
+        return Ok(None);
+    }
+    if let Some(summary) = pre_sig.unit_threats.iter().find(|s| s.unit_id == recruiter_id) {
+        if summary.distinct_attacker_count > 0 || summary.open_distinct_attacker_count > 0 {
+            return Ok(None);
+        }
+    }
+    if contact_facts.friendly_unit_ids.contains(&recruiter_id)
+        || contact_facts.actor_ids.contains(&recruiter_id)
+    {
+        return Ok(None);
+    }
+
+    // 2. Next recruit from policy queue
+    let Some((candidate_index, entry)) = crate::routine::next_recruit(policy, progress) else {
+        return Ok(None);
+    };
+    let Some(def) = units.get(&entry.def_id) else {
+        return Ok(None);
+    };
+    if !recruit_ids.iter().any(|id| id == &entry.def_id) {
+        return Ok(None);
+    }
+    let gold = state.gold[side as usize];
+    if gold < policy.reserve_gold + def.cost {
+        return Ok(None);
+    }
+
+    // 3. Placement hexes
+    let mut placement_hexes: Vec<Hex> = keep_hex
+        .neighbors()
+        .into_iter()
+        .filter(|dest| {
+            state
+                .board
+                .tile_at(*dest)
+                .is_some_and(|tile| tile.terrain_id == "castle")
+                && !state.hex_to_unit.contains_key(dest)
+        })
+        .collect();
+    placement_hexes.sort_unstable_by_key(|hex| {
+        let (col, row) = hex.to_offset();
+        (row, col)
+    });
+    placement_hexes.dedup();
+
+    for placement in placement_hexes {
+        // Placement cannot be adjacent to any contact enemy
+        let adjacent_to_contact_enemy = contact_facts.enemy_unit_ids.iter().any(|&eid| {
+            state
+                .positions
+                .get(&eid)
+                .is_some_and(|epos| placement.distance(*epos) <= 1)
+        });
+        if adjacent_to_contact_enemy {
+            continue;
+        }
+
+        let mut clone = state.clone();
+        let new_id = clone.next_unit_id;
+        let new_unit = Unit::from_def(new_id, def, side);
+        if apply_recruit(&mut clone, new_unit, placement, def.cost).is_err() {
+            continue;
+        }
+
+        // Find newly recruited unit
+        let Some(&new_id) = clone.hex_to_unit.get(&placement) else {
+            continue;
+        };
+
+        // Newly recruited unit has no attacks and no threats after end-turn
+        if let Ok(tactics_after) = unit_tactics(&clone, new_id) {
+            if tactics_after
+                .origins
+                .iter()
+                .any(|o| !o.engagements.is_empty())
+            {
+                continue;
+            }
+        } else {
+            continue;
+        }
+
+        let post_sig = compute_tactical_signature(&clone, side)?;
+
+        if let Some(summary_after) = post_sig.unit_threats.iter().find(|s| s.unit_id == new_id) {
+            if summary_after.distinct_attacker_count > 0
+                || summary_after.open_distinct_attacker_count > 0
+            {
+                continue;
+            }
+        }
+
+        // All other friendly units: attack surfaces and threat summaries unchanged
+        let mut unchanged = true;
+        for &(id, ref before_attacks) in &pre_sig.attacks {
+            let after_attacks = post_sig
+                .attacks
+                .iter()
+                .find(|(i, _)| *i == id)
+                .map(|(_, a)| a);
+            if Some(before_attacks) != after_attacks {
+                unchanged = false;
+                break;
+            }
+        }
+        if !unchanged {
+            continue;
+        }
+
+        for before_threat in &pre_sig.unit_threats {
+            let after_threat = post_sig
+                .unit_threats
+                .iter()
+                .find(|s| s.unit_id == before_threat.unit_id);
+            if Some(before_threat) != after_threat {
+                unchanged = false;
+                break;
+            }
+        }
+        if !unchanged {
+            continue;
+        }
+
+        if pre_sig.recruiter_threats != post_sig.recruiter_threats {
+            continue;
+        }
+
+        // Contact participants must not increase
+        if let Some(new_facts) = current_contact(&clone, side)? {
+            for f_id in &new_facts.friendly_unit_ids {
+                if !contact_facts.friendly_unit_ids.contains(f_id) {
+                    unchanged = false;
+                    break;
+                }
+            }
+            for e_id in &new_facts.enemy_unit_ids {
+                if !contact_facts.enemy_unit_ids.contains(e_id) {
+                    unchanged = false;
+                    break;
+                }
+            }
+        }
+        if !unchanged {
+            continue;
+        }
+
+        // Board invariants
+        for (&id, original_unit) in &state.units {
+            if original_unit.faction == side {
+                if let Some(cloned_unit) = clone.units.get(&id) {
+                    if cloned_unit.hp != original_unit.hp {
+                        unchanged = false;
+                        break;
+                    }
+                } else {
+                    unchanged = false;
+                    break;
+                }
+            }
+        }
+        if !unchanged {
+            continue;
+        }
+        if clone.gold[side as usize] != state.gold[side as usize] - def.cost {
+            continue;
+        }
+        if clone.village_owners != state.village_owners {
+            continue;
+        }
+
+        let pre_hash = hash_signature(&pre_sig);
+        let post_hash = hash_signature(&post_sig);
+        return Ok(Some(IndependentRecruitExecution {
+            candidate_index,
+            def_id: entry.def_id.clone(),
+            placement,
+            pre_tactical_hash: pre_hash,
+            post_tactical_hash: post_hash,
+        }));
     }
 
     Ok(None)

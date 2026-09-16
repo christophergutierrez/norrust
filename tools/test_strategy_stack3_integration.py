@@ -68,7 +68,9 @@ def act(actions: list[dict], *, finish: bool = False) -> dict:
 def prepare(root: Path, fixture: str, responses: list[dict], *,
             extra_units: list[dict] | None = None,
             accepted: int | None = None,
-            maximum: int | None = None) -> tuple[Path, Path, Path, Path]:
+            maximum: int | None = None,
+            turn: int | None = None,
+            gold: list[int] | None = None) -> tuple[Path, Path, Path, Path]:
     data = json.loads((STACK3 / fixture).read_text())
     board = ROOT / "scenarios/big_battle_6/board.toml"
     if not board.is_file():
@@ -77,6 +79,13 @@ def prepare(root: Path, fixture: str, responses: list[dict], *,
         raise AssertionError("maintained big_battle_6 board is absent or hash changed")
     data["board_path"] = str(board)
     data["save_state"]["board_path"] = str(board)
+
+    if turn is not None:
+        data["save_state"]["turn"] = turn
+        data["turn"] = turn
+    if gold is not None:
+        data["save_state"]["gold"] = list(gold)
+        data["starting_gold"] = gold[0]
 
     if extra_units:
         for u in extra_units:
@@ -118,7 +127,8 @@ def prepare(root: Path, fixture: str, responses: list[dict], *,
 
 def launch(root: Path, log: Path, checkpoint: Path, backend: Path, *, turns: int = 1,
            max_calls: int = 8, maximum: int | None = None,
-           driver_path: Path | None = None) -> subprocess.CompletedProcess[str]:
+           driver_path: Path | None = None,
+           resume_log: bool = False) -> subprocess.CompletedProcess[str]:
     envelope = json.loads(checkpoint.read_text())
     args = [sys.executable, "-m", "tools.llm_client", "--driver", str(driver_path or DRIVER),
             "--scenario", str(envelope["scenario"]), "--faction0", str(envelope["faction0"]),
@@ -131,7 +141,10 @@ def launch(root: Path, log: Path, checkpoint: Path, backend: Path, *, turns: int
             "--max-model-calls-per-turn", str(max_calls)]
     if maximum is not None:
         args += ["--max-partial-batches-per-turn", str(maximum)]
-    args += ["--resume-checkpoint", str(checkpoint)]
+    if resume_log:
+        args += ["--resume-log", str(log)]
+    else:
+        args += ["--resume-checkpoint", str(checkpoint)]
     return subprocess.run(args, cwd=ROOT, text=True, capture_output=True, timeout=70)
 
 
@@ -227,6 +240,82 @@ class TestStrategyStack3Integration(unittest.TestCase):
             self.assertEqual(f_rows[0]["source"], "llm")
             self.assertEqual(f_rows[0]["proposal_source"], "engine_option")
             self.assertEqual(f_rows[0]["orders"][0]["unit_id"], 1)
+
+    def test_recruitment_review_delivers_packet_and_executes_replenishment(self):
+        """Completed queue with idle gold triggers economic review and executes replenishment during contact."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            turn1_policy = {
+                "reserve_gold": 0,
+                "recruits": [{"def_id": "Skeleton", "count": 1, "role": "army"}],
+                "villages": [], "rally": None, "holds": [], "scouts": [],
+            }
+            replacement_policy = {
+                "reserve_gold": 0,
+                "recruits": [{"def_id": "Skeleton", "count": 1, "role": "army"}],
+                "villages": [], "rally": None, "holds": [], "scouts": [],
+            }
+            responses = [
+                policy("set_policy", turn1_policy),       # Turn 1: initial policy
+                choose("u3-attack-1", finish=True),        # Turn 1: contact
+                policy("set_policy", replacement_policy), # Turn 2: recruitment review
+                choose("u3-attack-1", finish=True),        # Turn 2: contact
+            ]
+            checkpoint, _, backend, prompt_log = prepare(root, "contact.json", responses)
+            log = root / "stack3-review.ndjson"
+            result = launch(root, log, checkpoint, backend, turns=4)
+            rows = records(log)
+            summary = [f"{r.get('type')}: {r.get('packet', {}).get('reason') or r.get('reason') or r.get('line', {}).get('type')} (raw={r.get('raw_output')})" for r in rows if r.get('type') in ('decision_packet', 'model', 'contextual_rejection', 'routine_exception')]
+            self.assertEqual(result.returncode, 0, f"Launch failed (code {result.returncode}):\n{result.stderr}\nSummary:\n" + "\n".join(summary))
+
+            rows = records(log)
+
+            # 1. Exactly one recruitment_review packet was issued on turn 2
+            review_packets = [r for r in rows if r.get("type") == "decision_packet"
+                              and r.get("packet", {}).get("reason") == "recruitment_review"]
+            self.assertEqual(len(review_packets), 1, "Exactly one recruitment_review packet must be delivered")
+            self.assertEqual(review_packets[0]["side_turn"], 2)
+
+            # 2. recruitment_review_resolved was logged
+            resolved_rows = [r for r in rows if r.get("type") == "recruitment_review_resolved"]
+            self.assertEqual(len(resolved_rows), 1)
+            self.assertEqual(resolved_rows[0]["side_turn"], 2)
+
+            # 3. Independent recruit executed during contact for the newly authorized unit on turn 2
+            indep_recruits = [r for r in rows if r.get("type") == "independent_routine_move"
+                              and r.get("action", {}).get("action") == "Recruit"]
+            self.assertEqual(len(indep_recruits), 2, "Must recruit once on turn 1 and once on turn 2")
+
+            # 4. Prompt content verification: backend prompt for review contains guidance and contact notice
+            calls = [json.loads(line) for line in prompt_log.read_text().splitlines() if line.strip()]
+            self.assertGreaterEqual(len(calls), 3)
+            review_prompt = calls[2]["prompt"]
+            self.assertIn("ECONOMIC RECONSIDERATION", review_prompt)
+            self.assertIn("Notice: Remote enemy contact is present", review_prompt)
+
+    def test_intentional_saving_suppresses_economic_review(self):
+        """When gold above reserve is insufficient, recruitment review is not triggered."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            saving_policy = {
+                "reserve_gold": 300,
+                "recruits": [{"def_id": "Skeleton", "count": 1, "role": "army"}],
+                "villages": [], "rally": None, "holds": [], "scouts": [],
+            }
+            responses = [
+                policy("set_policy", saving_policy), # Turn 1: initial policy (reserves 300g)
+                choose("u3-attack-1", finish=True),  # Turn 1: contact
+                choose("u3-attack-1", finish=True),  # Turn 2: contact directly, no review!
+            ]
+            checkpoint, _, backend, prompt_log = prepare(root, "contact.json", responses)
+            log = root / "stack3-saving.ndjson"
+            result = launch(root, log, checkpoint, backend, turns=4)
+            self.assertEqual(result.returncode, 0, f"Launch failed:\n{result.stderr}\n{result.stdout}")
+
+            rows = records(log)
+            review_packets = [r for r in rows if r.get("type") == "decision_packet"
+                              and r.get("packet", {}).get("reason") == "recruitment_review"]
+            self.assertEqual(len(review_packets), 0, "No recruitment review when gold is saved")
 
     def test_query_determinism_and_resource_bounds_20_iterations(self):
         """20 repeated routine_next queries on contact state: determinism, <10s deadline."""

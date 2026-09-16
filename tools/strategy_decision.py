@@ -198,6 +198,8 @@ def compute_incident_key(
   elif reason in ("initial", "objectives_complete"):
     if "policy_complete" in evidence:
       canonical["policy_complete"] = bool(evidence["policy_complete"])
+  elif reason == "recruitment_review":
+    pass
   else:
     # Generic primitives
     for k in sorted(evidence):
@@ -329,7 +331,7 @@ def build_decision_packet(
   elif reason == "threat_unavailable":
     decision_kind = DECISION_KIND_FACTS_UNAVAILABLE
   elif reason in ("route_unavailable", "unsafe_route", "invalid_assignment",
-                  "recruitment_blocked", "no_executable_orders"):
+                  "recruitment_blocked", "recruitment_review", "no_executable_orders"):
     decision_kind = DECISION_KIND_POLICY
   else:
     decision_kind = DECISION_KIND_POLICY
@@ -970,6 +972,18 @@ def render_decision_brief(
       }
       sections.append(
         "To choose, respond with: " + json.dumps(example, separators=(",", ":"))
+      )
+  elif packet.reason == "recruitment_review":
+    sections.append(
+      "ECONOMIC RECONSIDERATION: Completed recruitment queue with unreserved gold. "
+      "Request a new finite queue with `set_policy` if more units are wanted, "
+      "use reserve_gold explicitly for intentional saving, or proceed with manual actions. "
+      f"Applicable responses: {', '.join(packet.allowed_kinds)}."
+    )
+    if packet.evidence.get("current_contact", {}).get("present"):
+      sections.append(
+        "Notice: Remote enemy contact is present. Updating policy does not move units or clear "
+        "tactical contact."
       )
   elif packet.reason == "recruitment_blocked":
     relief = _capacity_relief_line(packet.evidence)
