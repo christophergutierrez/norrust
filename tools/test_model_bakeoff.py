@@ -138,6 +138,15 @@ class ComparisonValidityTests(unittest.TestCase):
         result = bakeoff.check_comparison_validity(resolved)
         self.assertFalse(result["valid"])
 
+    def test_observation_experiment_with_different_seeds_is_valid(self):
+        manifest = _small_manifest(cells=[_base_cell("a", seed=4477), _base_cell("b", seed=7731)])
+        manifest["experiment_kind"] = "observation"
+        resolved = bakeoff.resolve_manifest(manifest)
+        result = bakeoff.check_comparison_validity(resolved)
+        self.assertEqual(result["experiment_kind"], "observation")
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["mismatches"], [])
+
 
 class EvidenceHelperTests(unittest.TestCase):
     """Fixtures built from synthetic (not live) NDJSON records."""

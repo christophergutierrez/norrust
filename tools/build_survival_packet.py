@@ -156,7 +156,27 @@ def build_review_packet(run_dir: Path, manifest: dict[str, Any], scores: dict[st
       "metric_vector": cell_score.get("metric_vector"),
     }
 
-  # Apply interpretation rules
+  if manifest.get("experiment_kind") == "observation":
+    cell_summaries = {}
+    for cell in manifest.get("cells", []):
+      cid = cell["id"]
+      cell_score = scores.get(cid, {})
+      cell_summaries[cid] = {
+        "cell_id": cid,
+        "seed": cell.get("seed"),
+        "reasoning_effort": cell.get("reasoning_effort"),
+        "passed": cell_score.get("passed", False),
+        "status": cell_score.get("status", "unknown"),
+        "metric_vector": cell_score.get("metric_vector"),
+      }
+    return {
+      "experiment_kind": "observation",
+      "cells": cell_summaries,
+      "objective": manifest.get("objective"),
+      "decision": "baseline_observations_complete",
+      "recommendation": "Preserve historical evidence and baseline observations; no candidate justified by Stack 2 screen",
+    }
+
   # High passes at least two defensive fixtures low fails, loses none that low passes, and passes quiet control
   low_passes = {p: positions[p].get("low", {}).get("passed", False) for p in positions}
   high_passes = {p: positions[p].get("high", {}).get("passed", False) for p in positions}

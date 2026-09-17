@@ -891,6 +891,8 @@ def check_comparison_validity(resolved_manifest: dict[str, Any]) -> dict[str, An
     for cell in cells:
         if kind in ("bakeoff", "recruiter_survival"):
             group = str(cell.get("position_id") or cell.get("match_group"))
+        elif kind == "observation":
+            group = str(cell.get("seed") or cell["id"])
         else:
             group = "all"
         groups.setdefault(group, []).append(cell)

@@ -398,6 +398,10 @@ def score_cell(position_id: str, records: list[dict[str, Any]]) -> dict[str, Any
     return score_late_emergency(records)
   elif position_id in ("quiet_control", "fixture_4_quiet_control", "rev_86_quiet_control"):
     return score_quiet_control(records)
+  elif not position_id:
+    vec = extract_survival_metric_vector(records)
+    vec["passed"] = bool(vec.get("recruiter_alive") and vec.get("terminal_result") != "unscored")
+    return vec
   else:
     raise ValueError(f"Unknown acceptance position: {position_id}")
 
