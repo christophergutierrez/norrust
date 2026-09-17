@@ -1,0 +1,54 @@
+{
+  "boundary": "model",
+  "description": "Early defensive decision on seed 4477 where U1 can retreat safely to (2,4) while U3 destroys enemy U28.",
+  "faction0": "undead",
+  "faction1": "undead",
+  "gold": 300,
+  "llm_side": 0,
+  "name": "fixture_1_seed_4477_defensive",
+  "policy": {
+    "holds": [],
+    "rally": {
+      "col": 3,
+      "row": 6
+    },
+    "recruits": [
+      {
+        "count": 6,
+        "def_id": "Skeleton",
+        "role": "army"
+      },
+      {
+        "count": 4,
+        "def_id": "Skeleton Archer",
+        "role": "army"
+      },
+      {
+        "count": 2,
+        "def_id": "Ghoul",
+        "role": "army"
+      }
+    ],
+    "reserve_gold": 0,
+    "scouts": [
+      11,
+      12
+    ],
+    "villages": [
+      {
+        "col": 2,
+        "row": 4
+      },
+      {
+        "col": 5,
+        "row": 3
+      }
+    ]
+  },
+  "progress": {},
+  "scenario": "big_battle_6",
+  "seed": 4477,
+  "side_turn": 7,
+  "source_checkpoint": "12-231-model-706a767dd94a86f9f8d9d3fb1cbd46021a068fc925f1bc6b7e491db0d1cc54ec.json",
+  "state_revision": 231
+}

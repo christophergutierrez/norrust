@@ -1,0 +1,31 @@
+{
+  "boundary": "model",
+  "description": "Late recruiter emergency on seed 4477 where U1 is threatened at keep with 8 attackers and stale policy assignment.",
+  "faction0": "undead",
+  "faction1": "undead",
+  "gold": 300,
+  "llm_side": 0,
+  "name": "fixture_3_late_emergency",
+  "policy": {
+    "holds": [
+      6,
+      38,
+      39,
+      40
+    ],
+    "rally": {
+      "col": 1,
+      "row": 7
+    },
+    "recruits": [],
+    "reserve_gold": 58,
+    "scouts": [],
+    "villages": []
+  },
+  "progress": {},
+  "scenario": "big_battle_6",
+  "seed": 4477,
+  "side_turn": 15,
+  "source_checkpoint": "28-479-model-0cccd5a53a02b5d1c151cf3b9b57bec2aeaf70af8b22252563be73d31a5c5796.json",
+  "state_revision": 479
+}

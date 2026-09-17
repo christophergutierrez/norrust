@@ -1,0 +1,55 @@
+{
+  "boundary": "partial",
+  "description": "Quiet control fixture where scouts engage remote front without needless recruiter panic/retreat.",
+  "faction0": "undead",
+  "faction1": "undead",
+  "gold": 300,
+  "llm_side": 0,
+  "name": "fixture_4_quiet_control",
+  "policy": {
+    "holds": [],
+    "rally": {
+      "col": 3,
+      "row": 6
+    },
+    "recruits": [
+      {
+        "count": 6,
+        "def_id": "Skeleton",
+        "role": "army"
+      },
+      {
+        "count": 4,
+        "def_id": "Skeleton Archer",
+        "role": "army"
+      },
+      {
+        "count": 2,
+        "def_id": "Ghoul",
+        "role": "army"
+      }
+    ],
+    "reserve_gold": 0,
+    "scouts": [
+      9,
+      10,
+      12
+    ],
+    "villages": [
+      {
+        "col": 2,
+        "row": 4
+      },
+      {
+        "col": 5,
+        "row": 3
+      }
+    ]
+  },
+  "progress": {},
+  "scenario": "big_battle_6",
+  "seed": 4477,
+  "side_turn": 3,
+  "source_checkpoint": "4-86-partial-63357b5cba441a90f28ca825230bfa021d13703d2633b71d0db27ec67778b87f.json",
+  "state_revision": 86
+}

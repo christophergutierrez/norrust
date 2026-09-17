@@ -1,0 +1,51 @@
+{
+  "boundary": "model",
+  "description": "Early defensive decision on seed 7731 where U1 can relocate to (0,2) preserving all 7 friendly units.",
+  "faction0": "undead",
+  "faction1": "undead",
+  "gold": 300,
+  "llm_side": 0,
+  "name": "fixture_2_seed_7731_defensive",
+  "policy": {
+    "holds": [
+      11,
+      38
+    ],
+    "rally": {
+      "col": 2,
+      "row": 3
+    },
+    "recruits": [
+      {
+        "count": 4,
+        "def_id": "Skeleton",
+        "role": "army"
+      },
+      {
+        "count": 4,
+        "def_id": "Skeleton Archer",
+        "role": "army"
+      }
+    ],
+    "reserve_gold": 0,
+    "scouts": [
+      8
+    ],
+    "villages": [
+      {
+        "col": 0,
+        "row": 2
+      },
+      {
+        "col": 2,
+        "row": 4
+      }
+    ]
+  },
+  "progress": {},
+  "scenario": "big_battle_6",
+  "seed": 7731,
+  "side_turn": 12,
+  "source_checkpoint": "22-456-model-d81c2a2c0ca34437fe5f46e615440ef08bc8022587e8498939df80b0de36c7de.json",
+  "state_revision": 456
+}
