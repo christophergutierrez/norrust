@@ -381,7 +381,7 @@ class TacticalOptionsTests(unittest.TestCase):
         "category": "relocation",
         "actor_id": 7,
         "actions": [{"action": "Move", "unit_id": 7, "col": 9, "row": 1}],
-        "movement_cost": 1,
+        "movement_cost": None,
         "exposure": {
           "distinct_attacker_count": 0,
           "max_incoming_damage": 0,
@@ -1045,6 +1045,567 @@ class ValidatedSelectionsTests(unittest.TestCase):
     self.assertIn("not a safety claim", rendered)
     self.assertIn("not guaranteed valid after any intervening action", rendered)
     self.assertIn("finish_turn=false", rendered)
+class MovementRepairOptionsTests(unittest.TestCase):
+  """Tests for Stack 2 movement repair functions."""
+
+  def test_dead_or_foreign_unit_returns_empty_options_and_reason(self):
+    """Dead or foreign unit (inspect_body not dict) returns unavailable."""
+    result = sd.movement_repair_options(
+      None, unit_id=42, requested_col=5, requested_row=6,
+      occupied_hexes=set(), revision=100)
+    self.assertEqual(result["options"], [])
+    self.assertEqual(result["unavailable_reason"], "dead_or_foreign")
+    self.assertEqual(result["coverage"]["endpoints_considered"], 0)
+
+  def test_no_current_position_in_destinations(self):
+    """Missing current hex means unit is dead."""
+    inspect_body = {
+      "destination_threats": [
+        {"col": 1, "row": 1, "current": False,
+         "distinct_attacker_count": 0, "max_incoming_sum": 0,
+         "focus_expected_damage_tenths": []}
+      ]
+    }
+    result = sd.movement_repair_options(
+      inspect_body, unit_id=5, requested_col=1, requested_row=1,
+      occupied_hexes=set(), revision=100)
+    self.assertEqual(result["options"], [])
+    self.assertEqual(result["unavailable_reason"], "dead_or_foreign")
+
+  def test_empty_destination_threats_yields_no_legal_endpoints(self):
+    """Empty destination list is treated as no legal endpoints."""
+    inspect_body = {"destination_threats": []}
+    result = sd.movement_repair_options(
+      inspect_body, unit_id=10, requested_col=5, requested_row=5,
+      occupied_hexes=set(), revision=100)
+    self.assertEqual(result["options"], [])
+    self.assertEqual(result["unavailable_reason"], "no_legal_endpoints")
+
+  def test_only_current_position_available_yields_no_legal_endpoints(self):
+    """If only the current hex is available, no alternatives exist."""
+    inspect_body = {
+      "destination_threats": [
+        {"col": 4, "row": 5, "current": True,
+         "distinct_attacker_count": 1, "max_incoming_sum": 10,
+         "focus_expected_damage_tenths": [5]}
+      ]
+    }
+    result = sd.movement_repair_options(
+      inspect_body, unit_id=10, requested_col=5, requested_row=5,
+      occupied_hexes=set(), revision=100)
+    self.assertEqual(result["options"], [])
+    self.assertEqual(result["unavailable_reason"], "no_legal_endpoints")
+
+  def test_excludes_occupied_hex(self):
+    """Occupied friendly unit hex is excluded from options."""
+    inspect_body = {
+      "destination_threats": [
+        {"col": 4, "row": 5, "current": True,
+         "distinct_attacker_count": 1, "max_incoming_sum": 10,
+         "focus_expected_damage_tenths": [5]},
+        {"col": 3, "row": 9, "current": False,
+         "distinct_attacker_count": 0, "max_incoming_sum": 0,
+         "focus_expected_damage_tenths": []},  # Occupied by U34
+        {"col": 5, "row": 4, "current": False,
+         "distinct_attacker_count": 0, "max_incoming_sum": 0,
+         "focus_expected_damage_tenths": []}
+      ]
+    }
+    result = sd.movement_repair_options(
+      inspect_body, unit_id=42, requested_col=3, requested_row=9,
+      occupied_hexes={(3, 9)}, revision=100)  # U34 at (3,9)
+
+    self.assertEqual(len(result["options"]), 1)
+    self.assertEqual(result["options"][0]["destination"]["col"], 5)
+    self.assertEqual(result["options"][0]["destination"]["row"], 4)
+    self.assertIsNone(result["unavailable_reason"])
+
+  def test_known_zero_exposure_sorts_before_unknown_exposure(self):
+    """Known-zero and unknown are distinct; known sorts first."""
+    inspect_body = {
+      "destination_threats": [
+        {"col": 4, "row": 5, "current": True,
+         "distinct_attacker_count": 1, "max_incoming_sum": 10,
+         "focus_expected_damage_tenths": [5]},
+        {"col": 1, "row": 1, "current": False,  # Unknown exposure
+         "focus_expected_damage_tenths": []},
+        {"col": 2, "row": 2, "current": False,  # Known zero
+         "distinct_attacker_count": 0, "max_incoming_sum": 0,
+         "focus_expected_damage_tenths": []}
+      ]
+    }
+    result = sd.movement_repair_options(
+      inspect_body, unit_id=10, requested_col=5, requested_row=5,
+      occupied_hexes=set(), revision=100)
+
+    self.assertEqual(len(result["options"]), 2)
+    # Known (2,2) should come first
+    self.assertEqual(result["options"][0]["destination"]["col"], 2)
+    self.assertEqual(result["options"][0]["coverage"], "complete")
+    # Unknown (1,1) should come second
+    self.assertEqual(result["options"][1]["destination"]["col"], 1)
+    self.assertEqual(result["options"][1]["coverage"], "unknown")
+    self.assertEqual(result["coverage"]["exposure"], "partial")
+
+  def test_ordering_precedence_known_exposure(self):
+    """Known endpoints sorted by attacker_count, then max_damage, then position."""
+    inspect_body = {
+      "destination_threats": [
+        {"col": 3, "row": 3, "current": True,
+         "distinct_attacker_count": 1, "max_incoming_sum": 10,
+         "focus_expected_damage_tenths": [5]},
+        {"col": 1, "row": 2, "current": False,
+         "distinct_attacker_count": 2, "max_incoming_sum": 20,
+         "focus_expected_damage_tenths": [10]},
+        {"col": 1, "row": 1, "current": False,
+         "distinct_attacker_count": 1, "max_incoming_sum": 15,
+         "focus_expected_damage_tenths": [8]},
+        {"col": 2, "row": 1, "current": False,
+         "distinct_attacker_count": 1, "max_incoming_sum": 15,
+         "focus_expected_damage_tenths": [8]}
+      ]
+    }
+    result = sd.movement_repair_options(
+      inspect_body, unit_id=10, requested_col=5, requested_row=5,
+      occupied_hexes=set(), revision=100)
+
+    self.assertEqual(len(result["options"]), 3)
+    # (1,1) attacker_count=1, max_damage=15
+    self.assertEqual(result["options"][0]["destination"], {"col": 1, "row": 1})
+    # (2,1) attacker_count=1, max_damage=15 (tie broken by row,col ascending)
+    self.assertEqual(result["options"][1]["destination"], {"col": 2, "row": 1})
+    # (1,2) attacker_count=2, max_damage=20
+    self.assertEqual(result["options"][2]["destination"], {"col": 1, "row": 2})
+
+  def test_at_most_three_options_returned(self):
+    """Result contains at most 3 options."""
+    inspect_body = {
+      "destination_threats": [
+        {"col": 3, "row": 3, "current": True,
+         "distinct_attacker_count": 1, "max_incoming_sum": 10,
+         "focus_expected_damage_tenths": [5]},
+        {"col": 1, "row": 1, "current": False,
+         "distinct_attacker_count": 0, "max_incoming_sum": 0,
+         "focus_expected_damage_tenths": []},
+        {"col": 2, "row": 2, "current": False,
+         "distinct_attacker_count": 0, "max_incoming_sum": 0,
+         "focus_expected_damage_tenths": []},
+        {"col": 4, "row": 4, "current": False,
+         "distinct_attacker_count": 0, "max_incoming_sum": 0,
+         "focus_expected_damage_tenths": []},
+        {"col": 5, "row": 5, "current": False,
+         "distinct_attacker_count": 0, "max_incoming_sum": 0,
+         "focus_expected_damage_tenths": []}
+      ]
+    }
+    result = sd.movement_repair_options(
+      inspect_body, unit_id=10, requested_col=10, requested_row=10,
+      occupied_hexes=set(), revision=100)
+
+    self.assertEqual(len(result["options"]), 3)
+    self.assertEqual(result["coverage"]["endpoints_considered"], 4)
+    self.assertEqual(result["coverage"]["endpoints_listed"], 3)
+
+  def test_coverage_counts_match_reality(self):
+    """endpoints_considered and endpoints_listed are accurate."""
+    inspect_body = {
+      "destination_threats": [
+        {"col": 3, "row": 3, "current": True,
+         "distinct_attacker_count": 1, "max_incoming_sum": 10,
+         "focus_expected_damage_tenths": [5]},
+        {"col": 1, "row": 1, "current": False,
+         "distinct_attacker_count": 0, "max_incoming_sum": 0,
+         "focus_expected_damage_tenths": []},
+        {"col": 3, "row": 9, "current": False,
+         "distinct_attacker_count": 0, "max_incoming_sum": 0,
+         "focus_expected_damage_tenths": []}
+      ]
+    }
+    result = sd.movement_repair_options(
+      inspect_body, unit_id=42, requested_col=5, requested_row=5,
+      occupied_hexes={(3, 9)}, revision=100)  # (3,9) occupied
+
+    # Total 3 destinations: current (1) + legal (1) + occupied (1)
+    # endpoints_considered = all non-current BEFORE exclusions = 2
+    # endpoints_listed = after exclusions = 1
+    self.assertEqual(result["coverage"]["endpoints_considered"], 2)
+    self.assertEqual(result["coverage"]["endpoints_listed"], 1)
+
+  def test_option_structure_complete(self):
+    """Each option has all required fields with correct structure."""
+    inspect_body = {
+      "destination_threats": [
+        {"col": 3, "row": 3, "current": True,
+         "distinct_attacker_count": 1, "max_incoming_sum": 10,
+         "focus_expected_damage_tenths": [5]},
+        {"col": 1, "row": 1, "current": False,
+         "distinct_attacker_count": 0, "max_incoming_sum": 0,
+         "focus_expected_damage_tenths": []}
+      ]
+    }
+    result = sd.movement_repair_options(
+      inspect_body, unit_id=42, requested_col=1, requested_row=1,
+      occupied_hexes=set(), revision=100)
+
+    self.assertEqual(len(result["options"]), 1)
+    opt = result["options"][0]
+
+    self.assertEqual(opt["option_id"], "u42-repair-1")
+    self.assertEqual(opt["category"], "repair_move")
+    self.assertEqual(opt["actor_id"], 42)
+    self.assertIsNone(opt["target_id"])
+    self.assertEqual(len(opt["actions"]), 1)
+    self.assertEqual(opt["actions"][0]["action"], "Move")
+    self.assertEqual(opt["actions"][0]["unit_id"], 42)
+    self.assertEqual(opt["actions"][0]["col"], 1)
+    self.assertEqual(opt["actions"][0]["row"], 1)
+    # movement_cost is None (not available in inspect_body per AMENDMENT 1)
+    self.assertIsNone(opt["movement_cost"])
+    self.assertEqual(opt["destination"], {"col": 1, "row": 1})
+    self.assertIsNotNone(opt["exposure"])
+    self.assertIn(opt["coverage"], ["complete", "unknown"])
+    self.assertIsNone(opt["advances_objective"])
+
+  def test_exposure_with_expected_damage(self):
+    """Exposure includes expected_incoming_damage_tenths when available."""
+    inspect_body = {
+      "destination_threats": [
+        {"col": 3, "row": 3, "current": True,
+         "distinct_attacker_count": 1, "max_incoming_sum": 10,
+         "focus_expected_damage_tenths": [5]},
+        {"col": 1, "row": 1, "current": False,
+         "distinct_attacker_count": 2, "max_incoming_sum": 25,
+         "focus_expected_damage_tenths": [12, 8]}
+      ]
+    }
+    result = sd.movement_repair_options(
+      inspect_body, unit_id=10, requested_col=1, requested_row=1,
+      occupied_hexes=set(), revision=100)
+
+    opt = result["options"][0]
+    exp = opt["exposure"]
+    self.assertEqual(exp["distinct_attacker_count"], 2)
+    self.assertEqual(exp["max_incoming_damage"], 25)
+    self.assertEqual(exp["expected_incoming_damage_tenths"], 12)  # First element
+
+  def test_amendment_1_u42_ordering_case(self):
+    """Real amendment case: U42 at (4,9) with endpoints (5,8) and (5,10).
+
+    From AMENDMENT 1: U42 at revision 377:
+      - current (4,9): 13 attackers
+      - (5,8): 13 attackers
+      - (5,10): 9 attackers
+
+    Correct ordering should be (5,10) first (lower exposure).
+    Requested (4,7) and repair guess (3,9) are both absent (illegal).
+    """
+    inspect_body = {
+      "destination_threats": [
+        {"col": 4, "row": 9, "current": True,
+         "distinct_attacker_count": 13, "max_incoming_sum": 42,
+         "focus_expected_damage_tenths": [15]},
+        {"col": 5, "row": 8, "current": False,
+         "distinct_attacker_count": 13, "max_incoming_sum": 40,
+         "focus_expected_damage_tenths": [14]},
+        {"col": 5, "row": 10, "current": False,
+         "distinct_attacker_count": 9, "max_incoming_sum": 28,
+         "focus_expected_damage_tenths": [10]}
+      ]
+    }
+    result = sd.movement_repair_options(
+      inspect_body, unit_id=42, requested_col=4, requested_row=7,
+      occupied_hexes=set(), revision=377)
+
+    # Should have 2 options (all legal endpoints except current)
+    self.assertEqual(len(result["options"]), 2)
+    self.assertEqual(result["coverage"]["endpoints_considered"], 2)
+    self.assertEqual(result["coverage"]["endpoints_listed"], 2)
+
+    # First should be (5,10) with 9 attackers (lower exposure)
+    opt1 = result["options"][0]
+    self.assertEqual(opt1["destination"]["col"], 5)
+    self.assertEqual(opt1["destination"]["row"], 10)
+    self.assertEqual(opt1["exposure"]["distinct_attacker_count"], 9)
+
+    # Second should be (5,8) with 13 attackers (higher exposure)
+    opt2 = result["options"][1]
+    self.assertEqual(opt2["destination"]["col"], 5)
+    self.assertEqual(opt2["destination"]["row"], 8)
+    self.assertEqual(opt2["exposure"]["distinct_attacker_count"], 13)
+
+  def test_defect1_col_row_tiebreak_ascending(self):
+    """DEFECT 1 FIX: (col,row) ascending for stable tie-break, not (row,col)."""
+    inspect_body = {
+      "destination_threats": [
+        {"col": 3, "row": 3, "current": True,
+         "distinct_attacker_count": 1, "max_incoming_sum": 10,
+         "focus_expected_damage_tenths": [5]},
+        {"col": 5, "row": 3, "current": False,  # Same exposure as below
+         "distinct_attacker_count": 1, "max_incoming_sum": 10,
+         "focus_expected_damage_tenths": [5]},
+        {"col": 3, "row": 5, "current": False,  # Same exposure as above
+         "distinct_attacker_count": 1, "max_incoming_sum": 10,
+         "focus_expected_damage_tenths": [5]}
+      ]
+    }
+    result = sd.movement_repair_options(
+      inspect_body, unit_id=10, requested_col=5, requested_row=5,
+      occupied_hexes=set(), revision=100)
+
+    self.assertEqual(len(result["options"]), 2)
+    # (col, row) ascending means (3,5) before (5,3)
+    opt1 = result["options"][0]
+    self.assertEqual(opt1["destination"]["col"], 3)
+    self.assertEqual(opt1["destination"]["row"], 5)
+
+    opt2 = result["options"][1]
+    self.assertEqual(opt2["destination"]["col"], 5)
+    self.assertEqual(opt2["destination"]["row"], 3)
+
+  def test_defect2_expected_damage_uses_maximum(self):
+    """DEFECT 2 FIX: Use MAXIMUM focus_expected_damage_tenths, not first element."""
+    inspect_body = {
+      "destination_threats": [
+        {"col": 3, "row": 3, "current": True,
+         "distinct_attacker_count": 3, "max_incoming_sum": 100,
+         "focus_expected_damage_tenths": [10, 20, 30]},
+        {"col": 1, "row": 1, "current": False,
+         "distinct_attacker_count": 3, "max_incoming_sum": 100,
+         "focus_expected_damage_tenths": [84, 168, 216]}  # Max is 216
+      ]
+    }
+    result = sd.movement_repair_options(
+      inspect_body, unit_id=42, requested_col=1, requested_row=1,
+      occupied_hexes=set(), revision=100)
+
+    opt = result["options"][0]
+    # Should use 216 (max), not 84 (first)
+    self.assertEqual(opt["exposure"]["expected_incoming_damage_tenths"], 216)
+
+  def test_defect2_expected_damage_empty_list_yields_none(self):
+    """DEFECT 2 FIX: Empty focus_expected_damage_tenths yields None (unknown)."""
+    inspect_body = {
+      "destination_threats": [
+        {"col": 3, "row": 3, "current": True,
+         "distinct_attacker_count": 2, "max_incoming_sum": 20,
+         "focus_expected_damage_tenths": [10]},
+        {"col": 1, "row": 1, "current": False,
+         "distinct_attacker_count": 2, "max_incoming_sum": 20,
+         "focus_expected_damage_tenths": []}  # Empty
+      ]
+    }
+    result = sd.movement_repair_options(
+      inspect_body, unit_id=42, requested_col=1, requested_row=1,
+      occupied_hexes=set(), revision=100)
+
+    opt = result["options"][0]
+    # Empty list should yield None (unknown), not 0
+    self.assertIsNone(opt["exposure"]["expected_incoming_damage_tenths"])
+
+  def test_defect3_unit_moved_true_returns_already_moved(self):
+    """DEFECT 3 FIX: unit_moved=True returns unavailable_reason 'already_moved'."""
+    inspect_body = {
+      "destination_threats": [
+        {"col": 3, "row": 3, "current": True,
+         "distinct_attacker_count": 1, "max_incoming_sum": 10,
+         "focus_expected_damage_tenths": [5]},
+        {"col": 1, "row": 1, "current": False,
+         "distinct_attacker_count": 0, "max_incoming_sum": 0,
+         "focus_expected_damage_tenths": []}
+      ]
+    }
+    result = sd.movement_repair_options(
+      inspect_body, unit_id=42, requested_col=1, requested_row=1,
+      occupied_hexes=set(), revision=100, unit_moved=True)
+
+    self.assertEqual(result["options"], [])
+    self.assertEqual(result["unavailable_reason"], "already_moved")
+    self.assertEqual(result["coverage"]["endpoints_considered"], 0)
+
+  def test_defect3_unit_moved_false_allows_options(self):
+    """DEFECT 3 FIX: unit_moved=False allows normal option generation."""
+    inspect_body = {
+      "destination_threats": [
+        {"col": 3, "row": 3, "current": True,
+         "distinct_attacker_count": 1, "max_incoming_sum": 10,
+         "focus_expected_damage_tenths": [5]},
+        {"col": 1, "row": 1, "current": False,
+         "distinct_attacker_count": 0, "max_incoming_sum": 0,
+         "focus_expected_damage_tenths": []}
+      ]
+    }
+    result = sd.movement_repair_options(
+      inspect_body, unit_id=42, requested_col=1, requested_row=1,
+      occupied_hexes=set(), revision=100, unit_moved=False)
+
+    self.assertEqual(len(result["options"]), 1)
+    self.assertIsNone(result["unavailable_reason"])
+
+  def test_defect3_unit_moved_none_infers_from_engine(self):
+    """DEFECT 3 FIX: unit_moved=None (default) infers from destination_threats."""
+    inspect_body = {
+      "destination_threats": [
+        {"col": 3, "row": 3, "current": True,
+         "distinct_attacker_count": 1, "max_incoming_sum": 10,
+         "focus_expected_damage_tenths": [5]},
+        {"col": 1, "row": 1, "current": False,
+         "distinct_attacker_count": 0, "max_incoming_sum": 0,
+         "focus_expected_damage_tenths": []}
+      ]
+    }
+    result = sd.movement_repair_options(
+      inspect_body, unit_id=42, requested_col=1, requested_row=1,
+      occupied_hexes=set(), revision=100, unit_moved=None)
+
+    self.assertEqual(len(result["options"]), 1)
+    self.assertIsNone(result["unavailable_reason"])
+
+  def test_defect4_endpoints_considered_before_exclusions(self):
+    """DEFECT 4 FIX: endpoints_considered = all non-current BEFORE exclusions."""
+    inspect_body = {
+      "destination_threats": [
+        {"col": 3, "row": 3, "current": True,
+         "distinct_attacker_count": 1, "max_incoming_sum": 10,
+         "focus_expected_damage_tenths": [5]},
+        {"col": 1, "row": 1, "current": False,
+         "distinct_attacker_count": 0, "max_incoming_sum": 0,
+         "focus_expected_damage_tenths": []},
+        {"col": 2, "row": 2, "current": False,
+         "distinct_attacker_count": 0, "max_incoming_sum": 0,
+         "focus_expected_damage_tenths": []},
+        {"col": 3, "row": 9, "current": False,  # This one will be excluded
+         "distinct_attacker_count": 0, "max_incoming_sum": 0,
+         "focus_expected_damage_tenths": []}
+      ]
+    }
+    result = sd.movement_repair_options(
+      inspect_body, unit_id=42, requested_col=1, requested_row=1,
+      occupied_hexes={(3, 9)}, revision=100)
+
+    # All non-current entries BEFORE exclusions: 3 (total 4 - current 1)
+    self.assertEqual(result["coverage"]["endpoints_considered"], 3)
+    # After exclusions, only 2 remain
+    self.assertEqual(result["coverage"]["endpoints_listed"], 2)
+    self.assertGreater(result["coverage"]["endpoints_considered"], result["coverage"]["endpoints_listed"])
+
+
+class RenderMovementRepairTests(unittest.TestCase):
+  """Tests for render_movement_repair_options."""
+
+  def test_renders_unavailable_reason_dead_or_foreign(self):
+    """Renders readable message for dead/foreign unit."""
+    result = {
+      "options": [],
+      "coverage": {"endpoints_considered": 0, "endpoints_listed": 0, "exposure": "unknown"},
+      "unavailable_reason": "dead_or_foreign"
+    }
+    rendered = sd.render_movement_repair_options(
+      result, requested_col=5, requested_row=5)
+    self.assertIn("dead", rendered.lower())
+    self.assertIn("opponent", rendered.lower())
+
+  def test_renders_unavailable_reason_no_legal_endpoints(self):
+    """Renders readable message for no legal endpoints."""
+    result = {
+      "options": [],
+      "coverage": {"endpoints_considered": 0, "endpoints_listed": 0, "exposure": "known"},
+      "unavailable_reason": "no_legal_endpoints"
+    }
+    rendered = sd.render_movement_repair_options(
+      result, requested_col=5, requested_row=5)
+    self.assertIn("reachable", rendered.lower())
+
+  def test_renders_options_with_exposure(self):
+    """Renders options with known exposure facts."""
+    result = {
+      "options": [
+        {
+          "option_id": "u42-repair-1",
+          "destination": {"col": 1, "row": 1},
+          "movement_cost": None,
+          "exposure": {
+            "distinct_attacker_count": 2,
+            "max_incoming_damage": 15,
+            "expected_incoming_damage_tenths": 8
+          }
+        }
+      ],
+      "coverage": {"endpoints_considered": 1, "endpoints_listed": 1, "exposure": "known"},
+      "unavailable_reason": None
+    }
+    rendered = sd.render_movement_repair_options(
+      result, requested_col=5, requested_row=5)
+    self.assertIn("u42-repair-1", rendered)
+    self.assertIn("1,1", rendered)
+    self.assertIn("attackers=2", rendered)
+    self.assertIn("max damage=15", rendered)
+    self.assertIn("expected damage=0.8", rendered)
+    self.assertIn("replaces the entire failed batch", rendered)
+
+  def test_renders_unknown_exposure(self):
+    """Renders 'exposure unknown' when exposure is None."""
+    result = {
+      "options": [
+        {
+          "option_id": "u42-repair-1",
+          "destination": {"col": 3, "row": 4},
+          "movement_cost": None,
+          "exposure": None
+        }
+      ],
+      "coverage": {"endpoints_considered": 1, "endpoints_listed": 1, "exposure": "unknown"},
+      "unavailable_reason": None
+    }
+    rendered = sd.render_movement_repair_options(
+      result, requested_col=5, requested_row=5)
+    self.assertIn("exposure unknown", rendered)
+
+  def test_renders_multiple_options(self):
+    """Renders multiple options correctly."""
+    result = {
+      "options": [
+        {
+          "option_id": "u42-repair-1",
+          "destination": {"col": 1, "row": 1},
+          "movement_cost": None,
+          "exposure": {"distinct_attacker_count": 0, "max_incoming_damage": 0,
+                      "expected_incoming_damage_tenths": 0}
+        },
+        {
+          "option_id": "u42-repair-2",
+          "destination": {"col": 2, "row": 2},
+          "movement_cost": None,
+          "exposure": None
+        }
+      ],
+      "coverage": {"endpoints_considered": 2, "endpoints_listed": 2, "exposure": "partial"},
+      "unavailable_reason": None
+    }
+    rendered = sd.render_movement_repair_options(
+      result, requested_col=5, requested_row=5)
+    self.assertIn("u42-repair-1", rendered)
+    self.assertIn("u42-repair-2", rendered)
+    self.assertIn("1,1", rendered)
+    self.assertIn("2,2", rendered)
+
+  def test_renders_never_says_safe(self):
+    """Rendering never labels an endpoint as safe."""
+    result = {
+      "options": [
+        {
+          "option_id": "u42-repair-1",
+          "destination": {"col": 1, "row": 1},
+          "movement_cost": None,
+          "exposure": {"distinct_attacker_count": 0, "max_incoming_damage": 0,
+                      "expected_incoming_damage_tenths": 0}
+        }
+      ],
+      "coverage": {"endpoints_considered": 1, "endpoints_listed": 1, "exposure": "known"},
+      "unavailable_reason": None
+    }
+    rendered = sd.render_movement_repair_options(
+      result, requested_col=5, requested_row=5)
+    self.assertNotIn("safe", rendered.lower())
 
 
 if __name__ == "__main__":

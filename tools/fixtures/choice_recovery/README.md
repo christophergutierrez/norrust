@@ -23,5 +23,12 @@ greater than or equal to that target's HP, so the target may die and the batch's
 would depend on combat rolls rather than on the rule under test. Raising one defender's HP
 makes the survival deterministic: U11 (max 21) plus U13 (max 24) is 45 against 60 HP.
 
-Both are exercised by tools/test_strategy_validated_selections.py, which re-derives the
-damage numbers from the engine's own combat_preview rather than trusting these notes.
+## checkpoint-d98880...json - ARCHIVE
+Revision 377 of the same recorded game, copied verbatim. This is the position that ended that
+run: U42 (6/31 HP) at (4,9) was ordered to (4,7), which the engine rejects as
+`DestinationUnreachable`, and the single repair guessed (3,9), which is `DestinationOccupied`
+by U34. The unit has exactly two legal endpoints, (5,8) and (5,10).
+
+These are exercised by tools/test_strategy_validated_selections.py and
+tools/test_strategy_movement_repair.py, which re-derive every number from the engine itself
+rather than trusting these notes.

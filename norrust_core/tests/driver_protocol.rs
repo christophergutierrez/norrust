@@ -1707,3 +1707,74 @@ fn move_group_toward_preserves_macro_indices_across_authored_interleaving() {
         event["kind"] == "end_turn" && event["delegated_order_index"] == 3
     }));
 }
+
+#[test]
+fn inspect_unit_reports_destination_costs_and_optional_reference_distance() {
+    let lines = run_driver(
+        &[
+            "--scenario", "debug_recruit", "--faction0", "undead", "--faction1", "undead",
+            "--gold", "100", "--max-turns", "1",
+        ],
+        r#"{"action":"Query","what":"inspect_unit","unit_id":1,"state_revision":0}
+{"action":"Query","what":"inspect_unit","unit_id":1,"state_revision":0,"to_col":1,"to_row":2}
+{"action":"Query","what":"inspect_unit","unit_id":999999,"state_revision":0}
+"#,
+    );
+    let statuses: Vec<_> = lines.iter().filter(|line| line["type"] == "status").collect();
+    assert_eq!(statuses.len(), 3, "three queries should produce three statuses");
+
+    // Without a reference hex: every destination carries an engine movement cost,
+    // the unit's own hex costs 0, and no distance is reported.
+    let plain = &statuses[0];
+    assert_eq!(plain["ok"], true);
+    let plain_dests = plain["body"]["destination_threats"]
+        .as_array()
+        .expect("destination_threats array");
+    assert!(!plain_dests.is_empty(), "unit 1 should have destinations");
+    for entry in plain_dests {
+        assert!(entry["cost"].is_number() || entry["cost"].is_null(),
+                "cost must be a number or explicit null: {:?}", entry);
+        assert!(entry.get("distance").is_none(),
+                "distance must be absent without to_col/to_row: {:?}", entry);
+    }
+    let current = plain_dests
+        .iter()
+        .find(|e| e["current"] == true)
+        .expect("the unit's own hex must be listed");
+    assert_eq!(current["cost"].as_i64(), Some(0), "standing still costs nothing");
+
+    // With a reference hex: distance is engine geometry to that hex, and the
+    // reference itself is distance 0. Reachability is still the listed set only.
+    let referenced = &statuses[1];
+    assert_eq!(referenced["ok"], true);
+    let referenced_dests = referenced["body"]["destination_threats"]
+        .as_array()
+        .expect("destination_threats array");
+    for entry in referenced_dests {
+        assert!(entry["distance"].is_number(),
+                "distance must be present when a reference hex is supplied: {:?}", entry);
+    }
+    let distance_at = |col: i64, row: i64| -> i64 {
+        referenced_dests
+            .iter()
+            .find(|e| e["col"].as_i64() == Some(col) && e["row"].as_i64() == Some(row))
+            .unwrap_or_else(|| panic!("expected ({},{}) among the destinations", col, row))
+            ["distance"]
+            .as_i64()
+            .expect("integer distance")
+    };
+    assert_eq!(distance_at(1, 2), 0, "the reference hex is zero from itself");
+    assert_eq!(distance_at(0, 0), 2, "(0,0) sits two hexes from (1,2)");
+    assert!(distance_at(1, 2) < distance_at(0, 0),
+            "a nearer hex must report a smaller distance than a farther one");
+    let distinct: std::collections::BTreeSet<i64> = referenced_dests
+        .iter()
+        .map(|e| e["distance"].as_i64().expect("integer distance"))
+        .collect();
+    assert!(distinct.len() > 1, "distances must vary across the set: {:?}", distinct);
+
+    // The existing failure classification is unchanged.
+    let missing = &statuses[2];
+    assert_eq!(missing["ok"], false);
+    assert_eq!(missing["code"], "UnitNotFound");
+}

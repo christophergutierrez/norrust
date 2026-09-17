@@ -64,6 +64,8 @@ try:
         ContextualResponseError,
         build_decision_packet,
         candidate_selections,
+        movement_repair_options,
+        render_movement_repair_options,
         validate_response_context,
         render_decision_brief,
         map_batch_failure_to_option)
@@ -116,6 +118,8 @@ except ImportError:  # pragma: no cover - direct script compatibility
         ContextualResponseError,
         build_decision_packet,
         candidate_selections,
+        movement_repair_options,
+        render_movement_repair_options,
         validate_response_context,
         render_decision_brief,
         map_batch_failure_to_option)
@@ -1144,6 +1148,57 @@ def _raise_preview_query_error(response: Any, query: str) -> None:
     raise RuntimeError(f"query_error: {query}: {message}")
 
 
+class EngineBatchRejected(ModelResponseError):
+    """An engine batch rejection carrying TYPED facts, not just English text.
+
+    The repair path needs the failed action, its index, the actor and the engine's
+    own error code. Recovering those by parsing the rendered message would be
+    guesswork, so they travel on the exception itself. `message` keeps the exact
+    text the model already receives, so existing behaviour is unchanged.
+    """
+
+    def __init__(self, message: str, *, orders: list[dict[str, Any]], validation: dict[str, Any],
+                 state_revision: int, option_origin: Optional[dict[str, Any]] = None):
+        super().__init__(message)
+        self.orders = orders
+        self.validation = validation
+        self.state_revision = state_revision
+        self.option_origin = option_origin
+        failed_index = validation.get("failed_index")
+        if not isinstance(failed_index, int) or isinstance(failed_index, bool):
+            results = validation.get("results")
+            failed_index = next(
+                (index for index, item in enumerate(results or [])
+                 if isinstance(item, dict) and item.get("ok") is False), None)
+        self.failed_index = failed_index
+        failed_action = None
+        if isinstance(failed_index, int) and 0 <= failed_index < len(orders):
+            candidate = orders[failed_index]
+            failed_action = candidate if isinstance(candidate, dict) else None
+        self.failed_action = failed_action
+        self.actor_id = None
+        if isinstance(failed_action, dict):
+            for key in ("unit_id", "attacker_id", "recruiter_id"):
+                value = failed_action.get(key)
+                if isinstance(value, int) and not isinstance(value, bool):
+                    self.actor_id = value
+                    break
+        code = None
+        results = validation.get("results")
+        if isinstance(results, list) and isinstance(failed_index, int):
+            if 0 <= failed_index < len(results) and isinstance(results[failed_index], dict):
+                code = results[failed_index].get("code")
+        self.error_code = code or validation.get("error_code")
+
+    @property
+    def failed_move(self) -> Optional[dict[str, Any]]:
+        """The failed action when it is a direct Move, else None."""
+        action = self.failed_action
+        if isinstance(action, dict) and action.get("action") == "Move":
+            return action
+        return None
+
+
 class QueryBudgetExhausted(RuntimeError):
     """The driver refused a query because the per-turn query budget is spent.
 
@@ -1359,6 +1414,83 @@ def validated_selections_for_packet(packet: DecisionPacket, exchange, state_revi
     if validated:
         return validated, "validated", queries
     return [], "none_validated", queries
+
+
+STRATEGY_MAX_REPAIR_VALIDATIONS = 3
+
+
+def movement_repair_menu(rejection: EngineBatchRejected, exchange, state: Any, *,
+                         llm_side: int) -> Optional[dict[str, Any]]:
+    """Engine-derived legal endpoints for a rejected direct Move, or None.
+
+    Spends ONE facts query (inspect_unit, which carries every legal destination with
+    its exposure, movement cost and distance to the requested hex) plus at most three
+    validations. It never fans out a query per reachable hex and never re-searches.
+
+    Returns None when the failure was not a direct Move, when the actor is not ours,
+    or when the facts query fails - callers keep the ordinary repair in those cases.
+    A returned menu may still be empty, carrying an explicit unavailable_reason.
+    """
+    move = rejection.failed_move
+    if move is None or not isinstance(rejection.actor_id, int):
+        return None
+    unit_id = rejection.actor_id
+    requested_col, requested_row = move.get("col"), move.get("row")
+    if not isinstance(requested_col, int) or not isinstance(requested_row, int):
+        return None
+    try:
+        response = exchange({"action": "Query", "what": "inspect_unit", "unit_id": unit_id,
+                             "state_revision": rejection.state_revision,
+                             "to_col": requested_col, "to_row": requested_row})
+    except RuntimeError:
+        # A facts query failure keeps its own classification upstream; never fabricate.
+        raise
+    if not isinstance(response, dict) or not response.get("ok"):
+        return None
+    inspect_body = response.get("body")
+    if not isinstance(inspect_body, dict):
+        return None
+
+    units = state.get("units") if isinstance(state, dict) else None
+    occupied: set[tuple[int, int]] = set()
+    unit_moved: Optional[bool] = None
+    if isinstance(units, list):
+        for unit in units:
+            if not isinstance(unit, dict):
+                continue
+            col, row = unit.get("col"), unit.get("row")
+            if isinstance(col, int) and isinstance(row, int) and unit.get("id") != unit_id:
+                occupied.add((col, row))
+            if unit.get("id") == unit_id:
+                unit_moved = bool(unit.get("moved")) if "moved" in unit else None
+                if unit.get("faction") != llm_side:
+                    return None
+    menu = movement_repair_options(
+        inspect_body, unit_id=unit_id, requested_col=requested_col,
+        requested_row=requested_row, occupied_hexes=occupied,
+        revision=rejection.state_revision, unit_moved=unit_moved)
+
+    # Publish only endpoints the engine confirms legal RIGHT NOW, through the ordinary
+    # validation path. An advertised endpoint that cannot execute would be worse than
+    # no menu at all, since the model's one repair would be spent on it.
+    confirmed: list[dict[str, Any]] = []
+    validations = 0
+    for option in menu.get("options", []):
+        if validations >= STRATEGY_MAX_REPAIR_VALIDATIONS:
+            break
+        validations += 1
+        try:
+            verdict = query_validate_batch(
+                exchange, copy.deepcopy(option.get("actions", [])), rejection.state_revision)
+        except QueryBudgetExhausted:
+            break
+        if verdict.get("valid") is True:
+            confirmed.append(option)
+    menu["options"] = confirmed
+    menu["validations_used"] = validations
+    if not confirmed and menu.get("unavailable_reason") is None:
+        menu["unavailable_reason"] = "no_validated_endpoints"
+    return menu
 
 
 def choose_validation_feedback(orders: Any, validation: Any, packet: DecisionPacket) -> str:
@@ -6616,9 +6748,11 @@ def run(args: argparse.Namespace) -> int:
                         metadata["rejected_strategy_proposals"] = int(metadata.get("rejected_strategy_proposals", 0)) + 1
                         record({"type": "strategy_batch_validation", "orders": submitted,
                                 "valid": False, "validation": copy.deepcopy(validation)})
-                        raise ModelResponseError(
+                        raise EngineBatchRejected(
                             "engine rejected strategy act: " +
-                            engine_validation_feedback(submitted, validation))
+                            engine_validation_feedback(submitted, validation),
+                            orders=submitted, validation=validation,
+                            state_revision=int(state.get("state_revision", 0)))
                 if isinstance(parsed, ChooseResponse):
                     if strategy_effective_final_only and not parsed.finish_turn:
                         raise ModelResponseError("final_only strategy choose must set finish_turn=true")
@@ -6636,9 +6770,13 @@ def run(args: argparse.Namespace) -> int:
                         metadata["rejected_strategy_proposals"] = int(metadata.get("rejected_strategy_proposals", 0)) + 1
                         record({"type": "strategy_batch_validation", "orders": submitted,
                                 "valid": False, "validation": copy.deepcopy(validation)})
-                        raise ModelResponseError(
+                        raise EngineBatchRejected(
                             "engine rejected strategy choose: " +
-                            choose_validation_feedback(submitted, validation, decision_packet))
+                            choose_validation_feedback(submitted, validation, decision_packet),
+                            orders=submitted, validation=validation,
+                            state_revision=int(state.get("state_revision", 0)),
+                            option_origin={"decision_id": decision_packet.decision_id,
+                                           "option_ids": list(parsed.option_ids)})
                     parsed.option_action_ranges = option_action_ranges
                 if is_redundant_finish_turn(decoded):
                     note_finish_normalization(reply, decoded)
@@ -6671,9 +6809,36 @@ def run(args: argparse.Namespace) -> int:
                     raise
                 repair_attempted = True
                 note_response_repair(exc, reply.text)
+                repair_menu_text = ""
+                if isinstance(exc, EngineBatchRejected) and exc.failed_move is not None:
+                    # Stack 2: replace coordinate guessing with engine-derived endpoints.
+                    menu = movement_repair_menu(exc, exchange, state, llm_side=args.llm_side)
+                    if menu is not None:
+                        durable({"type": "strategy_movement_repair_menu",
+                                 "state_revision": exc.state_revision,
+                                 "unit_id": exc.actor_id,
+                                 "requested": {"col": exc.failed_move.get("col"),
+                                               "row": exc.failed_move.get("row")},
+                                 "error_code": exc.error_code,
+                                 "failed_index": exc.failed_index,
+                                 "coverage": menu.get("coverage"),
+                                 "unavailable_reason": menu.get("unavailable_reason"),
+                                 "validations_used": menu.get("validations_used"),
+                                 "options": copy.deepcopy(menu.get("options", []))})
+                        rendered = render_movement_repair_options(
+                            menu, requested_col=exc.failed_move.get("col"),
+                            requested_row=exc.failed_move.get("row"))
+                        if rendered:
+                            repair_menu_text = (
+                                "\nSTRATEGY_REPAIR_OPTIONS_BEGIN\n" + rendered +
+                                f"\nThese endpoints were validated at state_revision "
+                                f"{exc.state_revision} and are legal now; they are not safe. "
+                                "Answer with an ordinary act containing exactly one of these "
+                                "moves, or your own complete replacement batch.\n"
+                                "STRATEGY_REPAIR_OPTIONS_END\n")
                 current_prompt = (prompt_text + "\nSTRATEGY_REPAIR_UNTRUSTED_DATA_BEGIN\n" +
                                    reply.text + "\nSTRATEGY_REPAIR_UNTRUSTED_DATA_END\n" +
-                                   strategy_repair_guidance(exc, decoded))
+                                   strategy_repair_guidance(exc, decoded) + repair_menu_text)
                 tool_context = ""
 
     def strategy_step() -> Optional[int]:

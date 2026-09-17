@@ -1294,3 +1294,342 @@ def render_decision_brief(
 
   guidance_text = "\n".join(sections)
   return f"{prefix}{context}\n{guidance_text}"
+
+
+def movement_repair_options(inspect_body, *, unit_id, requested_col, requested_row,
+                            occupied_hexes, revision, unit_moved=None) -> dict:
+  """Generate at most three legal movement alternatives when a move fails.
+
+  Stack 2 repair function: when an engine-rejected batch has a Move as its first
+  failed action, offer distinct legal endpoints that were unavailable in the
+  original request. The unit's current hex and occupied hexes are excluded.
+
+  Ordering precedence (frozen):
+    1. Known-exposure endpoints before unknown-exposure endpoints
+    2. Lower next-opponent exposure (distinct_attacker_count, then max_incoming_damage)
+    3. Smaller ENGINE hex distance to the originally requested (col,row)
+    4. (col,row) ascending for stable ties
+
+  Args:
+    inspect_body: The response body from inspect_unit, containing unit_tactics
+                  and destination_threats.
+    unit_id: The unit that failed to reach the requested destination.
+    requested_col, requested_row: The originally requested destination.
+    occupied_hexes: Set/list of (col, row) tuples occupied by friendly units.
+    revision: The state revision for the packet.
+    unit_moved: Optional bool indicating if the unit has already moved.
+               If True, returns unavailable_reason "already_moved".
+               If None (default), inference from destination_threats is attempted.
+
+  Returns:
+    dict with keys:
+      - options: list of at most 3 movement options (or empty if unavailable)
+      - coverage: dict with endpoints_considered, endpoints_listed, exposure level
+      - unavailable_reason: None or one of "already_moved", "no_legal_endpoints",
+                           "dead_or_foreign"
+  """
+  # Check if unit has already moved (cannot move again)
+  if unit_moved is True:
+    return {
+      "options": [],
+      "coverage": {
+        "endpoints_considered": 0,
+        "endpoints_listed": 0,
+        "exposure": "unknown"
+      },
+      "unavailable_reason": "already_moved"
+    }
+
+  # Validate inspect_body structure
+  if not isinstance(inspect_body, dict):
+    return {
+      "options": [],
+      "coverage": {
+        "endpoints_considered": 0,
+        "endpoints_listed": 0,
+        "exposure": "unknown"
+      },
+      "unavailable_reason": "dead_or_foreign"
+    }
+
+  # Extract destination_threats from inspect_body
+  destinations = inspect_body.get("destination_threats", [])
+  if not isinstance(destinations, list):
+    return {
+      "options": [],
+      "coverage": {
+        "endpoints_considered": 0,
+        "endpoints_listed": 0,
+        "exposure": "unknown"
+      },
+      "unavailable_reason": "dead_or_foreign"
+    }
+
+  if not destinations:
+    return {
+      "options": [],
+      "coverage": {
+        "endpoints_considered": 0,
+        "endpoints_listed": 0,
+        "exposure": "unknown"
+      },
+      "unavailable_reason": "no_legal_endpoints"
+    }
+
+  # Find current position (marked with current=True)
+  current_col = None
+  current_row = None
+  for dest in destinations:
+    if isinstance(dest, dict) and dest.get("current"):
+      current_col = dest.get("col")
+      current_row = dest.get("row")
+      break
+
+  # If no current position found, unit is dead or foreign
+  if current_col is None:
+    return {
+      "options": [],
+      "coverage": {
+        "endpoints_considered": len(destinations),
+        "endpoints_listed": 0,
+        "exposure": "unknown"
+      },
+      "unavailable_reason": "dead_or_foreign"
+    }
+
+  # Normalize occupied_hexes to a set
+  occupied_set = set()
+  if occupied_hexes:
+    if isinstance(occupied_hexes, (list, tuple)):
+      occupied_set = set(occupied_hexes)
+    elif isinstance(occupied_hexes, set):
+      occupied_set = occupied_hexes
+
+  # Filter destinations: exclude current, occupied, and endpoints marked current=True
+  candidates = []
+  for dest in destinations:
+    if not isinstance(dest, dict):
+      continue
+
+    col = dest.get("col")
+    row = dest.get("row")
+
+    # Skip the current hex
+    if col == current_col and row == current_row:
+      continue
+
+    # Skip occupied hexes
+    if (col, row) in occupied_set:
+      continue
+
+    # Skip if marked as current (redundant check)
+    if dest.get("current"):
+      continue
+
+    candidates.append(dest)
+
+  # If no candidates remain, report no legal endpoints
+  if not candidates:
+    return {
+      "options": [],
+      "coverage": {
+        "endpoints_considered": len(destinations) - 1,  # minus current position
+        "endpoints_listed": 0,
+        "exposure": "unknown"  # DEFECT FIX: was "known" but should be unknown when no options listed
+      },
+      "unavailable_reason": "no_legal_endpoints"
+    }
+
+  # Categorize candidates by exposure knowledge
+  known_candidates = []
+  unknown_candidates = []
+
+  for dest in candidates:
+    attacker_count = dest.get("distinct_attacker_count")
+    max_damage = dest.get("max_incoming_sum")
+    focus_expected = dest.get("focus_expected_damage_tenths", [])
+
+    # Check if exposure facts are known (non-null/non-missing)
+    has_count = isinstance(attacker_count, int) and not isinstance(attacker_count, bool)
+    has_damage = isinstance(max_damage, int) and not isinstance(max_damage, bool)
+
+    if has_count and has_damage:
+      # Known exposure: map Rust fields to option format
+      # focus_expected_damage_tenths is a vector; use MAXIMUM to avoid understating threat
+      expected_damage = None
+      if isinstance(focus_expected, list):
+        ints = [x for x in focus_expected if isinstance(x, int) and not isinstance(x, bool)]
+        if ints:
+          expected_damage = max(ints)  # Maximum expected damage across all attackers
+
+      exposure = {
+        "distinct_attacker_count": attacker_count,
+        "max_incoming_damage": max_damage,
+        "expected_incoming_damage_tenths": expected_damage
+      }
+      known_candidates.append((dest, exposure, False))
+    else:
+      # Unknown exposure: missing or null facts
+      unknown_candidates.append((dest, None, True))
+
+  # Sort known candidates by the frozen ordering precedence:
+  # 2. lower known exposure (distinct_attacker_count, then max_incoming_damage)
+  # 3. smaller engine hex distance to the originally requested hex, when the engine
+  #    supplied one; entries without a distance sort after those that have one, so a
+  #    missing fact never masquerades as "closest".
+  # 4. (col,row) ascending for stable ties.
+  def _distance_key(dest):
+    value = dest.get("distance")
+    if isinstance(value, int) and not isinstance(value, bool):
+      return (0, value)
+    return (1, 0)
+
+  known_candidates.sort(key=lambda x: (
+    x[1]["distinct_attacker_count"],
+    x[1]["max_incoming_damage"],
+    _distance_key(x[0]),
+    x[0].get("col", 0),
+    x[0].get("row", 0)
+  ))
+
+  # Sort unknown candidates by position (ordering rule 4: (col,row) ascending)
+  unknown_candidates.sort(key=lambda x: (
+    x[0].get("col", 0),
+    x[0].get("row", 0)
+  ))
+
+  # Combine: known first (rule 1), then unknown
+  sorted_candidates = known_candidates + unknown_candidates
+
+  # Select at most three options
+  selected = sorted_candidates[:3]
+
+  # Build option dicts
+  options = []
+  for idx, (dest, exposure, is_unknown) in enumerate(selected):
+    col = dest.get("col")
+    row = dest.get("row")
+
+    # The engine supplies a per-destination movement cost when it knows one
+    # (0 for the unit's own hex, null when it did not list the hex). Never
+    # compute it in Python: an absent cost stays unknown and renders as such.
+    raw_cost = dest.get("cost")
+    movement_cost = (raw_cost if isinstance(raw_cost, int)
+                     and not isinstance(raw_cost, bool) else None)
+
+    option = {
+      "option_id": f"u{unit_id}-repair-{idx + 1}",
+      "category": "repair_move",
+      "actor_id": unit_id,
+      "target_id": None,
+      "actions": [{
+        "action": "Move",
+        "unit_id": unit_id,
+        "col": col,
+        "row": row
+      }],
+      "movement_cost": movement_cost,
+      "destination": {"col": col, "row": row},
+      "exposure": exposure,
+      "coverage": "unknown" if is_unknown else "complete",
+      "advances_objective": None
+    }
+    options.append(option)
+
+  # Determine overall exposure coverage
+  has_known = any(not is_unknown for _, _, is_unknown in selected)
+  has_unknown = any(is_unknown for _, _, is_unknown in selected)
+
+  if has_unknown and has_known:
+    exposure_coverage = "partial"
+  elif has_unknown:
+    exposure_coverage = "unknown"
+  else:
+    exposure_coverage = "known"
+
+  return {
+    "options": options,
+    "coverage": {
+      "endpoints_considered": len(destinations) - 1,  # DEFECT FIX: all non-current entries BEFORE exclusions
+      "endpoints_listed": len(selected),
+      "exposure": exposure_coverage
+    },
+    "unavailable_reason": None
+  }
+
+
+def render_movement_repair_options(result, *, requested_col, requested_row) -> str:
+  """Render movement repair options as concise guidance text.
+
+  Explains that choosing a repair option replaces the entire failed batch.
+  Displays each option's destination, cost, and exposure (or "unknown").
+
+  Args:
+    result: dict returned from movement_repair_options()
+    requested_col, requested_row: The originally requested destination (for context)
+
+  Returns:
+    Concise text suitable for a decision brief suffix
+  """
+  if not isinstance(result, dict):
+    return "Movement repair options unavailable."
+
+  options = result.get("options", [])
+  unavailable_reason = result.get("unavailable_reason")
+
+  # Handle unavailable cases
+  if unavailable_reason:
+    reason_map = {
+      "already_moved": "Unit has already moved.",
+      "no_legal_endpoints": "No reachable endpoints remain; original destination may have been the only option.",
+      "dead_or_foreign": "Unit is dead or belongs to the opponent."
+    }
+    reason_text = reason_map.get(unavailable_reason, "Repair options unavailable.")
+    return reason_text
+
+  if not options:
+    return "No repair options generated."
+
+  lines = []
+  lines.append("MOVEMENT REPAIR: Choosing any option replaces the entire failed batch.")
+
+  for opt in options:
+    if not isinstance(opt, dict):
+      continue
+
+    option_id = opt.get("option_id", "unknown")
+    dest = opt.get("destination", {})
+    dest_col = dest.get("col")
+    dest_row = dest.get("row")
+    cost = opt.get("movement_cost")
+
+    # Format exposure
+    exposure = opt.get("exposure")
+    if exposure is None:
+      exp_text = "exposure unknown"
+    else:
+      exp_parts = []
+      attacker_count = exposure.get("distinct_attacker_count")
+      max_damage = exposure.get("max_incoming_damage")
+      expected_damage = exposure.get("expected_incoming_damage_tenths")
+
+      if isinstance(attacker_count, int):
+        exp_parts.append(f"attackers={attacker_count}")
+      if isinstance(max_damage, int):
+        exp_parts.append(f"max damage={max_damage}")
+      if isinstance(expected_damage, int):
+        exp_parts.append(f"expected damage={expected_damage / 10.0:.1f}")
+
+      exp_text = ", ".join(exp_parts) if exp_parts else "exposure unknown"
+
+    # Format movement cost (may be None if not available)
+    if cost is None:
+      cost_str = " cost unknown"
+    elif isinstance(cost, int):
+      cost_str = f" cost={cost}"
+    else:
+      cost_str = ""
+
+    lines.append(f"  {option_id}: ({dest_col},{dest_row}){cost_str} | {exp_text}")
+
+  return "\n".join(lines)

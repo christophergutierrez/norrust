@@ -490,6 +490,26 @@ occupant came from an earlier proposed action (with its zero-based index) or
 from the original live state. Similarly, a target rejection (`UnitNotFound`)
 identifies whether the unit was killed by an earlier proposed action in the
 sequential batch (naming its index) or was missing from the original live state.
+
+When that rejection's first failed action is a direct `Move` by one of the
+model's own units, the single repair prompt also carries a
+`STRATEGY_REPAIR_OPTIONS` block: at most three legal endpoints for that one
+actor, taken from the engine rather than guessed. They come from a single
+`inspect_unit` facts query and are each confirmed with `validate_batch` at the
+unchanged revision, so every advertised endpoint is executable right then;
+at most three such validations are spent, and none is advertised without its own
+successful verdict. Endpoints are ordered by known exposure first (never
+treating unknown exposure as zero), then by engine distance to the hex the model
+originally asked for, then by `(col,row)`. Each carries its movement cost,
+destination and attacker/damage facts.
+
+A legal endpoint is not a safe endpoint, and the block never says otherwise.
+Choosing one REPLACES the entire rejected batch: it is not appended to the
+prefix, and the rejected prefix was never committed. An authored complete
+replacement `act` remains available exactly as before. When the actor has
+already moved, is dead, or belongs to the opponent, the block is absent or
+carries an explicit reason rather than invented alternatives; a spent query
+budget simply truncates the list instead of failing the repair.
 Rejection is transactional: no earlier action in
 that batch commits, and the corrected response is validated from the unchanged
 revision. A recruit moved away during the same replay frees its castle hex for
@@ -1542,7 +1562,14 @@ call. A model action batch must never contain `Query`:
 The current position and reachable positions therefore map directly to `Move` and
 `Attack` choices. `recruit_options` returns the active faction's `faction_id`,
 `side_can_place`, `placement_hexes`, each legal definition's `def_id`, `cost`, and
-`affordable`, plus `batch_macro_enabled`. These engine responses are authoritative:
+`affordable`, plus `batch_macro_enabled`. `inspect_unit` reports one entry per
+reachable destination in `destination_threats`, each carrying the engine's own
+movement `cost` to that hex (`0` for the unit's current hex, `null` when the
+engine did not list it) alongside the existing exposure facts, and an integer
+`distance` only when the request supplies both `to_col` and `to_row`. `distance`
+is hex geometry to that reference and never claims the unit can path there:
+reachability is exactly the listed destinations. These
+engine responses are authoritative:
 the client does not reconstruct movement, combat, recruitment, or placement
 legality. Additional engine query failures are typed status failures.
 

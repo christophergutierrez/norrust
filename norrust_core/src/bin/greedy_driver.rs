@@ -34,7 +34,7 @@ use norrust_core::game_state::{
     apply_action, apply_advance, apply_recruit, eligible_recruiter_keep, legal_recruitment_placements,
     recruit_from_def, Action, AdvanceTarget, GameState, PendingSpawn, TriggerZone,
 };
-use norrust_core::game_state::{legal_moves, legal_targets};
+use norrust_core::game_state::{legal_moves, legal_moves_with_costs, legal_targets};
 use norrust_core::hex::Hex;
 use norrust_core::loader::{expand_recruits, Registry};
 use norrust_core::pathfinding::{get_zoc_hexes, reachable_hexes};
@@ -3576,6 +3576,53 @@ fn interactive_protocol_game(mut c: Config) {
                                     match unit_destination_threats(&state, unit_id) {
                                         Ok(destinations) => {
                                             body["destination_threats"] = json!(destinations);
+                                            // Enrich each destination with the engine's own movement
+                                            // cost, and with hex distance to a reference hex when the
+                                            // caller names one (to_col/to_row). Distance is geometry
+                                            // only: reachability remains exactly this destination list.
+                                            let costs = legal_moves_with_costs(&state, unit_id)
+                                                .unwrap_or_default();
+                                            let reference = match (
+                                                parsed.get("to_col").and_then(Value::as_i64),
+                                                parsed.get("to_row").and_then(Value::as_i64),
+                                            ) {
+                                                (Some(c), Some(r)) => {
+                                                    Some(Hex::from_offset(c as i32, r as i32))
+                                                }
+                                                _ => None,
+                                            };
+                                            if let Some(entries) =
+                                                body["destination_threats"].as_array_mut()
+                                            {
+                                                for entry in entries.iter_mut() {
+                                                    let (col, row) = match (
+                                                        entry.get("col").and_then(Value::as_i64),
+                                                        entry.get("row").and_then(Value::as_i64),
+                                                    ) {
+                                                        (Some(c), Some(r)) => (c as i32, r as i32),
+                                                        _ => continue,
+                                                    };
+                                                    let hex = Hex::from_offset(col, row);
+                                                    let is_current = entry
+                                                        .get("current")
+                                                        .and_then(Value::as_bool)
+                                                        .unwrap_or(false);
+                                                    // The unit's own hex costs nothing to "reach";
+                                                    // anything the engine did not list stays unknown.
+                                                    let cost = if is_current {
+                                                        Some(0)
+                                                    } else {
+                                                        costs.get(&hex).copied()
+                                                    };
+                                                    entry["cost"] = match cost {
+                                                        Some(value) => json!(value),
+                                                        None => Value::Null,
+                                                    };
+                                                    if let Some(target) = reference {
+                                                        entry["distance"] = json!(hex.distance(target));
+                                                    }
+                                                }
+                                            }
                                             json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,"body":body})
                                         }
                                         Err(error) => {
