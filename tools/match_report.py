@@ -467,6 +467,11 @@ def classify(records: list[dict[str, Any]],
         "physical_calls": explicit_physical_calls,
         "repairs": total_repairs,
         "strategy_repairs": len(strategy_repairs),
+        "strategy_recovery": {
+            key: terminal.get("strategy_recovery_" + key,
+                              metadata.get("strategy_recovery_" + key))
+            for key in ("dispatched", "committed", "rejected", "unavailable")
+        },
         "rejected_strategy_proposals": rejected_proposals_count,
         "repair_breakdown": dict(repair_breakdown),
         "repair_discrepancy": repair_discrepancy,

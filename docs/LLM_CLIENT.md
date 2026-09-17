@@ -503,6 +503,47 @@ treating unknown exposure as zero), then by engine distance to the hex the model
 originally asked for, then by `(col,row)`. Each carries its movement cost,
 destination and attacker/damage facts.
 
+If that single repair is ALSO rejected by the engine for action legality, the
+client issues one final constrained recovery response for that controlled side
+turn. Nothing from either rejected batch was committed. Eligibility is narrow:
+only a second engine action-legality rejection qualifies. A provider failure,
+malformed JSON, a policy or context rejection, a stale revision, a query, time,
+token or call limit, a cancellation and a no-progress halt all keep their own
+existing outcomes and never open recovery.
+
+The recovery packet offers at most three single-actor options, reusing the
+failed actor's repair endpoints or the ordinary packet's own singletons, each
+validated at the unchanged revision together with the no-sweep finish boundary
+it would execute with. Recovery `choose` must select exactly one option and set
+`finish_turn=true`; it cannot combine independently validated alternatives.
+Allowed kinds are the intersection of `choose`,
+`finish_turn` and `resign` with the ORIGINAL packet's permissions: recovery
+never invents a permission the ordinary decision lacked, so a context that may
+not finish still may not finish, and `act`, `set_policy` and inspection loops
+are not accepted in this last response. Resignation stays a model decision and
+is never an automatic fallback, so a resign-only menu does not count as an
+executable recovery; when none exists the run keeps its ordinary invalid-response
+terminal with a recorded reason rather than inventing an action.
+
+The allowance is at most one extra logical model response per controlled side
+turn, spent within the existing per-turn call, query, token and time budgets, so
+a normal response plus a repair plus a recovery is three responses only when
+those limits already allow three. It is RESERVED and journalled before dispatch
+(`strategy_recovery_reserved`, carrying the side turn, revision, decision id,
+source request, allowed kinds and offered option ids), so an interrupted or
+uncertain dispatch consumes it: resuming replays those records and never grants
+a second recovery for the same side turn, and another incident, a policy change
+or a restart never refills it. Outcomes are journalled separately
+(`strategy_recovery_outcome` accepted, committed, or rejected, and
+`strategy_recovery_unavailable` with its reason) and counted separately in
+`strategy_recovery_dispatched`, `_committed`, `_rejected` and `_unavailable`. A
+counter ABSENT from an older log means unknown, not zero. Acceptance records a
+validated response; committed is counted only after the driver checkpoint and
+ordinary batch-commit record prove execution. Reservation alone is not dispatch.
+`strategy_recovery_dispatch` records each backend attempt after budget and stop
+checks; the normal output-limit policy remains in force. Provider calls and paid
+usage are reconciled from the usage sidecar, including locally blocked attempts.
+
 A legal endpoint is not a safe endpoint, and the block never says otherwise.
 Choosing one REPLACES the entire rejected batch: it is not appended to the
 prefix, and the rejected prefix was never committed. An authored complete

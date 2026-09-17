@@ -323,6 +323,18 @@ several underlying provider/host inference calls -- a publication attempt,
 an inspection/tool call, a retried call after a transport error -- so
 `model_requests` is too coarse to be the detailed usage ledger.
 
+A bounded strategy recovery uses an ordinary model request: its physical calls
+appear in `model_calls` exactly once, joined to the request that carried them,
+including any output-limit retry. The client journals
+`strategy_recovery_reserved` before dispatching it and `strategy_recovery_outcome`
+afterwards, distinguishing response acceptance from checkpoint-proven commitment.
+`strategy_recovery_dispatch` records backend attempts, not proof of paid usage.
+An import can reconcile a reservation that has no response (an
+interrupted dispatch, which still consumes the side turn's allowance) against one
+that produced a committed batch. Reimporting the same archive is idempotent and
+adds no extra calls. Logs written before this feature carry no recovery records
+at all; their recovery counts are unknown rather than zero.
+
 `model_calls` is that detailed ledger. Each row is one actual provider/host
 inference response, or one observable dispatched attempt whose outcome is
 unknown; a locally blocked request that never reached a provider owns zero

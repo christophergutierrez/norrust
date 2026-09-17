@@ -1198,6 +1198,13 @@ class EngineBatchRejected(ModelResponseError):
             return action
         return None
 
+    @property
+    def recoverable_action_rejection(self) -> bool:
+        return (self.failed_action is not None
+                and self.validation.get("committed") is False
+                and self.validation.get("replay") == "read_only_atomic"
+                and not self.validation.get("error_code"))
+
 
 class QueryBudgetExhausted(RuntimeError):
     """The driver refused a query because the per-turn query budget is spent.
@@ -1417,6 +1424,34 @@ def validated_selections_for_packet(packet: DecisionPacket, exchange, state_revi
 
 
 STRATEGY_MAX_REPAIR_VALIDATIONS = 3
+STRATEGY_MAX_RECOVERY_OPTIONS = 3
+
+
+def recovery_candidate_options(rejection: EngineBatchRejected, packet: Optional[DecisionPacket],
+                               repair_menu: Optional[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Legal single-actor candidates for a constrained recovery, at most three.
+
+    Reuses what already exists: the failed actor's repair endpoints from Stack 2 when
+    there are any, otherwise the ordinary packet's own singleton options. There is no
+    cross-unit rescue search and no new option vocabulary.
+    """
+    candidates: list[dict[str, Any]] = []
+    if rejection.actor_id is None:
+        return candidates
+    if isinstance(repair_menu, dict):
+        for option in repair_menu.get("options", []):
+            if (isinstance(option, dict) and option.get("actions")
+                    and option.get("actor_id") == rejection.actor_id):
+                candidates.append(copy.deepcopy(option))
+    if not candidates and packet is not None:
+        actor = rejection.actor_id
+        for option in packet.options:
+            if not isinstance(option, dict) or not option.get("actions"):
+                continue
+            if actor is not None and option.get("actor_id") != actor:
+                continue
+            candidates.append(copy.deepcopy(option))
+    return candidates[:STRATEGY_MAX_RECOVERY_OPTIONS]
 
 
 def movement_repair_menu(rejection: EngineBatchRejected, exchange, state: Any, *,
@@ -1427,9 +1462,11 @@ def movement_repair_menu(rejection: EngineBatchRejected, exchange, state: Any, *
     its exposure, movement cost and distance to the requested hex) plus at most three
     validations. It never fans out a query per reachable hex and never re-searches.
 
-    Returns None when the failure was not a direct Move, when the actor is not ours,
-    or when the facts query fails - callers keep the ordinary repair in those cases.
-    A returned menu may still be empty, carrying an explicit unavailable_reason.
+    Returns None when the failure was not a direct Move or the actor is unavailable
+    or foreign. Inspection protocol, stale-state, and budget failures propagate.
+    A budget exhausted during endpoint validation is flagged on the partial menu;
+    recovery must not use that flag to bypass the budget. An empty menu carries
+    an explicit unavailable_reason.
     """
     move = rejection.failed_move
     if move is None or not isinstance(rejection.actor_id, int):
@@ -1438,6 +1475,12 @@ def movement_repair_menu(rejection: EngineBatchRejected, exchange, state: Any, *
     requested_col, requested_row = move.get("col"), move.get("row")
     if not isinstance(requested_col, int) or not isinstance(requested_row, int):
         return None
+    live_units = state.get("units") if isinstance(state, dict) else None
+    if isinstance(live_units, list):
+        actor = next((unit for unit in live_units
+                      if isinstance(unit, dict) and unit.get("id") == unit_id), None)
+        if actor is None or actor.get("faction") != llm_side:
+            return None
     try:
         response = exchange({"action": "Query", "what": "inspect_unit", "unit_id": unit_id,
                              "state_revision": rejection.state_revision,
@@ -1445,11 +1488,18 @@ def movement_repair_menu(rejection: EngineBatchRejected, exchange, state: Any, *
     except RuntimeError:
         # A facts query failure keeps its own classification upstream; never fabricate.
         raise
-    if not isinstance(response, dict) or not response.get("ok"):
-        return None
+    if not isinstance(response, dict):
+        raise RuntimeError("query_error: movement repair: invalid inspection response")
+    if response.get("code") in {"query_limit", "query_timeout"}:
+        raise QueryBudgetExhausted("query_error: movement repair inspection budget exhausted")
+    if not response.get("ok"):
+        if response.get("code") == "UnitNotFound":
+            return None
+        raise RuntimeError("query_error: movement repair: " + str(response.get("message")))
+    _require_query_revision(response, rejection.state_revision, "inspect_unit")
     inspect_body = response.get("body")
     if not isinstance(inspect_body, dict):
-        return None
+        raise RuntimeError("query_error: movement repair: missing inspection body")
 
     units = state.get("units") if isinstance(state, dict) else None
     occupied: set[tuple[int, int]] = set()
@@ -1483,6 +1533,7 @@ def movement_repair_menu(rejection: EngineBatchRejected, exchange, state: Any, *
             verdict = query_validate_batch(
                 exchange, copy.deepcopy(option.get("actions", [])), rejection.state_revision)
         except QueryBudgetExhausted:
+            menu["budget_exhausted"] = True
             break
         if verdict.get("valid") is True:
             confirmed.append(option)
@@ -5609,6 +5660,12 @@ def run(args: argparse.Namespace) -> int:
     strategy_active_packet: Optional[DecisionPacket] = None
     strategy_economic_reviews_resolved: set[int] = set()
     strategy_economic_reviews_checked: set[int] = set()
+    # Stack 3: at most ONE extra recovery response per controlled side turn. A side
+    # turn lands here the moment recovery is RESERVED, before dispatch, so an
+    # interrupted or uncertain dispatch consumes the allowance rather than handing
+    # out a second one after a crash. Restored from the durable log on resume.
+    strategy_recovery_reserved_side_turns: set[Any] = set()
+    strategy_recovery_accepted_requests: set[str] = set()
     metadata = {"scenario": args.scenario, "faction0": args.faction0, "faction1": args.faction1,
                 "gold": args.gold, "seed": args.seed, "llm_side": args.llm_side,
                 "first_player": 0 if args.llm_side == 0 else 1,
@@ -5672,6 +5729,14 @@ def run(args: argparse.Namespace) -> int:
                 "draft_reviews": 0, "draft_revisions": 0, "draft_confirmations": 0,
                 "draft_review_repairs": 0, "draft_review_inspections": 0,
                 "repairs": 0, "strategy_repairs": 0, "rejected_strategy_proposals": 0,
+                # Stack 3 recovery counters are initialised so a run that never needed
+                # recovery reports an explicit zero. A field ABSENT from an older log
+                # means unknown, not zero, and must not be reported as zero.
+                "strategy_recovery_dispatched": 0,
+                "strategy_recovery_committed": 0,
+                "strategy_recovery_rejected": 0,
+                "strategy_recovery_unavailable": 0,
+                "strategy_recovery_reserved_turns": [],
                 "timeout_finishes": 0,
                 "partial_limit_finishes": 0,
                 "focused_operation_rejections": 0,
@@ -5731,6 +5796,10 @@ def run(args: argparse.Namespace) -> int:
             if isinstance(previous_metadata.get("agenda_origin"), dict):
                 agenda_origin = dict(previous_metadata["agenda_origin"])
         recovered_memory = recover_optional_memory(parent_records)
+        strategy_recovery_reserved_side_turns.update(
+            turn for turn in previous_metadata.get("strategy_recovery_reserved_turns", [])
+            if type(turn) is int)
+        metadata["strategy_recovery_reserved_turns"] = sorted(strategy_recovery_reserved_side_turns)
         if recovered_memory["intent"]:
             intent_memory = recovered_memory["intent"]
             intent_origin = recovered_memory["intent_origin"]
@@ -5749,6 +5818,13 @@ def run(args: argparse.Namespace) -> int:
                 strategy_committed_updates = []
             if record.get("type") == "routine_progress_committed":
                 strategy_committed_updates.append(record)
+            if record.get("type") == "strategy_recovery_reserved":
+                # The allowance is spent once reserved, even if the parent process died
+                # before, during or after that dispatch. Resume must never hand out a
+                # second recovery for the same controlled side turn.
+                strategy_recovery_reserved_side_turns.add(record.get("side_turn"))
+                metadata["strategy_recovery_reserved_turns"] = sorted(
+                    turn for turn in strategy_recovery_reserved_side_turns if type(turn) is int)
             if record.get("type") == "agenda_error":
                 # Undelivered at interruption: the resumed side still owes the
                 # player this explanation, so replay it rather than dropping it.
@@ -5980,7 +6056,7 @@ def run(args: argparse.Namespace) -> int:
                  "start_revision": start_revision,
                  "started_at": datetime.now(timezone.utc).isoformat()})
     def complete_model(model_prompt: str, *, allow_tools: bool = True,
-                       purpose: str = "decision") -> ModelReply:
+                       purpose: str = "decision", recovery: bool = False) -> ModelReply:
         if purpose not in {"decision", "inspection_followup", "review", "repair"}:
             raise ValueError(f"unknown model request purpose: {purpose}")
         nonlocal request_sequence, pending_annotation_notice, pending_agenda_feedback
@@ -6114,6 +6190,11 @@ def run(args: argparse.Namespace) -> int:
                     try:
                         try:
                             check_stop_fence("before_provider_dispatch")
+                            if recovery:
+                                metadata["strategy_recovery_dispatched"] += 1
+                                durable({"type": "strategy_recovery_dispatch",
+                                         "request_id": request_id,
+                                         "side_turn_id": request_side_turn_id})
                             attempt_dispatched = True
                             reply = backend.complete(delivered_prompt)
                         finally:
@@ -6619,9 +6700,150 @@ def run(args: argparse.Namespace) -> int:
         """Call, inspect, repair once, and parse one strategy response."""
         nonlocal strategy_model_responses_this_turn, model_calls_this_turn
         nonlocal focused_local_context
+        nonlocal strategy_active_packet
         repair_attempted = False
         tool_context = ""
         current_prompt = prompt_text
+        recovery_attempted = False
+        repair_was_engine_rejection = False
+
+        def begin_recovery(exc: EngineBatchRejected,
+                           reply: ModelReply) -> Optional[tuple[DecisionPacket, str]]:
+            """Reserve and build the ONE constrained recovery for this side turn.
+
+            Returns None whenever recovery is not permitted, in which case the caller
+            re-raises and the existing terminal classification stands. Eligibility is
+            narrow on purpose: only a second ENGINE ACTION-LEGALITY rejection qualifies,
+            never a provider failure, malformed response, policy/context rejection,
+            budget, cancellation or stale revision.
+            """
+            nonlocal recovery_attempted, strategy_active_packet
+            if (recovery_attempted or not repair_was_engine_rejection
+                    or not exc.recoverable_action_rejection):
+                return None
+            if model_calls_this_turn >= metadata["max_model_calls_per_turn"]:
+                raise ModelCallBudgetExhausted("strategy recovery response budget exhausted")
+            check_game_budget()
+            check_stop_fence("before_recovery_construction")
+            # Key the allowance on the controlled TURN NUMBER, not the side-turn id.
+            # A checkpoint resume starts a new conversation id, so an id-based key would
+            # look unused after a crash and hand out a second "final" recovery for the
+            # same turn. The turn number survives resume; the id is kept for provenance.
+            side_turn_key = int(state.get("turn", 0)) if isinstance(state, dict) else 0
+            side_turn_id = metadata.get("current_side_turn_id")
+            if side_turn_key in strategy_recovery_reserved_side_turns:
+                # A different incident, a policy revision or a restart never refills it.
+                metadata["strategy_recovery_unavailable"] += 1
+                durable({"type": "strategy_recovery_unavailable",
+                         "side_turn": side_turn_key, "reason": "allowance_already_used"})
+                return None
+            revision = int(state.get("state_revision", 0)) if isinstance(state, dict) else 0
+
+            repair_menu = None
+            if exc.failed_move is not None:
+                repair_menu = movement_repair_menu(exc, exchange, state, llm_side=args.llm_side)
+                if repair_menu is not None and repair_menu.get("budget_exhausted"):
+                    raise QueryBudgetExhausted("query_error: recovery menu budget exhausted")
+            candidates = recovery_candidate_options(exc, decision_packet, repair_menu)
+
+            # Each candidate is validated together with the no-sweep finish boundary it
+            # will actually execute with, so an advertised recovery cannot fail on the
+            # boundary the model is being told to use.
+            validated: list[dict[str, Any]] = []
+            for option in candidates:
+                orders = copy.deepcopy(option.get("actions", []))
+                orders.append(copy.deepcopy(NO_SWEEP_FINISH))
+                verdict = query_validate_batch(exchange, orders, revision)
+                if verdict.get("valid") is True:
+                    validated.append(option)
+
+            # Intersect with the ACTUAL context permissions: recovery never invents a
+            # permission the ordinary decision did not already carry, and a mandatory
+            # advancement context cannot finish merely because recovery is active.
+            context_kinds = set(decision_packet.allowed_kinds) if decision_packet is not None else set()
+            allowed = [kind for kind in ("choose", "finish_turn", "resign")
+                       if kind in context_kinds]
+            if not validated and "choose" in allowed:
+                allowed.remove("choose")
+            if not allowed or (allowed == ["resign"]):
+                # Resignation is always the model's own decision and is never the
+                # automatic fallback, so a resign-only menu is not an executable recovery.
+                durable({"type": "strategy_recovery_unavailable",
+                         "side_turn": side_turn_key, "state_revision": revision,
+                         "reason": "no_permitted_executable_recovery",
+                         "validated_options": len(validated),
+                         "context_kinds": sorted(context_kinds)})
+                metadata["strategy_recovery_unavailable"] = int(
+                    metadata.get("strategy_recovery_unavailable", 0)) + 1
+                return None
+
+            evidence = {
+                "stage": "recovery",
+                "failed_action": copy.deepcopy(exc.failed_action),
+                "failed_index": exc.failed_index,
+                "error_code": exc.error_code,
+                "options": copy.deepcopy(validated),
+                "options_truncated": False,
+            }
+            recovery_packet = build_decision_packet(
+                "engine_repair_exhausted", evidence, revision,
+                game_id=metadata.get("game_id") or metadata.get("conversation_id") or "",
+                side_turn=state.get("turn") if isinstance(state, dict) else 0,
+                final_only=True,
+                allowed_kinds_override=allowed)
+
+            # Reserve BEFORE dispatch and journal it, so an interrupted or uncertain
+            # dispatch consumes the allowance instead of granting a second one on resume.
+            recovery_attempted = True
+            # The caller resolves the chosen option ids against the issued packet, so the
+            # recovery packet must become the active one; otherwise a valid recovery choose
+            # would be rejected downstream as an unknown option id.
+            strategy_active_packet = recovery_packet
+            strategy_recovery_reserved_side_turns.add(side_turn_key)
+            metadata["strategy_recovery_reserved_turns"] = sorted(
+                turn for turn in strategy_recovery_reserved_side_turns if type(turn) is int)
+            durable({"type": "decision_packet", "packet": recovery_packet.to_dict(),
+                     "side_turn": side_turn_key, "state_revision": revision,
+                     "game_id": metadata.get("conversation_id")})
+            durable({"type": "strategy_recovery_reserved",
+                     "side_turn": side_turn_key,
+                     "side_turn_id": side_turn_id,
+                     "state_revision": revision,
+                     "decision_id": recovery_packet.decision_id,
+                     "source_request_id": reply.request_id,
+                     "allowed_kinds": list(allowed),
+                     "option_ids": [option.get("option_id") for option in validated],
+                     "error_code": exc.error_code})
+
+            shapes = []
+            if "choose" in allowed:
+                ids = ", ".join(repr(option.get("option_id")) for option in validated)
+                shapes.append(
+                    '{"kind":"choose","decision_id":"' + recovery_packet.decision_id +
+                    '","option_ids":["<one of ' + ids + '>"],"finish_turn":true}')
+            if "finish_turn" in allowed:
+                shapes.append('{"kind":"finish_turn"}')
+            if "resign" in allowed:
+                shapes.append('{"kind":"resign"}')
+            brief = render_decision_brief(
+                recovery_packet,
+                state=state,
+                recruit_options=None,
+                changes=None,
+                policy=strategy_installation.policy if strategy_installation is not None else None,
+                progress=strategy_progress)
+            return recovery_packet, (
+                brief +
+                "\nSTRATEGY_RECOVERY_BEGIN\n"
+                "Your previous batch was rejected by the engine and the single repair was "
+                "also rejected; nothing was committed. This is the LAST response of this "
+                "turn. Answer with exactly one of these shapes:\n" +
+                "\n".join(shapes) +
+                "\nThe listed options were validated at state_revision " + str(revision) +
+                " together with the finishing boundary; they are legal, not safe. "
+                "act and set_policy are not accepted here, and another invalid answer "
+                "ends this run.\nSTRATEGY_RECOVERY_END\n")
+
 
         def note_response_repair(error: object, raw_output: object) -> None:
             # Keep the bounded repair visible in the durable transcript.  The
@@ -6651,19 +6873,26 @@ def run(args: argparse.Namespace) -> int:
                 except (OSError, ValueError):
                     pass
 
+        def reject_recovery(error: object, reply: ModelReply) -> None:
+            if recovery_attempted:
+                metadata["strategy_recovery_rejected"] += 1
+                durable({"type": "strategy_recovery_outcome", "outcome": "rejected",
+                         "error": str(error), "request_id": reply.request_id})
+
         while True:
             if model_calls_this_turn >= metadata["max_model_calls_per_turn"]:
                 raise ModelCallBudgetExhausted("strategy logical response budget exhausted")
             model_calls_this_turn += 1
             strategy_model_responses_this_turn += 1
             metadata["model_calls"] += 1
-            allow_tools = (not bool(strategy_effective_final_only)
+            allow_tools = (not recovery_attempted and not bool(strategy_effective_final_only)
                            and tool_calls_this_turn < metadata["max_tool_calls_per_turn"]
                            and model_calls_this_turn < metadata["max_model_calls_per_turn"])
             delivered = current_prompt + tool_context
             purpose = ("repair" if repair_attempted else
                        ("inspection_followup" if tool_context else "decision"))
-            reply = complete_model(delivered, allow_tools=allow_tools, purpose=purpose)
+            reply = complete_model(delivered, allow_tools=allow_tools, purpose=purpose,
+                                   recovery=recovery_attempted)
             enforce_usage(reply, args)
             record({"type": "model", "call": metadata["model_calls"],
                     "prompt_hash": reply.prompt_hash, "prompt_bytes": reply.prompt_bytes,
@@ -6674,6 +6903,7 @@ def run(args: argparse.Namespace) -> int:
                 decoded, recovered_suffix = decode_strategy_response(reply.text)
             except (TypeError, ValueError) as exc:
                 if repair_attempted:
+                    reject_recovery(exc, reply)
                     raise ModelResponseError(f"response is not valid JSON: {exc}") from exc
                 repair_attempted = True
                 note_response_repair(exc, reply.text)
@@ -6693,6 +6923,7 @@ def run(args: argparse.Namespace) -> int:
                 if not allow_tools:
                     exc = ModelResponseError("strategy inspection is unavailable at this boundary")
                     if repair_attempted:
+                        reject_recovery(exc, reply)
                         raise exc
                     repair_attempted = True
                     note_response_repair(exc, reply.text)
@@ -6722,6 +6953,10 @@ def run(args: argparse.Namespace) -> int:
                 parsed = parse_model_response(decoded)
                 if decision_packet is not None:
                     validate_response_context(parsed, decision_packet)
+                if recovery_attempted and isinstance(parsed, ChooseResponse):
+                    if not parsed.finish_turn or len(parsed.option_ids) != 1:
+                        raise ModelResponseError(
+                            "recovery choose requires exactly one option and finish_turn=true")
                 if isinstance(parsed, SetPolicyResponse) and policy_context is not None:
                     known = effective_scout_ids(
                         strategy_installation.policy if strategy_installation is not None else None,
@@ -6780,8 +7015,18 @@ def run(args: argparse.Namespace) -> int:
                     parsed.option_action_ranges = option_action_ranges
                 if is_redundant_finish_turn(decoded):
                     note_finish_normalization(reply, decoded)
+                if recovery_attempted:
+                    strategy_recovery_accepted_requests.add(reply.request_id)
+                    durable({"type": "strategy_recovery_outcome", "outcome": "accepted",
+                             "kind": decoded.get("kind") if isinstance(decoded, dict) else None,
+                             "request_id": reply.request_id,
+                             "state_revision": int(state.get("state_revision", 0))
+                             if isinstance(state, dict) else None})
                 return parsed, reply
             except (ModelResponseError, PolicyValidationError) as exc:
+                if recovery_attempted:
+                    reject_recovery(exc, reply)
+                    raise
                 if decision_packet is not None and isinstance(exc, ContextualResponseError):
                     current_side_turn = state.get("turn") if isinstance(state, dict) else 0
                     strategy_incident_tracker.record_ineffective(
@@ -6793,7 +7038,7 @@ def run(args: argparse.Namespace) -> int:
                              "side_turn": current_side_turn,
                              "reason": str(exc),
                              "response": reply.text})
-                    if repair_attempted or not strategy_incident_tracker.can_attempt_correction(
+                    if repair_attempted or recovery_attempted or not strategy_incident_tracker.can_attempt_correction(
                             current_side_turn, decision_packet.state_revision, decision_packet.incident_key):
                         raise
                     repair_attempted = True
@@ -6806,10 +7051,20 @@ def run(args: argparse.Namespace) -> int:
                     tool_context = ""
                     continue
                 if repair_attempted:
+                    # Stack 3: one constrained recovery, only after a SECOND engine
+                    # action-legality rejection. Anything else keeps its terminal.
+                    if isinstance(exc, EngineBatchRejected):
+                        started = begin_recovery(exc, reply)
+                        if started is not None:
+                            decision_packet, current_prompt = started
+                            tool_context = ""
+                            continue
                     raise
                 repair_attempted = True
                 note_response_repair(exc, reply.text)
                 repair_menu_text = ""
+                repair_was_engine_rejection = (
+                    isinstance(exc, EngineBatchRejected) and exc.recoverable_action_rejection)
                 if isinstance(exc, EngineBatchRejected) and exc.failed_move is not None:
                     # Stack 2: replace coordinate guessing with engine-derived endpoints.
                     menu = movement_repair_menu(exc, exchange, state, llm_side=args.llm_side)
@@ -7335,9 +7590,13 @@ def run(args: argparse.Namespace) -> int:
                                  message="final_only strategy choose must set finish_turn=true")
                     durable({"type": "terminal", **metadata})
                     return TERMINAL_EXIT_CODES[TERMINAL_MODEL_INVALID]
+                issuing_packet = packet
+                if (strategy_active_packet is not None
+                        and strategy_active_packet.decision_id == parsed.decision_id):
+                    issuing_packet = strategy_active_packet
                 try:
                     orders, option_action_ranges = resolve_choose_batch(
-                        parsed, packet, no_recruit_macro=args.no_recruit_macro)
+                        parsed, issuing_packet, no_recruit_macro=args.no_recruit_macro)
                 except ContextualResponseError as exc:
                     set_terminal(metadata, TERMINAL_MODEL_INVALID, winner=None,
                                  reason=TERMINAL_MODEL_INVALID, code="strategy_response_invalid",
@@ -7556,6 +7815,13 @@ def run(args: argparse.Namespace) -> int:
             return emit_budget_interrupted("max_game_total_tokens_exhausted", message)
         if isinstance(error, PromptTooLarge):
             return emit_prompt_too_large(error)
+        if isinstance(error, QueryBudgetExhausted):
+            return emit_budget_interrupted("query_budget_exhausted", message)
+        if message.startswith("query_error:"):
+            set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
+                         reason="infrastructure_failure", code="query_error", message=message)
+            durable({"type": "query_error", **metadata})
+            return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
         set_terminal(metadata, TERMINAL_INFRASTRUCTURE,
                      winner=None, reason="infrastructure_failure",
                      code="model_backend_failure", message=message)
@@ -7819,6 +8085,12 @@ def run(args: argparse.Namespace) -> int:
                     # report the action boundary as uncertain.
                     check_stop_fence("after_checkpoint_before_batch_commit")
                     durable({"type": "batch_committed", **commit_details})
+                    recovery_request = pending_commit.get("request_id")
+                    if recovery_request in strategy_recovery_accepted_requests:
+                        strategy_recovery_accepted_requests.remove(recovery_request)
+                        metadata["strategy_recovery_committed"] += 1
+                        durable({"type": "strategy_recovery_outcome", "outcome": "committed",
+                                 **commit_details})
                     contact_key = pending_commit.get("contact_state_key")
                     if isinstance(contact_key, str) and contact_key:
                         gid = pending_commit.get("contact_game_id") or ""

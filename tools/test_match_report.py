@@ -5,6 +5,20 @@ from .llm_client import replay_accepted_progress
 
 
 class ReportTests(unittest.TestCase):
+    def test_recovery_acceptance_is_not_reported_as_commit(self):
+        report = classify([
+            {"type": "strategy_recovery_outcome", "outcome": "accepted"},
+            {"type": "terminal", "terminal_class": "infrastructure_failure",
+             "strategy_recovery_dispatched": 1, "strategy_recovery_committed": 0,
+             "strategy_recovery_rejected": 0, "strategy_recovery_unavailable": 0},
+        ])
+        self.assertEqual(report["strategy_recovery"]["dispatched"], 1)
+        self.assertEqual(report["strategy_recovery"]["committed"], 0)
+
+    def test_historical_recovery_counters_are_unknown(self):
+        report = classify([{"type": "terminal", "terminal_class": "model_invalid"}])
+        self.assertTrue(all(value is None for value in report["strategy_recovery"].values()))
+
     def test_progress_replay_resets_only_at_accepted_end_turn(self):
         moved, attacked = replay_accepted_progress([
             {"type": "driver", "line": {"type": "events", "source": "llm", "events": [

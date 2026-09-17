@@ -212,6 +212,16 @@ necessary archive evidence once. Final reports must cover:
 - Completed controlled player turns versus engine side-turns, terminal reason, and winner only if proven.
 - Villages, income, recruiter survival (including terminal recruiter position col/row and last model action if fallen), and model versus routine actions.
 - Recoveries, repairs (distinguishing schema errors, engine rejections, and context rejections), and exceptions.
+- Bounded strategy recoveries, counted separately from ordinary repairs:
+  dispatched backend attempts, committed batches, rejected responses, and
+  unavailable recoveries (`match_report.strategy_recovery`). At most one extra logical response
+  per controlled side turn, reserved before dispatch and never refilled by a
+  later incident or a resume. A run whose log lacks these counters predates the
+  feature: report them as unknown, not zero. A recovery that commits a legal
+  move is not evidence of good play, and an unavailable recovery is not a
+  failure of the model.
+  Reservation is not dispatch, and an accepted response is not yet a committed
+  action. Check the usage sidecar for actual provider calls and billing coverage.
 - Physical calls versus logical requests, and measured input, cached input, output, and reasoning tokens (included in output).
 - Input/output cost separation: compute uncached input, cached input, and output independently at dated rates; count cached input once and do not double-count reasoning. Preserve unknown cache-write usage.
 - Measured model elapsed time versus engine execution time.
