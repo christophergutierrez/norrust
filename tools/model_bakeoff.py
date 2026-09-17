@@ -200,7 +200,7 @@ def resolve_manifest(manifest: dict[str, Any], *, rng: random.Random | None = No
         cell["decision_mode"], cell["action_encoding"] = mode, encoding
         cell["incremental_turns"] = bool(cell.get("incremental_turns", mode == "focused"))
         cell["budgets"] = dict(cell.get("budgets") or {})
-        cell["budgets"].setdefault("max_partial_batches_per_turn", 64 if mode == "focused" else 3)
+        cell["budgets"].setdefault("max_partial_batches_per_turn", 64 if mode in ("focused", "strategy") else 3)
         cell["max_partial_batches_per_turn"] = cell["budgets"]["max_partial_batches_per_turn"]
         provenance = {
             "guide_hash": guide,
@@ -440,8 +440,8 @@ def run_cell(cell: dict[str, Any], run_dir: Path, *, timeout: float | None = Non
             if source_hash != cell["provenance"]["checkpoint_sha256"]:
                 raise ValueError("checkpoint source changed after manifest resolution")
             payload = json.loads(source_bytes)
-            if (payload.get("boundary") != "model" or payload.get("pending_opponent_turn")
-                    or (payload.get("accepted_partial_batches", 0) and not cell.get("allow_partial_turn_checkpoint"))):
+            if (((payload.get("boundary") != "model" or payload.get("accepted_partial_batches", 0)) and not cell.get("allow_partial_turn_checkpoint"))
+                    or payload.get("pending_opponent_turn")):
                 raise ValueError("comparison branches require a model side-turn boundary")
             (cell_dir / "source_checkpoint.json").write_bytes(source_bytes)
             board = REPO_ROOT / "scenarios" / str(payload["scenario"]) / "board.toml"
@@ -743,6 +743,7 @@ def aggregate_cell(result: CellRunResult, cell: dict[str, Any], *,
         "decision_mode": cell.get("decision_mode"),
         "action_encoding": cell.get("action_encoding"),
         "position_family": cell.get("position_family"),
+        "position_id": cell.get("position_id"),
         "variant": cell.get("variant"),
     }
     if not result.log_path.is_file():
@@ -772,6 +773,17 @@ def aggregate_cell(result: CellRunResult, cell: dict[str, Any], *,
         entry["task_success"] = False
     telemetry = bakeoff_metrics.extract_telemetry(records)
     entry["telemetry"] = telemetry
+    pos_id = cell.get("position_id")
+    if pos_id:
+        try:
+            from . import strategy_quality
+            survival = strategy_quality.score_cell(pos_id, records)
+            entry["survival_score"] = survival
+            entry["metric_vector"] = survival
+            if "passed" in survival and survival["passed"] is not None:
+                entry["task_success"] = survival["passed"]
+        except Exception as exc:
+            entry["survival_score"] = {"status": "unscored", "unscored_reason": str(exc)}
     usage = None
     physical_call_rows = None
     if catalog_path is not None:
@@ -877,7 +889,10 @@ def check_comparison_validity(resolved_manifest: dict[str, Any]) -> dict[str, An
     # share every frozen setting and may differ only in declared treatment.
     groups: dict[str, list[dict[str, Any]]] = {}
     for cell in cells:
-        group = str(cell.get("match_group")) if kind == "bakeoff" else "all"
+        if kind in ("bakeoff", "recruiter_survival"):
+            group = str(cell.get("position_id") or cell.get("match_group"))
+        else:
+            group = "all"
         groups.setdefault(group, []).append(cell)
     for group_cells in groups.values():
         baseline_fp = None
@@ -904,6 +919,8 @@ def check_comparison_validity(resolved_manifest: dict[str, Any]) -> dict[str, An
                 # differ for the declared A/B/C bakeoff.
                 if kind == "bakeoff" and key in TREATMENT_KEYS:
                     continue
+                if kind == "recruiter_survival" and key == "reasoning_effort":
+                    continue
                 # Strategy treatments are a separate comparison family. Their
                 # controller/backend and treatment settings intentionally
                 # differ, while source/driver/guide/checkpoint identity and
@@ -916,7 +933,11 @@ def check_comparison_validity(resolved_manifest: dict[str, Any]) -> dict[str, An
                     continue
                 mismatches.append({"cell": cell["id"], "baseline_cell": baseline_id, "field": key,
                                    "baseline_value": baseline_fp[key], "candidate_value": value})
-        if kind == "bakeoff":
+        if kind == "recruiter_survival":
+            efforts = sorted(c.get("reasoning_effort", "") for c in group_cells)
+            if efforts != ["high", "low"]:
+                mismatches.append({"error": f"position {group} requires both low and high reasoning_effort"})
+        elif kind == "bakeoff":
             if sorted(c.get("arm", "") for c in group_cells) != ["A", "B", "C"]:
                 mismatches.append({"error": "each matched position needs exactly arms A, B, C"})
             partial_limits = {c.get("arm"): c.get("max_partial_batches_per_turn")
@@ -1045,6 +1066,20 @@ def build_report(resolved_manifest: dict[str, Any], results: list[CellRunResult]
                                      "rate": (bucket["completed"] / bucket["cells"]) if bucket["cells"] else None}
 
     arms_present = any(entry.get("arm") in {"A", "B", "C"} for entry in cells_report)
+    recruiter_survival_summary = None
+    if resolved_manifest.get("experiment_kind") == "recruiter_survival":
+        positions: dict[str, Any] = {}
+        for e in cells_report:
+            pid = e.get("position_id") or e.get("match_group")
+            if pid:
+                positions.setdefault(pid, {})[e.get("reasoning_effort")] = e.get("survival_score")
+        recruiter_survival_summary = {
+            "positions": positions,
+            "all_scored": all(
+                e.get("survival_score", {}).get("status") in ("scored", "unscored")
+                for e in cells_report if e.get("status") == "ok"
+            ),
+        }
     return {
         "schema_version": SCHEMA_VERSION,
         "objective": resolved_manifest.get("objective"),
@@ -1054,6 +1089,7 @@ def build_report(resolved_manifest: dict[str, Any], results: list[CellRunResult]
         "configurations": configurations,
         "cells": cells_report,
         "bakeoff": bakeoff_metrics.compare_arms(cells_report) if arms_present else None,
+        "recruiter_survival": recruiter_survival_summary,
         "note": ("Draws are counted separately from wins and are never wins. "
                 "Compute cost (model_calls, wall_ms) is reported per cell, "
                 "separate from outcome. Every scheduled cell above is listed "

@@ -42,23 +42,37 @@ def main(argv: list[str] | None = None) -> int:
   call_count = sum(1 for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip())
   index = max(0, call_count - 1)
   raw_response = responses[min(index, len(responses) - 1)]
-  response = dict(raw_response)
+  response = dict(raw_response) if isinstance(raw_response, dict) else raw_response
 
-  if response.get("kind") == "choose" and response.get("decision_id") == "__FROM_PROMPT__":
-    issued = [match for match in re.findall(r'"decision_id":\s*"([^"]+)"', prompt)
-              if match != "dec-issued"]
-    if issued:
-      response["decision_id"] = issued[-1]
+  if isinstance(response, dict):
+    if "delay_seconds" in response:
+      import time
+      time.sleep(float(response["delay_seconds"]))
 
-  response_text = json.dumps(response, separators=(",", ":"))
-  reply = {
-    "text": response_text,
-    "usage": {
-      "input_tokens": max(10, len(prompt) // 4),
-      "output_tokens": max(5, len(response_text) // 4),
-      "reasoning_tokens": 0,
-    },
-  }
+    if "exit_code" in response:
+      sys.exit(int(response["exit_code"]))
+
+    if response.get("kind") == "choose" and response.get("decision_id") == "__FROM_PROMPT__":
+      issued = [match for match in re.findall(r'"decision_id":\s*"([^"]+)"', prompt)
+                if match != "dec-issued"]
+      if issued:
+        response["decision_id"] = issued[-1]
+
+    if "raw_text" in response:
+      print(response["raw_text"])
+      return 0
+
+    omit_usage = response.pop("omit_usage", False)
+    response_text = json.dumps(response, separators=(",", ":"))
+    reply: dict[str, Any] = {"text": response_text}
+    if not omit_usage:
+      reply["usage"] = {
+        "input_tokens": max(10, len(prompt) // 4),
+        "output_tokens": max(5, len(response_text) // 4),
+        "reasoning_tokens": 0,
+      }
+  else:
+    reply = {"text": str(response)}
   print(json.dumps(reply, separators=(",", ":")))
   return 0
 

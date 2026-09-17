@@ -19,7 +19,11 @@ import subprocess
 import tempfile
 import unittest
 
-from . import strategy_quality as sq
+import shlex
+import sqlite3
+import sys
+
+from . import build_survival_packet, game_history, model_bakeoff, strategy_quality as sq
 
 ROOT = Path(__file__).resolve().parents[1]
 DRIVER = Path(os.environ.get("NORRUST_TEST_DRIVER", ROOT / "norrust_core/target/release/greedy_driver"))
@@ -304,6 +308,343 @@ class TestRecruiterSurvivalFixtures(unittest.TestCase):
         self.assertEqual(vec["friendly_material"], 38)
         self.assertTrue(vec["completed_horizon"])
         self.assertTrue(vec["recruiter_alive"])
+
+
+    def test_bakeoff_recruiter_survival_full_pipeline(self):
+        """Full pipeline: launch -> response -> continuation -> score -> import -> packet."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            run_dir = root / "run"
+            catalog = root / "catalog.sqlite"
+            responses_path = root / "responses.json"
+            responses_path.write_text(json.dumps([{"kind": "finish_turn"}]))
+
+            backend_cmd = (
+                f"{sys.executable} -m tools.fixtures.strategy_decisions.fake_transport "
+                f"--responses {responses_path}"
+            )
+
+            manifest = {
+                "experiment_kind": "recruiter_survival",
+                "cells": [
+                    {
+                        "id": "cell-f1-low",
+                        "position_id": "fixture_1_seed_4477_defensive",
+                        "checkpoint_fixture": "tools/fixtures/recruiter_survival/fixture_1_seed_4477_defensive/checkpoint.json",
+                        "scenario": "big_battle_6",
+                        "seed": 4477,
+                        "faction0": "undead",
+                        "faction1": "undead",
+                        "gold": 300,
+                        "llm_side": 0,
+                        "max_turns": 14,
+                        "model": "fake-model",
+                        "driver": str(DRIVER),
+                        "reasoning_effort": "low",
+                        "decision_mode": "strategy",
+                        "action_encoding": "coordinates",
+                        "incremental_turns": True,
+                        "pricing": {
+                            "date": "2026-09-17",
+                            "rates": {
+                                "input_per_million": 0.15,
+                                "cached_input_per_million": 0.03,
+                                "output_per_million": 0.5,
+                                "reasoning_included_in_output": True,
+                            },
+                        },
+                        "budgets": {
+                            "max_game_total_tokens": 150000,
+                            "max_model_calls_per_turn": 3,
+                            "turn_timeout": 30,
+                            "model_timeout": 10,
+                        },
+                        "backend": {"kind": "command", "command": backend_cmd},
+                    },
+                    {
+                        "id": "cell-f1-high",
+                        "position_id": "fixture_1_seed_4477_defensive",
+                        "checkpoint_fixture": "tools/fixtures/recruiter_survival/fixture_1_seed_4477_defensive/checkpoint.json",
+                        "scenario": "big_battle_6",
+                        "seed": 4477,
+                        "faction0": "undead",
+                        "faction1": "undead",
+                        "gold": 300,
+                        "llm_side": 0,
+                        "max_turns": 14,
+                        "model": "fake-model",
+                        "driver": str(DRIVER),
+                        "reasoning_effort": "high",
+                        "decision_mode": "strategy",
+                        "action_encoding": "coordinates",
+                        "incremental_turns": True,
+                        "pricing": {
+                            "date": "2026-09-17",
+                            "rates": {
+                                "input_per_million": 0.15,
+                                "cached_input_per_million": 0.03,
+                                "output_per_million": 0.5,
+                                "reasoning_included_in_output": True,
+                            },
+                        },
+                        "budgets": {
+                            "max_game_total_tokens": 150000,
+                            "max_model_calls_per_turn": 3,
+                            "turn_timeout": 30,
+                            "model_timeout": 10,
+                        },
+                        "backend": {"kind": "command", "command": backend_cmd},
+                    },
+                ],
+            }
+
+            resolved = model_bakeoff.resolve_manifest(manifest)
+            validity = model_bakeoff.check_comparison_validity(resolved)
+            self.assertTrue(validity["valid"], f"Manifest invalid: {validity.get('mismatches')}")
+
+            results = model_bakeoff.run_manifest(resolved, run_dir, timeout=60)
+            self.assertEqual(len(results), 2)
+            self.assertTrue(all(r.status == "ok" for r in results))
+
+            # Import to catalog
+            imported1 = model_bakeoff.import_cells(catalog, results, "test-cohort")
+            self.assertEqual(len(imported1), 2)
+
+            # Idempotence: re-import produces identical list without error or row duplication
+            imported2 = model_bakeoff.import_cells(catalog, results, "test-cohort")
+            self.assertEqual(imported1, imported2)
+
+            conn = game_history.open_history(catalog, read_only=True)
+            try:
+                games_count = conn.execute("SELECT count(*) FROM games").fetchone()[0]
+                self.assertEqual(games_count, 2)
+            finally:
+                conn.close()
+
+            # Build report
+            report = model_bakeoff.build_report(resolved, results, catalog_path=catalog, cohort_id="test-cohort")
+            self.assertEqual(report["totals"]["scheduled"], 2)
+            self.assertEqual(report["totals"]["completed"], 2)
+            self.assertIsNotNone(report["recruiter_survival"])
+            self.assertIn("fixture_1_seed_4477_defensive", report["recruiter_survival"]["positions"])
+
+            # Generate evidence packet
+            build_survival_packet.generate_packet(run_dir, catalog_path=catalog)
+            self.assertTrue((run_dir / "evidence-index.json").is_file())
+            self.assertTrue((run_dir / "decisions.jsonl").is_file())
+            self.assertTrue((run_dir / "scores.json").is_file())
+            self.assertTrue((run_dir / "review-packet.json").is_file())
+
+            scores = json.loads((run_dir / "scores.json").read_text())
+            self.assertIn("cell-f1-low", scores)
+            self.assertIn("cell-f1-high", scores)
+            self.assertEqual(scores["cell-f1-low"]["status"], "scored")
+
+    def test_fake_transport_missing_usage_and_provider_error(self):
+        """Missing usage is preserved without zero-guessing; provider error records failed cell."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+
+            # 1. Missing usage
+            resp_missing = root / "resp_missing.json"
+            resp_missing.write_text(json.dumps([{"kind": "finish_turn", "omit_usage": True}]))
+            backend_missing = f"{sys.executable} -m tools.fixtures.strategy_decisions.fake_transport --responses {resp_missing}"
+
+            manifest_missing = {
+                "experiment_kind": "recruiter_survival",
+                "cells": [
+                    {
+                        "id": "cell-missing-usage-low",
+                        "position_id": "fixture_1_seed_4477_defensive",
+                        "checkpoint_fixture": "tools/fixtures/recruiter_survival/fixture_1_seed_4477_defensive/checkpoint.json",
+                        "scenario": "big_battle_6",
+                        "seed": 4477,
+                        "faction0": "undead",
+                        "faction1": "undead",
+                        "gold": 300,
+                        "llm_side": 0,
+                        "max_turns": 14,
+                        "model": "fake-model",
+                        "driver": str(DRIVER),
+                        "reasoning_effort": "low",
+                        "decision_mode": "strategy",
+                        "action_encoding": "coordinates",
+                        "incremental_turns": True,
+                        "budgets": {
+                            "max_game_total_tokens": 150000,
+                            "max_model_calls_per_turn": 3,
+                            "turn_timeout": 30,
+                            "model_timeout": 10,
+                        },
+                        "backend": {"kind": "command", "command": backend_missing},
+                    },
+                    {
+                        "id": "cell-missing-usage-high",
+                        "position_id": "fixture_1_seed_4477_defensive",
+                        "checkpoint_fixture": "tools/fixtures/recruiter_survival/fixture_1_seed_4477_defensive/checkpoint.json",
+                        "scenario": "big_battle_6",
+                        "seed": 4477,
+                        "faction0": "undead",
+                        "faction1": "undead",
+                        "gold": 300,
+                        "llm_side": 0,
+                        "max_turns": 14,
+                        "model": "fake-model",
+                        "driver": str(DRIVER),
+                        "reasoning_effort": "high",
+                        "decision_mode": "strategy",
+                        "action_encoding": "coordinates",
+                        "incremental_turns": True,
+                        "budgets": {
+                            "max_game_total_tokens": 150000,
+                            "max_model_calls_per_turn": 3,
+                            "turn_timeout": 30,
+                            "model_timeout": 10,
+                        },
+                        "backend": {"kind": "command", "command": backend_missing},
+                    },
+                ],
+            }
+            resolved_missing = model_bakeoff.resolve_manifest(manifest_missing)
+            res_missing = model_bakeoff.run_manifest(resolved_missing, root / "run_missing", timeout=30)
+            self.assertTrue(all(r.status == "ok" for r in res_missing))
+
+            # 2. Provider error
+            resp_error = root / "resp_error.json"
+            resp_error.write_text(json.dumps([{"exit_code": 1}]))
+            backend_error = f"{sys.executable} -m tools.fixtures.strategy_decisions.fake_transport --responses {resp_error}"
+
+            manifest_error = {
+                "experiment_kind": "recruiter_survival",
+                "cells": [
+                    {
+                        "id": "cell-error-low",
+                        "position_id": "fixture_1_seed_4477_defensive",
+                        "checkpoint_fixture": "tools/fixtures/recruiter_survival/fixture_1_seed_4477_defensive/checkpoint.json",
+                        "scenario": "big_battle_6",
+                        "seed": 4477,
+                        "faction0": "undead",
+                        "faction1": "undead",
+                        "gold": 300,
+                        "llm_side": 0,
+                        "max_turns": 14,
+                        "model": "fake-model",
+                        "driver": str(DRIVER),
+                        "reasoning_effort": "low",
+                        "decision_mode": "strategy",
+                        "action_encoding": "coordinates",
+                        "incremental_turns": True,
+                        "budgets": {
+                            "max_game_total_tokens": 150000,
+                            "max_model_calls_per_turn": 3,
+                            "turn_timeout": 30,
+                            "model_timeout": 10,
+                        },
+                        "backend": {"kind": "command", "command": backend_error},
+                    },
+                    {
+                        "id": "cell-error-high",
+                        "position_id": "fixture_1_seed_4477_defensive",
+                        "checkpoint_fixture": "tools/fixtures/recruiter_survival/fixture_1_seed_4477_defensive/checkpoint.json",
+                        "scenario": "big_battle_6",
+                        "seed": 4477,
+                        "faction0": "undead",
+                        "faction1": "undead",
+                        "gold": 300,
+                        "llm_side": 0,
+                        "max_turns": 14,
+                        "model": "fake-model",
+                        "driver": str(DRIVER),
+                        "reasoning_effort": "high",
+                        "decision_mode": "strategy",
+                        "action_encoding": "coordinates",
+                        "incremental_turns": True,
+                        "budgets": {
+                            "max_game_total_tokens": 150000,
+                            "max_model_calls_per_turn": 3,
+                            "turn_timeout": 30,
+                            "model_timeout": 10,
+                        },
+                        "backend": {"kind": "command", "command": backend_error},
+                    },
+                ],
+            }
+            resolved_error = model_bakeoff.resolve_manifest(manifest_error)
+            res_error = model_bakeoff.run_manifest(resolved_error, root / "run_error", timeout=30)
+            self.assertTrue(all(r.status == "failed" for r in res_error))
+
+    def test_partial_turn_checkpoint_execution(self):
+        """Fixture 4 with allow_partial_turn_checkpoint executes and scores cleanly."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            run_dir = root / "run"
+            responses_path = root / "responses.json"
+            responses_path.write_text(json.dumps([{"kind": "finish_turn"}]))
+            backend_cmd = f"{sys.executable} -m tools.fixtures.strategy_decisions.fake_transport --responses {responses_path}"
+
+            manifest = {
+                "experiment_kind": "recruiter_survival",
+                "cells": [
+                    {
+                        "id": "cell-f4-low",
+                        "position_id": "fixture_4_quiet_control",
+                        "checkpoint_fixture": "tools/fixtures/recruiter_survival/fixture_4_quiet_control/checkpoint.json",
+                        "allow_partial_turn_checkpoint": True,
+                        "scenario": "big_battle_6",
+                        "seed": 4477,
+                        "faction0": "undead",
+                        "faction1": "undead",
+                        "gold": 300,
+                        "llm_side": 0,
+                        "max_turns": 6,
+                        "model": "fake-model",
+                        "driver": str(DRIVER),
+                        "reasoning_effort": "low",
+                        "decision_mode": "strategy",
+                        "action_encoding": "coordinates",
+                        "incremental_turns": True,
+                        "budgets": {
+                            "max_game_total_tokens": 150000,
+                            "max_model_calls_per_turn": 3,
+                            "turn_timeout": 30,
+                            "model_timeout": 10,
+                        },
+                        "backend": {"kind": "command", "command": backend_cmd},
+                    },
+                    {
+                        "id": "cell-f4-high",
+                        "position_id": "fixture_4_quiet_control",
+                        "checkpoint_fixture": "tools/fixtures/recruiter_survival/fixture_4_quiet_control/checkpoint.json",
+                        "allow_partial_turn_checkpoint": True,
+                        "scenario": "big_battle_6",
+                        "seed": 4477,
+                        "faction0": "undead",
+                        "faction1": "undead",
+                        "gold": 300,
+                        "llm_side": 0,
+                        "max_turns": 6,
+                        "model": "fake-model",
+                        "driver": str(DRIVER),
+                        "reasoning_effort": "high",
+                        "decision_mode": "strategy",
+                        "action_encoding": "coordinates",
+                        "incremental_turns": True,
+                        "budgets": {
+                            "max_game_total_tokens": 150000,
+                            "max_model_calls_per_turn": 3,
+                            "turn_timeout": 30,
+                            "model_timeout": 10,
+                        },
+                        "backend": {"kind": "command", "command": backend_cmd},
+                    },
+                ],
+            }
+
+            resolved = model_bakeoff.resolve_manifest(manifest)
+            results = model_bakeoff.run_manifest(resolved, run_dir, timeout=30)
+            self.assertTrue(all(r.status == "ok" for r in results))
+            report = model_bakeoff.build_report(resolved, results)
+            self.assertEqual(report["totals"]["completed"], 2)
 
 
 if __name__ == "__main__":

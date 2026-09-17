@@ -213,7 +213,7 @@ def extract_survival_metric_vector(records: list[dict[str, Any]], expected_side:
   # Check if run ended with an unscored infrastructure/budget termination
   if terminal:
     reason = terminal.get("reason")
-    if reason in ("timeout", "model_timeout", "token_limit", "max_turns", "infrastructure_failure") or terminal.get("infrastructure_invalid"):
+    if reason in ("timeout", "model_timeout", "token_limit", "infrastructure_failure") or terminal.get("infrastructure_invalid") or terminal.get("terminal_class") == "infrastructure":
       return {
         "status": "unscored",
         "unscored_reason": reason or "infrastructure_failure",
