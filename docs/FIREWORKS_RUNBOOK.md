@@ -209,8 +209,11 @@ Inspect SQLite first, then review the final `match.watchdog/review.json` and
 necessary archive evidence once. Final reports must cover:
 - Requested versus reported reasoning effort (`low`, `high`, `max`, or unknown).
 - Prompt layout version (`strategy_layout_v1`, `prompt_layout_v2`, or legacy/unknown) and fixed-prefix UTF-8 bytes and SHA-256 hash.
-- Completed controlled player turns versus engine side-turns, terminal reason, and winner only if proven.
-- Villages, income, recruiter survival (including terminal recruiter position col/row and last model action if fallen), and model versus routine actions.
+- Completed controlled player turns versus resolved side-turns: report `completed_side_turns` (completed `EndTurn` boundaries) and `resolved_side_turns`, noting any `terminal_partial_side_turn`, terminal reason, and winner only if proven.
+- Villages, income, recruiter survival and terminal outcome via `match_report.recruiter_outcome` (last proven live HP and coordinate, last committed model action, and verified death location derived by replaying archive movement events through lethal combat; never a stale pre-move snapshot).
+- Strategy choices and recommendation adoption via `match_report.strategy_choices` (response kinds, submitted selections, committed option batches, option-ID matches, exact ID-plus-finish matches, and custom combinations).
+- Decisive decisions via `match_report.decisive_decisions` (`first_rejected_choice` and `last_recruiter_action`, referencing exact request, decision, revision, options, error, and checkpoint).
+- Delegated tactical actions via `match_report.delegated_tactical_actions` and `tactical_delegation_occurred`: distinguish a no-sweep finish (`FinishWithGreedy(groups=[], holds=[])`) from actual delegated Greedy moves or attacks.
 - Recoveries, repairs (distinguishing schema errors, engine rejections, and context rejections), and exceptions.
 - Bounded strategy recoveries, counted separately from ordinary repairs:
   dispatched backend attempts, committed batches, rejected responses, and

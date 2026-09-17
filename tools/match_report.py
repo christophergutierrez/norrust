@@ -159,6 +159,298 @@ def _end_turn_owner(event: dict[str, Any], source: Any,
     return provenance if provenance in {"unknown", side_owner} else "unknown"
 
 
+def extract_strategy_choices(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Extract strategy response kinds, submitted options, and recommendation adoption."""
+    req_responses: dict[str, dict[str, Any]] = {}
+    response_kinds: Counter[str] = Counter()
+    for r in records:
+        rtype = r.get("type")
+        if rtype == "model_request":
+            req_id = r.get("request_id")
+            raw = r.get("raw_output")
+            if req_id and raw is not None:
+                try:
+                    parsed = json.loads(raw) if isinstance(raw, str) else raw
+                    if isinstance(parsed, dict):
+                        kind = parsed.get("kind", "unknown")
+                        if not isinstance(kind, str):
+                            kind = "malformed"
+                        req_responses[req_id] = parsed
+                    else:
+                        kind = "malformed"
+                except Exception:
+                    kind = "malformed"
+                response_kinds[kind] += 1
+        elif rtype == "model":
+            # Only count standalone model records if no model_request seen
+            pass
+
+    committed_batch_ids = {
+        r["batch_id"] for r in records
+        if r.get("type") == "batch_committed" and isinstance(r.get("batch_id"), str)
+    }
+
+    val_menus: dict[str, dict[str, Any]] = {}
+    for r in records:
+        if r.get("type") == "strategy_validated_selections":
+            dec_id = r.get("decision_id")
+            if isinstance(dec_id, str) and dec_id:
+                val_menus[dec_id] = r
+
+    committed_option_batches = 0
+    id_matches = 0
+    exact_matches = 0
+    custom_combos = 0
+    unresolved_linkage = 0
+
+    for r in records:
+        if r.get("type") == "forwarded_orders":
+            opts = r.get("option_ids")
+            if not isinstance(opts, list) or not opts:
+                continue
+            batch_id = r.get("batch_id")
+            if batch_id not in committed_batch_ids:
+                continue
+            committed_option_batches += 1
+            dec_id = r.get("decision_id")
+            req_id = r.get("request_id")
+            val = val_menus.get(dec_id) if isinstance(dec_id, str) else None
+            req = req_responses.get(req_id) if isinstance(req_id, str) else None
+            if not val or not req:
+                unresolved_linkage += 1
+                continue
+            model_finish = req.get("finish_turn")
+            matched_id = False
+            matched_exact = False
+            for sel in val.get("selections", []):
+                if isinstance(sel, dict) and sel.get("option_ids") == opts:
+                    matched_id = True
+                    if sel.get("finish_turn") == model_finish:
+                        matched_exact = True
+                    break
+            if matched_exact:
+                exact_matches += 1
+                id_matches += 1
+            elif matched_id:
+                id_matches += 1
+            else:
+                custom_combos += 1
+
+    menus_with_selections = [
+        v for v in val_menus.values()
+        if isinstance(v.get("selections"), list) and v["selections"]
+    ]
+
+    has_strategy_evidence = bool(response_kinds or committed_option_batches or val_menus)
+    if not has_strategy_evidence:
+        return {
+            "response_kinds": None,
+            "submitted_option_selections": None,
+            "committed_option_batches": None,
+            "recommendation_adoption": None,
+        }
+
+    return {
+        "response_kinds": dict(response_kinds),
+        "submitted_option_selections": response_kinds.get("choose", 0),
+        "committed_option_batches": committed_option_batches,
+        "recommendation_adoption": {
+            "issued_menus_with_validated_selections": len(menus_with_selections),
+            "committed_option_id_matches": id_matches,
+            "committed_exact_matches": exact_matches,
+            "custom_combinations": custom_combos,
+            "unresolved_linkage": unresolved_linkage,
+        },
+    }
+
+
+def extract_recruiter_outcome(records: list[dict[str, Any]], controlled_side: int | None) -> dict[str, Any]:
+    """Replay live movements and combat events to determine recruiter fate."""
+    if controlled_side not in (0, 1):
+        controlled_side = 0
+    recruiter_id: int | None = None
+    last_proven_live_hp: int | None = None
+    last_proven_live_position: dict[str, int] | None = None
+    last_committed_model_action: dict[str, Any] | None = None
+    death_location: dict[str, int] | None = None
+    death_evidence: dict[str, Any] | None = None
+    death_proven = False
+    alive: bool | None = None
+    current_pos: dict[str, int] | None = None
+
+    for r in records:
+        rtype = r.get("type")
+        if rtype == "driver":
+            line = r.get("line")
+            if not isinstance(line, dict):
+                continue
+            ltype = line.get("type")
+            if ltype == "state":
+                if recruiter_id is None:
+                    rec_unit = next(
+                        (u for u in line.get("units", [])
+                         if isinstance(u, dict) and u.get("can_recruit") and u.get("faction") == controlled_side),
+                        None
+                    )
+                    if rec_unit and isinstance(rec_unit.get("id"), int):
+                        recruiter_id = rec_unit["id"]
+                if recruiter_id is not None:
+                    u = next(
+                        (u for u in line.get("units", [])
+                         if isinstance(u, dict) and u.get("id") == recruiter_id),
+                        None
+                    )
+                    if u:
+                        alive = True
+                        current_pos = {"col": u["col"], "row": u["row"]}
+                        last_proven_live_position = dict(current_pos)
+                        last_proven_live_hp = u.get("hp")
+                    else:
+                        if alive is not None and not death_proven:
+                            alive = False
+            elif ltype == "events":
+                source = line.get("source")
+                for ev in line.get("events", []):
+                    if not isinstance(ev, dict):
+                        continue
+                    ekind = ev.get("kind")
+                    unit = ev.get("unit")
+                    if ekind == "move" and unit == recruiter_id:
+                        to_hex = ev.get("to")
+                        if isinstance(to_hex, dict) and "col" in to_hex and "row" in to_hex:
+                            current_pos = {"col": to_hex["col"], "row": to_hex["row"]}
+                            last_proven_live_position = dict(current_pos)
+                        if source in ("llm", "model"):
+                            last_committed_model_action = {
+                                "action": "Move", "unit_id": recruiter_id,
+                                "col": current_pos["col"] if current_pos else None,
+                                "row": current_pos["row"] if current_pos else None,
+                            }
+                    elif ekind == "attack":
+                        dfn = ev.get("defender") if isinstance(ev.get("defender"), dict) else {}
+                        atk = ev.get("attacker") if isinstance(ev.get("attacker"), dict) else {}
+                        if source in ("llm", "model") and atk.get("unit") == recruiter_id:
+                            last_committed_model_action = {
+                                "action": "Attack", "attacker_id": recruiter_id,
+                                "defender_id": dfn.get("unit"),
+                            }
+                        if dfn.get("unit") == recruiter_id:
+                            hp = dfn.get("hp")
+                            if isinstance(hp, int) and hp > 0:
+                                last_proven_live_hp = hp
+                            if dfn.get("killed") is True:
+                                death_proven = True
+                                alive = False
+                                death_location = dict(current_pos) if current_pos else None
+                                death_evidence = {
+                                    "kind": "attack",
+                                    "attacker": atk.get("unit"),
+                                    "damage": ev.get("damage_to_defender"),
+                                }
+                        elif atk.get("unit") == recruiter_id:
+                            hp = atk.get("hp")
+                            if isinstance(hp, int) and hp > 0:
+                                last_proven_live_hp = hp
+                            if atk.get("killed") is True:
+                                death_proven = True
+                                alive = False
+                                death_location = dict(current_pos) if current_pos else None
+                                death_evidence = {
+                                    "kind": "counterattack",
+                                    "defender": dfn.get("unit"),
+                                    "damage": ev.get("damage_to_attacker"),
+                                }
+                    elif ekind in ("death", "unit_death"):
+                        dead = ev.get("unit") or ev.get("dead")
+                        dead_id = dead.get("id") if isinstance(dead, dict) else dead
+                        if dead_id == recruiter_id:
+                            death_proven = True
+                            alive = False
+                            death_location = dict(current_pos) if current_pos else None
+                            death_evidence = {"kind": ekind}
+
+    if recruiter_id is None:
+        return {
+            "recruiter_id": None,
+            "alive": None,
+            "death_proven": False,
+            "death_location": None,
+            "death_evidence": None,
+            "last_proven_live_hp": None,
+            "last_proven_live_position": None,
+            "last_committed_model_action": None,
+        }
+
+    return {
+        "recruiter_id": recruiter_id,
+        "alive": alive,
+        "death_proven": death_proven,
+        "death_location": death_location,
+        "death_evidence": death_evidence,
+        "last_proven_live_hp": last_proven_live_hp,
+        "last_proven_live_position": last_proven_live_position,
+        "last_committed_model_action": last_committed_model_action,
+    }
+
+
+def extract_decisive_decisions(records: list[dict[str, Any]], recruiter_id: int | None = None) -> dict[str, Any]:
+    """Provide bounded references for the first rejected choice and last recruiter action."""
+    first_rejected: dict[str, Any] | None = None
+    last_recruiter_action: dict[str, Any] | None = None
+    last_ckpt: str | None = None
+    last_packet: dict[str, Any] | None = None
+    last_req: dict[str, Any] | None = None
+
+    for r in records:
+        rtype = r.get("type")
+        if rtype == "checkpoint_ref":
+            path = r.get("path")
+            if isinstance(path, str):
+                last_ckpt = path
+        elif rtype == "decision_packet":
+            last_packet = r
+        elif rtype == "model_request":
+            last_req = r
+        elif rtype == "strategy_response_repair" and first_rejected is None:
+            option_ids = None
+            raw = r.get("raw_output")
+            if raw:
+                try:
+                    parsed = json.loads(raw) if isinstance(raw, str) else raw
+                    if isinstance(parsed, dict) and isinstance(parsed.get("option_ids"), list):
+                        option_ids = parsed["option_ids"]
+                except Exception:
+                    pass
+            first_rejected = {
+                "request_id": last_req.get("request_id") if last_req else None,
+                "decision_id": last_packet.get("packet", {}).get("decision_id") if last_packet else None,
+                "state_revision": r.get("state_revision"),
+                "turn": r.get("turn"),
+                "option_ids": option_ids,
+                "error": r.get("error"),
+                "checkpoint": last_ckpt,
+            }
+        elif rtype == "forwarded_orders":
+            orders = r.get("orders")
+            if isinstance(orders, list) and recruiter_id is not None:
+                for ord_item in orders:
+                    if not isinstance(ord_item, dict):
+                        continue
+                    if ord_item.get("unit_id") == recruiter_id or ord_item.get("attacker_id") == recruiter_id:
+                        last_recruiter_action = {
+                            "request_id": r.get("request_id") or (last_req.get("request_id") if last_req else None),
+                            "decision_id": r.get("decision_id") or (last_packet.get("packet", {}).get("decision_id") if last_packet else None),
+                            "state_revision": r.get("state_revision"),
+                            "action": ord_item,
+                            "checkpoint": last_ckpt,
+                        }
+
+    return {
+        "first_rejected_choice": first_rejected,
+        "last_recruiter_action": last_recruiter_action,
+    }
+
+
 def classify(records: list[dict[str, Any]],
              publication_records: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     terminal = terminal_record(records)
@@ -363,7 +655,9 @@ def classify(records: list[dict[str, Any]],
     elif generated_end_turns:
         # A winner can terminate during an action before emitting EndTurn.
         resolved_side_turns = generated_end_turns + (1 if has_winner else 0)
-    if resolved_side_turns is not None:
+    if terminal_partial_side_turn is not None:
+        completed_side_turns = generated_end_turns
+    elif resolved_side_turns is not None:
         completed_side_turns = resolved_side_turns
     else:
         completed_side_turns = len(side_turns)
@@ -437,6 +731,11 @@ def classify(records: list[dict[str, Any]],
     if not classified_class:
         reason = terminal.get("reason")
         classified_class = "gameplay" if reason in {"winner", "loss", "max_turns", "turn_limit", "resignation"} else "unfinished_recoverable"
+    strategy_choices = extract_strategy_choices(records)
+    recruiter_outcome = extract_recruiter_outcome(records, controlled_side)
+    recruiter_id = recruiter_outcome.get("recruiter_id")
+    decisive_decisions = extract_decisive_decisions(records, recruiter_id=recruiter_id)
+
     report = {
         "terminal_class": classified_class,
         "winner": terminal.get("winner") if classified_class == "gameplay" else None,
@@ -475,6 +774,9 @@ def classify(records: list[dict[str, Any]],
         "rejected_strategy_proposals": rejected_proposals_count,
         "repair_breakdown": dict(repair_breakdown),
         "repair_discrepancy": repair_discrepancy,
+        "strategy_choices": strategy_choices,
+        "recruiter_outcome": recruiter_outcome,
+        "decisive_decisions": decisive_decisions,
         "accounting_mismatch": bool(mismatch_reasons),
         "accounting_mismatch_reasons": mismatch_reasons,
         "tool_calls": terminal.get("queries"),
@@ -542,6 +844,12 @@ def classify(records: list[dict[str, Any]],
             "villages": delegated_villages,
             "end_turns": delegated_event_counts["end_turn"],
         },
+        "delegated_tactical_actions": delegated_event_counts["move"] + delegated_event_counts["attack"],
+        "tactical_delegation_occurred": bool(
+            delegated_event_counts["move"] > 0
+            or delegated_event_counts["attack"] > 0
+            or delegated_kills > 0
+        ),
         "routine": {
             "units": len(routine_units),
             "moves": routine_event_counts["move"],

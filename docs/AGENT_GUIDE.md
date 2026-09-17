@@ -79,11 +79,31 @@ layout, model, affinity, or provider cache fields are unknown, and equal prompt
 prefixes do not establish a provider cache hit or speedup.
 
 For LLM game analysis, use the canonical prompt recorded by `tools/llm_client.py`
-and its request artifacts. Historical file-backend summaries may omit draft-review,
-rescue, economy, or budget evidence; their absence is unknown, not proof that the
-model did not receive it. Greedy handoff eligibility also describes execution, not
-tactical safety. Preserve the original NDJSON/checkpoints when rebuilding a catalog
-or comparing prompt delivery.
+and its request artifacts. Use `tools/match_report.py` to extract deterministic
+gameplay and strategy summaries:
+- `strategy_choices`: counts model response kinds, submitted option selections,
+  committed option batches, and recommendation adoption (menus with validated
+  selections, committed option-ID matches, exact ID-plus-finish matches, custom
+  combinations, and unresolved linkage). Distinguish strategy choices from generic
+  choice handles.
+- `recruiter_outcome`: reports last proven live HP and position, last committed
+  model action, and verified death location. Replay committed movement from proven
+  snapshots through the lethal combat event in archive order; do not report a stale
+  pre-move snapshot as the death position. Missing linkage remains unknown.
+- `decisive_decisions`: indexes the `first_rejected_choice` and `last_recruiter_action`
+  before death, linking request, decision, revision, options, error, and checkpoint.
+- Completed turns versus resolved turns: `completed_side_turns` counts completed
+  `EndTurn` boundaries, while `resolved_side_turns` reports the turn reached. An
+  interrupted turn is reported under `terminal_partial_side_turn`.
+- Delegated tactics: `delegated_tactical_actions` and `tactical_delegation_occurred`
+  report actual executed tactical moves and attacks; a no-sweep boundary
+  (`FinishWithGreedy(groups=[], holds=[])`) is not tactical delegation when zero
+  tactical actions were executed.
+
+Historical file-backend summaries may omit draft-review, rescue, economy, or budget
+evidence; their absence is unknown, not proof that the model did not receive it.
+Greedy handoff eligibility also describes execution, not tactical safety. Preserve
+the original NDJSON/checkpoints when rebuilding a catalog or comparing prompt delivery.
 
 ## Fog of War
 

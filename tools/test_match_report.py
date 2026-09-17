@@ -1,6 +1,6 @@
 import unittest
 
-from .match_report import aggregate_publication, classify
+from .match_report import aggregate_publication, classify, load_records
 from .llm_client import replay_accepted_progress
 
 
@@ -363,6 +363,162 @@ class ReportTests(unittest.TestCase):
             "metadata_repairs": 0,
             "proven_repairs": 1,
         })
+
+    def test_recruiter_move_followed_by_death_reports_committed_destination(self):
+        records = [
+            {"type": "metadata", "llm_side": 0},
+            {"type": "driver", "line": {"type": "state", "units": [{"id": 1, "faction": 0, "can_recruit": True, "col": 1, "row": 8, "hp": 27}]}},
+            {"type": "driver", "line": {"type": "events", "source": "llm", "events": [
+                {"kind": "move", "unit": 1, "from": {"col": 1, "row": 8}, "to": {"col": 0, "row": 11}}
+            ]}},
+            {"type": "driver", "line": {"type": "events", "source": "greedy", "events": [
+                {"kind": "attack", "attacker": {"unit": 23}, "defender": {"unit": 1, "hp": 0, "killed": True}, "damage_to_defender": 14}
+            ]}},
+            {"type": "driver", "line": {"type": "state", "units": []}},
+            {"type": "terminal", "terminal_class": "gameplay", "reason": "winner", "winner": 1},
+        ]
+        report = classify(records)
+        outcome = report["recruiter_outcome"]
+        self.assertTrue(outcome["death_proven"])
+        self.assertFalse(outcome["alive"])
+        self.assertEqual(outcome["death_location"], {"col": 0, "row": 11})
+        self.assertEqual(outcome["last_proven_live_position"], {"col": 0, "row": 11})
+        self.assertEqual(outcome["last_committed_model_action"], {
+            "action": "Move", "unit_id": 1, "col": 0, "row": 11
+        })
+
+    def test_recruiter_absent_without_death_linkage_returns_unknown_location(self):
+        records = [
+            {"type": "metadata", "llm_side": 0},
+            {"type": "driver", "line": {"type": "state", "units": [{"id": 1, "faction": 0, "can_recruit": True, "col": 1, "row": 8, "hp": 27}]}},
+            # Recruiter simply absent in subsequent state with no witnessed lethal event
+            {"type": "driver", "line": {"type": "state", "units": []}},
+            {"type": "terminal", "terminal_class": "gameplay", "reason": "winner", "winner": 1},
+        ]
+        report = classify(records)
+        outcome = report["recruiter_outcome"]
+        self.assertFalse(outcome["death_proven"])
+        self.assertIsNone(outcome["death_location"])
+
+    def test_simulated_death_from_validate_batch_produces_no_live_death_record(self):
+        records = [
+            {"type": "metadata", "llm_side": 0},
+            {"type": "driver", "line": {"type": "state", "units": [{"id": 1, "faction": 0, "can_recruit": True, "col": 2, "row": 7, "hp": 48}]}},
+            # Simulated query replay with death in query type
+            {"type": "query", "line": {"type": "events", "events": [{"kind": "death", "unit": 1}]}},
+            {"type": "strategy_batch_validation", "valid": False, "validation": {"committed": False}},
+            {"type": "terminal", "terminal_class": "gameplay"},
+        ]
+        report = classify(records)
+        outcome = report["recruiter_outcome"]
+        self.assertFalse(outcome["death_proven"])
+        self.assertTrue(outcome["alive"])
+        self.assertEqual(outcome["last_proven_live_hp"], 48)
+
+    def test_strategy_choose_with_zero_generic_choice_handles_still_counts_as_choose(self):
+        records = [
+            {"type": "model_request", "request_id": "req-1", "raw_output": '{"kind": "choose", "option_ids": ["opt-1"], "finish_turn": true}'},
+            {"type": "strategy_validated_selections", "decision_id": "dec-1", "selections": [{"option_ids": ["opt-1"], "finish_turn": True}]},
+            {"type": "forwarded_orders", "batch_id": "b-1", "request_id": "req-1", "decision_id": "dec-1", "option_ids": ["opt-1"], "orders": []},
+            {"type": "batch_committed", "batch_id": "b-1"},
+            {"type": "terminal", "terminal_class": "gameplay", "handle_choices_used": 0},
+        ]
+        report = classify(records)
+        sc = report["strategy_choices"]
+        self.assertEqual(sc["response_kinds"], {"choose": 1})
+        self.assertEqual(sc["submitted_option_selections"], 1)
+        self.assertEqual(sc["committed_option_batches"], 1)
+        self.assertEqual(sc["recommendation_adoption"]["committed_exact_matches"], 1)
+
+    def test_rejected_and_duplicated_records_cannot_inflate_committed_counts(self):
+        records = [
+            {"type": "model_request", "request_id": "req-1", "raw_output": '{"kind": "choose", "option_ids": ["opt-1"], "finish_turn": false}'},
+            {"type": "strategy_validated_selections", "decision_id": "dec-1", "selections": [{"option_ids": ["opt-1"], "finish_turn": False}]},
+            # Uncommitted forwarded_orders (e.g. rolled back or rejected)
+            {"type": "forwarded_orders", "batch_id": "b-rejected", "request_id": "req-1", "decision_id": "dec-1", "option_ids": ["opt-1"], "orders": []},
+            {"type": "terminal", "terminal_class": "gameplay"},
+        ]
+        report = classify(records)
+        sc = report["strategy_choices"]
+        self.assertEqual(sc["committed_option_batches"], 0)
+        self.assertEqual(sc["recommendation_adoption"]["committed_option_id_matches"], 0)
+
+    def test_terminal_partial_turn_fixture_counts(self):
+        events = []
+        for turn in range(1, 16):
+            events.append({"kind": "end_turn", "source": "model", "ended_faction": 0, "active_faction": 1, "turn": turn})
+            if turn < 15:
+                events.append({"kind": "end_turn", "source": "greedy", "ended_faction": 1, "active_faction": 0, "turn": turn})
+        records = [
+            {"type": "metadata", "llm_side": 0, "finish_telemetry_available": True},
+            {"type": "driver", "line": {"type": "events", "events": events}},
+            {"type": "driver", "line": {"type": "game_end", "side_turns": 30, "winner": 1}},
+            {"type": "terminal", "terminal_class": "gameplay", "reason": "winner", "winner": 1},
+        ]
+        report = classify(records)
+        self.assertFalse(report["accounting_mismatch"])
+        self.assertEqual(report["completed_model_turns"], 15)
+        self.assertEqual(report["completed_opponent_turns"], 14)
+        self.assertEqual(report["completed_engine_turns"], 29)
+        self.assertEqual(report["completed_side_turns"], 29)
+        self.assertEqual(report["resolved_side_turns"], 30)
+        self.assertEqual(report["terminal_partial_side_turn"], {
+            "side_turn": 30,
+            "side": 1,
+            "owner": "opponent",
+            "reason": "winner",
+        })
+
+    def test_known_no_sweep_finish_produces_zero_generated_delegated_tactical_actions(self):
+        records = [
+            {"type": "metadata", "llm_side": 0, "finish_telemetry_available": True},
+            {"type": "turn_boundary", "accepted": True, "authored_finish_kind": "FinishWithGreedy",
+             "executed_finish_kind": "FinishWithGreedy", "delegated_unit_ids": []},
+            {"type": "driver", "line": {"type": "events", "events": [
+                {"kind": "end_turn", "source": "delegated_greedy"}
+            ]}},
+            {"type": "terminal", "terminal_class": "gameplay"},
+        ]
+        report = classify(records)
+        self.assertEqual(report["delegated_tactical_actions"], 0)
+        self.assertFalse(report["tactical_delegation_occurred"])
+
+    def test_primary_game_reprocessing_matches_expected_facts(self):
+        import hashlib
+        from pathlib import Path
+        log_path = Path("tmp/glm-luna-fullgame-20260917T042432Z/recording/glm-luna-fullgame/match.ndjson")
+        if not log_path.is_file():
+            self.skipTest("primary game match.ndjson not found in tmp")
+        expected_hash = "fd771d5c4bfd163cbe4592fe1c761ac8a9fa14b570ff7fb81a07b65ae114b5e8"
+        actual_hash = hashlib.sha256(log_path.read_bytes()).hexdigest()
+        self.assertEqual(actual_hash, expected_hash, "Original archive hash must be preserved")
+
+        records = load_records(log_path)
+        report = classify(records)
+        sc = report["strategy_choices"]
+        self.assertEqual(sc["response_kinds"], {"set_policy": 4, "choose": 29, "finish_turn": 2, "act": 1})
+        self.assertEqual(sc["submitted_option_selections"], 29)
+        self.assertEqual(sc["committed_option_batches"], 28)
+        self.assertEqual(sc["recommendation_adoption"]["issued_menus_with_validated_selections"], 28)
+        self.assertEqual(sc["recommendation_adoption"]["committed_option_id_matches"], 2)
+        self.assertEqual(sc["recommendation_adoption"]["committed_exact_matches"], 1)
+        self.assertEqual(sc["recommendation_adoption"]["custom_combinations"], 26)
+        self.assertEqual(sc["recommendation_adoption"]["unresolved_linkage"], 0)
+
+        # Recruiter outcome and death at (0, 11)
+        ro = report["recruiter_outcome"]
+        self.assertTrue(ro["death_proven"])
+        self.assertFalse(ro["alive"])
+        self.assertEqual(ro["death_location"], {"col": 0, "row": 11})
+        self.assertEqual(ro["last_committed_model_action"], {"action": "Move", "col": 0, "row": 11, "unit_id": 1})
+
+        # Decisive decisions
+        dd = report["decisive_decisions"]
+        self.assertIsNotNone(dd["first_rejected_choice"])
+        self.assertEqual(dd["first_rejected_choice"]["turn"], 9)
+        self.assertIsNotNone(dd["last_recruiter_action"])
+        self.assertEqual(dd["last_recruiter_action"]["action"]["col"], 0)
+        self.assertEqual(dd["last_recruiter_action"]["action"]["row"], 11)
 
 
 if __name__ == "__main__":

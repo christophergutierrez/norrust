@@ -303,6 +303,26 @@ responses and generated fallback orders. Coverage is valid annotations divided
 by applicable submitted batches, or `null` when there are none; rule counts are
 counts of cited rule IDs in valid final annotations.
 
+For strategy-mode matches, `match_report` also extracts:
+- `strategy_choices`: maps model response kinds (`choose`, `set_policy`, `act`,
+  `finish_turn`, `resign`), counts submitted option selections, and tracks committed
+  engine option batches. It separates recommendation adoption into issued menus
+  with validated selections, committed option-ID matches, exact ID-plus-finish matches,
+  custom combinations, and unresolved linkages.
+- `recruiter_outcome`: deterministically derives the leader's last proven live HP
+  and coordinate, last committed model action, and death location by replaying
+  recorded movements through the lethal attack in archive order. If movement or death
+  linkage is missing, location is reported as unknown rather than guessed from a
+  pre-move state snapshot.
+- `decisive_decisions`: isolates the `first_rejected_choice` and `last_recruiter_action`,
+  preserving exact request, decision, revision, options, error, and checkpoint references.
+- Turn boundaries: distinguishes `completed_side_turns` (number of completed `EndTurn`
+  boundaries, e.g. 15 controlled + 14 opponent = 29 completed) from `resolved_side_turns`
+  (turn number reached, e.g. 30), and documents any `terminal_partial_side_turn`.
+- Delegated tactical actions: reports `delegated_tactical_actions` and boolean
+  `tactical_delegation_occurred`, distinguishing no-sweep finishes from actual Greedy
+  attacks or movements.
+
 `inventory`, `game`, `turns`, and the Python `verify_history(path)` helper open
 an existing catalog read-only. A missing path fails instead of creating a new
 database. Quote shell paths containing spaces or characters such as `#`, `?`,
