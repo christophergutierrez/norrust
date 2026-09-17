@@ -21,6 +21,7 @@ from .llm_client import (
     STRATEGY_MAX_VALIDATION_QUERIES,
     resolve_choose_batch,
     query_validate_batch,
+    QueryBudgetExhausted,
     NO_SWEEP_FINISH,
 )
 from .routine_policy import ChooseResponse
@@ -61,7 +62,8 @@ class SimpleExchange:
         self.driver_proc = driver_proc
         self.query_count = 0
         self.validate_batch_count = 0
-        self.should_fail_on_validate_batch = None  # Set to an int to fail on that validate_batch query number
+        self.should_fail_on_validate_batch = None  # int: raise a transport failure on that validate_batch
+        self.budget_limit_on_validate_batch = None  # int: answer that validate_batch with query_limit
 
     def __call__(self, request):
         """Send a request to the driver and get the response."""
@@ -73,6 +75,11 @@ class SimpleExchange:
             if (self.should_fail_on_validate_batch is not None and
                 self.validate_batch_count == self.should_fail_on_validate_batch):
                 raise RuntimeError(f"query_error: simulated failure on validate_batch query {self.validate_batch_count}")
+            if (self.budget_limit_on_validate_batch is not None and
+                self.validate_batch_count == self.budget_limit_on_validate_batch):
+                # Exactly what the driver returns once the per-turn query budget is spent.
+                return {"type": "status", "ok": False, "code": "query_limit",
+                        "message": "query limit exceeded"}
 
         # Send to driver and get response
         self.driver_proc.stdin.write(json.dumps(request) + "\n")
@@ -318,6 +325,56 @@ class ValidatedSelectionsTests(unittest.TestCase):
                 proc.stdin.close()
                 proc.wait(timeout=20)
 
+    def test_query_budget_exhaustion_reports_unavailable_without_raising(self):
+        """A spent query budget degrades to an explicit unknown, not an error.
+
+        The driver answers a query past its limit with ok:false code query_limit.
+        Candidate validation must report coverage "unavailable" and advertise nothing,
+        because the budget being gone says nothing about whether the candidates were legal.
+        """
+        packet = make_tactical_packet_from_options([
+            {"option_id": "a-1", "actor_id": 3,
+             "actions": [{"action": "Move", "unit_id": 3, "col": 10, "row": 7}]},
+            {"option_id": "b-1", "actor_id": 4,
+             "actions": [{"action": "Move", "unit_id": 4, "col": 11, "row": 7}]},
+        ])
+
+        def exhausted_exchange(request):
+            if request.get("what") == "validate_batch":
+                return {"type": "status", "ok": False, "code": "query_limit",
+                        "message": "query limit exceeded"}
+            return {"type": "status", "ok": True, "body": {}}
+
+        validated, coverage, queries = validated_selections_for_packet(
+            packet, exhausted_exchange, 5, no_recruit_macro=False)
+        self.assertEqual(coverage, "unavailable")
+        self.assertEqual(validated, [], "nothing may be advertised when legality is unknown")
+        self.assertGreaterEqual(queries, 1)
+
+    def test_real_query_failure_propagates_instead_of_looking_normal(self):
+        """A genuine transport/protocol failure keeps its existing classification.
+
+        Regression guard: this helper previously swallowed every RuntimeError and
+        returned coverage "unavailable", so a broken driver produced a decision that
+        looked ordinary. Only a spent budget may be absorbed.
+        """
+        packet = make_tactical_packet_from_options([
+            {"option_id": "a-1", "actor_id": 3,
+             "actions": [{"action": "Move", "unit_id": 3, "col": 10, "row": 7}]},
+        ])
+
+        def broken_exchange(request):
+            if request.get("what") == "validate_batch":
+                return {"type": "status", "ok": False, "code": "driver_gone",
+                        "message": "transport closed"}
+            return {"type": "status", "ok": True, "body": {}}
+
+        with self.assertRaises(RuntimeError) as caught:
+            validated_selections_for_packet(packet, broken_exchange, 5, no_recruit_macro=False)
+        self.assertNotIsInstance(caught.exception, QueryBudgetExhausted,
+                                 "a transport failure is not a budget exhaustion")
+        self.assertIn("query_error", str(caught.exception))
+
     def test_query_budget_ceiling_at_most_four_queries(self):
         """Validated_selections_for_packet should issue AT MOST 4 validate_batch
         queries for a packet with many options. Count real queries via an exchange
@@ -449,47 +506,33 @@ class ValidatedSelectionsTests(unittest.TestCase):
                     packet, exchange, state_revision, no_recruit_macro=False
                 )
 
-                # Query the driver for current state after validation
-                exchange({"action": "Query", "what": "routine_next",
-                         "state_revision": state_revision,
-                         "policy": {"reserve_gold": 0, "recruits": [], "scouts": [],
-                                   "villages": [], "rally": None, "holds": []},
-                         "progress": {}})
+                # Ask the driver for the live state through the same exchange. An
+                # earlier version issued routine_next and then scanned stdout for a
+                # {"type":"state"} line that this protocol never emits, so it blocked
+                # until the harness timeout and every assertion below sat behind an
+                # `if after_state:` that could never run.
+                after = exchange({"action": "Query", "what": "state"})
+                self.assertTrue(after.get("ok"), f"state query must succeed: {after}")
+                after_state = after.get("body") or {}
 
-                # Get the response and check for state
-                after_state = None
-                for _ in range(100):
-                    line = proc.stdout.readline()
-                    if not line:
-                        break
-                    try:
-                        obj = json.loads(line)
-                        if obj.get("type") == "state":
-                            after_state = obj
-                            break
-                    except (json.JSONDecodeError, ValueError):
-                        continue
-
-                # State revision should not have changed (validation is read-only)
-                if after_state:
-                    after_revision = after_state.get("state_revision")
-                    self.assertEqual(initial_revision, after_revision,
-                                   "State revision should not change after validation")
-
-                    # Unit positions and HP should be identical
-                    after_units = after_state.get("units", [])
-                    self.assertEqual(len(initial_units), len(after_units),
-                                   "Number of units should not change")
-
-                    for init_unit, after_unit in zip(initial_units, after_units):
-                        self.assertEqual(init_unit.get("id"), after_unit.get("id"),
-                                       "Unit IDs should match")
-                        self.assertEqual(init_unit.get("col"), after_unit.get("col"),
-                                       f"Unit {init_unit.get('id')} col should not change")
-                        self.assertEqual(init_unit.get("row"), after_unit.get("row"),
-                                       f"Unit {init_unit.get('id')} row should not change")
-                        self.assertEqual(init_unit.get("hp"), after_unit.get("hp"),
-                                       f"Unit {init_unit.get('id')} hp should not change")
+                self.assertEqual(initial_revision, after_state.get("state_revision"),
+                                 "state revision must not change: validation is read-only")
+                after_units = after_state.get("units", [])
+                self.assertEqual(len(initial_units), len(after_units),
+                                 "unit count must not change")
+                before_by_id = {u.get("id"): u for u in initial_units}
+                after_by_id = {u.get("id"): u for u in after_units}
+                self.assertEqual(sorted(before_by_id), sorted(after_by_id),
+                                 "the same unit ids must be present")
+                for unit_id, before_unit in before_by_id.items():
+                    after_unit = after_by_id[unit_id]
+                    self.assertEqual(
+                        (before_unit.get("col"), before_unit.get("row"), before_unit.get("hp")),
+                        (after_unit.get("col"), after_unit.get("row"), after_unit.get("hp")),
+                        f"unit {unit_id} position/hp must be unchanged by validation")
+                self.assertIn(coverage,
+                              {"validated", "none_validated", "not_generated", "unavailable"})
+                self.assertIsInstance(queries_used, int)
 
             finally:
                 proc.stdin.close()
@@ -537,9 +580,10 @@ class ValidatedSelectionsTests(unittest.TestCase):
                 self.assertIsNotNone(initial_state, "Could not get initial state from driver")
                 state_revision = initial_state.get("state_revision")
 
-                # Wrap exchange with query failure on 2nd validate_batch query
+                # Answer the 2nd validate_batch with the driver's real budget-exhausted
+                # status, so coverage must report unknown rather than a false negative.
                 exchange = SimpleExchange(proc)
-                exchange.should_fail_on_validate_batch = 2
+                exchange.budget_limit_on_validate_batch = 2
 
                 # Create a packet with multiple candidate options from different actors
                 options = [

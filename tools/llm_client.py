@@ -1144,10 +1144,23 @@ def _raise_preview_query_error(response: Any, query: str) -> None:
     raise RuntimeError(f"query_error: {query}: {message}")
 
 
+class QueryBudgetExhausted(RuntimeError):
+    """The driver refused a query because the per-turn query budget is spent.
+
+    A subclass of RuntimeError so every existing `except RuntimeError` handler keeps
+    classifying it exactly as before. Callers that merely enrich a decision (such as
+    candidate validation) may catch this specific type and degrade to an explicit
+    unknown, while a genuine transport or protocol failure still propagates.
+    """
+
+
 def query_validate_batch(exchange, orders: list[dict[str, Any]], state_revision: int) -> dict[str, Any]:
     """Validate a complete batch against the unchanged, revision-pinned state."""
     response = exchange({"action": "Query", "what": "validate_batch",
                          "state_revision": state_revision, "orders": orders})
+    if isinstance(response, dict) and response.get("code") in {"query_limit", "query_timeout"}:
+        raise QueryBudgetExhausted(
+            f"query_error: validate_batch: {response.get('message', 'query budget exhausted')}")
     if isinstance(response, dict) and response.get("code") in {
         "partial_limit", "parse", "batch_too_large", "stale_state",
         "unauthorized_side", "unauthorized_unit", "action_limit",
@@ -1332,9 +1345,12 @@ def validated_selections_for_packet(packet: DecisionPacket, exchange, state_revi
         queries += 1
         try:
             validation = query_validate_batch(exchange, submitted, state_revision)
-        except RuntimeError:
-            # Existing query error classification is preserved by the caller's
-            # handling; legality of the remaining candidates stays UNKNOWN.
+        except QueryBudgetExhausted:
+            # The budget is spent, which the plan treats as "offer the ordinary menu
+            # with explicit coverage": legality of the remaining candidates is UNKNOWN,
+            # not disproven. Any OTHER query failure deliberately propagates so the
+            # existing infrastructure classification still applies instead of being
+            # silently downgraded to a decision that looks normal.
             return validated, "unavailable", queries
         if validation.get("valid") is True:
             validated.append({"option_ids": list(option_ids),
@@ -7069,8 +7085,17 @@ def run(args: argparse.Namespace) -> int:
                 # through the real engine, using the same expansion a model `choose`
                 # would take. Bounded to four extra read-only validation queries and
                 # never worth a paid model call. Legality only, never safety.
-                selections, selections_coverage, validation_queries = validated_selections_for_packet(
-                    packet, exchange, revision, no_recruit_macro=args.no_recruit_macro)
+                try:
+                    selections, selections_coverage, validation_queries = validated_selections_for_packet(
+                        packet, exchange, revision, no_recruit_macro=args.no_recruit_macro)
+                except RuntimeError as exc:
+                    # A real query failure keeps its existing classification rather than
+                    # quietly becoming an ordinary decision with an empty menu.
+                    set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
+                                 reason="infrastructure_failure",
+                                 code="strategy_selection_query_failed", message=str(exc))
+                    durable({"type": "query_error", **metadata})
+                    return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
                 packet = dataclasses.replace(packet, validated_selections=selections)
                 packet.coverage["selections"] = selections_coverage
                 strategy_active_packet = packet
