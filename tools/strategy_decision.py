@@ -366,9 +366,9 @@ def build_decision_packet(
     allowed = list(ALLOWED_PROMOTION)
   elif decision_kind == DECISION_KIND_FACTS_UNAVAILABLE:
     allowed = list(ALLOWED_TACTICAL)
-  elif decision_kind == DECISION_KIND_POLICY and reason == "contact" and options:
-    # proposed_destination (or another non-current_state contact stage) with
-    # a generated bounded menu: keep every policy response legal and add
+  elif decision_kind == DECISION_KIND_POLICY and reason in ("contact", "invalid_assignment") and options:
+    # proposed_destination (or another non-current_state contact stage) or invalid_assignment
+    # with a generated bounded menu: keep every policy response legal and add
     # choose. Empty options leave ALLOWED_ALL exactly as today.
     allowed = list(ALLOWED_POLICY_WITH_CHOOSE)
   else:
@@ -405,7 +405,7 @@ def build_decision_packet(
         "facts": "complete",
         "options": "truncated" if options_truncated else "complete",
       }
-  elif decision_kind == DECISION_KIND_POLICY and reason == "contact" and options:
+  elif decision_kind == DECISION_KIND_POLICY and reason in ("contact", "invalid_assignment") and options:
     coverage = {
       "facts": "complete",
       "options": "truncated" if options_truncated else "complete",
@@ -1006,6 +1006,88 @@ def _proposed_movement_guidance(packet: DecisionPacket) -> str:
   return " ".join(parts)
 
 
+def _render_options_block(packet: DecisionPacket, state: Optional[dict[str, Any]]) -> str:
+  opt_lines = [
+    "Offered tactical options, grouped by actor from the flat issued list. "
+    "Each option is individually valid against the current board. "
+    "Selecting several options in one choose response avoids another call per unit "
+    "and executes them sequentially in listed order as an atomic batch "
+    "(at most one option per actor; rollback occurs if any action fails)."
+  ]
+  recruiter_ids = set()
+  recruiter_hps = {}
+  if isinstance(state, dict):
+    for u in state.get("units", []):
+      if isinstance(u, dict) and u.get("can_recruit"):
+        uid = u.get("id")
+        if isinstance(uid, int):
+          recruiter_ids.add(uid)
+          recruiter_hps[uid] = (u.get("hp", 0), u.get("max_hp", u.get("hp", 0)))
+  for actor_id, actor_opts in _group_options_by_actor(packet.options):
+    is_rec = actor_id in recruiter_ids
+    rec_hp = recruiter_hps.get(actor_id)
+    actor_label = f"Actor {actor_id}" + (f" (Recruiter, HP {rec_hp[0]}/{rec_hp[1]})" if is_rec and rec_hp else "") + ":"
+    opt_lines.append(actor_label)
+    for opt in actor_opts:
+      oid = opt.get("option_id")
+      cat = opt.get("category")
+      acts = opt.get("actions", [])
+      act_descs = []
+      for a in acts:
+        if not isinstance(a, dict):
+          act_descs.append(json.dumps(a))
+          continue
+        act_name = a.get("action")
+        if act_name == "Move":
+          act_descs.append(
+            f"Move({a.get('unit_id')} -> ({a.get('col', a.get('to_col'))}, {a.get('row', a.get('to_row'))}))"
+          )
+        elif act_name == "Attack":
+          att_id = a.get("attacker_id", a.get("unit_id"))
+          def_id = a.get("defender_id", a.get("target_id"))
+          act_descs.append(f"Attack({att_id} -> {def_id})")
+        else:
+          act_descs.append(json.dumps(a))
+      actions_summary = "; ".join(act_descs)
+      forecast_str = ""
+      fc = opt.get("forecast")
+      if isinstance(fc, dict):
+        forecast_parts = []
+        dealt = fc.get("expected_damage_dealt_tenths")
+        received = fc.get("expected_damage_received_tenths")
+        kill_chance = fc.get("kill_chance_bps")
+        outcome = fc.get("outcome_bps")
+        if isinstance(dealt, int) and not isinstance(dealt, bool):
+          forecast_parts.append(f"expected damage dealt={dealt / 10.0:.1f}")
+        if isinstance(received, int) and not isinstance(received, bool):
+          forecast_parts.append(f"expected counter damage={received / 10.0:.1f}")
+        if isinstance(kill_chance, int) and not isinstance(kill_chance, bool):
+          forecast_parts.append(f"kill chance={kill_chance / 100.0:.1f}%")
+        if (isinstance(outcome, list) and len(outcome) == 3
+            and isinstance(outcome[2], int) and not isinstance(outcome[2], bool)):
+          forecast_parts.append(f"immediate exchange attacker loss chance={outcome[2] / 100.0:.1f}%")
+        if forecast_parts:
+          forecast_str = " | Forecast: immediate exchange only (not enemy next-turn survival); " + "; ".join(forecast_parts) + " (estimates, not guarantees)"
+      exposure_str = _format_option_exposure(opt, is_recruiter=is_rec, recruiter_hp=rec_hp)
+      movement_cost = opt.get("movement_cost")
+      cost_str = (f" | Cost: {movement_cost}"
+                  if isinstance(movement_cost, int) and not isinstance(movement_cost, bool)
+                  else "")
+      opt_lines.append(
+        f"  - Option {oid!r} ({cat}): [{actions_summary}]{cost_str}{forecast_str}{exposure_str}"
+      )
+  compat_notes = _format_option_compatibility_notes(packet.options)
+  if compat_notes:
+    opt_lines.append("Option compatibility notes:")
+    opt_lines.extend(compat_notes)
+  example = _build_choose_example(packet)
+  if example is not None:
+    opt_lines.append(
+      "To choose, respond with: " + json.dumps(example, separators=(",", ":"))
+    )
+  return "\n".join(opt_lines)
+
+
 def render_decision_brief(
   packet: DecisionPacket,
   *,
@@ -1153,85 +1235,7 @@ def render_decision_brief(
         fact_parts.append(f"contact_state_key={packet.contact_state_key}")
       sections.append("Contact facts: " + ", ".join(fact_parts))
     if packet.options:
-      opt_lines = [
-        "Offered tactical options, grouped by actor from the flat issued list. "
-        "Each option is individually valid against the current board. "
-        "Selecting several options in one choose response avoids another call per unit "
-        "and executes them sequentially in listed order as an atomic batch "
-        "(at most one option per actor; rollback occurs if any action fails)."
-      ]
-      recruiter_ids = set()
-      recruiter_hps = {}
-      if isinstance(state, dict):
-        for u in state.get("units", []):
-          if isinstance(u, dict) and u.get("can_recruit"):
-            uid = u.get("id")
-            if isinstance(uid, int):
-              recruiter_ids.add(uid)
-              recruiter_hps[uid] = (u.get("hp", 0), u.get("max_hp", u.get("hp", 0)))
-      for actor_id, actor_opts in _group_options_by_actor(packet.options):
-        is_rec = actor_id in recruiter_ids
-        rec_hp = recruiter_hps.get(actor_id)
-        actor_label = f"Actor {actor_id}" + (f" (Recruiter, HP {rec_hp[0]}/{rec_hp[1]})" if is_rec and rec_hp else "") + ":"
-        opt_lines.append(actor_label)
-        for opt in actor_opts:
-          oid = opt.get("option_id")
-          cat = opt.get("category")
-          acts = opt.get("actions", [])
-          act_descs = []
-          for a in acts:
-            if not isinstance(a, dict):
-              act_descs.append(json.dumps(a))
-              continue
-            act_name = a.get("action")
-            if act_name == "Move":
-              act_descs.append(
-                f"Move({a.get('unit_id')} -> ({a.get('col', a.get('to_col'))}, {a.get('row', a.get('to_row'))}))"
-              )
-            elif act_name == "Attack":
-              att_id = a.get("attacker_id", a.get("unit_id"))
-              def_id = a.get("defender_id", a.get("target_id"))
-              act_descs.append(f"Attack({att_id} -> {def_id})")
-            else:
-              act_descs.append(json.dumps(a))
-          actions_summary = "; ".join(act_descs)
-          forecast_str = ""
-          fc = opt.get("forecast")
-          if isinstance(fc, dict):
-            forecast_parts = []
-            dealt = fc.get("expected_damage_dealt_tenths")
-            received = fc.get("expected_damage_received_tenths")
-            kill_chance = fc.get("kill_chance_bps")
-            outcome = fc.get("outcome_bps")
-            if isinstance(dealt, int) and not isinstance(dealt, bool):
-              forecast_parts.append(f"expected damage dealt={dealt / 10.0:.1f}")
-            if isinstance(received, int) and not isinstance(received, bool):
-              forecast_parts.append(f"expected counter damage={received / 10.0:.1f}")
-            if isinstance(kill_chance, int) and not isinstance(kill_chance, bool):
-              forecast_parts.append(f"kill chance={kill_chance / 100.0:.1f}%")
-            if (isinstance(outcome, list) and len(outcome) == 3
-                and isinstance(outcome[2], int) and not isinstance(outcome[2], bool)):
-              forecast_parts.append(f"immediate exchange attacker loss chance={outcome[2] / 100.0:.1f}%")
-            if forecast_parts:
-              forecast_str = " | Forecast: immediate exchange only (not enemy next-turn survival); " + "; ".join(forecast_parts) + " (estimates, not guarantees)"
-          exposure_str = _format_option_exposure(opt, is_recruiter=is_rec, recruiter_hp=rec_hp)
-          movement_cost = opt.get("movement_cost")
-          cost_str = (f" | Cost: {movement_cost}"
-                      if isinstance(movement_cost, int) and not isinstance(movement_cost, bool)
-                      else "")
-          opt_lines.append(
-            f"  - Option {oid!r} ({cat}): [{actions_summary}]{cost_str}{forecast_str}{exposure_str}"
-          )
-      compat_notes = _format_option_compatibility_notes(packet.options)
-      if compat_notes:
-        opt_lines.append("Option compatibility notes:")
-        opt_lines.extend(compat_notes)
-      example = _build_choose_example(packet)
-      if example is not None:
-        opt_lines.append(
-          "To choose, respond with: " + json.dumps(example, separators=(",", ":"))
-        )
-      sections.append("\n".join(opt_lines))
+      sections.append(_render_options_block(packet, state))
   elif packet.reason == "contact" and packet.evidence.get("stage") != "current_state":
     dest_line = _contact_destination_line(packet.evidence)
     if dest_line:
@@ -1248,6 +1252,45 @@ def render_decision_brief(
     if example is not None:
       sections.append(
         "To choose, respond with: " + json.dumps(example, separators=(",", ":"))
+      )
+  elif packet.reason == "invalid_assignment":
+    cause = packet.evidence.get("cause", "unknown")
+    unit_id = packet.evidence.get("unit_id")
+    unit_str = f" for unit {unit_id}" if unit_id is not None else ""
+    if packet.options:
+      tr = packet.evidence.get("threatened_recruiter", {})
+      rec_id = tr.get("recruiter_id", "unknown")
+      rec_hp = tr.get("hp", "unknown")
+      rec_max_hp = tr.get("max_hp", rec_hp)
+      att_cnt = tr.get("distinct_attacker_count", 0)
+      max_dmg = tr.get("max_incoming_damage", 0)
+      exp_tenths = tr.get("expected_incoming_damage_tenths", 0)
+      exp_dmg = f"{exp_tenths / 10.0:.1f}" if isinstance(exp_tenths, (int, float)) else str(exp_tenths)
+      sections.append(
+        f"POLICY ASSIGNMENT EXCEPTION ({cause}{unit_str}) WITH THREATENED RECRUITER:\n"
+        f"Recruiter {rec_id} (HP {rec_hp}/{rec_max_hp}) is exposed to enemy attacks on next turn "
+        f"({att_cnt} distinct attackers, max incoming {max_dmg}, expected incoming {exp_dmg}). "
+        "Editing assignments moves no unit; choosing a tactical action does not repair the installed policy. "
+        f"Applicable responses: {', '.join(packet.allowed_kinds)}."
+      )
+      sections.append(_render_options_block(packet, state))
+    elif packet.evidence.get("options_empty_reason") == "exhausted_recruiter_no_tactical_options":
+      tr = packet.evidence.get("threatened_recruiter", {})
+      rec_id = tr.get("recruiter_id", "unknown")
+      rec_hp = tr.get("hp", "unknown")
+      rec_max_hp = tr.get("max_hp", rec_hp)
+      sections.append(
+        f"POLICY ASSIGNMENT EXCEPTION ({cause}{unit_str}): "
+        f"Recruiter {rec_id} (HP {rec_hp}/{rec_max_hp}) is exposed to enemy attacks on next turn, "
+        "but has no executable movement or attack actions. No tactical menu was generated. "
+        "Editing assignments moves no unit. You may submit `set_policy` to repair assignments, "
+        f"or manual actions. Applicable responses: {', '.join(packet.allowed_kinds)}."
+      )
+    else:
+      sections.append(
+        f"POLICY DECISION REQUIRED: Policy assignment failed ({cause}{unit_str}). "
+        f"Submit `set_policy` to define objectives, or submit manual actions. "
+        f"Applicable responses: {', '.join(packet.allowed_kinds)}."
       )
   elif packet.reason == "recruitment_review":
     sections.append(

@@ -11,8 +11,8 @@ use crate::loader::Registry;
 use crate::pathfinding::{find_path, get_zoc_hexes};
 use crate::routine_decision::{
     actionability_from_flags, exhausted_contact_menu_facts, generate_tactical_options,
-    involved_option_flags, ContactActionability, CoordinateOffset, TacticalExposureFacts,
-    TacticalOption,
+    generate_threatened_recruiter_options, involved_option_flags, ContactActionability,
+    CoordinateOffset, TacticalExposureFacts, TacticalOption,
 };
 use crate::schema::UnitDef;
 use crate::tactics::{
@@ -1479,6 +1479,30 @@ pub(crate) fn rally_goals(state: &GameState, rally: Hex) -> Vec<Hex> {
     goals
 }
 
+fn enrich_invalid_assignment(
+    state: &GameState,
+    side: u8,
+    mut evidence: Value,
+) -> RoutineOutcome {
+    if let Ok(Some(facts)) = generate_threatened_recruiter_options(state, side) {
+        if let Some(obj) = evidence.as_object_mut() {
+            obj.insert("threatened_recruiter".to_string(), json!(facts.recruiter));
+            obj.insert("actor_ids".to_string(), json!(facts.actor_ids));
+            obj.insert("eligible_actor_count".to_string(), json!(facts.eligible_actor_count));
+            obj.insert("actors_truncated".to_string(), json!(facts.actors_truncated));
+            obj.insert("options".to_string(), json!(facts.options));
+            obj.insert("options_truncated".to_string(), json!(facts.options_truncated));
+            if let Some(reason) = facts.options_empty_reason {
+                obj.insert("options_empty_reason".to_string(), json!(reason));
+            }
+        }
+    }
+    RoutineOutcome::Exception {
+        reason: "invalid_assignment",
+        evidence,
+    }
+}
+
 pub fn routine_next(
     state: &GameState,
     side: u8,
@@ -1494,27 +1518,26 @@ pub fn routine_next(
                 .tile_at(**v)
                 .is_none_or(|tile| tile.terrain_id != "village")
     }) {
-        return RoutineOutcome::Exception {
-            reason: "invalid_assignment",
-            evidence: json!({"cause":"invalid_village_objective","village":coord(*village)}),
-        };
+        return enrich_invalid_assignment(
+            state,
+            side,
+            json!({"cause":"invalid_village_objective","village":coord(*village)}),
+        );
     }
     if policy
         .rally
         .is_some_and(|rally| !state.board.contains(rally))
     {
-        return RoutineOutcome::Exception {
-            reason: "invalid_assignment",
-            evidence: json!({"cause":"invalid_rally"}),
-        };
+        return enrich_invalid_assignment(
+            state,
+            side,
+            json!({"cause":"invalid_rally"}),
+        );
     }
     let scouts = match validate_identity(state, policy, progress, side) {
         Ok(v) => v,
         Err(e) => {
-            return RoutineOutcome::Exception {
-                reason: "invalid_assignment",
-                evidence: e,
-            }
+            return enrich_invalid_assignment(state, side, e);
         }
     };
     // Computed once and reused by both the current-contact gate below (which
@@ -1648,10 +1671,7 @@ pub fn routine_next(
     }
     match scout_goal(state, policy, progress, side, &scouts) {
         Err(e) => {
-            return RoutineOutcome::Exception {
-                reason: "invalid_assignment",
-                evidence: e,
-            }
+            return enrich_invalid_assignment(state, side, e);
         }
         Ok(Some((id, village, mut effects))) => {
             let endpoints = route_endpoints(state, id, &[village]);
@@ -3994,6 +4014,40 @@ mod tests {
                     ..
                 }
             ));
+        }
+    }
+
+    #[test]
+    fn invalid_assignment_enriches_threatened_recruiter_options() {
+        let registry = units();
+        let mut s = state();
+        let mut recruiter = Unit::from_def(1, registry.get("Dark Sorcerer").unwrap(), 0);
+        recruiter.can_recruit = true;
+        s.units.insert(1, recruiter);
+
+        // Threaten recruiter 1
+        let mut enemy = Unit::from_def(99, registry.get("Skeleton").unwrap(), 1);
+        enemy.movement = 5;
+        s.place_unit(enemy, Hex::from_offset(2, 1));
+
+        // Policy has a dead scout unit (unit 40)
+        let p = RoutinePolicy {
+            scouts: vec![40],
+            ..policy(&[])
+        };
+        let outcome = routine_next(&s, 0, &p, &RoutineProgress::default(), &[], &registry);
+        match outcome {
+            RoutineOutcome::Exception { reason, evidence } => {
+                assert_eq!(reason, "invalid_assignment");
+                assert_eq!(evidence["cause"], "dead_or_foreign_unit");
+                assert_eq!(evidence["unit_id"], 40);
+                assert!(evidence.get("threatened_recruiter").is_some());
+                assert_eq!(evidence["actor_ids"], json!([1]));
+                let options = evidence["options"].as_array().expect("options array");
+                assert!(!options.is_empty());
+                assert!(options.len() <= 4);
+            }
+            other => panic!("expected invalid_assignment exception, got {other:?}"),
         }
     }
 }

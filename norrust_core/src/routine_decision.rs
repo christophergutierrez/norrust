@@ -675,6 +675,126 @@ fn generate_actor_options(
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecruiterThreatFacts {
+    pub recruiter_id: u32,
+    pub hp: u32,
+    pub max_hp: u32,
+    pub distinct_attacker_count: u32,
+    pub open_distinct_attacker_count: u32,
+    pub max_incoming_damage: u32,
+    pub expected_incoming_damage_tenths: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreatenedRecruiterTacticalFacts {
+    pub recruiter: RecruiterThreatFacts,
+    pub actor_ids: Vec<u32>,
+    pub eligible_actor_count: u32,
+    pub actors_truncated: bool,
+    pub options: Vec<TacticalOption>,
+    pub options_truncated: bool,
+    pub options_empty_reason: Option<String>,
+}
+
+/// Bounded tactical options for a threatened live friendly recruiter during
+/// policy maintenance (e.g., `invalid_assignment`).
+///
+/// Identifies live friendly recruiters with known next-opponent exposure. If
+/// any has executable actions, selects ONE recruiter (by deterministic ascending ID)
+/// and generates at most 4 tactical options (<= 2 attacks, <= 2 relocations).
+/// If threatened recruiters exist but none can act, reports explicit no-options
+/// coverage (`exhausted_recruiter_no_tactical_options`). Returns `Ok(None)` if
+/// no friendly recruiter is threatened.
+pub fn generate_threatened_recruiter_options(
+    state: &GameState,
+    side: u8,
+) -> Result<Option<ThreatenedRecruiterTacticalFacts>, TacticsError> {
+    let surface = recruiter_threats_after_end_turn(state, side)?;
+    let mut threatened: Vec<&crate::tactics::RecruiterThreats> = surface
+        .recruiters
+        .iter()
+        .filter(|r| r.distinct_attacker_count > 0 || r.open_distinct_attacker_count > 0)
+        .collect();
+    if threatened.is_empty() {
+        return Ok(None);
+    }
+    threatened.sort_by_key(|r| r.recruiter_id);
+
+    let mut actionable = Vec::new();
+    for r in &threatened {
+        if has_executable_options(state, r.recruiter_id)? {
+            actionable.push(*r);
+        }
+    }
+
+    if actionable.is_empty() {
+        let first = threatened[0];
+        let max_hp = state
+            .units
+            .get(&first.recruiter_id)
+            .map(|u| u.max_hp)
+            .unwrap_or(first.hp);
+        let expected_incoming = first
+            .focus_expected_damage_tenths
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(0);
+        return Ok(Some(ThreatenedRecruiterTacticalFacts {
+            recruiter: RecruiterThreatFacts {
+                recruiter_id: first.recruiter_id,
+                hp: first.hp,
+                max_hp,
+                distinct_attacker_count: first.distinct_attacker_count,
+                open_distinct_attacker_count: first.open_distinct_attacker_count,
+                max_incoming_damage: first.max_incoming_sum,
+                expected_incoming_damage_tenths: expected_incoming,
+            },
+            actor_ids: Vec::new(),
+            eligible_actor_count: 0,
+            actors_truncated: false,
+            options: Vec::new(),
+            options_truncated: false,
+            options_empty_reason: Some("exhausted_recruiter_no_tactical_options".to_string()),
+        }));
+    }
+
+    let chosen = actionable[0];
+    let eligible_actor_count = actionable.len() as u32;
+    let actors_truncated = eligible_actor_count > 1;
+    let generated = generate_actor_options(state, chosen.recruiter_id)?;
+    let max_hp = state
+        .units
+        .get(&chosen.recruiter_id)
+        .map(|u| u.max_hp)
+        .unwrap_or(chosen.hp);
+    let expected_incoming = chosen
+        .focus_expected_damage_tenths
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(0);
+
+    Ok(Some(ThreatenedRecruiterTacticalFacts {
+        recruiter: RecruiterThreatFacts {
+            recruiter_id: chosen.recruiter_id,
+            hp: chosen.hp,
+            max_hp,
+            distinct_attacker_count: chosen.distinct_attacker_count,
+            open_distinct_attacker_count: chosen.open_distinct_attacker_count,
+            max_incoming_damage: chosen.max_incoming_sum,
+            expected_incoming_damage_tenths: expected_incoming,
+        },
+        actor_ids: vec![chosen.recruiter_id],
+        eligible_actor_count,
+        actors_truncated,
+        options: generated.options,
+        options_truncated: generated.truncated,
+        options_empty_reason: None,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1380,5 +1500,115 @@ mod tests {
                 .count();
             assert!(count > 0 && count <= 4);
         }
+    }
+
+    fn base_test_state() -> GameState {
+        let mut b = Board::new(10, 8);
+        for r in 0..8 {
+            for c in 0..10 {
+                b.set_tile(Hex::from_offset(c, r), Tile::new("flat"));
+            }
+        }
+        let k = Hex::from_offset(1, 1);
+        b.set_tile(k, Tile::new("keep"));
+        for h in k.neighbors() {
+            if b.contains(h) {
+                b.set_tile(h, Tile::new("castle"));
+            }
+        }
+        let mut s = GameState::new(b);
+        s.gold = [1000, 1000];
+        s
+    }
+
+    #[test]
+    fn test_threatened_recruiter_options_safe_returns_none() {
+        let s = test_state();
+        // Recruiter at (1, 1), no enemies
+        let facts = generate_threatened_recruiter_options(&s, 0).unwrap();
+        assert!(facts.is_none());
+    }
+
+    #[test]
+    fn test_threatened_recruiter_options_threatened_and_actionable() {
+        let registry = units();
+        let mut s = base_test_state();
+        let mut recruiter = Unit::from_def(1, registry.get("Dark Sorcerer").unwrap(), 0);
+        recruiter.can_recruit = true;
+        s.place_unit(recruiter, Hex::from_offset(1, 1));
+
+        // Place enemy near recruiter (unit 1 at keep (1,1))
+        let enemy = Unit::from_def(99, registry.get("Skeleton").unwrap(), 1);
+        s.place_unit(enemy, Hex::from_offset(2, 1));
+
+        let facts = generate_threatened_recruiter_options(&s, 0).unwrap().expect("should find threatened recruiter");
+        assert_eq!(facts.actor_ids, vec![1]);
+        assert_eq!(facts.eligible_actor_count, 1);
+        assert!(!facts.actors_truncated);
+        assert!(!facts.options.is_empty());
+        assert!(facts.options.len() <= 4);
+        assert_eq!(facts.options_empty_reason, None);
+        assert!(facts.recruiter.distinct_attacker_count > 0 || facts.recruiter.open_distinct_attacker_count > 0);
+        assert_eq!(facts.recruiter.recruiter_id, 1);
+
+        let attacks = facts.options.iter().filter(|o| o.category == "attack").count();
+        let relocations = facts.options.iter().filter(|o| o.category == "relocation").count();
+        assert!(attacks <= 2);
+        assert!(relocations <= 2);
+    }
+
+    #[test]
+    fn test_threatened_recruiter_options_exhausted() {
+        let registry = units();
+        let mut s = base_test_state();
+        let mut recruiter = Unit::from_def(1, registry.get("Dark Sorcerer").unwrap(), 0);
+        recruiter.can_recruit = true;
+        recruiter.moved = true;
+        recruiter.attacked = true;
+        s.place_unit(recruiter, Hex::from_offset(1, 1));
+
+        let enemy = Unit::from_def(99, registry.get("Skeleton").unwrap(), 1);
+        s.place_unit(enemy, Hex::from_offset(2, 1));
+
+        let facts = generate_threatened_recruiter_options(&s, 0).unwrap().expect("should detect threatened recruiter");
+        assert!(facts.options.is_empty());
+        assert_eq!(
+            facts.options_empty_reason.as_deref(),
+            Some("exhausted_recruiter_no_tactical_options")
+        );
+        assert_eq!(facts.actor_ids.len(), 0);
+        assert_eq!(facts.eligible_actor_count, 0);
+        assert!(!facts.actors_truncated);
+        assert!(facts.recruiter.distinct_attacker_count > 0 || facts.recruiter.open_distinct_attacker_count > 0);
+    }
+
+    #[test]
+    fn test_threatened_recruiter_options_multiple_recruiters_truncation() {
+        let registry = units();
+        let mut s = base_test_state();
+        // Unit 1 is recruiter at (1,1)
+        let mut r1 = Unit::from_def(1, registry.get("Dark Sorcerer").unwrap(), 0);
+        r1.can_recruit = true;
+        s.place_unit(r1, Hex::from_offset(1, 1));
+
+        // Add another recruiter unit 50 at (5, 5)
+        let mut r2 = Unit::from_def(50, registry.get("Dark Sorcerer").unwrap(), 0);
+        r2.can_recruit = true;
+        s.place_unit(r2, Hex::from_offset(5, 5));
+
+        // Threaten unit 1
+        let e1 = Unit::from_def(98, registry.get("Skeleton").unwrap(), 1);
+        s.place_unit(e1, Hex::from_offset(2, 1));
+
+        // Threaten unit 50
+        let e2 = Unit::from_def(99, registry.get("Skeleton").unwrap(), 1);
+        s.place_unit(e2, Hex::from_offset(5, 6));
+
+        let facts = generate_threatened_recruiter_options(&s, 0).unwrap().expect("should find threatened recruiter");
+        // Unit 1 (lowest ID) is selected
+        assert_eq!(facts.actor_ids, vec![1]);
+        assert_eq!(facts.eligible_actor_count, 2);
+        assert!(facts.actors_truncated);
+        assert_eq!(facts.recruiter.recruiter_id, 1);
     }
 }

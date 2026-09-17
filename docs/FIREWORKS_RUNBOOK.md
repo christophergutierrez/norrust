@@ -247,6 +247,15 @@ that every rescue is impossible. If an invalid policy attempt or identical conta
 incident is repeated at the same revision, the player is halted after one
 corrective follow-up with `budget_interrupted` and stop code `strategy_no_progress`.
 
+During `invalid_assignment` policy maintenance exceptions, if a live friendly
+recruiter has next-turn exposure and executable actions, the packet attaches up to
+four tactical options (at most two attacks, at most two relocations) and permits
+`choose` alongside `set_policy`, `act`, `finish_turn`, and `resign`. Choosing a
+tactical action executes that move/attack atomically but does not repair the
+installed policy, which remains outstanding. If the threatened recruiter is
+exhausted, explicit no-options coverage is reported without generating unrelated
+helper menus.
+
 When screening or testing from synthetic strategy fixtures, bootstrap with
 `--strategy-policy` (zero paid calls, zero board actions) to produce an authentic
 model-boundary checkpoint and companion parent audit log. Resuming that checkpoint

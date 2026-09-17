@@ -621,7 +621,8 @@ with strictly validated applicable responses:
 | `contact` (`stage: current_state`) no options | `tactical` | `act`, `finish_turn`, `resign` | Current board contact pause cannot be cleared by policy edits. Exhausted contact does not generate an automatic rescue menu; custom `act` remains legal. |
 | Proposed movement contact with a generated menu | `policy` | `set_policy`, `act`, `finish_turn`, `resign`, `choose` | Resolve the named blocked step first: choose an offered option, author a legal action, or change policy for that step. Preserve unrelated objectives unless they need to change. A risky legal option is allowed; the menu is not an instruction to take it. |
 | Proposed movement contact without a menu / `unsafe_route` | `policy` | `set_policy`, `act`, `finish_turn`, `resign` | Replacing the policy objective can avoid the hazardous destination. |
-| `recruitment_blocked`, `route_unavailable`, `invalid_assignment` | `policy` | `set_policy`, `act`, `finish_turn`, `resign` | Policy adjustment can redirect routine tasks. |
+| `recruitment_blocked`, `route_unavailable`, `invalid_assignment` (safe recruiter or exhausted) | `policy` | `set_policy`, `act`, `finish_turn`, `resign` | Policy adjustment can redirect routine tasks. If the recruiter is exhausted, explicit no-options coverage is reported without helper menus. |
+| `invalid_assignment` (threatened actionable recruiter) | `policy` | `set_policy`, `act`, `finish_turn`, `resign`, `choose` | Recruiter has next-opponent exposure and executable actions; at most four tactical options are attached. Choosing moves the recruiter but leaves outstanding policy maintenance unresolved. |
 | `promotion_pending` | `promotion` | `act`, `resign` | Unit must submit legal `Advance` action; engine rejects ending turn during promotion. |
 | `threat_unavailable` | `facts_unavailable` | `act`, `finish_turn`, `resign` | Manual actions required when threat calculations cannot be completed. |
 
