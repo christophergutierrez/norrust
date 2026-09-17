@@ -10,7 +10,7 @@ import copy
 import hashlib
 import json
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 try:
@@ -93,6 +93,12 @@ class DecisionPacket:
   final_only: bool = False
   contact_state_key: Optional[str] = None
   closure_reason: Optional[str] = None
+  # Stack 1: candidates the integrator proved LEGAL AT source_revision via the
+  # real engine. Never safe, never guaranteed valid after any intervening
+  # action. This module never sets this field on its own; only the integrator
+  # may append an entry, and only after a successful engine validation call.
+  # Each entry: {"option_ids": [str, ...], "source_revision": int, "finish_turn": bool}.
+  validated_selections: list[dict[str, Any]] = field(default_factory=list)
 
   def to_dict(self) -> dict[str, Any]:
     return {
@@ -108,12 +114,17 @@ class DecisionPacket:
       "final_only": self.final_only,
       "contact_state_key": self.contact_state_key,
       "closure_reason": self.closure_reason,
+      "validated_selections": copy.deepcopy(self.validated_selections),
     }
 
   @classmethod
   def from_dict(cls, data: dict[str, Any]) -> DecisionPacket:
     raw_key = data.get("contact_state_key")
     raw_reason = data.get("closure_reason")
+    raw_validated = data.get("validated_selections", [])
+    validated_selections = (
+      copy.deepcopy(raw_validated) if isinstance(raw_validated, list) else []
+    )
     return cls(
       decision_id=str(data["decision_id"]),
       state_revision=int(data["state_revision"]),
@@ -127,6 +138,7 @@ class DecisionPacket:
       final_only=bool(data.get("final_only", False)),
       contact_state_key=raw_key if isinstance(raw_key, str) and raw_key else None,
       closure_reason=raw_reason if isinstance(raw_reason, str) and raw_reason else None,
+      validated_selections=validated_selections,
     )
 
 
@@ -808,9 +820,124 @@ def _format_option_compatibility_notes(options: list[dict[str, Any]]) -> list[st
   return notes
 
 
+def candidate_selections(packet: DecisionPacket) -> list[list[str]]:
+  """Conservative candidate option_ids lists for the integrator to validate.
+
+  Pure and read-only: this walks packet.options as issued and never touches
+  the engine or marks anything validated. Returns at most FOUR lists, in
+  order: (a) one greedy multi-actor list, built by walking options in their
+  existing order and taking the first option per actor that shares neither a
+  destination nor an attack target with an already-selected option (at most
+  one option per actor), stopping once 3 options have been picked; then (b)
+  the first individually offered option for each of the existing actors
+  (existing actor/option priority order), taken unconditionally. Identical
+  lists are deduplicated, order preserved, and actions within an option are
+  never reordered. Every returned list has between 1 and 3 option_ids,
+  matching the response parser's hard 1..3 `choose` limit — an unsubmittable
+  candidate must never be produced or advertised.
+
+  These destination/target filters are conservative CANDIDATE SELECTION for
+  proposing a batch worth validating; they are not a new legality rule, and
+  shared-target multi-attacks remain selectable via the ordinary options.
+  """
+  options = [opt for opt in packet.options if isinstance(opt, dict)]
+  groups = _group_options_by_actor(options)
+
+  greedy_ids: list[str] = []
+  used_destinations: set[tuple[int, int]] = set()
+  used_targets: set[int] = set()
+  picked_actors: set[Any] = set()
+  for opt in options:
+    if len(greedy_ids) >= 3:
+      break
+    option_id = opt.get("option_id")
+    if not isinstance(option_id, str):
+      continue
+    actor_id = opt.get("actor_id")
+    if actor_id in picked_actors:
+      continue
+    dests = _get_option_destinations(opt)
+    targets = _get_option_targets(opt)
+    if dests & used_destinations or targets & used_targets:
+      continue
+    greedy_ids.append(option_id)
+    picked_actors.add(actor_id)
+    used_destinations |= dests
+    used_targets |= targets
+
+  candidates: list[list[str]] = []
+  if greedy_ids:
+    candidates.append(greedy_ids)
+
+  for _actor_id, actor_opts in groups[:3]:
+    for opt in actor_opts:
+      option_id = opt.get("option_id")
+      if isinstance(option_id, str):
+        candidates.append([option_id])
+        break
+
+  deduped: list[list[str]] = []
+  seen: set[tuple[str, ...]] = set()
+  for candidate in candidates:
+    key = tuple(candidate)
+    if key in seen:
+      continue
+    seen.add(key)
+    deduped.append(candidate)
+
+  return deduped[:4]
+
+
+def render_validated_selections(packet: DecisionPacket) -> str:
+  """Compact rendering of the preferred (first) validated selection, if any.
+
+  Validated means the integrator proved this exact ordered option_ids list
+  (and finish_turn) LEGAL AT source_revision by an actual engine call. It is
+  never a safety claim and never a claim of continued validity after any
+  intervening action; re-validation happens again through ordinary submission.
+  Returns "" when packet.validated_selections is empty.
+  """
+  if not packet.validated_selections:
+    return ""
+  first = packet.validated_selections[0]
+  if not isinstance(first, dict):
+    return ""
+  option_ids = first.get("option_ids")
+  option_ids = [str(oid) for oid in option_ids] if isinstance(option_ids, list) else []
+  source_revision = first.get("source_revision")
+  finish_turn = bool(first.get("finish_turn", False))
+  ids_str = ", ".join(option_ids)
+  return (
+    f"Engine-validated selection (legal at revision {source_revision} only; "
+    "not a safety claim and not guaranteed valid after any intervening action; "
+    f"re-validated on submission): option_ids=[{ids_str}], finish_turn={json.dumps(finish_turn)}."
+  )
+
+
 def _build_choose_example(packet: DecisionPacket) -> Optional[dict[str, Any]]:
   if "choose" not in packet.allowed_kinds or not packet.options:
     return None
+
+  if packet.validated_selections:
+    first = packet.validated_selections[0]
+    if isinstance(first, dict):
+      option_ids = first.get("option_ids")
+      valid_ids = {
+        opt.get("option_id")
+        for opt in packet.options
+        if isinstance(opt, dict) and isinstance(opt.get("option_id"), str)
+      }
+      if (
+        isinstance(option_ids, list)
+        and option_ids
+        and all(isinstance(oid, str) and oid in valid_ids for oid in option_ids)
+      ):
+        return {
+          "kind": "choose",
+          "decision_id": packet.decision_id,
+          "option_ids": list(option_ids),
+          "finish_turn": bool(first.get("finish_turn", packet.final_only)),
+        }
 
   grouped = _group_options_by_actor(packet.options)
   if not grouped:

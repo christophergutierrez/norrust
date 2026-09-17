@@ -432,6 +432,34 @@ other units may still accept custom legal actions. `coverage.options` describes 
 coverage independently and remains `complete` for a genuinely empty enumerated menu. Nonzero destination
 exposure is labeled `still exposed after this option` using issuing-state estimates.
 
+The issued packet may also carry `validated_selections`: at most a few
+ready-to-select `option_ids` combinations (ordered, one option per actor) that
+an integrator proved legal by an actual engine call, each recording the exact
+`source_revision` and `finish_turn` validated. Candidate combinations are
+chosen conservatively from the existing menu — one greedy multi-actor pick
+plus each actor's first individually offered option — never by searching a
+Cartesian product or re-searching after a rejection, and never by forbidding
+deliberate shared-target multi-attacks. **Validated means legal execution at
+that recorded revision only.** It is never a safety claim and never implies
+the combination stays valid after any intervening action; choosing it still
+submits through the ordinary path and is validated again from the state as it
+stands at submission time. When present, the printed choose example prefers
+the first validated selection; otherwise the example is built exactly as
+before. `validated_selections` defaults to an empty list and is omitted-safe
+when reading older archived packets.
+
+The decision packet's `coverage["selections"]` key reports the legality
+outcome for candidate selection combinations. "validated" means at least one
+candidate was proven legal at that exact `state_revision` by an engine
+validate_batch call; "none_validated" means the engine rejected every
+candidate (a definitive engine verdict); "not_generated" means no candidates
+were worth proposing and nothing was tried; "unavailable" means a validation
+query failed or the budget ran out, rendering legality unknown. **A failed
+or exhausted validation query never degrades to "none_validated"—unknown
+remains unknown.** "Validated" always means legal at that revision only; it
+is never a safety claim and does not guarantee validity after any
+intervening action.
+
 The initial policy and exception briefs repeat the compact live map, both-side
 unit identities, economy and recruit costs. Exception briefs also repeat the
 installed assignments, holds, rally and remaining counts. At an ordinary

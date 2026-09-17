@@ -1,6 +1,7 @@
 """Unit tests for tools/strategy_decision.py (Stack 1)."""
 from __future__ import annotations
 
+import dataclasses
 import unittest
 from types import SimpleNamespace
 
@@ -851,6 +852,199 @@ class ProposedDestinationMenuRoutingTests(unittest.TestCase):
       option_ids=["u8-proceed-1", "u8-safe-1"], finish_turn=False)
     with self.assertRaises(sd.ContextualResponseError):
       sd.validate_response_context(response, packet)
+
+
+class ValidatedSelectionsTests(unittest.TestCase):
+  def _packet(self, options, **kwargs):
+    return sd.build_decision_packet(
+      "contact",
+      {"stage": "current_state", "options": options},
+      revision=kwargs.pop("revision", 42),
+      **kwargs,
+    )
+
+  def test_greedy_skips_option_sharing_destination_with_earlier_pick(self):
+    options = [
+      {
+        "option_id": "a1-move-1",
+        "actor_id": 1,
+        "actions": [{"action": "Move", "unit_id": 1, "col": 2, "row": 2}],
+      },
+      {
+        "option_id": "a2-move-conflict",
+        "actor_id": 2,
+        "actions": [{"action": "Move", "unit_id": 2, "col": 2, "row": 2}],
+      },
+      {
+        "option_id": "a2-move-clear",
+        "actor_id": 2,
+        "actions": [{"action": "Move", "unit_id": 2, "col": 5, "row": 5}],
+      },
+    ]
+    packet = self._packet(options)
+    candidates = sd.candidate_selections(packet)
+    greedy = candidates[0]
+    self.assertEqual(greedy, ["a1-move-1", "a2-move-clear"])
+    self.assertNotIn("a2-move-conflict", greedy)
+
+  def test_greedy_skips_option_sharing_target_with_earlier_pick(self):
+    options = [
+      {
+        "option_id": "a1-attack-1",
+        "actor_id": 1,
+        "actions": [{"action": "Attack", "attacker_id": 1, "defender_id": 9}],
+      },
+      {
+        "option_id": "a2-attack-conflict",
+        "actor_id": 2,
+        "actions": [{"action": "Attack", "attacker_id": 2, "defender_id": 9}],
+      },
+      {
+        "option_id": "a2-attack-clear",
+        "actor_id": 2,
+        "actions": [{"action": "Attack", "attacker_id": 2, "defender_id": 20}],
+      },
+    ]
+    packet = self._packet(options)
+    candidates = sd.candidate_selections(packet)
+    greedy = candidates[0]
+    self.assertEqual(greedy, ["a1-attack-1", "a2-attack-clear"])
+    self.assertNotIn("a2-attack-conflict", greedy)
+
+  def test_at_most_four_lists_deduped_stable_order_one_per_actor(self):
+    options = []
+    for actor in (1, 2, 3, 4):
+      options.append({
+        "option_id": f"a{actor}-move-1",
+        "actor_id": actor,
+        "actions": [{"action": "Move", "unit_id": actor, "col": actor, "row": actor}],
+      })
+    packet = self._packet(options)
+    candidates = sd.candidate_selections(packet)
+    self.assertLessEqual(len(candidates), 4)
+    # Dedup preserves order; no duplicate lists.
+    self.assertEqual(len(candidates), len(set(tuple(c) for c in candidates)))
+    # Greedy list carries at most one option per actor and stops at 3 picks
+    # (the hard `choose` option_ids limit), even though a 4th actor qualifies.
+    greedy = candidates[0]
+    self.assertEqual(len(greedy), len(set(greedy)))
+    self.assertEqual(greedy, ["a1-move-1", "a2-move-1", "a3-move-1"])
+    # Only the first three actors get an individual singleton (existing max).
+    singles = candidates[1:]
+    self.assertEqual(singles, [["a1-move-1"], ["a2-move-1"], ["a3-move-1"]])
+    for c in candidates:
+      self.assertTrue(1 <= len(c) <= 3)
+
+  def test_greedy_list_caps_at_three_ids_with_five_conflict_free_actors(self):
+    options = []
+    for actor in (1, 2, 3, 4, 5):
+      options.append({
+        "option_id": f"a{actor}-move-1",
+        "actor_id": actor,
+        "actions": [{"action": "Move", "unit_id": actor, "col": actor, "row": actor}],
+      })
+    packet = self._packet(options)
+    candidates = sd.candidate_selections(packet)
+    greedy = candidates[0]
+    self.assertEqual(len(greedy), 3)
+    self.assertEqual(greedy, ["a1-move-1", "a2-move-1", "a3-move-1"])
+    for c in candidates:
+      self.assertTrue(1 <= len(c) <= 3, f"candidate {c} violates the 1..3 choose limit")
+
+  def test_dedup_collapses_identical_greedy_and_singleton(self):
+    options = [
+      {
+        "option_id": "a1-move-1",
+        "actor_id": 1,
+        "actions": [{"action": "Move", "unit_id": 1, "col": 2, "row": 2}],
+      },
+    ]
+    packet = self._packet(options)
+    candidates = sd.candidate_selections(packet)
+    self.assertEqual(candidates, [["a1-move-1"]])
+
+  def test_three_independent_moves_produce_one_three_id_list(self):
+    options = [
+      {
+        "option_id": "u6-relocate-2",
+        "actor_id": 6,
+        "actions": [{"action": "Move", "unit_id": 6, "col": 8, "row": 2}],
+      },
+      {
+        "option_id": "u7-relocate-1",
+        "actor_id": 7,
+        "actions": [{"action": "Move", "unit_id": 7, "col": 9, "row": 1}],
+      },
+      {
+        "option_id": "u4-relocate-1",
+        "actor_id": 4,
+        "actions": [{"action": "Move", "unit_id": 4, "col": 3, "row": 5}],
+      },
+    ]
+    packet = self._packet(options)
+    candidates = sd.candidate_selections(packet)
+    self.assertIn(["u6-relocate-2", "u7-relocate-1", "u4-relocate-1"], candidates)
+
+  def test_packet_round_trips_validated_selections(self):
+    options = [
+      {"option_id": "a1-move-1", "actor_id": 1,
+       "actions": [{"action": "Move", "unit_id": 1, "col": 2, "row": 2}]},
+    ]
+    packet = self._packet(options, decision_id="dec-vs-1")
+    entry = {"option_ids": ["a1-move-1"], "source_revision": 42, "finish_turn": True}
+    packet = dataclasses.replace(packet, validated_selections=[entry])
+    restored = sd.DecisionPacket.from_dict(packet.to_dict())
+    self.assertEqual(restored.validated_selections, [entry])
+
+  def test_packet_round_trips_absent_validated_selections_as_empty(self):
+    data = sd.build_decision_packet(
+      "contact", {"stage": "current_state", "options": []}, revision=1,
+    ).to_dict()
+    del data["validated_selections"]
+    restored = sd.DecisionPacket.from_dict(data)
+    self.assertEqual(restored.validated_selections, [])
+
+  def test_example_uses_validated_selection_when_present(self):
+    options = [
+      {"option_id": "a1-move-1", "actor_id": 1,
+       "actions": [{"action": "Move", "unit_id": 1, "col": 2, "row": 2}]},
+      {"option_id": "a2-move-1", "actor_id": 2,
+       "actions": [{"action": "Move", "unit_id": 2, "col": 5, "row": 5}]},
+    ]
+    packet = self._packet(options, decision_id="dec-vs-2")
+    entry = {"option_ids": ["a2-move-1"], "source_revision": 42, "finish_turn": True}
+    validated_packet = dataclasses.replace(packet, validated_selections=[entry])
+    example = sd._build_choose_example(validated_packet)
+    self.assertEqual(example, {
+      "kind": "choose",
+      "decision_id": "dec-vs-2",
+      "option_ids": ["a2-move-1"],
+      "finish_turn": True,
+    })
+    # Unchanged behaviour byte-for-byte when there is no validated selection.
+    self.assertEqual(sd._build_choose_example(packet), sd._build_choose_example(packet))
+    baseline_example = sd._build_choose_example(packet)
+    self.assertNotEqual(baseline_example, example)
+
+  def test_render_validated_selections_empty_when_none(self):
+    packet = self._packet([{"option_id": "a1-move-1", "actor_id": 1,
+                             "actions": [{"action": "Move", "unit_id": 1, "col": 2, "row": 2}]}])
+    self.assertEqual(sd.render_validated_selections(packet), "")
+
+  def test_render_validated_selections_states_legality_not_safety(self):
+    options = [
+      {"option_id": "a1-move-1", "actor_id": 1,
+       "actions": [{"action": "Move", "unit_id": 1, "col": 2, "row": 2}]},
+    ]
+    packet = self._packet(options)
+    entry = {"option_ids": ["a1-move-1"], "source_revision": 42, "finish_turn": False}
+    packet = dataclasses.replace(packet, validated_selections=[entry])
+    rendered = sd.render_validated_selections(packet)
+    self.assertIn("a1-move-1", rendered)
+    self.assertIn("revision 42", rendered)
+    self.assertIn("not a safety claim", rendered)
+    self.assertIn("not guaranteed valid after any intervening action", rendered)
+    self.assertIn("finish_turn=false", rendered)
 
 
 if __name__ == "__main__":

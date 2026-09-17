@@ -17,6 +17,7 @@ import threading
 import time
 import uuid
 from collections import deque
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -62,6 +63,7 @@ try:
         IncidentTracker,
         ContextualResponseError,
         build_decision_packet,
+        candidate_selections,
         validate_response_context,
         render_decision_brief,
         map_batch_failure_to_option)
@@ -113,6 +115,7 @@ except ImportError:  # pragma: no cover - direct script compatibility
         IncidentTracker,
         ContextualResponseError,
         build_decision_packet,
+        candidate_selections,
         validate_response_context,
         render_decision_brief,
         map_batch_failure_to_option)
@@ -1286,6 +1289,60 @@ def resolve_choose_batch(parsed: ChooseResponse, packet: DecisionPacket, *,
         raise ModelResponseError(
             f"action batch exceeds {STRATEGY_BATCH_ACTION_LIMIT} objects")
     return submitted, ranges
+
+
+STRATEGY_MAX_VALIDATION_QUERIES = 4
+
+
+def validated_selections_for_packet(packet: DecisionPacket, exchange, state_revision: int, *,
+                                    no_recruit_macro: bool) -> tuple[list[dict[str, Any]], str, int]:
+    """Prove a few candidate option_ids lists legal at `state_revision` via the engine.
+
+    Returns (validated, coverage, queries_used). Every entry is proven by a real
+    validate_batch reply through the SAME expansion a model `choose` would take, so
+    an advertised selection is legal at that revision only: it is never a safety
+    claim and never a promise of validity after an intervening action.
+
+    Coverage is explicit about why a menu carries no proven selection:
+      "not_generated" - no candidates were worth proposing (e.g. no options);
+      "none_validated" - candidates were tried and the engine rejected all of them;
+      "unavailable"    - a query failed or the budget ran out, so legality is UNKNOWN.
+    A query failure never degrades into a silent "none_validated" success, and no
+    candidate is ever advertised without its own successful engine reply.
+    """
+    candidates = candidate_selections(packet)
+    if not candidates:
+        return [], "not_generated", 0
+    finish_turn = bool(packet.final_only)
+    validated: list[dict[str, Any]] = []
+    queries = 0
+    for option_ids in candidates[:STRATEGY_MAX_VALIDATION_QUERIES]:
+        try:
+            orders, _ranges = resolve_choose_batch(
+                ChooseResponse(decision_id=packet.decision_id, option_ids=list(option_ids),
+                               finish_turn=finish_turn),
+                packet, no_recruit_macro=no_recruit_macro)
+        except (ContextualResponseError, ModelResponseError):
+            # A candidate we cannot even expand is simply not advertised. This is a
+            # candidate-generation limit, not an engine verdict, so keep going.
+            continue
+        submitted = list(orders)
+        if finish_turn:
+            submitted.append(copy.deepcopy(NO_SWEEP_FINISH))
+        queries += 1
+        try:
+            validation = query_validate_batch(exchange, submitted, state_revision)
+        except RuntimeError:
+            # Existing query error classification is preserved by the caller's
+            # handling; legality of the remaining candidates stays UNKNOWN.
+            return validated, "unavailable", queries
+        if validation.get("valid") is True:
+            validated.append({"option_ids": list(option_ids),
+                              "source_revision": int(state_revision),
+                              "finish_turn": finish_turn})
+    if validated:
+        return validated, "validated", queries
+    return [], "none_validated", queries
 
 
 def choose_validation_feedback(orders: Any, validation: Any, packet: DecisionPacket) -> str:
@@ -7006,6 +7063,23 @@ def run(args: argparse.Namespace) -> int:
             else:
                 strategy_incident_tracker.observe_incident(
                     current_side_turn, revision, packet.incident_key)
+
+            if packet.options:
+                # Stack 1: prove a few ordinary selections legal at this exact revision
+                # through the real engine, using the same expansion a model `choose`
+                # would take. Bounded to four extra read-only validation queries and
+                # never worth a paid model call. Legality only, never safety.
+                selections, selections_coverage, validation_queries = validated_selections_for_packet(
+                    packet, exchange, revision, no_recruit_macro=args.no_recruit_macro)
+                packet = dataclasses.replace(packet, validated_selections=selections)
+                packet.coverage["selections"] = selections_coverage
+                strategy_active_packet = packet
+                durable({"type": "strategy_validated_selections",
+                         "decision_id": packet.decision_id,
+                         "state_revision": revision,
+                         "coverage": selections_coverage,
+                         "validation_queries": validation_queries,
+                         "selections": copy.deepcopy(selections)})
 
             durable({"type": "decision_packet", "packet": packet.to_dict(),
                      "side_turn": current_side_turn, "state_revision": revision,
