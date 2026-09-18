@@ -48,7 +48,13 @@ reservation and is not built for concurrent writers.
    is an error, never a guessed reservation. `--amount` may raise the reservation
    above that minimum but cannot lower it. Reservation is refused, leaving the
    ledger untouched, when another cell holds the active reservation or when the
-   amount exceeds `remaining_authorization_usd`.
+   amount exceeds `remaining_authorization_usd`. If an invocation contains
+   repeated `--max-prompt-bytes` options, the effective limit is the final
+   value parsed by the client, including `--max-prompt-bytes=N` forms; the
+   reservation tool charges that same final value. Rates, amounts, minima,
+   ledger balances and derived costs must be finite and valid before a reserve
+   or reconcile write. NaN and either infinity are rejected and leave the
+   ledger byte-for-byte unchanged.
 2. Run the cell with `tools.model_bakeoff run ... --only-cell <cell>`.
 3. Reconcile after the cell's process has exited, however it ended:
    `tools.budget_reconciler reconcile --ledger <standing ledger> --cell-dir

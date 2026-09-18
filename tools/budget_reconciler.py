@@ -26,12 +26,70 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any
 
 from .model_usage import ModelCall, merge_lifecycle
 from .output_limits import DEFAULT_MAX_PROMPT_BYTES, MAX_OUTPUT_LIMIT
+
+
+def _finite_number(value: Any, label: str, *, nonnegative: bool = True) -> float | int:
+  """Validate a JSON/CLI numeric value before it participates in accounting.
+
+  ``float('nan')`` compares false against every limit, so comparisons alone
+  cannot protect a reservation.  Keep integer values as integers (including
+  large counts that cannot be converted to a float) and reject non-finite
+  floating-point values explicitly.
+  """
+  if isinstance(value, bool) or not isinstance(value, (int, float)):
+    raise ValueError(f"{label} must be a finite numeric value")
+  if isinstance(value, float) and not math.isfinite(value):
+    raise ValueError(f"{label} must be a finite numeric value")
+  if nonnegative and value < 0:
+    raise ValueError(f"{label} must be nonnegative")
+  return value
+
+
+def _finite_rates(rates: Any) -> dict[str, float | int]:
+  if not isinstance(rates, dict):
+    raise ValueError("pricing rates must be an object")
+  checked: dict[str, float | int] = {}
+  for key in ("input_per_million", "cached_input_per_million", "output_per_million"):
+    checked[key] = _finite_number(rates.get(key), f"pricing.rates.{key}")
+  return checked
+
+
+_LEDGER_MONEY_FIELDS = (
+    "standing_cap_usd", "prior_spend_usd", "remaining_authorization_usd",
+    "spendable_authorization_usd", "active_reservation_usd",
+    "actual_total_spend_usd",
+)
+
+
+def _validate_ledger_money(ledger: dict[str, Any]) -> None:
+  """Reject poisoned monetary fields before reserve/reconcile can write."""
+  for key in _LEDGER_MONEY_FIELDS:
+    if key in ledger:
+      # Remaining/spendable balances may legitimately be negative after an
+      # over-cap measured reconciliation; they still must be finite.
+      _finite_number(ledger[key], f"ledger.{key}",
+                     nonnegative=key not in {"remaining_authorization_usd",
+                                             "spendable_authorization_usd"})
+  cells = ledger.get("cells", {})
+  if not isinstance(cells, dict):
+    raise ValueError("ledger.cells must be an object")
+  for cell_id, cell in cells.items():
+    if not isinstance(cell, dict):
+      raise ValueError(f"ledger.cells.{cell_id} must be an object")
+    if "cost_usd" in cell:
+      _finite_number(cell["cost_usd"], f"ledger.cells.{cell_id}.cost_usd")
+  pricing = ledger.get("pricing")
+  if pricing is not None:
+    if not isinstance(pricing, dict):
+      raise ValueError("ledger.pricing must be an object")
+    _finite_rates(pricing.get("rates"))
 
 def resolved_max_prompt_bytes(cell: dict[str, Any]) -> int:
   """The RESOLVED per-request prompt-byte limit this cell will actually run
@@ -43,6 +101,9 @@ def resolved_max_prompt_bytes(cell: dict[str, Any]) -> int:
   will actually enforce is.
   """
   args = cell.get("extra_client_args") or []
+  if not isinstance(args, list):
+    raise ValueError("cell extra_client_args must be a list")
+  resolved: int | None = None
   for index, token in enumerate(args):
     if token == "--max-prompt-bytes":
       if index + 1 >= len(args):
@@ -51,19 +112,20 @@ def resolved_max_prompt_bytes(cell: dict[str, Any]) -> int:
         value = int(args[index + 1])
       except (TypeError, ValueError):
         raise ValueError(f"cell extra_client_args --max-prompt-bytes value is not an int: {args[index + 1]!r}")
-      if value <= 0:
-        raise ValueError("cell extra_client_args --max-prompt-bytes must be a positive finite limit")
-      return value
-    if isinstance(token, str) and token.startswith("--max-prompt-bytes="):
+      # argparse's default action is store: repeated options retain the last
+      # successfully parsed value.  Keep scanning so this resolver charges the
+      # same limit as the argv handed to tools.llm_client.
+      resolved = value
+    elif isinstance(token, str) and token.startswith("--max-prompt-bytes="):
       raw = token.split("=", 1)[1]
       try:
         value = int(raw)
-      except ValueError:
+      except (TypeError, ValueError):
         raise ValueError(f"cell extra_client_args --max-prompt-bytes value is not an int: {raw!r}")
-      if value <= 0:
-        raise ValueError("cell extra_client_args --max-prompt-bytes must be a positive finite limit")
-      return value
-  return DEFAULT_MAX_PROMPT_BYTES
+      resolved = value
+  if resolved is not None and resolved <= 0:
+    raise ValueError("cell extra_client_args --max-prompt-bytes must be a positive finite limit")
+  return DEFAULT_MAX_PROMPT_BYTES if resolved is None else resolved
 
 # tools/model_bakeoff.py:227-234 documents CellRunResult.status as one of
 # "ok" | "failed" | "error" | "not_run"; tools/model_bakeoff.py:482-486
@@ -141,11 +203,7 @@ def compute_reservation_usd(cell: dict[str, Any]) -> float:
   if not isinstance(pricing, dict) or not isinstance(pricing.get("rates"), dict):
     raise ValueError("cell is missing a configured pricing snapshot with rates; "
                       "refusing to guess a reservation")
-  rates = pricing["rates"]
-  for key in ("input_per_million", "cached_input_per_million", "output_per_million"):
-    value = rates.get(key)
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
-      raise ValueError(f"pricing.rates.{key} must be a resolved finite nonnegative rate")
+  rates = _finite_rates(pricing["rates"])
 
   budgets = cell.get("budgets")
   if not isinstance(budgets, dict):
@@ -158,10 +216,15 @@ def compute_reservation_usd(cell: dict[str, Any]) -> float:
 
   highest_rate = max(rates["input_per_million"], rates["cached_input_per_million"],
                       rates["output_per_million"])
-  soft_cost_usd = soft_cap / 1_000_000.0 * highest_rate
-  final_request_cost_usd = (MAX_OUTPUT_LIMIT / 1_000_000.0 * rates["output_per_million"]
-                             + max_prompt_bytes / 1_000_000.0 * rates["input_per_million"])
-  return soft_cost_usd + final_request_cost_usd
+  try:
+    soft_cost_usd = soft_cap / 1_000_000.0 * highest_rate
+    final_request_cost_usd = (MAX_OUTPUT_LIMIT / 1_000_000.0 * rates["output_per_million"]
+                               + max_prompt_bytes / 1_000_000.0 * rates["input_per_million"])
+    reservation = soft_cost_usd + final_request_cost_usd
+  except (OverflowError, ValueError) as exc:
+    raise ValueError("computed reservation is not finite") from exc
+  _finite_number(reservation, "computed reservation")
+  return reservation
 
 
 def _row_to_call(row: dict[str, Any]) -> ModelCall | None:
@@ -201,11 +264,13 @@ def reconcile_cell(cell_dir: Path, pricing: dict[str, Any]) -> dict[str, Any]:
   """
   usage_file = cell_dir / "usage.ndjson"
   reasons: list[str] = []
+  if not isinstance(pricing, dict):
+    raise ValueError("pricing must be an object")
+  rates = _finite_rates(pricing.get("rates"))
   if not usage_file.is_file():
     return {"call_count": 0, "calls": [], "cost_usd": 0.0,
             "coverage": "incomplete", "reasons": ["missing_usage_file"]}
 
-  rates = pricing["rates"]
   by_id: dict[tuple[str, str], ModelCall] = {}
   order: list[tuple[str, str]] = []
   saw_dispatch: set[tuple[str, str]] = set()
@@ -263,9 +328,17 @@ def reconcile_cell(cell_dir: Path, pricing: dict[str, Any]) -> dict[str, Any]:
         call_reasons.append("missing_measured_tokens")
       else:
         uncached = max(0, tin - cin)
-        cost_usd = (uncached * rates["input_per_million"]
-                    + cin * rates["cached_input_per_million"]
-                    + out * rates["output_per_million"]) / 1_000_000.0
+        try:
+          # Scale token counts before multiplying by prices.  This preserves
+          # finite per-call costs when large measured counts and finite rates
+          # would overflow an intermediate product, while the final finite
+          # check still rejects a genuinely nonfinite cost.
+          cost_usd = ((uncached / 1_000_000.0) * rates["input_per_million"]
+                      + (cin / 1_000_000.0) * rates["cached_input_per_million"]
+                      + (out / 1_000_000.0) * rates["output_per_million"])
+          _finite_number(cost_usd, "computed call cost")
+        except (OverflowError, ValueError) as exc:
+          raise ValueError(f"computed cost for call {call.call_id!r} is not finite") from exc
     relevant_gaps = [g for g in call.normalization_gaps
                      if g.split(":", 1)[0] in _COST_RELEVANT_TOKEN_FIELDS]
     if relevant_gaps:
@@ -289,6 +362,11 @@ def reconcile_cell(cell_dir: Path, pricing: dict[str, Any]) -> dict[str, Any]:
     if cost_usd is not None:
       total_cost_usd += cost_usd
 
+  try:
+    _finite_number(total_cost_usd, "computed cell cost")
+  except (OverflowError, ValueError) as exc:
+    raise ValueError("computed cell cost is not finite") from exc
+
   return {
     "call_count": len(order),
     "calls": calls_out,
@@ -306,18 +384,18 @@ def reserve(ledger_path: Path, cell_id: str, minimum_usd: float,
   `minimum_usd`, overwrite another cell's active reservation, or reserve
   more than `remaining_authorization_usd`.
   """
-  if isinstance(minimum_usd, bool) or not isinstance(minimum_usd, (int, float)) or minimum_usd < 0:
-    raise ValueError("minimum_usd must be a nonnegative computed amount")
+  _finite_number(minimum_usd, "minimum_usd")
   amount = minimum_usd if amount_usd is None else amount_usd
-  if isinstance(amount, bool) or not isinstance(amount, (int, float)):
-    raise ValueError("amount must be numeric")
+  _finite_number(amount, "amount")
   if amount < minimum_usd:
     raise ValueError(
         f"--amount ${amount:.6f} is below the computed minimum reservation "
         f"${minimum_usd:.6f}; a bare --amount may not bypass the computed minimum")
 
   ledger = load_ledger(ledger_path)
-  existing_amount = float(ledger.get("active_reservation_usd", 0.0) or 0.0)
+  _validate_ledger_money(ledger)
+  existing_raw = ledger.get("active_reservation_usd", 0.0)
+  existing_amount = _finite_number(existing_raw, "ledger.active_reservation_usd")
   existing_cell = ledger.get("reserved_for_cell")
   if existing_amount > 0 and existing_cell not in (None, cell_id):
     raise ValueError(
@@ -325,8 +403,9 @@ def reserve(ledger_path: Path, cell_id: str, minimum_usd: float,
         f"active reservation of ${existing_amount:.6f}")
 
   remaining = ledger.get("remaining_authorization_usd")
-  if not isinstance(remaining, (int, float)) or isinstance(remaining, bool):
+  if remaining is None:
     raise ValueError("ledger missing remaining_authorization_usd")
+  _finite_number(remaining, "ledger.remaining_authorization_usd", nonnegative=False)
   if amount > remaining:
     raise ValueError(f"insufficient authorization: needed ${amount:.6f}, remaining ${remaining:.6f}")
 
@@ -339,9 +418,11 @@ def reserve(ledger_path: Path, cell_id: str, minimum_usd: float,
 
 def reconcile(ledger_path: Path, cell_dir: Path, cell_id: str) -> dict[str, Any]:
   ledger = load_ledger(ledger_path)
+  _validate_ledger_money(ledger)
   pricing = ledger.get("pricing")
   if not isinstance(pricing, dict) or not isinstance(pricing.get("rates"), dict):
     raise ValueError("ledger missing a configured pricing snapshot with rates")
+  _finite_rates(pricing["rates"])
 
   result = reconcile_cell(cell_dir, pricing)
   status = terminal_status(cell_dir)
@@ -360,12 +441,17 @@ def reconcile(ledger_path: Path, cell_dir: Path, cell_id: str) -> dict[str, Any]
   ledger.pop("calls", None)
 
   total_measured_spend = sum(c.get("cost_usd") or 0.0 for c in cells.values())
+  _finite_number(total_measured_spend, "computed actual_total_spend_usd")
   ledger["actual_total_spend_usd"] = total_measured_spend
   standing_cap = ledger.get("standing_cap_usd")
   prior_spend = ledger.get("prior_spend_usd")
-  if not isinstance(standing_cap, (int, float)) or not isinstance(prior_spend, (int, float)):
+  if standing_cap is None or prior_spend is None:
     raise ValueError("ledger missing standing_cap_usd/prior_spend_usd")
+  _finite_number(standing_cap, "ledger.standing_cap_usd")
+  _finite_number(prior_spend, "ledger.prior_spend_usd")
   ledger["remaining_authorization_usd"] = standing_cap - prior_spend - total_measured_spend
+  _finite_number(ledger["remaining_authorization_usd"],
+                 "computed remaining_authorization_usd", nonnegative=False)
 
   reserved_for = ledger.get("reserved_for_cell")
   if reserved_for == cell_id:
@@ -376,8 +462,12 @@ def reconcile(ledger_path: Path, cell_dir: Path, cell_id: str) -> dict[str, Any]
     # Otherwise: incomplete evidence -> keep the full reservation (the
     # simple conservative rule), rather than releasing early.
 
+  active_reservation = ledger.get("active_reservation_usd", 0.0)
+  _finite_number(active_reservation, "ledger.active_reservation_usd")
   ledger["spendable_authorization_usd"] = (
-      ledger["remaining_authorization_usd"] - ledger.get("active_reservation_usd", 0.0))
+      ledger["remaining_authorization_usd"] - active_reservation)
+  _finite_number(ledger["spendable_authorization_usd"],
+                 "computed spendable_authorization_usd", nonnegative=False)
 
   save_ledger(ledger_path, ledger)
   return ledger

@@ -8,9 +8,13 @@ tmp/recruiter-survival/budget-ledger.json is never read or written here.
 from __future__ import annotations
 
 import json
+import math
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from . import budget_reconciler as br
 from .output_limits import MAX_OUTPUT_LIMIT
@@ -131,6 +135,59 @@ class ResolvedMaxPromptBytesTest(unittest.TestCase):
     cell["extra_client_args"] = ["--max-prompt-bytes=99999"]
     self.assertEqual(br.resolved_max_prompt_bytes(cell), 99999)
 
+  def test_repeated_split_flags_use_argparse_last_value(self):
+    cell = _cell()
+    cell["extra_client_args"] = ["--max-prompt-bytes", "100", "--max-prompt-bytes", "200"]
+    self.assertEqual(br.resolved_max_prompt_bytes(cell), 200)
+
+  def test_repeated_equals_flags_use_argparse_last_value(self):
+    cell = _cell()
+    cell["extra_client_args"] = ["--max-prompt-bytes=100", "--max-prompt-bytes=200"]
+    self.assertEqual(br.resolved_max_prompt_bytes(cell), 200)
+
+  def test_repeated_split_and_equals_flags_use_argparse_last_value(self):
+    cell = _cell()
+    cell["extra_client_args"] = ["--max-prompt-bytes", "100", "--max-prompt-bytes=200"]
+    self.assertEqual(br.resolved_max_prompt_bytes(cell), 200)
+
+  def test_actual_client_parser_uses_last_duplicate_value(self):
+    # Patch only the post-parse runner so the real llm_client argparse parser
+    # handles both spellings and duplicate store semantics.
+    from . import llm_client
+    captured = {}
+
+    def capture(args):
+      captured["max_prompt_bytes"] = args.max_prompt_bytes
+      return 0
+
+    argv = ["llm_client", "--orders-file", "unused-orders.json",
+            "--max-prompt-bytes", "100", "--max-prompt-bytes=200"]
+    with mock.patch.object(llm_client, "run", side_effect=capture), \
+         mock.patch.object(sys, "argv", argv):
+      self.assertEqual(llm_client.main(), 0)
+    self.assertEqual(captured["max_prompt_bytes"], 200)
+
+  def test_actual_parser_accepts_overridden_nonpositive_duplicate(self):
+    from . import llm_client
+    captured = {}
+
+    def capture(args):
+      captured["max_prompt_bytes"] = args.max_prompt_bytes
+      return 0
+
+    argv = ["llm_client", "--orders-file", "unused-orders.json",
+            "--max-prompt-bytes", "0", "--max-prompt-bytes", "200"]
+    with mock.patch.object(llm_client, "run", side_effect=capture), \
+         mock.patch.object(sys, "argv", argv):
+      self.assertEqual(llm_client.main(), 0)
+    self.assertEqual(captured["max_prompt_bytes"], 200)
+
+  def test_final_nonpositive_prompt_limit_is_rejected(self):
+    cell = _cell()
+    cell["extra_client_args"] = ["--max-prompt-bytes", "100", "--max-prompt-bytes", "0"]
+    with self.assertRaises(ValueError):
+      br.resolved_max_prompt_bytes(cell)
+
 
 class ComputeReservationTest(unittest.TestCase):
   def test_covers_escalation_from_initial_to_ceiling(self):
@@ -186,6 +243,19 @@ class ComputeReservationTest(unittest.TestCase):
   def test_malformed_prompt_bytes_value_raises_explicit_error(self):
     cell = _cell()
     cell["extra_client_args"] = ["--max-prompt-bytes", "not-a-number"]
+    with self.assertRaises(ValueError):
+      br.compute_reservation_usd(cell)
+
+  def test_nonfinite_rates_are_rejected(self):
+    for bad in (math.nan, math.inf, -math.inf):
+      cell = _cell()
+      cell["pricing"]["rates"]["input_per_million"] = bad
+      with self.subTest(rate=bad), self.assertRaises(ValueError):
+        br.compute_reservation_usd(cell)
+
+  def test_nonfinite_computed_reservation_is_rejected(self):
+    cell = _cell(soft_cap=10_000_000)
+    cell["pricing"]["rates"]["output_per_million"] = 1e308
     with self.assertRaises(ValueError):
       br.compute_reservation_usd(cell)
 
@@ -338,6 +408,58 @@ class ReserveTest(unittest.TestCase):
     self.assertEqual(ledger["active_reservation_usd"], 0.6)
     self.assertEqual(ledger["reserved_for_cell"], "cell-A")
 
+  def test_nonfinite_amounts_are_refused_without_modifying_ledger(self):
+    for amount in (math.nan, math.inf, -math.inf):
+      with self.subTest(amount=amount):
+        _write_ledger(self.ledger_path, standing_cap=2.0, prior_spend=0.0)
+        before = self.ledger_path.read_bytes()
+        with self.assertRaises(ValueError):
+          br.reserve(self.ledger_path, "cell-1", 0.5, amount_usd=amount)
+        self.assertEqual(self.ledger_path.read_bytes(), before)
+
+  def test_nonfinite_minimums_are_refused_without_modifying_ledger(self):
+    for minimum in (math.nan, math.inf, -math.inf):
+      with self.subTest(minimum=minimum):
+        _write_ledger(self.ledger_path, standing_cap=2.0, prior_spend=0.0)
+        before = self.ledger_path.read_bytes()
+        with self.assertRaises(ValueError):
+          br.reserve(self.ledger_path, "cell-1", minimum)
+        self.assertEqual(self.ledger_path.read_bytes(), before)
+
+  def test_public_cli_nonfinite_amounts_are_refused_without_modifying_ledger(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      root = Path(tmp)
+      cell = _cell("cli-cell")
+      manifest = root / "manifest.json"
+      manifest.write_text(json.dumps({"cells": [cell]}), encoding="utf-8")
+      _write_ledger(root / "ledger.json", standing_cap=2.0, prior_spend=0.0,
+                    pricing=cell["pricing"])
+      ledger = root / "ledger.json"
+      for amount in ("nan", "inf", "-inf"):
+        before = ledger.read_bytes()
+        result = subprocess.run(
+            [sys.executable, "-m", "tools.budget_reconciler", "reserve",
+             "--ledger", str(ledger), "--manifest", str(manifest),
+             "--cell-id", "cli-cell", "--amount=" + amount],
+            cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("finite numeric value", result.stderr)
+        self.assertEqual(ledger.read_bytes(), before)
+
+  def test_nonfinite_ledger_balances_are_refused_without_modifying_ledger(self):
+    for field, bad in (("remaining_authorization_usd", math.nan),
+                       ("active_reservation_usd", math.inf),
+                       ("spendable_authorization_usd", -math.inf)):
+      with self.subTest(field=field):
+        _write_ledger(self.ledger_path, standing_cap=2.0, prior_spend=0.0)
+        ledger = json.loads(self.ledger_path.read_text())
+        ledger[field] = bad
+        self.ledger_path.write_text(json.dumps(ledger, allow_nan=True, indent=2, sort_keys=True) + "\n")
+        before = self.ledger_path.read_bytes()
+        with self.assertRaises(ValueError):
+          br.reserve(self.ledger_path, "cell-1", 0.5)
+        self.assertEqual(self.ledger_path.read_bytes(), before)
+
 
 class ReconcileLedgerTest(unittest.TestCase):
   def setUp(self):
@@ -479,6 +601,57 @@ class ReconcileLedgerTest(unittest.TestCase):
     _write_run_status(self.cell_dir, "ok")
     ledger = br.reconcile(self.ledger_path, self.cell_dir, "cell-1")
     self.assertEqual(ledger["cells"]["cell-1"]["call_count"], 2)
+
+  def test_nonfinite_ledger_balance_is_refused_without_modifying_ledger(self):
+    _write_ledger(self.ledger_path, standing_cap=2.0, prior_spend=0.0)
+    ledger = json.loads(self.ledger_path.read_text())
+    ledger["actual_total_spend_usd"] = math.nan
+    self.ledger_path.write_text(json.dumps(ledger, allow_nan=True, indent=2, sort_keys=True) + "\n")
+    self._complete_receipts()
+    before = self.ledger_path.read_bytes()
+    with self.assertRaises(ValueError):
+      br.reconcile(self.ledger_path, self.cell_dir, "cell-1")
+    self.assertEqual(self.ledger_path.read_bytes(), before)
+
+  def test_nonfinite_rate_is_refused_without_modifying_ledger(self):
+    pricing = _pricing()
+    pricing["rates"]["cached_input_per_million"] = math.inf
+    _write_ledger(self.ledger_path, standing_cap=2.0, prior_spend=0.0, pricing=pricing)
+    self._complete_receipts()
+    before = self.ledger_path.read_bytes()
+    with self.assertRaises(ValueError):
+      br.reconcile(self.ledger_path, self.cell_dir, "cell-1")
+    self.assertEqual(self.ledger_path.read_bytes(), before)
+
+  def test_nonfinite_computed_call_cost_is_refused_without_modifying_ledger(self):
+    pricing = _pricing()
+    pricing["rates"]["output_per_million"] = 1e308
+    _write_ledger(self.ledger_path, standing_cap=2.0, prior_spend=0.0, pricing=pricing)
+    _write_usage(self.cell_dir, [
+      _dispatch("g1", "c1"),
+      _final("g1", "c1", input_tokens=1, cached_input_tokens=0, output_tokens=10_000_000),
+    ])
+    before = self.ledger_path.read_bytes()
+    with self.assertRaises(ValueError):
+      br.reconcile(self.ledger_path, self.cell_dir, "cell-1")
+    self.assertEqual(self.ledger_path.read_bytes(), before)
+
+  def test_finite_call_costs_cannot_overflow_the_cell_total(self):
+    pricing = _pricing()
+    pricing["rates"]["output_per_million"] = 1e308
+    _write_ledger(self.ledger_path, standing_cap=2.0, prior_spend=0.0, pricing=pricing)
+    _write_usage(self.cell_dir, [
+      _dispatch("g1", "c1"),
+      _final("g1", "c1", input_tokens=0, cached_input_tokens=0, output_tokens=1_000_000),
+      _dispatch("g1", "c2"),
+      _final("g1", "c2", input_tokens=0, cached_input_tokens=0, output_tokens=1_000_000),
+    ])
+    with self.assertRaisesRegex(ValueError, "computed cell cost"):
+      br.reconcile_cell(self.cell_dir, pricing)
+    before = self.ledger_path.read_bytes()
+    with self.assertRaises(ValueError):
+      br.reconcile(self.ledger_path, self.cell_dir, "cell-1")
+    self.assertEqual(self.ledger_path.read_bytes(), before)
 
 
 class AtomicWriteTest(unittest.TestCase):
