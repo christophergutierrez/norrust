@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from pathlib import Path
 import subprocess
 import tempfile
+import textwrap
 import unittest
 
 from .llm_client import (
@@ -58,6 +60,15 @@ class MockExchange:
 
 @unittest.skipUnless(DRIVER.is_file(), "Build greedy_driver before running integration tests")
 class StrategyConsequencesIntegrationTests(unittest.TestCase):
+
+    @staticmethod
+    def _driver_events(rows: list[dict]) -> list[dict]:
+        result = []
+        for row in rows:
+            line = row.get("line", row)
+            if isinstance(line, dict) and line.get("type") == "events":
+                result.extend(line.get("events", []))
+        return result
 
     def _start_driver(self, checkpoint: Path) -> tuple[subprocess.Popen, int]:
         proc = subprocess.Popen(
@@ -133,8 +144,12 @@ class StrategyConsequencesIntegrationTests(unittest.TestCase):
             # Check that exactly first two selections are enriched
             self.assertIn("consequences", enriched[0])
             self.assertIn("consequences", enriched[1])
-            self.assertEqual(enriched[0]["consequences"]["coverage"], "complete")
-            self.assertEqual(enriched[1]["consequences"]["coverage"], "complete")
+            # This quiet contact fixture has no recruiter/friendly threat
+            # payload in the forecast envelope.  The absence remains partial
+            # and renders as unknown rather than claiming no exposure.
+            self.assertEqual(enriched[0]["consequences"]["coverage"], "partial")
+            self.assertEqual(enriched[1]["consequences"]["coverage"], "partial")
+            self.assertEqual(enriched[0]["consequences"]["field_coverage"]["recruiter_exposure"], "unknown")
 
             # Verify rendered comparison block
             test_packet = DecisionPacket(
@@ -294,14 +309,56 @@ class StrategyConsequencesIntegrationTests(unittest.TestCase):
         self.assertEqual(candidate_actions[-1]["action"], "FinishWithGreedy")
 
     def test_end_to_end_scripted_backend_chooses_selection(self):
-        """End-to-end launch with greedy_driver: prompt contains simulation block and scripted choose commits."""
+        """Card B from the delivered prompt commits its exact option actions."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
+            # Two adjacent friendly attackers make the delivered packet expose
+            # two independent legal cards.  Card B is then read from the
+            # prompt and linked to the exact committed attack identity.
+            extra_combatant = {
+                "id": 7, "def_id": "Skeleton", "name": "Skeleton", "level": 1,
+                "faction": 0, "hp": 34, "max_hp": 34, "movement": 5,
+                "col": 10, "row": 8, "moved": False, "attacked": False,
+                "can_recruit": False, "advancement_pending": False,
+                "slowed": False, "poisoned": False, "xp": 0,
+                "xp_needed": 30, "abilities": [],
+            }
+            initial_policy = {
+                "reserve_gold": 0, "recruits": [], "scouts": [],
+                "villages": [], "rally": None, "holds": [],
+            }
             responses = [
-                policy(),
-                choose("u3-attack-1", finish=True),
+                policy("set_policy", initial_policy),
+                choose("unused", finish=True),
             ]
-            checkpoint, _, backend, prompt_log = prepare(root, "contact.json", responses)
+            checkpoint, _, backend, prompt_log = prepare(
+                root, "contact.json", responses, extra_units=[extra_combatant])
+            # The model reads the actual second card from the prompt.  This
+            # catches a forwarded-order test that merely proves some legal
+            # order was sent without linking it to the displayed card.
+            backend.write_text(textwrap.dedent(f"""
+                import json, re, sys
+                from pathlib import Path
+                log_path = Path({str(prompt_log)!r})
+                prompt = sys.stdin.read()
+                with log_path.open('a', encoding='utf-8') as stream:
+                    stream.write(json.dumps({{'prompt': prompt}}) + '\\n')
+                calls = len(log_path.read_text(encoding='utf-8').splitlines())
+                if calls == 1:
+                    response = {json.dumps(json.dumps(policy("set_policy", initial_policy), separators=(',', ':')))}
+                elif calls == 2:
+                    cards = [json.loads(value) for value in re.findall(
+                        r'To choose this selection: ([{{].*?[}}])', prompt)]
+                    if len(cards) < 2:
+                        raise SystemExit('delivered prompt did not contain Card B')
+                    response = json.dumps(cards[1], separators=(',', ':'))
+                else:
+                    # Card B is deliberately submitted without its boundary so
+                    # the next ordinary model request proves the engine starts
+                    # a new checkpoint.  End that same side turn explicitly.
+                    response = json.dumps({{"kind": "finish_turn"}}, separators=(',', ':'))
+                print(json.dumps({{'text': response}}))
+            """).lstrip(), encoding="utf-8")
             log = root / "consequence-choose.ndjson"
             result = launch(root, log, checkpoint, backend, turns=1)
             self.assertEqual(result.returncode, 0, f"Launch failed:\n{result.stderr}\n{result.stdout}")
@@ -312,12 +369,52 @@ class StrategyConsequencesIntegrationTests(unittest.TestCase):
                             "Expected SIMULATION — NOT EXECUTED in delivered prompt")
             self.assertTrue(any("Selection 1" in p for p in prompts),
                             "Expected Selection 1 in delivered prompt")
+            card_lines = re.findall(r"To choose this selection: (\{.*?\})", next(
+                p for p in prompts if "SIMULATION — NOT EXECUTED" in p))
+            self.assertGreaterEqual(len(card_lines), 2)
+            card_b = json.loads(card_lines[1])
 
-            # Verify chosen selection committed with source='llm'
             rows = records(log)
             f_rows = [r for r in rows if r.get("type") == "forwarded_orders"]
-            self.assertTrue(any(r.get("source") == "llm" for r in f_rows),
-                            "Expected model-authored or model-chosen order committed with source 'llm'")
+            llm_row = next(r for r in f_rows if r.get("source") == "llm")
+            self.assertEqual(llm_row.get("option_ids"), card_b["option_ids"])
+            self.assertTrue(any(
+                r.get("source") == "llm"
+                and any(order.get("action") == "FinishWithGreedy"
+                        for order in r.get("orders", []) if isinstance(order, dict))
+                for r in f_rows
+            ), "Card B execution must be followed by an explicit finish boundary")
+            packet_row = next(r for r in rows if r.get("type") == "decision_packet"
+                              and (r.get("decision_id") == card_b["decision_id"]
+                                   or r.get("packet", {}).get("decision_id") == card_b["decision_id"]))
+            by_id = {o["option_id"]: o for o in packet_row["packet"]["options"]}
+            expected_orders = [action for option_id in card_b["option_ids"]
+                               for action in by_id[option_id]["actions"]]
+            if card_b["finish_turn"]:
+                expected_orders.append(copy.deepcopy(NO_SWEEP_FINISH))
+            self.assertEqual(llm_row["orders"], expected_orders)
+            committed = self._driver_events(rows)
+            self.assertTrue(committed, "Card B must produce committed engine events")
+            expected_events = []
+            for action in expected_orders:
+                if action.get("action") == "Move":
+                    expected_events.append(("move", action.get("unit_id"),
+                                            action.get("col"), action.get("row")))
+                elif action.get("action") == "Attack":
+                    expected_events.append(("attack", action.get("attacker_id"),
+                                            action.get("defender_id")))
+            actual_events = []
+            for event in committed:
+                if event.get("source") != "llm":
+                    continue
+                if event.get("kind") == "move":
+                    actual_events.append(("move", event.get("unit"),
+                                          event.get("to", {}).get("col"),
+                                          event.get("to", {}).get("row")))
+                elif event.get("kind") == "attack":
+                    actual_events.append(("attack", event.get("attacker", {}).get("unit"),
+                                          event.get("defender", {}).get("unit")))
+            self.assertEqual(actual_events, expected_events)
 
     def test_end_to_end_scripted_backend_authors_legal_custom_action(self):
         """End-to-end launch with greedy_driver: scripted backend authors legal act outside cards and it commits."""
@@ -343,8 +440,100 @@ class StrategyConsequencesIntegrationTests(unittest.TestCase):
             self.assertTrue(len(llm_orders) > 0, "Custom action must commit with source 'llm'")
             self.assertEqual(llm_orders[0]["orders"][0]["action"], "Move")
             self.assertEqual(llm_orders[0]["orders"][0]["unit_id"], 3)
+            move_events = [event for event in self._driver_events(rows)
+                           if event.get("kind") == "move" and event.get("unit") == 3]
+            self.assertTrue(move_events)
+            self.assertEqual((move_events[0]["to"]["col"], move_events[0]["to"]["row"]), (10, 6))
+
+    @staticmethod
+    def _run_direct_driver(checkpoint_dir: Path, *, preview: bool,
+                           checkpoint: Path | None = None,
+                           actions: list[dict] | None = None) -> list[dict]:
+        envelope = json.loads(checkpoint.read_text()) if checkpoint else {}
+        proc = subprocess.Popen(
+            [str(DRIVER), "--scenario", "big_battle_6", "--faction0", "undead",
+             "--faction1", "undead", "--gold", str(envelope.get("starting_gold", 300)),
+             "--seed", str(envelope.get("seed", 9211)),
+             "--llm-side", "0", "--max-turns", "1", "--incremental-turns",
+             "--checkpoint-dir", str(checkpoint_dir)]
+            + (["--resume-checkpoint", str(checkpoint)] if checkpoint else []),
+            cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True)
+        rows: list[dict] = []
+        actions = actions or [{"action": "RecruitBatch", "def_id": "Skeleton", "count": 1},
+                              {"action": "EndTurn"}]
+
+        def read_until(kind: str) -> dict:
+            while True:
+                line = proc.stdout.readline()
+                if not line:
+                    raise AssertionError(f"driver EOF while waiting for {kind}: {proc.stderr.read()}")
+                value = json.loads(line)
+                rows.append(value)
+                if value.get("type") == kind:
+                    return value
+
+        try:
+            initial = read_until("state")
+            revision = initial["state_revision"]
+            if preview:
+                proc.stdin.write(json.dumps({
+                    "action": "Query", "what": "preview_batch",
+                    "state_revision": revision, "phase": "final", "mode": "forecast",
+                    "candidates": [actions],
+                }) + "\n")
+                proc.stdin.flush()
+                response = read_until("status")
+                if not response.get("ok"):
+                    raise AssertionError(response)
+                if any(row.get("type") == "events" for row in rows):
+                    raise AssertionError("read-only preview emitted events")
+            proc.stdin.write(json.dumps(actions) + "\n")
+            proc.stdin.flush()
+            read_until("game_end")
+            return rows
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+            proc.wait(timeout=5)
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                stream.close()
+
+    def test_preview_and_no_preview_checkpoint_execution_are_identical(self):
+        """Read-only forecast does not alter combat events, progress, or RNG."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            checkpoint, _, _, _ = prepare(root, "contact.json", [policy()])
+            combat_actions = [
+                {"action": "Move", "unit_id": 3, "col": 11, "row": 6},
+                {"action": "Attack", "attacker_id": 3, "defender_id": 4},
+                copy.deepcopy(NO_SWEEP_FINISH),
+            ]
+            starting_rng = json.loads(checkpoint.read_text())["save_state"]["rng_state"]
+            with_preview_dir = root / "with-preview"
+            without_preview_dir = root / "without-preview"
+            with_preview_dir.mkdir()
+            without_preview_dir.mkdir()
+            with_preview = self._run_direct_driver(
+                with_preview_dir, preview=True, checkpoint=checkpoint,
+                actions=combat_actions)
+            without_preview = self._run_direct_driver(
+                without_preview_dir, preview=False, checkpoint=checkpoint,
+                actions=combat_actions)
+
+            self.assertEqual(self._driver_events(with_preview), self._driver_events(without_preview))
+            end_a = next(row for row in with_preview if row.get("type") == "game_end")
+            end_b = next(row for row in without_preview if row.get("type") == "game_end")
+            for key in ("gold", "active_faction", "turn", "state_revision", "units"):
+                self.assertEqual(end_a["state"].get(key), end_b["state"].get(key), key)
+            checkpoints_a = [row for row in with_preview if row.get("type") == "checkpoint"]
+            checkpoints_b = [row for row in without_preview if row.get("type") == "checkpoint"]
+            self.assertTrue(checkpoints_a and checkpoints_b)
+            saved_a = json.loads((with_preview_dir / checkpoints_a[-1]["path"]).read_text())
+            saved_b = json.loads((without_preview_dir / checkpoints_b[-1]["path"]).read_text())
+            self.assertEqual(saved_a["save_state"], saved_b["save_state"])
+            self.assertNotEqual(saved_a["save_state"]["rng_state"], starting_rng)
 
 
 if __name__ == "__main__":
     unittest.main()
-

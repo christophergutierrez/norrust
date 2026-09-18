@@ -486,12 +486,20 @@ class ReportTests(unittest.TestCase):
     def test_primary_game_reprocessing_matches_expected_facts(self):
         import hashlib
         from pathlib import Path
-        log_path = Path("tmp/glm-luna-fullgame-20260917T042432Z/recording/glm-luna-fullgame/match.ndjson")
-        if not log_path.is_file():
-            self.skipTest("primary game match.ndjson not found in tmp")
-        expected_hash = "fd771d5c4bfd163cbe4592fe1c761ac8a9fa14b570ff7fb81a07b65ae114b5e8"
+        fixture_root = Path(__file__).resolve().parents[1] / "tools/fixtures/strategy_match_report"
+        log_path = fixture_root / "primary_reduced.ndjson"
+        provenance = (fixture_root / "README.md").read_text()
+        self.assertIn(
+            "fd771d5c4bfd163cbe4592fe1c761ac8a9fa14b570ff7fb81a07b65ae114b5e8",
+            provenance,
+            "Original archive hash must remain recorded in fixture provenance",
+        )
         actual_hash = hashlib.sha256(log_path.read_bytes()).hexdigest()
-        self.assertEqual(actual_hash, expected_hash, "Original archive hash must be preserved")
+        self.assertEqual(
+            actual_hash,
+            "2745a3ee212865b42ad49f868009b98bf89c427178927af2def0598128f316e6",
+            "Reduced fixture hash must be stable",
+        )
 
         records = load_records(log_path)
         report = classify(records)

@@ -462,20 +462,28 @@ intervening action.
 
 When validated selections exist, up to two entries are enriched with
 engine-derived consequences from a single read-only `preview_batch` query
-(`mode="forecast"`). The enriched selections are presented as a neutral
-comparison block labeled `SIMULATION — NOT EXECUTED`. Each candidate card
-details projected gold changes, immediate combat exchange forecasts, and
-recruiter and friendly unit exposures (reporting direct blockers and open
-threats separately). Every fact comes directly from the engine; missing
-evidence is marked explicitly as `unknown` and never converted to zero or
-implied safe. A candidate-level validation failure marks that selection's
+(`mode="forecast"`). The forecast envelope must carry the current state
+revision, `mode="forecast"`, a valid phase, and explicit forecast/threat
+coverage flags; a missing or mismatched scope makes the card unavailable.
+The enriched selections are presented as a neutral comparison block labeled
+`SIMULATION — NOT EXECUTED`. Each candidate card details projected gold
+changes, immediate combat exchange forecasts, and recruiter and friendly unit
+exposures (reporting direct blockers and open threats separately). Every fact
+comes directly from the engine. Each field has its own `known`, `partial`, or
+`unknown` coverage, so absent metrics, empty data from a truncated envelope,
+and malformed entries remain uncertainty rather than becoming `none`, zero, or
+implied safety. A candidate-level validation failure marks that selection's
 consequences unavailable rather than safe. A budget-exhausted preview leaves
 legal selections available with consequences marked unavailable, without
 spending model calls or retries. Each card carries its exact, submit-ready
 `choose` response object so no single selection is given preferential editorial
-weight. The entire comparison block is strictly bounded in size (< 3 KiB UTF-8),
-lives in the volatile prompt suffix, and concludes with a reminder of the
-current live state revision. Custom authored actions via `act` and manual option
+weight. The entire comparison block is bounded at 3,072 UTF-8 bytes: optional
+detail is omitted only after all card framing, JSON responses, the live revision
+reminder, and the omission marker are reserved. If even that mandatory framing
+cannot fit pathological identifiers, the client emits a truthful bounded
+fallback without clipping or rewriting an identifier. The block lives in the
+volatile prompt suffix. A read-only preview does not advance execution, events,
+progress, or RNG, and custom authored actions via `act` and manual option
 combinations outside the previewed cards remain fully supported.
 
 Every brief also carries one connected economic line, built with its structured

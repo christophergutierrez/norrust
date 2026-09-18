@@ -7,6 +7,7 @@ response validation, decision brief rendering, and real-driver commitment.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -33,7 +34,22 @@ DRIVER = Path(os.environ.get(
 if not DRIVER.is_file():
     DRIVER = ROOT / "norrust_core/target/debug/greedy_driver"
 
-HISTORICAL_CKPT = ROOT / "tmp/glm-luna-fullgame-20260917T042432Z/recording/glm-luna-fullgame/match.ckpt/28-479-model-0cccd5a53a02b5d1c151cf3b9b57bec2aeaf70af8b22252563be73d31a5c5796.json"
+HISTORICAL_CKPT = ROOT / "tools/fixtures/recruiter_survival/fixture_3_late_emergency/checkpoint.json"
+
+
+def materialize_checkpoint(source: Path, destination: Path) -> Path:
+    """Resolve the tracked fixture's scenario-board placeholder for the driver."""
+    data = json.loads(source.read_text())
+    board = ROOT / "scenarios/big_battle_6/board.toml"
+    if not board.is_file() or hashlib.sha256(board.read_bytes()).hexdigest() != data["board_sha256"]:
+        raise AssertionError("maintained big_battle_6 board is absent or hash changed")
+    data["board_path"] = str(board)
+    data["save_state"]["board_path"] = str(board)
+    encoded = json.dumps(data).encode()
+    checkpoint = destination.with_name(
+        f"28-479-model-{hashlib.sha256(encoded).hexdigest()}.json")
+    checkpoint.write_bytes(encoded)
+    return checkpoint
 
 
 class TestStrategyThreatDecisionPacket(unittest.TestCase):
@@ -157,7 +173,6 @@ class TestStrategyThreatDecisionPacket(unittest.TestCase):
 class TestStrategyThreatOptionsDriver(unittest.TestCase):
     """Integration tests running against the real Rust driver."""
 
-    @unittest.skipUnless(HISTORICAL_CKPT.is_file(), "Requires historical checkpoint 479")
     def test_revision_479_historical_enrichment_and_choose_commit(self):
         """Historical checkpoint 479 must produce an enriched invalid_assignment packet,
 
@@ -166,11 +181,12 @@ class TestStrategyThreatOptionsDriver(unittest.TestCase):
         from .llm_client import resolve_choose_batch
 
         with tempfile.TemporaryDirectory() as td:
+            checkpoint = materialize_checkpoint(HISTORICAL_CKPT, Path(td) / "checkpoint.json")
             proc = subprocess.Popen(
                 [str(DRIVER), "--scenario", "big_battle_6", "--faction0", "undead",
                  "--faction1", "undead", "--gold", "300", "--seed", "4477",
                  "--llm-side", "0", "--max-turns", "120", "--incremental-turns",
-                 "--resume-checkpoint", str(HISTORICAL_CKPT)],
+                 "--resume-checkpoint", str(checkpoint)],
                 cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, text=True
             )

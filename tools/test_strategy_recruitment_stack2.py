@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import select
 import subprocess
@@ -19,10 +20,21 @@ from .test_strategy_stack1_integration import launch, policy, prepare
 CASTLE_HEXES = [
     (1, 6), (2, 6), (3, 6), (1, 7), (3, 7), (1, 8), (2, 8), (3, 8),
 ]
-ARCHIVE_18 = ROOT / (
-    "tmp/glm-strategy-release-20260915T132431Z/recording/glm-strategy/match.ckpt/"
-    "0-18-partial-e72c444810fa8158c2c2368e9b8cb3d5c180d7efa314f23c440e12bd93531cb8.json"
-)
+ARCHIVE_18 = ROOT / "tools/fixtures/strategy_recruitment_stack2/revision_18/checkpoint.json"
+
+
+def materialize_archive_checkpoint(source: Path, destination: Path) -> Path:
+    data = json.loads(source.read_text())
+    board = ROOT / "scenarios/big_battle_6/board.toml"
+    if not board.is_file() or hashlib.sha256(board.read_bytes()).hexdigest() != data["board_sha256"]:
+        raise AssertionError("maintained big_battle_6 board is absent or hash changed")
+    data["board_path"] = str(board)
+    data["save_state"]["board_path"] = str(board)
+    encoded = json.dumps(data, separators=(",", ":")).encode()
+    checkpoint = destination.with_name(
+        f"0-18-partial-{hashlib.sha256(encoded).hexdigest()}.json")
+    checkpoint.write_bytes(encoded)
+    return checkpoint
 POLICY_18 = {
     "holds": [],
     "rally": {"col": 12, "row": 7},
@@ -222,8 +234,6 @@ class RecruitmentCapacityReliefTests(unittest.TestCase):
             self.assertEqual(len(prompt_log.read_text().splitlines()), 1)
 
     def test_archive_revision_18_now_steps_toward_rally(self):
-        if not ARCHIVE_18.is_file():
-            self.skipTest("trial 7 revision-18 checkpoint is not in this checkout")
         # Trial 7's recorded policy listed four villages for two scout recruits,
         # which scout-capacity validation now stops (see the test below). Keep
         # the castle-capacity relief coverage on the same checkpoint and progress
@@ -232,30 +242,32 @@ class RecruitmentCapacityReliefTests(unittest.TestCase):
         policy["villages"] = [{"col": 2, "row": 4}, {"col": 5, "row": 3}]
         times = []
         body = None
-        for _ in range(3):
-            started = time.perf_counter()
-            reply = query_driver(ARCHIVE_18, {
-                "action": "Query", "what": "routine_next",
-                "state_revision": 18, "policy": policy, "progress": PROGRESS_18,
-            })
-            times.append(time.perf_counter() - started)
-            self.assertTrue(reply.get("ok"), reply)
-            body = reply.get("body")
-            self.assertEqual(body.get("result"), "action")
-            self.assertEqual(body.get("reason"), "castle_capacity")
-            self.assertEqual(body.get("action", {}).get("action"), "Move")
-            self.assertIn(body.get("action", {}).get("unit_id"), [9, 10, 11, 12, 13, 14])
+        with tempfile.TemporaryDirectory() as td:
+            checkpoint = materialize_archive_checkpoint(ARCHIVE_18, Path(td) / "checkpoint.json")
+            for _ in range(3):
+                started = time.perf_counter()
+                reply = query_driver(checkpoint, {
+                    "action": "Query", "what": "routine_next",
+                    "state_revision": 18, "policy": policy, "progress": PROGRESS_18,
+                })
+                times.append(time.perf_counter() - started)
+                self.assertTrue(reply.get("ok"), reply)
+                body = reply.get("body")
+                self.assertEqual(body.get("result"), "action")
+                self.assertEqual(body.get("reason"), "castle_capacity")
+                self.assertEqual(body.get("action", {}).get("action"), "Move")
+                self.assertIn(body.get("action", {}).get("unit_id"), [9, 10, 11, 12, 13, 14])
         self.assertLess(max(times), 10.0, times)
 
     def test_archive_revision_18_recorded_policy_now_stops_on_scout_capacity(self):
-        if not ARCHIVE_18.is_file():
-            self.skipTest("trial 7 revision-18 checkpoint is not in this checkout")
         # Both scout recruits are committed and assigned, so villages (6,11) and
         # (18,10) can never receive a scout under this installation.
-        reply = query_driver(ARCHIVE_18, {
-            "action": "Query", "what": "routine_next",
-            "state_revision": 18, "policy": POLICY_18, "progress": PROGRESS_18,
-        })
+        with tempfile.TemporaryDirectory() as td:
+            checkpoint = materialize_archive_checkpoint(ARCHIVE_18, Path(td) / "checkpoint.json")
+            reply = query_driver(checkpoint, {
+                "action": "Query", "what": "routine_next",
+                "state_revision": 18, "policy": POLICY_18, "progress": PROGRESS_18,
+            })
         self.assertTrue(reply.get("ok"), reply)
         body = reply.get("body")
         self.assertEqual(body.get("result"), "exception")
