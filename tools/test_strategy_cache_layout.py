@@ -362,14 +362,83 @@ class StrategyCacheLayoutTests(unittest.TestCase):
             self.assertIn("axe", prefix_text)
             self.assertIn("res=[", prefix_text)
 
-            # In suffix: dynamic economic summary
-            self.assertIn("ECONOMIC_SUMMARY:", suffix_text)
-            self.assertIn("friendly_units=", suffix_text)
-            self.assertIn("enemy_units=", suffix_text)
-            self.assertIn("gold=", suffix_text)
-            self.assertIn("unreserved=", suffix_text)
-            self.assertIn("queue_remaining=", suffix_text)
-            self.assertIn("recruitment_possible=", suffix_text)
+            # In suffix: dynamic economic summary (JSON-encoded facts)
+            self.assertIn("economic_summary", suffix_text)
+            self.assertIn("friendly_units", suffix_text)
+            self.assertIn("enemy_units", suffix_text)
+            self.assertIn("gold", suffix_text)
+            self.assertIn("unreserved_gold", suffix_text)
+            self.assertIn("queue_remaining", suffix_text)
+            self.assertIn("recruitment_possible", suffix_text)
+
+    def test_economic_summary_line_mutations_preserve_prefix(self):
+        """Economic summary line mutations (gold, villages, roster) preserve fixed prefix."""
+        defs = ("Skeleton", "Ghost")
+        base_state = _sample_state()
+        base_packet = build_decision_packet("initial", {}, revision=10, decision_id="dec-base")
+        base_brief = render_policy_brief(0, defs, state=base_state)
+        base_prompt = finalize_strategy_prompt(base_brief, base_state, packet=base_packet)
+        base_regions = prompt_regions(base_prompt)
+        prefix_sha = base_regions["fixed_prefix_sha256"]
+        prefix_bytes = base_regions["fixed_prefix_bytes"]
+
+        # Mutate: gold, village ownership, unit roster
+        mutated_state = copy.deepcopy(base_state)
+        mutated_state["gold"] = [176, 200]  # Changed from [100, 80]
+        mutated_state["terrain"][1]["owner"] = -1  # Village at (1,0): was 0, now unowned
+        mutated_state["terrain"][3]["owner"] = 0  # Village at (3,0): was 1, now owned by side 0
+        # Add a new friendly unit
+        mutated_state["units"].append({
+            "id": 6, "faction": 0, "def_id": "Sentinel", "col": 0, "row": 0, "hp": 25,
+            "max_hp": 25, "moved": False, "attacked": False, "movement": 4, "can_recruit": False
+        })
+
+        mutated_brief = render_policy_brief(0, defs, state=mutated_state)
+        mutated_prompt = finalize_strategy_prompt(mutated_brief, mutated_state, packet=base_packet)
+        mutated_regions = prompt_regions(mutated_prompt)
+
+        # Fixed prefix must be byte-identical
+        self.assertEqual(mutated_regions["fixed_prefix_sha256"], prefix_sha)
+        self.assertEqual(mutated_regions["fixed_prefix_bytes"], prefix_bytes)
+        self.assertEqual(base_prompt.encode("utf-8")[:prefix_bytes], mutated_prompt.encode("utf-8")[:prefix_bytes])
+
+        # Economic line must change in the suffix and reflect mutations
+        suffix_base = base_prompt[prefix_bytes:]
+        suffix_mutated = mutated_prompt[prefix_bytes:]
+        self.assertNotEqual(suffix_base, suffix_mutated)
+
+        # Verify specific values in the economic summary line
+        self.assertIn("176 gold", mutated_prompt[prefix_bytes:])
+        # After mutations:
+        # - terrain[1] (1,0): owner 0 -> -1 (unowned)
+        # - terrain[3] (3,0): owner 1 -> 0 (friendly)
+        # Result: friendly_villages=1, enemy_villages=0, unowned=1
+        self.assertIn("villages 1 vs 0", mutated_prompt[prefix_bytes:])
+        self.assertIn("1 unowned", mutated_prompt[prefix_bytes:])
+        # Units: initially 2 friendly (id 1,2) + 1 enemy (id 5); after adding id 6 (faction 0): 3 vs 1
+        self.assertIn("units 3 vs 1", mutated_prompt[prefix_bytes:])
+
+    def test_economic_summary_unowned_villages_never_count_as_enemy(self):
+        """Map with all villages unowned (owner=-1) renders as 0 vs 0, never vs 6."""
+        defs = ("Archer", "Scout")
+        neutral_state = _sample_state()
+        # Set all village owners to -1 (unowned)
+        for tile in neutral_state["terrain"]:
+            if tile.get("terrain_id") == "village":
+                tile["owner"] = -1
+
+        packet = build_decision_packet("initial", {}, revision=1, decision_id="dec-neutral")
+        brief = render_policy_brief(0, defs, state=neutral_state)
+        prompt = finalize_strategy_prompt(brief, neutral_state, packet=packet)
+        regions = prompt_regions(prompt)
+        suffix = prompt[regions["fixed_prefix_bytes"]:]
+
+        # All 2 villages are unowned, so must render as "villages 0 vs 0 (2 unowned)"
+        self.assertIn("villages 0 vs 0", suffix)
+        self.assertIn("2 unowned", suffix)
+        # Must never say "vs 2" or "vs 6" which would indicate miscounting
+        self.assertNotIn("villages 0 vs 2", suffix)
+        self.assertNotIn("vs 6", suffix)
 
 
 if __name__ == "__main__":

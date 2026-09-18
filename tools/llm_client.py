@@ -6828,9 +6828,11 @@ def run(args: argparse.Namespace) -> int:
             brief = render_decision_brief(
                 recovery_packet,
                 state=state,
-                recruit_options=None,
+                recruit_options=state.get("strategy_recruit_options") if isinstance(state, dict) else None,
                 changes=None,
                 policy=strategy_installation.policy if strategy_installation is not None else None,
+                remaining=strategy_progress.remaining(strategy_installation.policy)
+                if (strategy_progress is not None and strategy_installation is not None) else None,
                 progress=strategy_progress)
             return recovery_packet, (
                 brief +
@@ -7322,7 +7324,12 @@ def run(args: argparse.Namespace) -> int:
                                 recruit_options=state.get("strategy_recruit_options"),
                                 changes=continuity_entries[-2:] if continuity_entries else None,
                                 policy=strategy_installation.policy,
-                                remaining=0,
+                                # Pass the remaining queue explicitly. The summary ignores a
+                                # non-list here and derives the queue from progress+policy
+                                # instead, so a bare 0 happened to be harmless; the explicit
+                                # list keeps this call site on the documented contract.
+                                remaining=strategy_progress.remaining(strategy_installation.policy)
+                                if strategy_progress is not None else None,
                                 progress=strategy_progress,
                                 recruitable_defs=context.recruitable_defs,
                             )

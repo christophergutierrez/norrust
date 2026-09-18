@@ -1588,68 +1588,356 @@ class ProposedDestinationRealOutputRenderingTests(unittest.TestCase):
         unknown_profile = rp.format_recruit_profile("NonExistentCreature")
         self.assertEqual(unknown_profile, "NonExistentCreature (profile unknown)")
 
-    def test_economic_summary_turn_3_shape(self):
+    # -- Shared fixtures for economic-summary table-driven tests. -----------
+
+    KEEP_TERRAIN = [{"col": 2, "row": 7, "terrain_id": "keep"}]
+
+    def _units(self, friendly_alive, enemy_alive, *, recruiter_col=2, recruiter_row=7):
+        units = [{"id": 1, "faction": 0, "can_recruit": True, "col": recruiter_col, "row": recruiter_row, "hp": 48}]
+        units += [{"id": i, "faction": 0, "can_recruit": False, "col": i, "row": 5, "hp": 30}
+                  for i in range(2, friendly_alive + 1)]
+        units += [{"id": 100 + i, "faction": 1, "can_recruit": False, "col": 10 + i, "row": 5, "hp": 30}
+                  for i in range(enemy_alive)]
+        return units
+
+    REAL_RECRUIT_OPTIONS = {
+        "side_can_place": True,
+        "placement_hexes": [{"col": 2, "row": 8}, {"col": 3, "row": 7}, {"col": 3, "row": 8},
+                             {"col": 2, "row": 6}, {"col": 1, "row": 7}, {"col": 1, "row": 6}],
+        "options": [
+            {"def_id": "Dark Adept", "cost": 16, "affordable": True},
+            {"def_id": "Ghost", "cost": 19, "affordable": True},
+            {"def_id": "Ghoul", "cost": 16, "affordable": True},
+            {"def_id": "Skeleton", "cost": 15, "affordable": True},
+            {"def_id": "Skeleton Archer", "cost": 14, "affordable": True},
+            {"def_id": "Vampire Bat", "cost": 13, "affordable": True},
+            {"def_id": "Walking Corpse", "cost": 8, "affordable": True},
+        ],
+    }
+
+    def test_economic_summary_completed_queue(self):
         state = {
             "turn": 3, "gold": [211, 50], "active_faction": 0, "state_revision": 12,
-            "units": [{"id": 1, "faction": 0, "can_recruit": True, "col": 2, "row": 7, "hp": 48}] +
-                     [{"id": i, "faction": 0, "can_recruit": False, "col": i, "row": 5, "hp": 30} for i in range(2, 9)] +
-                     [{"id": 10 + i, "faction": 1, "can_recruit": False, "col": 10 + i, "row": 5, "hp": 30} for i in range(20)],
+            "terrain": self.KEEP_TERRAIN,
+            "units": self._units(9, 20),
         }
-        policy = {"reserve_gold": 0, "recruits": [{"def_id": "Skeleton", "count": 7, "role": "army"}]}
-        remaining = []
-        recruit_options = {
-            "side_can_place": True,
-            "placement_hexes": [{"col": 2, "row": 8}, {"col": 3, "row": 7}],
-            "options": [{"def_id": "Skeleton", "cost": 15, "affordable": True}],
-        }
-        summary = rp.compute_economic_summary(state, policy=policy, remaining=remaining, recruit_options=recruit_options)
-        self.assertEqual(summary["friendly_units"], 8)
+        policy = {"reserve_gold": 0, "recruits": [{"def_id": "Skeleton", "count": 7, "role": "army"}], "villages": []}
+        summary = rp.compute_economic_summary(state, policy=policy, remaining=[], recruit_options=self.REAL_RECRUIT_OPTIONS)
+        self.assertEqual(summary["friendly_units"], 9)
         self.assertEqual(summary["enemy_units"], 20)
         self.assertEqual(summary["gold"], 211)
         self.assertEqual(summary["reserve_gold"], 0)
         self.assertEqual(summary["unreserved_gold"], 211)
         self.assertEqual(summary["queue_remaining"], 0)
         self.assertEqual(summary["queue_status"], "completed")
-        self.assertEqual(summary["legal_placements"], 2)
-        self.assertTrue(summary["recruitment_possible"])
+        self.assertEqual(summary["legal_placements"], 6)
+        self.assertIs(summary["side_can_place"], True)
+        self.assertIsNone(summary["next_recruit_def_id"])
+        self.assertIsNone(summary["next_recruit_cost"])
+        self.assertIsNone(summary["next_recruit_affordable"])
+        self.assertTrue(summary["some_recruit_affordable"])
+        self.assertEqual(summary["friendly_villages"], 0)
+        self.assertEqual(summary["enemy_villages"], 0)
+        self.assertEqual(summary["pending_village_objectives"], 0)
+        self.assertIs(summary["recruitment_possible"], True)
         self.assertEqual(summary["status_detail"], "finished_queue")
 
         line = rp.format_economic_summary_line(summary)
-        self.assertIn("friendly_units=8", line)
-        self.assertIn("enemy_units=20", line)
-        self.assertIn("gold=211", line)
-        self.assertIn("unreserved=211", line)
-        self.assertIn("queue_remaining=0", line)
-        self.assertIn("recruitment_possible=true", line)
-        self.assertIn("queue completed; 211 unreserved gold available for recruitment", line)
+        self.assertEqual(
+            line,
+            "211 gold (211 unreserved); units 9 vs 20; villages 0 vs 0; "
+            "no village objectives; queue complete; recruitment available.")
+        self.assertLessEqual(len(line), 500)
 
-    def test_economic_summary_blockers_distinguished(self):
-        base_state = {
-            "turn": 1, "gold": [5, 100], "active_faction": 0,
-            "units": [{"id": 1, "faction": 0, "can_recruit": True, "col": 2, "row": 7, "hp": 48}],
+    def test_economic_summary_active_queue(self):
+        state = {
+            "turn": 2, "active_faction": 0, "gold": [100, 10],
+            "terrain": self.KEEP_TERRAIN,
+            "units": self._units(1, 1),
         }
-        recruit_options = {
+        policy = {"reserve_gold": 0,
+                  "recruits": [{"def_id": "Skeleton", "count": 3, "role": "army"}]}
+        progress = rp.RoutineProgress.fresh("install-1", policy)
+        remaining = progress.remaining(policy)
+        summary = rp.compute_economic_summary(
+            state, policy=policy, progress=progress, remaining=remaining,
+            recruit_options=self.REAL_RECRUIT_OPTIONS)
+        self.assertEqual(summary["queue_status"], "active")
+        self.assertEqual(summary["queue_remaining"], 3)
+        self.assertEqual(summary["next_recruit_def_id"], "Skeleton")
+        self.assertEqual(summary["next_recruit_cost"], 15)
+        self.assertIs(summary["next_recruit_affordable"], True)
+        self.assertIs(summary["queue_executable"], True)
+        self.assertIs(summary["recruitment_possible"], True)
+        self.assertEqual(summary["status_detail"], "active_available")
+
+    def test_economic_summary_packed_castle_blocks_regardless_of_queue(self):
+        state = {
+            "turn": 2, "active_faction": 0, "gold": [100, 10],
+            "terrain": self.KEEP_TERRAIN,
+            "units": self._units(1, 1),
+        }
+        packed_options = dict(self.REAL_RECRUIT_OPTIONS, side_can_place=False, placement_hexes=[])
+        # Simultaneous facts: a completed queue does not hide the placement blocker.
+        summary_completed = rp.compute_economic_summary(
+            state, policy={"reserve_gold": 0, "recruits": []}, remaining=[], recruit_options=packed_options)
+        self.assertEqual(summary_completed["queue_status"], "completed")
+        self.assertIs(summary_completed["side_can_place"], False)
+        self.assertEqual(summary_completed["legal_placements"], 0)
+        self.assertIs(summary_completed["recruitment_possible"], False)
+        self.assertEqual(summary_completed["status_detail"], "no_placement")
+
+        policy_active = {"reserve_gold": 0, "recruits": [{"def_id": "Skeleton", "count": 2, "role": "army"}]}
+        summary_active = rp.compute_economic_summary(
+            state, policy=policy_active, remaining=[{"queue_index": 0, "def_id": "Skeleton", "role": "army", "remaining": 2}],
+            recruit_options=packed_options)
+        self.assertEqual(summary_active["queue_status"], "active")
+        self.assertIs(summary_active["recruitment_possible"], False)
+        self.assertEqual(summary_active["status_detail"], "no_placement")
+        self.assertIs(summary_active["queue_executable"], False)
+
+    def test_economic_summary_no_eligible_recruiter(self):
+        state = {"turn": 1, "active_faction": 0, "gold": [100, 100], "terrain": self.KEEP_TERRAIN, "units": []}
+        summary = rp.compute_economic_summary(state, recruit_options=self.REAL_RECRUIT_OPTIONS)
+        self.assertIs(summary["recruiter_eligible"], False)
+        self.assertIs(summary["recruitment_possible"], False)
+        self.assertEqual(summary["status_detail"], "no_eligible_recruiter")
+
+    def test_economic_summary_total_vs_reserved_affordability(self):
+        state = {
+            "turn": 1, "active_faction": 0, "gold": [100, 100],
+            "terrain": self.KEEP_TERRAIN, "units": self._units(1, 1),
+        }
+        cheap_options = {
             "side_can_place": True,
             "placement_hexes": [{"col": 2, "row": 8}],
-            "options": [{"def_id": "Skeleton", "cost": 15, "affordable": False}],
+            "options": [{"def_id": "Skeleton", "cost": 15, "affordable": True}],
         }
-        # 1. No budget
-        s_budget = rp.compute_economic_summary(base_state, recruit_options=recruit_options)
-        self.assertFalse(s_budget["recruitment_possible"])
-        self.assertEqual(s_budget["status_detail"], "no_budget")
+        # Total gold covers the cost, but the reserve consumes all spendable gold.
+        policy_reserved = {"reserve_gold": 90, "recruits": []}
+        s_reserved = rp.compute_economic_summary(state, policy=policy_reserved, remaining=[], recruit_options=cheap_options)
+        self.assertEqual(s_reserved["gold"], 100)
+        self.assertEqual(s_reserved["unreserved_gold"], 10)
+        self.assertIs(s_reserved["some_recruit_affordable"], False)
+        self.assertIs(s_reserved["recruitment_possible"], False)
+        self.assertEqual(s_reserved["status_detail"], "no_unreserved_budget")
 
-        # 2. No placement
-        base_state["gold"] = [100, 100]
-        recruit_options_no_place = {"side_can_place": False, "placement_hexes": [], "options": recruit_options["options"]}
-        s_place = rp.compute_economic_summary(base_state, recruit_options=recruit_options_no_place)
-        self.assertFalse(s_place["recruitment_possible"])
-        self.assertEqual(s_place["status_detail"], "no_placement")
+        # Total gold itself is insufficient, regardless of reserve.
+        poor_state = dict(state, gold=[5, 100])
+        s_poor = rp.compute_economic_summary(poor_state, policy={"reserve_gold": 0, "recruits": []}, remaining=[], recruit_options=cheap_options)
+        self.assertEqual(s_poor["unreserved_gold"], 5)
+        self.assertIs(s_poor["some_recruit_affordable"], False)
+        self.assertIs(s_poor["recruitment_possible"], False)
+        self.assertEqual(s_poor["status_detail"], "no_budget")
 
-        # 3. No eligible recruiter
-        no_recruiter_state = {"turn": 1, "gold": [100, 100], "active_faction": 0, "units": []}
-        s_rec = rp.compute_economic_summary(no_recruiter_state, recruit_options={"side_can_place": False, "placement_hexes": []})
-        self.assertFalse(s_rec["recruitment_possible"])
-        self.assertEqual(s_rec["status_detail"], "no_eligible_recruiter")
+    def test_economic_summary_expensive_next_recruit_with_cheaper_alternative(self):
+        # The queue's next ordered recruit (Ghost, 19) is unaffordable, but a
+        # cheaper alternative (Walking Corpse, 8) exists. This must read as a
+        # blocked queue, not an executable one.
+        state = {
+            "turn": 4, "active_faction": 0, "gold": [12, 10],
+            "terrain": self.KEEP_TERRAIN, "units": self._units(1, 1),
+        }
+        policy = {"reserve_gold": 0, "recruits": [{"def_id": "Ghost", "count": 1, "role": "army"},
+                                                  {"def_id": "Walking Corpse", "count": 1, "role": "army"}]}
+        remaining = [{"queue_index": 0, "def_id": "Ghost", "role": "army", "remaining": 1},
+                     {"queue_index": 1, "def_id": "Walking Corpse", "role": "army", "remaining": 1}]
+        summary = rp.compute_economic_summary(state, policy=policy, remaining=remaining, recruit_options=self.REAL_RECRUIT_OPTIONS)
+        self.assertEqual(summary["next_recruit_def_id"], "Ghost")
+        self.assertEqual(summary["next_recruit_cost"], 19)
+        self.assertIs(summary["next_recruit_affordable"], False)
+        self.assertIs(summary["some_recruit_affordable"], True)
+        self.assertIs(summary["queue_executable"], False)
+        self.assertIs(summary["recruitment_possible"], True)
+        self.assertEqual(summary["status_detail"], "queue_blocked_next_unaffordable")
+        line = rp.format_economic_summary_line(summary)
+        # The general recruitment clause is legitimately "available" (a
+        # cheaper alternative is buyable), but the queue's own clause must
+        # say so explicitly rather than let "recruitment available" imply
+        # the queue itself can proceed.
+        self.assertIn("queue active (2 remaining; next queued recruit unaffordable)", line)
+        self.assertIn("recruitment available", line)
+        self.assertIn("cheaper alternative available", line)
+
+    def test_economic_summary_queue_clause_reflects_next_recruit_affordability(self):
+        base_state = {
+            "turn": 4, "active_faction": 0,
+            "terrain": self.KEEP_TERRAIN, "units": self._units(1, 1),
+        }
+        policy = {"reserve_gold": 0, "recruits": [{"def_id": "Skeleton", "count": 1, "role": "army"}]}
+        remaining = [{"queue_index": 0, "def_id": "Skeleton", "role": "army", "remaining": 1}]
+
+        # Next recruit affordable: queue reads as plainly active.
+        affordable_state = dict(base_state, gold=[100, 10])
+        s_true = rp.compute_economic_summary(
+            affordable_state, policy=policy, remaining=remaining, recruit_options=self.REAL_RECRUIT_OPTIONS)
+        self.assertIs(s_true["next_recruit_affordable"], True)
+        self.assertIs(s_true["queue_executable"], True)
+        line_true = rp.format_economic_summary_line(s_true)
+        self.assertIn("queue active (1 remaining)", line_true)
+        self.assertNotIn("unaffordable", line_true)
+        self.assertNotIn("unknown)", line_true)
+
+        # Next recruit unaffordable, and no cheaper alternative either:
+        # the queue clause must still say so, not just the general clause.
+        poor_state = dict(base_state, gold=[2, 10])
+        s_false = rp.compute_economic_summary(
+            poor_state, policy=policy, remaining=remaining, recruit_options=self.REAL_RECRUIT_OPTIONS)
+        self.assertIs(s_false["next_recruit_affordable"], False)
+        self.assertIs(s_false["recruitment_possible"], False)
+        line_false = rp.format_economic_summary_line(s_false)
+        self.assertIn("queue active (1 remaining; next queued recruit unaffordable)", line_false)
+
+        # Next recruit's cost is unknown (missing from recruit_options): the
+        # queue clause must say the affordability is unknown, never imply
+        # the queue can proceed.
+        unknown_cost_options = {
+            "side_can_place": True,
+            "placement_hexes": [{"col": 2, "row": 8}],
+            "options": [{"def_id": "Ghost", "cost": 19, "affordable": True}],  # no Skeleton entry
+        }
+        s_unknown = rp.compute_economic_summary(
+            affordable_state, policy=policy, remaining=remaining, recruit_options=unknown_cost_options)
+        self.assertEqual(s_unknown["next_recruit_cost"], "unknown")
+        self.assertEqual(s_unknown["next_recruit_affordable"], "unknown")
+        self.assertEqual(s_unknown["queue_executable"], "unknown")
+        line_unknown = rp.format_economic_summary_line(s_unknown)
+        self.assertIn("queue active (1 remaining; next queued recruit affordability unknown)", line_unknown)
+        # A reader must not be able to mistake the general recruitment
+        # clause for proof the queue itself can proceed.
+        self.assertIn("recruitment available", line_unknown)
+
+    def test_economic_summary_village_ownership_excludes_neutral_sentinel(self):
+        base_state = {
+            "turn": 1, "active_faction": 0, "gold": [176, 4],
+            "units": self._units(9, 20),
+        }
+
+        # The real big_battle_6 opening: every village is owner -1 (neutral),
+        # not owned by either side. This must never read as enemy-held.
+        opening_terrain = self.KEEP_TERRAIN + [
+            {"col": c, "row": 9, "terrain_id": "village", "owner": -1} for c in range(6)
+        ]
+        s_opening = rp.compute_economic_summary(
+            dict(base_state, terrain=opening_terrain), recruit_options=self.REAL_RECRUIT_OPTIONS)
+        self.assertEqual(s_opening["friendly_villages"], 0)
+        self.assertEqual(s_opening["enemy_villages"], 0)
+        self.assertEqual(s_opening["neutral_villages"], 6)
+        line_opening = rp.format_economic_summary_line(s_opening)
+        self.assertIn("villages 0 vs 0 (6 unowned)", line_opening)
+        self.assertNotIn("vs 6", line_opening)
+        self.assertLessEqual(len(line_opening), 500)
+
+        # Mixed ownership: one neutral, one friendly, one enemy.
+        mixed_terrain = self.KEEP_TERRAIN + [
+            {"col": 5, "row": 5, "terrain_id": "village", "owner": -1},
+            {"col": 6, "row": 5, "terrain_id": "village", "owner": 0},
+            {"col": 7, "row": 5, "terrain_id": "village", "owner": 1},
+        ]
+        s_mixed = rp.compute_economic_summary(
+            dict(base_state, terrain=mixed_terrain), recruit_options=self.REAL_RECRUIT_OPTIONS)
+        self.assertEqual(s_mixed["friendly_villages"], 1)
+        self.assertEqual(s_mixed["enemy_villages"], 1)
+        self.assertEqual(s_mixed["neutral_villages"], 1)
+        line_mixed = rp.format_economic_summary_line(s_mixed)
+        self.assertIn("villages 1 vs 1 (1 unowned)", line_mixed)
+
+        # Unknown ownership (missing owner field) stays unknown, not neutral.
+        unknown_terrain = self.KEEP_TERRAIN + [{"col": 5, "row": 5, "terrain_id": "village"}]
+        s_unknown_owner = rp.compute_economic_summary(
+            dict(base_state, terrain=unknown_terrain), recruit_options=self.REAL_RECRUIT_OPTIONS)
+        self.assertEqual(s_unknown_owner["friendly_villages"], "unknown")
+        self.assertEqual(s_unknown_owner["enemy_villages"], "unknown")
+        self.assertEqual(s_unknown_owner["neutral_villages"], "unknown")
+
+    def test_economic_summary_missing_data_stays_unknown(self):
+        base_state = {
+            "turn": 1, "active_faction": 0, "gold": [100, 100],
+            "terrain": self.KEEP_TERRAIN, "units": self._units(1, 1),
+        }
+
+        # No options at all.
+        s_no_options = rp.compute_economic_summary(
+            base_state, recruit_options={"side_can_place": True, "placement_hexes": [{"col": 2, "row": 8}]})
+        self.assertEqual(s_no_options["some_recruit_affordable"], "unknown")
+        self.assertEqual(s_no_options["recruitment_possible"], "unknown")
+
+        # Options present but costs missing.
+        s_missing_costs = rp.compute_economic_summary(
+            base_state, recruit_options={"side_can_place": True, "placement_hexes": [{"col": 2, "row": 8}],
+                                          "options": [{"def_id": "Skeleton"}]})
+        self.assertEqual(s_missing_costs["some_recruit_affordable"], "unknown")
+        self.assertEqual(s_missing_costs["recruitment_possible"], "unknown")
+
+        # Unknown roster (units missing entirely) must not read as an empty one.
+        s_no_roster = rp.compute_economic_summary(
+            {"turn": 1, "active_faction": 0, "gold": [100, 100], "terrain": self.KEEP_TERRAIN},
+            recruit_options=self.REAL_RECRUIT_OPTIONS)
+        self.assertEqual(s_no_roster["friendly_units"], "unknown")
+        self.assertEqual(s_no_roster["enemy_units"], "unknown")
+        self.assertEqual(s_no_roster["recruiter_eligible"], "unknown")
+        self.assertEqual(s_no_roster["recruitment_possible"], "unknown")
+
+        # Unknown side must never default to 0.
+        s_no_side = rp.compute_economic_summary(
+            {"turn": 1, "gold": [100, 100], "terrain": self.KEEP_TERRAIN, "units": self._units(1, 1)},
+            recruit_options=self.REAL_RECRUIT_OPTIONS)
+        self.assertEqual(s_no_side["friendly_units"], "unknown")
+        self.assertEqual(s_no_side["enemy_units"], "unknown")
+        self.assertEqual(s_no_side["gold"], "unknown")
+        self.assertEqual(s_no_side["recruitment_possible"], "unknown")
+        self.assertEqual(s_no_side["status_detail"], "unknown_side")
+
+        # Unknown village ownership is not rendered as zero owned villages.
+        state_unknown_villages = dict(base_state, terrain=self.KEEP_TERRAIN + [{"col": 5, "row": 5, "terrain_id": "village"}])
+        s_villages = rp.compute_economic_summary(state_unknown_villages, recruit_options=self.REAL_RECRUIT_OPTIONS)
+        self.assertEqual(s_villages["friendly_villages"], "unknown")
+        self.assertEqual(s_villages["enemy_villages"], "unknown")
+        line = rp.format_economic_summary_line(s_villages)
+        self.assertIn("villages unknown vs unknown", line)
+        self.assertNotIn("villages 0 vs 0", line)
+
+        # Missing placement facts (no recruit_options at all).
+        s_no_placement_facts = rp.compute_economic_summary(base_state, recruit_options=None)
+        self.assertEqual(s_no_placement_facts["legal_placements"], "unknown")
+        self.assertEqual(s_no_placement_facts["side_can_place"], "unknown")
+        self.assertEqual(s_no_placement_facts["recruitment_possible"], "unknown")
+
+    def test_economic_summary_reproduces_handoff_round_2(self):
+        """176 gold (126 unreserved); units 9 vs 20; villages 0 vs 1; completed queue."""
+        state = {
+            "turn": 2, "active_faction": 0, "gold": [176, 4],
+            "terrain": self.KEEP_TERRAIN + [{"col": 9, "row": 9, "terrain_id": "village", "owner": 1}],
+            "units": self._units(9, 20),
+        }
+        policy = {
+            "reserve_gold": 50,
+            "recruits": [
+                {"def_id": "Skeleton", "count": 4, "role": "army"},
+                {"def_id": "Dark Adept", "count": 2, "role": "army"},
+                {"def_id": "Ghoul", "count": 2, "role": "army"},
+            ],
+            "scouts": [], "villages": [], "rally": {"col": 8, "row": 6}, "holds": [],
+        }
+        summary = rp.compute_economic_summary(state, policy=policy, remaining=[], recruit_options=self.REAL_RECRUIT_OPTIONS)
+        self.assertEqual(summary["gold"], 176)
+        self.assertEqual(summary["reserve_gold"], 50)
+        self.assertEqual(summary["unreserved_gold"], 126)
+        self.assertEqual(summary["friendly_units"], 9)
+        self.assertEqual(summary["enemy_units"], 20)
+        self.assertEqual(summary["friendly_villages"], 0)
+        self.assertEqual(summary["enemy_villages"], 1)
+        self.assertEqual(summary["pending_village_objectives"], 0)
+        self.assertEqual(summary["queue_status"], "completed")
+        self.assertIs(summary["recruitment_possible"], True)
+        self.assertEqual(summary["status_detail"], "finished_queue")
+
+        line = rp.format_economic_summary_line(summary)
+        self.assertEqual(
+            line,
+            "176 gold (126 unreserved); units 9 vs 20; villages 0 vs 1; "
+            "no village objectives; queue complete; recruitment available.")
+        self.assertLessEqual(len(line), 500)
 
 
 if __name__ == "__main__":

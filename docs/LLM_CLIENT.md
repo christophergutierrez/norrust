@@ -460,6 +460,30 @@ remains unknown.** "Validated" always means legal at that revision only; it
 is never a safety claim and does not guarantee validity after any
 intervening action.
 
+Every brief also carries one connected economic line, built with its structured
+facts from a single source (`compute_economic_summary`), for example
+`176 gold (126 unreserved); units 9 vs 20; villages 0 vs 0 (6 unowned); no
+village objectives; queue complete; recruitment available.` Each fact is either
+an engine value or `unknown`; an unknown roster, controlled side, village
+ownership or placement fact is never shown as zero, empty or false, and no
+unknown can make recruitment read as possible. Unit counts are headcounts of
+living units per side including recruiters, not a strength score. Village
+ownership uses the engine's `-1` as unowned: those count toward neither side
+and appear as `(N unowned)`. Recruit costs and placement come only from the
+engine's recruit options, never a guessed minimum.
+
+Two recruitment questions are kept apart. `recruitment_possible` asks whether
+anything is recruitable now; `queue_executable` asks whether the installed
+finite queue's NEXT ordered recruit can be bought and placed. A cheap
+alternative never makes a blocked queue read as runnable, so when the queue is
+active but not proven runnable its clause says so, as in `queue active (2
+remaining; next queued recruit unaffordable)` or `... affordability unknown`.
+A completed queue and blocked placement are reported together when both hold.
+Affordability of a whole queue is not proof that it can all be placed this
+turn: castle space can spread it over several turns. The line sits in the
+volatile part of the prompt, after the fixed prefix, so changing gold,
+ownership or units never disturbs prefix caching.
+
 The initial policy and exception briefs repeat the compact live map, both-side
 unit identities, economy and recruit costs. Exception briefs also repeat the
 installed assignments, holds, rally and remaining counts. At an ordinary

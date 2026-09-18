@@ -1397,169 +1397,414 @@ def compute_economic_summary(
     remaining: Any = None,
     recruit_options: Any = None,
 ) -> dict[str, Any]:
-    """Derive a compact economic summary from existing facts."""
+    """Derive a compact, honest economic summary from existing engine facts.
+
+    Every fact distinguishes an authoritative empty/zero/false value from an
+    unknown one. An unknown side, roster, gold split, village ownership, or
+    placement fact is never coerced to zero/false, and unknown facts can
+    never establish ``recruitment_possible`` (or ``queue_executable``) as
+    ``True``. ``recruit_options`` is the raw ``recruit_options`` query body
+    (``options`` -- ``{def_id, cost, affordable}`` -- plus ``side_can_place``
+    and ``placement_hexes``), for example as stored by the client in
+    ``state["strategy_recruit_options"]``; there is no guessed minimum cost.
+    ``remaining`` should be the actual output of ``RoutineProgress.remaining()``
+    (or an equivalent list of ``{queue_index, def_id, role, remaining}``
+    entries in ascending queue order) when the caller already has it; a
+    ``progress``/``policy`` pair is used to compute it otherwise.
+    """
+    unknown = "unknown"
     if not isinstance(state, dict):
         return {
-            "friendly_units": "unknown",
-            "enemy_units": "unknown",
-            "gold": "unknown",
+            "gold": unknown,
             "reserve_gold": 0,
-            "unreserved_gold": "unknown",
-            "queue_remaining": "unknown",
-            "queue_status": "unknown",
-            "legal_placements": "unknown",
-            "recruitment_possible": "unknown",
-            "status_detail": "unknown",
+            "unreserved_gold": unknown,
+            "friendly_units": unknown,
+            "enemy_units": unknown,
+            "friendly_villages": unknown,
+            "enemy_villages": unknown,
+            "neutral_villages": unknown,
+            "pending_village_objectives": unknown,
+            "queue_remaining": unknown,
+            "queue_status": unknown,
+            "next_recruit_def_id": unknown,
+            "next_recruit_cost": unknown,
+            "next_recruit_affordable": unknown,
+            "some_recruit_affordable": unknown,
+            "legal_placements": unknown,
+            "side_can_place": unknown,
+            "recruiter_eligible": unknown,
+            "queue_executable": unknown,
+            "recruitment_possible": unknown,
+            "status_detail": "unknown_state",
         }
 
-    side = state.get("active_faction")
-    if not isinstance(side, int):
-        side = 0
+    # -- Controlled side. Never default an unknown side to 0. --------------
+    raw_side = state.get("active_faction")
+    side: Optional[int] = raw_side if (isinstance(raw_side, int) and not isinstance(raw_side, bool)) else None
 
+    # -- Units (recruiters are counted as units, not a separate score). ----
     units = state.get("units")
-    if isinstance(units, list):
-        friendly_units = sum(1 for u in units if isinstance(u, dict) and u.get("faction") == side
-                             and (not isinstance(u.get("hp"), int) or u.get("hp") > 0))
-        enemy_units = sum(1 for u in units if isinstance(u, dict) and u.get("faction") != side
-                          and (not isinstance(u.get("hp"), int) or u.get("hp") > 0))
-        friendly_recruiters = [u for u in units if isinstance(u, dict) and u.get("faction") == side
-                               and u.get("can_recruit")
-                               and (not isinstance(u.get("hp"), int) or u.get("hp") > 0)]
+    if isinstance(units, list) and side is not None:
+        friendly_units: Any = sum(
+            1 for u in units if isinstance(u, dict) and u.get("faction") == side
+            and (not isinstance(u.get("hp"), int) or u.get("hp") > 0))
+        enemy_units: Any = sum(
+            1 for u in units if isinstance(u, dict) and u.get("faction") != side
+            and (not isinstance(u.get("hp"), int) or u.get("hp") > 0))
+        friendly_recruiters: Optional[list[dict[str, Any]]] = [
+            u for u in units if isinstance(u, dict) and u.get("faction") == side
+            and u.get("can_recruit")
+            and (not isinstance(u.get("hp"), int) or u.get("hp") > 0)]
     else:
-        friendly_units = "unknown"
-        enemy_units = "unknown"
-        friendly_recruiters = []
+        friendly_units = unknown
+        enemy_units = unknown
+        friendly_recruiters = None  # unknown roster, not an authoritative empty one
 
+    # -- Gold: total and unreserved. ----------------------------------------
     raw_gold = state.get("gold")
-    if isinstance(raw_gold, list) and len(raw_gold) > side and isinstance(raw_gold[side], int):
+    current_gold: Any
+    if side is not None and isinstance(raw_gold, list) and len(raw_gold) > side \
+            and isinstance(raw_gold[side], int) and not isinstance(raw_gold[side], bool):
         current_gold = raw_gold[side]
-    elif isinstance(raw_gold, int):
+    elif isinstance(raw_gold, int) and not isinstance(raw_gold, bool):
         current_gold = raw_gold
     else:
-        current_gold = "unknown"
+        current_gold = unknown
 
     reserve_gold = (policy.get("reserve_gold", 0)
                     if isinstance(policy, dict) and isinstance(policy.get("reserve_gold"), int)
+                    and not isinstance(policy.get("reserve_gold"), bool)
                     else 0)
 
-    if isinstance(current_gold, int):
-        unreserved_gold = max(0, current_gold - reserve_gold)
-    else:
-        unreserved_gold = "unknown"
+    unreserved_gold: Any = max(0, current_gold - reserve_gold) if isinstance(current_gold, int) else unknown
 
-    # Queue remaining
+    # -- Villages owned by both sides. Unknown ownership is never zero. ----
+    # The engine's `TileSnapshot.owner` contract (norrust_core/src/snapshot.rs)
+    # is authoritative: owner is 0 or 1 for a captured village, or exactly -1
+    # for "unowned / not a village" -- -1 is a neutral sentinel, never a real
+    # side index. An unowned village must count toward neither side, or a
+    # freshly-opened map (every village owner -1) would misreport the entire
+    # map as already enemy-held.
+    terrain = state.get("terrain")
+    village_tiles = [t for t in terrain if isinstance(t, dict) and t.get("terrain_id") == "village"] \
+        if isinstance(terrain, list) else None
+    owned_village_coords: Optional[set[tuple[int, int]]] = None
+    if village_tiles is not None and side is not None:
+        owners_known = all(
+            isinstance(t.get("owner"), int) and not isinstance(t.get("owner"), bool)
+            for t in village_tiles)
+        if owners_known:
+            friendly_villages: Any = sum(1 for t in village_tiles if t.get("owner") == side)
+            enemy_villages: Any = sum(
+                1 for t in village_tiles if t.get("owner") != side and t.get("owner", -1) >= 0)
+            neutral_villages: Any = sum(1 for t in village_tiles if t.get("owner", -1) < 0)
+            owned_village_coords = {
+                (t["col"], t["row"]) for t in village_tiles
+                if t.get("owner") == side and isinstance(t.get("col"), int) and not isinstance(t.get("col"), bool)
+                and isinstance(t.get("row"), int) and not isinstance(t.get("row"), bool)}
+        else:
+            friendly_villages = unknown
+            enemy_villages = unknown
+            neutral_villages = unknown
+    else:
+        friendly_villages = unknown
+        enemy_villages = unknown
+        neutral_villages = unknown
+
+    # -- Pending village objectives from the installed policy. -------------
+    # A missing policy has no objectives at all (an authoritative 0), unlike
+    # unknown ownership above. When ownership is unknown, an unresolved
+    # listed village stays pending rather than being assumed already owned
+    # -- the same convention documented for scout-capacity validation.
+    if policy is None:
+        pending_village_objectives: Any = 0
+    elif isinstance(policy, dict):
+        listed: set[tuple[int, int]] = set()
+        for coord in policy.get("villages") or []:
+            if (isinstance(coord, dict)
+                    and isinstance(coord.get("col"), int) and not isinstance(coord.get("col"), bool)
+                    and isinstance(coord.get("row"), int) and not isinstance(coord.get("row"), bool)):
+                listed.add((coord["col"], coord["row"]))
+        completed: set[tuple[int, int]] = set()
+        if progress is not None and hasattr(progress, "completed_villages"):
+            for entry in progress.completed_villages or []:
+                if (isinstance(entry, dict)
+                        and isinstance(entry.get("col"), int) and not isinstance(entry.get("col"), bool)
+                        and isinstance(entry.get("row"), int) and not isinstance(entry.get("row"), bool)):
+                    completed.add((entry["col"], entry["row"]))
+        pending = 0
+        for pair in listed:
+            if pair in completed:
+                continue
+            if owned_village_coords is not None and pair in owned_village_coords:
+                continue
+            pending += 1
+        pending_village_objectives = pending
+    else:
+        pending_village_objectives = unknown
+
+    # -- Recruit queue: actual RoutineProgress.remaining() contract. -------
+    remaining_list: Optional[list[dict[str, Any]]] = None
     if remaining is not None and isinstance(remaining, list):
-        queue_remaining = sum(item.get("remaining", 0) for item in remaining if isinstance(item, dict))
-        queue_status = "completed" if queue_remaining == 0 else "active"
+        remaining_list = [item for item in remaining if isinstance(item, dict)]
     elif progress is not None and policy is not None and hasattr(progress, "remaining"):
-        rem = progress.remaining(policy)
-        queue_remaining = sum(item.get("remaining", 0) for item in rem)
-        queue_status = "completed" if queue_remaining == 0 else "active"
+        remaining_list = progress.remaining(policy)
     elif policy is not None and isinstance(policy.get("recruits"), list):
-        queue_remaining = sum(r.get("count", 0) for r in policy.get("recruits", []) if isinstance(r, dict))
-        queue_status = "completed" if queue_remaining == 0 else "active"
-    else:
-        queue_remaining = "unknown"
-        queue_status = "unknown"
+        remaining_list = [
+            {"queue_index": index, "def_id": r.get("def_id"), "role": r.get("role"), "remaining": r.get("count")}
+            for index, r in enumerate(policy["recruits"])
+            if isinstance(r, dict) and isinstance(r.get("count"), int) and not isinstance(r.get("count"), bool)
+        ]
 
-    # Placement availability and recruiter readiness
-    legal_placements = "unknown"
-    side_can_place = None
-    min_cost = 8
+    next_entry: Optional[dict[str, Any]] = None
+    if remaining_list is not None:
+        queue_remaining: Any = sum(
+            item.get("remaining", 0) for item in remaining_list
+            if isinstance(item.get("remaining"), int) and not isinstance(item.get("remaining"), bool))
+        queue_status = "completed" if queue_remaining == 0 else "active"
+        for item in remaining_list:
+            left = item.get("remaining")
+            if isinstance(left, int) and not isinstance(left, bool) and left > 0:
+                next_entry = item
+                break
+    else:
+        queue_remaining = unknown
+        queue_status = unknown
+
+    # -- Real engine recruit options and placement facts. -------------------
+    # No guessed minimum recruit cost: costs come only from
+    # `recruit_options["options"]` (as stored in
+    # `state["strategy_recruit_options"]` by `strategy_validation_context`).
+    options_list: Optional[list[dict[str, Any]]] = None
+    legal_placements: Any = unknown
+    side_can_place: Any = unknown
     if isinstance(recruit_options, dict):
         hexes = recruit_options.get("placement_hexes")
         if isinstance(hexes, list):
             legal_placements = len(hexes)
-            side_can_place = recruit_options.get("side_can_place", len(hexes) > 0)
+        raw_can_place = recruit_options.get("side_can_place")
+        if isinstance(raw_can_place, bool):
+            side_can_place = raw_can_place
+        elif isinstance(hexes, list):
+            side_can_place = len(hexes) > 0
         options = recruit_options.get("options")
         if isinstance(options, list):
-            costs = [opt.get("cost") for opt in options if isinstance(opt, dict) and isinstance(opt.get("cost"), int)]
-            if costs:
-                min_cost = min(costs)
+            options_list = options
 
-    # Check recruiter eligibility
-    recruiter_eligible = "unknown"
-    if not friendly_recruiters:
-        recruiter_eligible = False
+    def _cost(def_id: Any) -> Any:
+        if options_list is None or not isinstance(def_id, str):
+            return unknown
+        for opt in options_list:
+            if isinstance(opt, dict) and opt.get("def_id") == def_id:
+                cost = opt.get("cost")
+                if isinstance(cost, int) and not isinstance(cost, bool):
+                    return cost
+                return unknown
+        return unknown
+
+    costs = [
+        opt.get("cost") for opt in (options_list or [])
+        if isinstance(opt, dict) and isinstance(opt.get("cost"), int) and not isinstance(opt.get("cost"), bool)
+    ]
+
+    def _some_affordable(gold_value: Any) -> Any:
+        if options_list is None:
+            return unknown
+        if options_list == []:
+            return False
+        if not costs:
+            return unknown
+        if not isinstance(gold_value, int):
+            return unknown
+        return any(cost <= gold_value for cost in costs)
+
+    some_affordable_total = _some_affordable(current_gold)
+    some_recruit_affordable = _some_affordable(unreserved_gold)
+
+    next_recruit_def_id: Any
+    next_recruit_cost: Any
+    next_recruit_affordable: Any
+    if remaining_list is None:
+        next_recruit_def_id = unknown
+        next_recruit_cost = unknown
+        next_recruit_affordable = unknown
+    elif next_entry is None:
+        # Queue completed (or genuinely empty): no next recruit exists.
+        next_recruit_def_id = None
+        next_recruit_cost = None
+        next_recruit_affordable = None
     else:
-        terrain = state.get("terrain")
-        if isinstance(terrain, list):
-            keep_coords = {(t.get("col"), t.get("row")) for t in terrain if isinstance(t, dict) and t.get("terrain_id") == "keep"}
-            recruiter_eligible = any((u.get("col"), u.get("row")) in keep_coords for u in friendly_recruiters)
+        def_id = next_entry.get("def_id")
+        next_recruit_def_id = def_id if isinstance(def_id, str) else unknown
+        next_recruit_cost = _cost(def_id)
+        if next_recruit_cost == unknown or not isinstance(unreserved_gold, int):
+            next_recruit_affordable = unknown
         else:
-            recruiter_eligible = True
+            next_recruit_affordable = unreserved_gold >= next_recruit_cost
 
-    # Recruitment possible and status detail
-    if recruiter_eligible is False:
+    # -- Recruiter eligibility (alive, can_recruit, on a keep). -------------
+    recruiter_eligible: Any
+    if friendly_recruiters is None:
+        recruiter_eligible = unknown
+    elif not friendly_recruiters:
+        recruiter_eligible = False
+    elif isinstance(terrain, list):
+        keep_coords = {(t.get("col"), t.get("row")) for t in terrain
+                       if isinstance(t, dict) and t.get("terrain_id") == "keep"}
+        recruiter_eligible = any((u.get("col"), u.get("row")) in keep_coords for u in friendly_recruiters)
+    else:
+        # A live recruiter exists but keep position cannot be verified.
+        # Unknown never establishes eligibility as true.
+        recruiter_eligible = unknown
+
+    # -- Queue completion is separate from recruitment feasibility. --------
+    queue_executable: Any
+    if queue_status != "active":
+        queue_executable = None
+    elif recruiter_eligible is False or side_can_place is False or legal_placements == 0:
+        queue_executable = False
+    elif next_recruit_affordable is False:
+        queue_executable = False
+    elif (next_recruit_affordable is True and recruiter_eligible is True
+          and (side_can_place is True or (isinstance(legal_placements, int) and legal_placements > 0))):
+        queue_executable = True
+    else:
+        queue_executable = unknown
+
+    if side is None:
+        recruitment_possible: Any = unknown
+        status_detail = "unknown_side"
+    elif recruiter_eligible is False:
         recruitment_possible = False
         status_detail = "no_eligible_recruiter"
-    elif legal_placements == 0 or (isinstance(recruit_options, dict) and recruit_options.get("placement_hexes") == []):
+    elif side_can_place is False or legal_placements == 0:
         recruitment_possible = False
         status_detail = "no_placement"
-    elif isinstance(current_gold, int) and current_gold < min_cost:
+    elif recruiter_eligible == unknown:
+        recruitment_possible = unknown
+        status_detail = "unknown"
+    elif side_can_place == unknown and legal_placements == unknown:
+        recruitment_possible = unknown
+        status_detail = "unknown"
+    elif some_recruit_affordable is False:
         recruitment_possible = False
-        status_detail = "no_budget"
-    elif isinstance(unreserved_gold, int) and unreserved_gold < min_cost:
-        recruitment_possible = False
-        status_detail = "no_unreserved_budget"
-    elif queue_status == "completed":
+        status_detail = "no_budget" if some_affordable_total is False else "no_unreserved_budget"
+    elif some_recruit_affordable is True:
         recruitment_possible = True
-        status_detail = "finished_queue"
-    elif queue_status == "active":
-        recruitment_possible = True
-        status_detail = "available"
-    elif isinstance(unreserved_gold, int) and unreserved_gold >= min_cost and legal_placements != 0 and recruiter_eligible is not False:
-        recruitment_possible = True
-        status_detail = "available"
+        if queue_status == "completed":
+            status_detail = "finished_queue"
+        elif queue_status == "active" and queue_executable is False:
+            status_detail = "queue_blocked_next_unaffordable"
+        else:
+            status_detail = "active_available"
     else:
-        recruitment_possible = "unknown"
+        recruitment_possible = unknown
         status_detail = "unknown"
 
     return {
-        "friendly_units": friendly_units,
-        "enemy_units": enemy_units,
         "gold": current_gold,
         "reserve_gold": reserve_gold,
         "unreserved_gold": unreserved_gold,
+        "friendly_units": friendly_units,
+        "enemy_units": enemy_units,
+        "friendly_villages": friendly_villages,
+        "enemy_villages": enemy_villages,
+        "neutral_villages": neutral_villages,
+        "pending_village_objectives": pending_village_objectives,
         "queue_remaining": queue_remaining,
         "queue_status": queue_status,
+        "next_recruit_def_id": next_recruit_def_id,
+        "next_recruit_cost": next_recruit_cost,
+        "next_recruit_affordable": next_recruit_affordable,
+        "some_recruit_affordable": some_recruit_affordable,
         "legal_placements": legal_placements,
+        "side_can_place": side_can_place,
+        "recruiter_eligible": recruiter_eligible,
+        "queue_executable": queue_executable,
         "recruitment_possible": recruitment_possible,
         "status_detail": status_detail,
     }
 
 
+_STATUS_DETAIL_REASON = {
+    "unknown_state": "state unknown",
+    "unknown_side": "controlled side unknown",
+    "no_eligible_recruiter": "no eligible recruiter",
+    "no_placement": "no placement space",
+    "no_budget": "no budget",
+    "no_unreserved_budget": "no unreserved budget",
+}
+
+
 def format_economic_summary_line(summary: dict[str, Any]) -> str:
-    """Format single-line compact human-readable economic summary."""
-    parts = [
-        f"friendly_units={summary.get('friendly_units')}",
-        f"enemy_units={summary.get('enemy_units')}",
-        f"gold={summary.get('gold')}",
-        f"reserve={summary.get('reserve_gold')}",
-        f"unreserved={summary.get('unreserved_gold')}",
-        f"queue_remaining={summary.get('queue_remaining')}",
-        f"legal_placements={summary.get('legal_placements')}",
-    ]
+    """Format one connected, honest, human-readable economic summary line.
+
+    Shape: ``176 gold (126 unreserved); units 9 vs 20; villages 0 vs 2;
+    no village objectives; queue complete; recruitment available.`` Every
+    value comes from ``summary`` (see ``compute_economic_summary``); unknown
+    facts are rendered as ``unknown``, never as a fabricated zero/false.
+    """
+    def _v(value: Any) -> str:
+        return "unknown" if value == "unknown" else str(value)
+
+    gold = summary.get("gold")
+    unreserved = summary.get("unreserved_gold")
+    if isinstance(gold, int) and isinstance(unreserved, int):
+        gold_clause = f"{gold} gold ({unreserved} unreserved)"
+    else:
+        gold_clause = f"gold {_v(gold)} ({_v(unreserved)} unreserved)"
+
+    units_clause = f"units {_v(summary.get('friendly_units'))} vs {_v(summary.get('enemy_units'))}"
+    villages_clause = f"villages {_v(summary.get('friendly_villages'))} vs {_v(summary.get('enemy_villages'))}"
+    neutral_villages = summary.get("neutral_villages")
+    if isinstance(neutral_villages, int) and neutral_villages > 0:
+        villages_clause += f" ({neutral_villages} unowned)"
+
+    pending = summary.get("pending_village_objectives")
+    if pending == 0:
+        objectives_clause = "no village objectives"
+    elif isinstance(pending, int):
+        objectives_clause = f"{pending} village objective{'s' if pending != 1 else ''} pending"
+    else:
+        objectives_clause = "village objectives unknown"
+
+    queue_status = summary.get("queue_status")
+    queue_executable = summary.get("queue_executable")
+    next_affordable = summary.get("next_recruit_affordable")
+    if queue_status == "completed":
+        queue_clause = "queue complete"
+    elif queue_status == "active":
+        remaining_txt = _v(summary.get("queue_remaining"))
+        # A general recruitment_possible=true (some option is buyable) must
+        # never let this clause imply the queue's own next item can proceed:
+        # state the queue's own affordability fact explicitly whenever it is
+        # not proven true, separate from the general recruitment clause below.
+        if queue_executable is True:
+            queue_clause = f"queue active ({remaining_txt} remaining)"
+        elif next_affordable is False:
+            queue_clause = f"queue active ({remaining_txt} remaining; next queued recruit unaffordable)"
+        elif next_affordable == "unknown":
+            queue_clause = f"queue active ({remaining_txt} remaining; next queued recruit affordability unknown)"
+        else:
+            queue_clause = f"queue active ({remaining_txt} remaining)"
+    else:
+        queue_clause = "queue unknown"
+
     possible = summary.get("recruitment_possible")
     detail = summary.get("status_detail")
-    if detail == "finished_queue":
-        rec_str = f"recruitment_possible=true (queue completed; {summary.get('unreserved_gold')} unreserved gold available for recruitment)"
-    elif detail == "no_budget":
-        rec_str = f"recruitment_possible=false (no budget: gold={summary.get('gold')})"
-    elif detail == "no_unreserved_budget":
-        rec_str = f"recruitment_possible=false (no unreserved budget: unreserved={summary.get('unreserved_gold')})"
-    elif detail == "no_placement":
-        rec_str = "recruitment_possible=false (no placement hexes available)"
-    elif detail == "no_eligible_recruiter":
-        rec_str = "recruitment_possible=false (no eligible recruiter on keep)"
-    elif possible is True:
-        rec_str = "recruitment_possible=true"
+    if possible is True:
+        recruitment_clause = "recruitment available"
     elif possible is False:
-        rec_str = "recruitment_possible=false"
+        reason = _STATUS_DETAIL_REASON.get(detail)
+        recruitment_clause = f"recruitment blocked ({reason})" if reason else "recruitment blocked"
     else:
-        rec_str = "recruitment_possible=unknown"
-    parts.append(rec_str)
-    return "ECONOMIC_SUMMARY: " + " ".join(parts)
+        recruitment_clause = "recruitment unknown"
+
+    clauses = [gold_clause, units_clause, villages_clause, objectives_clause, queue_clause, recruitment_clause]
+    if detail == "queue_blocked_next_unaffordable":
+        clauses.append("cheaper alternative available")
+
+    return "; ".join(clauses) + "."
 
 
 def _strategy_context(state: Optional[dict[str, Any]] = None,
