@@ -69,6 +69,9 @@ try:
         validate_response_context,
         render_decision_brief,
         map_batch_failure_to_option)
+    from .strategy_consequences import (
+        extract_candidate_consequences,
+        _unavailable_consequences)
 except ImportError:  # pragma: no cover - direct script compatibility
     # Running `python tools/llm_client.py` puts only the tools directory on
     # sys.path. Import the package modules from the repository root so their
@@ -123,6 +126,9 @@ except ImportError:  # pragma: no cover - direct script compatibility
         validate_response_context,
         render_decision_brief,
         map_batch_failure_to_option)
+    from tools.strategy_consequences import (
+        extract_candidate_consequences,
+        _unavailable_consequences)
 
 ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "Engage", "EndTurn", "Advance", "Resign",
            "DoneWithImportantMoves", "FinishWithGreedy", "MoveGroupToward"}
@@ -1131,6 +1137,16 @@ def decode_strategy_response(text: str) -> tuple[Any, str | None]:
         return value, suffix
 
 
+class QueryBudgetExhausted(RuntimeError):
+    """The driver refused a query because the per-turn query budget is spent.
+
+    A subclass of RuntimeError so every existing `except RuntimeError` handler keeps
+    classifying it exactly as before. Callers that merely enrich a decision (such as
+    candidate validation) may catch this specific type and degrade to an explicit
+    unknown, while a genuine transport or protocol failure still propagates.
+    """
+
+
 def _raise_preview_query_error(response: Any, query: str) -> None:
     """Raise a typed model error for known candidate failures.
 
@@ -1140,6 +1156,8 @@ def _raise_preview_query_error(response: Any, query: str) -> None:
     code = response.get("code") if isinstance(response, dict) else None
     message = (response.get("message", "preview query failed")
                if isinstance(response, dict) else "invalid preview response")
+    if code in {"query_limit", "query_timeout"}:
+        raise QueryBudgetExhausted(f"query_error: {query}: {message}")
     if code in CANDIDATE_QUERY_ERROR_CLASSES:
         raise CandidateQueryError(query, code, message,
                                   candidate_index=response.get("candidate_index")
@@ -1204,16 +1222,6 @@ class EngineBatchRejected(ModelResponseError):
                 and self.validation.get("committed") is False
                 and self.validation.get("replay") == "read_only_atomic"
                 and not self.validation.get("error_code"))
-
-
-class QueryBudgetExhausted(RuntimeError):
-    """The driver refused a query because the per-turn query budget is spent.
-
-    A subclass of RuntimeError so every existing `except RuntimeError` handler keeps
-    classifying it exactly as before. Callers that merely enrich a decision (such as
-    candidate validation) may catch this specific type and degrade to an explicit
-    unknown, while a genuine transport or protocol failure still propagates.
-    """
 
 
 def query_validate_batch(exchange, orders: list[dict[str, Any]], state_revision: int) -> dict[str, Any]:
@@ -1421,6 +1429,78 @@ def validated_selections_for_packet(packet: DecisionPacket, exchange, state_revi
     if validated:
         return validated, "validated", queries
     return [], "none_validated", queries
+
+
+def preview_validated_selections(
+    packet: DecisionPacket,
+    selections: list[dict[str, Any]],
+    exchange,
+    state_revision: int,
+    *,
+    no_recruit_macro: bool,
+) -> tuple[list[dict[str, Any]], int]:
+    """Enrich at most two validated selections with engine forecast consequences.
+
+    Issues at most ONE preview_batch query for at most two candidates.
+    Never invents facts on failure; catches QueryBudgetExhausted and leaves
+    consequences marked unavailable. Real transport failures propagate.
+    """
+    if not selections:
+        return [], 0
+
+    preview_candidates = selections[:2]
+    candidate_orders: list[list[dict[str, Any]]] = []
+    for sel in preview_candidates:
+        try:
+            orders, _ = resolve_choose_batch(
+                ChooseResponse(decision_id=packet.decision_id,
+                               option_ids=list(sel.get("option_ids", [])),
+                               finish_turn=bool(sel.get("finish_turn", False))),
+                packet, no_recruit_macro=no_recruit_macro)
+        except (ContextualResponseError, ModelResponseError):
+            candidate_orders = []
+            break
+        submitted = list(orders)
+        if sel.get("finish_turn"):
+            submitted.append(copy.deepcopy(NO_SWEEP_FINISH))
+        candidate_orders.append(submitted)
+
+    if not candidate_orders or len(candidate_orders) != len(preview_candidates):
+        return copy.deepcopy(selections), 0
+
+    finish_flags = [bool(sel.get("finish_turn")) for sel in preview_candidates]
+    if all(finish_flags):
+        phase = "final"
+    elif not any(finish_flags):
+        phase = "partial"
+    else:
+        # Mixed finish semantics: do not mix phases in one query or spend extra queries
+        return copy.deepcopy(selections), 0
+
+    try:
+        preview_body = query_preview_batch(exchange, candidate_orders, state_revision, phase=phase, mode="forecast")
+        queries_used = 1
+    except QueryBudgetExhausted:
+        enriched = copy.deepcopy(selections)
+        for sel in enriched[:2]:
+            sel["consequences"] = _unavailable_consequences(reason="query_budget_exhausted")
+        return enriched, 0
+
+    enriched = copy.deepcopy(selections)
+    actual_rev = preview_body.get("state_revision")
+    ret_candidates = preview_body.get("candidates", [])
+    count_ok = isinstance(ret_candidates, list) and len(ret_candidates) == len(candidate_orders)
+    phase_ok = preview_body.get("phase") == phase
+    mode_ok = preview_body.get("mode") == "forecast"
+
+    for idx in range(len(preview_candidates)):
+        if not count_ok or not phase_ok or not mode_ok:
+            enriched[idx]["consequences"] = _unavailable_consequences(reason="preview_contract_mismatch")
+        else:
+            enriched[idx]["consequences"] = extract_candidate_consequences(
+                preview_body, idx, expected_revision=state_revision, actual_revision=actual_rev)
+
+    return enriched, queries_used
 
 
 STRATEGY_MAX_REPAIR_VALIDATIONS = 3
@@ -7525,6 +7605,18 @@ def run(args: argparse.Namespace) -> int:
                     return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
                 packet = dataclasses.replace(packet, validated_selections=selections)
                 packet.coverage["selections"] = selections_coverage
+                if selections:
+                    try:
+                        selections, _preview_queries = preview_validated_selections(
+                            packet, selections, exchange, revision,
+                            no_recruit_macro=args.no_recruit_macro)
+                    except RuntimeError as exc:
+                        set_terminal(metadata, TERMINAL_INFRASTRUCTURE, winner=None,
+                                     reason="infrastructure_failure",
+                                     code="strategy_selection_query_failed", message=str(exc))
+                        durable({"type": "query_error", **metadata})
+                        return TERMINAL_EXIT_CODES[TERMINAL_INFRASTRUCTURE]
+                    packet = dataclasses.replace(packet, validated_selections=selections)
                 strategy_active_packet = packet
                 durable({"type": "strategy_validated_selections",
                          "decision_id": packet.decision_id,

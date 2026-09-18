@@ -460,6 +460,24 @@ remains unknown.** "Validated" always means legal at that revision only; it
 is never a safety claim and does not guarantee validity after any
 intervening action.
 
+When validated selections exist, up to two entries are enriched with
+engine-derived consequences from a single read-only `preview_batch` query
+(`mode="forecast"`). The enriched selections are presented as a neutral
+comparison block labeled `SIMULATION — NOT EXECUTED`. Each candidate card
+details projected gold changes, immediate combat exchange forecasts, and
+recruiter and friendly unit exposures (reporting direct blockers and open
+threats separately). Every fact comes directly from the engine; missing
+evidence is marked explicitly as `unknown` and never converted to zero or
+implied safe. A candidate-level validation failure marks that selection's
+consequences unavailable rather than safe. A budget-exhausted preview leaves
+legal selections available with consequences marked unavailable, without
+spending model calls or retries. Each card carries its exact, submit-ready
+`choose` response object so no single selection is given preferential editorial
+weight. The entire comparison block is strictly bounded in size (< 3 KiB UTF-8),
+lives in the volatile prompt suffix, and concludes with a reminder of the
+current live state revision. Custom authored actions via `act` and manual option
+combinations outside the previewed cards remain fully supported.
+
 Every brief also carries one connected economic line, built with its structured
 facts from a single source (`compute_economic_summary`), for example
 `176 gold (126 unreserved); units 9 vs 20; villages 0 vs 0 (6 unowned); no

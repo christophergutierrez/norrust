@@ -1,0 +1,193 @@
+"""Unit tests for tools.strategy_consequences."""
+from __future__ import annotations
+
+import json
+import unittest
+
+from .strategy_consequences import (
+    extract_candidate_consequences,
+    format_consequences_comparison,
+)
+
+
+class StrategyConsequencesTests(unittest.TestCase):
+
+    def _sample_preview_body(self) -> dict:
+        return {
+            "mode": "forecast",
+            "phase": "final",
+            "sampling": False,
+            "state_revision": 5,
+            "coverage": {
+                "forecast": "conditional_pre_finish",
+                "delegated_sweep": "unavailable",
+                "threats": "pre_finish",
+                "post_sweep": "unavailable",
+            },
+            "candidates": [
+                {
+                    "valid": True,
+                    "assumption": "all forecast combatants survive in place",
+                    "summary": {
+                        "gold_before": 100,
+                        "gold_after": 85,
+                        "units_before": 3,
+                        "units_after": 3,
+                        "recruiters": [{"unit_id": 1, "hp": 30}],
+                        "affordable_recruitment_remaining": True,
+                    },
+                    "forecasts": [
+                        {
+                            "attacker_id": 2,
+                            "defender_id": 5,
+                            "forecast": {
+                                "outcome_bps": [3000, 6500, 500],
+                                "expected_damage_tenths": [125, 40],
+                            },
+                        }
+                    ],
+                    "recruiter_threats": {
+                        "recruiters": [
+                            {
+                                "recruiter_id": 1,
+                                "hp": 30,
+                                "distinct_attacker_count": 1,
+                                "max_incoming_sum": 9,
+                                "lethal_attackers_needed": None,
+                                "origins_conflict": False,
+                                "open_distinct_attacker_count": 2,
+                                "open_max_incoming_sum": 18,
+                                "open_lethal_attackers_needed": 3,
+                                "open_origins_conflict": True,
+                            }
+                        ]
+                    },
+                    "exposure": {
+                        "units": [
+                            {
+                                "unit_id": 2,
+                                "hp": 22,
+                                "col": 5,
+                                "row": 6,
+                                "distinct_attacker_count": 1,
+                                "max_incoming_sum": 10,
+                                "lethal_attackers_needed": 2,
+                                "open_distinct_attacker_count": 1,
+                                "open_max_incoming_sum": 10,
+                                "open_lethal_attackers_needed": 2,
+                            }
+                        ]
+                    },
+                }
+            ],
+        }
+
+    def test_extract_complete_consequences(self):
+        body = self._sample_preview_body()
+        cons = extract_candidate_consequences(body, 0, expected_revision=5)
+        self.assertEqual(cons["coverage"], "complete")
+        self.assertEqual(cons["forecast_phase"], "final")
+        self.assertEqual(cons["assumption"], "all forecast combatants survive in place")
+        self.assertEqual(cons["gold_change"], -15)
+
+        # Attacks
+        self.assertEqual(len(cons["attacks"]), 1)
+        att = cons["attacks"][0]
+        self.assertEqual(att["attacker_id"], 2)
+        self.assertEqual(att["target_id"], 5)
+        self.assertEqual(att["defender_killed"], "30%")
+        self.assertEqual(att["both_survive"], "65%")
+        self.assertEqual(att["attacker_killed"], "5%")
+        self.assertEqual(att["expected_damage_to_defender"], "12.5HP")
+        self.assertEqual(att["attacker_retaliation"], "4HP")
+
+        # Recruiter exposure
+        rec = cons["recruiter_exposure"]
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec["recruiter_id"], 1)
+        self.assertEqual(rec["hp"], "30HP")
+        self.assertEqual(rec["direct_attackers"], "1")
+        self.assertEqual(rec["direct_max"], "9HP")
+        self.assertEqual(rec["direct_lethal_needed"], "null (unreachable under supplied maximum volleys)")
+        self.assertEqual(rec["open_attackers"], "2")
+        self.assertEqual(rec["open_max"], "18HP")
+        self.assertEqual(rec["open_lethal_needed"], "3")
+
+        # Friendly exposure
+        self.assertEqual(len(cons["friendly_exposure"]), 1)
+        u = cons["friendly_exposure"][0]
+        self.assertEqual(u["unit_id"], 2)
+        self.assertEqual(u["hp"], "22HP")
+        self.assertEqual(u["direct_attackers"], "1")
+
+    def test_extract_missing_gold_yields_partial_coverage(self):
+        body = self._sample_preview_body()
+        del body["candidates"][0]["summary"]
+        cons = extract_candidate_consequences(body, 0, expected_revision=5)
+        self.assertEqual(cons["coverage"], "partial")
+        self.assertEqual(cons["gold_change"], "unknown")
+        self.assertIn("gold_change", cons["missing"])
+
+    def test_stale_state_revision_invalidates_consequences(self):
+        body = self._sample_preview_body()
+        cons = extract_candidate_consequences(body, 0, expected_revision=6)
+        self.assertEqual(cons["coverage"], "unavailable")
+        self.assertEqual(cons["reason"], "stale_state_revision")
+
+    def test_candidate_validation_failure_marks_unavailable_with_error(self):
+        body = self._sample_preview_body()
+        body["candidates"][0]["valid"] = False
+        body["candidates"][0]["preview_error"] = {"code": "unit_not_found", "message": "target died"}
+        cons = extract_candidate_consequences(body, 0, expected_revision=5)
+        self.assertEqual(cons["coverage"], "unavailable")
+        self.assertIn("target died", cons["reason"])
+
+    def test_candidate_index_out_of_bounds_marks_unavailable(self):
+        body = self._sample_preview_body()
+        cons = extract_candidate_consequences(body, 2, expected_revision=5)
+        self.assertEqual(cons["coverage"], "unavailable")
+
+    def test_format_consequences_comparison_neutral_and_bounded(self):
+        body = self._sample_preview_body()
+        c1 = extract_candidate_consequences(body, 0, expected_revision=5)
+        c2 = dict(c1, gold_change=0, assumption="none")
+
+        selections = [
+            {"option_ids": ["opt-1"], "finish_turn": False, "consequences": c1},
+            {"option_ids": ["opt-2", "opt-3"], "finish_turn": True, "consequences": c2},
+        ]
+
+        rendered = format_consequences_comparison(selections, "dec-42", 5)
+
+        # Header and simulation label
+        self.assertIn("SIMULATION — NOT EXECUTED", rendered)
+        self.assertIn("Estimates are conditional on engine forecast assumptions", rendered)
+
+        # Neutral ordering
+        self.assertIn("Selection 1 (option_ids=['opt-1'], finish_turn=false):", rendered)
+        self.assertIn("Selection 2 (option_ids=['opt-2', 'opt-3'], finish_turn=true):", rendered)
+
+        # Prohibit biased editorial words
+        for biased in ("best", "safe", "preferred", "recommended", "optimal"):
+            self.assertNotIn(biased, rendered.lower())
+
+        # Submit-ready choose responses present
+        self.assertIn('To choose this selection: {"kind":"choose","decision_id":"dec-42","option_ids":["opt-1"],"finish_turn":false}', rendered)
+        self.assertIn('To choose this selection: {"kind":"choose","decision_id":"dec-42","option_ids":["opt-2","opt-3"],"finish_turn":true}', rendered)
+
+        # Live revision reminder
+        self.assertIn("Current live state revision is 5.", rendered)
+
+        # Length bound < 3 KiB UTF-8
+        self.assertLess(len(rendered.encode("utf-8")), 3072)
+
+    def test_format_consequences_empty_when_no_consequences(self):
+        selections = [
+            {"option_ids": ["opt-1"], "finish_turn": False},
+        ]
+        rendered = format_consequences_comparison(selections, "dec-42", 5)
+        self.assertEqual(rendered, "")
+
+
+if __name__ == "__main__":
+    unittest.main()

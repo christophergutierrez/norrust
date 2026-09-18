@@ -889,16 +889,21 @@ def candidate_selections(packet: DecisionPacket) -> list[list[str]]:
 
 
 def render_validated_selections(packet: DecisionPacket) -> str:
-  """Compact rendering of the preferred (first) validated selection, if any.
+  """Rendering of validated selection(s), if any.
 
-  Validated means the integrator proved this exact ordered option_ids list
-  (and finish_turn) LEGAL AT source_revision by an actual engine call. It is
-  never a safety claim and never a claim of continued validity after any
-  intervening action; re-validation happens again through ordinary submission.
+  When selections are enriched with consequences, formats the neutral
+  SIMULATION — NOT EXECUTED comparison block with submit-ready choose
+  responses and live revision reminder.
+  When consequences are absent, returns the compact single-selection text.
   Returns "" when packet.validated_selections is empty.
   """
   if not packet.validated_selections:
     return ""
+  if any(isinstance(s, dict) and "consequences" in s for s in packet.validated_selections):
+    from .strategy_consequences import format_consequences_comparison
+    return format_consequences_comparison(
+      packet.validated_selections, packet.decision_id, packet.state_revision
+    )
   first = packet.validated_selections[0]
   if not isinstance(first, dict):
     return ""
@@ -1080,11 +1085,21 @@ def _render_options_block(packet: DecisionPacket, state: Optional[dict[str, Any]
   if compat_notes:
     opt_lines.append("Option compatibility notes:")
     opt_lines.extend(compat_notes)
-  example = _build_choose_example(packet)
-  if example is not None:
-    opt_lines.append(
-      "To choose, respond with: " + json.dumps(example, separators=(",", ":"))
-    )
+  sim_block = render_validated_selections(packet)
+  if sim_block:
+    opt_lines.append(sim_block)
+    if not any(isinstance(s, dict) and "consequences" in s for s in packet.validated_selections):
+      example = _build_choose_example(packet)
+      if example is not None:
+        opt_lines.append(
+          "To choose, respond with: " + json.dumps(example, separators=(",", ":"))
+        )
+  else:
+    example = _build_choose_example(packet)
+    if example is not None:
+      opt_lines.append(
+        "To choose, respond with: " + json.dumps(example, separators=(",", ":"))
+      )
   return "\n".join(opt_lines)
 
 
