@@ -2010,7 +2010,8 @@ def render_policy_brief(reserve_gold_default: int, recruitable_defs: Iterable[st
                         remaining: Any = None,
                         changes: Any = None,
                         policy: Any = None,
-                        progress: Any = None) -> str:
+                        progress: Any = None,
+                        validation_context: Any = None) -> str:
     """Render the stable strategy contract and compact current facts."""
     prefix = render_strategy_fixed_prefix(state, recruitable_defs)
     context = _strategy_context(state, recruit_options=recruit_options,
@@ -2022,7 +2023,13 @@ def render_policy_brief(reserve_gold_default: int, recruitable_defs: Iterable[st
         "each recruit count is a finite total for this installation, and scouts/villages/holds "
         "must satisfy the current engine limits."
     )
-    return f"{prefix}{context}\n{guidance}"
+    opening_menu = ""
+    if validation_context is not None:
+        from .opening_policy import build_opening_policies, render_opening_policy_menu
+        opening_menu = render_opening_policy_menu(
+            build_opening_policies(state, validation_context, recruit_options)
+        )
+    return f"{prefix}{context}\n{opening_menu}\n{guidance}"
 
 
 def _capacity_relief_line(evidence: Any) -> str:

@@ -7247,7 +7247,8 @@ def run(args: argparse.Namespace) -> int:
                     recruit_options=state.get("strategy_recruit_options") if isinstance(state, dict) else None,
                     changes=continuity_entries[-2:] if continuity_entries else None,
                     policy=strategy_installation.policy if strategy_installation is not None else None,
-                    progress=strategy_progress)
+                    progress=strategy_progress,
+                    validation_context=context)
                 try:
                     parsed, reply = strategy_call_model(
                         brief, policy_context=context, decision_packet=initial_packet)

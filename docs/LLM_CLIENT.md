@@ -614,6 +614,21 @@ performs an automatic Greedy sweep and is never used as a routine boundary.
 checked-in policy and plays it with no backend started and zero model responses,
 recording the controller identity as fixed-policy code rather than a model.
 
+For the ordinary initial `big_battle_6` opening with undead on side 0 and 300
+gold, the initial strategy brief may include a volatile
+`OPENING_POLICY_SUGGESTIONS` block with two complete ordinary `set_policy`
+responses: Expansion and Concentration.  The suggestions are generated from
+the current recruit costs, placement facts, board bounds, faction, leader
+position, and neutral village ownership, then passed through the same policy
+validator used for model responses.  They are scoped to that opening shape;
+missing or unsupported facts produce an explicit unavailable line and leave the
+custom response path unchanged.  The suggested `scouts` list is empty because
+recruit IDs do not exist until the driver commits those recruits.  The menu is
+volatile and bounded to 4 KiB; it is shown only for initial policy selection,
+never for tactical requests or routine exceptions.  See the relocatable
+fixtures in `tools/fixtures/strategy_openings/` for the exact ordinary
+responses and their live-cost accounting.
+
 Policies support finite recruitment with a gold reserve, up to eight scouts
 (existing IDs plus new scout recruits), four village objectives, a rally point,
 and explicit holds. Scouts use terrain-cost routes and remain on an uncaptured
