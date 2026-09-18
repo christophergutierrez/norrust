@@ -9,6 +9,9 @@ from .model_identity import classify_model_identity
 INITIAL_OUTPUT_LIMIT = 128 * 1024
 MAX_OUTPUT_LIMIT = 512 * 1024
 MAX_CEILING_FAILURES = 3
+# The client's default ceiling on one assembled prompt, in UTF-8 bytes. Bytes bound
+# input tokens from above, so this is also the most input one request can bill.
+DEFAULT_MAX_PROMPT_BYTES = 16 * 1024 * 1024
 
 
 class OutputLimitExceeded(RuntimeError):

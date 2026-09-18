@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from . import model_bakeoff
+from .budget_reconciler import compute_reservation_usd
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DRIVER_PATH = "norrust_core/target/release/greedy_driver"
@@ -108,8 +109,6 @@ def build_manifest(*, backend_command: str = BACKEND_CMD, driver: str = DRIVER_P
       "reasoning_included_in_output": True,
     },
     "soft_sum_cell_tokens": 150_000,
-    "max_in_flight_context_tokens": 131_072,
-    "conservative_estimated_ceiling_usd": 0.145,
   }
 
   cells = []
@@ -131,6 +130,11 @@ def build_manifest(*, backend_command: str = BACKEND_CMD, driver: str = DRIVER_P
       "decision_mode": "strategy",
       "action_encoding": "coordinates",
       "incremental_turns": True,
+      # Explicit finite prompt-byte ceiling so the reservation's final-request
+      # bound is meaningful rather than the client's 16 MiB default (see
+      # tools/budget_reconciler.py resolved_max_prompt_bytes /
+      # tools/llm_client.py:9646). 262144 is what the recorded full game used.
+      "extra_client_args": ["--max-prompt-bytes", "262144"],
       "pricing": pricing,
       "budgets": {
         "max_game_total_tokens": 150_000,
@@ -149,6 +153,9 @@ def build_manifest(*, backend_command: str = BACKEND_CMD, driver: str = DRIVER_P
     }
     if defn.get("allow_partial_turn_checkpoint"):
       cell["allow_partial_turn_checkpoint"] = True
+    # See tools/build_baseline_manifest.py for why this is per-cell and
+    # computed rather than a fixed guessed label.
+    cell["pricing"] = dict(pricing, conservative_estimated_ceiling_usd=compute_reservation_usd(cell))
     cells.append(cell)
 
   return {
@@ -165,6 +172,7 @@ def build_initial_budget_ledger(out_dir: Path) -> dict[str, Any]:
     "standing_cap_usd": 2.000000,
     "prior_spend_usd": 0.171026,
     "remaining_authorization_usd": 1.828974,
+    "spendable_authorization_usd": 1.828974,
     "pricing": {
       "date": "2026-09-17",
       "provider": "Fireworks",
@@ -176,10 +184,9 @@ def build_initial_budget_ledger(out_dir: Path) -> dict[str, Any]:
         "reasoning_included_in_output": True,
       },
     },
-    "reservation_per_cell_usd": 0.145,
     "active_reservation_usd": 0.0,
-    "actual_screen_spend_usd": 0.0,
-    "calls": [],
+    "reserved_for_cell": None,
+    "actual_total_spend_usd": 0.0,
     "cells": {},
   }
 
@@ -195,14 +202,22 @@ def build_operator_guide(run_dir: Path) -> str:
     "```",
     "",
     "## Execution Commands",
-    "Run each cell sequentially using `tools.model_bakeoff`:",
+    "Reserve budget from resolved limits, run, then reconcile receipts for each",
+    "cell in turn (one sequential operator; do not overlap cells). The reserve",
+    "step computes its minimum from the resolved manifest -- a bare `--amount`",
+    "cannot bypass it:",
     "",
   ]
   for idx, c in enumerate(CELL_DEFINITIONS, 1):
     cid = c["id"]
-    lines.append(f"### Step {idx}: Run cell `{cid}` ({c['position_id']}, effort `{c['reasoning_effort']}`)")
+    lines.append(f"### Step {idx}: Cell `{cid}` ({c['position_id']}, effort `{c['reasoning_effort']}`)")
     lines.append("```bash")
-    lines.append(f"python3 -m tools.model_bakeoff run {run_dir}/manifest.json --run-dir {run_dir} --only-cell {cid} --cohort recruiter-survival-screen")
+    lines.append(f"python3 -m tools.budget_reconciler reserve --ledger {run_dir}/budget-ledger.json "
+                 f"--manifest {run_dir}/manifest.json --cell-id {cid}")
+    lines.append(f"python3 -m tools.model_bakeoff run {run_dir}/manifest.json --run-dir {run_dir} "
+                 f"--only-cell {cid} --cohort recruiter-survival-screen")
+    lines.append(f"python3 -m tools.budget_reconciler reconcile --ledger {run_dir}/budget-ledger.json "
+                 f"--cell-dir {run_dir}/{cid} --cell-id {cid}")
     lines.append("```")
     lines.append("")
 
@@ -230,7 +245,16 @@ def main(argv: list[str] | None = None) -> int:
     raise ValueError(f"Manifest validity failed: {validity.get('mismatches')}")
 
   (args.out_dir / "manifest.json").write_text(json.dumps(resolved, indent=2, sort_keys=True) + "\n")
-  (args.out_dir / "budget-ledger.json").write_text(json.dumps(build_initial_budget_ledger(args.out_dir), indent=2, sort_keys=True) + "\n")
+  ledger_path = args.out_dir / "budget-ledger.json"
+  if ledger_path.exists():
+    # Never overwrite or reset a standing ledger -- it may already record
+    # real spend/reservations from prior runs. First-time setup only.
+    raise FileExistsError(
+        f"refusing to write {ledger_path}: a ledger already exists there. "
+        "This builder only creates a ledger's initial seed; it never resets "
+        "a standing ledger. Delete or move the existing file yourself if you "
+        "really intend to start a brand-new standing ledger.")
+  ledger_path.write_text(json.dumps(build_initial_budget_ledger(args.out_dir), indent=2, sort_keys=True) + "\n")
   (args.out_dir / "OPERATOR.md").write_text(build_operator_guide(args.out_dir))
 
   print(f"Successfully generated manifest, budget-ledger, and OPERATOR.md in {args.out_dir}")

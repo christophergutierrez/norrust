@@ -28,6 +28,43 @@ to `act`/`choose`. The redundant recorded object
 `{"kind":"finish_turn","finish_turn":true}` is accepted and normalized without a
 repair call. Do not treat that normalization as extra usage.
 
+## Budget reservation and reconciliation
+
+Screening and baseline cells spend against one standing budget ledger. Never
+recreate, reset or reseed it from a remembered figure: read it, and let the tools
+below update it. Operate one cell at a time; the ledger holds a single active
+reservation and is not built for concurrent writers.
+
+1. Reserve before launching a cell. `tools.budget_reconciler reserve --ledger
+   <standing ledger> --manifest <resolved manifest> --cell-id <cell>` computes the
+   minimum from that cell's resolved limits, not from a fixed label: its soft
+   game-token cap charged at the highest configured token rate, plus one maximum
+   final request of `tools.output_limits.MAX_OUTPUT_LIMIT` output tokens and the
+   cell's resolved `--max-prompt-bytes` as input. The client checks both the soft
+   cap and the output ceiling before every physical dispatch, retries included, so
+   there is no unchecked retry tail to add. Prompt bytes bound input tokens from
+   above, and the client refuses an oversized prompt before dispatching it, so the
+   manifests pass an explicit finite `--max-prompt-bytes`. A missing finite limit
+   is an error, never a guessed reservation. `--amount` may raise the reservation
+   above that minimum but cannot lower it. Reservation is refused, leaving the
+   ledger untouched, when another cell holds the active reservation or when the
+   amount exceeds `remaining_authorization_usd`.
+2. Run the cell with `tools.model_bakeoff run ... --only-cell <cell>`.
+3. Reconcile after the cell's process has exited, however it ended:
+   `tools.budget_reconciler reconcile --ledger <standing ledger> --cell-dir
+   <cell dir> --cell-id <cell>`. Physical calls are identified by `(game_id,
+   call_id)`, never by prompt hash, so repeated lifecycle rows count once.
+   Reconciling is idempotent: the same receipts give the same ledger, and only
+   that cell's entry is replaced. A call without measured usage stays unknown
+   rather than becoming zero spend.
+
+The reservation is released only when `run_status.json` proves the cell stopped
+(`status` `ok`, `failed` or `error`; the file merely existing is not proof) AND
+every dispatched call has a matched, fully measured final receipt. Otherwise the
+full reservation stays, which is the deliberate conservative default; reconcile
+again when late evidence arrives. Before the next cell, judge available funds by
+`spendable_authorization_usd`, which already subtracts any reservation still held.
+
 ## Bounded recording without a paid observer
 
 This example is one strategy opening, not the three-cell pilot or a full game.

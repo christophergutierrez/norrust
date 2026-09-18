@@ -27,7 +27,7 @@ try:
     from .decision_annotations import annotation_for_response, inapplicable_annotation
     from .request_journal import append_request_milestone
     from .request_recovery import recoverable_answer
-    from .output_limits import (INITIAL_OUTPUT_LIMIT, MAX_OUTPUT_LIMIT, OutputLimitExceeded,
+    from .output_limits import (DEFAULT_MAX_PROMPT_BYTES, INITIAL_OUTPUT_LIMIT, MAX_OUTPUT_LIMIT, OutputLimitExceeded,
                                 OutputLimitPolicy, combined_usage)
     from .response_parsing import (parse_action_response, ResponseParseError,
                                     recover_bare_tool_prefix, RECOGNIZED_BARE_TOOLS)
@@ -81,7 +81,7 @@ except ImportError:  # pragma: no cover - direct script compatibility
     from tools.decision_annotations import annotation_for_response, inapplicable_annotation
     from tools.request_journal import append_request_milestone
     from tools.request_recovery import recoverable_answer
-    from tools.output_limits import (INITIAL_OUTPUT_LIMIT, MAX_OUTPUT_LIMIT, OutputLimitExceeded,
+    from tools.output_limits import (DEFAULT_MAX_PROMPT_BYTES, INITIAL_OUTPUT_LIMIT, MAX_OUTPUT_LIMIT, OutputLimitExceeded,
                                      OutputLimitPolicy, combined_usage)
     from tools.response_parsing import (parse_action_response, ResponseParseError,
                                         recover_bare_tool_prefix, RECOGNIZED_BARE_TOOLS)
@@ -9643,7 +9643,7 @@ def main() -> int:
     p.add_argument("--turn-timeout", type=int, default=930)
     p.add_argument("--query-budget-seconds", type=int, default=300)
     p.add_argument("--max-queries-per-turn", type=int, default=256)
-    p.add_argument("--max-prompt-bytes", type=int, default=16 * 1024 * 1024)
+    p.add_argument("--max-prompt-bytes", type=int, default=DEFAULT_MAX_PROMPT_BYTES)
     p.add_argument("--token-input-limit", type=int)
     p.add_argument("--token-output-limit", type=int)
     p.add_argument("--token-total-limit", type=int)
