@@ -15,10 +15,12 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
 
 try:
+    from .tactical_playbook import load_combat_doctrine
     from .threat_render import (
         _readable_whole_hp, _readable_threat_count, _readable_lethal_attackers,
         _readable_focus, _readable_hp_tenths)
 except ImportError:  # pragma: no cover - direct script compatibility
+    from tools.tactical_playbook import load_combat_doctrine
     from tools.threat_render import (
         _readable_whole_hp, _readable_threat_count, _readable_lethal_attackers,
         _readable_focus, _readable_hp_tenths)
@@ -1904,12 +1906,9 @@ def _strategy_contract(recruitable_defs: Iterable[str] = ()) -> str:
     profiles = format_recruit_profiles(recruitable_defs)
     doctrine = (
         "Strategy doctrine:\n"
-        "1. Recruiter survival outranks an attractive isolated exchange. Never expose your recruiter to lethal retaliation or subsequent multi-attacker focus.\n"
-        "2. In combat, judge enemy response on the next turn, not just immediate retaliation during the strike exchange.\n"
-        "3. Maintain army strength: idle unreserved gold and an undersized force relative to the enemy warrant recruitment review.\n"
-        "4. Expand village assignments when feasible to secure steady income and board presence.\n"
-        "5. A choice menu provides possible legal options, not a recommended turn plan; choosing an option executes only that option.\n"
-        "6. Recruitment counts in policy are finite totals per installation, not recurring targets. Movement and attack allowances reset each turn.\n"
+        + load_combat_doctrine() + "\n"
+        "A choice menu provides possible legal options, not a recommended turn plan; choosing an option executes only that option.\n"
+        "Recruitment counts in policy are finite totals per installation, not recurring targets. Movement and attack allowances reset each turn.\n"
     )
     return (
         "Strategy objective: defeat the enemy recruiter while keeping your recruiter alive; "

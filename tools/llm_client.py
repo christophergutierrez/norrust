@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 try:
+    from .tactical_playbook import load_tactical_playbook
     from .turn_agenda import agenda_from_response, compact_agenda, annotate_agenda_unit_status
     from .decision_annotations import annotation_for_response, inapplicable_annotation
     from .request_journal import append_request_milestone
@@ -80,6 +81,7 @@ except ImportError:  # pragma: no cover - direct script compatibility
     _repo_root = str(Path(__file__).resolve().parents[1])
     if _repo_root not in sys.path:
         sys.path.insert(0, _repo_root)
+    from tools.tactical_playbook import load_tactical_playbook
     from tools.turn_agenda import agenda_from_response, compact_agenda, annotate_agenda_unit_status
     from tools.decision_annotations import annotation_for_response, inapplicable_annotation
     from tools.request_journal import append_request_milestone
@@ -999,20 +1001,6 @@ ENGINE_RULES = (
     "upkeep and no separate base income: village gold and recruit costs are the only things that change gold.\n"
     "- A round advances only after BOTH sides have ended a turn.\n"
 )
-
-
-PLAYBOOK_PATH = Path(__file__).resolve().parents[1] / "docs" / "LLM_TACTICAL_PLAYBOOK.md"
-
-
-def load_tactical_playbook() -> str:
-    """Load the canonical instructions independently of the process working directory."""
-    try:
-        return PLAYBOOK_PATH.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise RuntimeError(
-            "model_prompt_error: canonical tactical playbook is missing or unreadable at "
-            f"{PLAYBOOK_PATH}; restore docs/LLM_TACTICAL_PLAYBOOK.md"
-        ) from exc
 
 
 def query_options(exchange) -> dict[str, Any]:

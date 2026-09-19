@@ -13,6 +13,7 @@ import unittest
 
 from pathlib import Path
 
+from .tactical_playbook import load_combat_doctrine
 from .game_history import open_history
 from .game_token_budget import measured_game_budget
 from .llm_client import (
@@ -354,7 +355,11 @@ class StrategyCacheLayoutTests(unittest.TestCase):
 
             # In prefix: doctrine
             self.assertIn("Strategy doctrine:", prefix_text)
-            self.assertIn("Recruiter survival outranks an attractive isolated exchange", prefix_text)
+            self.assertIn("Protect recruiter survival", prefix_text)
+            doctrine = load_combat_doctrine()
+            self.assertEqual(prompt.count(doctrine), 1)
+            self.assertIn(doctrine, prefix_text)
+            self.assertLess(prefix_text.index(doctrine), prefix_text.index("Recruit profiles:"))
             # In prefix: accurate recruit profiles from data/units/
             self.assertIn("Dark Adept (cost=16 hp=28 mov=5 align=chaotic", prefix_text)
             self.assertIn("chill wave", prefix_text)

@@ -1,21 +1,50 @@
 {
   "label": "Expansion",
-  "intent": "Recruit two fast scouts for nearby villages while building an army and freeing castle space toward the rally.",
-  "recruit_cost": 260,
-  "reserve_gold": 40,
+  "intent": "Use two scouts for nearby villages, Skeletons and Ghosts as a frontline, and Dark Adepts as ranged support; advance them together toward the rally.",
   "response": {
     "kind": "set_policy",
     "policy": {
-      "reserve_gold": 40,
+      "reserve_gold": 50,
       "recruits": [
-        {"def_id": "Vampire Bat", "count": 2, "role": "scout"},
-        {"def_id": "Ghost", "count": 6, "role": "army"},
-        {"def_id": "Skeleton", "count": 8, "role": "army"}
+        {
+          "def_id": "Vampire Bat",
+          "count": 2,
+          "role": "scout"
+        },
+        {
+          "def_id": "Skeleton",
+          "count": 6,
+          "role": "army"
+        },
+        {
+          "def_id": "Ghost",
+          "count": 2,
+          "role": "army"
+        },
+        {
+          "def_id": "Dark Adept",
+          "count": 6,
+          "role": "army"
+        }
       ],
       "scouts": [],
-      "villages": [{"col": 2, "row": 4}, {"col": 5, "row": 3}],
-      "rally": {"col": 6, "row": 6},
+      "villages": [
+        {
+          "col": 2,
+          "row": 4
+        },
+        {
+          "col": 5,
+          "row": 3
+        }
+      ],
+      "rally": {
+        "col": 6,
+        "row": 6
+      },
       "holds": []
     }
-  }
+  },
+  "recruit_cost": 250,
+  "reserve_gold": 50
 }

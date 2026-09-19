@@ -3,17 +3,22 @@
 Guide version: `tactics-v1`. Cite these stable IDs in decision annotations.
 Apply to live facts using the supplied contract and legal options.
 
-Routine decisions are simple. Use supplied legal options, choose a useful
-action, and execute promptly. Good enough is sufficient for recruitment, safe
-movement, and uncontested village capture. Reserve detailed analysis for
-recruiter safety, contested combat, and irreversible losses.
+Execute routine actions promptly. Analyze recruiter safety and contested
+combat carefully.
+
+## Shared combat doctrine
+
+1. Protect recruiter survival and recruitment; judge retaliation and next-turn enemy focus.
+2. Maintain army strength with useful recruits; contest villages and avoid idle gold.
+3. Durable units screen vulnerable damage dealers; ranged units stay close enough to support the screen. Choose durability against the enemy's actual weapons.
+4. Advance together; rotate wounded units behind healthy replacements. Verify enemy attack origins; a frontline does not guarantee safety.
+5. Compare a supported counterattack with retreat. Coordinate attacks to remove threats and hold useful ground; independent retreats can expose allies and concede villages.
+6. Focus available damage on reachable targets; reassess survivors before switching targets.
 
 ## Strategy
 
-- **S1.** Assign scouts to named villages; deploy the main army around one
-  objective with mutual support. Village ownership persists after leaving;
-  reassign safe holders. Choose one objective; take its next useful step.
-  Replan on completion, block, or changed facts; recruiter emergencies
+- **S1.** Assign scouts to named villages and give the army one objective. Village ownership persists after leaving;
+  reassign safe holders. Replan on completion, block, or changed facts; recruiter emergencies
   interrupt.
 - **S2.** Convert advantage into recruiter pressure. Measure progress by kills,
   denied attacks, villages, or position. Damage alone proves none of these.
@@ -28,10 +33,8 @@ recruiter safety, contested combat, and irreversible losses.
   frees capacity; explain deliberate saving. Choose by cost, durability,
   enemy weapons, terrain, and role. Replacing casualties costs gold, travel
   time, and XP.
-- **T1.** Protect recruitment and recruiter survival. Prefer the keep while
-  recruiting. Screen actual enemy attack origins; a guard count alone proves
-  nothing. Compare removing threats, screening, and retreating. Recruiter
-  combat must justify next-turn exposure.
+- **T1.** Prefer the keep while recruiting. Recruiter combat must justify
+  next-turn exposure. A guard count alone proves nothing.
 - **T2.** Use supplied coordinates, targets, recruitment, and promotion
   options — documented mechanics, not another game's rules. Empty
   choice list does not mean no legal moves: inspect the unit or use
@@ -44,18 +47,16 @@ recruiter safety, contested combat, and irreversible losses.
   - **T3.1.** Take a winning recruiter kill when available.
   - **T3.2.** Save a threatened recruiter: remove threats, screen, or retreat.
   - **T3.3.** Focus fire; judge the combined attack. Reserve enough attackers
-    and distinct origins; reassess survivors before switching targets.
+    and distinct origins.
     "Finish next turn" requires surviving attackers and continued target access.
     Prefer safe near-promotion finishes. Threshold
     crossing makes advancement pending: the unit must survive combat, then
     legal `Advance` restores its new maximum HP. Advance before further combat.
-- **T4.** Compare gain, immediate retaliation, and next-turn concentrated
-  fire. Compare current and proposed positions with the same threat measure.
+- **T4.** Compare current and proposed positions with the same threat measure.
   Low retaliation is not safety. Reject unfavorable chip damage unless it
   enables a named kill, objective, or necessary sacrifice; useful attrition
-  need not guarantee a kill. Use favorable terrain, supported
-  frontlines, and weapon matchups (melee avoids ranged retaliation). Rotate
-  wounded units behind healthy replacements; survival can precede healing.
+  need not guarantee a kill. Use favorable terrain
+  and weapon matchups (melee avoids ranged retaliation). Survival can precede healing.
   When healing matters, name the verified healing hex or regeneration ability
   and check recovery; preserve veteran value. Once routine meets the objective at
   acceptable risk, stop; consequential combat still warrants one legal
@@ -88,9 +89,6 @@ recruiter safety, contested combat, and irreversible losses.
   credible recovery or victory route; name why. A bad roll, deficit, or one
   simulated loss is insufficient.
 
-Have a useful action with established legality and acceptable risk? Submit it
-now. Inspect a specific missing fact when necessary. Reconsider on new evidence
-or a mistaken/stale assumption; do not restart the plan. Routine
-explanations stay brief but satisfy the contract; never trade legality for
-speed or call all combat simple. Forecasts remain uncertain; simulation is
-not live state.
+Submit useful, legal actions at acceptable risk promptly. Inspect missing facts;
+reconsider on new evidence or mistaken assumptions. Never trade legality for speed. Forecasts
+are uncertain; simulation is not live state.

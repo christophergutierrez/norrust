@@ -1,21 +1,46 @@
 {
   "label": "Concentration",
-  "intent": "Recruit one fast scout for a central village and devote more of the queue to the army rally.",
-  "recruit_cost": 266,
-  "reserve_gold": 32,
+  "intent": "Use one scout for a central village and a larger Skeleton frontline with Ghosts and Dark Adept ranged support; keep the army together toward the rally.",
   "response": {
     "kind": "set_policy",
     "policy": {
-      "reserve_gold": 32,
+      "reserve_gold": 48,
       "recruits": [
-        {"def_id": "Vampire Bat", "count": 1, "role": "scout"},
-        {"def_id": "Ghost", "count": 7, "role": "army"},
-        {"def_id": "Skeleton", "count": 8, "role": "army"}
+        {
+          "def_id": "Vampire Bat",
+          "count": 1,
+          "role": "scout"
+        },
+        {
+          "def_id": "Skeleton",
+          "count": 7,
+          "role": "army"
+        },
+        {
+          "def_id": "Ghost",
+          "count": 2,
+          "role": "army"
+        },
+        {
+          "def_id": "Dark Adept",
+          "count": 6,
+          "role": "army"
+        }
       ],
       "scouts": [],
-      "villages": [{"col": 5, "row": 3}],
-      "rally": {"col": 6, "row": 6},
+      "villages": [
+        {
+          "col": 5,
+          "row": 3
+        }
+      ],
+      "rally": {
+        "col": 6,
+        "row": 6
+      },
       "holds": []
     }
-  }
+  },
+  "recruit_cost": 252,
+  "reserve_gold": 48
 }

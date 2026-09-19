@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from . import tactical_playbook
 from . import llm_client
 from . import action_choices as ac
 from .decision_annotations import annotation_for_response, validate_decisions
@@ -2827,12 +2828,12 @@ class ClientValidationTests(unittest.TestCase):
 
     def test_prompt_starts_with_exact_canonical_tactical_playbook(self):
         prompt = prompt_for({}, [])
-        canonical = llm_client.PLAYBOOK_PATH.read_text(encoding="utf-8")
+        canonical = tactical_playbook.PLAYBOOK_PATH.read_text(encoding="utf-8")
         self.assertTrue(prompt.startswith(canonical + "\n"))
         self.assertEqual(prompt.count(canonical), 1)
 
     def test_canonical_tactical_playbook_retains_core_tradeoffs(self):
-        canonical = " ".join(llm_client.PLAYBOOK_PATH.read_text(encoding="utf-8").split())
+        canonical = " ".join(tactical_playbook.PLAYBOOK_PATH.read_text(encoding="utf-8").split())
         for guidance in (
             "Village ownership persists after leaving",
             "one recruit at a time",
@@ -2849,8 +2850,8 @@ class ClientValidationTests(unittest.TestCase):
     def test_playbook_loading_is_independent_of_working_directory(self):
         expected_path = Path(llm_client.__file__).resolve().parents[1] / \
             "docs" / "LLM_TACTICAL_PLAYBOOK.md"
-        self.assertEqual(llm_client.PLAYBOOK_PATH, expected_path)
-        expected = llm_client.PLAYBOOK_PATH.read_text(encoding="utf-8")
+        self.assertEqual(tactical_playbook.PLAYBOOK_PATH, expected_path)
+        expected = tactical_playbook.PLAYBOOK_PATH.read_text(encoding="utf-8")
         original_cwd = os.getcwd()
         with tempfile.TemporaryDirectory() as directory:
             try:
@@ -2862,7 +2863,7 @@ class ClientValidationTests(unittest.TestCase):
     def test_missing_playbook_has_actionable_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             missing = Path(directory) / "missing-norrust-playbook.md"
-            with mock.patch.object(llm_client, "PLAYBOOK_PATH", missing), \
+            with mock.patch.object(tactical_playbook, "PLAYBOOK_PATH", missing), \
                     self.assertRaisesRegex(
                         RuntimeError,
                         r"model_prompt_error: canonical tactical playbook is missing or unreadable.*"
@@ -2871,7 +2872,7 @@ class ClientValidationTests(unittest.TestCase):
                 prompt_for({}, [])
 
     def test_docs_link_to_canonical_playbook_without_checklist_duplication(self):
-        docs_dir = llm_client.PLAYBOOK_PATH.parent
+        docs_dir = tactical_playbook.PLAYBOOK_PATH.parent
         for name in ("LLM_CLIENT.md", "LLM_VS_ALGORITHM.md"):
             text = (docs_dir / name).read_text(encoding="utf-8")
             with self.subTest(name=name):

@@ -21,9 +21,18 @@ the request archive. A transport receipt proves delivery, not comprehension.
 
 ### Prompt maintenance
 
-The canonical prompt starts with the numbered
-[MEMORYLESS TACTICAL PLAYBOOK](LLM_TACTICAL_PLAYBOOK.md). Keep strategic choices
-there; `prompt_for` in `tools/llm_client.py` supplies engine rules, match rules,
+The canonical tactics live in the
+[MEMORYLESS TACTICAL PLAYBOOK](LLM_TACTICAL_PLAYBOOK.md). Batch and focused
+prompts start with the full playbook. Strategy prompts include its **Shared
+combat doctrine** near the beginning of every fixed prefix, before unit
+profiles and map geometry. This covers complementary frontline/ranged roles,
+weapon matchups, coordinated counterattacks, and village pressure as well as
+recruiter safety. Keep tactical advice there; `tools/tactical_playbook.py`
+loads both forms from that one document. Strategy response syntax stays in
+`tools/routine_policy.py`; full-playbook response and annotation instructions
+are not injected into strategy mode.
+
+`prompt_for` in `tools/llm_client.py` supplies engine rules, match rules,
 response schemas, tool semantics, and forecast definitions.
 
 `ENGINE_RULES` in `tools/llm_client.py` states the engine mechanics a player
@@ -634,7 +643,11 @@ recording the controller identity as fixed-policy code rather than a model.
 For the ordinary initial `big_battle_6` opening with undead on side 0 and 300
 gold, the initial strategy brief may include a volatile
 `OPENING_POLICY_SUGGESTIONS` block with two complete ordinary `set_policy`
-responses: Expansion and Concentration.  The suggestions are generated from
+responses: Expansion and Concentration. Both pair a Skeleton/Ghost frontline
+with Dark Adept ranged support and scouts; they illustrate shared doctrine,
+not proven winning compositions or an automatically maintained formation.
+The model still chooses tactical positioning and adapts to enemy weapons.
+The suggestions are generated from
 the current recruit costs, placement facts, board bounds, faction, leader
 position, and neutral village ownership, then passed through the same policy
 validator used for model responses.  They are scoped to that opening shape;

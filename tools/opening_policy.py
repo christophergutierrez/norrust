@@ -78,10 +78,10 @@ def _option_costs(recruit_options: Any) -> dict[str, int] | None:
             continue
         def_id, cost = option.get("def_id"), option.get("cost")
         if isinstance(def_id, str) and isinstance(cost, int) and not isinstance(cost, bool) and cost >= 0:
-            if def_id in {"Vampire Bat", "Ghost", "Skeleton"} and option.get("affordable") is not True:
+            if def_id in {"Vampire Bat", "Ghost", "Skeleton", "Dark Adept"} and option.get("affordable") is not True:
                 return None
             costs[def_id] = cost
-    needed = {"Vampire Bat", "Ghost", "Skeleton"}
+    needed = {"Vampire Bat", "Ghost", "Skeleton", "Dark Adept"}
     return costs if needed <= costs.keys() else None
 
 
@@ -123,13 +123,14 @@ def build_opening_policies(
 
     expansion = _policy(
         "Expansion",
-        "Recruit two fast scouts for nearby villages while building an army and freeing castle space toward the rally.",
+        "Use two scouts for nearby villages, Skeletons and Ghosts as a frontline, and Dark Adepts as ranged support; advance them together toward the rally.",
         {
-            "reserve_gold": 40,
+            "reserve_gold": 50,
             "recruits": [
                 {"def_id": "Vampire Bat", "count": 2, "role": "scout"},
-                {"def_id": "Ghost", "count": 6, "role": "army"},
-                {"def_id": "Skeleton", "count": 8, "role": "army"},
+                {"def_id": "Skeleton", "count": 6, "role": "army"},
+                {"def_id": "Ghost", "count": 2, "role": "army"},
+                {"def_id": "Dark Adept", "count": 6, "role": "army"},
             ],
             "scouts": [],
             "villages": [{"col": col, "row": row} for col, row in EXPANSION_VILLAGES],
@@ -138,13 +139,14 @@ def build_opening_policies(
         }, costs, validation_context)
     concentration = _policy(
         "Concentration",
-        "Recruit one fast scout for a central village and devote more of the queue to the army rally.",
+        "Use one scout for a central village and a larger Skeleton frontline with Ghosts and Dark Adept ranged support; keep the army together toward the rally.",
         {
-            "reserve_gold": 32,
+            "reserve_gold": 48,
             "recruits": [
                 {"def_id": "Vampire Bat", "count": 1, "role": "scout"},
-                {"def_id": "Ghost", "count": 7, "role": "army"},
-                {"def_id": "Skeleton", "count": 8, "role": "army"},
+                {"def_id": "Skeleton", "count": 7, "role": "army"},
+                {"def_id": "Ghost", "count": 2, "role": "army"},
+                {"def_id": "Dark Adept", "count": 6, "role": "army"},
             ],
             "scouts": [],
             "villages": [{"col": col, "row": row} for col, row in CONCENTRATION_VILLAGES],
@@ -165,7 +167,7 @@ def render_opening_policy_menu(policies: list[dict[str, Any]]) -> str:
         "OPENING_POLICY_SUGGESTIONS_BEGIN",
         "Supported scope: big_battle_6, undead side 0, ordinary 300-gold opening.",
         "These are complete ordinary set_policy responses; copy one or edit it. "
-        "Scout IDs stay empty until the driver commits actual recruits.",
+        "Scout IDs stay empty until the driver commits actual recruits. These compositions are examples, not proven counters; adapt them to enemy weapons and live threats.",
     ]
     for item in policies[:2]:
         response = json.dumps(item["response"], sort_keys=True, separators=(",", ":"))

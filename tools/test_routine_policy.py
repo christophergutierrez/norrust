@@ -1559,18 +1559,18 @@ class ProposedDestinationRealOutputRenderingTests(unittest.TestCase):
     def test_strategy_doctrine_present_and_compact(self):
         contract = rp._strategy_contract(["Dark Adept", "Skeleton"])
         self.assertIn("Strategy doctrine:", contract)
-        self.assertIn("Recruiter survival outranks an attractive isolated exchange", contract)
-        self.assertIn("judge enemy response", contract)
-        self.assertIn("idle unreserved gold and an undersized force", contract)
-        self.assertIn("Expand village assignments", contract)
+        self.assertIn("Protect recruiter survival", contract)
+        self.assertIn("next-turn enemy focus", contract)
+        self.assertIn("idle gold", contract)
+        self.assertIn("contest villages", contract)
         self.assertIn("choice menu provides possible legal options, not a recommended turn plan", contract)
         self.assertIn("finite totals per installation", contract)
 
-        # Doctrine word count verification: <= 150 words
+        # Shared combat doctrine plus strategy protocol notes stay compact.
         doc_start = contract.index("Strategy doctrine:")
         doc_end = contract.index("In LIVE_STATE and the current facts")
         doctrine_words = contract[doc_start:doc_end].split()
-        self.assertLessEqual(len(doctrine_words), 150)
+        self.assertLessEqual(len(doctrine_words), 180)
 
     def test_recruit_profiles_authoritative_and_accurate(self):
         profile = rp.format_recruit_profile("Dark Adept")

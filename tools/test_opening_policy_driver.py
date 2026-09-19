@@ -11,6 +11,7 @@ import textwrap
 import unittest
 import shutil
 
+from .tactical_playbook import load_combat_doctrine
 from .test_strategy_routine_stack2 import engine_events as quiet_engine_events
 from .test_strategy_routine_stack2 import driver_states as quiet_driver_states
 from .test_strategy_routine_stack2 import launch as quiet_launch
@@ -82,7 +83,7 @@ class OpeningPolicyDriverTests(unittest.TestCase):
 
     def test_seed2038_initial_prompt_selects_each_displayed_policy(self) -> None:
         for choice, expected_cost, expected_scouts in (
-            ("Expansion", 260, 2), ("Concentration", 266, 1)
+            ("Expansion", 250, 2), ("Concentration", 252, 1)
         ):
             with tempfile.TemporaryDirectory(prefix=f"driver-{choice.lower()}-", dir=ARTIFACT_ROOT) as temp:
                 root = Path(temp)
@@ -102,6 +103,8 @@ class OpeningPolicyDriverTests(unittest.TestCase):
                 self.assertLessEqual(len(menu.encode()), 4096)
                 requests = [record for record in records if record.get("type") == "model_request"]
                 self.assertGreaterEqual(len(requests), 1)
+                for request in requests:
+                    self.assertIn(load_combat_doctrine(), request["prompt"])
                 self.assertIn("OPENING_POLICY_SUGGESTIONS_BEGIN", requests[0]["prompt"])
                 self.assertTrue(all("OPENING_POLICY_SUGGESTIONS_BEGIN" not in record["prompt"]
                                     for record in requests[1:]))
@@ -113,7 +116,7 @@ class OpeningPolicyDriverTests(unittest.TestCase):
                 } for record in records))
                 policy = installed[0]["policy"]
                 cost = sum(
-                    {"Vampire Bat": 13, "Ghost": 19, "Skeleton": 15}[item["def_id"]] * item["count"]
+                    {"Vampire Bat": 13, "Ghost": 19, "Skeleton": 15, "Dark Adept": 16}[item["def_id"]] * item["count"]
                     for item in policy["recruits"]
                 )
                 self.assertEqual(cost, expected_cost)
@@ -122,9 +125,11 @@ class OpeningPolicyDriverTests(unittest.TestCase):
                 events = engine_events(records)
                 recruits = [event for event in events if event.get("kind") == "recruit"]
                 # Castle placement may leave the final queue entries pending
-                # on this one-turn boundary (Concentration commits 14); the
+                # on this one-turn boundary; the
                 # policy itself is still a complete finite 16-unit request.
                 self.assertGreaterEqual(len(recruits), 6)
+                self.assertTrue(any(event.get("def_id") == "Skeleton" for event in recruits))
+                self.assertTrue(any(event.get("def_id") == "Dark Adept" for event in recruits))
                 self.assertEqual(len({event.get("unit") for event in recruits}), len(recruits))
                 self.assertEqual(sum(event.get("def_id") == "Vampire Bat" for event in recruits), expected_scouts)
                 self.assertTrue(any(event.get("kind") == "move" and event.get("source") == "routine"

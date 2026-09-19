@@ -34,7 +34,7 @@ def opening_state() -> dict:
 
 def context() -> ValidationContext:
     return ValidationContext(
-        recruitable_defs=frozenset({"Vampire Bat", "Ghost", "Skeleton"}),
+        recruitable_defs=frozenset({"Vampire Bat", "Ghost", "Skeleton", "Dark Adept"}),
         friendly_unit_ids=frozenset({1}),
         recruiter_ids=frozenset({1}),
         village_coords=frozenset(VILLAGES),
@@ -51,6 +51,7 @@ def options() -> dict:
             {"def_id": "Vampire Bat", "cost": 13, "affordable": True},
             {"def_id": "Ghost", "cost": 19, "affordable": True},
             {"def_id": "Skeleton", "cost": 15, "affordable": True},
+            {"def_id": "Dark Adept", "cost": 16, "affordable": True},
         ],
     }
 
@@ -59,8 +60,8 @@ class OpeningPolicyTests(unittest.TestCase):
     def test_two_complete_policies_use_live_costs_and_validate(self) -> None:
         policies = build_opening_policies(opening_state(), context(), options())
         self.assertEqual([item["label"] for item in policies], ["Expansion", "Concentration"])
-        self.assertEqual([item["recruit_cost"] for item in policies], [260, 266])
-        self.assertEqual([item["reserve_gold"] for item in policies], [40, 32])
+        self.assertEqual([item["recruit_cost"] for item in policies], [250, 252])
+        self.assertEqual([item["reserve_gold"] for item in policies], [50, 48])
         for item in policies:
             response = item["response"]
             self.assertEqual(response["kind"], "set_policy")
@@ -78,6 +79,11 @@ class OpeningPolicyTests(unittest.TestCase):
         missing_options = copy.deepcopy(options())
         missing_options["options"] = [missing_options["options"][0]]
         self.assertEqual(build_opening_policies(opening_state(), context(), missing_options), [])
+
+        for field, value in (("cost", None), ("affordable", False)):
+            unavailable_ranged = copy.deepcopy(options())
+            unavailable_ranged["options"][-1][field] = value
+            self.assertEqual(build_opening_policies(opening_state(), context(), unavailable_ranged), [])
 
         unknown_ownership = opening_state()
         unknown_ownership["terrain"][0].pop("owner")
