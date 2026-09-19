@@ -820,7 +820,7 @@ def _format_option_compatibility_notes(options: list[dict[str, Any]]) -> list[st
   return notes
 
 
-def candidate_selections(packet: DecisionPacket) -> list[list[str]]:
+def _legacy_candidate_selections(packet: DecisionPacket) -> list[list[str]]:
   """Conservative candidate option_ids lists for the integrator to validate.
 
   Pure and read-only: this walks packet.options as issued and never touches
@@ -886,6 +886,160 @@ def candidate_selections(packet: DecisionPacket) -> list[list[str]]:
     deduped.append(candidate)
 
   return deduped[:4]
+
+
+def _known_nonnegative_int(value: Any) -> Optional[int]:
+  if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+    return value
+  return None
+
+
+def _option_exposure_count(option: dict[str, Any]) -> Optional[int]:
+  """Read the current schema's known occupied-board attacker count."""
+  exposure = option.get("exposure")
+  if not isinstance(exposure, dict):
+    return None
+  return _known_nonnegative_int(exposure.get("distinct_attacker_count"))
+
+
+def _option_expected_damage(option: dict[str, Any]) -> Optional[int]:
+  forecast = option.get("forecast")
+  if not isinstance(forecast, dict):
+    return None
+  return _known_nonnegative_int(forecast.get("expected_damage_dealt_tenths"))
+
+
+def _option_id(option: dict[str, Any]) -> Optional[str]:
+  value = option.get("option_id")
+  return value if isinstance(value, str) and value else None
+
+
+def _packet_recruiter_id(packet: DecisionPacket) -> Optional[int]:
+  evidence = packet.evidence if isinstance(packet.evidence, dict) else {}
+  threatened = evidence.get("threatened_recruiter")
+  if isinstance(threatened, dict):
+    value = threatened.get("recruiter_id")
+    if isinstance(value, int) and not isinstance(value, bool):
+      return value
+  return None
+
+
+def coordinated_tactical_candidate_selections(packet: DecisionPacket) -> list[list[str]]:
+  """Build two bounded, transparent alternatives from an issued option pool.
+
+  The first recipe relocates the threatened recruiter, preferring known
+  occupied-board attacker counts, movement cost, and ID;
+  it appends up to two known-damage attacks from distinct non-recruiter
+  actors.  The second recipe applies pressure with up to three distinct
+  attack actors, ordered by known immediate damage and option ID.  Missing
+  metrics are unknown and never treated as zero.  If either grounded recipe
+  cannot be formed, the existing conservative candidates are retained.
+  """
+  recruiter_id = _packet_recruiter_id(packet)
+  if recruiter_id is None or not packet.options:
+    return _legacy_candidate_selections(packet)
+
+  options = [option for option in packet.options if isinstance(option, dict)]
+  relocations = [
+    option for option in options
+    if option.get("category") == "relocation"
+    and option.get("actor_id") == recruiter_id
+    and _option_id(option) is not None
+    and _option_exposure_count(option) is not None
+  ]
+  attacks = [
+    option for option in options
+    if option.get("category") == "attack"
+    and isinstance(option.get("actor_id"), int)
+    and _option_id(option) is not None
+    and _option_expected_damage(option) is not None
+  ]
+  if not attacks:
+    return _legacy_candidate_selections(packet)
+
+  def relocation_key(option: dict[str, Any]) -> tuple[Any, ...]:
+    occupied_count = _option_exposure_count(option)
+    movement_cost = _known_nonnegative_int(option.get("movement_cost"))
+    return (
+      occupied_count is None, occupied_count if occupied_count is not None else 0,
+      movement_cost is None, movement_cost if movement_cost is not None else 0,
+      _option_id(option),
+    )
+
+  relocation = min(relocations, key=relocation_key) if relocations else None
+
+  def best_attack_per_actor(candidates: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    ordered = sorted(
+      candidates,
+      key=lambda option: (-_option_expected_damage(option), _option_id(option)),
+    )
+    selected: list[dict[str, Any]] = []
+    deferred_conflicts: list[dict[str, Any]] = []
+    actors: set[int] = set()
+    targets: set[int] = set()
+    for option in ordered:
+      actor = option.get("actor_id")
+      if not isinstance(actor, int) or actor in actors:
+        continue
+      option_targets = _get_option_targets(option)
+      if option_targets & targets:
+        deferred_conflicts.append(option)
+        continue
+      selected.append(option)
+      actors.add(actor)
+      targets |= option_targets
+      if len(selected) == limit:
+        return selected
+    # If the pool has no non-conflicting choice for a distinct actor, retain
+    # that existing option as a bounded proposal. The engine's whole-batch
+    # validation remains authoritative and can reject a target killed earlier
+    # in the submitted sequence; the client must not claim compatibility.
+    for option in deferred_conflicts:
+      actor = option.get("actor_id")
+      if isinstance(actor, int) and actor not in actors:
+        selected.append(option)
+        actors.add(actor)
+        if len(selected) == limit:
+          break
+    return selected
+
+  non_recruiter_attacks = [option for option in attacks if option.get("actor_id") != recruiter_id]
+  relocation_attacks = best_attack_per_actor(non_recruiter_attacks, 2)
+  pressure_attacks = best_attack_per_actor(attacks, 3)
+
+  coordinated: list[list[str]] = []
+  if relocation is not None and relocation_attacks:
+    coordinated.append([_option_id(relocation)] + [_option_id(option) for option in relocation_attacks])
+  if pressure_attacks:
+    coordinated.append([_option_id(option) for option in pressure_attacks])
+
+  # Retain the existing singleton/greedy escape hatches after the two
+  # transparent recipes.  Four validation attempts remain the hard cap.
+  result: list[list[str]] = []
+  seen: set[tuple[str, ...]] = set()
+  for candidate in coordinated + _legacy_candidate_selections(packet):
+    if not candidate or len(candidate) > 3 or any(not isinstance(item, str) for item in candidate):
+      continue
+    key = tuple(candidate)
+    if key in seen:
+      continue
+    seen.add(key)
+    result.append(candidate)
+    if len(result) == 4:
+      break
+  return result
+
+
+def candidate_selections(packet: DecisionPacket) -> list[list[str]]:
+  """Return coordinated recruiter alternatives when their evidence is grounded."""
+  evidence = packet.evidence if isinstance(packet.evidence, dict) else {}
+  if (packet.reason == "contact"
+      and evidence.get("stage") == "current_state"
+      and evidence.get("contact_actionability") == "actionable"
+      and isinstance(evidence.get("threatened_recruiter"), dict)
+      and _packet_recruiter_id(packet) is not None):
+    return coordinated_tactical_candidate_selections(packet)
+  return _legacy_candidate_selections(packet)
 
 
 def render_validated_selections(packet: DecisionPacket) -> str:

@@ -13,6 +13,10 @@ Each fixture contains:
    - **Situation**: Early tactical contact with enemy advance. Recruiter U1 is forward.
    - **Positive reference**: U1 retreats to safe village/hex (2,4) with 0 threat; U3 attacks enemy U28 with high kill chance and 0 retaliation. Recruiter remains 48/48 HP; U28 is eliminated.
    - **Negative reference**: U1 makes a reckless charge to (5,8) to attack enemy U20; suffers retaliation damage (down to 38 HP) and stays exposed to 6 distinct attackers.
+   - **Stack 4 reference**: `stack4_reference.json` freezes the current revision-231
+     contact option IDs and the two bounded candidate selections. The archived
+     option exposure rows provide occupied-board counts; open-board counts are
+     explicitly unknown for this packet and are never treated as zero.
 
 2. **`fixture_2_seed_7731_defensive`**:
    - **Historical source**: Seed 7731, revision 456 (Side Turn 12).

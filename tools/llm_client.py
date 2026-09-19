@@ -7556,6 +7556,49 @@ def run(args: argparse.Namespace) -> int:
             current_side_turn = int(state.get("turn", 0)) if isinstance(state, dict) else 0
             contact_scope = metadata.get("current_side_turn_id") or current_side_turn
             final_only = bool(isinstance(state, dict) and state.get("final_only"))
+            if (exc_result.reason == "contact"
+                    and isinstance(exc_result.evidence, dict)
+                    and exc_result.evidence.get("stage") == "current_state"
+                    and exc_result.evidence.get("contact_actionability") == "actionable"
+                    and isinstance(exc_result.evidence.get("actor_ids"), list)
+                    and isinstance(state, dict)):
+                recruiter_ids = {
+                    unit.get("id") for unit in state.get("units", [])
+                    if isinstance(unit, dict)
+                    and unit.get("faction") == args.llm_side
+                    and unit.get("can_recruit") is True
+                }
+                surface = state.get("tactical_surface")
+                live_threatened = {
+                    item.get("recruiter_id") for item in (
+                        surface.get("threats", {}).get("recruiters", [])
+                        if isinstance(surface, dict)
+                        and isinstance(surface.get("threats"), dict)
+                        and isinstance(surface.get("threats", {}).get("recruiters"), list)
+                        else []
+                    )
+                    if isinstance(item, dict)
+                    and any(
+                        isinstance(item.get(key), int)
+                        and not isinstance(item.get(key), bool)
+                        and item.get(key) > 0
+                        for key in ("distinct_attacker_count", "open_distinct_attacker_count")
+                    )
+                }
+                threatened = sorted(
+                    recruiter_id for recruiter_id in recruiter_ids
+                    if recruiter_id in exc_result.evidence["actor_ids"]
+                    and recruiter_id in live_threatened
+                )
+                if len(threatened) == 1 and "threatened_recruiter" not in exc_result.evidence:
+                    # The routine query already selected this actor as eligible
+                    # for the actionable contact menu. Preserve that engine fact
+                    # in the packet so candidate generation can distinguish the
+                    # recruiter from other actors without guessing from IDs.
+                    exc_result.evidence = copy.deepcopy(exc_result.evidence)
+                    exc_result.evidence["threatened_recruiter"] = {
+                        "recruiter_id": threatened[0],
+                    }
             packet = build_decision_packet(
                 exc_result.reason, exc_result.evidence, revision,
                 game_id=metadata.get("game_id") or metadata.get("conversation_id") or "",

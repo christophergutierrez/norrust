@@ -486,6 +486,23 @@ volatile prompt suffix. A read-only preview does not advance execution, events,
 progress, or RNG, and custom authored actions via `act` and manual option
 combinations outside the previewed cards remain fully supported.
 
+For a narrow `contact` packet at `stage: current_state` with
+`contact_actionability: actionable`, the client can ground a threatened
+recruiter when exactly one live recruiter is both an eligible actor and has a
+positive tactical-surface attacker count. It then places two deterministic
+recipes ahead of the legacy candidates: a recruiter relocation chosen by the
+known occupied-board `distinct_attacker_count`, movement cost and option ID,
+with up to two known-damage attacks from distinct non-recruiter actors; and a
+pressure batch of up to three distinct attack actors ordered by known expected
+damage and option ID. When several attacks are available, the recipes prefer
+disjoint targets when the issued pool provides them. The current packet schema
+does not provide an open-board count for this heuristic, so that value remains
+unavailable rather than being treated as zero. Missing recruiter or option
+metrics use the existing conservative candidate generation. The existing
+budget remains four whole-batch validation attempts and one preview for two
+cards. The reproducible source-matched comparison procedure is documented in
+[`docs/TACTICAL_COMPARISON.md`](TACTICAL_COMPARISON.md).
+
 Every brief also carries one connected economic line, built with its structured
 facts from a single source (`compute_economic_summary`), for example
 `176 gold (126 unreserved); units 9 vs 20; villages 0 vs 0 (6 unowned); no
