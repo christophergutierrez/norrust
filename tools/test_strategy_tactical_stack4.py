@@ -239,6 +239,43 @@ class CoordinatedTacticalCandidateTests(unittest.TestCase):
         legacy = sd._legacy_candidate_selections(tactical)
         self.assertEqual(sd.coordinated_tactical_candidate_selections(tactical), legacy)
 
+    def test_relocation_singleton_preserved_when_no_support_attacks(self):
+        options = [
+            option("u1-relocate-1", 1, "relocation", direct=0, movement_cost=1),
+            option("u1-relocate-2", 1, "relocation", direct=1, movement_cost=2),
+        ]
+        candidates = sd.candidate_selections(packet(options))
+        self.assertEqual(candidates[0], ["u1-relocate-1"])
+
+    def test_relocation_singleton_preserved_when_only_recruiter_can_attack(self):
+        options = [
+            option("u1-relocate-1", 1, "relocation", direct=0, movement_cost=1),
+            option("u1-attack-1", 1, "attack", expected=150, target_id=20),
+        ]
+        candidates = sd.candidate_selections(packet(options))
+        # Recipe 1 has relocation singleton; Recipe 2 has pressure attack
+        self.assertEqual(candidates[0], ["u1-relocate-1"])
+        self.assertEqual(candidates[1], ["u1-attack-1"])
+
+    def test_invalid_assignment_threatened_recruiter_uses_coordinated_candidates(self):
+        options = [
+            option("u1-relocate-1", 1, "relocation", direct=0, movement_cost=1),
+            option("u3-attack-1", 3, "attack", expected=120, target_id=28),
+        ]
+        pkt = sd.build_decision_packet(
+            "invalid_assignment",
+            {
+                "cause": "dead_or_foreign_unit",
+                "unit_id": 40,
+                "threatened_recruiter": {"recruiter_id": 1},
+                "options": options,
+            },
+            revision=231,
+        )
+        candidates = sd.candidate_selections(pkt)
+        self.assertEqual(candidates[0], ["u1-relocate-1", "u3-attack-1"])
+        self.assertEqual(candidates[1], ["u3-attack-1"])
+
     def test_quiet_control_and_empty_or_exhausted_contacts_do_not_invent_recipes(self):
         quiet = sd.build_decision_packet(
             "contact",

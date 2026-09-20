@@ -239,8 +239,8 @@ class TestStrategyThreatOptionsDriver(unittest.TestCase):
                 # Options attached
                 options = ev.get("options", [])
                 self.assertGreater(len(options), 0, "must attach tactical options for threatened recruiter")
-                self.assertLessEqual(len(options), 4, "options must be capped at 4")
-                self.assertEqual(ev.get("actor_ids"), [1])
+                self.assertLessEqual(len(options), 12, "options must be capped at 12 for up to 3 actors")
+                self.assertEqual(ev.get("actor_ids"), [1, 6, 38])
 
                 # Packet building from this evidence permits choose
                 packet = build_decision_packet("invalid_assignment", ev, rev, game_id="hist", side_turn=28)

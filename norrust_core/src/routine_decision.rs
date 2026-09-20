@@ -164,6 +164,80 @@ pub(crate) fn has_executable_attack(
     Ok(false)
 }
 
+pub(crate) fn has_executable_attack_on(
+    state: &GameState,
+    actor_id: u32,
+    targets: &HashSet<u32>,
+) -> Result<bool, TacticsError> {
+    if targets.is_empty() {
+        return Ok(false);
+    }
+    let actor = state
+        .units
+        .get(&actor_id)
+        .ok_or(ActionError::UnitNotFound(actor_id))?;
+    if actor.faction != state.active_faction || actor.attacked {
+        return Ok(false);
+    }
+    let current = *state
+        .positions
+        .get(&actor_id)
+        .ok_or(ActionError::UnitNotFound(actor_id))?;
+
+    for defender_id in legal_targets(state, actor_id, current)? {
+        if targets.contains(&defender_id) {
+            let mut sim = state.clone();
+            if apply_action(
+                &mut sim,
+                Action::Attack {
+                    attacker_id: actor_id,
+                    defender_id,
+                },
+            )
+            .is_ok()
+            {
+                return Ok(true);
+            }
+        }
+    }
+    if actor.moved {
+        return Ok(false);
+    }
+
+    let destinations = legal_moves_with_costs(state, actor_id)?;
+    for destination in destinations.keys().copied() {
+        let mut sim = state.clone();
+        if apply_action(
+            &mut sim,
+            Action::Move {
+                unit_id: actor_id,
+                destination,
+            },
+        )
+        .is_err()
+        {
+            continue;
+        }
+        for defender_id in legal_targets(&sim, actor_id, destination)? {
+            if targets.contains(&defender_id) {
+                let mut attack_sim = sim.clone();
+                if apply_action(
+                    &mut attack_sim,
+                    Action::Attack {
+                        attacker_id: actor_id,
+                        defender_id,
+                    },
+                )
+                .is_ok()
+                {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
 pub(crate) fn has_executable_relocation(
     state: &GameState,
     actor_id: u32,
@@ -761,9 +835,7 @@ pub fn generate_threatened_recruiter_options(
     }
 
     let chosen = actionable[0];
-    let eligible_actor_count = actionable.len() as u32;
-    let actors_truncated = eligible_actor_count > 1;
-    let generated = generate_actor_options(state, chosen.recruiter_id)?;
+    let recruiter_generated = generate_actor_options(state, chosen.recruiter_id)?;
     let max_hp = state
         .units
         .get(&chosen.recruiter_id)
@@ -776,6 +848,48 @@ pub fn generate_threatened_recruiter_options(
         .max()
         .unwrap_or(0);
 
+    let mut threat_enemy_ids = HashSet::new();
+    for t in &chosen.threats {
+        threat_enemy_ids.insert(t.attacker_id);
+    }
+    for t in &chosen.open_threats {
+        threat_enemy_ids.insert(t.attacker_id);
+    }
+
+    let mut threat_attackers = Vec::new();
+    let mut general_attackers = Vec::new();
+    for (&id, unit) in &state.units {
+        if unit.faction == side && !unit.can_recruit && !unit.attacked && id != chosen.recruiter_id {
+            if has_executable_attack_on(state, id, &threat_enemy_ids)? {
+                threat_attackers.push(id);
+            } else if has_executable_attack(state, id)? {
+                general_attackers.push(id);
+            }
+        }
+    }
+    threat_attackers.sort_unstable();
+    general_attackers.sort_unstable();
+    let mut eligible_support = threat_attackers;
+    eligible_support.extend(general_attackers);
+
+    let support_selected: Vec<u32> = eligible_support.iter().copied().take(2).collect();
+
+    let mut actor_ids = vec![chosen.recruiter_id];
+    let mut options = recruiter_generated.options;
+    let mut options_truncated = recruiter_generated.truncated;
+
+    for &support_id in &support_selected {
+        let support_generated = generate_actor_options(state, support_id)?;
+        if !support_generated.options.is_empty() {
+            options_truncated |= support_generated.truncated;
+            options.extend(support_generated.options);
+            actor_ids.push(support_id);
+        }
+    }
+
+    let eligible_actor_count = (actionable.len() + eligible_support.len()) as u32;
+    let actors_truncated = eligible_actor_count as usize > actor_ids.len();
+
     Ok(Some(ThreatenedRecruiterTacticalFacts {
         recruiter: RecruiterThreatFacts {
             recruiter_id: chosen.recruiter_id,
@@ -786,11 +900,11 @@ pub fn generate_threatened_recruiter_options(
             max_incoming_damage: chosen.max_incoming_sum,
             expected_incoming_damage_tenths: expected_incoming,
         },
-        actor_ids: vec![chosen.recruiter_id],
+        actor_ids,
         eligible_actor_count,
         actors_truncated,
-        options: generated.options,
-        options_truncated: generated.truncated,
+        options,
+        options_truncated,
         options_empty_reason: None,
     }))
 }
@@ -1610,5 +1724,40 @@ mod tests {
         assert_eq!(facts.eligible_actor_count, 2);
         assert!(facts.actors_truncated);
         assert_eq!(facts.recruiter.recruiter_id, 1);
+    }
+
+    #[test]
+    fn test_threatened_recruiter_with_friendly_support_actors() {
+        let registry = units();
+        let mut s = base_test_state();
+        let mut r1 = Unit::from_def(1, registry.get("Dark Sorcerer").unwrap(), 0);
+        r1.can_recruit = true;
+        s.place_unit(r1, Hex::from_offset(1, 1));
+
+        // Enemy 99 threatens recruiter 1
+        let e1 = Unit::from_def(99, registry.get("Skeleton").unwrap(), 1);
+        s.place_unit(e1, Hex::from_offset(2, 1));
+
+        // Friendly support unit 2 (Skeleton) adjacent to enemy 99
+        let u2 = Unit::from_def(2, registry.get("Skeleton").unwrap(), 0);
+        s.place_unit(u2, Hex::from_offset(3, 1));
+
+        // Friendly support unit 3 (Dark Adept) adjacent to enemy 99
+        let u3 = Unit::from_def(3, registry.get("Dark Adept").unwrap(), 0);
+        s.place_unit(u3, Hex::from_offset(2, 2));
+
+        // Friendly support unit 4 (Dark Adept) adjacent to enemy 99
+        let u4 = Unit::from_def(4, registry.get("Dark Adept").unwrap(), 0);
+        s.place_unit(u4, Hex::from_offset(1, 2));
+
+        let facts = generate_threatened_recruiter_options(&s, 0).unwrap().expect("should find facts");
+        assert_eq!(facts.actor_ids, vec![1, 2, 3]);
+        assert_eq!(facts.eligible_actor_count, 4); // 1 recruiter + 3 support
+        assert!(facts.actors_truncated); // 4 > 3
+        assert_eq!(facts.recruiter.recruiter_id, 1);
+        // Options include recruiter options and support units' options
+        assert!(facts.options.iter().any(|o| o.actor_id == 1));
+        assert!(facts.options.iter().any(|o| o.actor_id == 2));
+        assert!(facts.options.iter().any(|o| o.actor_id == 3));
     }
 }

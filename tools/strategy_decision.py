@@ -958,7 +958,7 @@ def coordinated_tactical_candidate_selections(packet: DecisionPacket) -> list[li
     and _option_id(option) is not None
     and _option_expected_damage(option) is not None
   ]
-  if not attacks:
+  if not relocations and not attacks:
     return _legacy_candidate_selections(packet)
 
   def relocation_key(option: dict[str, Any]) -> tuple[Any, ...]:
@@ -1012,8 +1012,11 @@ def coordinated_tactical_candidate_selections(packet: DecisionPacket) -> list[li
   pressure_attacks = best_attack_per_actor(attacks, 3)
 
   coordinated: list[list[str]] = []
-  if relocation is not None and relocation_attacks:
-    coordinated.append([_option_id(relocation)] + [_option_id(option) for option in relocation_attacks])
+  if relocation is not None:
+    if relocation_attacks:
+      coordinated.append([_option_id(relocation)] + [_option_id(option) for option in relocation_attacks])
+    else:
+      coordinated.append([_option_id(relocation)])
   if pressure_attacks:
     coordinated.append([_option_id(option) for option in pressure_attacks])
 
@@ -1037,11 +1040,13 @@ def coordinated_tactical_candidate_selections(packet: DecisionPacket) -> list[li
 def candidate_selections(packet: DecisionPacket) -> list[list[str]]:
   """Return coordinated recruiter alternatives when their evidence is grounded."""
   evidence = packet.evidence if isinstance(packet.evidence, dict) else {}
-  if (packet.reason == "contact"
-      and evidence.get("stage") == "current_state"
-      and evidence.get("contact_actionability") == "actionable"
-      and isinstance(evidence.get("threatened_recruiter"), dict)
-      and _packet_recruiter_id(packet) is not None):
+  if not packet.options or _packet_recruiter_id(packet) is None or not isinstance(evidence.get("threatened_recruiter"), dict):
+    return _legacy_candidate_selections(packet)
+  if packet.reason == "contact":
+    if (evidence.get("stage") == "current_state"
+        and evidence.get("contact_actionability") == "actionable"):
+      return coordinated_tactical_candidate_selections(packet)
+  elif packet.reason == "invalid_assignment":
     return coordinated_tactical_candidate_selections(packet)
   return _legacy_candidate_selections(packet)
 
