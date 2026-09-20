@@ -3,7 +3,10 @@
 The opening menu is deliberately small.  It is offered only when the live
 state has the supported big_battle_6 undead opening shape and every fact needed
 to validate both recipes is present.  The returned responses are ordinary
-``set_policy`` objects; no menu selector or future unit ID is introduced.
+``set_policy`` responses with zero intentional reserve to mobilize an affordable
+combined-arms force spending >= 95% of starting gold.  Gold reserves are reserved
+for explicit saving objectives, and custom nonzero reserves remain fully valid.
+No menu selector or future unit ID is introduced.
 """
 from __future__ import annotations
 
@@ -93,7 +96,7 @@ def _policy(label: str, intent: str, policy: dict[str, Any], costs: dict[str, in
         return None
     cost = sum(costs[item["def_id"]] * item["count"] for item in normalized["recruits"])
     gold = 300
-    if cost + normalized["reserve_gold"] > gold or cost < (gold * 80 // 100):
+    if cost + normalized["reserve_gold"] > gold or cost < (gold * 95 // 100):
         return None
     return {
         "label": label,
@@ -125,12 +128,12 @@ def build_opening_policies(
         "Expansion",
         "Use two scouts for nearby villages, Skeletons and Ghosts as a frontline, and Dark Adepts as ranged support; advance them together toward the rally.",
         {
-            "reserve_gold": 50,
+            "reserve_gold": 0,
             "recruits": [
                 {"def_id": "Vampire Bat", "count": 2, "role": "scout"},
-                {"def_id": "Skeleton", "count": 6, "role": "army"},
+                {"def_id": "Skeleton", "count": 8, "role": "army"},
                 {"def_id": "Ghost", "count": 2, "role": "army"},
-                {"def_id": "Dark Adept", "count": 6, "role": "army"},
+                {"def_id": "Dark Adept", "count": 7, "role": "army"},
             ],
             "scouts": [],
             "villages": [{"col": col, "row": row} for col, row in EXPANSION_VILLAGES],
@@ -141,12 +144,12 @@ def build_opening_policies(
         "Concentration",
         "Use one scout for a central village and a larger Skeleton frontline with Ghosts and Dark Adept ranged support; keep the army together toward the rally.",
         {
-            "reserve_gold": 48,
+            "reserve_gold": 0,
             "recruits": [
                 {"def_id": "Vampire Bat", "count": 1, "role": "scout"},
-                {"def_id": "Skeleton", "count": 7, "role": "army"},
+                {"def_id": "Skeleton", "count": 9, "role": "army"},
                 {"def_id": "Ghost", "count": 2, "role": "army"},
-                {"def_id": "Dark Adept", "count": 6, "role": "army"},
+                {"def_id": "Dark Adept", "count": 7, "role": "army"},
             ],
             "scouts": [],
             "villages": [{"col": col, "row": row} for col, row in CONCENTRATION_VILLAGES],
@@ -167,6 +170,7 @@ def render_opening_policy_menu(policies: list[dict[str, Any]]) -> str:
         "OPENING_POLICY_SUGGESTIONS_BEGIN",
         "Supported scope: big_battle_6, undead side 0, ordinary 300-gold opening.",
         "These are complete ordinary set_policy responses; copy one or edit it. "
+        "Reserve is for explicit saving objectives; custom nonzero reserves remain valid. "
         "Scout IDs stay empty until the driver commits actual recruits. These compositions are examples, not proven counters; adapt them to enemy weapons and live threats.",
     ]
     for item in policies[:2]:

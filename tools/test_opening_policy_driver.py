@@ -83,7 +83,7 @@ class OpeningPolicyDriverTests(unittest.TestCase):
 
     def test_seed2038_initial_prompt_selects_each_displayed_policy(self) -> None:
         for choice, expected_cost, expected_scouts in (
-            ("Expansion", 250, 2), ("Concentration", 252, 1)
+            ("Expansion", 296, 2), ("Concentration", 298, 1)
         ):
             with tempfile.TemporaryDirectory(prefix=f"driver-{choice.lower()}-", dir=ARTIFACT_ROOT) as temp:
                 root = Path(temp)
@@ -101,6 +101,7 @@ class OpeningPolicyDriverTests(unittest.TestCase):
                 menu = "OPENING_POLICY_SUGGESTIONS_BEGIN" + menu.split(
                     "OPENING_POLICY_SUGGESTIONS_END", 1)[0] + "OPENING_POLICY_SUGGESTIONS_END"
                 self.assertLessEqual(len(menu.encode()), 4096)
+                self.assertIn("Reserve is for explicit saving objectives", menu)
                 requests = [record for record in records if record.get("type") == "model_request"]
                 self.assertGreaterEqual(len(requests), 1)
                 for request in requests:
@@ -120,13 +121,23 @@ class OpeningPolicyDriverTests(unittest.TestCase):
                     for item in policy["recruits"]
                 )
                 self.assertEqual(cost, expected_cost)
-                self.assertEqual(sum(item["count"] for item in policy["recruits"]), 16)
+                self.assertGreaterEqual(cost, 285)
+                self.assertLessEqual(cost, 300)
+                self.assertEqual(policy["reserve_gold"], 0)
+                self.assertEqual(sum(item["count"] for item in policy["recruits"]), 19)
                 self.assertEqual(policy["scouts"], [])
+                # Frontline and ranged support constraints
+                self.assertGreaterEqual(
+                    sum(item["count"] for item in policy["recruits"] if item["def_id"] == "Dark Adept"), 6
+                )
+                self.assertGreaterEqual(
+                    sum(item["count"] for item in policy["recruits"] if item["def_id"] in {"Skeleton", "Ghost"}), 8
+                )
                 events = engine_events(records)
                 recruits = [event for event in events if event.get("kind") == "recruit"]
                 # Castle placement may leave the final queue entries pending
                 # on this one-turn boundary; the
-                # policy itself is still a complete finite 16-unit request.
+                # policy itself is still a complete finite 19-unit request.
                 self.assertGreaterEqual(len(recruits), 6)
                 self.assertTrue(any(event.get("def_id") == "Skeleton" for event in recruits))
                 self.assertTrue(any(event.get("def_id") == "Dark Adept" for event in recruits))
@@ -136,7 +147,7 @@ class OpeningPolicyDriverTests(unittest.TestCase):
                                     and event.get("to") == {"col": 6, "row": 6}
                                     for event in events))
 
-    def test_quiet_clone_runs_both_openings_through_turn_four(self) -> None:
+    def test_quiet_clone_runs_both_openings_to_completion_within_six_turns(self) -> None:
         """Exercise committed recruits, village ownership, rally, and no re-install."""
         for fixture_name in ("expansion", "concentration"):
             with self.subTest(fixture_name=fixture_name):
@@ -159,15 +170,27 @@ class OpeningPolicyDriverTests(unittest.TestCase):
                         print(json.dumps({{'text': json.dumps(response, separators=(',', ':'))}}))
                     """).lstrip())
                     log = root / "quiet.ndjson"
-                    result = quiet_launch(root, log, checkpoint, policy_file, backend, turns=4)
+                    result = quiet_launch(root, log, checkpoint, policy_file, backend, turns=6)
                     self.assertEqual(result.returncode, 0,
                                      result.stderr + "\n" + (log.read_text()[-12000:] if log.exists() else ""))
                     records = rows(log)
                     self.assertEqual(sum(record.get("type") == "policy_installed" for record in records), 1)
                     events = quiet_engine_events(records)
                     recruits = [event for event in events if event.get("kind") == "recruit"]
-                    self.assertGreaterEqual(len(recruits), 6)
-                    self.assertEqual(len({event.get("unit") for event in recruits}), len(recruits))
+                    # All 19 units in the finite queue finish recruitment within 6 controlled turns
+                    self.assertEqual(len(recruits), 19)
+                    self.assertEqual(len({event.get("unit") for event in recruits}), 19)
+                    self.assertFalse(any(record.get("type") in {
+                        "model_error", "strategy_repair", "strategy_response_rejected",
+                    } for record in records))
+
+                    # Cost accounting: separate starting gold spending from later income
+                    committed_spending = sum(event["cost"] for event in recruits)
+                    expected_spending = 296 if fixture_name == "expansion" else 298
+                    self.assertEqual(committed_spending, expected_spending)
+                    self.assertGreaterEqual(committed_spending, 285)
+                    self.assertLessEqual(committed_spending, 300)
+
                     states = quiet_driver_states(records)
                     self.assertTrue(any(
                         state.get("side_turns", 99) <= 3
@@ -181,7 +204,7 @@ class OpeningPolicyDriverTests(unittest.TestCase):
                                 if event.get("kind") == "village" and event.get("owner") == 0}
                     expected_villages = {(2, 4), (5, 3)} if fixture_name == "expansion" else {(5, 3)}
                     self.assertTrue(expected_villages <= villages)
-                    self.assertTrue(any(state.get("side_turns", 99) <= 4 for state in states))
+                    self.assertTrue(any(state.get("side_turns", 99) <= 6 for state in states))
 
     def test_displayed_expansion_resumes_from_first_committed_recruit(self) -> None:
         """A checkpoint resume preserves the opening installation and IDs."""
@@ -265,6 +288,43 @@ class OpeningPolicyDriverTests(unittest.TestCase):
             self.assertFalse(any(record.get("type") in {
                 "model_error", "strategy_repair", "strategy_response_rejected",
             } for record in records))
+
+    def test_displayed_menu_allows_custom_deliberate_reserve(self) -> None:
+        """A custom policy with a deliberate nonzero reserve installs and is respected."""
+        with tempfile.TemporaryDirectory(prefix="custom-reserve-", dir=ARTIFACT_ROOT) as temp:
+            root = Path(temp)
+            backend = root / "backend.py"
+            prompt_path = root / "initial-prompt.json"
+            log_path = root / "run.ndjson"
+            backend_script(backend, "Expansion", prompt_path)
+            backend.write_text(textwrap.dedent(f"""
+                import json, sys
+                prompt = sys.stdin.read()
+                if 'OPENING_POLICY_SUGGESTIONS_BEGIN' not in prompt:
+                    response = {{'kind': 'finish_turn'}}
+                else:
+                    response = {{'kind': 'set_policy', 'policy': {{
+                        'reserve_gold': 150,
+                        'recruits': [{{'def_id': 'Skeleton', 'count': 8, 'role': 'army'}}],
+                        'scouts': [], 'villages': [], 'rally': {{'col': 6, 'row': 6}}, 'holds': []
+                    }}}}
+                print(json.dumps({{'text': json.dumps(response, separators=(',', ':'))}}))
+            """).lstrip())
+            result = subprocess.run(seed_command(log_path, backend), cwd=ROOT, text=True,
+                                    capture_output=True, timeout=120)
+            self.assertEqual(result.returncode, 0,
+                             result.stderr + "\n" + log_path.read_text()[-12000:])
+            records = rows(log_path)
+            installed = [record for record in records if record.get("type") == "policy_installed"]
+            self.assertEqual(len(installed), 1)
+            self.assertEqual(installed[0]["policy"]["reserve_gold"], 150)
+            self.assertFalse(any(record.get("type") in {
+                "model_error", "strategy_repair", "strategy_response_rejected",
+            } for record in records))
+            # Ending gold after recruits must respect the 150 reserve
+            recruits = [e for e in engine_events(records) if e.get("kind") == "recruit"]
+            spent = sum(e.get("cost", 15) for e in recruits)
+            self.assertLessEqual(spent, 300 - 150)
 
 
 if __name__ == "__main__":

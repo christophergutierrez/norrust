@@ -4,7 +4,7 @@
   "response": {
     "kind": "set_policy",
     "policy": {
-      "reserve_gold": 48,
+      "reserve_gold": 0,
       "recruits": [
         {
           "def_id": "Vampire Bat",
@@ -13,7 +13,7 @@
         },
         {
           "def_id": "Skeleton",
-          "count": 7,
+          "count": 9,
           "role": "army"
         },
         {
@@ -23,7 +23,7 @@
         },
         {
           "def_id": "Dark Adept",
-          "count": 6,
+          "count": 7,
           "role": "army"
         }
       ],
@@ -41,6 +41,6 @@
       "holds": []
     }
   },
-  "recruit_cost": 252,
-  "reserve_gold": 48
+  "recruit_cost": 298,
+  "reserve_gold": 0
 }

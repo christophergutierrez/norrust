@@ -8,10 +8,14 @@ IDs.
 
 The costs are calculated from the seed-2038 `recruit_options` query:
 
-* Expansion: 2 Vampire Bats, 6 Skeletons, 2 Ghosts, and 6 Dark Adepts cost
-  250 gold and leave 50 gold in reserve.
-* Concentration: 1 Vampire Bat, 7 Skeletons, 2 Ghosts, and 6 Dark Adepts cost
-  252 gold and leave 48 gold in reserve.
+* Expansion: 2 Vampire Bats, 8 Skeletons, 2 Ghosts, and 7 Dark Adepts cost
+  296 gold and leave 0 gold in reserve (spending >= 95% of initial 300 gold).
+* Concentration: 1 Vampire Bat, 9 Skeletons, 2 Ghosts, and 7 Dark Adepts cost
+  298 gold and leave 0 gold in reserve (spending >= 95% of initial 300 gold).
+
+Both examples set `reserve_gold: 0` to deploy an affordable combined-arms force
+immediately. In general, `reserve_gold` is for explicit saving objectives;
+custom nonzero reserves remain fully valid.
 
 Both policies use ordinary `set_policy` responses.  Their `scouts` arrays are
 empty because recruit IDs do not exist until the engine commits recruitment.
