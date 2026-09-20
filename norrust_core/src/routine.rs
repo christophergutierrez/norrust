@@ -441,6 +441,52 @@ fn scout_ids(policy: &RoutinePolicy, progress: &RoutineProgress) -> Vec<u32> {
     ids
 }
 
+pub fn validate_installation(
+    state: &GameState,
+    policy: &RoutinePolicy,
+    side: u8,
+) -> Result<(), Value> {
+    if let Some(village) = policy.villages.iter().find(|village| {
+        !state.board.contains(**village)
+            || state
+                .board
+                .tile_at(**village)
+                .is_none_or(|tile| tile.terrain_id != "village")
+    }) {
+        return Err(json!({"cause":"invalid_village_objective","village":coord(*village)}));
+    }
+    if policy
+        .rally
+        .is_some_and(|rally| !state.board.contains(rally))
+    {
+        return Err(json!({"cause":"invalid_rally"}));
+    }
+    for id in policy.scouts.iter().chain(policy.holds.iter()) {
+        match state.units.get(id) {
+            Some(unit) if unit.faction == side && state.positions.contains_key(id) => {}
+            _ => return Err(json!({"cause":"dead_or_foreign_unit","unit_id":id})),
+        }
+    }
+    if policy
+        .scouts
+        .iter()
+        .any(|id| state.units.get(id).is_some_and(recruiter))
+    {
+        return Err(json!({"cause":"scout_is_recruiter"}));
+    }
+    let (required_assignments, scout_capacity) =
+        village_scout_capacity(state, policy, &RoutineProgress::default(), side);
+    if required_assignments > scout_capacity {
+        return Err(json!({
+            "cause": "insufficient_scout_capacity",
+            "required_assignments": required_assignments,
+            "scout_capacity": scout_capacity,
+            "villages": policy.villages.iter().map(|v| coord(*v)).collect::<Vec<_>>(),
+        }));
+    }
+    Ok(())
+}
+
 fn validate_identity(
     state: &GameState,
     policy: &RoutinePolicy,
@@ -495,6 +541,152 @@ fn validate_identity(
     Ok(scouts)
 }
 
+#[derive(Debug, Clone)]
+pub struct EffectiveRoutineState {
+    pub effective_scouts: Vec<u32>,
+    pub effective_holds: HashSet<u32>,
+    pub effective_progress: RoutineProgress,
+    pub maintenance_effects: Vec<Value>,
+}
+
+pub fn upkeep_installed_policy(
+    state: &GameState,
+    policy: &RoutinePolicy,
+    progress: &RoutineProgress,
+    side: u8,
+) -> Result<EffectiveRoutineState, Value> {
+    if let Some(issue) = &progress.parse_issue {
+        return Err(json!({"cause":"malformed_progress","detail":issue}));
+    }
+    let all_scouts = scout_ids(policy, progress);
+    for id in all_scouts.iter().chain(policy.holds.iter()) {
+        if let Some(unit) = state.units.get(id) {
+            if unit.faction != side {
+                return Err(json!({"cause":"dead_or_foreign_unit","unit_id":id}));
+            }
+        }
+    }
+    if all_scouts
+        .iter()
+        .any(|id| state.units.get(id).is_some_and(|u| u.faction == side && recruiter(u)))
+    {
+        return Err(json!({"cause":"scout_is_recruiter"}));
+    }
+    let mut assigned_units = HashSet::new();
+    let mut assigned_villages = HashSet::new();
+    for assignment in &progress.scout_assignments {
+        if !assigned_units.insert(assignment.unit_id)
+            || !assigned_villages.insert(assignment.village)
+        {
+            return Err(
+                json!({"cause":"duplicate_scout_assignment","unit_id":assignment.unit_id,"village":coord(assignment.village)}),
+            );
+        }
+        if !all_scouts.contains(&assignment.unit_id) || policy.holds.contains(&assignment.unit_id) {
+            return Err(
+                json!({"cause":"assignment_unit_not_eligible","unit_id":assignment.unit_id}),
+            );
+        }
+        if !policy.villages.contains(&assignment.village) {
+            return Err(
+                json!({"cause":"assignment_village_not_selected","unit_id":assignment.unit_id,"village":coord(assignment.village)}),
+            );
+        }
+    }
+    if let Some(village) = progress
+        .completed_villages
+        .iter()
+        .find(|village| !policy.villages.contains(village))
+    {
+        return Err(json!({"cause":"completed_village_not_selected","village":coord(*village)}));
+    }
+
+    let is_live_friendly = |id: &u32| -> bool {
+        match state.units.get(id) {
+            Some(unit) => unit.faction == side && state.positions.contains_key(id),
+            None => false,
+        }
+    };
+
+    let effective_scouts: Vec<u32> = all_scouts
+        .iter()
+        .copied()
+        .filter(&is_live_friendly)
+        .collect();
+
+    let effective_holds: HashSet<u32> = policy
+        .holds
+        .iter()
+        .copied()
+        .filter(&is_live_friendly)
+        .collect();
+
+    let effective_assignments: Vec<ScoutAssignment> = progress
+        .scout_assignments
+        .iter()
+        .filter(|a| is_live_friendly(&a.unit_id))
+        .cloned()
+        .collect();
+
+    let mut maintenance_effects = Vec::new();
+    for a in &progress.scout_assignments {
+        if !is_live_friendly(&a.unit_id) {
+            maintenance_effects.push(json!({
+                "kind": "scout_unassigned",
+                "unit_id": a.unit_id,
+                "col": a.village.to_offset().0,
+                "row": a.village.to_offset().1,
+            }));
+        }
+    }
+    for &id in &progress.scout_ids {
+        if !is_live_friendly(&id) {
+            maintenance_effects.push(json!({
+                "kind": "scout_retired",
+                "unit_id": id,
+            }));
+        }
+    }
+    for &id in &policy.scouts {
+        if !is_live_friendly(&id) && !progress.scout_ids.contains(&id) {
+            maintenance_effects.push(json!({
+                "kind": "scout_retired",
+                "unit_id": id,
+            }));
+        }
+    }
+    maintenance_effects.sort_by_key(|e| {
+        (
+            e["kind"].as_str().unwrap_or("").to_string(),
+            e["unit_id"].as_u64().unwrap_or(0),
+        )
+    });
+    maintenance_effects.dedup();
+
+    let effective_progress = RoutineProgress {
+        installation_id: progress.installation_id.clone(),
+        recruited: progress.recruited.clone(),
+        scout_ids: effective_scouts.clone(),
+        scout_assignments: effective_assignments,
+        completed_villages: progress.completed_villages.clone(),
+        policy_complete: progress.policy_complete,
+        parse_issue: None,
+    };
+
+    Ok(EffectiveRoutineState {
+        effective_scouts,
+        effective_holds,
+        effective_progress,
+        maintenance_effects,
+    })
+}
+
+fn combine_effects(maintenance: &[Value], extra: Vec<Value>) -> Value {
+    let mut all = maintenance.to_vec();
+    all.extend(extra);
+    progress_update(all)
+}
+
 /// Compute the village workload against scout capacity (Stack 1 contract).
 ///
 /// `required_assignments` = distinct `policy.villages` that are not in
@@ -518,6 +710,12 @@ fn village_scout_capacity(
     let assigned_villages: HashSet<Hex> = progress
         .scout_assignments
         .iter()
+        .filter(|a| {
+            state
+                .units
+                .get(&a.unit_id)
+                .is_some_and(|u| u.faction == side && state.positions.contains_key(&a.unit_id))
+        })
         .map(|a| a.village)
         .collect();
     let required_assignments = policy
@@ -533,6 +731,12 @@ fn village_scout_capacity(
     let assigned_units: HashSet<u32> = progress
         .scout_assignments
         .iter()
+        .filter(|a| {
+            state
+                .units
+                .get(&a.unit_id)
+                .is_some_and(|u| u.faction == side && state.positions.contains_key(&a.unit_id))
+        })
         .map(|a| a.unit_id)
         .collect();
     let live_unassigned_scouts = scout_ids(policy, progress)
@@ -1534,20 +1738,51 @@ pub fn routine_next(
             json!({"cause":"invalid_rally"}),
         );
     }
-    let scouts = match validate_identity(state, policy, progress, side) {
-        Ok(v) => v,
-        Err(e) => {
-            return enrich_invalid_assignment(state, side, e);
-        }
-    };
+    let (effective_scouts, effective_holds, effective_progress, maintenance_effects) =
+        if progress.installation_id.is_none() {
+            let scouts = match validate_identity(state, policy, progress, side) {
+                Ok(v) => v,
+                Err(e) => {
+                    return enrich_invalid_assignment(state, side, e);
+                }
+            };
+            (scouts, policy.holds.iter().copied().collect::<HashSet<u32>>(), progress.clone(), Vec::new())
+        } else {
+            let upkeep = match upkeep_installed_policy(state, policy, progress, side) {
+                Ok(v) => v,
+                Err(e) => {
+                    return enrich_invalid_assignment(state, side, e);
+                }
+            };
+            (
+                upkeep.effective_scouts,
+                upkeep.effective_holds,
+                upkeep.effective_progress,
+                upkeep.maintenance_effects,
+            )
+        };
     // Computed once and reused by both the current-contact gate below (which
     // must not offer an independent routine move when capacity is already
     // insufficient) and the post-contact capacity exit. Threat/promotion
     // checks must still take priority over the capacity exception itself, so
     // this does not return early.
     let (required_assignments, scout_capacity) =
-        village_scout_capacity(state, policy, progress, side);
+        village_scout_capacity(state, policy, &effective_progress, side);
     let capacity_sufficient = required_assignments <= scout_capacity;
+    let total_scouts_committed: usize = policy.scouts.len()
+        + progress
+            .recruited
+            .iter()
+            .filter(|r| {
+                policy
+                    .recruits
+                    .get(r.queue_index)
+                    .is_some_and(|e| e.role == "scout")
+            })
+            .map(|r| r.done as usize)
+            .sum::<usize>();
+    let has_casualty_deficit = !maintenance_effects.is_empty()
+        || effective_scouts.len() < total_scouts_committed;
     let pending: Vec<u32> = state
         .units
         .iter()
@@ -1563,7 +1798,7 @@ pub fn routine_next(
         Ok(Some(facts)) => {
             if capacity_sufficient {
                 match crate::routine_independent::find_independent_move(
-                    state, side, policy, progress, &scouts, &facts,
+                    state, side, policy, &effective_progress, &effective_scouts, &facts,
                 ) {
                     Ok(Some(indep)) => {
                         let (col, row) = indep.candidate.destination.to_offset();
@@ -1587,7 +1822,7 @@ pub fn routine_next(
                         });
                         return RoutineOutcome::Action {
                             action: json!({"action":"Move","unit_id":indep.candidate.unit_id,"col":col,"row":row}),
-                            progress_update: progress_update(indep.candidate.progress_effects),
+                            progress_update: combine_effects(&maintenance_effects, indep.candidate.progress_effects),
                             reason: indep.candidate.reason,
                             independent_move: Some(independent_move_meta),
                         };
@@ -1601,7 +1836,7 @@ pub fn routine_next(
                     }
                 }
                 match crate::routine_independent::find_independent_recruit(
-                    state, side, policy, progress, recruit_ids, units, &facts,
+                    state, side, policy, &effective_progress, recruit_ids, units, &facts,
                 ) {
                     Ok(Some(indep)) => {
                         let (col, row) = indep.placement.to_offset();
@@ -1624,7 +1859,7 @@ pub fn routine_next(
                         });
                         return RoutineOutcome::Action {
                             action: json!({"action":"Recruit","def_id":indep.def_id,"col":col,"row":row}),
-                            progress_update: progress_update(vec![json!({"kind":"recruited","queue_index":indep.candidate_index})]),
+                            progress_update: combine_effects(&maintenance_effects, vec![json!({"kind":"recruited","queue_index":indep.candidate_index})]),
                             reason: "recruit",
                             independent_move: Some(independent_move_meta),
                         };
@@ -1652,7 +1887,7 @@ pub fn routine_next(
             };
         }
     }
-    if !capacity_sufficient {
+    if (progress.installation_id.is_none() || !has_casualty_deficit) && !capacity_sufficient {
         return RoutineOutcome::Exception {
             reason: "no_executable_orders",
             evidence: json!({
@@ -1663,13 +1898,13 @@ pub fn routine_next(
             }),
         };
     }
-    if progress.policy_complete {
+    if effective_progress.policy_complete {
         return RoutineOutcome::Exception {
             reason: "objectives_complete",
             evidence: json!({"policy_complete":true}),
         };
     }
-    match scout_goal(state, policy, progress, side, &scouts) {
+    match scout_goal(state, policy, &effective_progress, side, &effective_scouts) {
         Err(e) => {
             return enrich_invalid_assignment(state, side, e);
         }
@@ -1679,7 +1914,7 @@ pub fn routine_next(
                 if state.units.get(&id).is_some_and(|u| u.moved) {
                     return RoutineOutcome::Finish {
                         reason: "no_remaining_routine_steps",
-                        progress_update: progress_update(Vec::new()),
+                        progress_update: combine_effects(&maintenance_effects, Vec::new()),
                     };
                 };
                 return RoutineOutcome::Exception {
@@ -1694,7 +1929,7 @@ pub fn routine_next(
                     effects.extend(finish_effects(state, policy, side));
                     return RoutineOutcome::Finish {
                         reason: "no_remaining_routine_steps",
-                        progress_update: progress_update(effects),
+                        progress_update: combine_effects(&maintenance_effects, effects),
                     };
                 }
                 let action = Action::Move {
@@ -1706,7 +1941,7 @@ pub fn routine_next(
                         effects.shrink_to_fit();
                         return RoutineOutcome::Action {
                             action: json!({"action":"Move","unit_id":id,"col":destination.to_offset().0,"row":destination.to_offset().1}),
-                            progress_update: progress_update(effects),
+                            progress_update: combine_effects(&maintenance_effects, effects),
                             reason: "village",
                             independent_move: None,
                         };
@@ -1752,13 +1987,13 @@ pub fn routine_next(
         }
         Ok(None) => {}
     }
-    if let Some(village) = unreachable_unassigned_village(state, policy, progress, side, &scouts) {
+    if let Some(village) = unreachable_unassigned_village(state, policy, &effective_progress, side, &effective_scouts) {
         return RoutineOutcome::Exception {
             reason: "route_unavailable",
             evidence: json!({"target":coord(village),"cause":"unreachable_or_no_legal_endpoint"}),
         };
     }
-    if let Some((index, entry)) = next_recruit(policy, progress) {
+    if let Some((index, entry)) = next_recruit(policy, &effective_progress) {
         let Some(def) = units.get(&entry.def_id) else {
             return RoutineOutcome::Exception {
                 reason: "recruitment_blocked",
@@ -1789,7 +2024,7 @@ pub fn routine_next(
             if income > 0 || occupied_village {
                 return RoutineOutcome::Finish {
                     reason: "no_remaining_routine_steps",
-                    progress_update: progress_update(Vec::new()),
+                    progress_update: combine_effects(&maintenance_effects, Vec::new()),
                 };
             }
             return RoutineOutcome::Exception {
@@ -1806,7 +2041,7 @@ pub fn routine_next(
             // A full keep may be relieved only by ordinary army travel. This
             // is deliberately below recruitment in the priority order and
             // never vacates a scout, hold, or recruiter implicitly.
-            let eligible = castle_travel_ids(state, side, &scouts, policy);
+            let eligible = castle_travel_ids(state, side, &effective_scouts, policy);
             let mut checked: Vec<u32> = Vec::new();
             let mut unit_causes: Vec<(u32, &'static str)> = Vec::new();
             if let Some(rally) = policy.rally {
@@ -1836,7 +2071,7 @@ pub fn routine_next(
                             Ok(evidence) if evidence.safe => {
                                 return RoutineOutcome::Action {
                                     action: json!({"action":"Move","unit_id":id,"col":destination.to_offset().0,"row":destination.to_offset().1}),
-                                    progress_update: progress_update(Vec::new()),
+                                    progress_update: combine_effects(&maintenance_effects, Vec::new()),
                                     reason: "castle_capacity",
                                     independent_move: None,
                                 }
@@ -1883,10 +2118,10 @@ pub fn routine_next(
                         ),
                     };
                 }
-                if moved_castle_travel_exists(state, side, &scouts, policy) {
+                if moved_castle_travel_exists(state, side, &effective_scouts, policy) {
                     return RoutineOutcome::Finish {
                         reason: "no_remaining_routine_steps",
-                        progress_update: progress_update(Vec::new()),
+                        progress_update: combine_effects(&maintenance_effects, Vec::new()),
                     };
                 }
             }
@@ -1997,7 +2232,7 @@ pub fn routine_next(
         }
         return RoutineOutcome::Action {
             action: json!({"action":"Recruit","def_id":entry.def_id,"col":placement.to_offset().0,"row":placement.to_offset().1}),
-            progress_update: progress_update(vec![json!({"kind":"recruited","queue_index":index})]),
+            progress_update: combine_effects(&maintenance_effects, vec![json!({"kind":"recruited","queue_index":index})]),
             reason: "recruit",
             independent_move: None,
         };
@@ -2010,8 +2245,8 @@ pub fn routine_next(
                 (u.faction == side
                     && !u.moved
                     && !recruiter(u)
-                    && !scouts.contains(id)
-                    && !policy.holds.contains(id))
+                    && !effective_scouts.contains(id)
+                    && !effective_holds.contains(id))
                 .then_some(*id)
             })
             .collect();
@@ -2049,7 +2284,7 @@ pub fn routine_next(
                     Ok(evidence) if evidence.safe => {
                         return RoutineOutcome::Action {
                             action: json!({"action":"Move","unit_id":id,"col":destination.to_offset().0,"row":destination.to_offset().1}),
-                            progress_update: progress_update(Vec::new()),
+                            progress_update: combine_effects(&maintenance_effects, Vec::new()),
                             reason: "rally",
                             independent_move: None,
                         }
@@ -2094,7 +2329,18 @@ pub fn routine_next(
             };
         }
     }
-    let queue_complete = next_recruit(policy, progress).is_none();
+    if !capacity_sufficient {
+        return RoutineOutcome::Exception {
+            reason: "no_executable_orders",
+            evidence: json!({
+                "cause": village_scout_capacity_cause(&effective_progress),
+                "required_assignments": required_assignments,
+                "scout_capacity": scout_capacity,
+                "villages": policy.villages.iter().map(|v| coord(*v)).collect::<Vec<_>>(),
+            }),
+        };
+    }
+    let queue_complete = next_recruit(policy, &effective_progress).is_none();
     let finishing_villages = finish_effects(state, policy, side);
     let finishing_village_coords: HashSet<Hex> = finishing_villages
         .iter()
@@ -2113,8 +2359,8 @@ pub fn routine_next(
         state.units.iter().all(|(id, unit)| {
             if unit.faction != side
                 || recruiter(unit)
-                || scouts.contains(id)
-                || policy.holds.contains(id)
+                || effective_scouts.contains(id)
+                || effective_holds.contains(id)
             {
                 return true;
             }
@@ -2129,12 +2375,12 @@ pub fn routine_next(
         effects.push(json!({"kind":"policy_completed"}));
         return RoutineOutcome::Finish {
             reason: "objectives_complete",
-            progress_update: progress_update(effects),
+            progress_update: combine_effects(&maintenance_effects, effects),
         };
     }
     RoutineOutcome::Finish {
         reason: "no_remaining_routine_steps",
-        progress_update: progress_update(finish_effects(state, policy, side)),
+        progress_update: combine_effects(&maintenance_effects, finish_effects(state, policy, side)),
     }
 }
 
@@ -2400,6 +2646,164 @@ mod tests {
             RoutineOutcome::Exception { reason: "invalid_assignment", evidence }
                 if evidence["cause"] == "dead_or_foreign_unit"
         ));
+    }
+
+    #[test]
+    fn installed_policy_retires_dead_scout_and_commits_queued_recruit_with_maintenance() {
+        let registry = units();
+        let (mut s, village) = village_state();
+        s.gold[0] = 100;
+        let p = RoutinePolicy {
+            reserve_gold: 0,
+            recruits: vec![RecruitEntry {
+                def_id: "Skeleton".into(),
+                count: 1,
+                role: "army".into(),
+            }],
+            scouts: vec![2],
+            villages: vec![village],
+            rally: None,
+            holds: Vec::new(),
+        };
+        let progress = RoutineProgress {
+            installation_id: Some("pol-1".into()),
+            scout_ids: vec![2],
+            scout_assignments: vec![ScoutAssignment {
+                unit_id: 2,
+                village,
+            }],
+            ..Default::default()
+        };
+        let outcome = routine_next(&s, 0, &p, &progress, &["Skeleton".into()], &registry);
+        match outcome {
+            RoutineOutcome::Action {
+                action,
+                progress_update,
+                reason,
+                ..
+            } => {
+                assert_eq!(reason, "recruit");
+                assert_eq!(action["action"], "Recruit");
+                assert_eq!(action["def_id"], "Skeleton");
+                let effects = progress_update["effects"].as_array().expect("effects array");
+                assert!(
+                    effects.iter().any(|e| e["kind"] == "scout_retired" && e["unit_id"] == 2),
+                    "expected scout_retired effect in {effects:?}"
+                );
+                assert!(
+                    effects.iter().any(|e| e["kind"] == "scout_unassigned" && e["unit_id"] == 2),
+                    "expected scout_unassigned effect in {effects:?}"
+                );
+                assert!(
+                    effects.iter().any(|e| e["kind"] == "recruited" && e["queue_index"] == 0),
+                    "expected recruited effect in {effects:?}"
+                );
+            }
+            other => panic!("expected Action for recruit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn installed_policy_rejects_live_foreign_unit() {
+        let registry = units();
+        let (mut s, village) = village_state();
+        let enemy_scout = Unit::from_def(5, registry.get("Ghost").unwrap(), 1);
+        s.place_unit(enemy_scout, Hex::from_offset(3, 4));
+        let p = RoutinePolicy {
+            reserve_gold: 0,
+            recruits: Vec::new(),
+            scouts: vec![5],
+            villages: vec![village],
+            rally: None,
+            holds: Vec::new(),
+        };
+        let progress = RoutineProgress {
+            installation_id: Some("pol-foreign".into()),
+            scout_ids: vec![5],
+            scout_assignments: Vec::new(),
+            ..Default::default()
+        };
+        let outcome = routine_next(&s, 0, &p, &progress, &["Skeleton".into()], &registry);
+        assert!(matches!(
+            outcome,
+            RoutineOutcome::Exception { reason: "invalid_assignment", evidence }
+                if evidence["cause"] == "dead_or_foreign_unit" && evidence["unit_id"] == 5
+        ));
+    }
+
+    #[test]
+    fn installed_policy_scout_casualty_defers_village_and_recruits_then_exhausts_capacity() {
+        let registry = units();
+        let (mut s, village) = village_state();
+        s.gold[0] = 50;
+        let village2 = Hex::from_offset(2, 6);
+        s.board.set_terrain(village2, "village");
+        let p = RoutinePolicy {
+            reserve_gold: 0,
+            recruits: vec![
+                RecruitEntry {
+                    def_id: "Vampire Bat".into(),
+                    count: 1,
+                    role: "scout".into(),
+                },
+                RecruitEntry {
+                    def_id: "Skeleton".into(),
+                    count: 1,
+                    role: "army".into(),
+                },
+            ],
+            scouts: Vec::new(),
+            villages: vec![village, village2],
+            rally: None,
+            holds: Vec::new(),
+        };
+        // Scout recruit is done (id 2), but unit 2 died. Army recruit is pending.
+        let progress1 = RoutineProgress {
+            installation_id: Some("pol-casualty".into()),
+            recruited: vec![RecruitProgress {
+                queue_index: 0,
+                done: 1,
+            }],
+            scout_ids: vec![2],
+            scout_assignments: vec![ScoutAssignment {
+                unit_id: 2,
+                village,
+            }],
+            ..Default::default()
+        };
+        let outcome1 = routine_next(&s, 0, &p, &progress1, &["Skeleton".into(), "Vampire Bat".into()], &registry);
+        match outcome1 {
+            RoutineOutcome::Action { reason, action, progress_update, .. } => {
+                assert_eq!(reason, "recruit");
+                assert_eq!(action["def_id"], "Skeleton");
+                let effects = progress_update["effects"].as_array().expect("effects array");
+                assert!(effects.iter().any(|e| e["kind"] == "scout_retired" && e["unit_id"] == 2));
+                assert!(effects.iter().any(|e| e["kind"] == "scout_unassigned" && e["unit_id"] == 2));
+            }
+            other => panic!("expected recruit action despite scout capacity deficit, got {other:?}"),
+        }
+
+        // Now progress has both recruits done. Scout capacity is 0, required is 2.
+        let progress2 = RoutineProgress {
+            installation_id: Some("pol-casualty".into()),
+            recruited: vec![
+                RecruitProgress { queue_index: 0, done: 1 },
+                RecruitProgress { queue_index: 1, done: 1 },
+            ],
+            scout_ids: Vec::new(),
+            scout_assignments: Vec::new(),
+            ..Default::default()
+        };
+        let outcome2 = routine_next(&s, 0, &p, &progress2, &["Skeleton".into(), "Vampire Bat".into()], &registry);
+        match outcome2 {
+            RoutineOutcome::Exception { reason, evidence } => {
+                assert_eq!(reason, "no_executable_orders");
+                assert_eq!(evidence["cause"], "scout_capacity_exhausted");
+                assert_eq!(evidence["required_assignments"], 2);
+                assert_eq!(evidence["scout_capacity"], 0);
+            }
+            other => panic!("expected scout_capacity_exhausted after all work done, got {other:?}"),
+        }
     }
 
     #[test]

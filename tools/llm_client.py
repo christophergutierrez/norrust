@@ -6746,6 +6746,16 @@ def run(args: argparse.Namespace) -> int:
                 if not last_forwarded_finish_kind:
                     return
                 committed.append({"kind": "policy_completed"})
+            elif kind == "scout_retired":
+                unit_id = effect.get("unit_id")
+                if not isinstance(unit_id, int) or isinstance(unit_id, bool) or unit_id <= 0:
+                    raise ValueError("scout_retired proposal requires a positive integer unit_id")
+                committed.append({"kind": "scout_retired", "unit_id": unit_id})
+            elif kind == "scout_unassigned":
+                if not all(key in effect for key in ("unit_id", "col", "row")):
+                    raise ValueError("scout_unassigned proposal requires unit_id, col and row")
+                committed.append({"kind": "scout_unassigned", "unit_id": effect["unit_id"],
+                                  "col": effect["col"], "row": effect["row"]})
             else:
                 raise ValueError(f"unknown routine progress proposal effect: {kind!r}")
         committed_update = {"effects": committed}
@@ -8105,6 +8115,17 @@ def run(args: argparse.Namespace) -> int:
                     if not pending_record.get("routine_finish"):
                         return None
                     committed_effects.append({"kind": "policy_completed"})
+                elif kind == "scout_retired":
+                    unit_id = effect.get("unit_id")
+                    if not isinstance(unit_id, int) or isinstance(unit_id, bool) or unit_id <= 0:
+                        return None
+                    committed_effects.append({"kind": "scout_retired", "unit_id": unit_id})
+                elif kind == "scout_unassigned":
+                    unit_id, col, row = effect.get("unit_id"), effect.get("col"), effect.get("row")
+                    if any(isinstance(v, bool) or not isinstance(v, int) for v in (unit_id, col, row)):
+                        return None
+                    committed_effects.append({"kind": "scout_unassigned", "unit_id": unit_id,
+                                              "col": col, "row": row})
                 else:
                     return None
             update = {"effects": committed_effects}

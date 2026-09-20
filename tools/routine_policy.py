@@ -237,14 +237,17 @@ def village_scout_capacity(
         if isinstance(v.get("col"), int) and not isinstance(v.get("col"), bool)
         and isinstance(v.get("row"), int) and not isinstance(v.get("row"), bool)
     }
+    live_ids = set(live_friendly_ids)
     assigned_village_set = {
         (a["col"], a["row"]) for a in scout_assignments
         if isinstance(a.get("col"), int) and not isinstance(a.get("col"), bool)
         and isinstance(a.get("row"), int) and not isinstance(a.get("row"), bool)
+        and (not live_ids or a.get("unit_id") in live_ids)
     }
     assigned_scout_ids = {
         a["unit_id"] for a in scout_assignments
         if isinstance(a.get("unit_id"), int) and not isinstance(a.get("unit_id"), bool)
+        and (not live_ids or a.get("unit_id") in live_ids)
     }
 
     ownership_known = owned_village_coords is not None
@@ -260,7 +263,6 @@ def village_scout_capacity(
             continue
         required_assignments += 1
 
-    live_ids = set(live_friendly_ids)
     recruiter_id_set = set(recruiter_ids)
     held_id_set = {u for u in (policy.get("holds") or [])
                    if isinstance(u, int) and not isinstance(u, bool)}
@@ -735,6 +737,19 @@ class RoutineProgress:
                 if set(effect) != {"kind"}:
                     raise ValueError("policy_completed effect has unknown fields")
                 normalized.append({"kind": kind})
+            elif kind == "scout_retired":
+                if set(effect) != {"kind", "unit_id"}:
+                    raise ValueError("scout_retired effect requires unit_id")
+                if isinstance(effect["unit_id"], bool) or not isinstance(effect["unit_id"], int) or effect["unit_id"] <= 0:
+                    raise ValueError("scout_retired requires a positive integer unit_id")
+                normalized.append({"kind": kind, "unit_id": effect["unit_id"]})
+            elif kind == "scout_unassigned":
+                if set(effect) != {"kind", "unit_id", "col", "row"}:
+                    raise ValueError("scout_unassigned effect requires unit_id, col and row")
+                if any(isinstance(effect[key], bool) or not isinstance(effect[key], int)
+                       for key in ("unit_id", "col", "row")):
+                    raise ValueError("scout_unassigned coordinates and unit_id must be integers")
+                normalized.append({key: effect[key] for key in ("kind", "unit_id", "col", "row")})
             else:
                 raise ValueError(f"unknown committed progress effect: {kind!r}")
         return normalized
@@ -790,6 +805,9 @@ class RoutineProgress:
                     if entry["role"] == "scout":
                         known_scouts.add(unit_id)
         for effect in effects:
+            if effect["kind"] == "scout_retired":
+                known_scouts.discard(effect["unit_id"])
+        for effect in effects:
             if effect["kind"] == "scout_assigned" and effect["unit_id"] not in known_scouts:
                 raise ValueError("scout_assigned effect references an unknown scout")
             elif effect["kind"] == "scout_assigned" and self.policy is not None:
@@ -828,6 +846,17 @@ class RoutineProgress:
                     self.completed_villages.append({"col": effect["col"], "row": effect["row"]})
             elif kind == "policy_completed":
                 self.policy_complete = True
+            elif kind == "scout_retired":
+                unit_id = effect["unit_id"]
+                if unit_id in self.scout_ids:
+                    self.scout_ids.remove(unit_id)
+                self.scout_assignments = [a for a in self.scout_assignments
+                                          if a.get("unit_id") != unit_id]
+            elif kind == "scout_unassigned":
+                unit_id = effect["unit_id"]
+                col, row = effect["col"], effect["row"]
+                self.scout_assignments = [a for a in self.scout_assignments
+                                          if not (a.get("unit_id") == unit_id and a.get("col") == col and a.get("row") == row)]
         self.last_proven_revision = state_revision
         self.applied_steps[batch_id] = {"digest": digest, "state_revision": state_revision}
         return True
