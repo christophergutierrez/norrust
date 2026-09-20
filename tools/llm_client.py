@@ -33,6 +33,8 @@ try:
     from .response_parsing import (parse_action_response, ResponseParseError,
                                     recover_bare_tool_prefix, RECOGNIZED_BARE_TOOLS)
     from .model_identity import classify_model_identity
+    from .analysis_capture import (AnalysisWriter, analysis_dir_for_log, build_manifest,
+                                   make_reference)
     from .game_token_budget import measured_game_budget
     from .model_usage import TOKEN_FIELDS
     from .action_choices import (ChoiceRegistry, extract_available_choices,
@@ -91,6 +93,8 @@ except ImportError:  # pragma: no cover - direct script compatibility
     from tools.response_parsing import (parse_action_response, ResponseParseError,
                                         recover_bare_tool_prefix, RECOGNIZED_BARE_TOOLS)
     from tools.model_identity import classify_model_identity
+    from tools.analysis_capture import (AnalysisWriter, analysis_dir_for_log, build_manifest,
+                                        make_reference)
     from tools.game_token_budget import measured_game_budget
     from tools.model_usage import TOKEN_FIELDS
     from tools.action_choices import (ChoiceRegistry, extract_available_choices,
@@ -136,6 +140,102 @@ ACTIONS = {"Move", "Attack", "Recruit", "RecruitBatch", "Engage", "EndTurn", "Ad
            "DoneWithImportantMoves", "FinishWithGreedy", "MoveGroupToward"}
 MAX_STRATEGY_RECOVERED_SUFFIX_BYTES = 2048
 CHECKPOINT_REF_DIGEST_BYTES = 64
+
+
+# Analysis-capture tap ---------------------------------------------------------
+#
+# These two helpers are the whole of the optional analysis hook.  They are kept
+# at module scope so they are unit-testable without standing up a full game.
+
+# Game-log record types mapped onto the frozen stack-1 analysis kinds.  A type
+# absent from this table is simply not mirrored; capture never invents a fact
+# the client did not already record.
+_ANALYSIS_KIND_BY_LOG_TYPE = {
+    "side_turn_started": ("turn_boundary", "started"),
+    "turn_boundary": ("turn_boundary", "finished"),
+    "batch_committed": ("action_commit", None),
+    "terminal": ("game_terminal", None),
+    "model_request": ("model_request", None),
+}
+
+# Fields copied verbatim from the game-log record into the analysis body when
+# present.  The contract makes prompt_sha256/prompt_bytes binding on
+# model_request bodies so a request-identity conflict is detectable without
+# reopening the prompt artifact.
+_ANALYSIS_BODY_FIELDS = (
+    "side", "round", "start_revision", "accepted", "forced_finish",
+    "authored_finish_kind", "executed_finish_kind", "winner",
+    "reason", "code", "status", "purpose",
+    "prompt_sha256", "prompt_bytes",
+)
+
+
+def _open_analysis_capture(args: argparse.Namespace, log_path: str | os.PathLike[str],
+                           conversation_id: str,
+                           metadata: dict[str, Any]) -> Optional[AnalysisWriter]:
+    """Create the optional analysis sidecar, or return None if it cannot start.
+
+    A failure here must leave an ordinary game entirely unaffected, so every
+    error is swallowed and reported by the ABSENCE of the sidecar rather than
+    by ending the run.  The launch configuration is filtered through the
+    contract allowlist inside build_manifest; no environment is serialized.
+    """
+    try:
+        log = Path(log_path)
+        provenance = source_metadata()
+        manifest = build_manifest(
+            conversation_id=conversation_id,
+            game_log=os.path.relpath(log, analysis_dir_for_log(log)),
+            source_commit=provenance.get("source_commit"),
+            dirty_patch_hash=provenance.get("dirty_patch_hash"),
+            driver_hash=(resolved_driver_hash(args.driver)
+                         if getattr(args, "driver", None) else None),
+            data_hash=None,
+            scenario_hash=None,
+            canonical_prompt_hash=None,
+            fixed_prefix_sha256=None,
+            game_seed=getattr(args, "seed", None),
+            controlled_side=getattr(args, "llm_side", None),
+            opponent_identity={"kind": metadata.get("opponent"),
+                               "planner": metadata.get("opponent_planner"),
+                               "recruit_policy": metadata.get("opponent_recruit_policy")},
+            limits={"max_turns": getattr(args, "max_turns", None),
+                    "max_model_calls_per_turn": getattr(args, "max_model_calls_per_turn", None),
+                    "max_tool_calls_per_turn": getattr(args, "max_tool_calls_per_turn", None),
+                    "model_timeout": getattr(args, "model_timeout", None)},
+            launch=args,
+        )
+        return AnalysisWriter.create(log, manifest)
+    except Exception:
+        return None
+
+
+def _record_analysis_event(writer: AnalysisWriter, obj: dict[str, Any],
+                           metadata: dict[str, Any]) -> None:
+    """Mirror one game-log record into the analysis sidecar, if it maps."""
+    mapped = _ANALYSIS_KIND_BY_LOG_TYPE.get(obj.get("type"))
+    if mapped is None:
+        return
+    kind, phase = mapped
+    body: dict[str, Any] = {"log_type": obj.get("type")}
+    if phase is not None:
+        body["phase"] = phase
+    # A model request opens a new decision.  Boundaries, commits and terminals
+    # are evidence ABOUT the decision already in flight, so they reuse its id.
+    decision_id = (writer.next_decision_id() if kind == "model_request"
+                   else writer.current_decision_id)
+    for key in _ANALYSIS_BODY_FIELDS:
+        if key in obj:
+            body[key] = obj[key]
+    writer.record(
+        kind,
+        decision_id=decision_id,
+        side_turn_id=obj.get("side_turn_id") or metadata.get("current_side_turn_id"),
+        request_id=obj.get("request_id"),
+        batch_id=obj.get("batch_id"),
+        state_revision=obj.get("state_revision"),
+        body=body,
+    )
 
 
 def checkpoint_dir_for_log(log_path: str | os.PathLike[str]) -> Path:
@@ -5972,10 +6072,36 @@ def run(args: argparse.Namespace) -> int:
                         if r.get("type") in {"tool_result", "batch_preview", "tool_followup"}
                     )
     log = open(log_path, "a", buffering=1) if log_path else None
+    # Optional passive analysis capture.  The writer taps the durable stream
+    # below rather than instrumenting individual call sites: this file has 31
+    # separate "terminal" writes and 99 durable() calls, so a hand-enumerated
+    # hook would silently miss a boundary the first time a 32nd site appears.
+    # Tapping the writer also makes passivity structural -- the tap only reads
+    # dicts the client has already built and already decided to write, so it
+    # cannot influence the prompt, candidate selection, queries, budgets, RNG
+    # or actions.  Capture stays off unless explicitly requested.
+    analysis_writer: Optional[AnalysisWriter] = None
+    if log_path and getattr(args, "analysis_capture", False):
+        analysis_writer = _open_analysis_capture(args, log_path, conversation_id, metadata)
+
+    def _tap_analysis(obj: dict[str, Any]) -> None:
+        """Mirror an already-written game-log record into the analysis sidecar.
+
+        Never raises: analysis capture is optional infrastructure and must not
+        be able to end a game that is otherwise progressing normally.
+        """
+        if analysis_writer is None or analysis_writer.stopped:
+            return
+        try:
+            _record_analysis_event(analysis_writer, obj, metadata)
+        except Exception:  # pragma: no cover - defence in depth around optional capture
+            pass
+
     def record(obj: dict[str, Any]) -> None:
         if log:
             log.write(json.dumps(obj, sort_keys=True) + "\n")
             log.flush()
+        _tap_analysis(obj)
     def durable(obj: dict[str, Any]) -> None:
         record(obj)
         if log:
@@ -9763,6 +9889,14 @@ def run(args: argparse.Namespace) -> int:
     except StopRequested as stop:
         return emit_observer_interrupted(stop)
     finally:
+        # Close the analysis sidecar before the log: the final capture_status
+        # marker is what distinguishes "capture finished" from "the process
+        # died mid-game", and a report is required to tell those apart.
+        if analysis_writer is not None:
+            try:
+                analysis_writer.close()
+            except Exception:  # pragma: no cover - optional capture never fails a run
+                pass
         if log:
             log.close()
         if proc.poll() is None:
@@ -9835,6 +9969,9 @@ def main() -> int:
                    help="maximum read-only model tool requests per turn (default: 4 in batch, 64 in focused)")
     p.add_argument("--decision-metrics", action="store_true",
                    help="preview final batches for recruiter-danger and recruitment telemetry")
+    p.add_argument("--analysis-capture", action="store_true",
+                   help="append an optional passive analysis sidecar beside the audit log; "
+                        "adds no provider call and no driver query, and changes no decision")
     p.add_argument("--timeout-finish", action="store_true",
                    help="after a proven model timeout, finish eligible units with greedy without recruiting")
     p.add_argument("--event-window-observations", type=int, default=1)

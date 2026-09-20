@@ -351,6 +351,76 @@ class ReportTests(unittest.TestCase):
         self.assertTrue(report["accounting_mismatch"])
         self.assertIn("terminal_side_turns_vs_generated_end_turns", report["accounting_mismatch_reasons"])
 
+    def test_winner_without_driver_side_turns_reports_partial_not_completed(self):
+        # This is the shape real archives actually have: the driver only puts
+        # an authoritative `side_turns` total on `game_end` when the game
+        # reaches max_turns. On a winner termination the final side turn
+        # never produces an end_turn transition, so `game_end` carries no
+        # `side_turns` field at all (only `turns`). The final, unfinished
+        # side turn must be reported as a terminal partial, not folded into
+        # completed_side_turns.
+        events = [
+            {"kind": "end_turn", "source": "model", "ended_faction": 0, "active_faction": 1},
+            {"kind": "end_turn", "source": "greedy", "ended_faction": 1, "active_faction": 0},
+            {"kind": "end_turn", "source": "model", "ended_faction": 0, "active_faction": 1},
+            {"kind": "end_turn", "source": "greedy", "ended_faction": 1, "active_faction": 0},
+            {"kind": "end_turn", "source": "model", "ended_faction": 0, "active_faction": 1},
+        ]
+        records = [
+            {"type": "metadata", "llm_side": 0, "finish_telemetry_available": True},
+            {"type": "driver", "line": {"type": "events", "events": events}},
+            {"type": "driver", "line": {"type": "game_end", "reason": "winner", "turns": 3, "winner": 1}},
+            {"type": "terminal", "terminal_class": "gameplay", "reason": "winner", "winner": 1},
+        ]
+        report = classify(records)
+        self.assertEqual(report["completed_engine_turns"], 5)
+        self.assertEqual(report["completed_side_turns"], 5)
+        self.assertEqual(report["terminal_partial_side_turn"], {
+            "side_turn": 6,
+            "side": 1,
+            "owner": "opponent",
+            "reason": "winner",
+        })
+
+    def test_clean_max_turns_finish_without_winner_is_unchanged(self):
+        # Mirrors the one sampled archive with no winner: the driver reports
+        # an authoritative side_turns total on game_end, and every side turn
+        # it counts actually completed. No terminal partial turn exists.
+        events = [
+            {"kind": "end_turn", "source": "model", "ended_faction": 0, "active_faction": 1},
+            {"kind": "end_turn", "source": "greedy", "ended_faction": 1, "active_faction": 0},
+        ]
+        records = [
+            {"type": "metadata", "llm_side": 0, "finish_telemetry_available": True},
+            {"type": "driver", "line": {"type": "events", "events": events}},
+            {"type": "driver", "line": {"type": "game_end", "reason": "max_turns", "turns": 1, "side_turns": 2}},
+            {"type": "terminal", "terminal_class": "gameplay", "reason": "max_turns"},
+        ]
+        report = classify(records)
+        self.assertIsNone(report["winner"])
+        self.assertEqual(report["completed_engine_turns"], 2)
+        self.assertEqual(report["completed_side_turns"], 2)
+        self.assertIsNone(report["terminal_partial_side_turn"])
+
+    def test_no_winner_and_no_driver_side_turns_reports_no_partial(self):
+        # A non-winner termination (e.g. infrastructure failure) with no
+        # authoritative driver total must not be misread as a partial
+        # winning turn -- there is no winner to attribute it to.
+        events = [
+            {"kind": "end_turn", "source": "model", "ended_faction": 0, "active_faction": 1},
+            {"kind": "end_turn", "source": "greedy", "ended_faction": 1, "active_faction": 0},
+        ]
+        records = [
+            {"type": "metadata", "llm_side": 0, "finish_telemetry_available": True},
+            {"type": "driver", "line": {"type": "events", "events": events}},
+            {"type": "terminal", "terminal_class": "infrastructure_failure", "reason": "model_error"},
+        ]
+        report = classify(records)
+        self.assertIsNone(report["winner"])
+        self.assertEqual(report["completed_engine_turns"], 2)
+        self.assertEqual(report["completed_side_turns"], 2)
+        self.assertIsNone(report["terminal_partial_side_turn"])
+
     def test_repair_discrepancy_reported(self):
         records = [
             {"type": "metadata", "repairs": 0},

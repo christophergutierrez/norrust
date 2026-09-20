@@ -1804,6 +1804,54 @@ Balance tests are explicitly excluded from this client milestone and must not be
 run.
 
 
+## Optional analysis capture
+
+`--analysis-capture` appends a passive analysis sidecar beside the audit log, in
+`<log stem>.analysis/`, alongside the existing `.ckpt/` and `.watchdog/`
+directories. It is off by default. A game recorded without it is an ordinary
+game and no analysis directory is created.
+
+```bash
+python3 -m tools.llm_client --log /absolute/run/match.ndjson \
+  --model-command 'python3 -m tools.fireworks_backend --stream' \
+  --analysis-capture
+```
+
+The sidecar holds `manifest.json` and an append-only `analysis.ndjson`. Capture
+is passive: it adds no provider call and no driver query, and it does not change
+the prompt, candidate selection, queries, budgets, game RNG, or the actions
+taken. The client writes the sidecar by mirroring records it has already written
+to the audit log, so enabling capture cannot alter how a game is played. The
+delivered player prompt and the normalized driver-query and action streams are
+identical with capture on and off.
+
+The manifest records source commit, dirty-patch hash, driver hash, game seed,
+controlled side, opponent identity, limits, and an allowlisted launch
+configuration. It never contains credentials and never serializes the process
+environment.
+
+Capture is optional infrastructure and never ends a game. If the byte cap is
+reached or a write fails, capture stops, records why, and play continues. The
+final `capture_status` record is the marker that capture completed; its absence
+after the process exits means the run did not finish, and a report says so
+rather than presenting truncated evidence as complete.
+
+Inspect a recorded sidecar without a model or a simulation:
+
+```bash
+python3 -m tools.game_analysis validate --archive /absolute/run/match.ndjson
+python3 -m tools.game_analysis report   --archive /absolute/run/match.ndjson
+python3 -m tools.game_analysis report   --archive /absolute/run/match.ndjson --json
+```
+
+`validate` re-hashes every recorded reference, checks sequence contiguity, and
+reports request-identity conflicts with both records retained. `report`
+separates started from completed turns, names any turn still open at the end,
+and reports a game that ended mid-turn as a terminal partial turn rather than as
+a completed one. Coverage is reported as one of `complete`, `capture_disabled`,
+`capture_stopped`, `unsupported_analysis`, or `empty_result`; these are distinct
+conditions and a report never collapses them into a single "no data" message.
+
 ## Automatic progress recording
 
 `tools.llm_supervisor` records progress during open provider requests without

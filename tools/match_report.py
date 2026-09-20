@@ -626,8 +626,27 @@ def classify(records: list[dict[str, Any]],
         )
     )
 
+    # The driver only emits an authoritative `side_turns` total on `game_end`
+    # when the game reached max_turns -- i.e. the final side turn actually
+    # completed and produced an end_turn transition. On a winner termination
+    # the final side turn ends the game before any end_turn transition, so
+    # the driver has nothing authoritative to report and `driver_side_turns`
+    # is empty. That side turn was started but never completed; it must be
+    # reported as a terminal partial turn, not folded into the completed
+    # count.
     terminal_partial_side_turn = None
-    if driver_side_turns and generated_end_turns and driver_side_turns[-1] == generated_end_turns + 1 and has_winner:
+    partial_side_turn_number = None
+    if has_winner and driver_side_turns and generated_end_turns and driver_side_turns[-1] == generated_end_turns + 1:
+        # Legacy/defensive path: a driver that does report an extra
+        # side_turns count alongside a winner termination.
+        partial_side_turn_number = driver_side_turns[-1]
+    elif has_winner and not driver_side_turns and generated_end_turns:
+        # The path actually taken by current archives: no authoritative
+        # driver total, so the partial turn is the one after the last
+        # completed end_turn transition.
+        partial_side_turn_number = generated_end_turns + 1
+
+    if partial_side_turn_number is not None:
         if controlled_side in (0, 1):
             if generated_model_end_turns == generated_opponent_end_turns + 1:
                 partial_side = 1 - controlled_side
@@ -643,7 +662,7 @@ def classify(records: list[dict[str, Any]],
             partial_owner = "unknown"
 
         terminal_partial_side_turn = {
-            "side_turn": driver_side_turns[-1],
+            "side_turn": partial_side_turn_number,
             "side": partial_side,
             "owner": partial_owner,
             "reason": terminal_reason or "winner",

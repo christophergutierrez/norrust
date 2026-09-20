@@ -552,6 +552,46 @@ about strength. System-instruction identity is not separately tracked;
 games ran under identical or differing instructions. Without `--json` it
 prints a compact per-game summary built from the same structure.
 
+## Optional analysis sidecars
+
+A game recorded with `--analysis-capture` (see `docs/LLM_CLIENT.md`) carries an
+`<log stem>.analysis/` sidecar. Import it with:
+
+```bash
+python3 -m tools.game_analysis import --db /absolute/catalog.sqlite \
+  --archive /absolute/run/match.ndjson
+```
+
+This hash-checks every recorded reference, then imports through the ordinary
+`tools.game_history` path. Import is idempotent: reimporting unchanged evidence
+leaves row counts and record hashes unchanged. A truncated final record yields a
+partial-import warning while retaining the records before it; corruption inside a
+complete interior record is surfaced with its byte location rather than skipped.
+
+Sidecar-only facts -- decision identities, coverage status, and turn-boundary
+phase accounting -- are not given catalog tables. The analysis records reuse the
+same `request_id` and `side_turn_id` values the audit log already produces, so
+the catalog-relevant facts arrive through the existing importer, and the rest is
+reported from the sidecar by `python3 -m tools.game_analysis report`. The catalog
+schema is unchanged by analysis capture.
+
+Search-only evaluations never receive a fabricated `model_requests` row.
+`decision_evaluations.request_id` is `NOT NULL` and references a real model
+request, so an evaluation with no model request belongs in the artifact named by
+`evaluation_runs.artifact_path`.
+
+### Turn counting
+
+`side_turns` is built from `turn_boundary` records and covers the controlled side
+only. Archives recorded before that record type existed import with no
+`side_turns` rows; a report over such an archive shows a coverage gap rather than
+a turn count of zero.
+
+A side turn that never produced an end-turn transition is not a completed turn.
+When a game ends mid-turn -- a win decided during an action, before the turn
+closes -- `tools.match_report` reports it as a terminal partial side turn and
+excludes it from `completed_side_turns`.
+
 ## Runtime health and maintenance
 
 An engine winner does not by itself make a model evaluation valid. Inspect the
