@@ -169,13 +169,18 @@ def extract_candidate_consequences(
     # only when the engine supplied a correctly shaped value; an authoritative
     # empty list is therefore distinct from an absent list.
     assumption = cand.get("assumption")
+    if assumption is None and "assumptions" in cand:
+        assumption = cand.get("assumptions")
     missing_fields: list[str] = []
     field_coverage: dict[str, str] = {}
     if isinstance(assumption, str) and assumption:
         assumption_value = assumption
+        field_coverage["assumption"] = "known"
+        field_coverage["assumptions"] = "known"
     else:
         assumption_value = "unknown"
         _field_status(field_coverage, "assumption", "unknown", missing_fields)
+        field_coverage["assumptions"] = "unknown"
 
     if not isinstance(phase, str):
         _field_status(field_coverage, "forecast_phase", "unknown", missing_fields)
@@ -332,6 +337,7 @@ def extract_candidate_consequences(
         "coverage": coverage,
         "forecast_phase": phase,
         "assumption": assumption_value,
+        "assumptions": assumption_value,
         "gold_change": gold_change,
         "attacks": attacks,
         "recruiter_exposure": recruiter_exposure,
@@ -347,6 +353,7 @@ def _unavailable_consequences(reason: str = "unavailable") -> dict[str, Any]:
         "reason": reason,
         "forecast_phase": "unknown",
         "assumption": "unknown",
+        "assumptions": "unknown",
         "gold_change": "unknown",
         "attacks": [],
         "recruiter_exposure": None,
@@ -355,6 +362,7 @@ def _unavailable_consequences(reason: str = "unavailable") -> dict[str, Any]:
         "field_coverage": {
             "forecast_phase": "unknown",
             "assumption": "unknown",
+            "assumptions": "unknown",
             "gold_change": "unknown",
             "attacks": "unknown",
             "recruiter_exposure": "unknown",

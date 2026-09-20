@@ -338,6 +338,52 @@ class StrategyConsequencesTests(unittest.TestCase):
         rendered = format_consequences_comparison(selections, "dec-42", 5)
         self.assertEqual(rendered, "")
 
+    def test_partial_preview_pure_relocation_consequences_known(self):
+        body = self._sample_preview_body()
+        body["phase"] = "partial"
+        cand = body["candidates"][0]
+        cand["forecasts"] = []
+        cand["assumption"] = "none"
+        cand["summary"]["gold_after"] = cand["summary"]["gold_before"]
+        cons = extract_candidate_consequences(body, 0, expected_revision=5)
+        self.assertEqual(cons["coverage"], "complete")
+        self.assertEqual(cons["forecast_phase"], "partial")
+        self.assertEqual(cons["assumption"], "none")
+        self.assertEqual(cons["assumptions"], "none")
+        self.assertEqual(cons["gold_change"], 0)
+        self.assertEqual(cons["attacks"], [])
+        self.assertEqual(cons["field_coverage"]["recruiter_exposure"], "known")
+        self.assertEqual(cons["field_coverage"]["friendly_exposure"], "known")
+        self.assertIsNotNone(cons["recruiter_exposure"])
+        self.assertEqual(cons["recruiter_exposure"]["recruiter_id"], 1)
+
+    def test_partial_preview_relocation_plus_attacks_consequences_known(self):
+        body = self._sample_preview_body()
+        body["phase"] = "partial"
+        cons = extract_candidate_consequences(body, 0, expected_revision=5)
+        self.assertEqual(cons["coverage"], "complete")
+        self.assertEqual(cons["forecast_phase"], "partial")
+        self.assertEqual(cons["assumption"], "all forecast combatants survive in place")
+        self.assertEqual(cons["assumptions"], "all forecast combatants survive in place")
+        self.assertEqual(len(cons["attacks"]), 1)
+        self.assertEqual(cons["field_coverage"]["recruiter_exposure"], "known")
+        self.assertEqual(cons["field_coverage"]["friendly_exposure"], "known")
+
+    def test_invalid_candidate_partial_preview_never_displays_known_safety(self):
+        body = self._sample_preview_body()
+        body["phase"] = "partial"
+        cand = body["candidates"][0]
+        cand["valid"] = False
+        cand["recruiter_threats"] = None
+        cand["exposure"] = None
+        cand["preview_error"] = {"code": "destination_occupied", "message": "destination occupied"}
+        cons = extract_candidate_consequences(body, 0, expected_revision=5)
+        self.assertEqual(cons["coverage"], "unavailable")
+        self.assertIsNone(cons["recruiter_exposure"])
+        self.assertEqual(cons["friendly_exposure"], [])
+        self.assertEqual(cons["field_coverage"]["recruiter_exposure"], "unknown")
+        self.assertEqual(cons["field_coverage"]["friendly_exposure"], "unknown")
+
 
 if __name__ == "__main__":
     unittest.main()

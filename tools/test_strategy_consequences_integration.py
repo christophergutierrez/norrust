@@ -144,12 +144,16 @@ class StrategyConsequencesIntegrationTests(unittest.TestCase):
             # Check that exactly first two selections are enriched
             self.assertIn("consequences", enriched[0])
             self.assertIn("consequences", enriched[1])
-            # This quiet contact fixture has no recruiter/friendly threat
-            # payload in the forecast envelope.  The absence remains partial
-            # and renders as unknown rather than claiming no exposure.
-            self.assertEqual(enriched[0]["consequences"]["coverage"], "partial")
-            self.assertEqual(enriched[1]["consequences"]["coverage"], "partial")
-            self.assertEqual(enriched[0]["consequences"]["field_coverage"]["recruiter_exposure"], "unknown")
+            # Partial previews on this valid position produce known recruiter and
+            # friendly exposure, with no combat assumptions for pure moves.
+            self.assertEqual(enriched[0]["consequences"]["coverage"], "complete")
+            self.assertEqual(enriched[1]["consequences"]["coverage"], "complete")
+            self.assertEqual(enriched[0]["consequences"]["field_coverage"]["recruiter_exposure"], "known")
+            self.assertEqual(enriched[0]["consequences"]["field_coverage"]["friendly_exposure"], "known")
+            self.assertEqual(enriched[1]["consequences"]["field_coverage"]["recruiter_exposure"], "known")
+            self.assertEqual(enriched[1]["consequences"]["field_coverage"]["friendly_exposure"], "known")
+            self.assertEqual(enriched[0]["consequences"]["assumption"], "none")
+            self.assertEqual(enriched[1]["consequences"]["assumption"], "none")
 
             # Verify rendered comparison block
             test_packet = DecisionPacket(
@@ -520,6 +524,303 @@ class StrategyConsequencesIntegrationTests(unittest.TestCase):
             without_preview = self._run_direct_driver(
                 without_preview_dir, preview=False, checkpoint=checkpoint,
                 actions=combat_actions)
+
+            self.assertEqual(self._driver_events(with_preview), self._driver_events(without_preview))
+            end_a = next(row for row in with_preview if row.get("type") == "game_end")
+            end_b = next(row for row in without_preview if row.get("type") == "game_end")
+            for key in ("gold", "active_faction", "turn", "state_revision", "units"):
+                self.assertEqual(end_a["state"].get(key), end_b["state"].get(key), key)
+            checkpoints_a = [row for row in with_preview if row.get("type") == "checkpoint"]
+            checkpoints_b = [row for row in without_preview if row.get("type") == "checkpoint"]
+            self.assertTrue(checkpoints_a and checkpoints_b)
+            saved_a = json.loads((with_preview_dir / checkpoints_a[-1]["path"]).read_text())
+            saved_b = json.loads((without_preview_dir / checkpoints_b[-1]["path"]).read_text())
+            self.assertEqual(saved_a["save_state"], saved_b["save_state"])
+            self.assertNotEqual(saved_a["save_state"]["rng_state"], starting_rng)
+
+    def _prepare_contact_driver(self, root: Path, *, defender_hp: int | None = None) -> tuple[subprocess.Popen, int]:
+        import hashlib
+        from .test_strategy_stack3_integration import STACK3
+        data = json.loads((STACK3 / "contact.json").read_text())
+        board = ROOT / "scenarios/big_battle_6/board.toml"
+        data["board_path"] = str(board)
+        data["save_state"]["board_path"] = str(board)
+        if defender_hp is not None:
+            for u in data["save_state"]["units"]:
+                if u["id"] == 4:
+                    u["hp"] = defender_hp
+        encoded = json.dumps(data, separators=(",", ":")).encode()
+        digest = hashlib.sha256(encoded).hexdigest()
+        ckpt = root / f"checkpoint-{digest}.json"
+        ckpt.write_bytes(encoded)
+
+        proc = subprocess.Popen(
+            [str(DRIVER), "--scenario", "big_battle_6", "--faction0", "undead",
+             "--faction1", "undead", "--gold", "300",
+             "--seed", "9211",
+             "--llm-side", "0", "--max-turns", "1", "--incremental-turns",
+             "--resume-checkpoint", str(ckpt)],
+            cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True)
+        initial_state = None
+        for _ in range(100):
+            line = proc.stdout.readline()
+            if not line:
+                raise RuntimeError("driver closed")
+            obj = json.loads(line)
+            if obj.get("type") == "state":
+                initial_state = obj
+                break
+        if initial_state is None:
+            proc.kill()
+            raise RuntimeError("could not get state from driver")
+        return proc, initial_state["state_revision"]
+
+    def test_partial_preview_pure_relocation_and_attacks_produce_known_exposure(self):
+        """Relocation-plus-attacks and pure relocation partial previews produce known recruiter and friendly exposure."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            proc, rev = self._prepare_contact_driver(root, defender_hp=1)
+            try:
+                cand_reloc = [{"action": "Move", "unit_id": 3, "col": 11, "row": 6}]
+                cand_attacks = [
+                    {"action": "Move", "unit_id": 3, "col": 11, "row": 6},
+                    {"action": "Attack", "attacker_id": 3, "defender_id": 4},
+                ]
+                proc.stdin.write(json.dumps({
+                    "action": "Query", "what": "preview_batch",
+                    "state_revision": rev, "phase": "partial", "mode": "forecast",
+                    "candidates": [cand_reloc, cand_attacks],
+                }) + "\n")
+                proc.stdin.flush()
+                resp = json.loads(proc.stdout.readline())
+                self.assertTrue(resp.get("ok"), resp)
+                body = resp.get("body", {})
+                self.assertEqual(body.get("phase"), "partial")
+                candidates = body.get("candidates", [])
+                self.assertEqual(len(candidates), 2)
+
+                # Candidate 0: pure relocation
+                self.assertTrue(candidates[0].get("valid"))
+                self.assertEqual(candidates[0].get("assumption"), "none")
+                self.assertIsNotNone(candidates[0].get("recruiter_threats"))
+                self.assertIsNotNone(candidates[0].get("exposure"))
+
+                # Candidate 1: relocation + attack
+                self.assertTrue(candidates[1].get("valid"))
+                self.assertEqual(candidates[1].get("assumption"), "all forecast combatants survive in place")
+                self.assertIsNotNone(candidates[1].get("recruiter_threats"))
+                self.assertIsNotNone(candidates[1].get("exposure"))
+                self.assertTrue(candidates[1].get("forecasts"))
+
+                # Normalize via extract_candidate_consequences
+                cons0 = extract_candidate_consequences(body, 0, expected_revision=rev, actual_revision=resp.get("state_revision"))
+                self.assertEqual(cons0["coverage"], "complete")
+                self.assertEqual(cons0["forecast_phase"], "partial")
+                self.assertEqual(cons0["assumption"], "none")
+                self.assertEqual(cons0["assumptions"], "none")
+                self.assertEqual(cons0["field_coverage"]["recruiter_exposure"], "known")
+                self.assertEqual(cons0["field_coverage"]["friendly_exposure"], "known")
+                self.assertIsNotNone(cons0["recruiter_exposure"])
+
+                cons1 = extract_candidate_consequences(body, 1, expected_revision=rev, actual_revision=resp.get("state_revision"))
+                self.assertEqual(cons1["coverage"], "complete")
+                self.assertEqual(cons1["forecast_phase"], "partial")
+                self.assertEqual(cons1["assumption"], "all forecast combatants survive in place")
+                self.assertEqual(cons1["assumptions"], "all forecast combatants survive in place")
+                self.assertEqual(cons1["field_coverage"]["recruiter_exposure"], "known")
+                self.assertEqual(cons1["field_coverage"]["friendly_exposure"], "known")
+                self.assertIsNotNone(cons1["recruiter_exposure"])
+                self.assertEqual(len(cons1["attacks"]), 1)
+            finally:
+                if proc.poll() is None:
+                    proc.terminate()
+                proc.wait(timeout=5)
+                for stream in (proc.stdin, proc.stdout, proc.stderr):
+                    if stream:
+                        stream.close()
+
+    def test_partial_preview_agrees_with_explicit_no_sweep_final_boundary(self):
+        """Partial preview agrees with explicit no-sweep final boundary exposure when both describe the same pre-finish position."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            proc, rev = self._prepare_contact_driver(root, defender_hp=1)
+            try:
+                partial_cand = [
+                    {"action": "Move", "unit_id": 3, "col": 11, "row": 6},
+                    {"action": "Attack", "attacker_id": 3, "defender_id": 4},
+                ]
+                final_cand = [
+                    {"action": "Move", "unit_id": 3, "col": 11, "row": 6},
+                    {"action": "Attack", "attacker_id": 3, "defender_id": 4},
+                    {"action": "DoneWithImportantMoves"},
+                ]
+                proc.stdin.write(json.dumps({
+                    "action": "Query", "what": "preview_batch",
+                    "state_revision": rev, "phase": "partial", "mode": "forecast",
+                    "candidates": [partial_cand],
+                }) + "\n")
+                proc.stdin.flush()
+                resp_partial = json.loads(proc.stdout.readline())
+
+                proc.stdin.write(json.dumps({
+                    "action": "Query", "what": "preview_batch",
+                    "state_revision": rev, "phase": "final", "mode": "forecast",
+                    "candidates": [final_cand],
+                }) + "\n")
+                proc.stdin.flush()
+                resp_final = json.loads(proc.stdout.readline())
+
+                p_cand = resp_partial["body"]["candidates"][0]
+                f_cand = resp_final["body"]["candidates"][0]
+                self.assertTrue(p_cand["valid"])
+                self.assertTrue(f_cand["valid"])
+                self.assertEqual(p_cand["recruiter_threats"], f_cand["recruiter_threats"])
+                self.assertEqual(p_cand["exposure"], f_cand["exposure"])
+                self.assertEqual(p_cand["assumption"], f_cand["assumption"])
+
+                # Invalid candidate never displays known projected safety
+                invalid_cand = [{"action": "Move", "unit_id": 3, "col": 999, "row": 999}]
+                proc.stdin.write(json.dumps({
+                    "action": "Query", "what": "preview_batch",
+                    "state_revision": rev, "phase": "partial", "mode": "forecast",
+                    "candidates": [invalid_cand],
+                }) + "\n")
+                proc.stdin.flush()
+                resp_invalid = json.loads(proc.stdout.readline())
+                inv_body = resp_invalid.get("body", {})
+                inv_cand = inv_body.get("candidates", [{}])[0]
+                self.assertFalse(inv_cand.get("valid"))
+                self.assertIsNone(inv_cand.get("recruiter_threats"))
+                self.assertIsNone(inv_cand.get("exposure"))
+                inv_cons = extract_candidate_consequences(inv_body, 0, expected_revision=rev, actual_revision=resp_invalid.get("state_revision"))
+                self.assertEqual(inv_cons["coverage"], "unavailable")
+                self.assertIsNone(inv_cons["recruiter_exposure"])
+                self.assertEqual(inv_cons["friendly_exposure"], [])
+                self.assertEqual(inv_cons["field_coverage"]["recruiter_exposure"], "unknown")
+                self.assertEqual(inv_cons["field_coverage"]["friendly_exposure"], "unknown")
+            finally:
+                if proc.poll() is None:
+                    proc.terminate()
+                proc.wait(timeout=5)
+                for stream in (proc.stdin, proc.stdout, proc.stderr):
+                    if stream:
+                        stream.close()
+
+    def test_attack_then_move_and_move_then_attack_retain_assumptions(self):
+        """Attack-then-move and move-then-attack cases retain all required forecast assumptions."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            proc, rev = self._prepare_contact_driver(root, defender_hp=1)
+            try:
+                cand_attack_move = [
+                    {"action": "Move", "unit_id": 3, "col": 11, "row": 6},
+                    {"action": "Attack", "attacker_id": 3, "defender_id": 4},
+                    {"action": "Move", "unit_id": 1, "col": 2, "row": 6},
+                ]
+                cand_move_attack = [
+                    {"action": "Move", "unit_id": 1, "col": 2, "row": 6},
+                    {"action": "Move", "unit_id": 3, "col": 11, "row": 6},
+                    {"action": "Attack", "attacker_id": 3, "defender_id": 4},
+                ]
+                proc.stdin.write(json.dumps({
+                    "action": "Query", "what": "preview_batch",
+                    "state_revision": rev, "phase": "partial", "mode": "forecast",
+                    "candidates": [cand_attack_move, cand_move_attack],
+                }) + "\n")
+                proc.stdin.flush()
+                resp = json.loads(proc.stdout.readline())
+                self.assertTrue(resp.get("ok"), resp)
+                body = resp.get("body", {})
+                cands = body.get("candidates", [])
+                self.assertEqual(len(cands), 2)
+
+                for idx in (0, 1):
+                    self.assertTrue(cands[idx].get("valid"))
+                    self.assertEqual(cands[idx].get("assumption"), "all forecast combatants survive in place")
+                    cons = extract_candidate_consequences(body, idx, expected_revision=rev, actual_revision=resp.get("state_revision"))
+                    self.assertEqual(cons["assumption"], "all forecast combatants survive in place")
+                    self.assertEqual(cons["assumptions"], "all forecast combatants survive in place")
+                    self.assertEqual(cons["field_coverage"]["assumption"], "known")
+                    self.assertEqual(cons["field_coverage"]["assumptions"], "known")
+                    self.assertEqual(cons["field_coverage"]["recruiter_exposure"], "known")
+                    self.assertEqual(cons["field_coverage"]["friendly_exposure"], "known")
+            finally:
+                if proc.poll() is None:
+                    proc.terminate()
+                proc.wait(timeout=5)
+                for stream in (proc.stdin, proc.stdout, proc.stderr):
+                    if stream:
+                        stream.close()
+
+    def test_partial_preview_preserves_committed_events_board_and_rng(self):
+        """Executing identical actions with/without partial preview gives identical committed events, board, and RNG continuation."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            checkpoint, _, _, _ = prepare(root, "contact.json", [policy()])
+            combat_actions = [
+                {"action": "Move", "unit_id": 3, "col": 11, "row": 6},
+                {"action": "Attack", "attacker_id": 3, "defender_id": 4},
+                copy.deepcopy(NO_SWEEP_FINISH),
+            ]
+            starting_rng = json.loads(checkpoint.read_text())["save_state"]["rng_state"]
+            with_preview_dir = root / "with-partial-preview"
+            without_preview_dir = root / "without-partial-preview"
+            with_preview_dir.mkdir()
+            without_preview_dir.mkdir()
+
+            partial_prefix = [combat_actions[0], combat_actions[1]]
+
+            def run_driver(preview_partial: bool, ckpt_dir: Path) -> list[dict]:
+                envelope = json.loads(checkpoint.read_text())
+                proc = subprocess.Popen(
+                    [str(DRIVER), "--scenario", "big_battle_6", "--faction0", "undead",
+                     "--faction1", "undead", "--gold", str(envelope.get("starting_gold", 300)),
+                     "--seed", str(envelope.get("seed", 9211)),
+                     "--llm-side", "0", "--max-turns", "1", "--incremental-turns",
+                     "--checkpoint-dir", str(ckpt_dir),
+                     "--resume-checkpoint", str(checkpoint)],
+                    cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, text=True)
+                rows = []
+                def read_until(kind: str) -> dict:
+                    while True:
+                        line = proc.stdout.readline()
+                        if not line:
+                            raise AssertionError(f"driver EOF while waiting for {kind}: {proc.stderr.read()}")
+                        value = json.loads(line)
+                        rows.append(value)
+                        if value.get("type") == kind:
+                            return value
+                try:
+                    initial = read_until("state")
+                    rev = initial["state_revision"]
+                    if preview_partial:
+                        proc.stdin.write(json.dumps({
+                            "action": "Query", "what": "preview_batch",
+                            "state_revision": rev, "phase": "partial", "mode": "forecast",
+                            "candidates": [partial_prefix],
+                        }) + "\n")
+                        proc.stdin.flush()
+                        response = read_until("status")
+                        if not response.get("ok"):
+                            raise AssertionError(response)
+                        if any(row.get("type") == "events" for row in rows):
+                            raise AssertionError("read-only partial preview emitted events")
+                    proc.stdin.write(json.dumps(combat_actions) + "\n")
+                    proc.stdin.flush()
+                    read_until("game_end")
+                    return rows
+                finally:
+                    if proc.poll() is None:
+                        proc.terminate()
+                    proc.wait(timeout=5)
+                    for stream in (proc.stdin, proc.stdout, proc.stderr):
+                        if stream:
+                            stream.close()
+
+            with_preview = run_driver(True, with_preview_dir)
+            without_preview = run_driver(False, without_preview_dir)
 
             self.assertEqual(self._driver_events(with_preview), self._driver_events(without_preview))
             end_a = next(row for row in with_preview if row.get("type") == "game_end")

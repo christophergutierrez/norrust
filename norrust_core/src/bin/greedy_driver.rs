@@ -1746,6 +1746,89 @@ fn add_dead_target_failure_detail(
     result["message"] = json!(message);
 }
 
+fn compute_affordable_recruitment_remaining(
+    state: &GameState,
+    model_side: u8,
+    factions: &[Faction; 2],
+    units: &Registry<UnitDef>,
+    disable_recruit_batch: bool,
+    next_id: u32,
+) -> bool {
+    if disable_recruit_batch {
+        let has_open_castle = state
+            .units
+            .iter()
+            .filter(|(_, unit)| unit.faction == model_side && unit.can_recruit)
+            .filter_map(|(id, _)| state.positions.get(id))
+            .filter(|hex| {
+                state
+                    .board
+                    .tile_at(**hex)
+                    .is_some_and(|tile| tile.terrain_id == "keep")
+            })
+            .flat_map(|hex| hex.neighbors())
+            .any(|hex| {
+                state
+                    .board
+                    .tile_at(hex)
+                    .is_some_and(|tile| tile.terrain_id == "castle")
+                    && !state.hex_to_unit.contains_key(&hex)
+            });
+        has_open_castle
+            && factions[model_side as usize]
+                .recruits
+                .iter()
+                .filter_map(|id| units.get(id))
+                .any(|def| state.gold[model_side as usize] >= def.cost)
+    } else {
+        factions[model_side as usize].recruits.iter().any(|def_id| {
+            let mut candidate = state.clone();
+            let mut candidate_id = next_id;
+            let mut candidate_events = Vec::new();
+            recruit_batch_with_events(
+                &mut candidate,
+                model_side,
+                &factions[model_side as usize],
+                units,
+                &mut candidate_id,
+                def_id,
+                1,
+                &mut candidate_events,
+            )
+            .is_ok()
+        })
+    }
+}
+
+fn capture_threat_exposure(
+    state: &GameState,
+    model_side: u8,
+    pre_end_threats: &mut Option<ThreatSurface>,
+    pre_end_exposure: &mut Option<UnitThreatSurface>,
+    preview_error: &mut Option<Value>,
+) {
+    if preview_error.is_some() {
+        return;
+    }
+    match recruiter_threats_after_end_turn(state, model_side) {
+        Ok(threats) => *pre_end_threats = Some(threats),
+        Err(error) => {
+            *preview_error = Some(
+                json!({"code":"threat_preview_error","message":error.to_string()}),
+            );
+            return;
+        }
+    }
+    match unit_threats_after_end_turn(state, model_side) {
+        Ok(exposure) => *pre_end_exposure = Some(exposure),
+        Err(error) => {
+            *preview_error = Some(
+                json!({"code":"exposure_preview_error","message":error.to_string()}),
+            );
+        }
+    }
+}
+
 /// Apply one model batch to an isolated state. The commit path and the
 /// read-only validation query deliberately share this executor so validation
 /// cannot approve a batch with different sequential semantics.
@@ -2181,66 +2264,21 @@ fn execute_model_batch(
             })(),
             Some("DoneWithImportantMoves") | Some("EndTurn") => {
                 if !sample_attacks {
-                    pre_end_recruitment_remaining = Some(if disable_recruit_batch {
-                        let has_open_castle = state
-                            .units
-                            .iter()
-                            .filter(|(_, unit)| unit.faction == model_side && unit.can_recruit)
-                            .filter_map(|(id, _)| state.positions.get(id))
-                            .filter(|hex| {
-                                state
-                                    .board
-                                    .tile_at(**hex)
-                                    .is_some_and(|tile| tile.terrain_id == "keep")
-                            })
-                            .flat_map(|hex| hex.neighbors())
-                            .any(|hex| {
-                                state
-                                    .board
-                                    .tile_at(hex)
-                                    .is_some_and(|tile| tile.terrain_id == "castle")
-                                    && !state.hex_to_unit.contains_key(&hex)
-                            });
-                        has_open_castle
-                            && factions[model_side as usize]
-                                .recruits
-                                .iter()
-                                .filter_map(|id| units.get(id))
-                                .any(|def| state.gold[model_side as usize] >= def.cost)
-                    } else {
-                        factions[model_side as usize].recruits.iter().any(|def_id| {
-                            let mut candidate = state.clone();
-                            let mut candidate_id = next_id;
-                            let mut candidate_events = Vec::new();
-                            recruit_batch_with_events(
-                                &mut candidate,
-                                model_side,
-                                &factions[model_side as usize],
-                                units,
-                                &mut candidate_id,
-                                def_id,
-                                1,
-                                &mut candidate_events,
-                            )
-                            .is_ok()
-                        })
-                    });
-                    match recruiter_threats_after_end_turn(&state, model_side) {
-                        Ok(threats) => pre_end_threats = Some(threats),
-                        Err(error) => {
-                            preview_error = Some(
-                                json!({"code":"threat_preview_error","message":error.to_string()}),
-                            );
-                        }
-                    }
-                    match unit_threats_after_end_turn(&state, model_side) {
-                        Ok(exposure) => pre_end_exposure = Some(exposure),
-                        Err(error) => {
-                            preview_error = Some(
-                                json!({"code":"exposure_preview_error","message":error.to_string()}),
-                            );
-                        }
-                    }
+                    pre_end_recruitment_remaining = Some(compute_affordable_recruitment_remaining(
+                        &state,
+                        model_side,
+                        factions,
+                        units,
+                        disable_recruit_batch,
+                        next_id,
+                    ));
+                    capture_threat_exposure(
+                        &state,
+                        model_side,
+                        &mut pre_end_threats,
+                        &mut pre_end_exposure,
+                        &mut preview_error,
+                    );
                 }
                 if sample_attacks {
                     automatic_model_finish(&mut state, model_side)
@@ -3398,8 +3436,28 @@ fn interactive_protocol_game(mut c: Config) {
                             if bounded_rollout {
                                 preview_source.rng = Rng::new(0x5eed_5eed_5eed_5eed);
                             }
-                            let execution = execute_model_batch(preview_source, next_id, orders, c.llm_side, &factions, &units, c.disable_recruit_batch, bounded_rollout);
-                            let valid = execution.preview_error.is_none() && execution.results.len() == orders.len() && execution.results.iter().all(|result| result.get("ok") == Some(&Value::Bool(true)));
+                            let mut execution = execute_model_batch(preview_source, next_id, orders, c.llm_side, &factions, &units, c.disable_recruit_batch, bounded_rollout);
+                            let mut valid = execution.preview_error.is_none() && execution.results.len() == orders.len() && execution.results.iter().all(|result| result.get("ok") == Some(&Value::Bool(true)));
+                            if valid && !bounded_rollout && phase == "partial" {
+                                capture_threat_exposure(
+                                    &execution.state,
+                                    c.llm_side,
+                                    &mut execution.pre_end_threats,
+                                    &mut execution.pre_end_exposure,
+                                    &mut execution.preview_error,
+                                );
+                                execution.pre_end_recruitment_remaining = Some(compute_affordable_recruitment_remaining(
+                                    &execution.state,
+                                    c.llm_side,
+                                    &factions,
+                                    &units,
+                                    c.disable_recruit_batch,
+                                    execution.next_id,
+                                ));
+                                if execution.preview_error.is_some() {
+                                    valid = false;
+                                }
+                            }
                             let mut recruiter_hp: Vec<Value> = execution.state.units.iter().filter_map(|(id, unit)| {
                                 (unit.faction == c.llm_side && unit.can_recruit).then(|| json!({"unit_id":id,"hp":unit.hp}))
                             }).collect();
@@ -4723,6 +4781,199 @@ mod tests {
         assert_eq!(execution.state.active_faction, state.active_faction);
         assert!(execution.pre_end_threats.is_some());
         assert!(execution.forecasts.is_empty());
+    }
+
+    #[test]
+    fn partial_preview_captures_exposure_and_agrees_with_explicit_no_sweep_final_boundary() {
+        let config = Config {
+            scenario: "big_battle_6".into(),
+            faction0: "undead".into(),
+            faction1: "undead".into(),
+            gold: 10,
+            seed: 42,
+            scripted: false,
+            llm_side: 0,
+            max_turns: 4,
+            turn_timeout: 1,
+            query_timeout: 1,
+            max_queries: 1,
+            disable_recruit_batch: false,
+            incremental_turns: false,
+            max_partial_batches_per_turn: 3,
+            checkpoint_dir: None,
+            resume_checkpoint: None,
+        };
+        let (state, faction0, faction1, units) = init_game(&config).expect("valid fixture");
+        let unit_id = state
+            .units
+            .values()
+            .find(|u| u.faction == 0 && !u.moved)
+            .map(|u| u.id)
+            .expect("friendly unit exists");
+        let dest = legal_moves(&state, unit_id)
+            .expect("legal moves")
+            .into_iter()
+            .next()
+            .expect("at least one destination");
+        let (col, row) = dest.to_offset();
+        let move_order = json!({"action": "Move", "unit_id": unit_id, "col": col, "row": row});
+
+        // 1. Partial batch execution + threat capture (simulating preview_batch phase="partial")
+        let mut partial_exec = execute_model_batch(
+            state.clone(),
+            state.next_unit_id,
+            &[move_order.clone()],
+            0,
+            &[faction0.clone(), faction1.clone()],
+            &units,
+            false,
+            false,
+        );
+        assert!(partial_exec.results.iter().all(|r| r.get("ok") == Some(&Value::Bool(true))));
+        capture_threat_exposure(
+            &partial_exec.state,
+            0,
+            &mut partial_exec.pre_end_threats,
+            &mut partial_exec.pre_end_exposure,
+            &mut partial_exec.preview_error,
+        );
+        assert!(partial_exec.pre_end_threats.is_some());
+        assert!(partial_exec.pre_end_exposure.is_some());
+        assert!(partial_exec.preview_error.is_none());
+
+        // 2. Final batch with DoneWithImportantMoves describing the same pre-finish position
+        let final_exec = execute_model_batch(
+            state.clone(),
+            state.next_unit_id,
+            &[move_order, json!({"action": "DoneWithImportantMoves"})],
+            0,
+            &[faction0, faction1],
+            &units,
+            false,
+            false,
+        );
+        assert!(final_exec.results.iter().all(|r| r.get("ok") == Some(&Value::Bool(true))));
+
+        // Both describe the same pre-finish position and must agree on exposure
+        assert_eq!(partial_exec.pre_end_threats, final_exec.pre_end_threats);
+        assert_eq!(partial_exec.pre_end_exposure, final_exec.pre_end_exposure);
+    }
+
+    #[test]
+    fn multi_action_preview_accumulates_assumptions_and_does_not_reset_on_move() {
+        let config = Config {
+            scenario: "big_battle_6".into(),
+            faction0: "undead".into(),
+            faction1: "undead".into(),
+            gold: 10,
+            seed: 42,
+            scripted: false,
+            llm_side: 0,
+            max_turns: 4,
+            turn_timeout: 1,
+            query_timeout: 1,
+            max_queries: 1,
+            disable_recruit_batch: false,
+            incremental_turns: false,
+            max_partial_batches_per_turn: 3,
+            checkpoint_dir: None,
+            resume_checkpoint: None,
+        };
+        let (mut state, faction0, faction1, units) = init_game(&config).expect("valid fixture");
+        let (attacker, attacker_hex) = state
+            .units
+            .values()
+            .find_map(|unit| {
+                (unit.faction == 0 && !unit.attacks.is_empty())
+                    .then(|| (unit.id, state.positions[&unit.id]))
+            })
+            .expect("fixture has an attacker");
+        let target = state
+            .units
+            .values()
+            .find(|u| u.faction == 1)
+            .map(|u| u.id)
+            .expect("target exists");
+        let target_old_hex = state.positions[&target];
+        let target_hex = attacker_hex
+            .neighbors()
+            .into_iter()
+            .find(|h| state.board.tile_at(*h).is_some() && !state.hex_to_unit.contains_key(h))
+            .expect("open neighboring hex exists");
+        state.positions.insert(target, target_hex);
+        state.hex_to_unit.remove(&target_old_hex);
+        state.hex_to_unit.insert(target_hex, target);
+        // Reduce target HP so the exchange has non-zero lethal probability and introduces survival assumptions
+        state.units.get_mut(&target).unwrap().hp = 1;
+
+        // Add a second friendly unit so we have a mover distinct from the attacker
+        let mover_hex = attacker_hex
+            .neighbors()
+            .into_iter()
+            .find(|hex| *hex != target_hex && state.board.tile_at(*hex).is_some() && !state.hex_to_unit.contains_key(hex))
+            .expect("attacker has another open neighboring hex");
+        let mut mover_unit = state.units[&attacker].clone();
+        let mover = state.next_unit_id;
+        state.next_unit_id += 1;
+        mover_unit.id = mover;
+        mover_unit.can_recruit = false;
+        mover_unit.moved = false;
+        mover_unit.attacked = false;
+        state.positions.insert(mover, mover_hex);
+        state.hex_to_unit.insert(mover_hex, mover);
+        state.units.insert(mover, mover_unit);
+
+        let mover_dest = legal_moves(&state, mover)
+            .expect("legal moves")
+            .into_iter()
+            .next()
+            .expect("destination exists");
+        let (m_col, m_row) = mover_dest.to_offset();
+
+        let attack_order = json!({"action": "Attack", "attacker_id": attacker, "defender_id": target});
+        let move_order = json!({"action": "Move", "unit_id": mover, "col": m_col, "row": m_row});
+
+        // 1. Attack then Move
+        let exec_attack_move = execute_model_batch(
+            state.clone(),
+            state.next_unit_id,
+            &[attack_order.clone(), move_order.clone()],
+            0,
+            &[faction0.clone(), faction1.clone()],
+            &units,
+            false,
+            false,
+        );
+        assert!(exec_attack_move.results.iter().all(|r| r.get("ok") == Some(&Value::Bool(true))));
+        assert!(exec_attack_move.post_combat_conditional);
+
+        // 2. Move then Attack
+        let exec_move_attack = execute_model_batch(
+            state.clone(),
+            state.next_unit_id,
+            &[move_order.clone(), attack_order],
+            0,
+            &[faction0.clone(), faction1.clone()],
+            &units,
+            false,
+            false,
+        );
+        assert!(exec_move_attack.results.iter().all(|r| r.get("ok") == Some(&Value::Bool(true))));
+        assert!(exec_move_attack.post_combat_conditional);
+
+        // 3. Pure Move has no combat assumptions
+        let exec_pure_move = execute_model_batch(
+            state,
+            100,
+            &[move_order],
+            0,
+            &[faction0, faction1],
+            &units,
+            false,
+            false,
+        );
+        assert!(exec_pure_move.results.iter().all(|r| r.get("ok") == Some(&Value::Bool(true))));
+        assert!(!exec_pure_move.post_combat_conditional);
     }
 
     #[test]
