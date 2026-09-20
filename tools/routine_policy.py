@@ -1838,6 +1838,302 @@ def format_economic_summary_line(summary: dict[str, Any]) -> str:
     return "; ".join(clauses) + "."
 
 
+def compute_army_action_facts(
+    state: Optional[dict[str, Any]],
+    *,
+    policy: Any = None,
+    evidence: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Derive truthful unit actionability status from state and policy holds.
+
+    Distinguishes exhausted, held, immobile, move-only, attack-only and ready units.
+    Missing coverage is 'unknown', never zero.
+    """
+    unknown = "unknown"
+    if not isinstance(state, dict):
+        return {
+            "status": unknown,
+            "ready": unknown,
+            "move_only": unknown,
+            "attack_only": unknown,
+            "immobile": unknown,
+            "held": unknown,
+            "exhausted": unknown,
+            "unused_action_ids": [],
+            "omitted_count": 0,
+            "total_unused": unknown,
+        }
+    units = state.get("units")
+    active = state.get("active_faction")
+    if not isinstance(units, list) or active is None:
+        return {
+            "status": unknown,
+            "ready": unknown,
+            "move_only": unknown,
+            "attack_only": unknown,
+            "immobile": unknown,
+            "held": unknown,
+            "exhausted": unknown,
+            "unused_action_ids": [],
+            "omitted_count": 0,
+            "total_unused": unknown,
+        }
+    holds = set()
+    if isinstance(policy, dict):
+        raw_holds = policy.get("holds")
+        if isinstance(raw_holds, list):
+            holds = {h for h in raw_holds if isinstance(h, int) and not isinstance(h, bool)}
+
+    friendly = [u for u in units if isinstance(u, dict) and u.get("faction") == active
+                and (not isinstance(u.get("hp"), int) or u.get("hp") > 0)]
+
+    ready_cnt = 0
+    move_only_cnt = 0
+    attack_only_cnt = 0
+    immobile_cnt = 0
+    held_cnt = 0
+    exhausted_cnt = 0
+    unused_ids = []
+
+    for u in friendly:
+        uid = u.get("id")
+        if uid in holds:
+            held_cnt += 1
+            continue
+        moved = u.get("moved")
+        attacked = u.get("attacked")
+        movement = u.get("movement")
+
+        if not isinstance(moved, bool) or not isinstance(attacked, bool):
+            continue
+
+        if moved and attacked:
+            exhausted_cnt += 1
+        elif not moved and attacked:
+            move_only_cnt += 1
+            if uid is not None:
+                unused_ids.append(uid)
+        elif moved and not attacked:
+            attack_only_cnt += 1
+            if uid is not None:
+                unused_ids.append(uid)
+        else:  # not moved and not attacked
+            if isinstance(movement, int) and not isinstance(movement, bool) and movement == 0:
+                immobile_cnt += 1
+            else:
+                ready_cnt += 1
+            if uid is not None:
+                unused_ids.append(uid)
+
+    return {
+        "status": "known",
+        "ready": ready_cnt,
+        "move_only": move_only_cnt,
+        "attack_only": attack_only_cnt,
+        "immobile": immobile_cnt,
+        "held": held_cnt,
+        "exhausted": exhausted_cnt,
+        "unused_action_ids": unused_ids[:8],
+        "omitted_count": max(0, len(unused_ids) - 8),
+        "total_unused": len(unused_ids),
+    }
+
+
+def _find_recruiter_threat(
+    packet: Any,
+    state: Optional[dict[str, Any]] = None,
+) -> Optional[dict[str, Any]]:
+    ev = getattr(packet, "evidence", {}) or {}
+    if not isinstance(ev, dict):
+        ev = {}
+    tr = ev.get("threatened_recruiter")
+    if isinstance(tr, dict) and tr.get("recruiter_id") is not None:
+        return tr
+    pt = ev.get("projected_threats")
+    if isinstance(pt, dict) and isinstance(pt.get("recruiters"), list):
+        for r in pt.get("recruiters", []):
+            if isinstance(r, dict) and (r.get("distinct_attacker_count", 0) > 0 or len(r.get("attackers", [])) > 0):
+                return r
+    if isinstance(state, dict):
+        exp = state.get("tactical_surface", {}).get("exposure", {})
+        if isinstance(exp, dict) and isinstance(exp.get("recruiters"), list):
+            for r in exp.get("recruiters", []):
+                if isinstance(r, dict) and (r.get("distinct_attacker_count", 0) > 0 or len(r.get("attackers", [])) > 0):
+                    return r
+    return None
+
+
+def _format_routine_state_clause(
+    packet: Any,
+    policy: Any = None,
+    progress: Any = None,
+    state: Optional[dict[str, Any]] = None,
+) -> str:
+    reason = getattr(packet, "reason", None) or "unspecified"
+    ev = getattr(packet, "evidence", {}) or {}
+    if not isinstance(ev, dict):
+        ev = {}
+    if reason == "contact":
+        stage = ev.get("stage", "current_state")
+        if stage == "proposed_destination":
+            clause = "Routine paused: proposed routine movement rejected (threat or obstacle at destination)."
+        else:
+            clause = "Routine paused: enemy contact detected on current board."
+    elif reason == "recruitment_blocked":
+        cause = ev.get("cause", "blocked")
+        clause = f"Routine paused: recruitment blocked ({cause})."
+    elif reason == "recruitment_review":
+        clause = "Routine paused: recruitment queue complete with unreserved gold available."
+    elif reason in ("unsafe_route", "route_unavailable"):
+        clause = "Routine paused: routine route unavailable or unsafe to objective."
+    elif reason == "invalid_assignment":
+        cause = ev.get("cause", "invalid")
+        uid = ev.get("unit_id")
+        uid_str = f" for unit {uid}" if uid is not None else ""
+        clause = f"Routine paused: assignment exception ({cause}{uid_str})."
+    elif reason == "no_executable_orders":
+        cause = ev.get("cause", "no executable orders")
+        clause = f"Routine paused: no executable orders ({cause})."
+    elif reason == "promotion_pending":
+        clause = "Routine paused: unit advancement pending."
+    else:
+        clause = f"Routine paused: {reason}."
+
+    if isinstance(policy, dict):
+        cap_fact = _village_scout_capacity_fact(policy, progress, state)
+        if isinstance(cap_fact, dict):
+            req = cap_fact.get("required_assignments")
+            cap = cap_fact.get("scout_capacity")
+            if isinstance(req, int) and isinstance(cap, int) and req > cap:
+                clause += f" Scout capacity deficit: {req} unassigned villages require scouts, but available capacity is {cap}."
+    return clause
+
+
+def _format_turn_economy_clause(
+    state: Optional[dict[str, Any]],
+    policy: Any = None,
+    progress: Any = None,
+    remaining: Any = None,
+    recruit_options: Any = None,
+) -> str:
+    econ = compute_economic_summary(
+        state, policy=policy, progress=progress, remaining=remaining, recruit_options=recruit_options
+    )
+    gold = econ.get("gold", "unknown")
+    unreserved = econ.get("unreserved_gold", "unknown")
+    reserve = policy.get("reserve_gold", 0) if isinstance(policy, dict) and isinstance(policy.get("reserve_gold"), int) else 0
+    gold_str = f"{gold} gold ({unreserved} unreserved, {reserve} reserved)" if isinstance(gold, int) else f"gold {gold} ({unreserved} unreserved)"
+
+    q_status = econ.get("queue_status", "unknown")
+    q_rem = econ.get("queue_remaining", "unknown")
+    if q_status == "completed":
+        q_str = "queue complete"
+    elif q_status == "active":
+        q_str = f"queue active ({q_rem} remaining)"
+    else:
+        q_str = f"queue {q_status}"
+
+    placements = econ.get("legal_placements", "unknown")
+    rec_avail = "available" if econ.get("recruitment_possible") is True else ("blocked" if econ.get("recruitment_possible") is False else "unknown")
+    return f"Economy: {gold_str}; {q_str}; placements: {placements} legal castle hexes; recruitment {rec_avail}."
+
+
+def _format_army_action_clause(
+    packet: Any,
+    state: Optional[dict[str, Any]],
+    policy: Any = None,
+) -> tuple[str, str]:
+    ev = getattr(packet, "evidence", {}) or {}
+    if not isinstance(ev, dict):
+        ev = {}
+    actor_ids = ev.get("actor_ids")
+    eligible_count = ev.get("eligible_actor_count")
+    truncated = bool(ev.get("actors_truncated", False))
+
+    if isinstance(actor_ids, list) and isinstance(eligible_count, int):
+        menu_line = f"Tactical menu actors: {len(actor_ids)} offered in options; {eligible_count} engine-eligible actors."
+        if truncated:
+            omitted = max(0, eligible_count - len(actor_ids))
+            menu_line += f" Note: {omitted} eligible actors omitted from this bounded menu."
+    elif isinstance(actor_ids, list):
+        menu_line = f"Tactical menu actors: {len(actor_ids)} offered in options."
+    else:
+        menu_line = "Tactical menu actors: not generated."
+
+    action_facts = compute_army_action_facts(state, policy=policy, evidence=ev)
+    if action_facts.get("status") == "unknown":
+        army_line = "Army action flags: friendly unit roster/status unknown."
+    else:
+        status_parts = []
+        if action_facts["ready"]: status_parts.append(f"{action_facts['ready']} ready")
+        if action_facts["move_only"]: status_parts.append(f"{action_facts['move_only']} move-only")
+        if action_facts["attack_only"]: status_parts.append(f"{action_facts['attack_only']} attack-only")
+        if action_facts["immobile"]: status_parts.append(f"{action_facts['immobile']} immobile")
+        if action_facts["held"]: status_parts.append(f"{action_facts['held']} held")
+        if action_facts["exhausted"]: status_parts.append(f"{action_facts['exhausted']} exhausted")
+        status_str = ", ".join(status_parts) if status_parts else "none"
+
+        unused_ids = action_facts["unused_action_ids"]
+        omitted = action_facts["omitted_count"]
+        omitted_str = f" (+{omitted} omitted)" if omitted > 0 else ""
+        army_line = (
+            f"Army action flags: {action_facts['total_unused']} units with unused action flags "
+            f"({status_str}): {unused_ids}{omitted_str}. "
+            "(Unused action flag is an unused flag only, not proof of a legal or useful move/attack)."
+        )
+
+    return menu_line, army_line
+
+
+def _format_finish_clause(packet: Any) -> str:
+    final_only = bool(getattr(packet, "final_only", False))
+    if final_only:
+        return (
+            "Finish consequences: finish_turn=true ends your whole side's turn immediately with no tactical sweep. "
+            "Notice: This decision is final-only; actions must set finish_turn=true."
+        )
+    return (
+        "Finish consequences: finish_turn=true ends your whole side's turn immediately with no tactical sweep. "
+        "finish_turn=false continues the turn with a fresh decision if other work or actors remain."
+    )
+
+
+def render_turn_status_block(
+    packet: Any,
+    state: Optional[dict[str, Any]] = None,
+    *,
+    policy: Any = None,
+    progress: Any = None,
+    remaining: Any = None,
+    recruit_options: Any = None,
+) -> str:
+    """Render one compact volatile turn-status block (<=900 UTF-8 bytes)."""
+    lines = ["TURN STATUS & PRIORITIES:"]
+
+    rt = _find_recruiter_threat(packet, state)
+    if rt is not None:
+        rid = rt.get("recruiter_id", rt.get("unit_id", "unknown"))
+        hp = rt.get("hp", "unknown")
+        max_hp = rt.get("max_hp", hp)
+        att_cnt = rt.get("distinct_attacker_count", len(rt.get("attackers", [])))
+        lines.append(f"- Recruiter alert: Recruiter {rid} (HP {hp}/{max_hp}) is exposed next turn ({att_cnt} attackers).")
+
+    lines.append("- " + _format_routine_state_clause(packet, policy=policy, progress=progress, state=state))
+    lines.append("- " + _format_turn_economy_clause(state, policy=policy, progress=progress, remaining=remaining, recruit_options=recruit_options))
+    menu_line, army_line = _format_army_action_clause(packet, state, policy=policy)
+    lines.append("- " + menu_line)
+    lines.append("- " + army_line)
+    lines.append("- " + _format_finish_clause(packet))
+
+    block = "\n".join(lines)
+    encoded = block.encode("utf-8")
+    if len(encoded) <= 900:
+        return block
+
+    lines[4] = "- Army action flags: friendly units have unused action flags (IDs omitted to fit budget)."
+    return "\n".join(lines)
+
+
 def _strategy_context(state: Optional[dict[str, Any]] = None,
                       recruit_options: Any = None,
                       remaining: Any = None,

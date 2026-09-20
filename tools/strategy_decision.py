@@ -23,6 +23,8 @@ try:
     _capacity_relief_line,
     _contact_destination_line,
     _contact_proposed_options_line,
+    render_turn_status_block,
+    compute_army_action_facts,
     SetPolicyResponse,
     ActResponse,
     FinishTurnResponse,
@@ -39,6 +41,8 @@ except ImportError:
     _capacity_relief_line,
     _contact_destination_line,
     _contact_proposed_options_line,
+    render_turn_status_block,
+    compute_army_action_facts,
     SetPolicyResponse,
     ActResponse,
     FinishTurnResponse,
@@ -1289,6 +1293,15 @@ def render_decision_brief(
 
   sections: list[str] = []
 
+  status_block = render_turn_status_block(
+    packet,
+    state=state,
+    policy=policy,
+    progress=progress,
+    remaining=remaining,
+    recruit_options=recruit_options,
+  )
+
   # Specific Guidance
   if packet.decision_kind == DECISION_KIND_TACTICAL:
     if packet.options:
@@ -1403,6 +1416,8 @@ def render_decision_brief(
       if packet.contact_state_key:
         fact_parts.append(f"contact_state_key={packet.contact_state_key}")
       sections.append("Contact facts: " + ", ".join(fact_parts))
+    if status_block:
+      sections.append(status_block)
     if packet.options:
       sections.append(_render_options_block(packet, state))
   elif packet.reason == "contact" and packet.evidence.get("stage") != "current_state":
@@ -1417,6 +1432,8 @@ def render_decision_brief(
       "A rejected proposed routine move is not current-board contact. "
       f"Applicable responses: {', '.join(packet.allowed_kinds)}."
     )
+    if status_block:
+      sections.append(status_block)
     example = _build_choose_example(packet)
     if example is not None:
       sections.append(
@@ -1442,6 +1459,8 @@ def render_decision_brief(
         "Editing assignments moves no unit; choosing a tactical action does not repair the installed policy. "
         f"Applicable responses: {', '.join(packet.allowed_kinds)}."
       )
+      if status_block:
+        sections.append(status_block)
       sections.append(_render_options_block(packet, state))
     elif packet.evidence.get("options_empty_reason") == "exhausted_recruiter_no_tactical_options":
       tr = packet.evidence.get("threatened_recruiter", {})
@@ -1455,12 +1474,16 @@ def render_decision_brief(
         "Editing assignments moves no unit. You may submit `set_policy` to repair assignments, "
         f"or manual actions. Applicable responses: {', '.join(packet.allowed_kinds)}."
       )
+      if status_block:
+        sections.append(status_block)
     else:
       sections.append(
         f"POLICY DECISION REQUIRED: Policy assignment failed ({cause}{unit_str}). "
         f"Submit `set_policy` to define objectives, or submit manual actions. "
         f"Applicable responses: {', '.join(packet.allowed_kinds)}."
       )
+      if status_block:
+        sections.append(status_block)
   elif packet.reason == "recruitment_review":
     sections.append(
       "ECONOMIC RECONSIDERATION: Completed recruitment queue with unreserved gold. "
@@ -1473,6 +1496,8 @@ def render_decision_brief(
         "Notice: Remote enemy contact is present. Updating policy does not move units or clear "
         "tactical contact."
       )
+    if status_block:
+      sections.append(status_block)
   elif packet.reason == "recruitment_blocked":
     relief = _capacity_relief_line(packet.evidence)
     if relief:
@@ -1481,28 +1506,38 @@ def render_decision_brief(
       "POLICY DECISION REQUIRED: Routine execution requires policy direction. Submit `set_policy` "
       f"to define objectives, or submit manual actions. Applicable responses: {', '.join(packet.allowed_kinds)}."
     )
+    if status_block:
+      sections.append(status_block)
   elif packet.reason in ("unsafe_route", "route_unavailable"):
     sections.append(
       "ROUTE / OBJECTIVE DECISION REQUIRED: A proposed routine movement encounters an obstacle, "
       "enemy contact, or danger. Replacing the policy objective (`set_policy`) can prevent this "
       f"proposed step. Applicable responses: {', '.join(packet.allowed_kinds)}."
     )
+    if status_block:
+      sections.append(status_block)
   elif packet.decision_kind == DECISION_KIND_PROMOTION:
     sections.append(
       "PROMOTION REQUIRED: A unit advancement is pending. Submit `act` containing the required "
       "legal advancement before dependent work can proceed, or `resign`. Do not submit finish_turn or set_policy. "
       f"Applicable responses: {', '.join(packet.allowed_kinds)}."
     )
+    if status_block:
+      sections.append(status_block)
   elif packet.decision_kind == DECISION_KIND_FACTS_UNAVAILABLE:
     sections.append(
       "FACTS UNAVAILABLE: Threat calculations could not be completed. Submit manual actions (`act`), "
       f"`finish_turn`, or `resign`. Applicable responses: {', '.join(packet.allowed_kinds)}."
     )
+    if status_block:
+      sections.append(status_block)
   else:
     sections.append(
       "POLICY DECISION REQUIRED: Routine execution requires policy direction. Submit `set_policy` "
       f"to define objectives, or submit manual actions. Applicable responses: {', '.join(packet.allowed_kinds)}."
     )
+    if status_block:
+      sections.append(status_block)
 
   guidance_text = "\n".join(sections)
   return f"{prefix}{context}\n{guidance_text}"
