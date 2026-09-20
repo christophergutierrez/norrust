@@ -349,6 +349,15 @@ model-owned tactical provenance, one bounded response repair, revision-stale
 inspection recovery, and final-only boundaries. A skipped driver test is a
 coverage gap and does not constitute acceptance.
 
+To verify the complete 8-case strategy resilience matrix (casualty survival,
+preview batch exposure, volatile turn status, threatened recruiter tactical
+alternatives, funded opening examples, and pipeline import linkage):
+
+```bash
+NORRUST_TEST_DRIVER=/absolute/path/to/greedy_driver \
+  python3 -m unittest tools.test_strategy_resilience_acceptance
+```
+
 For an exact-progress benchmark, resume the recorded checkpoint and send its
 complete installed policy and committed progress to the `routine_next` query.
 Record source, binary, policy, progress and checkpoint hashes, query timings,
