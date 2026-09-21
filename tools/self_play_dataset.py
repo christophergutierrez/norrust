@@ -38,9 +38,15 @@ def read_game(path):
     if records[-1].get('type') != 'terminal':
         raise ValueError(f'{path}: incomplete game')
     meta, terminal = records[0], records[-1]
-    if any(r.get('type') != 'snapshot' for r in records[1:-1]):
+    middle = records[1:-1]
+    unsupported = [r.get('type') for r in middle
+                   if r.get('type') not in ('snapshot', 'actions')]
+    if unsupported:
         raise ValueError(f'{path}: unexpected record inside trajectory')
-    snapshots = records[1:-1]
+    # Action records are optional evidence between boundaries. They do not
+    # create additional dataset positions; coverage remains explicit in the
+    # action record and metadata.
+    snapshots = [r for r in middle if r.get('type') == 'snapshot']
     count = terminal['side_turns_executed']
     expected = [('opening', 0)]
     for step in range(count):
