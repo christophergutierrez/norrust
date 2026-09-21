@@ -5,8 +5,10 @@
 //!   --team1 northerners --team2 undead --ai1 greedy-look-ahead --ai2 greedy \
 //!   --games 100
 
+use norrust_core::save::SaveState;
 use std::collections::HashSet;
 use std::env;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -54,6 +56,7 @@ struct Config {
     threads: usize,
     first: FirstPlayer,
     second_gold: u32,
+    record_dir: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -94,6 +97,7 @@ Options:
   --threads N           Worker threads (default: available CPUs)
   --first SIDE           team1 | team2 | coin-flip (default: team1)
   --second-gold N        Extra starting gold for the second player (default: 5)
+  --record-dir PATH     Write isolated state trajectories (directory must be new)
   --verbose             CSV header plus one line per game
   --compact             One comma-separated summary line
   -h, --help            Show this help"
@@ -139,6 +143,7 @@ fn parse_args() -> Config {
             .unwrap_or(1),
         first: FirstPlayer::Team1,
         second_gold: 5,
+        record_dir: None,
     };
     let args: Vec<String> = env::args().skip(1).collect();
     let mut i = 0;
@@ -162,6 +167,7 @@ fn parse_args() -> Config {
         }
         let value = &args[i + 1];
         match key.as_str() {
+            "--record-dir" => c.record_dir = Some(PathBuf::from(value)),
             "--scenario" => c.scenario = value.clone(),
             "--team1" => c.team1 = value.clone(),
             "--team2" => c.team2 = value.clone(),
@@ -478,6 +484,31 @@ fn play_turn(
     }
 }
 
+fn record_state(
+    writer: &mut Option<BufWriter<std::fs::File>>,
+    state: &GameState,
+    board: &str,
+    phase: &str,
+    step: u32,
+    recruits: [u32; 2],
+    next_id: u32,
+) {
+    if let Some(writer) = writer {
+        let mut save = SaveState::build(state, board, None, None, None, None);
+        // Recruitment in this runner owns its own ID allocator.
+        save.next_unit_id = next_id;
+        serde_json::to_writer(
+            &mut *writer,
+            &serde_json::json!({
+                "type": "snapshot", "phase": phase, "step": step,
+                "recruits": recruits, "state": save
+            }),
+        )
+        .expect("write trajectory snapshot");
+        writeln!(writer).expect("write trajectory newline");
+    }
+}
+
 fn run_game(c: &Config, game: u32) -> GameResult {
     let base = root();
     let data = base.join("data");
@@ -537,16 +568,75 @@ fn run_game(c: &Config, game: u32) -> GameResult {
     let mut rng = mix_seed(game_seed ^ 0xa0761d6478bd642f);
     let mut next_id = 3;
     let limit = safety_turns.saturating_mul(2).saturating_add(2);
-    for _ in 0..limit {
+    let board_path = base.join("scenarios").join(&c.scenario).join("board.toml");
+    let board_path = board_path.to_str().expect("UTF-8 board path");
+    let mut recording = c.record_dir.as_ref().map(|dir| {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dir.join(format!("game-{game:05}.ndjson")))
+            .expect("create trajectory");
+        let mut writer = BufWriter::new(file);
+        let meta = serde_json::json!({"type":"metadata", "schema_version":1,
+            "game":game, "input_seed":game_index, "engine_seed":game_seed,
+            "scenario":c.scenario, "factions":[c.team1,c.team2],
+            "algorithms":[ai_name(c.ai1),ai_name(c.ai2)], "first":first,
+            "starting_gold":starting_gold, "safety_side_turns":limit,
+            "coverage":"state_boundaries_only", "model_calls":0});
+        serde_json::to_writer(&mut writer, &meta).expect("write metadata");
+        writeln!(writer).expect("write newline");
+        writer
+    });
+    record_state(
+        &mut recording,
+        &state,
+        board_path,
+        "opening",
+        0,
+        recruits,
+        next_id,
+    );
+    for step in 0..limit {
         let side = state.active_faction;
         if side == 0 {
             recruits[0] += recruit(&mut state, 0, f1, &units, &mut next_id);
+            record_state(
+                &mut recording,
+                &state,
+                board_path,
+                "after_recruitment",
+                step,
+                recruits,
+                next_id,
+            );
             play_turn(&mut state, 0, c.ai1, &mut rng, f1, &units);
         } else {
             recruits[1] += recruit(&mut state, 1, f2, &units, &mut next_id);
+            record_state(
+                &mut recording,
+                &state,
+                board_path,
+                "after_recruitment",
+                step,
+                recruits,
+                next_id,
+            );
             play_turn(&mut state, 1, c.ai2, &mut rng, f2, &units);
         }
+        record_state(
+            &mut recording,
+            &state,
+            board_path,
+            "after_turn",
+            step + 1,
+            recruits,
+            next_id,
+        );
         if let Some(winner) = state.check_winner() {
+            if let Some(writer) = &mut recording {
+                writeln!(writer, "{}", serde_json::json!({"type":"terminal", "reason":"winner", "winner":winner, "side_turns_executed":step+1})).expect("write terminal");
+                writer.flush().expect("flush trajectory");
+            }
             let value = |side: u8| {
                 state
                     .units
@@ -567,6 +657,10 @@ fn run_game(c: &Config, game: u32) -> GameResult {
                 recruits,
             };
         }
+    }
+    if let Some(writer) = &mut recording {
+        writeln!(writer, "{}", serde_json::json!({"type":"terminal", "reason":"safety_cap", "winner":null, "side_turns_executed":limit})).expect("write terminal");
+        writer.flush().expect("flush trajectory");
     }
     GameResult {
         game,
@@ -677,6 +771,9 @@ fn ai_name(ai: AiKind) -> &'static str {
 
 fn main() {
     let c = Arc::new(parse_args());
+    if let Some(dir) = &c.record_dir {
+        std::fs::create_dir(dir).expect("record directory must be new with existing parent");
+    }
     let next = Arc::new(AtomicU32::new(1));
     let results = Arc::new(Mutex::new(Vec::with_capacity(c.games as usize)));
     let mut workers = Vec::new();

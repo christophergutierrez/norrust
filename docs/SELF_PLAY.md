@@ -223,3 +223,52 @@ yet. Default `--second-gold 5` is not that compensation.
 - Round clock: `GameState.sides_acted_this_round`; `turn` increments after both
   sides end a turn
 - Board: `scenarios/big_battle_6/board.toml`
+
+## Optional state trajectories
+
+Add `--record-dir PATH` to retain an opening snapshot, a snapshot after each
+recruitment phase, a snapshot after each algorithm turn, and an explicit terminal
+record. The directory must not exist and its parent must exist. Each game owns a
+separate `game-NNNNN.ndjson`; worker threads never share a trajectory file.
+Recording uses the existing `SaveState` representation and does not draw random
+numbers or change planning. Disk errors fail the run rather than silently losing
+records. A missing terminal means incomplete evidence, never a gameplay loss.
+
+These are **boundary trajectories**, not action traces. They support position
+value analysis, recruitment counts, village ownership, composition, and locating
+large changes between turns. They do not establish action order, why a unit lost
+HP, tactical intent, or the value of an unplayed alternative. The snapshot after
+an algorithm turn can include next-side upkeep; phase comparisons must respect
+that boundary. Preserve the source commit, local patch, binary hash, commands,
+and copies of unit definitions and scenario files alongside a research cohort.
+Save states retain engine RNG for replay; never expose it as a policy feature.
+
+For a cohort with lookahead on side 0 and greedy on side 1:
+
+```bash
+python3 -m tools.self_play_dataset /absolute/cohort/games \
+  --definitions /absolute/cohort/data/units \
+  --output /absolute/cohort/dataset
+```
+
+The output directory must be new. The tool validates complete boundary sequences,
+rejects duplicate configurations, and writes an analysis SQLite index, per-side
+position features in `positions.jsonl`, and summary/landmark reports. Its index is
+separate from the model-game catalog: these games have no model requests or
+invented model usage. Raw snapshots and archive hashes retain evidence links.
+Metadata includes factions, gold, initiative, algorithm identities and seeds.
+
+The outcome is an eventual win/loss label under the recorded policies, not an
+optimal-move label. Capped outcomes remain null. Train/validation/test splits use
+seed groups, keeping initiative, faction and gold variants with the same seed
+together. Reuse a seed for related variants. For stronger generalization tests,
+hold out whole faction matchups or maps as well. Adjacent snapshots are highly
+correlated; use games or paired seed groups as the statistical sampling unit.
+
+Landmark reports compare health-weighted material, villages, and cumulative
+recruits at rounds 5, 10 and 20 after both sides have acted. Games already ended
+are absent from later landmarks; reports state sample counts and cap counts.
+These associations do not isolate causes and must be stratified by matchup,
+gold and initiative before proposing scoring weights. Review large reversals
+and counterexamples, then test proposed weights on held-out games. Imitation
+training still requires separately reviewed action evidence.
