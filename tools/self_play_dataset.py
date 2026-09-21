@@ -40,10 +40,10 @@ def read_game(path):
     meta, terminal = records[0], records[-1]
     middle = records[1:-1]
     unsupported = [r.get('type') for r in middle
-                   if r.get('type') not in ('snapshot', 'actions')]
+    if r.get('type') not in ('snapshot', 'actions', 'recruitment')]
     if unsupported:
         raise ValueError(f'{path}: unexpected record inside trajectory')
-    # Action records are optional evidence between boundaries. They do not
+    # Action and recruitment records are optional evidence between boundaries. They do not
     # create additional dataset positions; coverage remains explicit in the
     # action record and metadata.
     snapshots = [r for r in middle if r.get('type') == 'snapshot']
