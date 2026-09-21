@@ -80,8 +80,10 @@ are not silently counted as uninterrupted benchmark games.
 
 Keep whole trajectories and their counterfactual branches in one evaluation
 split. A sampled alternative is useful for prioritizing investigation, but
-short horizons, one-opponent-response rollouts, censored samples, and finite
-candidate sets limit what it can establish.
+short horizons, bounded opponent-response rollouts, censored samples, and finite
+candidate sets limit what it can establish. Multi-round rollouts must report the
+completed opponent count and continuation count explicitly; an early terminal
+state is valid evidence for the shorter realized trajectory.
 
 For recorded-game analysis, inspect the SQLite catalog and coverage before
 opening individual archives. Missing usage, prompt, reasoning, boundary, and
