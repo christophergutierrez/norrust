@@ -9026,7 +9026,22 @@ def run(args: argparse.Namespace) -> int:
                 turn_intent = None
                 # Ask the engine for the complete legal action surface before
                 # the model call; legality is never reconstructed in Python.
+                query_cache: dict[str, dict[str, Any]] = {}
+
                 def exchange(request: dict[str, str]) -> dict[str, Any]:
+                    cacheable = (
+                        request.get("action") == "Query"
+                        and request.get("what") in {
+                            "tactical_surface", "turn_options", "recruit_options",
+                        }
+                        and isinstance(request.get("state_revision"), int)
+                    )
+                    cache_key = json.dumps(request, sort_keys=True, separators=(",", ":"))
+                    if cacheable and cache_key in query_cache:
+                        cached = copy.deepcopy(query_cache[cache_key])
+                        metadata["queries"] += 1
+                        record({"type": "query", "cached": True, "line": cached})
+                        return cached
                     try:
                         proc.stdin.write(json.dumps(request) + "\n")
                         proc.stdin.flush()
@@ -9041,6 +9056,8 @@ def run(args: argparse.Namespace) -> int:
                         raise RuntimeError("query_error: invalid driver response") from exc
                     metadata["queries"] += 1
                     record({"type": "query", "line": query_line})
+                    if cacheable and query_line.get("ok") is True:
+                        query_cache[cache_key] = copy.deepcopy(query_line)
                     return query_line
                 if strategy_mode:
                     # No prompt is built and no model is asked merely because
