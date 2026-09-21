@@ -12,6 +12,95 @@ from unittest.mock import Mock, patch
 from . import tactical_comparison as comparison
 
 
+class TacticalComparisonDefaultsCharacterizationTests(unittest.TestCase):
+  """Locks in the pre-generalization behavior of ``_materialize``/``_start``.
+
+  Stack 3 (decision_capsule.py) parameterizes the scenario, factions, gold,
+  seed, launch turns and repo root that used to be hardcoded here. These
+  tests pin the exact defaults so that generalizing the machinery cannot
+  silently change what the Stack 4 recruiter comparison (``run_comparison``/
+  ``main`` called with no arguments) does.
+  """
+
+  def test_materialize_defaults_to_the_recruiter_fixture_scenario_board(self):
+    with tempfile.TemporaryDirectory() as td:
+      directory = Path(td)
+      source = directory / "checkpoint.json"
+      source.write_text(json.dumps({
+        "board_path": "/somewhere/else/board.toml",
+        "save_state": {"board_path": "/somewhere/else/board.toml", "state_revision": 231},
+        "side_turns": 12, "boundary": "model", "pending_opponent_turn": False,
+      }), encoding="utf-8")
+      result_path = comparison._materialize(source, directory / "out.json")
+      data = json.loads(result_path.read_text(encoding="utf-8"))
+      expected_board = str(comparison.ROOT / "scenarios/big_battle_6/board.toml")
+      self.assertEqual(data["board_path"], expected_board)
+      self.assertEqual(data["save_state"]["board_path"], expected_board)
+
+  def test_materialize_honors_a_different_scenario_and_root(self):
+    with tempfile.TemporaryDirectory() as td:
+      directory = Path(td)
+      repo_root = directory / "repo"
+      board_dir = repo_root / "scenarios" / "other_scenario"
+      board_dir.mkdir(parents=True)
+      (board_dir / "board.toml").write_text("# board\n", encoding="utf-8")
+      source = directory / "checkpoint.json"
+      source.write_text(json.dumps({
+        "board_path": "/irrelevant/board.toml",
+        "save_state": {"board_path": "/irrelevant/board.toml", "state_revision": 5},
+        "side_turns": 1, "boundary": "model", "pending_opponent_turn": False,
+      }), encoding="utf-8")
+      result_path = comparison._materialize(
+        source, directory / "out.json", scenario="other_scenario", repo_root=repo_root)
+      data = json.loads(result_path.read_text(encoding="utf-8"))
+      expected_board = str(board_dir / "board.toml")
+      self.assertEqual(data["board_path"], expected_board)
+      self.assertEqual(data["save_state"]["board_path"], expected_board)
+
+  def test_start_builds_the_recruiter_fixture_argv_by_default(self):
+    with tempfile.TemporaryDirectory() as td:
+      driver = Path(td) / "driver"
+      driver.write_bytes(b"")
+      captured = {}
+
+      def fake_popen(argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        return Mock()
+
+      with patch.object(comparison.subprocess, "Popen", side_effect=fake_popen):
+        comparison._start(Path("checkpoint.json"), Path("checkpoints"), driver=driver)
+      self.assertEqual(captured["argv"], [
+        str(driver), "--scenario", "big_battle_6", "--faction0", "undead",
+        "--faction1", "undead", "--gold", "300", "--seed", "4477",
+        "--llm-side", "0", "--max-turns", "16", "--incremental-turns",
+        "--checkpoint-dir", "checkpoints", "--resume-checkpoint", "checkpoint.json",
+      ])
+      self.assertEqual(captured["kwargs"]["cwd"], comparison.ROOT)
+
+  def test_start_honors_overridden_launch_parameters(self):
+    with tempfile.TemporaryDirectory() as td:
+      driver = Path(td) / "driver"
+      driver.write_bytes(b"")
+      captured = {}
+
+      def fake_popen(argv, **kwargs):
+        captured["argv"] = argv
+        return Mock()
+
+      with patch.object(comparison.subprocess, "Popen", side_effect=fake_popen):
+        comparison._start(
+          Path("checkpoint.json"), Path("checkpoints"), driver=driver,
+          scenario="other_scenario", faction0="loyalists", faction1="rebels",
+          gold=150, seed=99, llm_side=1, max_turns=8, incremental_turns=False)
+      self.assertEqual(captured["argv"], [
+        str(driver), "--scenario", "other_scenario", "--faction0", "loyalists",
+        "--faction1", "rebels", "--gold", "150", "--seed", "99",
+        "--llm-side", "1", "--max-turns", "8",
+        "--checkpoint-dir", "checkpoints", "--resume-checkpoint", "checkpoint.json",
+      ])
+
+
 class TacticalComparisonBoundaryTests(unittest.TestCase):
   def test_checkpoint_requires_matching_digest_revision_and_model_boundary(self):
     with tempfile.TemporaryDirectory() as td:

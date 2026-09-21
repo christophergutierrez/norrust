@@ -674,3 +674,56 @@ class ProvenanceGapTests(GameAnalysisTestCase):
         report = build_report(str(self.log_path))
         self.assertEqual({}, {k: v for k, v in report["evidence"].items() if k == "missing"})
         self.assertTrue(report["provenance_gaps"])
+
+
+class EvaluateCapsuleTests(GameAnalysisTestCase):
+    """Stack 3: `evaluate` validates a capsule and states its capability.
+
+    A capsule that passes validation has NOT thereby earned the right to claim
+    client replay equivalence. The capability must be said out loud, because a
+    reader who sees only "ok" would otherwise infer the stronger claim.
+    """
+
+    def _capsule(self, **extra):
+        from tools.decision_capsule import build_capsule
+        fixture = Path(__file__).resolve().parents[1] / (
+            "tools/fixtures/decision_positions/promotion.json")
+        target = self.root / f"capsule-{len(extra)}"
+        build_capsule(fixture, target, source={"archive": "x", "game_id": "g"}, **extra)
+        return target
+
+    def test_board_only_capsule_does_not_claim_replay_equivalence(self):
+        from tools.game_analysis import run_evaluate
+        import argparse, io, contextlib
+        capsule = self._capsule()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = run_evaluate(argparse.Namespace(capsule=str(capsule), json=False))
+        text = buf.getvalue()
+        self.assertEqual(0, code)
+        self.assertIn("board_only", text)
+        self.assertIn("NOT full client replay equivalence", text)
+
+    def test_full_capsule_reports_full_capability(self):
+        from tools.game_analysis import run_evaluate
+        import argparse, io, contextlib
+        capsule = self._capsule(policy={"holds": []}, progress={},
+                                request_context={"harness_request_id": "r1"})
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = run_evaluate(argparse.Namespace(capsule=str(capsule), json=False))
+        self.assertEqual(0, code)
+        self.assertIn("full_client_replay", buf.getvalue())
+
+    def test_missing_capsule_directory_fails_clearly(self):
+        from tools.game_analysis import run_evaluate
+        import argparse
+        code = run_evaluate(argparse.Namespace(capsule=str(self.root / "nope"), json=False))
+        self.assertEqual(2, code)
+
+    def test_evaluate_launches_no_model(self):
+        """`evaluate` must never launch a paid model; paid play stays explicit."""
+        import tools.game_analysis as ga
+        source = Path(ga.__file__).read_text()
+        for forbidden in ("fireworks_backend", "codex_backend", "model_command"):
+            self.assertNotIn(forbidden, source)

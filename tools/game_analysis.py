@@ -46,6 +46,9 @@ try:
     )
     from .game_history import _read_usage_sidecar, import_game, open_history
     from .model_usage import dedupe_calls
+    from .decision_capsule import (CAPABILITY_BOARD_ONLY,
+                                   CAPABILITY_UNSUPPORTED_BOUNDARY,
+                                   validate_capsule)
 except ImportError:  # pragma: no cover - direct script compatibility
     from analysis_capture import (  # type: ignore
         ANALYSIS_MANIFEST_NAME,
@@ -59,6 +62,9 @@ except ImportError:  # pragma: no cover - direct script compatibility
     )
     from game_history import _read_usage_sidecar, import_game, open_history  # type: ignore
     from model_usage import dedupe_calls  # type: ignore
+    from decision_capsule import (CAPABILITY_BOARD_ONLY,  # type: ignore
+                                  CAPABILITY_UNSUPPORTED_BOUNDARY,
+                                  validate_capsule)
 
 
 def resolve_log_path(archive: str | Path) -> Path:
@@ -670,12 +676,44 @@ def run_import(db_path: str | Path, archive: str | Path) -> tuple[int, dict[str,
 # evaluate (stub -- a later stack)
 # ---------------------------------------------------------------------------
 
-def run_evaluate(_args: argparse.Namespace) -> int:
-    print(
-        "game_analysis evaluate: not implemented in this stack (stack 1 is "
-        "validate/report/import only); see tmp/analysis-exec/CONTRACT.md",
-        file=sys.stderr)
-    return 2
+def run_evaluate(args: argparse.Namespace) -> int:
+    """Validate, and optionally replay, an archived decision capsule.
+
+    `evaluate` never launches a paid model -- the plan reserves paid play for
+    an explicit bakeoff operation -- and never modifies the original archive.
+    Its driver work happens against a restored, isolated state, which is why
+    engine queries are legitimate here although capture forbids them during
+    live play.
+    """
+    capsule_dir = Path(args.capsule).resolve() if args.capsule else None
+    if capsule_dir is None:
+        print("game_analysis evaluate: --capsule is required", file=sys.stderr)
+        return 2
+    if not capsule_dir.is_dir():
+        print(f"game_analysis evaluate: no capsule directory at {capsule_dir}", file=sys.stderr)
+        return 2
+
+    result = validate_capsule(capsule_dir)
+    capability = result.get("capability")
+    problems = result.get("problems") or []
+
+    if args.json:
+        print(json.dumps(result, sort_keys=True))
+    else:
+        print(f"capsule:          {capsule_dir}")
+        print(f"capability:       {capability}")
+        if capability == CAPABILITY_BOARD_ONLY:
+            # Saying this out loud matters: a board-only capsule can support
+            # board analysis but cannot claim client replay equivalence, and a
+            # reader must not infer the stronger claim from a passing validate.
+            print("                  companion client state is absent; board analysis only,"
+                  " NOT full client replay equivalence")
+        elif capability == CAPABILITY_UNSUPPORTED_BOUNDARY:
+            print("                  this boundary cannot be restored exactly;"
+                  " the board was NOT advanced to make it convenient")
+        for problem in problems:
+            print(f"  problem: {problem}")
+    return 0 if result.get("ok") else 1
 
 
 # ---------------------------------------------------------------------------
@@ -697,9 +735,10 @@ def main(argv: list[str]) -> int:
     import_parser.add_argument("--db", required=True)
     import_parser.add_argument("--archive", required=True)
 
-    evaluate_parser = sub.add_parser("evaluate", help="not implemented in stack 1")
-    evaluate_parser.add_argument("--archive", required=False)
-    evaluate_parser.add_argument("--db", required=False)
+    evaluate_parser = sub.add_parser(
+        "evaluate", help="validate an archived decision capsule; never launches a paid model")
+    evaluate_parser.add_argument("--capsule", required=True)
+    evaluate_parser.add_argument("--json", action="store_true")
 
     args = parser.parse_args(argv)
 

@@ -1897,6 +1897,50 @@ not add a driver query; the prompt hashes do not exist when the manifest is
 written, and are recorded instead on every `model_request` record, where they
 are actually observed.
 
+### Decision capsules and offline evaluation
+
+A recorded decision can be lifted into a portable capsule and restored in
+isolation, without a model and without touching the original archive:
+
+```bash
+python3 -m tools.game_analysis evaluate --capsule /absolute/capsule
+python3 -m tools.game_analysis evaluate --capsule /absolute/capsule --json
+```
+
+A capsule keeps the driver checkpoint verbatim, with the machine-specific
+scenario board path replaced by a placeholder resolved at load time, so a
+capsule copied to another directory still validates and restores. The driver
+verifies the board digest itself before resuming.
+
+Every capsule states its own capability, and a passing validation does not by
+itself license the strongest reading:
+
+- `full_client_replay` -- checkpoint plus policy, routine progress and request
+  context are all present.
+- `board_only` -- the checkpoint restores, but companion client state is
+  absent. This supports board analysis and does NOT establish client replay
+  equivalence. Missing policy state is reported as reduced capability, never
+  silently replaced with a default policy.
+- `unsupported_boundary` -- the boundary cannot be restored exactly. The board
+  is never advanced to make a capsule convenient; a capsule of a different
+  position is not evidence about this decision.
+
+A deterministic replay that does not reproduce the recorded revision, events
+and state is an integrity defect, reported as such. It is not evidence about
+the quality of the play.
+
+`evaluate` never launches a paid model; paid play remains an explicit bakeoff
+operation. Its engine queries run against a restored, isolated state, which is
+why they are legitimate here although capture adds none during live play.
+
+Factual diagnostics are computed from authoritative engine, event and registry
+data. They distinguish a unit that merely has an unused flag from one that had
+a useful legal action available, so an idle unit with nothing worth doing is
+not reported as a missed opportunity. Straight-line proximity is labelled a
+heuristic and never reported as protection. Candidate coverage is reported as
+finite, never as exhaustive legal coverage. A value that cannot be determined
+is reported as unknown rather than as zero.
+
 ## Automatic progress recording
 
 `tools.llm_supervisor` records progress during open provider requests without

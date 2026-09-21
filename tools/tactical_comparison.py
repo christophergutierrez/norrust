@@ -30,16 +30,30 @@ DRIVER = Path(os.environ.get(
 )).resolve()
 NO_SWEEP_FINISH = {"action": "FinishWithGreedy", "groups": [], "holds": []}
 
+# Launch defaults match the Stack 4 recruiter fixture exactly, so every
+# existing call site (and its tests) keeps its original behavior when it
+# passes no launch arguments. Stack 3's decision_capsule module supplies its
+# own values for any other fixture instead of relying on these defaults.
+DEFAULT_SCENARIO = "big_battle_6"
+DEFAULT_FACTION0 = "undead"
+DEFAULT_FACTION1 = "undead"
+DEFAULT_GOLD = 300
+DEFAULT_SEED = 4477
+DEFAULT_LLM_SIDE = 0
+DEFAULT_MAX_TURNS = 16
+DEFAULT_INCREMENTAL_TURNS = True
+
 
 def _read_json(path: Path) -> dict[str, Any]:
   return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _materialize(source: Path, destination: Path) -> Path:
+def _materialize(source: Path, destination: Path, *, scenario: str = DEFAULT_SCENARIO,
+                 repo_root: Path = ROOT) -> Path:
   data = _read_json(source)
-  board = ROOT / "scenarios/big_battle_6/board.toml"
+  board = repo_root / "scenarios" / scenario / "board.toml"
   if not board.is_file():
-    raise RuntimeError("maintained big_battle_6 board is missing")
+    raise RuntimeError(f"maintained {scenario} board is missing")
   data["board_path"] = str(board)
   data["save_state"]["board_path"] = str(board)
   encoded = json.dumps(data, separators=(",", ":")).encode("utf-8")
@@ -55,15 +69,24 @@ def _materialize(source: Path, destination: Path) -> Path:
   return path
 
 
-def _start(checkpoint: Path, checkpoint_dir: Path) -> subprocess.Popen[bytes]:
-  if not DRIVER.is_file():
+def _start(checkpoint: Path, checkpoint_dir: Path, *, driver: Path = DRIVER,
+          scenario: str = DEFAULT_SCENARIO, faction0: str = DEFAULT_FACTION0,
+          faction1: str = DEFAULT_FACTION1, gold: int = DEFAULT_GOLD,
+          seed: int = DEFAULT_SEED, llm_side: int = DEFAULT_LLM_SIDE,
+          max_turns: int = DEFAULT_MAX_TURNS,
+          incremental_turns: bool = DEFAULT_INCREMENTAL_TURNS,
+          repo_root: Path = ROOT) -> subprocess.Popen[bytes]:
+  if not driver.is_file():
     raise RuntimeError("build the source-matched greedy_driver first")
+  argv = [str(driver), "--scenario", scenario, "--faction0", faction0,
+          "--faction1", faction1, "--gold", str(gold), "--seed", str(seed),
+          "--llm-side", str(llm_side), "--max-turns", str(max_turns)]
+  if incremental_turns:
+    argv.append("--incremental-turns")
+  argv += ["--checkpoint-dir", str(checkpoint_dir), "--resume-checkpoint", str(checkpoint)]
   return subprocess.Popen(
-    [str(DRIVER), "--scenario", "big_battle_6", "--faction0", "undead",
-     "--faction1", "undead", "--gold", "300", "--seed", "4477",
-     "--llm-side", "0", "--max-turns", "16", "--incremental-turns",
-     "--checkpoint-dir", str(checkpoint_dir), "--resume-checkpoint", str(checkpoint)],
-    cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    argv,
+    cwd=repo_root, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
     stderr=subprocess.PIPE, bufsize=0,
   )
 
@@ -229,20 +252,31 @@ def _terminal_state(records: list[dict[str, Any]]) -> dict[str, Any] | None:
   return None
 
 
-def _case_result(case: str, option_ids: list[str], reference: dict[str, Any]) -> dict[str, Any]:
+def _case_result(case: str, option_ids: list[str], reference: dict[str, Any], *,
+                 fixture: Path = FIXTURE, driver: Path = DRIVER,
+                 scenario: str = DEFAULT_SCENARIO, faction0: str = DEFAULT_FACTION0,
+                 faction1: str = DEFAULT_FACTION1, gold: int = DEFAULT_GOLD,
+                 seed: int = DEFAULT_SEED, llm_side: int = DEFAULT_LLM_SIDE,
+                 max_turns: int = DEFAULT_MAX_TURNS,
+                 incremental_turns: bool = DEFAULT_INCREMENTAL_TURNS,
+                 repo_root: Path = ROOT) -> dict[str, Any]:
   with tempfile.TemporaryDirectory(prefix="norrust-tactical-") as td:
     root = Path(td)
     checkpoint_dir = root / "checkpoints"
     checkpoint_dir.mkdir()
-    checkpoint = _materialize(FIXTURE / "checkpoint.json", root / "checkpoint.json")
-    process = _start(checkpoint, checkpoint_dir)
+    checkpoint = _materialize(fixture / "checkpoint.json", root / "checkpoint.json",
+                              scenario=scenario, repo_root=repo_root)
+    process = _start(checkpoint, checkpoint_dir, driver=driver, scenario=scenario,
+                     faction0=faction0, faction1=faction1, gold=gold, seed=seed,
+                     llm_side=llm_side, max_turns=max_turns,
+                     incremental_turns=incremental_turns, repo_root=repo_root)
     records: list[dict[str, Any]] = []
     try:
       initial_records = _read_until(process, "state")
       records.extend(initial_records)
       initial_state = initial_records[-1]
       revision = initial_state["state_revision"]
-      metadata = _read_json(FIXTURE / "metadata.json")
+      metadata = _read_json(fixture / "metadata.json")
       routine_reply, query_records = _query(process, {
         "action": "Query", "what": "routine_next", "state_revision": revision,
         "policy": metadata["policy"], "progress": metadata["progress"],
@@ -437,15 +471,21 @@ def _case_result(case: str, option_ids: list[str], reference: dict[str, Any]) ->
       _close(process)
 
 
-def run_comparison() -> dict[str, Any]:
-  reference = _read_json(FIXTURE / "stack4_reference.json")
-  source_checkpoint = FIXTURE / reference["source_checkpoint"]
-  source_metadata = FIXTURE / "metadata.json"
+def run_comparison(*, fixture: Path = FIXTURE, driver: Path = DRIVER,
+                   scenario: str = DEFAULT_SCENARIO, faction0: str = DEFAULT_FACTION0,
+                   faction1: str = DEFAULT_FACTION1, gold: int = DEFAULT_GOLD,
+                   seed: int = DEFAULT_SEED, llm_side: int = DEFAULT_LLM_SIDE,
+                   max_turns: int = DEFAULT_MAX_TURNS,
+                   incremental_turns: bool = DEFAULT_INCREMENTAL_TURNS,
+                   repo_root: Path = ROOT) -> dict[str, Any]:
+  reference = _read_json(fixture / "stack4_reference.json")
+  source_checkpoint = fixture / reference["source_checkpoint"]
+  source_metadata = fixture / "metadata.json"
   if hashlib.sha256(source_checkpoint.read_bytes()).hexdigest() != reference["source_checkpoint_sha256"]:
     raise RuntimeError("fixture checkpoint provenance hash does not match stack4_reference.json")
   if hashlib.sha256(source_metadata.read_bytes()).hexdigest() != reference["source_metadata_sha256"]:
     raise RuntimeError("fixture metadata provenance hash does not match stack4_reference.json")
-  driver_sha256 = hashlib.sha256(DRIVER.read_bytes()).hexdigest() if DRIVER.is_file() else None
+  driver_sha256 = hashlib.sha256(driver.read_bytes()).hexdigest() if driver.is_file() else None
   alternatives = reference["alternatives"]
   cases = [
     ("relocation_pressure", alternatives["relocation_pressure"]["option_ids"]),
@@ -453,12 +493,16 @@ def run_comparison() -> dict[str, Any]:
     ("no_sweep", []),
     ("always_first", [reference["option_ids"][0]]),
   ]
-  results = [_case_result(name, ids, reference) for name, ids in cases]
+  results = [_case_result(name, ids, reference, fixture=fixture, driver=driver,
+                          scenario=scenario, faction0=faction0, faction1=faction1,
+                          gold=gold, seed=seed, llm_side=llm_side, max_turns=max_turns,
+                          incremental_turns=incremental_turns, repo_root=repo_root)
+             for name, ids in cases]
   return {
-    "fixture": str(FIXTURE.relative_to(ROOT)),
+    "fixture": str(fixture.relative_to(repo_root)),
     "source_checkpoint_sha256": reference["source_checkpoint_sha256"],
     "source_metadata_sha256": reference["source_metadata_sha256"],
-    "driver_path": str(DRIVER),
+    "driver_path": str(driver),
     "driver_sha256": driver_sha256,
     "state_revision": reference["state_revision"],
     "horizon": "one controlled boundary plus one actual Greedy opponent turn",
