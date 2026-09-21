@@ -184,7 +184,7 @@ fn final_nonsampling_preview_is_pre_finish_and_does_not_claim_a_sweep() {
         .expect("preview status");
     assert_eq!(status["ok"], true);
     let body = &status["body"];
-    assert_eq!(body["sampling"], false);
+    assert_eq!(body["bounded_rollout"], false);
     assert_eq!(body["coverage"]["forecast"], "conditional_pre_finish");
     assert_eq!(body["coverage"]["delegated_sweep"], "unavailable");
     assert_eq!(body["coverage"]["post_sweep"], "unavailable");
@@ -205,17 +205,154 @@ fn bounded_preview_reports_isolated_finish_and_opponent_coverage() {
     let status = lines.iter().find(|line| line["type"] == "status").expect("preview status");
     assert_eq!(status["ok"], true);
     let body = &status["body"];
-    assert_eq!(body["sampling"], true);
+    assert_eq!(body["bounded_rollout"], true);
     assert_eq!(body["coverage"]["post_sweep"], "modeled");
     let candidate = &body["candidates"][0];
     assert_eq!(candidate["observation_stage"], "post_opponent_response");
-    assert_eq!(candidate["post_sweep"]["policy"], "driver_greedy_one_response_v1");
+    assert_eq!(candidate["post_sweep"]["policy"], "driver_greedy_one_response_v2");
+    assert_eq!(candidate["post_sweep"]["sample_count"], 1);
+    // No `evaluation_seed` was requested, so the driver falls back to its
+    // documented default seed (unchanged from the old hardcoded constant).
     assert_eq!(candidate["post_sweep"]["evaluation_seed"], 0x5eed5eed5eed5eedu64);
     let post_finish = &candidate["post_sweep"]["stages"]["post_finish"];
     assert!(post_finish.is_object());
     assert!(post_finish["units_detail"].is_array());
     assert!(post_finish["villages"].is_array());
     assert!(post_finish["sides"][0]["material_cost"].is_number());
+}
+
+// The S3 duel fixture pairs two adjacent "Brawler" leaders (16 strikes at 1
+// damage each) on a keep with 50% defense, so a full attack's total damage is
+// genuinely stochastic (binomial(16, 0.5)) rather than the S2 fixture's
+// deterministic 0%-defense duel. `preview_batch(..., mode="bounded_rollout")`
+// candidates below request an explicit `evaluation_seed`; each side's HP
+// after the modeled opponent response is compared across seeds/candidates to
+// confirm the fix's actual behavior, not just its declared shape.
+fn s3_stochastic_duel_args() -> [&'static str; 8] {
+    [
+        "--scenario", "duel", "--faction0", "brawler_a", "--faction1", "brawler_b",
+        "--max-turns", "1",
+    ]
+}
+
+fn s3_stochastic_duel_env() -> [(&'static str, &'static str); 1] {
+    [(
+        "NORRUST_TEST_ROOT_DIR",
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/s3_stochastic_duel"),
+    )]
+}
+
+fn bounded_rollout_post_sweep(lines: &[Value]) -> Value {
+    let status = lines.iter().find(|line| line["type"] == "status").expect("preview status");
+    assert_eq!(status["ok"], true);
+    status["body"]["candidates"][0]["post_sweep"].clone()
+}
+
+#[test]
+fn bounded_rollout_same_seed_is_reproducible() {
+    let query = |seed: u64| {
+        format!(
+            r#"{{"action":"Query","what":"preview_batch","state_revision":0,"phase":"final","mode":"bounded_rollout","evaluation_seed":{seed},"candidates":[[{{"action":"EndTurn"}}]]}}
+"#
+        )
+    };
+    let first = run_driver_with_env(&s3_stochastic_duel_args(), &query(1), &s3_stochastic_duel_env());
+    let second = run_driver_with_env(&s3_stochastic_duel_args(), &query(1), &s3_stochastic_duel_env());
+    let first_sweep = bounded_rollout_post_sweep(&first);
+    let second_sweep = bounded_rollout_post_sweep(&second);
+    assert_eq!(first_sweep["evaluation_seed"], 1);
+    assert_eq!(first_sweep, second_sweep, "identical evaluation_seed must reproduce identical rollout results");
+}
+
+#[test]
+fn bounded_rollout_different_seeds_diverge_for_stochastic_combat() {
+    let query = |seed: u64| {
+        format!(
+            r#"{{"action":"Query","what":"preview_batch","state_revision":0,"phase":"final","mode":"bounded_rollout","evaluation_seed":{seed},"candidates":[[{{"action":"EndTurn"}}]]}}
+"#
+        )
+    };
+    let seed1 = run_driver_with_env(&s3_stochastic_duel_args(), &query(1), &s3_stochastic_duel_env());
+    let seed2 = run_driver_with_env(&s3_stochastic_duel_args(), &query(2), &s3_stochastic_duel_env());
+    let sweep1 = bounded_rollout_post_sweep(&seed1);
+    let sweep2 = bounded_rollout_post_sweep(&seed2);
+    // Both leaders survive at 50% defense with max_hp=40 against a 16-strike,
+    // 1-damage attack, so `post_opponent` is present for both seeds and its
+    // side HP is a direct readout of the stochastic outcome under that seed.
+    let hp1 = &sweep1["stages"]["post_opponent"]["sides"];
+    let hp2 = &sweep2["stages"]["post_opponent"]["sides"];
+    assert_ne!(hp1, hp2, "different evaluation_seed values must be able to produce different stochastic outcomes");
+}
+
+#[test]
+fn bounded_rollout_candidate_combat_and_opponent_response_share_one_rng_stream() {
+    // Same evaluation_seed, two candidates: one that ends the turn immediately
+    // and one that spends the model's own attack (consuming 16 more RNG
+    // draws) before ending the turn. If the opponent's response reseeded the
+    // RNG (the old, buggy behavior), both candidates' post_opponent stage
+    // would be identical, since they'd both replay from the same fixed
+    // starting point regardless of what the candidate itself consumed. Seeing
+    // different post_opponent outcomes proves the stream is continuous.
+    let lines = run_driver_with_env(
+        &s3_stochastic_duel_args(),
+        r#"{"action":"Query","what":"preview_batch","state_revision":0,"phase":"final","mode":"bounded_rollout","evaluation_seed":1,"candidates":[[{"action":"EndTurn"}],[{"action":"Attack","attacker_id":1,"defender_id":2},{"action":"EndTurn"}]]}
+"#,
+        &s3_stochastic_duel_env(),
+    );
+    let status = lines.iter().find(|line| line["type"] == "status").expect("preview status");
+    assert_eq!(status["ok"], true);
+    let candidates = status["body"]["candidates"].as_array().expect("candidates");
+    assert_eq!(candidates.len(), 2);
+    let no_attack_post_finish = &candidates[0]["post_sweep"]["stages"]["post_finish"]["sides"];
+    let with_attack_post_finish = &candidates[1]["post_sweep"]["stages"]["post_finish"]["sides"];
+    // Sanity check: the candidate that attacks actually changed the pre-opponent
+    // state; the one that didn't attack left both leaders full health.
+    assert_ne!(no_attack_post_finish, with_attack_post_finish);
+    let no_attack_post_opponent = &candidates[0]["post_sweep"]["stages"]["post_opponent"]["sides"];
+    let with_attack_post_opponent = &candidates[1]["post_sweep"]["stages"]["post_opponent"]["sides"];
+    assert_ne!(
+        no_attack_post_opponent, with_attack_post_opponent,
+        "the candidate's own RNG consumption must shift the opponent's rolled outcome -- \
+         no second reset may sit between candidate execution and the opponent response"
+    );
+}
+
+#[test]
+fn bounded_rollout_never_mutates_the_live_state_rng() {
+    let fixture_env = s3_stochastic_duel_env();
+    // Baseline: a real Attack with no preceding preview.
+    let baseline = run_driver_with_env(
+        &s3_stochastic_duel_args(),
+        "[{\"action\":\"Attack\",\"attacker_id\":1,\"defender_id\":2},{\"action\":\"EndTurn\"}]\n",
+        &fixture_env,
+    );
+    // Same real Attack, but preceded by a bounded-rollout preview against the
+    // live state. If the preview mutated the live RNG (rather than running on
+    // a clone), this Attack would draw from a different point in the stream
+    // and land on different damage than the baseline.
+    let after_preview = run_driver_with_env(
+        &s3_stochastic_duel_args(),
+        concat!(
+            "{\"action\":\"Query\",\"what\":\"preview_batch\",\"state_revision\":0,\"phase\":\"final\",",
+            "\"mode\":\"bounded_rollout\",\"evaluation_seed\":99,\"candidates\":[[{\"action\":\"EndTurn\"}]]}\n",
+            "[{\"action\":\"Attack\",\"attacker_id\":1,\"defender_id\":2},{\"action\":\"EndTurn\"}]\n",
+        ),
+        &fixture_env,
+    );
+    let attack_event = |lines: &[Value]| -> Value {
+        lines
+            .iter()
+            .find(|line| line["type"] == "events" && line["events"][0]["kind"] == "attack")
+            .expect("attack event")["events"][0]
+            .clone()
+    };
+    let baseline_attack = attack_event(&baseline);
+    let after_preview_attack = attack_event(&after_preview);
+    assert_eq!(
+        baseline_attack["damage_to_attacker"], after_preview_attack["damage_to_attacker"],
+        "a bounded rollout preview must not perturb the live state's RNG"
+    );
+    assert_eq!(baseline_attack["damage_to_defender"], after_preview_attack["damage_to_defender"]);
 }
 
 #[test]

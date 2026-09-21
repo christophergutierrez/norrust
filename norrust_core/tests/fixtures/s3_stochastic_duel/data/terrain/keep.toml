@@ -1,0 +1,14 @@
+# TEST-ONLY terrain fixture for the S3 bounded-rollout evaluation-seed tests.
+#
+# default_defense = 50 gives every hit against a unit standing here a 50%
+# chance (Rng::roll_hit(50)), so combat resolved on this tile is genuinely
+# stochastic -- unlike the S2 duel fixture's 0%-defense keep, which is
+# deterministic by construction. This is what lets these tests show that two
+# different `evaluation_seed` values produce different combat outcomes.
+id = "keep"
+name = "Keep"
+symbol = "k"
+default_defense = 50
+default_movement_cost = 1
+healing = 0
+color = "#c8a030"

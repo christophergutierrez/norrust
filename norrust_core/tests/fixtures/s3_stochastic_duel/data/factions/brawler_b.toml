@@ -1,0 +1,7 @@
+# TEST-ONLY faction fixture for the S3 bounded-rollout evaluation-seed tests.
+# No recruiting is used by these tests, so recruits stays empty.
+id = "brawler_b"
+name = "Brawler B Faction"
+leader_def = "Brawler"
+recruits = []
+starting_gold = 0

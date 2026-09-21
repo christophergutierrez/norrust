@@ -329,3 +329,66 @@ class RevisionConflictTests(unittest.TestCase):
         source={"archive": "x", "game_id": "g"},
         decision={"decision_id": "d1"})
       self.assertNotIn("state_revision_conflict", manifest["decision"])
+
+
+@unittest.skipUnless(
+  (Path(os.environ.get("NORRUST_TEST_DRIVER",
+                       ROOT / "norrust_core/target/debug/greedy_driver"))).is_file(),
+  "built greedy_driver required; run tools.fast_check first")
+class CapsuleQueryAdapterTests(unittest.TestCase):
+  """The seam between a restored capsule and the bounded evaluator.
+
+  The evaluator is a pure function of a callable so it can be tested without a
+  driver, which leaves exactly one thing unproven: that the adapter really
+  speaks the driver's protocol. This test closes that gap against a real
+  process rather than a mock.
+  """
+
+  def _driver(self):
+    return Path(os.environ.get("NORRUST_TEST_DRIVER",
+                               ROOT / "norrust_core/target/debug/greedy_driver"))
+
+  def test_adapter_drives_a_real_bounded_evaluation(self):
+    from . import bounded_evaluation as be
+    fixture = ROOT / "tools/fixtures/decision_positions/promotion.json"
+    with tempfile.TemporaryDirectory() as td:
+      root = Path(td)
+      capsule.build_capsule(fixture, root / "cap", source={"archive": "x", "game_id": "g"})
+      handle = capsule.restore_capsule(root / "cap", self._driver(), root / "ws")
+      try:
+        query = capsule.capsule_query_fn(handle)
+        revision = handle.observation["state_revision"]
+        result = be.evaluate(
+          query, state_revision=revision, model_side=0, opponent_side=1,
+          actual_choice={"orders": [{"action": "EndTurn"}]},
+          config=be.EvaluationConfig(seed_schedule=(1, 2, 3)))
+      finally:
+        capsule.close_capsule_session(handle)
+    candidate = result["candidates"][0]
+    self.assertEqual([1, 2, 3], list(candidate["completed_seeds"]))
+    self.assertEqual([], list(candidate["censored_seeds"]))
+    self.assertTrue(candidate["legal"])
+
+  def test_best_candidate_never_claims_an_optimal_move(self):
+    """A ranking over tested candidates is not a claim about the position."""
+    from . import bounded_evaluation as be
+    fixture = ROOT / "tools/fixtures/decision_positions/promotion.json"
+    with tempfile.TemporaryDirectory() as td:
+      root = Path(td)
+      capsule.build_capsule(fixture, root / "cap", source={"archive": "x", "game_id": "g"})
+      handle = capsule.restore_capsule(root / "cap", self._driver(), root / "ws")
+      try:
+        query = capsule.capsule_query_fn(handle)
+        result = be.evaluate(
+          query, state_revision=handle.observation["state_revision"],
+          model_side=0, opponent_side=1,
+          actual_choice={"orders": [{"action": "EndTurn"}]},
+          config=be.EvaluationConfig(
+            seed_schedule=(1, 2),
+            score_fn=lambda outcome: (outcome or {}).get("gold_after", 0),
+            score_name="gold_after_predeclared"))
+      finally:
+        capsule.close_capsule_session(handle)
+    verdict = result["best_candidate"]["verdict"]
+    self.assertIn("best among tested candidates under this evaluator", verdict)
+    self.assertNotIn("optimal move", verdict)

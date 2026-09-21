@@ -960,18 +960,26 @@ fn rollout_state_summary(state: &GameState) -> Value {
     })
 }
 
-/// Run an isolated, deterministic illustration of the selected finish and one
-/// opponent response. This never mutates the live state or its RNG.
+/// Default evaluation seed for a bounded rollout when the query omits
+/// `evaluation_seed`. Kept so existing callers see unchanged behavior.
+const DEFAULT_EVALUATION_SEED: u64 = 0x5eed_5eed_5eed_5eed;
+
+/// Run an isolated illustration of the selected finish and one opponent
+/// response, continuing the single RNG stream that was seeded from
+/// `evaluation_seed` before the candidate's own orders executed. This is one
+/// sample drawn under one seed, not a statistical distribution -- a
+/// stochastic combat fixture needs a different `evaluation_seed` to see a
+/// different sample. This never mutates the live state or its RNG (the
+/// rollout runs entirely on a clone).
 fn bounded_rollout_summary(
-    mut state: GameState,
+    state: GameState,
     next_id: u32,
     model_side: u8,
     factions: &[Faction; 2],
     units: &Registry<UnitDef>,
     own_event_count: usize,
+    evaluation_seed: u64,
 ) -> Value {
-    const EVALUATION_SEED: u64 = 0x5eed_5eed_5eed_5eed;
-    state.rng = Rng::new(EVALUATION_SEED);
     let post_finish = rollout_state_summary(&state);
     let mut opponent_state = state.clone();
     let mut opponent_next_id = next_id;
@@ -991,9 +999,9 @@ fn bounded_rollout_summary(
         }
     }
     json!({
-        "evaluation_seed": EVALUATION_SEED,
-        "policy": "driver_greedy_one_response_v1",
-        "sampling": true,
+        "evaluation_seed": evaluation_seed,
+        "policy": "driver_greedy_one_response_v2",
+        "sample_count": 1,
         "stages": {
             "post_finish": post_finish,
             "post_opponent": if opponent_error.is_none() && opponent_event_count > 0 {
@@ -3388,6 +3396,10 @@ fn interactive_protocol_game(mut c: Config) {
                     let phase = parsed.get("phase").and_then(Value::as_str).unwrap_or("final");
                     let mode = parsed.get("mode").and_then(Value::as_str).unwrap_or("forecast");
                     let bounded_rollout = mode == "bounded_rollout";
+                    let evaluation_seed = parsed
+                        .get("evaluation_seed")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(DEFAULT_EVALUATION_SEED);
                     if parsed.get("state_revision").and_then(Value::as_u64)
                         != Some(state.state_revision)
                     {
@@ -3432,9 +3444,12 @@ fn interactive_protocol_game(mut c: Config) {
                             // A bounded comparison is an isolated illustration. Reset the
                             // RNG before executing the candidate itself, not only before the
                             // opponent response, so live RNG state cannot influence the branch.
+                            // The seeded stream is NOT reset again before the opponent
+                            // response -- candidate combat and opponent combat draw from
+                            // the same continuous stream, as a real turn would.
                             let mut preview_source = state.clone();
                             if bounded_rollout {
-                                preview_source.rng = Rng::new(0x5eed_5eed_5eed_5eed);
+                                preview_source.rng = Rng::new(evaluation_seed);
                             }
                             let mut execution = execute_model_batch(preview_source, next_id, orders, c.llm_side, &factions, &units, c.disable_recruit_batch, bounded_rollout);
                             let mut valid = execution.preview_error.is_none() && execution.results.len() == orders.len() && execution.results.iter().all(|result| result.get("ok") == Some(&Value::Bool(true)));
@@ -3470,6 +3485,7 @@ fn interactive_protocol_game(mut c: Config) {
                                     &factions,
                                     &units,
                                     execution.events.len(),
+                                    evaluation_seed,
                                 ))
                             } else {
                                 None
@@ -3489,7 +3505,7 @@ fn interactive_protocol_game(mut c: Config) {
                                     "affordable_recruitment_remaining":execution.pre_end_recruitment_remaining}})
                         }).collect::<Vec<_>>();
                             json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,
-                            "body":{"sampling":bounded_rollout,"mode":mode,"phase":phase,"coverage":if bounded_rollout {json!({"forecast":"bounded_rollout","delegated_sweep":"modeled","post_sweep":"modeled"})} else {json!({"forecast":"conditional_pre_finish","delegated_sweep":"unavailable","threats":"pre_finish","post_sweep":"unavailable"})},"candidates":previews}})
+                            "body":{"bounded_rollout":bounded_rollout,"mode":mode,"phase":phase,"coverage":if bounded_rollout {json!({"forecast":"bounded_rollout","delegated_sweep":"modeled","post_sweep":"modeled"})} else {json!({"forecast":"conditional_pre_finish","delegated_sweep":"unavailable","threats":"pre_finish","post_sweep":"unavailable"})},"candidates":previews}})
                         }
                     }
                 }

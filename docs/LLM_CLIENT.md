@@ -1941,6 +1941,41 @@ heuristic and never reported as protection. Candidate coverage is reported as
 finite, never as exhaustive legal coverage. A value that cannot be determined
 is reported as unknown rather than as zero.
 
+### Bounded alternative evaluation
+
+For a restored decision, several legal plans can be evaluated from the same
+position and compared across independent evaluation seeds.
+
+The driver's bounded rollout takes an explicit `evaluation_seed`. That seed is
+applied once, before the candidate's own orders execute, and the same stream
+continues through candidate combat, the finish or delegated sweep, and the
+opponent response. Different seeds therefore produce genuinely different
+outcomes. Because differing actions consume random numbers differently, equal
+seeds do not guarantee identical combat events; the seed schedule improves
+reproducibility without claiming perfect event pairing.
+
+Each rollout reports `sample_count: 1`. One rollout under one seed is one
+sample, not a distribution. The rollout policy is versioned
+(`driver_greedy_one_response_v2`); the previous version reset the evaluation
+seed a second time before the opponent response, which made that response
+identical for every candidate.
+
+Exploration defaults are at most 16 candidates, 16 declared seeds, one
+opponent response, and a 120-second wall ceiling per decision. These are
+exploration defaults, not statistically sufficient proof. The recorded choice
+and the legal finish keep reserved slots before anything else is pruned.
+
+A candidate or sample that times out or fails is censored and stays visible.
+It is never recorded as a zero outcome and never as a win, and a candidate
+whose legality was never determined is reported as unknown rather than as
+illegal. When candidates completed different numbers of samples, they are
+compared on the matched seed subset and the report says so.
+
+Results are reported as "best among tested candidates under this evaluator"
+and as a "sampled value gap". A ranking over the candidates that happened to
+be tested is not a claim about the best action in the position, and zero
+deaths across a seed set is not a guarantee of safety.
+
 ## Automatic progress recording
 
 `tools.llm_supervisor` records progress during open provider requests without

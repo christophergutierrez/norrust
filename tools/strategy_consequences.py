@@ -138,7 +138,7 @@ def extract_candidate_consequences(
         return _unavailable_consequences(reason="stale_state_revision")
     if preview_body.get("mode") != "forecast":
         return _unavailable_consequences(reason="forecast_mode_invalid")
-    if "sampling" in preview_body and preview_body.get("sampling") is not False:
+    if "bounded_rollout" in preview_body and preview_body.get("bounded_rollout") is not False:
         return _unavailable_consequences(reason="forecast_sampling_invalid")
     phase = preview_body.get("phase")
     if phase not in _FORECAST_PHASES:

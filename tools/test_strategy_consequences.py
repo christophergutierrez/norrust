@@ -17,7 +17,7 @@ class StrategyConsequencesTests(unittest.TestCase):
         return {
             "mode": "forecast",
             "phase": "final",
-            "sampling": False,
+            "bounded_rollout": False,
             "state_revision": 5,
             "coverage": {
                 "forecast": "conditional_pre_finish",

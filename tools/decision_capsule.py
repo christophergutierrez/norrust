@@ -500,6 +500,25 @@ def restore_capsule(
   )
 
 
+def capsule_query_fn(handle: CapsuleHandle):
+  """Adapt a restored capsule into the narrow QueryFn the evaluator expects.
+
+  `tactical_comparison._query` returns `(final_status, all_records)` because
+  its callers need the intermediate driver records. The bounded evaluator only
+  needs the final status mapping, so the two shapes are bridged here rather
+  than in the evaluator: the evaluator stays a pure function of a callable and
+  remains testable without a live driver process.
+
+  An exception is NOT swallowed here. The evaluator censors a failed sample on
+  purpose, recording it as visibly incomplete rather than as a zero outcome,
+  and it can only do that if the failure actually reaches it.
+  """
+  def query(payload):
+    response, _records = _tc._query(handle.process, dict(payload))
+    return response
+  return query
+
+
 def close_capsule_session(handle: CapsuleHandle) -> None:
   _tc._close(handle.process)
 

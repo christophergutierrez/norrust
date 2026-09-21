@@ -1,0 +1,36 @@
+# TEST-ONLY unit fixture for the S3 bounded-rollout evaluation-seed tests.
+# 16 strikes at 1 damage each, paired with a terrain that gives exactly 50%
+# hit chance (see ../terrain/keep.toml), makes total damage per full attack
+# a binomial(16, 0.5) outcome: anywhere from 0 to 16, distinct seeds landing
+# on different totals with overwhelming probability. max_hp is comfortably
+# above the worst case (16) so neither side ever dies mid-test, which keeps
+# both the candidate's own attack and the opponent's counter-response
+# available for every seed exercised by these tests.
+id = "Brawler"
+name = "Brawler"
+race = "test"
+level = 1
+experience = 999
+max_hp = 40
+movement = 1
+alignment = "neutral"
+cost = 1
+usage = "fighter"
+abilities = ["leader"]
+advances_to = []
+
+[[attacks]]
+id = "flurry"
+name = "flurry"
+damage = 1
+strikes = 16
+attack_type = "impact"
+range = "melee"
+specials = []
+
+[resistances]
+
+[movement_costs]
+keep = 1
+
+[defense]

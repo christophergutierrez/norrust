@@ -2024,7 +2024,7 @@ def query_bounded_comparison(exchange, candidates: list[list[dict[str, Any]]],
     body = response["body"]
     if not isinstance(body, dict):
         raise RuntimeError("query_error: bounded_comparison: driver body must be an object")
-    if body.get("mode") != "bounded_rollout" or body.get("sampling") is not True:
+    if body.get("mode") != "bounded_rollout" or body.get("bounded_rollout") is not True:
         raise RuntimeError("query_error: bounded_comparison: driver did not confirm bounded rollout")
     # Same envelope carry as query_preview_batch: the envelope is the
     # authoritative query origin, so nested sampled-transition rows (which
@@ -2677,7 +2677,7 @@ def compact_batch_preview(preview: dict[str, Any], originating_revision: Any = N
         coverage.get("forecast", "unknown"),
         coverage.get("overall", coverage.get("forecast", "unknown")),
         coverage.get("delegated_sweep", "unknown"),
-        preview.get("sampling", "?"), side if side in (0, 1) else "unknown")]
+        preview.get("bounded_rollout", "?"), side if side in (0, 1) else "unknown")]
     for index, candidate in enumerate(preview.get("candidates", [])):
         if not isinstance(candidate, dict):
             continue
@@ -3698,7 +3698,10 @@ def sampled_transition(preview: dict[str, Any], state: dict[str, Any] | None = N
                  if isinstance(candidates, list) and 0 <= candidate_index < len(candidates)
                  else None)
     post_sweep = candidate.get("post_sweep") if isinstance(candidate, dict) else None
-    if not isinstance(post_sweep, dict) or post_sweep.get("sampling") is not True:
+    # One rollout under one seed is ONE sample, not a distribution. The driver
+    # reports sample_count so a reader cannot mistake a single deterministic
+    # rollout for evidence of variance.
+    if not isinstance(post_sweep, dict) or not isinstance(post_sweep.get("sample_count"), int):
         return _unknown_sampled_transition("sampled_rollout_missing",
                                            preview.get("state_revision", "unknown"), candidate_index)
     stages = post_sweep.get("stages")
@@ -3928,7 +3931,7 @@ def compact_draft_review(preview: dict[str, Any], danger_before: bool,
         post_opponent = stages.get("post_opponent") if isinstance(stages, dict) else None
         lines.append("SIMULATION — NOT EXECUTED BEGIN originating_revision=%s sampling=%s" % (
             preview.get("state_revision", preview.get("originating_state_revision", "unknown")),
-            preview.get("sampling", "unknown")))
+            preview.get("bounded_rollout", "unknown")))
         lines.append("DELEGATION_RESULT policy=%s seed=%s own_events=%s opponent_events=%s" % (
             post_sweep.get("policy", "?"), post_sweep.get("evaluation_seed", "?"),
             post_sweep.get("own_event_count", "?"), post_sweep.get("opponent_event_count", "?")))
@@ -6132,7 +6135,7 @@ def run(args: argparse.Namespace) -> int:
                 "coordinate_fallbacks": 0,
                 "choice_handles_authored": 0,
                 "choice_actions_expanded": 0,
-                "sampling": None, "llm_authored_extra": False,
+                "sample_count": None, "llm_authored_extra": False,
                 "winner": None, "reason": None, "terminal_class": None,
                 "state_revision": None, "current_turn": None,
                 "infrastructure_invalid": False, "gameplay_valid": False,

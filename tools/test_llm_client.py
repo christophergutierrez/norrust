@@ -356,13 +356,13 @@ class ClientValidationTests(unittest.TestCase):
             [{"action": "Move", "unit_id": 4, "col": 2, "row": 1},
              {"action": "FinishWithGreedy", "groups": [], "holds": []}],
         ]
-        preview = {"state_revision": 77, "sampling": True, "candidates": [
-            {"valid": True, "post_sweep": {"sampling": True,
+        preview = {"state_revision": 77, "bounded_rollout": True, "candidates": [
+            {"valid": True, "post_sweep": {"sample_count": 1,
              "coverage": {"own_finish": True, "opponent_response": True}, "stages": {
                  "post_finish": {"units_detail": [{"unit_id": 3, "side": 0,
                      "position": {"col": 1, "row": 1}}]},
                  "post_opponent": {"units_detail": []}}}},
-            {"valid": True, "post_sweep": {"sampling": True,
+            {"valid": True, "post_sweep": {"sample_count": 1,
              "coverage": {"own_finish": True, "opponent_response": True}, "stages": {
                  "post_finish": {"units_detail": [{"unit_id": 4, "side": 0,
                      "position": {"col": 2, "row": 1}}]},
@@ -1393,8 +1393,8 @@ class ClientValidationTests(unittest.TestCase):
             {"id": 3, "faction": 0, "col": 1, "row": 1},
             {"id": 4, "faction": 0, "col": 2, "row": 1},
         ]}
-        preview = {"state_revision": 77, "sampling": True, "candidates": [
-            {"valid": True, "post_sweep": {"sampling": True,
+        preview = {"state_revision": 77, "bounded_rollout": True, "candidates": [
+            {"valid": True, "post_sweep": {"sample_count": 1,
               "coverage": {"own_finish": True, "opponent_response": True}, "stages": {
                 "post_finish": {"units_detail": [
                     {"unit_id": 3, "side": 0, "position": {"col": 1, "row": 1}},
@@ -1404,7 +1404,7 @@ class ClientValidationTests(unittest.TestCase):
                     {"unit_id": 3, "side": 0, "position": {"col": 1, "row": 1}},
                 ]},
             }}},
-            {"valid": True, "post_sweep": {"sampling": True,
+            {"valid": True, "post_sweep": {"sample_count": 1,
               "coverage": {"own_finish": True, "opponent_response": False}, "stages": {
                 "post_finish": {"units_detail": [
                     {"unit_id": 3, "side": 0, "position": {"col": 4, "row": 1}},
@@ -1425,21 +1425,21 @@ class ClientValidationTests(unittest.TestCase):
 
     def test_sampled_transition_does_not_treat_empty_or_missing_opponent_as_death(self):
         base = {"state_revision": 12, "candidates": [{"valid": True, "post_sweep": {
-            "sampling": True, "coverage": {"own_finish": True, "opponent_response": True}, "stages": {
+            "sample_count": 1, "coverage": {"own_finish": True, "opponent_response": True}, "stages": {
                 "post_finish": {"units_detail": [{"unit_id": 8, "side": 0,
                                                      "position": {"col": 1, "row": 1}}]},
                 "post_opponent": {"units_detail": []},
             }}}]}
         self.assertEqual(llm_client.sampled_transition(base, friendly_side=0)["opponent_casualties"]["unit_ids"], [8])
         missing = {"state_revision": 12, "candidates": [{"valid": True, "post_sweep": {
-            "sampling": True, "coverage": {"own_finish": True, "opponent_response": True}, "stages": {
+            "sample_count": 1, "coverage": {"own_finish": True, "opponent_response": True}, "stages": {
                 "post_finish": {"units_detail": [{"unit_id": 8, "side": 0,
                                                      "position": {"col": 1, "row": 1}}]},
                 "post_opponent": None,
             }}}]}
         self.assertIsNone(llm_client.sampled_transition(missing, friendly_side=0)["opponent_casualties"]["unit_ids"])
         malformed = {"state_revision": 12, "candidates": [{"valid": True, "post_sweep": {
-            "sampling": True, "coverage": {"own_finish": True, "opponent_response": True}, "stages": {
+            "sample_count": 1, "coverage": {"own_finish": True, "opponent_response": True}, "stages": {
                 "post_finish": {"units_detail": [{"unit_id": 8, "side": 0}]},
                 "post_opponent": {"units_detail": []},
             }}}]}
@@ -1447,7 +1447,7 @@ class ClientValidationTests(unittest.TestCase):
 
     def test_sampled_transition_does_not_treat_missing_opponent_as_death(self):
         missing = {"state_revision": 12, "candidates": [{"post_sweep": {
-            "sampling": True, "stages": {
+            "bounded_rollout": True, "stages": {
                 "post_finish": {"units_detail": [{"unit_id": 8, "side": 0}]},
                 "post_opponent": None,
             }}}]}
@@ -1457,7 +1457,7 @@ class ClientValidationTests(unittest.TestCase):
 
     def test_sampled_transition_requires_friendly_side_identity(self):
         preview = {"state_revision": 12, "candidates": [{"valid": True, "post_sweep": {
-            "sampling": True, "coverage": {"own_finish": True, "opponent_response": True},
+            "sample_count": 1, "coverage": {"own_finish": True, "opponent_response": True},
             "stages": {"post_finish": {"units_detail": [
                 {"unit_id": 8, "side": 1, "position": {"col": 2, "row": 2}}]},
                 "post_opponent": {"units_detail": []}}}}]}
@@ -1579,7 +1579,7 @@ class ClientValidationTests(unittest.TestCase):
                 "gold": [195, 11], "units": [
                     {"id": 1, "faction": 0, "hp": 48, "max_hp": 48,
                      "col": 2, "row": 7, "can_recruit": True}]}
-        preview = {"state_revision": 130, "sampling": True, "candidates": [{
+        preview = {"state_revision": 130, "bounded_rollout": True, "candidates": [{
             "valid": True, "post_sweep": {
                 "policy": "driver_greedy_one_response_v1", "evaluation_seed": 17,
                 "coverage": {"own_finish": True, "opponent_response": True},
@@ -1630,7 +1630,7 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("unavailable", str(ctx.exception))
 
     def test_compact_batch_preview_uses_recruiter_aggregate_not_origins(self):
-        rendered = compact_batch_preview({"sampling": False, "state_revision": 17, "candidates": [{
+        rendered = compact_batch_preview({"bounded_rollout": False, "state_revision": 17, "candidates": [{
             "valid": True,
             "summary": {"gold_before": 20, "gold_after": 6, "units_before": 4, "units_after": 5},
             "forecasts": [],
@@ -1651,7 +1651,7 @@ class ClientValidationTests(unittest.TestCase):
 
     def test_bounded_comparison_requires_driver_rollout_confirmation(self):
         sent = []
-        body = {"mode": "bounded_rollout", "sampling": True, "candidates": []}
+        body = {"mode": "bounded_rollout", "bounded_rollout": True, "candidates": []}
         result = query_bounded_comparison(
             lambda request: sent.append(request) or {"ok": True, "body": body},
             [[{"action": "EndTurn"}]], 4)
@@ -1666,8 +1666,8 @@ class ClientValidationTests(unittest.TestCase):
         already does (~line 934), so nested SAMPLED_TRANSITION rows in the
         real envelope-to-renderer path do not render `unknown` when the
         envelope separately knew the revision."""
-        body = {"mode": "bounded_rollout", "sampling": True, "candidates": [
-            {"valid": True, "post_sweep": {"sampling": True,
+        body = {"mode": "bounded_rollout", "bounded_rollout": True, "candidates": [
+            {"valid": True, "post_sweep": {"sample_count": 1,
              "coverage": {"own_finish": True, "opponent_response": True}, "stages": {
                  "post_finish": {"units_detail": [{"unit_id": 3, "side": 0,
                      "position": {"col": 1, "row": 1}}]},
@@ -1688,8 +1688,8 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("SAMPLED_FRIENDLY_CASUALTIES", rendered)
 
     def test_bounded_comparison_leaves_genuinely_unknown_revision_unknown(self):
-        body = {"mode": "bounded_rollout", "sampling": True, "candidates": [
-            {"valid": True, "post_sweep": {"sampling": True,
+        body = {"mode": "bounded_rollout", "bounded_rollout": True, "candidates": [
+            {"valid": True, "post_sweep": {"sample_count": 1,
              "coverage": {"own_finish": True, "opponent_response": True}, "stages": {
                  "post_finish": {"units_detail": []}, "post_opponent": {"units_detail": []}}}}]}
         result = query_bounded_comparison(
@@ -1852,7 +1852,7 @@ class ClientValidationTests(unittest.TestCase):
             validate_preview_request(request)
 
     def test_compact_batch_preview_renders_ordered_attack_sequences(self):
-        rendered = compact_batch_preview({"sampling": False, "candidates": [{
+        rendered = compact_batch_preview({"bounded_rollout": False, "candidates": [{
             "valid": True, "summary": {}, "forecasts": [],
             "attack_sequences": [{"target_id": 7, "target_hp": 20,
                                    "attacker_ids": [3, 4], "kill_bps": 8100,
@@ -1861,7 +1861,7 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("C0 OUT T7 hp=20 attackers=U3,U4 kill_probabilities=(81%) expected_damage=(17.6HP)", rendered)
 
     def test_compact_batch_preview_reports_typed_failure_and_assumption(self):
-        rendered = compact_batch_preview({"sampling": False, "candidates": [{
+        rendered = compact_batch_preview({"bounded_rollout": False, "candidates": [{
             "valid": False,
             "results": [{"ok": True},
                         {"ok": False, "code": "NotAdjacent",
@@ -1875,7 +1875,7 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("C0 ASSUMPTION all forecast combatants survive in place", rendered)
 
     def test_compact_batch_preview_reports_conditional_action_indices(self):
-        rendered = compact_batch_preview({"sampling": False, "candidates": [{
+        rendered = compact_batch_preview({"bounded_rollout": False, "candidates": [{
             "valid": True,
             "results": [{"ok": True},
                         {"ok": True, "conditional_on_survival": True}],
@@ -1884,7 +1884,7 @@ class ClientValidationTests(unittest.TestCase):
         self.assertIn("C0 CONDITIONAL action_indices=[1]", rendered)
 
     def test_compact_batch_preview_reports_bounded_delegation_stages(self):
-        rendered = compact_batch_preview({"sampling": True, "candidates": [{
+        rendered = compact_batch_preview({"bounded_rollout": True, "candidates": [{
             "valid": True, "summary": {},
             "post_sweep": {
                 "policy": "driver_greedy_one_response_v1",
@@ -3216,14 +3216,14 @@ class ClientValidationTests(unittest.TestCase):
                 {"type": "status", "ok": True, "what": "inspect_unit", "state_revision": 7, "body": {
                     "unit_id": 1, "origins": []}},
                 {"type": "status", "ok": True, "what": "preview_batch", "body": {
-                    "mode": "bounded_rollout", "sampling": True, "candidates": [
+                    "mode": "bounded_rollout", "bounded_rollout": True, "candidates": [
                         {"valid": True, "summary": {}, "forecasts": [], "recruiter_threats": {"recruiters": []}},
                         {"valid": True, "summary": {}, "forecasts": [], "recruiter_threats": {"recruiters": []}},
                     ]}},
                 {"type": "status", "ok": True, "what": "validate_batch", "body": {
                     "valid": True, "failed_index": None, "results": [{"ok": True}, {"ok": True}]}},
                 {"type": "status", "ok": True, "what": "preview_batch", "body": {
-                    "sampling": False, "candidates": [{"valid": True, "summary": {
+                    "bounded_rollout": False, "candidates": [{"valid": True, "summary": {
                         "affordable_recruitment_remaining": False}, "forecasts": [],
                         "recruiter_threats": {"recruiters": []}}]}},
                 {"type": "game_end", "reason": "max_turns", "winner": None},
@@ -3392,7 +3392,7 @@ class ClientValidationTests(unittest.TestCase):
              {"type": "status", "ok": True, "what": "tactical_surface", "body": {
                  "threats": {"recruiters": [{"recruiter_id": 1, "lethal_attackers_needed": 1}]}}},
              {"type": "status", "ok": True, "what": "preview_batch", "body": {
-                 "sampling": False, "candidates": [{"valid": True, "recruiter_threats": {
+                 "bounded_rollout": False, "candidates": [{"valid": True, "recruiter_threats": {
                      "recruiters": [{"recruiter_id": 1, "hp": 34,
                                      "distinct_attacker_count": 2, "max_incoming_sum": 40,
                                      "lethal_attackers_needed": 1}]}}]}},

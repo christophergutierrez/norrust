@@ -93,9 +93,10 @@ class PlayerContractIntegrationTests(unittest.TestCase):
             first, _ = self._until(process, "status")
             self.assertTrue(first["ok"], first)
             body = first["body"]
-            self.assertTrue(body["sampling"])
+            self.assertTrue(body["bounded_rollout"])
             self.assertEqual(body["coverage"]["forecast"], "bounded_rollout")
-            self.assertTrue(all(candidate["post_sweep"]["sampling"]
+            # One rollout under one seed is one sample, never a distribution.
+            self.assertTrue(all(candidate["post_sweep"]["sample_count"] == 1
                                 for candidate in body["candidates"]))
             self.assertEqual([c["summary"]["gold_after"] for c in body["candidates"]], [285, 270])
             self.assertEqual([c["summary"]["units_after"] for c in body["candidates"]], [3, 4])
@@ -141,11 +142,11 @@ class PlayerContractIntegrationTests(unittest.TestCase):
             preview, preview_records = self._until(process, "status")
             self.assertTrue(preview["ok"], preview)
             body = preview["body"]
-            self.assertTrue(body["sampling"])
+            self.assertTrue(body["bounded_rollout"])
             self.assertEqual(body["coverage"]["forecast"], "bounded_rollout")
             candidate = body["candidates"][0]
             self.assertEqual(candidate["observation_stage"], "post_opponent_response")
-            self.assertTrue(candidate["post_sweep"]["sampling"])
+            self.assertEqual(1, candidate["post_sweep"]["sample_count"])
             # Query output contains hypothetical post-sweep facts, but no
             # events/state record was committed and the revision is unchanged.
             self.assertEqual(preview["state_revision"], revision)
