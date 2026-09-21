@@ -1324,6 +1324,18 @@ pub fn ai_take_turn_coordinated(
     cheapest_recruit_cost: u32,
     recruit_defs: &[(u32, u32)],
 ) {
+    // Keep the experimental selector within the existing lookahead budget once
+    // armies grow. Comparing two full plans is useful in opening positions but
+    // otherwise doubles the expensive planner work without adding evidence.
+    let own_unit_count = state
+        .units
+        .values()
+        .filter(|u| u.faction == faction)
+        .count();
+    if own_unit_count > 8 {
+        ai_take_turn_greedy_lookahead(state, faction, cheapest_recruit_cost, recruit_defs);
+        return;
+    }
     let mut lookahead = state.clone();
     ai_take_turn_greedy_lookahead(&mut lookahead, faction, cheapest_recruit_cost, recruit_defs);
 
