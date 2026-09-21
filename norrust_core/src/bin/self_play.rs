@@ -15,7 +15,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use norrust_core::ai::{
-    ai_take_turn_coordinated, ai_take_turn_greedy, ai_take_turn_greedy_lookahead,
+    ai_take_turn_coordinated, ai_take_turn_greedy, ai_take_turn_with_recruits_recorded,
+    ActionRecord,
 };
 use norrust_core::board::Tile;
 use norrust_core::game_state::{apply_action, apply_recruit, Action, GameState};
@@ -512,9 +513,12 @@ fn play_turn(
     rng: &mut u64,
     faction: &Faction,
     units: &Registry<UnitDef>,
-) {
+) -> Vec<ActionRecord> {
     match kind {
-        AiKind::Greedy => ai_take_turn_greedy(state, side),
+        AiKind::Greedy => {
+            ai_take_turn_greedy(state, side);
+            Vec::new()
+        }
         AiKind::Lookahead => {
             let recruit_defs: Vec<(u32, u32)> = faction
                 .recruits
@@ -526,7 +530,7 @@ fn play_turn(
                 .map(|(cost, _)| *cost)
                 .min()
                 .unwrap_or(0);
-            ai_take_turn_greedy_lookahead(state, side, cheapest, &recruit_defs);
+            ai_take_turn_with_recruits_recorded(state, side, cheapest, &recruit_defs)
         }
         AiKind::Coordinated => {
             let recruit_defs: Vec<(u32, u32)> = faction
@@ -540,8 +544,38 @@ fn play_turn(
                 .min()
                 .unwrap_or(0);
             ai_take_turn_coordinated(state, side, cheapest, &recruit_defs);
+            Vec::new()
         }
-        AiKind::Random => random_turn(state, side, rng),
+        AiKind::Random => {
+            random_turn(state, side, rng);
+            Vec::new()
+        }
+    }
+}
+
+fn record_actions(
+    writer: &mut Option<BufWriter<std::fs::File>>,
+    step: u32,
+    side: u8,
+    actions: &[ActionRecord],
+) {
+    if actions.is_empty() {
+        return;
+    }
+    if let Some(writer) = writer {
+        serde_json::to_writer(
+            &mut *writer,
+            &serde_json::json!({
+                "type": "actions",
+                "phase": "committed_turn_actions",
+                "step": step,
+                "side": side,
+                "coverage": "lookahead_executor_prefix",
+                "actions": actions,
+            }),
+        )
+        .expect("write trajectory actions");
+        writeln!(writer).expect("write trajectory action newline");
     }
 }
 
@@ -647,7 +681,7 @@ fn run_game(c: &Config, game: u32) -> GameResult {
                 RecruitPolicy::Balanced => "balanced",
             },
             "starting_gold":starting_gold, "safety_side_turns":limit,
-            "coverage":"state_boundaries_only", "model_calls":0});
+            "coverage":"state_boundaries_plus_lookahead_actions", "model_calls":0});
         serde_json::to_writer(&mut writer, &meta).expect("write metadata");
         writeln!(writer).expect("write newline");
         writer
@@ -674,7 +708,8 @@ fn run_game(c: &Config, game: u32) -> GameResult {
                 recruits,
                 next_id,
             );
-            play_turn(&mut state, 0, c.ai1, &mut rng, f1, &units);
+            let actions = play_turn(&mut state, 0, c.ai1, &mut rng, f1, &units);
+            record_actions(&mut recording, step, 0, &actions);
         } else {
             recruits[1] += recruit(&mut state, 1, f2, &units, &mut next_id, c.recruit_policy);
             record_state(
@@ -686,7 +721,8 @@ fn run_game(c: &Config, game: u32) -> GameResult {
                 recruits,
                 next_id,
             );
-            play_turn(&mut state, 1, c.ai2, &mut rng, f2, &units);
+            let actions = play_turn(&mut state, 1, c.ai2, &mut rng, f2, &units);
+            record_actions(&mut recording, step, 1, &actions);
         }
         record_state(
             &mut recording,

@@ -1590,7 +1590,24 @@ pub fn ai_take_turn_with_recruits(
     cheapest_recruit_cost: u32,
     recruit_defs: &[(u32, u32)],
 ) {
+    let _ =
+        ai_take_turn_with_recruits_recorded(state, faction, cheapest_recruit_cost, recruit_defs);
+}
+
+/// Execute a planned turn and return the action records that were committed.
+///
+/// The records are produced by the same plan that drives the executor.  An
+/// action that becomes invalid after an earlier action is omitted, so callers
+/// can distinguish the authoritative committed prefix from a speculative
+/// plan.  The turn boundary is deliberately not included; callers own it.
+pub fn ai_take_turn_with_recruits_recorded(
+    state: &mut GameState,
+    faction: u8,
+    cheapest_recruit_cost: u32,
+    recruit_defs: &[(u32, u32)],
+) -> Vec<ActionRecord> {
     let (records, _score) = plan_full_turn(state, faction, cheapest_recruit_cost, recruit_defs);
+    let mut committed = Vec::new();
 
     // Replay the best plan on the real state.
     // Skip actions for simulated recruit IDs (they don't exist in the real state).
@@ -1605,26 +1622,34 @@ pub fn ai_take_turn_with_recruits(
                     continue;
                 }
                 let dest = Hex::from_offset(*to_col, *to_row);
-                let _ = apply_action(
+                if apply_action(
                     state,
                     Action::Move {
                         unit_id: *unit_id,
                         destination: dest,
                     },
-                );
+                )
+                .is_ok()
+                {
+                    committed.push(record.clone());
+                }
             }
             ActionRecord::Attack {
                 attacker_id,
                 defender_id,
             } => {
                 if state.units.contains_key(attacker_id) && state.units.contains_key(defender_id) {
-                    let _ = apply_action(
+                    if apply_action(
                         state,
                         Action::Attack {
                             attacker_id: *attacker_id,
                             defender_id: *defender_id,
                         },
-                    );
+                    )
+                    .is_ok()
+                    {
+                        committed.push(record.clone());
+                    }
                 }
             }
             ActionRecord::Recruit => {
@@ -1634,6 +1659,7 @@ pub fn ai_take_turn_with_recruits(
     }
 
     apply_action(state, Action::EndTurn).expect("EndTurn must always succeed");
+    committed
 }
 
 /// Plan an AI turn on a cloned state, returning the list of actions taken.
@@ -1873,6 +1899,32 @@ mod tests {
             )),
             "a spent recruit must not be selected: {records:?}"
         );
+    }
+
+    #[test]
+    fn recorded_turn_contains_only_actions_committed_by_executor() {
+        let mut board = Board::new(8, 3);
+        for col in 0..8 {
+            for row in 0..3 {
+                board.set_terrain(Hex::from_offset(col, row), "flat");
+            }
+        }
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+        state.place_unit(make_fighter(1, 0, 30), Hex::from_offset(1, 1));
+        state.place_unit(make_fighter(2, 1, 30), Hex::from_offset(7, 1));
+
+        let records = ai_take_turn_with_recruits_recorded(&mut state, 0, 0, &[]);
+
+        assert!(
+            records.iter().all(|record| match record {
+                ActionRecord::Move { unit_id, .. } => *unit_id == 1,
+                ActionRecord::Attack { attacker_id, .. } => *attacker_id == 1,
+                ActionRecord::Recruit => false,
+            }),
+            "records must identify committed friendly actions: {records:?}"
+        );
+        assert_eq!(state.active_faction, 1, "the helper owns only one turn");
     }
 
     #[test]
