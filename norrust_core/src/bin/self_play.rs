@@ -24,7 +24,7 @@ use norrust_core::hex::Hex;
 use norrust_core::loader::Registry;
 use norrust_core::pathfinding::{get_zoc_hexes, reachable_hexes};
 use norrust_core::scenario::load_board;
-use norrust_core::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
+use norrust_core::schema::{AttackDef, FactionDef, RecruitGroup, TerrainDef, UnitDef};
 use norrust_core::unit::Unit;
 
 #[derive(Clone, Copy)]
@@ -39,6 +39,63 @@ enum AiKind {
 enum RecruitPolicy {
     FirstAffordable,
     Balanced,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RecruitRole {
+    Melee,
+    Ranged,
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct RecruitSummary {
+    recruited: u32,
+    melee: u32,
+    ranged: u32,
+    other: u32,
+    balanced_fallbacks: u32,
+}
+
+fn role_for_attacks(attacks: &[AttackDef]) -> RecruitRole {
+    if attacks.iter().any(|attack| attack.range == "ranged") {
+        RecruitRole::Ranged
+    } else if attacks.iter().any(|attack| attack.range == "melee") {
+        RecruitRole::Melee
+    } else {
+        RecruitRole::Other
+    }
+}
+
+fn role_for_def(def: &UnitDef) -> RecruitRole {
+    role_for_attacks(&def.attacks)
+}
+
+fn choose_balanced_recruit(
+    affordable: &[&UnitDef],
+    state: &GameState,
+    side: u8,
+) -> Option<(usize, RecruitRole, bool)> {
+    let (melee, ranged) = state
+        .units
+        .values()
+        .filter(|unit| unit.faction == side)
+        .map(|unit| role_for_attacks(&unit.attacks))
+        .fold((0, 0), |(melee, ranged), role| match role {
+            RecruitRole::Melee => (melee + 1, ranged),
+            RecruitRole::Ranged => (melee, ranged + 1),
+            RecruitRole::Other => (melee, ranged),
+        });
+    let wanted = if ranged < melee {
+        RecruitRole::Ranged
+    } else {
+        RecruitRole::Melee
+    };
+    affordable
+        .iter()
+        .position(|def| role_for_def(def) == wanted)
+        .map(|index| (index, wanted, false))
+        .or_else(|| affordable.first().map(|def| (0, role_for_def(def), true)))
 }
 
 #[derive(Clone, Copy)]
@@ -298,8 +355,8 @@ fn recruit(
     units: &Registry<UnitDef>,
     next_id: &mut u32,
     policy: RecruitPolicy,
-) -> u32 {
-    let mut recruited = 0;
+) -> RecruitSummary {
+    let mut summary = RecruitSummary::default();
     loop {
         let keep = state
             .positions
@@ -397,43 +454,32 @@ fn recruit(
             .filter_map(|id| units.get(id))
             .filter(|d| state.gold[side as usize] >= d.cost)
             .collect();
-        let Some(def) = (match policy {
-            RecruitPolicy::FirstAffordable => affordable.first().copied(),
-            RecruitPolicy::Balanced => {
-                let ranged = state
-                    .units
-                    .values()
-                    .filter(|u| u.faction == side)
-                    .filter(|u| u.attacks.iter().any(|a| a.range == "ranged"))
-                    .count();
-                let melee = state
-                    .units
-                    .values()
-                    .filter(|u| u.faction == side)
-                    .filter(|u| u.attacks.iter().any(|a| a.range == "melee"))
-                    .count();
-                let want_ranged = ranged < melee;
-                affordable
-                    .iter()
-                    .copied()
-                    .find(|d| {
-                        d.attacks
-                            .iter()
-                            .any(|a| (a.range == "ranged") == want_ranged)
-                    })
-                    .or_else(|| affordable.first().copied())
+        let choice = match policy {
+            RecruitPolicy::FirstAffordable => {
+                affordable.first().map(|def| (0, role_for_def(def), false))
             }
-        }) else {
+            RecruitPolicy::Balanced => choose_balanced_recruit(&affordable, state, side),
+        };
+        let Some((choice_index, role, balanced_fallback)) = choice else {
             break;
         };
+        let def = affordable[choice_index];
         let cost = def.cost;
         if apply_recruit(state, Unit::from_def(*next_id, def, side), dest, cost).is_err() {
             break;
         }
         *next_id += 1;
-        recruited += 1;
+        summary.recruited += 1;
+        match role {
+            RecruitRole::Melee => summary.melee += 1,
+            RecruitRole::Ranged => summary.ranged += 1,
+            RecruitRole::Other => summary.other += 1,
+        }
+        if balanced_fallback {
+            summary.balanced_fallbacks += 1;
+        }
     }
-    recruited
+    summary
 }
 
 fn legal_random_action(state: &GameState, side: u8) -> Vec<Action> {
@@ -579,6 +625,39 @@ fn record_actions(
     }
 }
 
+fn record_recruitment(
+    writer: &mut Option<BufWriter<std::fs::File>>,
+    step: u32,
+    side: u8,
+    policy: RecruitPolicy,
+    summary: RecruitSummary,
+) {
+    if let Some(writer) = writer {
+        serde_json::to_writer(
+            &mut *writer,
+            &serde_json::json!({
+                "type": "recruitment",
+                "phase": "committed_recruitment",
+                "step": step,
+                "side": side,
+                "policy": match policy {
+                    RecruitPolicy::FirstAffordable => "first-affordable",
+                    RecruitPolicy::Balanced => "balanced",
+                },
+                "recruited": summary.recruited,
+                "roles": {
+                    "melee": summary.melee,
+                    "ranged": summary.ranged,
+                    "other": summary.other,
+                },
+                "balanced_fallbacks": summary.balanced_fallbacks,
+            }),
+        )
+        .expect("write recruitment record");
+        writeln!(writer).expect("write recruitment newline");
+    }
+}
+
 fn record_state(
     writer: &mut Option<BufWriter<std::fs::File>>,
     state: &GameState,
@@ -698,7 +777,9 @@ fn run_game(c: &Config, game: u32) -> GameResult {
     for step in 0..limit {
         let side = state.active_faction;
         if side == 0 {
-            recruits[0] += recruit(&mut state, 0, f1, &units, &mut next_id, c.recruit_policy);
+            let recruitment = recruit(&mut state, 0, f1, &units, &mut next_id, c.recruit_policy);
+            recruits[0] += recruitment.recruited;
+            record_recruitment(&mut recording, step, 0, c.recruit_policy, recruitment);
             record_state(
                 &mut recording,
                 &state,
@@ -711,7 +792,9 @@ fn run_game(c: &Config, game: u32) -> GameResult {
             let actions = play_turn(&mut state, 0, c.ai1, &mut rng, f1, &units);
             record_actions(&mut recording, step, 0, &actions);
         } else {
-            recruits[1] += recruit(&mut state, 1, f2, &units, &mut next_id, c.recruit_policy);
+            let recruitment = recruit(&mut state, 1, f2, &units, &mut next_id, c.recruit_policy);
+            recruits[1] += recruitment.recruited;
+            record_recruitment(&mut recording, step, 1, c.recruit_policy, recruitment);
             record_state(
                 &mut recording,
                 &state,
@@ -895,4 +978,78 @@ fn main() {
         worker.join().expect("worker panicked");
     }
     print_results(&c, Arc::try_unwrap(results).unwrap().into_inner().unwrap());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn attack(range: &str) -> AttackDef {
+        AttackDef {
+            range: range.to_string(),
+            ..AttackDef::default()
+        }
+    }
+
+    fn unit(id: &str, range: &str, cost: u32) -> UnitDef {
+        UnitDef {
+            id: id.to_string(),
+            cost,
+            attacks: vec![attack(range)],
+            ..UnitDef::default()
+        }
+    }
+
+    fn test_state() -> GameState {
+        let board = load_board(
+            &root()
+                .join("scenarios")
+                .join("big_battle_6")
+                .join("board.toml"),
+        )
+        .expect("test board");
+        GameState::new_seeded(board.board, 1)
+    }
+
+    #[test]
+    fn role_classification_prefers_ranged_and_marks_unknown_as_other() {
+        assert_eq!(role_for_attacks(&[attack("melee")]), RecruitRole::Melee);
+        assert_eq!(role_for_attacks(&[attack("ranged")]), RecruitRole::Ranged);
+        assert_eq!(
+            role_for_attacks(&[attack("ranged"), attack("melee")]),
+            RecruitRole::Ranged
+        );
+        assert_eq!(role_for_attacks(&[]), RecruitRole::Other);
+    }
+
+    #[test]
+    fn balanced_choice_is_deterministic_and_targets_missing_role() {
+        let melee = unit("melee", "melee", 10);
+        let ranged = unit("ranged", "ranged", 10);
+        let affordable = vec![&melee, &ranged];
+        let mut state = test_state();
+
+        assert_eq!(
+            choose_balanced_recruit(&affordable, &state, 0),
+            Some((0, RecruitRole::Melee, false))
+        );
+
+        state.place_unit(Unit::from_def(1, &melee, 0), Hex::from_offset(0, 0));
+        assert_eq!(
+            choose_balanced_recruit(&affordable, &state, 0),
+            Some((1, RecruitRole::Ranged, false))
+        );
+    }
+
+    #[test]
+    fn balanced_choice_reports_fallback_when_requested_role_is_unavailable() {
+        let ranged = unit("ranged", "ranged", 10);
+        let affordable = vec![&ranged];
+        let state = test_state();
+
+        assert_eq!(
+            choose_balanced_recruit(&affordable, &state, 0),
+            Some((0, RecruitRole::Ranged, true))
+        );
+    }
 }
