@@ -20,8 +20,9 @@ Stack 1 (this module, this stage) provides three subcommands:
   no notion of `decision_id`/`turn_boundary` records, so those stay sidecar
   evidence surfaced by `report`, not new catalog rows.
 
-`evaluate` (a later stack) is stubbed here to fail loudly rather than silently
-do nothing.
+`evaluate` validates an archived decision capsule; it never launches a paid
+model. `report --improvement` assembles an evidence-linked improvement report
+from the archive and an optional saved evaluator artifact.
 """
 from __future__ import annotations
 
@@ -49,6 +50,7 @@ try:
     from .decision_capsule import (CAPABILITY_BOARD_ONLY,
                                    CAPABILITY_UNSUPPORTED_BOUNDARY,
                                    validate_capsule)
+    from .analysis_report import build_improvement_report, format_improvement_report
 except ImportError:  # pragma: no cover - direct script compatibility
     from analysis_capture import (  # type: ignore
         ANALYSIS_MANIFEST_NAME,
@@ -65,6 +67,7 @@ except ImportError:  # pragma: no cover - direct script compatibility
     from decision_capsule import (CAPABILITY_BOARD_ONLY,  # type: ignore
                                   CAPABILITY_UNSUPPORTED_BOUNDARY,
                                   validate_capsule)
+    from analysis_report import build_improvement_report, format_improvement_report  # type: ignore
 
 
 def resolve_log_path(archive: str | Path) -> Path:
@@ -590,12 +593,31 @@ def format_report_text(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def run_report(archive: str | Path, as_json: bool) -> int:
+def _load_evaluation(path: str | Path | None) -> tuple[dict[str, Any] | None, str | None]:
+    if path is None:
+        return None, None
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return None, f"cannot read evaluation artifact: {exc}"
+    if not isinstance(value, dict):
+        return None, "evaluation artifact is not a JSON object"
+    return value, None
+
+
+def run_report(archive: str | Path, as_json: bool, *, improvement: bool = False,
+               evaluation_path: str | Path | None = None) -> int:
     report = build_report(archive)
+    if improvement:
+        evaluation, error = _load_evaluation(evaluation_path)
+        if error:
+            print(error, file=sys.stderr)
+            return 2
+        report = build_improvement_report(report, evaluation)
     if as_json:
         print(json.dumps(report, sort_keys=True))
     else:
-        print(format_report_text(report))
+        print(format_improvement_report(report) if improvement else format_report_text(report))
     return 0
 
 
@@ -730,6 +752,10 @@ def main(argv: list[str]) -> int:
     report_parser = sub.add_parser("report", help="coverage/boundary report for an analysis sidecar")
     report_parser.add_argument("--archive", required=True)
     report_parser.add_argument("--json", action="store_true")
+    report_parser.add_argument("--improvement", action="store_true",
+                               help="include evidence-linked improvement findings")
+    report_parser.add_argument("--evaluation",
+                               help="saved bounded-evaluation JSON artifact")
 
     import_parser = sub.add_parser("import", help="import the archive into the catalog and cross-check the sidecar")
     import_parser.add_argument("--db", required=True)
@@ -747,7 +773,8 @@ def main(argv: list[str]) -> int:
         print("\n".join(lines))
         return exit_code
     if args.command == "report":
-        return run_report(args.archive, args.json)
+        return run_report(args.archive, args.json, improvement=args.improvement,
+                          evaluation_path=args.evaluation)
     if args.command == "import":
         exit_code, result = run_import(args.db, args.archive)
         print(json.dumps(result, sort_keys=True))
