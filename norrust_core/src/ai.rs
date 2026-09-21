@@ -1315,9 +1315,9 @@ pub fn ai_take_turn_greedy_lookahead(
 /// Coordinated experimental planner.
 ///
 /// Compare the existing response-aware planner with the fast baseline on
-/// cloned state, then commit the complete-turn plan with the better explicit
-/// survival/economy score.  This is intentionally bounded to two candidates;
-/// it is a coordination hook, not an unbounded search framework.
+/// privately seeded cloned states, then execute the selected policy against the
+/// real state. This is intentionally bounded to two candidates; it is a
+/// coordination hook, not an unbounded search framework.
 pub fn ai_take_turn_coordinated(
     state: &mut GameState,
     faction: u8,
@@ -1336,18 +1336,26 @@ pub fn ai_take_turn_coordinated(
         ai_take_turn_greedy_lookahead(state, faction, cheapest_recruit_cost, recruit_defs);
         return;
     }
+    // Candidate ranking must not depend on the live combat stream. The live
+    // state is still used unchanged for the eventual committed turn below.
+    let evaluation_seed = 0x9e37_79b9_7f4a_7c15_u64
+        ^ state.state_revision
+        ^ ((faction as u64) << 32)
+        ^ state.turn as u64;
     let mut lookahead = state.clone();
+    lookahead.rng = crate::combat::Rng::new(evaluation_seed);
     ai_take_turn_greedy_lookahead(&mut lookahead, faction, cheapest_recruit_cost, recruit_defs);
 
     let mut greedy = state.clone();
+    greedy.rng = crate::combat::Rng::new(evaluation_seed);
     ai_take_turn_greedy(&mut greedy, faction);
 
     let lookahead_score = coordinated_state_score(&lookahead, faction);
     let greedy_score = coordinated_state_score(&greedy, faction);
     if lookahead_score >= greedy_score {
-        *state = lookahead;
+        ai_take_turn_greedy_lookahead(state, faction, cheapest_recruit_cost, recruit_defs);
     } else {
-        *state = greedy;
+        ai_take_turn_greedy(state, faction);
     }
 }
 
@@ -2445,6 +2453,26 @@ mod tests {
         assert!(state.units.contains_key(&1));
         assert!(state.positions.contains_key(&1));
         assert!(state.sides_acted_this_round <= 1);
+    }
+
+    #[test]
+    fn coordinated_selection_does_not_use_live_rng_for_ranking() {
+        let board = setup_keep_board(0, 0);
+        let mut first = GameState::new_seeded(board.clone(), 11);
+        let mut second = GameState::new_seeded(board, 99);
+        for state in [&mut first, &mut second] {
+            state.active_faction = 0;
+            state.gold[0] = 0;
+            state.place_unit(make_leader(1, 0), Hex::from_offset(0, 0));
+            state.place_unit(make_fighter(2, 0, 30), Hex::from_offset(2, 0));
+        }
+
+        ai_take_turn_coordinated(&mut first, 0, 0, &[]);
+        ai_take_turn_coordinated(&mut second, 0, 0, &[]);
+
+        assert_eq!(first.positions, second.positions);
+        assert_eq!(first.active_faction, second.active_faction);
+        assert_eq!(first.sides_acted_this_round, second.sides_acted_this_round);
     }
 
     #[test]
