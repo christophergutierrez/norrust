@@ -968,8 +968,9 @@ fn rollout_state_summary(state: &GameState) -> Value {
 /// `evaluation_seed`. Kept so existing callers see unchanged behavior.
 const DEFAULT_EVALUATION_SEED: u64 = 0x5eed_5eed_5eed_5eed;
 
-/// Run an isolated illustration of the selected finish and one opponent
-/// response, continuing the single RNG stream that was seeded from
+/// Run an isolated illustration of the selected finish and complete opponent
+/// responses, inserting one model continuation between responses. Continue the
+/// single RNG stream that was seeded from
 /// `evaluation_seed` before the candidate's own orders executed. This is one
 /// sample drawn under one seed, not a statistical distribution -- a
 /// stochastic combat fixture needs a different `evaluation_seed` to see a
@@ -990,13 +991,24 @@ fn bounded_rollout_summary(
     let mut opponent_next_id = next_id;
     let mut opponent_event_count = 0usize;
     let mut continuation_event_count = 0usize;
+    let mut opponent_responses_completed = 0u8;
+    let mut continuation_turns_completed = 0u8;
     let mut opponent_error = None;
     let mut stages = serde_json::Map::new();
-    for response_index in 1..=opponent_responses.max(1) {
+    for turn_index in 0..(2 * opponent_responses.max(1) - 1) {
         if opponent_state.check_winner().is_some() {
             break;
         }
         let side = opponent_state.active_faction;
+        let expected_side = if turn_index % 2 == 0 {
+            1 - model_side
+        } else {
+            model_side
+        };
+        if side != expected_side {
+            opponent_error = Some("unexpected active side in bounded continuation".into());
+            break;
+        }
         match run_driver_greedy_turn(
             &mut opponent_state,
             side,
@@ -1007,13 +1019,15 @@ fn bounded_rollout_summary(
             Ok(events) => {
                 if side == model_side {
                     continuation_event_count += events.len();
+                    continuation_turns_completed += 1;
                 } else {
                     opponent_event_count += events.len();
+                    opponent_responses_completed += 1;
+                    stages.insert(
+                        format!("post_opponent_{opponent_responses_completed}"),
+                        rollout_state_summary(&opponent_state),
+                    );
                 }
-                stages.insert(
-                    format!("post_opponent_{response_index}"),
-                    rollout_state_summary(&opponent_state),
-                );
             }
             Err(error) => {
                 opponent_error = Some(error.to_string());
@@ -1031,7 +1045,7 @@ fn bounded_rollout_summary(
         "policy": if opponent_responses.max(1) == 1 {
             "driver_greedy_one_response_v2"
         } else {
-            "driver_greedy_continuation_v3"
+            "driver_greedy_continuation_v4"
         },
         "sample_count": 1,
         "stages": {
@@ -1044,6 +1058,13 @@ fn bounded_rollout_summary(
         "own_event_count": own_event_count,
         "opponent_event_count": opponent_event_count,
         "continuation_event_count": continuation_event_count,
+        "opponent_responses_completed": opponent_responses_completed,
+        "continuation_turns_completed": continuation_turns_completed,
+        "terminated_early": opponent_state.check_winner().is_some()
+            && opponent_responses_completed < opponent_responses.max(1),
+        "terminal_state": if opponent_state.check_winner().is_some() {
+            Some(rollout_state_summary(&opponent_state))
+        } else { None },
         "opponent_error": opponent_error,
         "coverage": {
             "own_finish": true,

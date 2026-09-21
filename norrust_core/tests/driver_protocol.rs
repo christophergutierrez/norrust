@@ -314,34 +314,125 @@ fn bounded_preview_reports_isolated_finish_and_opponent_coverage() {
 }
 
 #[test]
-fn bounded_preview_supports_two_complete_opponent_responses() {
-    let lines = run_driver(
-        &[
-            "--scenario",
-            "big_battle_6",
-            "--faction0",
-            "undead",
-            "--faction1",
-            "undead",
-            "--gold",
-            "300",
-            "--max-turns",
-            "4",
-        ],
-        r#"{"action":"Query","what":"preview_batch","state_revision":0,"phase":"final","mode":"bounded_rollout","opponent_responses":2,"evaluation_seed":7,"candidates":[[{"action":"EndTurn"}]]}
-"#,
-    );
-    let status = lines
-        .iter()
-        .find(|line| line["type"] == "status")
-        .expect("preview status");
-    assert_eq!(status["ok"], true);
-    let rollout = &status["body"]["candidates"][0]["post_sweep"];
-    assert_eq!(rollout["opponent_responses"], 2);
-    assert_eq!(rollout["policy"], "driver_greedy_continuation_v3");
-    assert!(rollout["stages"]["post_opponent_1"].is_object());
-    assert!(rollout["stages"]["post_opponent_2"].is_object());
-    assert_eq!(rollout["coverage"]["opponent_response"], true);
+fn bounded_preview_supports_complete_opponent_responses_for_both_sides() {
+    for side in ["0", "1"] {
+        for horizon in 1..=3 {
+            let args = [
+                "--scenario",
+                "big_battle_6",
+                "--faction0",
+                "undead",
+                "--faction1",
+                "undead",
+                "--gold",
+                "0",
+                "--max-turns",
+                "8",
+                "--llm-side",
+                side,
+            ];
+            let probe = run_driver(
+                &args,
+                "{\"action\":\"Query\",\"what\":\"preview_batch\",\"state_revision\":999999}\n",
+            );
+            let revision = probe.iter().find(|line| line["type"] == "status").unwrap()
+                ["state_revision"]
+                .as_u64()
+                .unwrap();
+            let lines = run_driver(
+                &args,
+                &format!(
+                    "{}\n",
+                    serde_json::json!({"action":"Query","what":"preview_batch","state_revision":revision,"phase":"final","mode":"bounded_rollout","opponent_responses":horizon,"evaluation_seed":7,"candidates":[[{"action":"EndTurn"}]]})
+                ),
+            );
+            let status = lines
+                .iter()
+                .find(|line| line["type"] == "status")
+                .expect("preview status");
+            assert_eq!(status["ok"], true);
+            let rollout = &status["body"]["candidates"][0]["post_sweep"];
+            assert_eq!(rollout["opponent_responses"], horizon);
+            assert_eq!(rollout["opponent_responses_completed"], horizon);
+            assert_eq!(rollout["continuation_turns_completed"], horizon - 1);
+            assert_eq!(
+                rollout["policy"],
+                if horizon == 1 {
+                    "driver_greedy_one_response_v2"
+                } else {
+                    "driver_greedy_continuation_v4"
+                }
+            );
+            let model_side = side.parse::<u64>().unwrap();
+            let first_turn = rollout["stages"]["post_opponent_1"]["turn"]
+                .as_u64()
+                .unwrap();
+            for response in 1..=horizon {
+                let stage = &rollout["stages"][format!("post_opponent_{response}")];
+                assert_eq!(stage["active_faction"], model_side);
+                assert_eq!(stage["turn"], first_turn + response - 1);
+            }
+            assert_eq!(rollout["terminated_early"], false);
+            assert_eq!(rollout["coverage"]["opponent_response"], true);
+        }
+    }
+}
+
+#[test]
+fn bounded_preview_stops_at_terminal_without_fabricating_later_responses() {
+    for own_wins in [false, true] {
+        let factions = if own_wins {
+            ["lethal", "fragile"]
+        } else {
+            ["fragile", "lethal"]
+        };
+        let mut orders = Vec::new();
+        if own_wins {
+            orders.push(serde_json::json!({"action":"Attack", "attacker_id":1, "defender_id":2}));
+        }
+        orders.push(serde_json::json!({"action":"EndTurn"}));
+        let lines = run_driver_with_env(
+            &[
+                "--scenario",
+                "duel",
+                "--faction0",
+                factions[0],
+                "--faction1",
+                factions[1],
+                "--max-turns",
+                "8",
+            ],
+            &format!(
+                "{}\n",
+                serde_json::json!({"action":"Query","what":"preview_batch","state_revision":0,"phase":"final","mode":"bounded_rollout","opponent_responses":3,"evaluation_seed":7,"candidates":[orders]})
+            ),
+            &[(
+                "NORRUST_TEST_ROOT_DIR",
+                concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/tests/fixtures/s2_deterministic_duel"
+                ),
+            )],
+        );
+        let status = lines.iter().find(|line| line["type"] == "status").unwrap();
+        assert_eq!(status["ok"], true);
+        let candidate = &status["body"]["candidates"][0];
+        assert_eq!(candidate["valid"], true, "{candidate}");
+        let rollout = &candidate["post_sweep"];
+        assert_eq!(rollout["terminated_early"], true);
+        assert_eq!(
+            rollout["terminal_state"]["winner"],
+            if own_wins { 0 } else { 1 }
+        );
+        assert_eq!(
+            rollout["opponent_responses_completed"],
+            if own_wins { 0 } else { 1 }
+        );
+        assert_eq!(rollout["continuation_turns_completed"], 0);
+        assert!(rollout["stages"]["post_opponent_2"].is_null());
+        assert!(rollout["stages"]["post_opponent_3"].is_null());
+        assert_eq!(rollout["coverage"]["opponent_response"], false);
+    }
 }
 
 // The S3 duel fixture pairs two adjacent "Brawler" leaders (16 strikes at 1
