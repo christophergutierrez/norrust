@@ -98,6 +98,7 @@ _RESERVED_LABELS = frozenset({LABEL_ACTUAL_CHOICE, LABEL_LEGAL_FINISH})
 DEFAULT_MAX_CANDIDATES = 16
 DEFAULT_SEED_COUNT = 16
 DEFAULT_OPPONENT_RESPONSES = 1
+MAX_OPPONENT_RESPONSES = 3
 DEFAULT_WALL_CEILING_SECONDS = 120.0
 
 # Response codes that describe an INFRASTRUCTURE failure (stale restored
@@ -155,11 +156,11 @@ class EvaluationConfig:
         "max_candidates must allow at least the actual choice and the legal finish")
     if not self.seed_schedule:
       raise ValueError("seed_schedule must declare at least one seed")
-    if self.opponent_responses != 1:
-      # The driver's bounded_rollout_summary always computes exactly one
-      # opponent response; nothing here can honestly ask for more without
-      # fabricating additional responses.
-      raise ValueError("this driver interface supports exactly one opponent response")
+    if not 1 <= self.opponent_responses <= MAX_OPPONENT_RESPONSES:
+      raise ValueError(
+        "opponent_responses must be between 1 and "
+        f"{MAX_OPPONENT_RESPONSES} complete responses"
+      )
     if (self.score_fn is None) != (self.score_name is None):
       raise ValueError(
         "score_fn and score_name must be declared together and in advance")
@@ -396,8 +397,21 @@ def extract_outcome_vector(
   """
   stages = rollout.get("stages", {}) or {}
   post_finish = stages.get("post_finish")
-  post_opponent = stages.get("post_opponent")
-  terminal_stage = post_opponent if post_opponent is not None else post_finish
+  # Horizon-1 uses the historical singular key. Multi-round drivers may
+  # expose post_opponent_1, post_opponent_2, ...; choose the final present
+  # stage so terminal outcomes remain raw driver evidence.
+  opponent_stages = [
+    stages[name] for name in sorted(
+      (name for name in stages if name.startswith("post_opponent_")),
+      key=lambda name: int(name.rsplit("_", 1)[1]) if name.rsplit("_", 1)[1].isdigit() else -1,
+    )
+    if stages[name] is not None
+  ]
+  if opponent_stages:
+    terminal_stage = opponent_stages[-1]
+  else:
+    post_opponent = stages.get("post_opponent")
+    terminal_stage = post_opponent if post_opponent is not None else post_finish
 
   friendly_pre = _side_summary(post_finish, model_side)
   friendly_post = _side_summary(terminal_stage, model_side)
@@ -432,7 +446,9 @@ def extract_outcome_vector(
   }
 
 
-def _build_query(candidate: Candidate, seed: int, state_revision: int) -> dict[str, Any]:
+def _build_query(
+  candidate: Candidate, seed: int, state_revision: int, opponent_responses: int,
+) -> dict[str, Any]:
   return {
     "action": "Query",
     "what": "preview_batch",
@@ -440,6 +456,9 @@ def _build_query(candidate: Candidate, seed: int, state_revision: int) -> dict[s
     "phase": candidate.phase,
     "evaluation_seed": seed,
     "state_revision": state_revision,
+    # Explicitly declare the bounded multi-round horizon. A driver that does
+    # not report this horizon is handled as censored by _run_candidate.
+    "opponent_responses": opponent_responses,
     # The driver accepts at most two candidate order-arrays per call
     # ("candidates must contain one or two action arrays"). This module
     # always sends exactly one: pairing two candidates in the same call
@@ -474,6 +493,7 @@ def _run_candidate(
   model_side: int,
   opponent_side: int,
   seed_schedule: Sequence[int],
+  opponent_responses: int,
   deadline: float,
   now: Callable[[], float],
   termination_reasons: set[str],
@@ -494,7 +514,7 @@ def _run_candidate(
       continue
 
     try:
-      response = query(_build_query(candidate, seed, state_revision))
+      response = query(_build_query(candidate, seed, state_revision, opponent_responses))
     except Exception as exc:  # noqa: BLE001 - a transport failure is evaluation data
       response = {"ok": False, "code": "query_exception", "message": str(exc)}
 
@@ -524,6 +544,11 @@ def _run_candidate(
     rollout = candidate_body.get("post_sweep")
     if rollout is None:
       samples.append(Sample(seed, "censored", "rollout_unavailable", None))
+      continue
+
+    declared_horizon = rollout.get("opponent_responses")
+    if opponent_responses > 1 and declared_horizon != opponent_responses:
+      samples.append(Sample(seed, "censored", "unsupported_horizon", None))
       continue
 
     outcome = extract_outcome_vector(rollout, model_side=model_side, opponent_side=opponent_side)
@@ -656,6 +681,7 @@ def evaluate(
     result = _run_candidate(
       query, candidate, state_revision=state_revision, model_side=model_side,
       opponent_side=opponent_side, seed_schedule=cfg.seed_schedule, deadline=deadline,
+      opponent_responses=cfg.opponent_responses,
       now=now, termination_reasons=termination_reasons,
     )
     results_by_id[candidate.candidate_id] = result
@@ -757,6 +783,7 @@ def evaluate(
       "max_candidates": cfg.max_candidates,
       "seed_count": len(cfg.seed_schedule),
       "opponent_responses": cfg.opponent_responses,
+      "horizon_rounds": cfg.opponent_responses,
       "wall_ceiling_seconds": cfg.wall_ceiling_seconds,
       "continuation_policy": cfg.continuation_policy,
       "score_name": cfg.score_name,
@@ -768,7 +795,7 @@ def evaluate(
       "continuation_policy": cfg.continuation_policy,
       "depth": {
         "description": "candidate finish (or delegated sweep for a partial "
-                        "candidate) then one opponent response",
+                        "candidate) then the declared number of opponent responses",
         "opponent_responses": cfg.opponent_responses,
       },
       "candidate_budget": cfg.max_candidates,

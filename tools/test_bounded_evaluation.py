@@ -23,7 +23,8 @@ def _make_rollout(*, seed: int, friendly_hp: int, enemy_hp: int, winner=None,
                    friendly_material: int = 10, enemy_material: int = 10,
                    friendly_villages: int = 0, enemy_villages: int = 0,
                    friendly_gold: int = 0, own_event_count: int = 1,
-                   opponent_responded: bool = True) -> dict[str, Any]:
+                   opponent_responded: bool = True,
+                   opponent_responses: int | None = None) -> dict[str, Any]:
   friendly_side = {
     "side": 0, "units": 1, "hp": friendly_hp, "max_hp": 20,
     "material_cost": friendly_material, "recruiters": 1,
@@ -44,13 +45,21 @@ def _make_rollout(*, seed: int, friendly_hp: int, enemy_hp: int, winner=None,
     "sides": [friendly_side, enemy_side], "units_detail": units_detail,
     "villages": [], "winner": winner,
   }
-  return {
+  stages = {"post_finish": stage}
+  if opponent_responses and opponent_responses > 1:
+    stages.update({f"post_opponent_{i}": stage for i in range(1, opponent_responses + 1)})
+  else:
+    stages["post_opponent"] = stage if opponent_responded else None
+  result = {
     "evaluation_seed": seed, "policy": "driver_greedy_one_response_v2", "sample_count": 1,
-    "stages": {"post_finish": stage, "post_opponent": stage if opponent_responded else None},
+    "stages": stages,
     "own_event_count": own_event_count, "opponent_event_count": 1 if opponent_responded else 0,
     "opponent_error": None,
     "coverage": {"own_finish": True, "opponent_response": opponent_responded},
   }
+  if opponent_responses is not None:
+    result["opponent_responses"] = opponent_responses
+  return result
 
 
 class MockDriver:
@@ -390,6 +399,37 @@ class EvaluateTests(unittest.TestCase):
     self.assertGreater(result["sampled_value_gaps"]["candidate-1"], 0)
     self.assertEqual(result["sampled_value_gaps"]["candidate-0"], 0)
 
+  def test_two_response_horizon_is_declared_and_uses_terminal_stage(self):
+    driver = MockDriver()
+    driver.add_legal(
+      ACTUAL_CHOICE_ORDERS,
+      lambda seed: _make_rollout(seed=seed, friendly_hp=11, enemy_hp=4,
+                                  opponent_responses=2),
+    )
+    driver.add_legal(
+      LEGAL_FINISH,
+      lambda seed: _make_rollout(seed=seed, friendly_hp=9, enemy_hp=7,
+                                  opponent_responses=2),
+    )
+    result = self._run(driver, config=_default_config(opponent_responses=2))
+    preview_calls = [c for c in driver.calls if c.get("what") == "preview_batch"]
+    self.assertTrue(preview_calls)
+    self.assertTrue(all(c["opponent_responses"] == 2 for c in preview_calls))
+    self.assertEqual(result["config"]["horizon_rounds"], 2)
+    actual = next(c for c in result["candidates"] if be.LABEL_ACTUAL_CHOICE in c["labels"])
+    self.assertEqual(actual["completed_seeds"], list(be.default_seed_schedule(4)))
+    self.assertEqual(actual["samples"][0]["outcome"]["recruiter_survival"]["hp"], [11])
+
+  def test_multi_round_response_without_declared_horizon_is_censored(self):
+    driver = MockDriver()
+    driver.add_legal(ACTUAL_CHOICE_ORDERS, lambda seed: _make_rollout(seed=seed, friendly_hp=20, enemy_hp=10))
+    driver.add_legal(LEGAL_FINISH, lambda seed: _make_rollout(seed=seed, friendly_hp=18, enemy_hp=10))
+    seeds = be.default_seed_schedule(2)
+    result = self._run(driver, config=_default_config(seed_schedule=seeds, opponent_responses=2))
+    actual = next(c for c in result["candidates"] if be.LABEL_ACTUAL_CHOICE in c["labels"])
+    self.assertEqual(actual["completed_seeds"], [])
+    self.assertEqual({s["censor_reason"] for s in actual["samples"]}, {"unsupported_horizon"})
+
 
 class EvaluationConfigTests(unittest.TestCase):
   def test_score_fn_and_name_must_be_declared_together(self):
@@ -402,9 +442,13 @@ class EvaluationConfigTests(unittest.TestCase):
     with self.assertRaises(ValueError):
       be.EvaluationConfig(max_candidates=1)
 
-  def test_opponent_responses_must_be_one(self):
+  def test_opponent_responses_are_bounded(self):
+    self.assertEqual(be.EvaluationConfig(opponent_responses=2).opponent_responses, 2)
+    self.assertEqual(be.EvaluationConfig(opponent_responses=3).opponent_responses, 3)
     with self.assertRaises(ValueError):
-      be.EvaluationConfig(opponent_responses=2)
+      be.EvaluationConfig(opponent_responses=0)
+    with self.assertRaises(ValueError):
+      be.EvaluationConfig(opponent_responses=4)
 
 
 if __name__ == "__main__":
