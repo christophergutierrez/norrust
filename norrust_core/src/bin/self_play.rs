@@ -35,6 +35,12 @@ enum AiKind {
 }
 
 #[derive(Clone, Copy)]
+enum RecruitPolicy {
+    FirstAffordable,
+    Balanced,
+}
+
+#[derive(Clone, Copy)]
 enum FirstPlayer {
     Team1,
     Team2,
@@ -60,6 +66,7 @@ struct Config {
     first: FirstPlayer,
     second_gold: u32,
     record_dir: Option<PathBuf>,
+    recruit_policy: RecruitPolicy,
 }
 
 #[derive(Clone)]
@@ -101,6 +108,7 @@ Options:
   --first SIDE           team1 | team2 | coin-flip (default: team1)
   --second-gold N        Extra starting gold for the second player (default: 5)
   --record-dir PATH     Write isolated state trajectories (directory must be new)
+  --recruit-policy KIND first-affordable | balanced (default: first-affordable)
   --verbose             CSV header plus one line per game
   --compact             One comma-separated summary line
   -h, --help            Show this help"
@@ -148,6 +156,7 @@ fn parse_args() -> Config {
         first: FirstPlayer::Team1,
         second_gold: 5,
         record_dir: None,
+        recruit_policy: RecruitPolicy::FirstAffordable,
     };
     let args: Vec<String> = env::args().skip(1).collect();
     let mut i = 0;
@@ -172,6 +181,13 @@ fn parse_args() -> Config {
         let value = &args[i + 1];
         match key.as_str() {
             "--record-dir" => c.record_dir = Some(PathBuf::from(value)),
+            "--recruit-policy" => {
+                c.recruit_policy = match value.as_str() {
+                    "first-affordable" => RecruitPolicy::FirstAffordable,
+                    "balanced" => RecruitPolicy::Balanced,
+                    _ => usage(),
+                }
+            }
             "--scenario" => c.scenario = value.clone(),
             "--team1" => c.team1 = value.clone(),
             "--team2" => c.team2 = value.clone(),
@@ -280,6 +296,7 @@ fn recruit(
     faction: &Faction,
     units: &Registry<UnitDef>,
     next_id: &mut u32,
+    policy: RecruitPolicy,
 ) -> u32 {
     let mut recruited = 0;
     loop {
@@ -373,12 +390,39 @@ fn recruit(
             dest = Some(castle);
         }
         let dest = dest.expect("recruitment destination must exist");
-        let Some(def) = faction
+        let affordable: Vec<&UnitDef> = faction
             .recruits
             .iter()
             .filter_map(|id| units.get(id))
-            .find(|d| state.gold[side as usize] >= d.cost)
-        else {
+            .filter(|d| state.gold[side as usize] >= d.cost)
+            .collect();
+        let Some(def) = (match policy {
+            RecruitPolicy::FirstAffordable => affordable.first().copied(),
+            RecruitPolicy::Balanced => {
+                let ranged = state
+                    .units
+                    .values()
+                    .filter(|u| u.faction == side)
+                    .filter(|u| u.attacks.iter().any(|a| a.range == "ranged"))
+                    .count();
+                let melee = state
+                    .units
+                    .values()
+                    .filter(|u| u.faction == side)
+                    .filter(|u| u.attacks.iter().any(|a| a.range == "melee"))
+                    .count();
+                let want_ranged = ranged < melee;
+                affordable
+                    .iter()
+                    .copied()
+                    .find(|d| {
+                        d.attacks
+                            .iter()
+                            .any(|a| (a.range == "ranged") == want_ranged)
+                    })
+                    .or_else(|| affordable.first().copied())
+            }
+        }) else {
             break;
         };
         let cost = def.cost;
@@ -598,6 +642,10 @@ fn run_game(c: &Config, game: u32) -> GameResult {
             "game":game, "input_seed":game_index, "engine_seed":game_seed,
             "scenario":c.scenario, "factions":[c.team1,c.team2],
             "algorithms":[ai_name(c.ai1),ai_name(c.ai2)], "first":first,
+            "recruit_policy": match c.recruit_policy {
+                RecruitPolicy::FirstAffordable => "first-affordable",
+                RecruitPolicy::Balanced => "balanced",
+            },
             "starting_gold":starting_gold, "safety_side_turns":limit,
             "coverage":"state_boundaries_only", "model_calls":0});
         serde_json::to_writer(&mut writer, &meta).expect("write metadata");
@@ -616,7 +664,7 @@ fn run_game(c: &Config, game: u32) -> GameResult {
     for step in 0..limit {
         let side = state.active_faction;
         if side == 0 {
-            recruits[0] += recruit(&mut state, 0, f1, &units, &mut next_id);
+            recruits[0] += recruit(&mut state, 0, f1, &units, &mut next_id, c.recruit_policy);
             record_state(
                 &mut recording,
                 &state,
@@ -628,7 +676,7 @@ fn run_game(c: &Config, game: u32) -> GameResult {
             );
             play_turn(&mut state, 0, c.ai1, &mut rng, f1, &units);
         } else {
-            recruits[1] += recruit(&mut state, 1, f2, &units, &mut next_id);
+            recruits[1] += recruit(&mut state, 1, f2, &units, &mut next_id, c.recruit_policy);
             record_state(
                 &mut recording,
                 &state,

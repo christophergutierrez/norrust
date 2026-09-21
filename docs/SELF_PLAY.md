@@ -217,6 +217,18 @@ first-player edge; treat it as a real algorithm effect to re-check at larger
 Second-player gold to flatten greedy-mirror to 50/50 has **not** been tuned
 yet. Default `--second-gold 5` is not that compensation.
 
+### Recruitment policy comparison
+
+The self-play runner defaults to the historical `first-affordable` recruitment
+policy. For a separate composition experiment, pass
+`--recruit-policy balanced`. The balanced policy alternates toward a melee or
+ranged definition when the faction actually offers an affordable definition of
+that role, then falls back to the first affordable definition. It does not alter
+the planner, opponent policy, or starting gold. Every recorded trajectory stores
+the selected policy in metadata. Compare the two policies with identical seeds,
+factions, gold and initiative; do not attribute a result to planning when the
+recruitment policy changed too.
+
 ## Implementation notes
 
 - Binary: `norrust_core/src/bin/self_play.rs`
