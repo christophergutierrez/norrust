@@ -397,6 +397,7 @@ def extract_outcome_vector(
   """
   stages = rollout.get("stages", {}) or {}
   post_finish = stages.get("post_finish")
+  terminal_state = rollout.get("terminal_state")
   # Horizon-1 uses the historical singular key. Multi-round drivers may
   # expose post_opponent_1, post_opponent_2, ...; choose the final present
   # stage so terminal outcomes remain raw driver evidence.
@@ -407,7 +408,9 @@ def extract_outcome_vector(
     )
     if stages[name] is not None
   ]
-  if opponent_stages:
+  if terminal_state is not None:
+    terminal_stage = terminal_state
+  elif opponent_stages:
     terminal_stage = opponent_stages[-1]
   else:
     post_opponent = stages.get("post_opponent")
@@ -547,7 +550,11 @@ def _run_candidate(
       continue
 
     declared_horizon = rollout.get("opponent_responses")
-    if opponent_responses > 1 and declared_horizon != opponent_responses:
+    # A terminal game is a valid completed sample even when it ends before the
+    # requested horizon. The driver must provide the terminal state explicitly;
+    # a missing numbered stage alone remains an unsupported horizon.
+    terminal_complete = rollout.get("terminal_state") is not None
+    if opponent_responses > 1 and declared_horizon != opponent_responses and not terminal_complete:
       samples.append(Sample(seed, "censored", "unsupported_horizon", None))
       continue
 

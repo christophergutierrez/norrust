@@ -430,6 +430,24 @@ class EvaluateTests(unittest.TestCase):
     self.assertEqual(actual["completed_seeds"], [])
     self.assertEqual({s["censor_reason"] for s in actual["samples"]}, {"unsupported_horizon"})
 
+  def test_early_terminal_state_completes_short_horizon(self):
+    driver = MockDriver()
+    def terminal(seed):
+      value = _make_rollout(seed=seed, friendly_hp=20, enemy_hp=0, winner=0,
+                            opponent_responses=3)
+      value["terminal_state"] = value["stages"]["post_opponent_1"]
+      value["stages"]["post_opponent_2"] = None
+      value["stages"]["post_opponent_3"] = None
+      value["opponent_responses_completed"] = 1
+      value["terminated_early"] = True
+      return value
+    driver.add_legal(ACTUAL_CHOICE_ORDERS, terminal)
+    driver.add_legal(LEGAL_FINISH, terminal)
+    result = self._run(driver, config=_default_config(seed_schedule=(7,), opponent_responses=3))
+    actual = next(c for c in result["candidates"] if be.LABEL_ACTUAL_CHOICE in c["labels"])
+    self.assertEqual(actual["completed_seeds"], [7])
+    self.assertEqual(actual["samples"][0]["outcome"]["terminal_result"], 0)
+
 
 class EvaluationConfigTests(unittest.TestCase):
   def test_score_fn_and_name_must_be_declared_together(self):
