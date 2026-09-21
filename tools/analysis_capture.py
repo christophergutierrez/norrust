@@ -36,6 +36,32 @@ RECORD_KINDS = frozenset({
     "capture_status",
 })
 
+# Stack-2 record kinds: the complete passive decision trace. A user can see
+# what the player was offered, what it selected, what failed, and what
+# actually executed, including repair attempts. Every kind is mirrored from a
+# game-log record the client already wrote (deviation 001), except
+# `stage_timing` and `usage_receipt`, which the client records directly from
+# facts it measures or owns.
+STACK2_RECORD_KINDS = frozenset({
+    "candidate_packet",      # what the player was offered (options, coverage, truncation)
+    "candidate_validation",  # engine-validated selections for a packet
+    "model_response",        # what the player answered (raw output, usage, cache)
+    "model_failure",         # a model/backend error before a response existed
+    "response_repair",       # repair attempts, incl. strategy recovery outcomes
+    "batch_validation",      # pre-submit validation results (valid AND invalid)
+    "validation_rejection",  # a driver-rejected batch after submission
+    "execution_submit",      # proposed/forwarded orders, incl. routine and repair
+    "routine_action",        # routine progress, independent moves, exceptions
+    "policy_change",         # policy installation (model or fixed file)
+    "resource_event",        # recruitment review resolution
+    "finish_event",          # why a finish was forced (timeout, partial limit)
+    "physical_retry",        # transport retries and output-limit retries
+    "stage_timing",          # monotonic stage spans around one model request
+    "usage_receipt",         # reference to the physical usage sidecar
+})
+
+RECORD_KINDS = frozenset(RECORD_KINDS | STACK2_RECORD_KINDS)
+
 # Frozen across all stacks.
 EVIDENCE_STATUSES = frozenset({
     "observed",
@@ -170,6 +196,54 @@ def make_reference(path: str | os.PathLike[str], role: str, base_dir: str | os.P
     }
 
 
+def make_range_reference(path: str | os.PathLike[str], role: str, base_dir: str | os.PathLike[str], *,
+                         byte_offset: int, byte_length: int,
+                        root: Optional[str | os.PathLike[str]] = None) -> dict[str, Any]:
+    """Build a frozen reference to a BYTE RANGE of an evidence artifact.
+
+    Stack 2 uses this to point at the exact game-log line a mirrored fact
+    came from, so the sidecar never duplicates prompt or response bytes that
+    the durable log already holds: the reference carries the line's byte
+    offset, length and sha256, and a reader can verify the range without
+    trusting the rest of the file. Semantics (deviation 002): when
+    `byte_offset`/`byte_length` are non-null, `sha256` and `bytes` describe
+    the RANGE, not the whole file. The archive-root rule is identical to
+    `make_reference`.
+    """
+    if role not in REFERENCE_ROLES:
+        raise ValueError(f"unknown reference role: {role!r}")
+    if not isinstance(byte_offset, int) or byte_offset < 0:
+        raise ValueError("byte_offset must be a non-negative integer")
+    if not isinstance(byte_length, int) or byte_length <= 0:
+        raise ValueError("byte_length must be a positive integer")
+    target = Path(path).resolve()
+    base = Path(base_dir).resolve()
+    archive_root = Path(root).resolve() if root is not None else base.parent
+    try:
+        target.relative_to(archive_root)
+    except ValueError:
+        raise ValueError(
+            f"reference path {target} escapes archive root {archive_root}; "
+            "a relative path to it would not survive copying the analysis "
+            "directory elsewhere") from None
+    with target.open("rb") as stream:
+        stream.seek(byte_offset)
+        payload = stream.read(byte_length)
+    if len(payload) != byte_length:
+        raise ValueError(
+            f"reference range [{byte_offset}, {byte_offset + byte_length}) exceeds "
+            f"the size of {target}")
+    return {
+        "role": role,
+        "path": os.path.relpath(target, base),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "bytes": byte_length,
+        "record_sequence": None,
+        "byte_offset": byte_offset,
+        "byte_length": byte_length,
+    }
+
+
 def build_manifest(*, conversation_id: str, game_log: str, source_commit: str,
                     driver_hash: str, data_hash: str, scenario_hash: str,
                     canonical_prompt_hash: str, fixed_prefix_sha256: str,
@@ -185,12 +259,19 @@ def build_manifest(*, conversation_id: str, game_log: str, source_commit: str,
                     parent_game_id: Optional[str] = None,
                     parent_checkpoint_sha256: Optional[str] = None,
                     lineage_root_id: Optional[str] = None,
+                    provenance_gaps: Optional[dict[str, str]] = None,
                     created_at: Optional[str] = None) -> dict[str, Any]:
     """Build the frozen `manifest.json` payload.
 
     `launch` is always run through `allowlisted_launch` here - callers cannot
     bypass the allowlist by pre-filtering and passing a dict of their own
     choosing that happens to look safe.
+
+    `provenance_gaps` names any manifest field left null and says WHY, so an
+    unpopulated hash reads as a known limit rather than as a bug or as an
+    assertion that the input was empty. A field that cannot be computed
+    without a query the capture is forbidden to make belongs here; it does
+    not get a fabricated value.
     """
     return {
         "analysis_schema_version": ANALYSIS_SCHEMA_VERSION,
@@ -220,6 +301,7 @@ def build_manifest(*, conversation_id: str, game_log: str, source_commit: str,
             "parent_checkpoint_sha256": parent_checkpoint_sha256,
             "lineage_root_id": lineage_root_id,
         },
+        "provenance_gaps": dict(provenance_gaps or {}),
     }
 
 
@@ -238,6 +320,7 @@ class AnalysisWriter:
                  conversation_id: str, byte_cap: int):
         self.analysis_dir = analysis_dir
         self.records_path = records_path
+        self.log_path: Optional[Path] = None
         self._handle = handle
         self.conversation_id = conversation_id
         self.byte_cap = byte_cap
@@ -248,12 +331,20 @@ class AnalysisWriter:
         self.stop_outcome: Optional[str] = None
         self.write_error: Optional[str] = None
         self._decision_sequence = 0
+        self._decision_open = False
+        self._decision_client_id: Optional[str] = None
         self._closed = False
 
     @classmethod
     def create(cls, log_path: str | os.PathLike[str], manifest: dict[str, Any], *,
-               byte_cap: int = DEFAULT_BYTE_CAP) -> "AnalysisWriter":
+               byte_cap: Optional[int] = DEFAULT_BYTE_CAP) -> "AnalysisWriter":
         """Create the sidecar directory and open it for writing.
+
+        A `byte_cap` of None means "not configured" and falls back to the
+        default; an explicit cap is used as given.  (Passing None explicitly
+        must not silently disable the cap: `None - reserve` would raise deep
+        inside the writer and, through the client's broad except, quietly
+        turn capture off for the whole game.)
 
         The directory is created mode 0o700 and both files mode 0o600 -
         evidence capsules may carry prompts and reasoning traces, so they get
@@ -277,7 +368,9 @@ class AnalysisWriter:
         os.chmod(records_path, 0o600)
 
         conversation_id = manifest.get("conversation_id", "match")
-        writer = cls(analysis_dir, records_path, handle, conversation_id, byte_cap)
+        effective_cap = byte_cap if isinstance(byte_cap, int) and byte_cap > 0 else DEFAULT_BYTE_CAP
+        writer = cls(analysis_dir, records_path, handle, conversation_id, effective_cap)
+        writer.log_path = Path(log_path)
         writer._write_record({
             "kind": "capture_started",
             "decision_id": None,
@@ -316,6 +409,99 @@ class AnalysisWriter:
         if self._decision_sequence == 0:
             return None
         return f"{self.conversation_id}:decision:{self._decision_sequence}"
+
+    # -- Stack 2: decision identity without a model request ------------------
+    #
+    # Stack 1 minted a decision on every mirrored `model_request`. Stack 2
+    # instruments the candidate path properly: a decision packet opens a
+    # decision (strategy mode), a fresh purpose="decision" request opens one
+    # (batch/focused mode), and repairs, reviews, follow-ups and tool rounds
+    # REUSE the decision they belong to instead of minting a new identity for
+    # the same choice point.
+
+    def _mint_decision(self, start_body: dict[str, Any],
+                       side_turn_id: Optional[str] = None,
+                       state_revision: Optional[int] = None) -> str:
+        """Mint a decision id and emit its `decision_start` record."""
+        decision_id = self.next_decision_id()
+        self._decision_open = True
+        self._decision_client_id = start_body.get("client_decision_id")
+        self.record("decision_start", decision_id=decision_id,
+                    side_turn_id=side_turn_id, state_revision=state_revision,
+                    body=dict(start_body))
+        return decision_id
+
+    def decision_for_request(self, purpose: Optional[str],
+                             side_turn_id: Optional[str] = None,
+                             state_revision: Optional[int] = None) -> Optional[str]:
+        """Return the decision a model request belongs to, minting if needed.
+
+        A repair, review or inspection follow-up continues the decision in
+        flight. A fresh `decision` request reuses the current decision only
+        when a decision packet opened it (strategy mode); otherwise it starts
+        a new one. Returns None only when capture has stopped.
+        """
+        if self.stopped:
+            return None
+        if self._decision_open and (self._decision_client_id is not None
+                                    or purpose != "decision"):
+            return self.current_decision_id
+        return self._mint_decision({"stage": "model_request", "purpose": purpose},
+                                   side_turn_id=side_turn_id, state_revision=state_revision)
+
+    def decision_for_packet(self, client_decision_id: Optional[str],
+                            side_turn_id: Optional[str] = None,
+                            state_revision: Optional[int] = None) -> Optional[str]:
+        """Return the decision a candidate packet opens, minting if needed.
+
+        The client's own packet decision id (a different id space from the
+        analysis decision id) is recorded in the `decision_start` body so the
+        two can be cross-referenced without being conflated. A packet with a
+        NEW client decision id always opens a new analysis decision: a
+        recovery packet or an incident recurrence is a new choice point even
+        though no turn boundary separates them.
+        """
+        if self.stopped:
+            return None
+        if (self._decision_open and client_decision_id is not None
+                and self._decision_client_id == client_decision_id):
+            return self.current_decision_id
+        return self._mint_decision(
+            {"stage": "decision_packet", "client_decision_id": client_decision_id},
+            side_turn_id=side_turn_id, state_revision=state_revision)
+
+    def close_decision(self) -> None:
+        """Mark the current decision closed (turn boundary or terminal)."""
+        self._decision_open = False
+
+    def note_usage_sidecar(self, sidecar_path: str | os.PathLike[str]) -> None:
+        """Record the authoritative physical usage receipts for this game.
+
+        The usage sidecar is append-only and written by the backend during
+        play, so its hash is pinned once here, at game end; a receipt that
+        changes afterwards is a visible conflict, not a silent pass. A game
+        with no sidecar records `missing` evidence rather than implying zero
+        usage.
+        """
+        if self.stopped or self._closed:
+            return
+        path = Path(sidecar_path)
+        if not path.is_file():
+            self.record("usage_receipt", decision_id=self.current_decision_id,
+                        evidence_status="missing",
+                        body={"reason": "no physical usage sidecar was written"})
+            return
+        try:
+            ref = make_reference(path, "usage", self.analysis_dir)
+        except (OSError, ValueError) as exc:
+            self.record("usage_receipt", decision_id=self.current_decision_id,
+                        evidence_status="missing",
+                        body={"reason": f"usage sidecar unreadable: {exc}"})
+            return
+        self.record("usage_receipt", decision_id=self.current_decision_id,
+                    refs=[ref],
+                    body={"note": "hash pinned at game end; the sidecar is the "
+                                  "authoritative physical-call receipt"})
 
     def record(self, kind: str, *, decision_id: str, side_turn_id: Optional[str] = None,
                request_id: Optional[str] = None, batch_id: Optional[str] = None,

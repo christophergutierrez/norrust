@@ -16,6 +16,7 @@ from tools.analysis_capture import (
     allowlisted_launch,
     analysis_dir_for_log,
     build_manifest,
+    make_range_reference,
     make_reference,
     read_records,
     validate_records,
@@ -456,3 +457,189 @@ class ValidateRecordsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RangeReferenceTests(unittest.TestCase):
+    """Stack 2: byte-range references point at exact game-log lines."""
+
+    def test_range_reference_hashes_exactly_the_named_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = Path(directory) / "match.ndjson"
+            first = json.dumps({"type": "one"}) + "\n"
+            second = json.dumps({"type": "two"}) + "\n"
+            log_path.write_text(first + second)
+            analysis_dir = analysis_dir_for_log(log_path)
+            analysis_dir.mkdir()
+            ref = make_range_reference(log_path, "game_log", analysis_dir,
+                                       byte_offset=len(first.encode()),
+                                       byte_length=len(second.encode()))
+            self.assertEqual("../match.ndjson", ref["path"])
+            self.assertEqual(len(second.encode()), ref["bytes"])
+            self.assertEqual(hashlib.sha256(second.encode()).hexdigest(), ref["sha256"])
+            self.assertEqual(len(first.encode()), ref["byte_offset"])
+
+    def test_range_beyond_file_size_raises(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = Path(directory) / "match.ndjson"
+            log_path.write_text("short")
+            analysis_dir = analysis_dir_for_log(log_path)
+            analysis_dir.mkdir()
+            with self.assertRaises(ValueError):
+                make_range_reference(log_path, "game_log", analysis_dir,
+                                     byte_offset=0, byte_length=1000)
+
+    def test_range_reference_enforces_archive_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            outside = root / "elsewhere.txt"
+            outside.write_text("data")
+            game_dir = root / "game"
+            game_dir.mkdir()
+            analysis_dir = game_dir / "match.analysis"
+            analysis_dir.mkdir()
+            with self.assertRaises(ValueError):
+                make_range_reference(outside, "game_log", analysis_dir,
+                                     byte_offset=0, byte_length=4)
+
+
+class DecisionIdentityTests(unittest.TestCase):
+    """Stack 2: decisions open at packets or fresh requests, not every request."""
+
+    def _writer(self):
+        log_path = Path(tempfile.mkdtemp()) / "match.ndjson"
+        log_path.write_text("")
+        self.addCleanup(shutil.rmtree, log_path.parent)
+        return AnalysisWriter.create(log_path, _manifest())
+
+    def test_fresh_decision_request_mints_and_repair_reuses(self):
+        writer = self._writer()
+        first = writer.decision_for_request("decision")
+        repair = writer.decision_for_request("repair")
+        self.assertEqual(first, repair,
+                         "a repair continues the decision it belongs to")
+        second = writer.decision_for_request("decision")
+        self.assertNotEqual(first, second,
+                            "a fresh decision request opens a new decision")
+
+    def test_packet_opens_decision_and_model_request_reuses_it(self):
+        writer = self._writer()
+        packet_decision = writer.decision_for_packet("client-decision-1")
+        request_decision = writer.decision_for_request("decision")
+        self.assertEqual(packet_decision, request_decision,
+                         "the model request for an issued packet reuses its decision")
+        again = writer.decision_for_packet("client-decision-1")
+        self.assertEqual(packet_decision, again)
+        other = writer.decision_for_packet("client-decision-2")
+        self.assertNotEqual(packet_decision, other,
+                            "a new client decision id opens a new analysis decision")
+
+    def test_close_decision_forces_next_decision_request_to_mint(self):
+        writer = self._writer()
+        first = writer.decision_for_request("decision")
+        writer.close_decision()
+        second = writer.decision_for_request("decision")
+        self.assertNotEqual(first, second)
+
+    def test_decision_start_record_is_emitted_with_stage(self):
+        writer = self._writer()
+        writer.decision_for_packet("client-decision-9")
+        writer.close()
+        result = read_records(writer.analysis_dir)
+        starts = [r for r in result.records if r["kind"] == "decision_start"]
+        self.assertEqual(1, len(starts))
+        self.assertEqual("decision_packet", starts[0]["body"]["stage"])
+        self.assertEqual("client-decision-9", starts[0]["body"]["client_decision_id"])
+
+
+class UsageReceiptTests(unittest.TestCase):
+    """Stack 2: the physical usage sidecar is referenced or reported missing."""
+
+    def _writer(self):
+        log_path = Path(tempfile.mkdtemp()) / "match.ndjson"
+        log_path.write_text("")
+        self.addCleanup(shutil.rmtree, log_path.parent)
+        return AnalysisWriter.create(log_path, _manifest())
+
+    def test_missing_sidecar_records_missing_evidence(self):
+        writer = self._writer()
+        writer.note_usage_sidecar(writer.analysis_dir.parent / "usage.ndjson")
+        writer.close()
+        result = read_records(writer.analysis_dir)
+        receipts = [r for r in result.records if r["kind"] == "usage_receipt"]
+        self.assertEqual(1, len(receipts))
+        self.assertEqual("missing", receipts[0]["evidence_status"])
+
+    def test_present_sidecar_is_referenced_with_hash(self):
+        writer = self._writer()
+        sidecar = writer.analysis_dir.parent / "usage.ndjson"
+        sidecar.write_text('{"game_id": "match-1", "call_id": "c1"}\n')
+        writer.note_usage_sidecar(sidecar)
+        writer.close()
+        result = read_records(writer.analysis_dir)
+        receipts = [r for r in result.records if r["kind"] == "usage_receipt"]
+        self.assertEqual(1, len(receipts))
+        self.assertEqual("observed", receipts[0]["evidence_status"])
+        (ref,) = receipts[0]["refs"]
+        self.assertEqual("usage", ref["role"])
+        self.assertEqual("../usage.ndjson", ref["path"])
+        self.assertEqual(hashlib.sha256(sidecar.read_bytes()).hexdigest(), ref["sha256"])
+
+
+class Stack2KindTests(unittest.TestCase):
+    """Stack 2 kinds round-trip through the writer and validator."""
+
+    def test_candidate_and_validation_kinds_round_trip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = Path(directory) / "match.ndjson"
+            log_path.write_text("")
+            writer = AnalysisWriter.create(log_path, _manifest())
+            did = writer.decision_for_packet("client-1")
+            writer.record("candidate_packet", decision_id=did,
+                          side_turn_id="match-1:side_turn:1", state_revision=3,
+                          body={"packet": {"decision_id": "client-1", "options": [
+                              {"option_id": "opt-a"}, {"option_id": "opt-b"}]}})
+            writer.record("candidate_validation", decision_id=did,
+                          side_turn_id="match-1:side_turn:1", state_revision=3,
+                          body={"client_decision_id": "client-1", "coverage": "validated"})
+            writer.record("batch_validation", decision_id=did,
+                          side_turn_id="match-1:side_turn:1", state_revision=3,
+                          body={"valid": False, "failed_index": 0})
+            writer.record("response_repair", decision_id=did,
+                          side_turn_id="match-1:side_turn:1", state_revision=3,
+                          body={"error": "bad json"})
+            writer.record("execution_submit", decision_id=did,
+                          side_turn_id="match-1:side_turn:1", batch_id="match-1:batch:1",
+                          state_revision=3,
+                          body={"orders": [{"action": "EndTurn"}], "source": "model"})
+            writer.record("action_commit", decision_id=did,
+                          side_turn_id="match-1:side_turn:1", batch_id="match-1:batch:1",
+                          state_revision=4, body={"origin": "llm"})
+            writer.close()
+
+            result = read_records(writer.analysis_dir)
+            self.assertEqual([], result.warnings)
+            validation = validate_records(result.records)
+            self.assertEqual([], validation.errors)
+            kinds = {r["kind"] for r in result.records}
+            self.assertLessEqual({"candidate_packet", "candidate_validation",
+                                  "batch_validation", "response_repair",
+                                  "execution_submit", "action_commit"}, kinds)
+
+    def test_routine_submission_carries_no_decision_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = Path(directory) / "match.ndjson"
+            log_path.write_text("")
+            writer = AnalysisWriter.create(log_path, _manifest())
+            did = writer.decision_for_request("decision")
+            # A routine submission is engine-selected: no decision id at all.
+            writer.record("execution_submit", decision_id=None,
+                          side_turn_id="match-1:side_turn:1", batch_id="match-1:batch:2",
+                          state_revision=5, body={"source": "routine"})
+            writer.record("routine_action", decision_id=None,
+                          side_turn_id="match-1:side_turn:1", batch_id="match-1:batch:2",
+                          state_revision=5, body={"reason": "contact"})
+            writer.close()
+            result = read_records(writer.analysis_dir)
+            routine = [r for r in result.records if r["kind"] == "execution_submit"]
+            self.assertEqual(1, len(routine))
+            self.assertIsNone(routine[0]["decision_id"])

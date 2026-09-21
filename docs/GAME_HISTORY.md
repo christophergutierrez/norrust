@@ -575,6 +575,17 @@ the catalog-relevant facts arrive through the existing importer, and the rest is
 reported from the sidecar by `python3 -m tools.game_analysis report`. The catalog
 schema is unchanged by analysis capture.
 
+Stack 2 extends the sidecar to the complete passive decision trace: candidate
+packets and validated selections, model responses, pre-submit batch validations,
+repair attempts, forwarded and committed orders, routine actions and exceptions,
+policy installations, forced finishes, transport retries, per-request stage
+timings with a pre-request budget snapshot, and a reference to the physical
+usage sidecar. Each mirrored record carries a byte-range reference (offset,
+length, sha256) to its exact audit-log line, so references verify without
+duplicating prompt or response bytes in the sidecar. A routine-submitted batch
+carries no decision id -- it is engine-selected, not a player decision -- and a
+repair reuses the decision it belongs to.
+
 Search-only evaluations never receive a fabricated `model_requests` row.
 `decision_evaluations.request_id` is `NOT NULL` and references a real model
 request, so an evaluation with no model request belongs in the artifact named by

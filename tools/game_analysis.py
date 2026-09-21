@@ -44,7 +44,8 @@ try:
         read_records,
         validate_records,
     )
-    from .game_history import import_game, open_history
+    from .game_history import _read_usage_sidecar, import_game, open_history
+    from .model_usage import dedupe_calls
 except ImportError:  # pragma: no cover - direct script compatibility
     from analysis_capture import (  # type: ignore
         ANALYSIS_MANIFEST_NAME,
@@ -56,7 +57,8 @@ except ImportError:  # pragma: no cover - direct script compatibility
         read_records,
         validate_records,
     )
-    from game_history import import_game, open_history  # type: ignore
+    from game_history import _read_usage_sidecar, import_game, open_history  # type: ignore
+    from model_usage import dedupe_calls  # type: ignore
 
 
 def resolve_log_path(archive: str | Path) -> Path:
@@ -112,7 +114,10 @@ def _hash_check_refs(analysis_dir: Path, records: list[dict[str, Any]]) -> list[
 
     A mismatch is a CONFLICT per the contract -- never silently resolved by
     picking one side -- so every problem found is returned, not just the
-    first.
+    first.  A reference with `byte_offset`/`byte_length` names a byte RANGE
+    of its artifact (deviation 002): the hash and size describe exactly those
+    bytes, so a reader can verify one game-log line without trusting the
+    rest of the file.
     """
     problems: list[str] = []
     for record in records:
@@ -126,7 +131,23 @@ def _hash_check_refs(analysis_dir: Path, records: list[dict[str, Any]]) -> list[
                 problems.append(f"sequence {sequence}: {error}")
                 continue
             try:
-                payload = target.read_bytes()
+                if ref.get("byte_offset") is not None or ref.get("byte_length") is not None:
+                    offset = ref.get("byte_offset")
+                    length = ref.get("byte_length")
+                    if not isinstance(offset, int) or not isinstance(length, int) or offset < 0 or length <= 0:
+                        problems.append(f"sequence {sequence}: reference {ref.get('path')!r} "
+                                        "has an invalid byte range")
+                        continue
+                    with target.open("rb") as stream:
+                        stream.seek(offset)
+                        payload = stream.read(length)
+                    if len(payload) != length:
+                        problems.append(
+                            f"sequence {sequence}: reference {ref.get('path')!r} range "
+                            f"[{offset}, {offset + length}) exceeds the file size")
+                        continue
+                else:
+                    payload = target.read_bytes()
             except OSError as exc:
                 problems.append(f"sequence {sequence}: reference {ref.get('path')!r} unreadable: {exc}")
                 continue
@@ -300,6 +321,169 @@ def summarize_evidence(records: list[dict[str, Any]]) -> dict[str, Any]:
     return {str(status): count for status, count in sorted(counts.items(), key=lambda kv: str(kv[0]))}
 
 
+def summarize_decisions(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """One line per decision: what was offered, selected, repaired, executed.
+
+    This is the stack-2 deliverable in report form -- a user can see what the
+    player was offered, what it selected, what failed, and what actually
+    executed, including repair attempts.  Counts stay honest: a rejected
+    order contributes no committed-action count, and a routine submission is
+    listed as engine-selected rather than misattributed to a model decision.
+    """
+    decisions: dict[str, dict[str, Any]] = {}
+    for record in records:
+        decision_id = record.get("decision_id")
+        if not isinstance(decision_id, str):
+            continue
+        entry = decisions.setdefault(decision_id, {
+            "decision_id": decision_id,
+            "side_turn_id": record.get("side_turn_id"),
+            "stage": None,
+            "client_decision_id": None,
+            "requests": 0,
+            "candidates_offered": None,
+            "candidates_truncated": None,
+            "candidate_filtering": None,
+            "candidate_omission": None,
+            "selection": None,
+            "selection_source": None,
+            "custom_orders": False,
+            "repairs": 0,
+            "validations_rejected": 0,
+            "committed_batches": [],
+            "finish_kinds": set(),
+        })
+        kind = record.get("kind")
+        body = record.get("body") or {}
+        if kind == "decision_start":
+            entry["stage"] = body.get("stage")
+            entry["client_decision_id"] = body.get("client_decision_id")
+        elif kind == "model_request":
+            entry["requests"] += 1
+        elif kind == "candidate_packet":
+            packet = body.get("packet") if isinstance(body.get("packet"), dict) else {}
+            options = packet.get("options")
+            if isinstance(options, list):
+                entry["candidates_offered"] = len(options)
+            coverage = packet.get("coverage") if isinstance(packet.get("coverage"), dict) else {}
+            entry["candidates_truncated"] = bool(coverage.get("options_truncated"))
+            # Omission, filtering and display truncation are three different
+            # things and must stay distinguishable.  The generator reports
+            # whether the shown list was truncated, but it does not report why
+            # a legal action was never generated, nor a per-candidate filter
+            # reason.  That absence is recorded as unreported -- never as
+            # "nothing was filtered" -- because the shown set is not evidence
+            # of the complete legal set.  Establishing what was legally
+            # available but absent requires offline enumeration from a
+            # restored state, which is stack 3 work, not a guess made here.
+            reasons = coverage.get("filter_reasons")
+            entry["candidate_filtering"] = (
+                "reported" if isinstance(reasons, (list, dict)) and reasons else "unreported")
+            entry["candidate_omission"] = "unknown_without_offline_enumeration"
+        elif kind == "execution_submit":
+            if body.get("option_ids"):
+                entry["selection"] = list(body.get("option_ids"))
+                entry["selection_source"] = body.get("proposal_source") or "engine_option"
+            elif body.get("orders"):
+                entry["custom_orders"] = True
+                entry["selection_source"] = body.get("source") or "custom"
+        elif kind == "response_repair":
+            entry["repairs"] += 1
+        elif kind == "batch_validation" and body.get("valid") is False:
+            entry["validations_rejected"] += 1
+        elif kind == "action_commit":
+            entry["committed_batches"].append(record.get("batch_id"))
+        elif kind == "turn_boundary" and body.get("phase") == "finished":
+            for key in ("authored_finish_kind", "executed_finish_kind"):
+                if body.get(key):
+                    entry["finish_kinds"].add(f"{key}={body.get(key)}")
+    for entry in decisions.values():
+        entry["committed_batches"] = sorted(b for b in entry["committed_batches"] if b)
+        entry["finish_kinds"] = sorted(entry["finish_kinds"])
+    return {"count": len(decisions), "items": list(decisions.values())}
+
+
+def summarize_usage(log_path: Path) -> dict[str, Any]:
+    """Summarize the authoritative physical usage receipts beside the log.
+
+    Token accounting definitions are stated explicitly, and absent values
+    stay unknown rather than becoming zero: a receipt without reasoning
+    tokens says reasoning is unreported, and a missing cache field says
+    cached input is unknown.  `total_tokens` is provider-reported and is
+    never recomputed from components.
+    """
+    sidecar = log_path.parent / "usage.ndjson"
+    if not sidecar.is_file():
+        return {"status": "missing",
+                "note": "no physical usage sidecar beside the log; usage is unknown, not zero"}
+    try:
+        from .game_history import _read_usage_sidecar
+        from .model_usage import dedupe_calls
+    except ImportError:  # pragma: no cover - direct script compatibility
+        from game_history import _read_usage_sidecar  # type: ignore
+        from model_usage import dedupe_calls  # type: ignore
+    records, malformed = _read_usage_sidecar(sidecar)
+    calls, conflicts = dedupe_calls(records)
+    known_total = 0
+    unknown_calls = 0
+    reasoning_reported = 0
+    cached_reported = 0
+    for call in calls:
+        total = call.total_tokens
+        if isinstance(total, int) and not call.normalization_gaps:
+            known_total += total
+        else:
+            unknown_calls += 1
+        if isinstance(call.reasoning_tokens, int):
+            reasoning_reported += 1
+        if isinstance(call.cached_input_tokens, int):
+            cached_reported += 1
+    return {
+        "status": "observed",
+        "physical_calls": len(calls),
+        "malformed_rows": len(malformed),
+        "conflicting_identities": len(conflicts),
+        "known_total_tokens": known_total,
+        "unknown_total_calls": unknown_calls,
+        "reasoning_reported_calls": reasoning_reported,
+        "cached_input_reported_calls": cached_reported,
+        "definitions": {
+            "total_tokens": "provider-reported; never recomputed as input+cached+output+reasoning",
+            "reasoning": "reasoning_tokens reported by the adapter; absent means unknown, not zero",
+            "cached_input": "cached_input_tokens reported by the adapter; absent means unknown, not zero",
+            "unknown_total_calls": "calls whose total could not be measured; excluded from known_total_tokens",
+        },
+    }
+
+
+def summarize_timings(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize measured stage timings; unmeasured stages stay unknown."""
+    spans: dict[str, list[int]] = collections.defaultdict(list)
+    unavailable: collections.Counter = collections.Counter()
+    requests = 0
+    for record in records:
+        if record.get("kind") != "stage_timing":
+            continue
+        requests += 1
+        body = record.get("body") or {}
+        for name, value in (body.get("spans") or {}).items():
+            if isinstance(value, int):
+                spans[name].append(value)
+        for name in body.get("unavailable") or []:
+            unavailable[name] += 1
+    def stats(values: list[int]) -> dict[str, int]:
+        ordered = sorted(values)
+        return {"count": len(ordered), "median_ms": ordered[len(ordered) // 2],
+                "max_ms": ordered[-1]}
+    return {
+        "requests_with_timings": requests,
+        "spans": {name: stats(values) for name, values in sorted(spans.items())},
+        "unavailable_span_counts": dict(unavailable),
+        "clock": "time.monotonic",
+        "note": "spans are non-overlapping; an absent span is unknown, never zero",
+    }
+
+
 def build_report(archive: str | Path) -> dict[str, Any]:
     log_path = resolve_log_path(archive)
     analysis_dir = analysis_dir_for_log(log_path)
@@ -317,7 +501,15 @@ def build_report(archive: str | Path) -> dict[str, Any]:
     report["turns"] = summarize_turns(records)
     report["identities"] = summarize_identities(records)
     report["evidence"] = summarize_evidence(records)
+    report["decisions"] = summarize_decisions(records)
+    report["usage"] = summarize_usage(log_path)
+    report["timings"] = summarize_timings(records)
     report["record_count"] = len(records)
+    # Manifest fields left null on purpose, each with its reason.  Surfacing
+    # these keeps a known limit from reading as missing evidence: a null
+    # scenario hash because capture may not query the driver is a different
+    # thing from a hash that should have been recorded and was not.
+    report["provenance_gaps"] = (manifest or {}).get("provenance_gaps") or {}
     return report
 
 
@@ -344,6 +536,49 @@ def format_report_text(report: dict[str, Any]) -> str:
     if identities["request_identity_conflicts"]:
         lines.append(f"  CONFLICTS:      {identities['request_identity_conflicts']}")
     lines.append(f"evidence status:  {report['evidence']}")
+    gaps = report.get("provenance_gaps") or {}
+    if gaps:
+        lines.append(f"provenance gaps:  {len(gaps)} manifest field(s) null by design")
+        for field_name in sorted(gaps):
+            lines.append(f"  {field_name}: {gaps[field_name]}")
+    decisions = report.get("decisions") or {}
+    if decisions.get("count"):
+        lines.append(f"decisions:        {decisions['count']}")
+        for item in decisions.get("items") or []:
+            offered = (f"{item['candidates_offered']} options"
+                       if item["candidates_offered"] is not None else "no packet")
+            if item.get("candidates_truncated"):
+                offered += " (display truncated)"
+            if item.get("candidate_filtering") == "unreported":
+                offered += ", filtering unreported"
+            selected = (f"selected {item['selection']}"
+                        if item["selection"] else
+                        ("custom orders" if item["custom_orders"] else "no selection captured"))
+            suffix = ""
+            if item["repairs"]:
+                suffix += f", {item['repairs']} repairs"
+            if item["validations_rejected"]:
+                suffix += f", {item['validations_rejected']} rejected validations"
+            if item["committed_batches"]:
+                suffix += f", committed {', '.join(item['committed_batches'])}"
+            else:
+                suffix += ", nothing committed"
+            lines.append(f"  {item['decision_id']}: {item['stage']}, {offered}, "
+                         f"{selected}{suffix}")
+    usage = report.get("usage") or {}
+    if usage.get("status") == "observed":
+        lines.append(f"usage:             {usage['physical_calls']} physical calls, "
+                     f"{usage['known_total_tokens']} known total tokens "
+                     f"({usage['unknown_total_calls']} unknown)")
+        lines.append("  definitions:     total is provider-reported and never recomputed; "
+                     "absent reasoning/cache values are unknown, not zero")
+    else:
+        lines.append("usage:             unknown (no physical usage sidecar)")
+    timings = report.get("timings") or {}
+    if timings.get("requests_with_timings"):
+        span_text = ", ".join(f"{name} median {data['median_ms']}ms"
+                              for name, data in (timings.get("spans") or {}).items())
+        lines.append(f"stage timings:     {timings['requests_with_timings']} requests; {span_text}")
     if report["reference_conflicts"]:
         lines.append(f"REFERENCE CONFLICTS: {report['reference_conflicts']}")
     return "\n".join(lines)

@@ -1825,6 +1825,23 @@ to the audit log, so enabling capture cannot alter how a game is played. The
 delivered player prompt and the normalized driver-query and action streams are
 identical with capture on and off.
 
+Each mirrored record also carries a byte-range reference to the exact audit-log
+line it came from, with that line's sha256, so the sidecar never duplicates
+prompt or response bytes the durable log already holds while every captured fact
+stays independently verifiable.
+
+The captured decision trace covers what the player was offered, what it
+selected, what failed, and what actually executed, including repair attempts:
+candidate packets and their engine-validated selections (strategy mode), model
+responses, pre-submit batch validations (accepted and rejected), repair
+attempts, forwarded and committed orders, routine actions and exceptions, policy
+installations, forced finishes, transport retries, per-request stage timings
+with a pre-request budget snapshot, and a reference to the physical usage
+sidecar. A routine-submitted batch is engine-selected, so it carries no decision
+id rather than being misattributed to the last model decision; a repair reuses
+the decision it belongs to instead of minting a new identity for the same choice
+point.
+
 The manifest records source commit, dirty-patch hash, driver hash, game seed,
 controlled side, opponent identity, limits, and an allowlisted launch
 configuration. It never contains credentials and never serializes the process
@@ -1834,7 +1851,14 @@ Capture is optional infrastructure and never ends a game. If the byte cap is
 reached or a write fails, capture stops, records why, and play continues. The
 final `capture_status` record is the marker that capture completed; its absence
 after the process exits means the run did not finish, and a report says so
-rather than presenting truncated evidence as complete.
+rather than presenting truncated evidence as complete. The cap defaults to
+64 MiB and is configurable:
+
+```bash
+python3 -m tools.llm_client --log /absolute/run/match.ndjson \
+  --model-command 'python3 -m tools.fireworks_backend --stream' \
+  --analysis-capture --analysis-byte-cap 8388608
+```
 
 Inspect a recorded sidecar without a model or a simulation:
 
@@ -1844,13 +1868,34 @@ python3 -m tools.game_analysis report   --archive /absolute/run/match.ndjson
 python3 -m tools.game_analysis report   --archive /absolute/run/match.ndjson --json
 ```
 
-`validate` re-hashes every recorded reference, checks sequence contiguity, and
-reports request-identity conflicts with both records retained. `report`
-separates started from completed turns, names any turn still open at the end,
-and reports a game that ended mid-turn as a terminal partial turn rather than as
-a completed one. Coverage is reported as one of `complete`, `capture_disabled`,
+`validate` re-hashes every recorded reference (including byte-range references
+into the audit log), checks sequence contiguity, and reports request-identity
+conflicts with both records retained. `report` separates started from completed
+turns, names any turn still open at the end, reports a game that ended mid-turn
+as a terminal partial turn rather than as a completed one, and lists one line
+per decision: the candidates offered, the selection (option ids or custom
+orders), repairs, rejected validations, and the batches that actually committed.
+Usage is summarized from the physical usage sidecar with explicit accounting
+definitions; absent reasoning or cache values stay unknown rather than becoming
+zero. Coverage is reported as one of `complete`, `capture_disabled`,
 `capture_stopped`, `unsupported_analysis`, or `empty_result`; these are distinct
 conditions and a report never collapses them into a single "no data" message.
+
+The report keeps three easily-confused things apart. Display truncation is
+reported when the generator says the shown list was cut short. Per-candidate
+filter reasons are reported as unreported, because the generator does not
+supply them -- which is not the same as reporting that nothing was filtered.
+Whether a legal action was never generated at all is reported as unknown: a
+finite candidate set is not evidence of exhaustive legal coverage, and
+establishing what was legally available but absent requires offline
+enumeration from a restored position.
+
+Manifest fields that are null on purpose are listed with the reason they
+cannot be filled, so a known limit does not read as missing evidence. The
+scenario board and unit registries are resolved by the driver and capture may
+not add a driver query; the prompt hashes do not exist when the manifest is
+written, and are recorded instead on every `model_request` record, where they
+are actually observed.
 
 ## Automatic progress recording
 

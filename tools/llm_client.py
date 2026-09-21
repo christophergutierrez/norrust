@@ -147,27 +147,109 @@ CHECKPOINT_REF_DIGEST_BYTES = 64
 # These two helpers are the whole of the optional analysis hook.  They are kept
 # at module scope so they are unit-testable without standing up a full game.
 
-# Game-log record types mapped onto the frozen stack-1 analysis kinds.  A type
+# Game-log record types mapped onto the frozen analysis kinds.  A type
 # absent from this table is simply not mirrored; capture never invents a fact
 # the client did not already record.
 _ANALYSIS_KIND_BY_LOG_TYPE = {
+    # Stack 1: identity and boundaries.
     "side_turn_started": ("turn_boundary", "started"),
     "turn_boundary": ("turn_boundary", "finished"),
     "batch_committed": ("action_commit", None),
     "terminal": ("game_terminal", None),
     "model_request": ("model_request", None),
+    # Stack 2: the complete passive decision trace.
+    "decision_packet": ("candidate_packet", None),
+    "strategy_validated_selections": ("candidate_validation", None),
+    "model": ("model_response", None),
+    "draft_review": ("model_response", None),
+    "model_error": ("model_failure", None),
+    "preflight_error": ("model_failure", None),
+    "repair": ("response_repair", None),
+    "action_repair": ("response_repair", None),
+    "action_repair_followup": ("response_repair", None),
+    "draft_review_repair": ("response_repair", None),
+    "strategy_response_repair": ("response_repair", None),
+    "strategy_recovery_reserved": ("response_repair", None),
+    "strategy_recovery_unavailable": ("response_repair", None),
+    "strategy_recovery_outcome": ("response_repair", None),
+    "batch_validation": ("batch_validation", None),
+    "strategy_batch_validation": ("batch_validation", None),
+    "action_failure": ("validation_rejection", None),
+    "request_submitted": ("execution_submit", None),
+    "forwarded_orders": ("execution_submit", None),
+    "routine_progress_committed": ("routine_action", None),
+    "independent_routine_move": ("routine_action", None),
+    "routine_exception": ("routine_action", None),
+    "policy_installed": ("policy_change", None),
+    "recruitment_review_resolved": ("resource_event", None),
+    "timeout_fallback": ("finish_event", None),
+    "partial_limit_finish": ("finish_event", None),
+    "model_transport_retry": ("physical_retry", None),
+    "model_output_limit": ("physical_retry", None),
 }
 
 # Fields copied verbatim from the game-log record into the analysis body when
-# present.  The contract makes prompt_sha256/prompt_bytes binding on
-# model_request bodies so a request-identity conflict is detectable without
-# reopening the prompt artifact.
-_ANALYSIS_BODY_FIELDS = (
-    "side", "round", "start_revision", "accepted", "forced_finish",
-    "authored_finish_kind", "executed_finish_kind", "winner",
-    "reason", "code", "status", "purpose",
-    "prompt_sha256", "prompt_bytes",
-)
+# present, per analysis kind.  Bodies stay SELECTIVE on purpose: every
+# mirrored record also carries a byte-range reference to its exact game-log
+# line, so the durable log remains the full-fidelity artifact and the sidecar
+# carries what a report needs without duplicating every field.
+_ANALYSIS_BODY_FIELDS_BY_KIND = {
+    "model_request": ("purpose", "status", "prompt_hash", "prompt_bytes",
+                      "prompt_layout_version", "fixed_prefix_sha256", "fixed_prefix_bytes",
+                      "prompt_regions", "response_bytes", "elapsed_ms", "usage", "cache",
+                      "decision_annotation", "error", "error_code"),
+    "model_response": ("call", "prompt_hash", "prompt_bytes", "raw_output", "usage", "cache",
+                       "review_id", "skipped", "reason", "body"),
+    "candidate_packet": ("packet", "side_turn", "game_id", "contact_scope"),
+    "candidate_validation": ("coverage", "validation_queries", "selections"),
+    "response_repair": ("call", "attempt", "prompt_hash", "prompt_bytes", "raw_output",
+                        "validation_error", "engine_error", "error", "outcome", "review_id",
+                        "option_ids", "allowed_kinds", "error_code", "reason", "side_turn",
+                        "candidate_error", "draft_rationale", "rejected_tool", "kind"),
+    "batch_validation": ("orders", "valid", "committed", "replay", "results", "failed_index",
+                         "repair", "reason", "parse_error", "validation"),
+    "validation_rejection": ("driver_failure", "repair_available"),
+    "execution_submit": ("orders", "source", "repair", "option_ids",
+                         "option_action_ranges", "proposal_source", "authored_finish_kind",
+                         "forced_finish", "action_encoding", "authored_choices",
+                         "expansion_mapping", "intent", "review_id", "routine_finish",
+                         "installation_id", "progress_update"),
+    "action_commit": ("origin", "option_ids", "proposal_source",
+                      "installation_id", "boundary", "pending_opponent_turn"),
+    "routine_action": ("installation_id", "batch_id", "progress_update",
+                       "recovered_from_checkpoint", "action", "policy_objective", "coverage",
+                       "reason", "evidence"),
+    "policy_change": ("installation_id", "policy", "source_request_id", "source_kind"),
+    "resource_event": (),
+    "finish_event": ("orders", "message", "holds"),
+    "physical_retry": ("cause", "retry_number", "call_id", "output_limit", "policy",
+                       "usage", "prompt_hash"),
+    "model_failure": ("error", "code", "reason", "message"),
+    "turn_boundary": ("phase", "side", "round", "start_revision", "accepted", "forced_finish",
+                      "authored_finish_kind", "executed_finish_kind", "delegated_unit_ids",
+                      "protected_unit_ids", "model_aware"),
+    "game_terminal": ("winner", "reason", "code", "terminal_class", "message"),
+}
+
+# The game log spells the prompt hash `prompt_hash`; the frozen contract binds
+# `model_request` bodies to `prompt_sha256`.  Stack 1 listed the contract name
+# without the alias, so the binding field was silently absent from captured
+# bodies (a defect found while building stack 2, fixed here): copy the value
+# under the contract's name.
+_ANALYSIS_BODY_ALIASES = {"prompt_hash": "prompt_sha256"}
+
+# Game-log records whose own `decision_id` field is the CLIENT's decision id
+# (a different id space from the analysis decision id).  It is preserved in
+# the body under `client_decision_id` so selection evidence stays linkable
+# without conflating the two spaces.
+_ANALYSIS_CLIENT_DECISION_ID_KINDS = frozenset({
+    "candidate_validation", "execution_submit", "resource_event", "action_commit",
+})
+
+# A routine-originated submission is engine-selected, not a player decision;
+# attributing it to the last model decision would be a misattribution, so it
+# carries no decision id at all.
+_ANALYSIS_ROUTINE_SOURCES = frozenset({"routine"})
 
 
 def _open_analysis_capture(args: argparse.Namespace, log_path: str | os.PathLike[str],
@@ -194,6 +276,27 @@ def _open_analysis_capture(args: argparse.Namespace, log_path: str | os.PathLike
             scenario_hash=None,
             canonical_prompt_hash=None,
             fixed_prefix_sha256=None,
+            # These four cannot be known here, and a guess would be worse than
+            # a null.  The scenario board and unit registry are resolved by the
+            # driver, not the client, so hashing them would mean either
+            # duplicating the driver's resolution or asking it -- and capture
+            # is forbidden to add a driver query.  The prompt hashes do not
+            # exist yet: the manifest is written before the first prompt is
+            # rendered.  Both prompt hashes ARE recorded per request, on every
+            # `model_request` analysis record, which is where they are
+            # actually observed.
+            provenance_gaps={
+                "data_hash": "unit/terrain registries are resolved by the driver; "
+                             "capture adds no driver query",
+                "scenario_hash": "the scenario board is resolved by the driver; "
+                                 "capture adds no driver query",
+                "canonical_prompt_hash": "not yet rendered when the manifest is "
+                                         "written; see prompt_sha256 on each "
+                                         "model_request record",
+                "fixed_prefix_sha256": "not yet rendered when the manifest is "
+                                       "written; see fixed_prefix_sha256 on each "
+                                       "model_request record",
+            },
             game_seed=getattr(args, "seed", None),
             controlled_side=getattr(args, "llm_side", None),
             opponent_identity={"kind": metadata.get("opponent"),
@@ -205,13 +308,33 @@ def _open_analysis_capture(args: argparse.Namespace, log_path: str | os.PathLike
                     "model_timeout": getattr(args, "model_timeout", None)},
             launch=args,
         )
+        byte_cap = getattr(args, "analysis_byte_cap", None)
+        if isinstance(byte_cap, int) and byte_cap > 0:
+            return AnalysisWriter.create(log, manifest, byte_cap=byte_cap)
         return AnalysisWriter.create(log, manifest)
     except Exception:
         return None
 
 
+def _analysis_log_ref(writer: "AnalysisWriter", log_ref: Optional[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build the byte-range reference to the game-log line just written."""
+    if log_ref is None or writer.log_path is None:
+        return []
+    return [{
+        "role": "game_log",
+        "path": os.path.relpath(writer.log_path, writer.analysis_dir),
+        "sha256": log_ref["sha256"],
+        "bytes": log_ref["byte_length"],
+        "record_sequence": None,
+        "byte_offset": log_ref["byte_offset"],
+        "byte_length": log_ref["byte_length"],
+    }]
+
+
 def _record_analysis_event(writer: AnalysisWriter, obj: dict[str, Any],
-                           metadata: dict[str, Any]) -> None:
+                           metadata: dict[str, Any],
+                           log_ref: Optional[dict[str, Any]] = None,
+                           stage: Optional[dict[str, Any]] = None) -> None:
     """Mirror one game-log record into the analysis sidecar, if it maps."""
     mapped = _ANALYSIS_KIND_BY_LOG_TYPE.get(obj.get("type"))
     if mapped is None:
@@ -220,21 +343,110 @@ def _record_analysis_event(writer: AnalysisWriter, obj: dict[str, Any],
     body: dict[str, Any] = {"log_type": obj.get("type")}
     if phase is not None:
         body["phase"] = phase
-    # A model request opens a new decision.  Boundaries, commits and terminals
-    # are evidence ABOUT the decision already in flight, so they reuse its id.
-    decision_id = (writer.next_decision_id() if kind == "model_request"
-                   else writer.current_decision_id)
-    for key in _ANALYSIS_BODY_FIELDS:
+    side_turn_id = obj.get("side_turn_id") or metadata.get("current_side_turn_id")
+    state_revision = obj.get("state_revision")
+
+    # Decision identity.  A model request or a candidate packet OPENS a
+    # decision (minting `decision_start` on the first one); repairs, reviews,
+    # follow-ups and tool rounds reuse the decision in flight.  Records that
+    # carry the client's own decision id keep it in the body; routine
+    # submissions honestly carry none.
+    decision_id: Optional[str] = None
+    if kind == "model_request":
+        decision_id = writer.decision_for_request(
+            obj.get("purpose"), side_turn_id=side_turn_id, state_revision=state_revision)
+    elif kind == "candidate_packet":
+        packet = obj.get("packet") if isinstance(obj.get("packet"), dict) else {}
+        decision_id = writer.decision_for_packet(
+            packet.get("decision_id"), side_turn_id=side_turn_id, state_revision=state_revision)
+    elif kind == "turn_boundary" and phase == "started":
+        # A turn OPENING is not evidence about any decision: the previous
+        # decision closed when the previous turn finished, and the next one
+        # has not been minted yet.  Attributing the turn start to the closed
+        # decision would be a misattribution.
+        decision_id = None
+    elif isinstance(obj.get("decision_id"), str):
+        decision_id = writer.current_decision_id
+        if kind in _ANALYSIS_CLIENT_DECISION_ID_KINDS:
+            body["client_decision_id"] = obj["decision_id"]
+    elif obj.get("source") in _ANALYSIS_ROUTINE_SOURCES or obj.get("origin") == "routine":
+        decision_id = None
+    else:
+        decision_id = writer.current_decision_id
+
+    for key in _ANALYSIS_BODY_FIELDS_BY_KIND.get(kind, ()):
         if key in obj:
-            body[key] = obj[key]
+            body[_ANALYSIS_BODY_ALIASES.get(key, key)] = obj[key]
+
+    refs = _analysis_log_ref(writer, log_ref)
+
+    # Stage timings and the pre-request budget snapshot belong to the request
+    # in flight; they are measured in `complete_model` and consumed here.
+    if kind == "model_request" and stage:
+        spans: dict[str, Any] = {}
+        t_entry = stage.get("t_entry")
+        t_dispatch = stage.get("t_dispatch")
+        t_returned = stage.get("t_returned")
+        if isinstance(t_entry, float) and isinstance(t_dispatch, float):
+            spans["request_preparation_ms"] = round((t_dispatch - t_entry) * 1000)
+        if isinstance(t_dispatch, float) and isinstance(t_returned, float):
+            spans["provider_wait_ms"] = round((t_returned - t_dispatch) * 1000)
+        if isinstance(t_returned, float):
+            spans["response_processing_ms"] = round((time.monotonic() - t_returned) * 1000)
+        if isinstance(stage.get("budget_before"), dict):
+            body["budget_before_request"] = stage["budget_before"]
+        writer.record(
+            "stage_timing",
+            decision_id=decision_id or "",
+            side_turn_id=side_turn_id,
+            request_id=obj.get("request_id"),
+            state_revision=state_revision,
+            body={
+                "spans": spans,
+                # Parsing and validation happen in the caller after the reply
+                # returns and are not separately instrumented; an absent span
+                # is unknown, never zero.
+                "unavailable": [name for name in ("request_preparation_ms", "provider_wait_ms",
+                                                  "response_processing_ms")
+                                if name not in spans],
+                "clock": "time.monotonic",
+                "note": "non-overlapping spans; provider_wait covers the dispatch loop "
+                        "including output-limit retries; response_processing includes "
+                        "annotation parsing and budget refresh",
+            },
+            refs=list(refs),
+        )
+
+    # Engine work: from forwarding a batch to the engine's committed
+    # checkpoint.  The mark is taken when the batch is forwarded and consumed
+    # when its commit lands.
+    if kind == "execution_submit" and obj.get("batch_id") and stage is not None:
+        stage["t_forwarded"] = time.monotonic()
+        stage["forwarded_batch_id"] = obj.get("batch_id")
+    if (kind == "action_commit" and stage is not None
+            and isinstance(stage.get("t_forwarded"), float)
+            and stage.get("forwarded_batch_id") == obj.get("batch_id")):
+        body["submit_to_commit_ms"] = round((time.monotonic() - stage["t_forwarded"]) * 1000)
+        body["submit_to_commit_note"] = ("from forwarding the batch to the engine's "
+                                         "committed checkpoint (includes pipe and "
+                                         "validation overhead)")
+        stage.pop("t_forwarded", None)
+        stage.pop("forwarded_batch_id", None)
+
+    if kind == "turn_boundary" and phase == "finished":
+        writer.close_decision()
+    elif kind == "game_terminal":
+        writer.close_decision()
+
     writer.record(
         kind,
         decision_id=decision_id,
-        side_turn_id=obj.get("side_turn_id") or metadata.get("current_side_turn_id"),
+        side_turn_id=side_turn_id,
         request_id=obj.get("request_id"),
         batch_id=obj.get("batch_id"),
-        state_revision=obj.get("state_revision"),
+        state_revision=state_revision,
         body=body,
+        refs=refs,
     )
 
 
@@ -6084,7 +6296,16 @@ def run(args: argparse.Namespace) -> int:
     if log_path and getattr(args, "analysis_capture", False):
         analysis_writer = _open_analysis_capture(args, log_path, conversation_id, metadata)
 
-    def _tap_analysis(obj: dict[str, Any]) -> None:
+    # Stage marks and the pre-request budget snapshot for the model request in
+    # flight.  `complete_model` writes them; the tap below reads them when it
+    # mirrors the request's game-log record.  Capture-off runs never touch it.
+    _analysis_stage: dict[str, Any] = {}
+    # Byte offset of the next game-log line, maintained only while capture is
+    # on so mirrored records can reference their exact game-log bytes.
+    _analysis_log_bytes = (os.fstat(log.fileno()).st_size
+                           if (analysis_writer is not None and log) else 0)
+
+    def _tap_analysis(obj: dict[str, Any], log_ref: Optional[dict[str, Any]] = None) -> None:
         """Mirror an already-written game-log record into the analysis sidecar.
 
         Never raises: analysis capture is optional infrastructure and must not
@@ -6093,15 +6314,28 @@ def run(args: argparse.Namespace) -> int:
         if analysis_writer is None or analysis_writer.stopped:
             return
         try:
-            _record_analysis_event(analysis_writer, obj, metadata)
+            _record_analysis_event(analysis_writer, obj, metadata, log_ref, _analysis_stage)
         except Exception:  # pragma: no cover - defence in depth around optional capture
             pass
 
     def record(obj: dict[str, Any]) -> None:
+        nonlocal _analysis_log_bytes
         if log:
-            log.write(json.dumps(obj, sort_keys=True) + "\n")
+            text = json.dumps(obj, sort_keys=True) + "\n"
+            log_ref = None
+            if analysis_writer is not None:
+                payload = text.encode("utf-8")
+                # The offset is captured before the write; the tap runs after
+                # it, so the referenced bytes are exactly the line just written.
+                log_ref = {"byte_offset": _analysis_log_bytes,
+                           "byte_length": len(payload),
+                           "sha256": hashlib.sha256(payload).hexdigest()}
+                _analysis_log_bytes += len(payload)
+            log.write(text)
             log.flush()
-        _tap_analysis(obj)
+            _tap_analysis(obj, log_ref)
+        else:
+            _tap_analysis(obj)
     def durable(obj: dict[str, Any]) -> None:
         record(obj)
         if log:
@@ -6259,6 +6493,21 @@ def run(args: argparse.Namespace) -> int:
         # stop therefore cannot spend a fresh provider call merely to discover
         # that cancellation was requested.
         check_stop_fence("before_model_dispatch")
+        if analysis_writer is not None:
+            # Stage marks for the request in flight, consumed by the tap when
+            # it mirrors this request's game-log record.  The budget snapshot
+            # is taken at entry, before any dispatch can spend more.
+            _analysis_stage["t_entry"] = time.monotonic()
+            _analysis_stage.pop("t_dispatch", None)
+            _analysis_stage.pop("t_returned", None)
+            _analysis_stage["budget_before"] = {
+                "game_total_tokens_spent": metadata.get("cumulative_game_total_tokens"),
+                "game_token_limit": getattr(args, "max_game_total_tokens", None),
+                "model_calls_this_turn": model_calls_this_turn,
+                "max_model_calls_per_turn": metadata.get("max_model_calls_per_turn"),
+                "tool_calls_this_turn": tool_calls_this_turn,
+                "max_tool_calls_per_turn": metadata.get("max_tool_calls_per_turn"),
+            }
         # The agenda complaint is NOT popped here: it is retained until a valid
         # agenda commits or the side turn ends, because a player that keeps
         # re-proposing the same rejected shape needs it on each attempt, not
@@ -6389,6 +6638,8 @@ def run(args: argparse.Namespace) -> int:
                                 durable({"type": "strategy_recovery_dispatch",
                                          "request_id": request_id,
                                          "side_turn_id": request_side_turn_id})
+                            if "t_dispatch" not in _analysis_stage:
+                                _analysis_stage["t_dispatch"] = time.monotonic()
                             attempt_dispatched = True
                             reply = backend.complete(delivered_prompt)
                         finally:
@@ -6431,6 +6682,8 @@ def run(args: argparse.Namespace) -> int:
                         # Unlike an optional accounting hint, the updated limit
                         # must reach the adapter before another paid call.
                         write_request_context(context_path, request_context)
+            if analysis_writer is not None:
+                _analysis_stage["t_returned"] = time.monotonic()
             apply_backend_settings(reply.cache, metadata, args)
             reply.request_id = request_id
             reply.side_turn_id = request_side_turn_id
@@ -7101,6 +7354,7 @@ def run(args: argparse.Namespace) -> int:
                                    recovery=recovery_attempted)
             enforce_usage(reply, args)
             record({"type": "model", "call": metadata["model_calls"],
+                    "request_id": reply.request_id,
                     "prompt_hash": reply.prompt_hash, "prompt_bytes": reply.prompt_bytes,
                     "raw_output": reply.text, "usage": reply.usage, "cache": reply.cache})
             if reply.usage is None:
@@ -8541,6 +8795,7 @@ def run(args: argparse.Namespace) -> int:
                             enforce_usage(repaired, args)
                             metadata["repairs"] = int(metadata.get("repairs", 0)) + 1
                             record({"type": "action_repair", "call": metadata["model_calls"],
+                                    "request_id": repaired.request_id,
                                     "prompt_hash": repaired.prompt_hash,
                                     "prompt_bytes": repaired.prompt_bytes,
                                     "raw_output": repaired.text, "usage": repaired.usage,
@@ -8578,6 +8833,7 @@ def run(args: argparse.Namespace) -> int:
                                 enforce_usage(followup, args)
                                 record({"type": "action_repair_followup",
                                         "call": metadata["model_calls"],
+                                        "request_id": followup.request_id,
                                         "prompt_hash": followup.prompt_hash,
                                         "prompt_bytes": followup.prompt_bytes,
                                         "raw_output": followup.text, "usage": followup.usage,
@@ -8892,6 +9148,7 @@ def run(args: argparse.Namespace) -> int:
                     final_reply = reply
                     enforce_usage(reply, args)
                     record({"type": "model", "call": metadata["model_calls"],
+                            "request_id": reply.request_id,
                             "prompt_hash": reply.prompt_hash, "prompt_bytes": reply.prompt_bytes,
                             "legacy_prompt_bytes": reply.prompt_bytes,
                             **regions,
@@ -9023,6 +9280,7 @@ def run(args: argparse.Namespace) -> int:
                         final_reply = repaired
                         enforce_usage(repaired, args)
                         record({"type": "repair", "call": metadata["model_calls"],
+                                "request_id": repaired.request_id,
                                 "prompt_hash": repaired.prompt_hash,
                                 "prompt_bytes": repaired.prompt_bytes,
                                 "raw_output": repaired.text, "usage": repaired.usage,
@@ -9299,6 +9557,7 @@ def run(args: argparse.Namespace) -> int:
                                             final_reply = repaired_review
                                             enforce_usage(repaired_review, args)
                                             record({"type": "draft_review_repair", "call": metadata["model_calls"],
+                                                    "request_id": repaired_review.request_id,
                                                     "review_id": active_review_id,
                                                     "request_id": repaired_review.request_id,
                                                     "side_turn_id": repaired_review.side_turn_id,
@@ -9581,6 +9840,7 @@ def run(args: argparse.Namespace) -> int:
                             enforce_usage(repaired, args)
                             metadata["repairs"] = int(metadata.get("repairs", 0)) + 1
                             record({"type": "action_repair", "call": metadata["model_calls"],
+                                    "request_id": repaired.request_id,
                                     "attempt": model_calls_this_turn,
                                     "prompt_hash": repaired.prompt_hash,
                                     "prompt_bytes": repaired.prompt_bytes,
@@ -9894,6 +10154,12 @@ def run(args: argparse.Namespace) -> int:
         # died mid-game", and a report is required to tell those apart.
         if analysis_writer is not None:
             try:
+                # Reference the authoritative physical usage receipts before
+                # the final marker; a game with no sidecar records `missing`
+                # evidence rather than implying zero usage.
+                if log_path:
+                    analysis_writer.note_usage_sidecar(
+                        Path(log_path).resolve().with_name("usage.ndjson"))
                 analysis_writer.close()
             except Exception:  # pragma: no cover - optional capture never fails a run
                 pass
@@ -9972,6 +10238,9 @@ def main() -> int:
     p.add_argument("--analysis-capture", action="store_true",
                    help="append an optional passive analysis sidecar beside the audit log; "
                         "adds no provider call and no driver query, and changes no decision")
+    p.add_argument("--analysis-byte-cap", type=int, default=None,
+                   help="total byte cap for the optional analysis sidecar records "
+                        "(default 67108864); capture stops visibly when it is reached")
     p.add_argument("--timeout-finish", action="store_true",
                    help="after a proven model timeout, finish eligible units with greedy without recruiting")
     p.add_argument("--event-window-observations", type=int, default=1)
@@ -10016,6 +10285,8 @@ def main() -> int:
         p.error("--resume-log must match --log")
     if a.resume_checkpoint and not a.log:
         p.error("--resume-checkpoint requires a new --log")
+    if a.analysis_byte_cap is not None and a.analysis_byte_cap < 1024:
+        p.error("--analysis-byte-cap must be at least 1024 bytes")
     if a.turn_timeout < a.query_budget_seconds + 2 * a.model_timeout:
         print("warning: --turn-timeout is below query budget + 2*model timeout", file=sys.stderr)
     return run(a)
