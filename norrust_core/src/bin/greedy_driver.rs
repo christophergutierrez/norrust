@@ -31,8 +31,9 @@ use norrust_core::combat::{
 };
 use norrust_core::events::GameEvent;
 use norrust_core::game_state::{
-    apply_action, apply_advance, apply_recruit, eligible_recruiter_keep, legal_recruitment_placements,
-    recruit_from_def, Action, AdvanceTarget, GameState, PendingSpawn, TriggerZone,
+    apply_action, apply_advance, apply_recruit, eligible_recruiter_keep,
+    legal_recruitment_placements, recruit_from_def, Action, AdvanceTarget, GameState, PendingSpawn,
+    TriggerZone,
 };
 use norrust_core::game_state::{legal_moves, legal_moves_with_costs, legal_targets};
 use norrust_core::hex::Hex;
@@ -47,8 +48,8 @@ use norrust_core::tactics::{
     target_inspection, turn_tactics, unit_destination_threats, unit_tactics,
     unit_threats_after_end_turn, ThreatSurface, UnitThreatSurface,
 };
-use norrust_core::unit::Unit;
 use norrust_core::unit::parse_alignment;
+use norrust_core::unit::Unit;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -739,15 +740,9 @@ fn authorize_model_batch(
                 );
             }
             for id in delegated {
-                if state
-                    .units
-                    .get(&id)
-                    .is_none_or(|unit| {
-                        unit.faction != model_side
-                            || unit.hp == 0
-                            || !state.positions.contains_key(&id)
-                    })
-                {
+                if state.units.get(&id).is_none_or(|unit| {
+                    unit.faction != model_side || unit.hp == 0 || !state.positions.contains_key(&id)
+                }) {
                     return Err((
                         "unauthorized_unit",
                         "FinishWithGreedy may reference only living model-side units",
@@ -765,15 +760,9 @@ fn authorize_model_batch(
                 .filter_map(Value::as_u64)
                 .map(|id| id as u32);
             for id in ids {
-                if state
-                    .units
-                    .get(&id)
-                    .is_none_or(|unit| {
-                        unit.faction != model_side
-                            || unit.hp == 0
-                            || !state.positions.contains_key(&id)
-                    })
-                {
+                if state.units.get(&id).is_none_or(|unit| {
+                    unit.faction != model_side || unit.hp == 0 || !state.positions.contains_key(&id)
+                }) {
                     return Err((
                         "unauthorized_unit",
                         "MoveGroupToward may reference only living model-side units",
@@ -830,11 +819,17 @@ fn validate_model_boundary(
     accepted_partial_batches: u32,
     max_partial_batches: u32,
 ) -> Result<(), (&'static str, String)> {
-    if orders.iter().any(|order| order.get("action").and_then(Value::as_str) == Some("Resign")) {
+    if orders
+        .iter()
+        .any(|order| order.get("action").and_then(Value::as_str) == Some("Resign"))
+    {
         return if orders == [json!({"action":"Resign"})] {
             Ok(())
         } else {
-            Err(("parse", "Resign must be the only action and have no extra fields".into()))
+            Err((
+                "parse",
+                "Resign must be the only action and have no extra fields".into(),
+            ))
         };
     }
     let end_turn_count = orders
@@ -858,7 +853,10 @@ fn validate_model_boundary(
         });
     if incremental {
         if end_turn_count > 1 || (end_turn_count == 1 && !ends) {
-            return Err(("parse", "EndTurn must be final and may appear at most once".into()));
+            return Err((
+                "parse",
+                "EndTurn must be final and may appear at most once".into(),
+            ));
         }
         if end_turn_count == 0 && accepted_partial_batches >= max_partial_batches {
             let msg = if max_partial_batches == 3 {
@@ -866,10 +864,7 @@ fn validate_model_boundary(
             } else {
                 format!("{max_partial_batches} partial batches are committed; the next batch must end the turn")
             };
-            return Err((
-                "partial_limit",
-                msg,
-            ));
+            return Err(("partial_limit", msg));
         }
     } else if end_turn_count != 1 || !ends {
         return Err(("parse", "exactly one final EndTurn is required".into()));
@@ -944,11 +939,20 @@ fn rollout_state_summary(state: &GameState) -> Value {
             }));
         }
     }
-    let mut villages: Vec<_> = state.village_owners.iter().map(|(hex, owner)| {
-        let (col, row) = hex.to_offset();
-        json!({"col": col, "row": row, "owner": owner})
-    }).collect();
-    villages.sort_by_key(|v| (v["row"].as_i64().unwrap_or_default(), v["col"].as_i64().unwrap_or_default()));
+    let mut villages: Vec<_> = state
+        .village_owners
+        .iter()
+        .map(|(hex, owner)| {
+            let (col, row) = hex.to_offset();
+            json!({"col": col, "row": row, "owner": owner})
+        })
+        .collect();
+    villages.sort_by_key(|v| {
+        (
+            v["row"].as_i64().unwrap_or_default(),
+            v["col"].as_i64().unwrap_or_default(),
+        )
+    });
     json!({
         "active_faction": state.active_faction,
         "turn": state.turn,
@@ -979,41 +983,71 @@ fn bounded_rollout_summary(
     units: &Registry<UnitDef>,
     own_event_count: usize,
     evaluation_seed: u64,
+    opponent_responses: u8,
 ) -> Value {
     let post_finish = rollout_state_summary(&state);
     let mut opponent_state = state.clone();
     let mut opponent_next_id = next_id;
     let mut opponent_event_count = 0usize;
+    let mut continuation_event_count = 0usize;
     let mut opponent_error = None;
-    if opponent_state.check_winner().is_none() && opponent_state.active_faction != model_side {
-        let opponent = opponent_state.active_faction;
+    let mut stages = serde_json::Map::new();
+    for response_index in 1..=opponent_responses.max(1) {
+        if opponent_state.check_winner().is_some() {
+            break;
+        }
+        let side = opponent_state.active_faction;
         match run_driver_greedy_turn(
             &mut opponent_state,
-            opponent,
-            &factions[opponent as usize],
+            side,
+            &factions[side as usize],
             units,
             &mut opponent_next_id,
         ) {
-            Ok(events) => opponent_event_count = events.len(),
-            Err(error) => opponent_error = Some(error.to_string()),
+            Ok(events) => {
+                if side == model_side {
+                    continuation_event_count += events.len();
+                } else {
+                    opponent_event_count += events.len();
+                }
+                stages.insert(
+                    format!("post_opponent_{response_index}"),
+                    rollout_state_summary(&opponent_state),
+                );
+            }
+            Err(error) => {
+                opponent_error = Some(error.to_string());
+                break;
+            }
         }
     }
+    let post_opponent = stages
+        .get("post_opponent_1")
+        .cloned()
+        .unwrap_or(Value::Null);
     json!({
         "evaluation_seed": evaluation_seed,
-        "policy": "driver_greedy_one_response_v2",
+        "opponent_responses": opponent_responses.max(1),
+        "policy": if opponent_responses.max(1) == 1 {
+            "driver_greedy_one_response_v2"
+        } else {
+            "driver_greedy_continuation_v3"
+        },
         "sample_count": 1,
         "stages": {
             "post_finish": post_finish,
-            "post_opponent": if opponent_error.is_none() && opponent_event_count > 0 {
-                rollout_state_summary(&opponent_state)
-            } else { Value::Null },
+            "post_opponent": post_opponent,
+            "post_opponent_1": stages.get("post_opponent_1").cloned().unwrap_or(Value::Null),
+            "post_opponent_2": stages.get("post_opponent_2").cloned().unwrap_or(Value::Null),
+            "post_opponent_3": stages.get("post_opponent_3").cloned().unwrap_or(Value::Null),
         },
         "own_event_count": own_event_count,
         "opponent_event_count": opponent_event_count,
+        "continuation_event_count": continuation_event_count,
         "opponent_error": opponent_error,
         "coverage": {
             "own_finish": true,
-            "opponent_response": opponent_error.is_none() && opponent_event_count > 0,
+            "opponent_response": opponent_error.is_none() && stages.len() == opponent_responses.max(1) as usize,
         },
     })
 }
@@ -1049,15 +1083,18 @@ fn unit_type_profile(def: &UnitDef) -> Value {
         let meaning = match ability.as_str() {
             "leader" => Some("can recruit from a keep".to_string()),
             "leadership" => Some(
-                "adjacent lower-level allies deal 25% more damage per level difference"
-                    .to_string(),
+                "adjacent lower-level allies deal 25% more damage per level difference".to_string(),
             ),
-            value if value
-                .strip_prefix("regenerates_")
-                .and_then(|amount| amount.parse::<u32>().ok())
-                .is_some() => {
+            value
+                if value
+                    .strip_prefix("regenerates_")
+                    .and_then(|amount| amount.parse::<u32>().ok())
+                    .is_some() =>
+            {
                 let amount = value.strip_prefix("regenerates_").unwrap();
-                Some(format!("heals {amount} HP at the start of its side's turn and cures poison"))
+                Some(format!(
+                    "heals {amount} HP at the start of its side's turn and cures poison"
+                ))
             }
             _ => None,
         };
@@ -1166,7 +1203,10 @@ fn handle_routine_next_query(
             json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,
                 "body": body})
         }
-        routine::RoutineOutcome::Finish { reason, progress_update } => {
+        routine::RoutineOutcome::Finish {
+            reason,
+            progress_update,
+        } => {
             json!({"type":"status","ok":true,"what":what,"state_revision":state.state_revision,
                 "body":{"result":"finish","reason":reason,"progress_update":progress_update}})
         }
@@ -1369,8 +1409,11 @@ fn valid_action_shape(order: &Value) -> bool {
         return true;
     }
     if action == "MoveGroupToward" {
-        let in_i32 =
-            |value: &Value| value.as_i64().is_some_and(|v| (i32::MIN as i64..=i32::MAX as i64).contains(&v));
+        let in_i32 = |value: &Value| {
+            value
+                .as_i64()
+                .is_some_and(|v| (i32::MIN as i64..=i32::MAX as i64).contains(&v))
+        };
         if !object.get("col").is_some_and(in_i32) || !object.get("row").is_some_and(in_i32) {
             return false;
         }
@@ -1498,8 +1541,14 @@ fn validate_model_batch_contract(
     if orders.iter().any(|order| !valid_action_shape(order)) {
         return Err(("parse", "invalid action shape"));
     }
-    if orders.iter().any(|order| order.get("action").and_then(Value::as_str) == Some("Resign")) {
-        return Err(("parse", "resignation cannot be previewed; submit it as a standalone action"));
+    if orders
+        .iter()
+        .any(|order| order.get("action").and_then(Value::as_str) == Some("Resign"))
+    {
+        return Err((
+            "parse",
+            "resignation cannot be previewed; submit it as a standalone action",
+        ));
     }
     let end_turns = orders
         .iter()
@@ -1542,7 +1591,10 @@ fn validate_partial_preview_contract(
     if orders.iter().any(|order| {
         matches!(
             order.get("action").and_then(Value::as_str),
-            Some("EndTurn") | Some("DoneWithImportantMoves") | Some("FinishWithGreedy") | Some("Resign")
+            Some("EndTurn")
+                | Some("DoneWithImportantMoves")
+                | Some("FinishWithGreedy")
+                | Some("Resign")
         )
     }) {
         return Err(("parse", "partial preview cannot contain a turn boundary"));
@@ -1653,7 +1705,11 @@ fn add_occupancy_failure_detail(
     if let Some(index) = earlier_action_index {
         occupancy["earlier_action_index"] = json!(index);
     }
-    if let Some(def_id) = state.units.get(&occupied_by).map(|unit| unit.def_id.clone()) {
+    if let Some(def_id) = state
+        .units
+        .get(&occupied_by)
+        .map(|unit| unit.def_id.clone())
+    {
         occupancy["occupied_by"]["def_id"] = json!(def_id);
     }
     result["occupancy"] = occupancy;
@@ -1821,18 +1877,16 @@ fn capture_threat_exposure(
     match recruiter_threats_after_end_turn(state, model_side) {
         Ok(threats) => *pre_end_threats = Some(threats),
         Err(error) => {
-            *preview_error = Some(
-                json!({"code":"threat_preview_error","message":error.to_string()}),
-            );
+            *preview_error =
+                Some(json!({"code":"threat_preview_error","message":error.to_string()}));
             return;
         }
     }
     match unit_threats_after_end_turn(state, model_side) {
         Ok(exposure) => *pre_end_exposure = Some(exposure),
         Err(error) => {
-            *preview_error = Some(
-                json!({"code":"exposure_preview_error","message":error.to_string()}),
-            );
+            *preview_error =
+                Some(json!({"code":"exposure_preview_error","message":error.to_string()}));
         }
     }
 }
@@ -2067,7 +2121,9 @@ fn execute_model_batch(
                                 let failed_index = sub
                                     .results
                                     .iter()
-                                    .position(|result| result.get("ok") == Some(&Value::Bool(false)))
+                                    .position(|result| {
+                                        result.get("ok") == Some(&Value::Bool(false))
+                                    })
                                     .unwrap_or(0);
                                 let failed = sub.results.get(failed_index).cloned().unwrap_or_else(
                                     || json!({"ok": false, "code": "unknown", "message": "nested action failed"}),
@@ -2142,9 +2198,10 @@ fn execute_model_batch(
                         );
                         known_units.extend(state.units.keys().copied());
                         results.push(json!({"ok":true,"requested":count,"recruited":recruited,"partial":(recruited as u64) < count}));
-                        delegated_order_indices.extend(std::iter::repeat(None).take(
-                            events.len().saturating_sub(events_len_before),
-                        ));
+                        delegated_order_indices.extend(
+                            std::iter::repeat(None)
+                                .take(events.len().saturating_sub(events_len_before)),
+                        );
                         continue;
                     }
                     Err(error) => Err(error),
@@ -2254,11 +2311,7 @@ fn execute_model_batch(
                             }
                         }
                         None => {
-                            let reason = if state
-                                .units
-                                .get(&id)
-                                .is_some_and(|unit| unit.moved)
-                            {
+                            let reason = if state.units.get(&id).is_some_and(|unit| unit.moved) {
                                 "spent"
                             } else {
                                 "no_improving_destination"
@@ -2342,9 +2395,14 @@ fn execute_model_batch(
                     }
                 }
                 known_units.extend(state.units.keys().copied());
-                delegated_order_indices.extend(std::iter::repeat(
-                    if is_delegating_order { Some(results.len()) } else { None },
-                ).take(events.len().saturating_sub(events_len_before)));
+                delegated_order_indices.extend(
+                    std::iter::repeat(if is_delegating_order {
+                        Some(results.len())
+                    } else {
+                        None
+                    })
+                    .take(events.len().saturating_sub(events_len_before)),
+                );
                 let mut result_value = if conditional_action {
                     json!({"ok":true,"conditional_on_survival":true})
                 } else {
@@ -2379,7 +2437,8 @@ fn execute_model_batch(
             }
             Err(error) => {
                 if let Some(mut detail) = nested_failure.take() {
-                    let code = detail.as_object()
+                    let code = detail
+                        .as_object()
                         .and_then(|obj| obj.get("nested"))
                         .and_then(|nested| nested.get("code"))
                         .and_then(Value::as_str)
@@ -2387,16 +2446,22 @@ fn execute_model_batch(
                         .to_string();
                     if let Some(object) = detail.as_object_mut() {
                         object.insert("ok".into(), Value::Bool(false));
-                        object.insert("code".into(),
-                                      object.get("nested")
-                                          .and_then(|nested| nested.get("code"))
-                                          .cloned()
-                                          .unwrap_or_else(|| Value::String(error.code().into())));
-                        object.insert("message".into(),
-                                      object.get("nested")
-                                          .and_then(|nested| nested.get("message"))
-                                          .cloned()
-                                          .unwrap_or_else(|| Value::String(error.to_string())));
+                        object.insert(
+                            "code".into(),
+                            object
+                                .get("nested")
+                                .and_then(|nested| nested.get("code"))
+                                .cloned()
+                                .unwrap_or_else(|| Value::String(error.code().into())),
+                        );
+                        object.insert(
+                            "message".into(),
+                            object
+                                .get("nested")
+                                .and_then(|nested| nested.get("message"))
+                                .cloned()
+                                .unwrap_or_else(|| Value::String(error.to_string())),
+                        );
                     }
                     if !replay_tainted {
                         add_occupancy_failure_detail(
@@ -2407,7 +2472,11 @@ fn execute_model_batch(
                             &initial_occupants,
                             &occupancy_provenance,
                         );
-                        if let Some(target) = detail.get("nested").and_then(|nested| nested.get("target")).cloned() {
+                        if let Some(target) = detail
+                            .get("nested")
+                            .and_then(|nested| nested.get("target"))
+                            .cloned()
+                        {
                             detail["target"] = target;
                         } else {
                             add_dead_target_failure_detail(
@@ -2422,7 +2491,8 @@ fn execute_model_batch(
                     }
                     results.push(detail);
                 } else {
-                    let mut detail = json!({"ok":false,"code":error.code(),"message":error.to_string()});
+                    let mut detail =
+                        json!({"ok":false,"code":error.code(),"message":error.to_string()});
                     if !replay_tainted {
                         add_occupancy_failure_detail(
                             &mut detail,
@@ -2950,10 +3020,7 @@ fn boundary_value(
             "accepted_partial_batches".into(),
             json!(accepted_partial_batches),
         );
-        object.insert(
-            "max_partial_batches".into(),
-            json!(max_partial_batches),
-        );
+        object.insert("max_partial_batches".into(), json!(max_partial_batches));
         object.insert(
             "remaining_partial_batches".into(),
             json!(max_partial_batches.saturating_sub(accepted_partial_batches)),
@@ -3208,7 +3275,14 @@ fn interactive_protocol_game(mut c: Config) {
         println!("{}", reference);
         io::stdout().flush().unwrap();
     }
-    print_boundary(&state, &units, false, c.incremental_turns, partial_batches, c.max_partial_batches_per_turn);
+    print_boundary(
+        &state,
+        &units,
+        false,
+        c.incremental_turns,
+        partial_batches,
+        c.max_partial_batches_per_turn,
+    );
 
     let (line_tx, line_rx) = mpsc::sync_channel::<Result<String, String>>(8);
     std::thread::spawn(move || {
@@ -3393,13 +3467,23 @@ fn interactive_protocol_game(mut c: Config) {
                 }
                 "preview_batch" => {
                     let candidates = parsed.get("candidates").and_then(Value::as_array);
-                    let phase = parsed.get("phase").and_then(Value::as_str).unwrap_or("final");
-                    let mode = parsed.get("mode").and_then(Value::as_str).unwrap_or("forecast");
+                    let phase = parsed
+                        .get("phase")
+                        .and_then(Value::as_str)
+                        .unwrap_or("final");
+                    let mode = parsed
+                        .get("mode")
+                        .and_then(Value::as_str)
+                        .unwrap_or("forecast");
                     let bounded_rollout = mode == "bounded_rollout";
                     let evaluation_seed = parsed
                         .get("evaluation_seed")
                         .and_then(Value::as_u64)
                         .unwrap_or(DEFAULT_EVALUATION_SEED);
+                    let opponent_responses = parsed
+                        .get("opponent_responses")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(1);
                     if parsed.get("state_revision").and_then(Value::as_u64)
                         != Some(state.state_revision)
                     {
@@ -3408,6 +3492,8 @@ fn interactive_protocol_game(mut c: Config) {
                         json!({"type":"status","ok":false,"what":what,"code":"unauthorized_side","message":"model actions are not authorized while the opponent is active"})
                     } else if !matches!(phase, "final" | "partial") {
                         json!({"type":"status","ok":false,"what":what,"code":"parse","message":"phase must be final or partial"})
+                    } else if !(1..=3).contains(&opponent_responses) {
+                        json!({"type":"status","ok":false,"what":what,"code":"parse","message":"opponent_responses must be between 1 and 3"})
                     } else if candidates.is_none()
                         || candidates.is_some_and(|items| items.is_empty() || items.len() > 2)
                     {
@@ -3427,12 +3513,14 @@ fn interactive_protocol_game(mut c: Config) {
                                         ));
                                     };
                                     if phase == "partial" {
-                                        validate_partial_preview_contract(orders, &state, c.llm_side)
+                                        validate_partial_preview_contract(
+                                            orders, &state, c.llm_side,
+                                        )
                                     } else {
                                         validate_model_batch_contract(orders, &state, c.llm_side)
                                     }
-                                        .err()
-                                        .map(|(code, message)| (index, code, message))
+                                    .err()
+                                    .map(|(code, message)| (index, code, message))
                                 });
                         if let Some((index, code, message)) = contract_error {
                             json!({"type":"status","ok":false,"what":what,"code":code,"message":message,"candidate_index":index})
@@ -3486,6 +3574,7 @@ fn interactive_protocol_game(mut c: Config) {
                                     &units,
                                     execution.events.len(),
                                     evaluation_seed,
+                                    opponent_responses as u8,
                                 ))
                             } else {
                                 None
@@ -3518,16 +3607,14 @@ fn interactive_protocol_game(mut c: Config) {
                             Ok(tactical_units) => {
                                 let side = state.active_faction as usize;
                                 let faction = &factions[side];
-                                let placement_hexes: Vec<Value> = legal_recruitment_placements(
-                                    &state,
-                                    state.active_faction,
-                                )
-                                    .into_iter()
-                                    .map(|hex| {
-                                        let (col, row) = hex.to_offset();
-                                        json!({"col":col,"row":row})
-                                    })
-                                    .collect();
+                                let placement_hexes: Vec<Value> =
+                                    legal_recruitment_placements(&state, state.active_faction)
+                                        .into_iter()
+                                        .map(|hex| {
+                                            let (col, row) = hex.to_offset();
+                                            json!({"col":col,"row":row})
+                                        })
+                                        .collect();
                                 let options: Vec<Value> = faction.recruits.iter().filter_map(|id| units.get(id).map(|def| json!({"def_id":id,"cost":def.cost,"affordable":state.gold[side] >= def.cost}))).collect();
                                 let recruiter_on_keep =
                                     eligible_recruiter_keep(&state, state.active_faction).is_some();
@@ -3605,7 +3692,8 @@ fn interactive_protocol_game(mut c: Config) {
                                         // only the first half of the round) rather than
                                         // `next_round_time_of_day` (which always names the phase of
                                         // the round after this one finishes).
-                                        let imminent_opponent_time_of_day = threats.projected_time_of_day;
+                                        let imminent_opponent_time_of_day =
+                                            threats.projected_time_of_day;
                                         json!({"type":"status","ok":true,"what":what,"body":{"visibility":"full","time_of_day":tod_label(state.turn),"next_round_time_of_day":tod_label(state.turn.saturating_add(1)),"next_opponent_time_of_day":imminent_opponent_time_of_day,"time_of_day_modifiers":time_of_day_modifiers(),"factions":faction_profiles,"units":tactical_units,"unit_types":unit_types,"threats":threats,"exposure":exposure,"force":force_summaries(&state),"economy":{"gold":state.gold[side],"next_village_income":next_village_income,"vacatable_castles":vacatable_castles},"recruitment":{"gold":state.gold[side],"placement_hexes":placement_hexes,"options":options,"legal_now":legal_now,"reason":recruit_reason,"recruiter_on_keep":recruiter_on_keep,"batch_macro_enabled":!c.disable_recruit_batch}}})
                                     }
                                     (Err(message), _, _) => {
@@ -3693,7 +3781,8 @@ fn interactive_protocol_game(mut c: Config) {
                                                         None => Value::Null,
                                                     };
                                                     if let Some(target) = reference {
-                                                        entry["distance"] = json!(hex.distance(target));
+                                                        entry["distance"] =
+                                                            json!(hex.distance(target));
                                                     }
                                                 }
                                             }
@@ -4069,7 +4158,8 @@ fn interactive_protocol_game(mut c: Config) {
             io::stdout().flush().unwrap();
             continue;
         }
-        let (orders, authored_source) = match detect_orders_envelope(&parsed, state.state_revision) {
+        let (orders, authored_source) = match detect_orders_envelope(&parsed, state.state_revision)
+        {
             OrdersEnvelope::Rejected(status) => {
                 println!("{}", status);
                 io::stdout().flush().unwrap();
@@ -4157,14 +4247,12 @@ fn interactive_protocol_game(mut c: Config) {
             io::stdout().flush().unwrap();
             continue;
         }
-        if let Err((code, message)) =
-            validate_model_boundary(
-                &orders,
-                c.incremental_turns,
-                partial_batches,
-                c.max_partial_batches_per_turn,
-            )
-        {
+        if let Err((code, message)) = validate_model_boundary(
+            &orders,
+            c.incremental_turns,
+            partial_batches,
+            c.max_partial_batches_per_turn,
+        ) {
             println!(
                 "{}",
                 json!({"type":"status","ok":false,"code":code,"message":message})
@@ -4172,11 +4260,17 @@ fn interactive_protocol_game(mut c: Config) {
             continue;
         }
         if orders == [json!({"action":"Resign"})] {
-            println!("{}", json!({"type":"status","ok":true,"results":[{"ok":true}],
-                "state_revision":state.state_revision}));
-            println!("{}", json!({"type":"game_end","reason":"resignation",
+            println!(
+                "{}",
+                json!({"type":"status","ok":true,"results":[{"ok":true}],
+                "state_revision":state.state_revision})
+            );
+            println!(
+                "{}",
+                json!({"type":"game_end","reason":"resignation",
                 "winner":1 - c.llm_side,"resigned_side":c.llm_side,
-                "turns":state.turn,"side_turns":side_turns,"state_revision":state.state_revision}));
+                "turns":state.turn,"side_turns":side_turns,"state_revision":state.state_revision})
+            );
             io::stdout().flush().unwrap();
             terminal = true;
             break;
@@ -4304,14 +4398,27 @@ fn interactive_protocol_game(mut c: Config) {
         }
         let last_index = segments.len().checked_sub(1);
         for (index, (start, end, is_delegated)) in segments.into_iter().enumerate() {
-            let kind = if Some(index) == last_index { finish_kind } else { None };
+            let kind = if Some(index) == last_index {
+                finish_kind
+            } else {
+                None
+            };
             if is_delegated {
                 print_events(
-                    &events[start..end], "delegated_greedy", "delegated_greedy", kind,
+                    &events[start..end],
+                    "delegated_greedy",
+                    "delegated_greedy",
+                    kind,
                     Some(&delegated_order_indices[start..end]),
                 );
             } else {
-                print_events(&events[start..end], authored_source, authored_source, kind, None);
+                print_events(
+                    &events[start..end],
+                    authored_source,
+                    authored_source,
+                    kind,
+                    None,
+                );
             }
         }
         if did_end && state.check_winner().is_none() {
@@ -4390,10 +4497,24 @@ fn interactive_protocol_game(mut c: Config) {
                     break;
                 }
             }
-            print_boundary(&state, &units, false, c.incremental_turns, partial_batches, c.max_partial_batches_per_turn);
+            print_boundary(
+                &state,
+                &units,
+                false,
+                c.incremental_turns,
+                partial_batches,
+                c.max_partial_batches_per_turn,
+            );
             deadline = Instant::now() + Duration::from_secs(c.turn_timeout);
         } else if c.incremental_turns && batch_succeeded {
-            print_boundary(&state, &units, true, c.incremental_turns, partial_batches, c.max_partial_batches_per_turn);
+            print_boundary(
+                &state,
+                &units,
+                true,
+                c.incremental_turns,
+                partial_batches,
+                c.max_partial_batches_per_turn,
+            );
         }
     }
     if !terminal && state.check_winner().is_none() {
@@ -4413,7 +4534,11 @@ fn completed_finish_kind(orders: &[Value], did_end: bool) -> Option<&'static str
     if !did_end {
         return None;
     }
-    match orders.last().and_then(|order| order.get("action")).and_then(Value::as_str) {
+    match orders
+        .last()
+        .and_then(|order| order.get("action"))
+        .and_then(Value::as_str)
+    {
         Some("DoneWithImportantMoves") => Some("explicit_done"),
         Some("FinishWithGreedy") => Some("selective"),
         Some("EndTurn") => Some("implicit_end_turn"),
@@ -4439,8 +4564,10 @@ mod protocol_tests {
     fn completed_partial_batch_has_no_finish_kind_and_never_panics() {
         let orders = vec![json!({"action": "Move", "unit_id": 1, "col": 2, "row": 2})];
         assert_eq!(completed_finish_kind(&orders, false), None);
-        assert_eq!(completed_finish_kind(&[json!({"action": "EndTurn"})], true),
-                   Some("implicit_end_turn"));
+        assert_eq!(
+            completed_finish_kind(&[json!({"action": "EndTurn"})], true),
+            Some("implicit_end_turn")
+        );
     }
 
     #[test]
@@ -4631,7 +4758,10 @@ mod tests {
         let state = GameState::new(norrust_core::board::Board::new(1, 1));
         let orders = vec![json!({"action":"Resign"})];
         assert!(authorize_model_batch(&orders, &state, 0).is_ok());
-        assert_eq!(authorize_model_batch(&orders, &state, 1).unwrap_err().0, "unauthorized_side");
+        assert_eq!(
+            authorize_model_batch(&orders, &state, 1).unwrap_err().0,
+            "unauthorized_side"
+        );
     }
 
     #[test]
@@ -4845,7 +4975,10 @@ mod tests {
             false,
             false,
         );
-        assert!(partial_exec.results.iter().all(|r| r.get("ok") == Some(&Value::Bool(true))));
+        assert!(partial_exec
+            .results
+            .iter()
+            .all(|r| r.get("ok") == Some(&Value::Bool(true))));
         capture_threat_exposure(
             &partial_exec.state,
             0,
@@ -4868,7 +5001,10 @@ mod tests {
             false,
             false,
         );
-        assert!(final_exec.results.iter().all(|r| r.get("ok") == Some(&Value::Bool(true))));
+        assert!(final_exec
+            .results
+            .iter()
+            .all(|r| r.get("ok") == Some(&Value::Bool(true))));
 
         // Both describe the same pre-finish position and must agree on exposure
         assert_eq!(partial_exec.pre_end_threats, final_exec.pre_end_threats);
@@ -4926,7 +5062,11 @@ mod tests {
         let mover_hex = attacker_hex
             .neighbors()
             .into_iter()
-            .find(|hex| *hex != target_hex && state.board.tile_at(*hex).is_some() && !state.hex_to_unit.contains_key(hex))
+            .find(|hex| {
+                *hex != target_hex
+                    && state.board.tile_at(*hex).is_some()
+                    && !state.hex_to_unit.contains_key(hex)
+            })
             .expect("attacker has another open neighboring hex");
         let mut mover_unit = state.units[&attacker].clone();
         let mover = state.next_unit_id;
@@ -4946,7 +5086,8 @@ mod tests {
             .expect("destination exists");
         let (m_col, m_row) = mover_dest.to_offset();
 
-        let attack_order = json!({"action": "Attack", "attacker_id": attacker, "defender_id": target});
+        let attack_order =
+            json!({"action": "Attack", "attacker_id": attacker, "defender_id": target});
         let move_order = json!({"action": "Move", "unit_id": mover, "col": m_col, "row": m_row});
 
         // 1. Attack then Move
@@ -4960,7 +5101,10 @@ mod tests {
             false,
             false,
         );
-        assert!(exec_attack_move.results.iter().all(|r| r.get("ok") == Some(&Value::Bool(true))));
+        assert!(exec_attack_move
+            .results
+            .iter()
+            .all(|r| r.get("ok") == Some(&Value::Bool(true))));
         assert!(exec_attack_move.post_combat_conditional);
 
         // 2. Move then Attack
@@ -4974,7 +5118,10 @@ mod tests {
             false,
             false,
         );
-        assert!(exec_move_attack.results.iter().all(|r| r.get("ok") == Some(&Value::Bool(true))));
+        assert!(exec_move_attack
+            .results
+            .iter()
+            .all(|r| r.get("ok") == Some(&Value::Bool(true))));
         assert!(exec_move_attack.post_combat_conditional);
 
         // 3. Pure Move has no combat assumptions
@@ -4988,7 +5135,10 @@ mod tests {
             false,
             false,
         );
-        assert!(exec_pure_move.results.iter().all(|r| r.get("ok") == Some(&Value::Bool(true))));
+        assert!(exec_pure_move
+            .results
+            .iter()
+            .all(|r| r.get("ok") == Some(&Value::Bool(true))));
         assert!(!exec_pure_move.post_combat_conditional);
     }
 
@@ -5004,7 +5154,10 @@ mod tests {
         def.defense.insert("hills".into(), 40);
 
         let profile = unit_type_profile(&def);
-        assert_eq!(profile["movement_costs"], json!({"flat": 2, "hills": 3, "mountains": 5}));
+        assert_eq!(
+            profile["movement_costs"],
+            json!({"flat": 2, "hills": 3, "mountains": 5})
+        );
         assert_eq!(profile["defense"], json!({"flat": 30, "hills": 40}));
         // Every listed terrain in the profile must agree with the engine's
         // own fallback function (an omitted terrain, e.g. "deep_water" here,
@@ -5076,11 +5229,12 @@ mod tests {
             color: "#808080".into(),
         };
 
-        let effective = norrust_core::schema::effective_movement_cost(
-            &knight.movement_costs,
-            "mountains",
+        let effective =
+            norrust_core::schema::effective_movement_cost(&knight.movement_costs, "mountains");
+        assert_eq!(
+            effective, 1,
+            "the FFI/profile fallback must match the flat engine default"
         );
-        assert_eq!(effective, 1, "the FFI/profile fallback must match the flat engine default");
         assert_ne!(
             effective, mountains_tile.movement_cost,
             "the tile's own movement_cost (3) is NOT what pathfinding actually charges here"
@@ -5147,10 +5301,14 @@ mod tests {
         let cost_10 = Hex::from_offset(7, 0); // hills, mountains, flat: 3+5+2
 
         let profile = unit_type_profile(&def);
-        let listed_cost = |terrain: &str| profile["movement_costs"][terrain].as_u64().unwrap() as u32;
+        let listed_cost =
+            |terrain: &str| profile["movement_costs"][terrain].as_u64().unwrap() as u32;
         assert_eq!(listed_cost("flat") * 3, 6);
         assert_eq!(listed_cost("hills") + listed_cost("mountains"), 8);
-        assert_eq!(listed_cost("hills") + listed_cost("mountains") + listed_cost("flat"), 10);
+        assert_eq!(
+            listed_cost("hills") + listed_cost("mountains") + listed_cost("flat"),
+            10
+        );
         // The FFI fallback function agrees exactly with the profile's own
         // numbers for every terrain used along these three destinations (all
         // are the unit's own listed overrides, so the flat-default fallback
@@ -5163,11 +5321,26 @@ mod tests {
         }
 
         let reachable = reachable_hexes(
-            &board, &def.movement_costs, 1, start, def.movement, &HashSet::new(), false,
+            &board,
+            &def.movement_costs,
+            1,
+            start,
+            def.movement,
+            &HashSet::new(),
+            false,
         );
-        assert!(reachable.contains(&cost_6), "cost 6 is within the 7-point budget");
-        assert!(!reachable.contains(&cost_8), "cost 8 exceeds the 7-point budget");
-        assert!(!reachable.contains(&cost_10), "cost 10 exceeds the 7-point budget");
+        assert!(
+            reachable.contains(&cost_6),
+            "cost 6 is within the 7-point budget"
+        );
+        assert!(
+            !reachable.contains(&cost_8),
+            "cost 8 exceeds the 7-point budget"
+        );
+        assert!(
+            !reachable.contains(&cost_10),
+            "cost 10 exceeds the 7-point budget"
+        );
     }
 
     #[test]
@@ -5345,7 +5518,10 @@ mod tests {
         assert_eq!(response["body"]["result"], json!("action"));
         assert_eq!(response["body"]["action"]["action"], json!("Recruit"));
         assert_eq!(response["body"]["action"]["def_id"], json!("Skeleton"));
-        assert_eq!(response["body"]["progress_update"], json!({"effects":[{"kind":"recruited","queue_index":0}]}));
+        assert_eq!(
+            response["body"]["progress_update"],
+            json!({"effects":[{"kind":"recruited","queue_index":0}]})
+        );
         assert_eq!(response["body"]["reason"], json!("recruit"));
         // Read-only: the live state used to answer this query is unchanged.
         assert_eq!(state.state_revision, before_revision);
@@ -5600,16 +5776,26 @@ mod tests {
         assert_eq!(execution.results[0]["ok"], json!(true));
         assert_eq!(execution.results[1]["ok"], json!(false));
         assert_eq!(execution.results[1]["code"], json!("UnitNotFound"));
-        assert_eq!(execution.results[1]["target"]["cause"], json!("earlier_simulated_kill"));
-        assert_eq!(execution.results[1]["target"]["earlier_action_index"], json!(0));
+        assert_eq!(
+            execution.results[1]["target"]["cause"],
+            json!("earlier_simulated_kill")
+        );
+        assert_eq!(
+            execution.results[1]["target"]["earlier_action_index"],
+            json!(0)
+        );
         assert_eq!(execution.results[1]["target"]["unit_id"], json!(20));
-        assert_eq!(execution.results[1]["target"]["originally_present"], json!(true));
-        assert!(execution.results[1]["message"].as_str().unwrap().contains("killed by earlier proposed action index 0"));
+        assert_eq!(
+            execution.results[1]["target"]["originally_present"],
+            json!(true)
+        );
+        assert!(execution.results[1]["message"]
+            .as_str()
+            .unwrap()
+            .contains("killed by earlier proposed action index 0"));
 
         // Batch 2: Attack a unit that never existed
-        let absent_orders = vec![
-            json!({"action":"Attack","attacker_id":10,"defender_id":999}),
-        ];
+        let absent_orders = vec![json!({"action":"Attack","attacker_id":10,"defender_id":999})];
         let absent_exec = execute_model_batch(
             state.clone(),
             state.next_unit_id,
@@ -5622,10 +5808,19 @@ mod tests {
         );
         assert_eq!(absent_exec.results[0]["ok"], json!(false));
         assert_eq!(absent_exec.results[0]["code"], json!("UnitNotFound"));
-        assert_eq!(absent_exec.results[0]["target"]["cause"], json!("original_live_state_missing"));
-        assert_eq!(absent_exec.results[0]["target"]["originally_present"], json!(false));
+        assert_eq!(
+            absent_exec.results[0]["target"]["cause"],
+            json!("original_live_state_missing")
+        );
+        assert_eq!(
+            absent_exec.results[0]["target"]["originally_present"],
+            json!(false)
+        );
         assert_eq!(absent_exec.results[0]["target"]["unit_id"], json!(999));
-        assert!(absent_exec.results[0]["message"].as_str().unwrap().contains("not found in the original live state"));
+        assert!(absent_exec.results[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("not found in the original live state"));
 
         // Batch 3: Two attacks against a surviving target both succeed
         let mut tank = Unit::from_def(30, fighter_def, 1);

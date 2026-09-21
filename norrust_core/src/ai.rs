@@ -1312,6 +1312,68 @@ pub fn ai_take_turn_greedy_lookahead(
     ai_take_turn_with_recruits(state, faction, cheapest, recruit_defs);
 }
 
+/// Coordinated experimental planner.
+///
+/// Compare the existing response-aware planner with the fast baseline on
+/// cloned state, then commit the complete-turn plan with the better explicit
+/// survival/economy score.  This is intentionally bounded to two candidates;
+/// it is a coordination hook, not an unbounded search framework.
+pub fn ai_take_turn_coordinated(
+    state: &mut GameState,
+    faction: u8,
+    cheapest_recruit_cost: u32,
+    recruit_defs: &[(u32, u32)],
+) {
+    let mut lookahead = state.clone();
+    ai_take_turn_greedy_lookahead(&mut lookahead, faction, cheapest_recruit_cost, recruit_defs);
+
+    let mut greedy = state.clone();
+    ai_take_turn_greedy(&mut greedy, faction);
+
+    let lookahead_score = coordinated_state_score(&lookahead, faction);
+    let greedy_score = coordinated_state_score(&greedy, faction);
+    if lookahead_score >= greedy_score {
+        *state = lookahead;
+    } else {
+        *state = greedy;
+    }
+}
+
+fn coordinated_state_score(state: &GameState, faction: u8) -> f32 {
+    let own_units = state.units.values().filter(|u| u.faction == faction);
+    let enemy_units = state.units.values().filter(|u| u.faction != faction);
+    let own_hp: f32 = own_units
+        .map(|u| u.hp as f32 / u.max_hp.max(1) as f32)
+        .sum();
+    let enemy_hp: f32 = enemy_units
+        .map(|u| u.hp as f32 / u.max_hp.max(1) as f32)
+        .sum();
+    let own_count = state
+        .units
+        .values()
+        .filter(|u| u.faction == faction)
+        .count() as f32;
+    let enemy_count = state
+        .units
+        .values()
+        .filter(|u| u.faction != faction)
+        .count() as f32;
+    let recruiter_alive = state
+        .units
+        .values()
+        .any(|u| u.faction == faction && u.can_recruit);
+    let villages = state
+        .village_owners
+        .values()
+        .filter(|&&owner| owner == faction as i8)
+        .count() as f32;
+    let gold = state.gold[faction as usize] as f32;
+    own_hp * 8.0 - enemy_hp * 3.0 + own_count * 4.0 - enemy_count * 2.0
+        + villages * 6.0
+        + gold * 0.25
+        + if recruiter_alive { 25.0 } else { -1000.0 }
+}
+
 /// Fast baseline AI: process units in ID order and choose each unit's best
 /// immediate move or attack without simulating the opponent's reply.
 /// Recruiters stay on a keep (or walk back to one) instead of chasing fights.
@@ -1927,9 +1989,23 @@ mod tests {
         // settles for the fallback.
         let mut state = build();
         let first = choose_toward_hex_destination(&state, 1, target).unwrap();
-        apply_action(&mut state, Action::Move { unit_id: 1, destination: first }).unwrap();
+        apply_action(
+            &mut state,
+            Action::Move {
+                unit_id: 1,
+                destination: first,
+            },
+        )
+        .unwrap();
         let second = choose_toward_hex_destination(&state, 2, target).unwrap();
-        apply_action(&mut state, Action::Move { unit_id: 2, destination: second }).unwrap();
+        apply_action(
+            &mut state,
+            Action::Move {
+                unit_id: 2,
+                destination: second,
+            },
+        )
+        .unwrap();
         assert_eq!(first, contested);
         assert_eq!(second, fallback);
         assert_eq!(state.positions[&1], contested);
@@ -1940,9 +2016,23 @@ mod tests {
         // submitted order, not unit id.
         let mut state = build();
         let first = choose_toward_hex_destination(&state, 2, target).unwrap();
-        apply_action(&mut state, Action::Move { unit_id: 2, destination: first }).unwrap();
+        apply_action(
+            &mut state,
+            Action::Move {
+                unit_id: 2,
+                destination: first,
+            },
+        )
+        .unwrap();
         let second = choose_toward_hex_destination(&state, 1, target).unwrap();
-        apply_action(&mut state, Action::Move { unit_id: 1, destination: second }).unwrap();
+        apply_action(
+            &mut state,
+            Action::Move {
+                unit_id: 1,
+                destination: second,
+            },
+        )
+        .unwrap();
         assert_eq!(first, contested);
         assert_eq!(second, fallback);
         assert_eq!(state.positions[&2], contested);
@@ -1999,10 +2089,18 @@ mod tests {
 
     #[test]
     fn imported_defense_values_have_the_same_meaning_in_ai_forecasts() {
-        let expected = [(40, 21.0 * 0.6), (50, 21.0 * 0.5), (60, 21.0 * 0.4), (30, 21.0 * 0.7)];
+        let expected = [
+            (40, 21.0 * 0.6),
+            (50, 21.0 * 0.5),
+            (60, 21.0 * 0.4),
+            (30, 21.0 * 0.7),
+        ];
         for (avoidance, damage) in expected {
             let result = expected_outgoing_damage(7, 3, avoidance, 0, 0);
-            assert!((result - damage).abs() < 0.01, "avoidance {avoidance}: {result}");
+            assert!(
+                (result - damage).abs() < 0.01,
+                "avoidance {avoidance}: {result}"
+            );
         }
     }
 
@@ -2261,6 +2359,28 @@ mod tests {
             state.positions[&1], keep,
             "greedy recruiter must not leave the keep to chase a fight"
         );
+    }
+
+    #[test]
+    fn coordinated_planner_commits_one_complete_legal_turn() {
+        let board = setup_keep_board(0, 0);
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+        state.gold[0] = 0;
+        let keep = Hex::from_offset(0, 0);
+        let mut leader = make_leader(1, 0);
+        leader.can_recruit = true;
+        state.units.insert(1, leader);
+        state.positions.insert(1, keep);
+        state.hex_to_unit.insert(keep, 1);
+        let before = state.clone();
+
+        ai_take_turn_coordinated(&mut state, 0, 15, &[]);
+
+        assert_eq!(state.active_faction, before.active_faction ^ 1);
+        assert!(state.units.contains_key(&1));
+        assert!(state.positions.contains_key(&1));
+        assert!(state.sides_acted_this_round <= 1);
     }
 
     #[test]

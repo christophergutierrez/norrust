@@ -42,12 +42,26 @@ fn run_driver_with_env(args: &[&str], input: &str, env: &[(&str, &str)]) -> Vec<
 fn resignation_concedes_either_side_without_advancing_or_running_opponent() {
     for side in ["0", "1"] {
         let lines = run_driver(
-            &["--scenario", "big_battle_6", "--llm-side", side, "--max-turns", "50"],
+            &[
+                "--scenario",
+                "big_battle_6",
+                "--llm-side",
+                side,
+                "--max-turns",
+                "50",
+            ],
             "[{\"action\":\"Resign\"}]\n[{\"action\":\"EndTurn\"}]\n",
         );
-        let boundary = lines.iter().rposition(|line| line["type"] == "state").unwrap();
+        let boundary = lines
+            .iter()
+            .rposition(|line| line["type"] == "state")
+            .unwrap();
         let after = &lines[boundary + 1..];
-        assert_eq!(after.len(), 2, "only acknowledgement and terminal may follow resignation");
+        assert_eq!(
+            after.len(),
+            2,
+            "only acknowledgement and terminal may follow resignation"
+        );
         assert_eq!(after[0]["ok"], true);
         let terminal = &after[1];
         assert_eq!(terminal["type"], "game_end");
@@ -56,7 +70,10 @@ fn resignation_concedes_either_side_without_advancing_or_running_opponent() {
         assert_eq!(terminal["winner"], 1 - side);
         assert_eq!(terminal["resigned_side"], side);
         assert_eq!(terminal["side_turns"], side);
-        assert_eq!(terminal["state_revision"], lines[boundary]["state_revision"]);
+        assert_eq!(
+            terminal["state_revision"],
+            lines[boundary]["state_revision"]
+        );
     }
 }
 
@@ -71,7 +88,10 @@ fn malformed_resignation_never_commits_other_orders() {
 [{"action":"Resign"}]
 "#,
     );
-    let statuses: Vec<_> = lines.iter().filter(|line| line["type"] == "status").collect();
+    let statuses: Vec<_> = lines
+        .iter()
+        .filter(|line| line["type"] == "status")
+        .collect();
     assert_eq!(statuses.len(), 5);
     assert!(statuses[..4].iter().all(|line| line["ok"] == false));
     assert_eq!(statuses[4]["ok"], true);
@@ -83,14 +103,23 @@ fn malformed_resignation_never_commits_other_orders() {
 #[test]
 fn resignation_validation_is_read_only_and_tactical_previews_reject_it() {
     let lines = run_driver(
-        &["--scenario", "big_battle_6", "--max-turns", "50", "--incremental-turns"],
+        &[
+            "--scenario",
+            "big_battle_6",
+            "--max-turns",
+            "50",
+            "--incremental-turns",
+        ],
         r#"{"action":"Query","what":"validate_batch","state_revision":0,"orders":[{"action":"Resign"}]}
 {"action":"Query","what":"preview_batch","state_revision":0,"phase":"final","candidates":[[{"action":"Resign"}]]}
 {"action":"Query","what":"preview_batch","state_revision":0,"phase":"partial","candidates":[[{"action":"Resign"}]]}
 [{"action":"Resign"}]
 "#,
     );
-    let statuses: Vec<_> = lines.iter().filter(|line| line["type"] == "status").collect();
+    let statuses: Vec<_> = lines
+        .iter()
+        .filter(|line| line["type"] == "status")
+        .collect();
     assert_eq!(statuses.len(), 4);
     assert_eq!(statuses[0]["body"]["valid"], true);
     assert_eq!(statuses[1]["ok"], false);
@@ -103,22 +132,41 @@ fn resignation_validation_is_read_only_and_tactical_previews_reject_it() {
 #[test]
 fn resignation_is_allowed_after_the_partial_batch_limit() {
     let lines = run_driver(
-        &["--scenario", "big_battle_6", "--faction0", "undead", "--gold", "300",
-          "--max-turns", "50", "--incremental-turns"],
+        &[
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--gold",
+            "300",
+            "--max-turns",
+            "50",
+            "--incremental-turns",
+        ],
         r#"[{"action":"RecruitBatch","def_id":"Skeleton","count":1}]
 [{"action":"RecruitBatch","def_id":"Skeleton","count":1}]
 [{"action":"RecruitBatch","def_id":"Skeleton","count":1}]
 [{"action":"Resign"}]
 "#,
     );
-    let states: Vec<_> = lines.iter().filter(|line| line["type"] == "state").collect();
+    let states: Vec<_> = lines
+        .iter()
+        .filter(|line| line["type"] == "state")
+        .collect();
     assert_eq!(states.last().unwrap()["accepted_partial_batches"], 3);
     let terminal = lines.last().unwrap();
     assert_eq!(terminal["reason"], "resignation");
     assert_eq!(terminal["side_turns"], 0);
-    assert_eq!(terminal["state_revision"], states.last().unwrap()["state_revision"]);
+    assert_eq!(
+        terminal["state_revision"],
+        states.last().unwrap()["state_revision"]
+    );
     for batch in lines.iter().filter(|line| line["type"] == "events") {
-        assert!(batch["events"].as_array().unwrap().iter().all(|event| event["kind"] == "recruit"));
+        assert!(batch["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|event| event["kind"] == "recruit"));
     }
 }
 
@@ -153,17 +201,32 @@ fn malformed_requests_get_one_typed_status_each() {
 fn partial_preview_accepts_prefix_and_labels_unavailable_sweep() {
     let lines = run_driver(
         &[
-            "--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
-            "--gold", "300", "--max-turns", "1", "--incremental-turns",
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+            "--gold",
+            "300",
+            "--max-turns",
+            "1",
+            "--incremental-turns",
         ],
         r#"{"action":"Query","what":"preview_batch","state_revision":0,"phase":"partial","candidates":[[{"action":"RecruitBatch","def_id":"Skeleton","count":1}]]}
 {"action":"Query","what":"preview_batch","state_revision":0,"phase":"partial","candidates":[[{"action":"EndTurn"}]]}
 "#,
     );
-    let statuses: Vec<&Value> = lines.iter().filter(|line| line["type"] == "status").collect();
+    let statuses: Vec<&Value> = lines
+        .iter()
+        .filter(|line| line["type"] == "status")
+        .collect();
     assert_eq!(statuses[0]["ok"], true);
     assert_eq!(statuses[0]["body"]["phase"], "partial");
-    assert_eq!(statuses[0]["body"]["coverage"]["delegated_sweep"], "unavailable");
+    assert_eq!(
+        statuses[0]["body"]["coverage"]["delegated_sweep"],
+        "unavailable"
+    );
     assert_eq!(statuses[1]["ok"], false);
     assert_eq!(statuses[1]["code"], "parse");
 }
@@ -172,8 +235,17 @@ fn partial_preview_accepts_prefix_and_labels_unavailable_sweep() {
 fn final_nonsampling_preview_is_pre_finish_and_does_not_claim_a_sweep() {
     let lines = run_driver(
         &[
-            "--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
-            "--gold", "300", "--max-turns", "1", "--incremental-turns",
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+            "--gold",
+            "300",
+            "--max-turns",
+            "1",
+            "--incremental-turns",
         ],
         r#"{"action":"Query","what":"preview_batch","state_revision":0,"phase":"final","candidates":[[{"action":"EndTurn"}]]}
 "#,
@@ -188,7 +260,10 @@ fn final_nonsampling_preview_is_pre_finish_and_does_not_claim_a_sweep() {
     assert_eq!(body["coverage"]["forecast"], "conditional_pre_finish");
     assert_eq!(body["coverage"]["delegated_sweep"], "unavailable");
     assert_eq!(body["coverage"]["post_sweep"], "unavailable");
-    assert_eq!(body["candidates"][0]["observation_stage"], "post_prefix_pre_sweep");
+    assert_eq!(
+        body["candidates"][0]["observation_stage"],
+        "post_prefix_pre_sweep"
+    );
     assert_eq!(body["candidates"][0]["post_sweep"], Value::Null);
 }
 
@@ -196,29 +271,77 @@ fn final_nonsampling_preview_is_pre_finish_and_does_not_claim_a_sweep() {
 fn bounded_preview_reports_isolated_finish_and_opponent_coverage() {
     let lines = run_driver(
         &[
-            "--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
-            "--gold", "300", "--max-turns", "1",
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+            "--gold",
+            "300",
+            "--max-turns",
+            "1",
         ],
         r#"{"action":"Query","what":"preview_batch","state_revision":0,"phase":"final","mode":"bounded_rollout","candidates":[[{"action":"EndTurn"}]]}
 "#,
     );
-    let status = lines.iter().find(|line| line["type"] == "status").expect("preview status");
+    let status = lines
+        .iter()
+        .find(|line| line["type"] == "status")
+        .expect("preview status");
     assert_eq!(status["ok"], true);
     let body = &status["body"];
     assert_eq!(body["bounded_rollout"], true);
     assert_eq!(body["coverage"]["post_sweep"], "modeled");
     let candidate = &body["candidates"][0];
     assert_eq!(candidate["observation_stage"], "post_opponent_response");
-    assert_eq!(candidate["post_sweep"]["policy"], "driver_greedy_one_response_v2");
+    assert_eq!(
+        candidate["post_sweep"]["policy"],
+        "driver_greedy_one_response_v2"
+    );
     assert_eq!(candidate["post_sweep"]["sample_count"], 1);
     // No `evaluation_seed` was requested, so the driver falls back to its
     // documented default seed (unchanged from the old hardcoded constant).
-    assert_eq!(candidate["post_sweep"]["evaluation_seed"], 0x5eed5eed5eed5eedu64);
+    assert_eq!(
+        candidate["post_sweep"]["evaluation_seed"],
+        0x5eed5eed5eed5eedu64
+    );
     let post_finish = &candidate["post_sweep"]["stages"]["post_finish"];
     assert!(post_finish.is_object());
     assert!(post_finish["units_detail"].is_array());
     assert!(post_finish["villages"].is_array());
     assert!(post_finish["sides"][0]["material_cost"].is_number());
+}
+
+#[test]
+fn bounded_preview_supports_two_complete_opponent_responses() {
+    let lines = run_driver(
+        &[
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+            "--gold",
+            "300",
+            "--max-turns",
+            "4",
+        ],
+        r#"{"action":"Query","what":"preview_batch","state_revision":0,"phase":"final","mode":"bounded_rollout","opponent_responses":2,"evaluation_seed":7,"candidates":[[{"action":"EndTurn"}]]}
+"#,
+    );
+    let status = lines
+        .iter()
+        .find(|line| line["type"] == "status")
+        .expect("preview status");
+    assert_eq!(status["ok"], true);
+    let rollout = &status["body"]["candidates"][0]["post_sweep"];
+    assert_eq!(rollout["opponent_responses"], 2);
+    assert_eq!(rollout["policy"], "driver_greedy_continuation_v3");
+    assert!(rollout["stages"]["post_opponent_1"].is_object());
+    assert!(rollout["stages"]["post_opponent_2"].is_object());
+    assert_eq!(rollout["coverage"]["opponent_response"], true);
 }
 
 // The S3 duel fixture pairs two adjacent "Brawler" leaders (16 strikes at 1
@@ -230,20 +353,32 @@ fn bounded_preview_reports_isolated_finish_and_opponent_coverage() {
 // confirm the fix's actual behavior, not just its declared shape.
 fn s3_stochastic_duel_args() -> [&'static str; 8] {
     [
-        "--scenario", "duel", "--faction0", "brawler_a", "--faction1", "brawler_b",
-        "--max-turns", "1",
+        "--scenario",
+        "duel",
+        "--faction0",
+        "brawler_a",
+        "--faction1",
+        "brawler_b",
+        "--max-turns",
+        "1",
     ]
 }
 
 fn s3_stochastic_duel_env() -> [(&'static str, &'static str); 1] {
     [(
         "NORRUST_TEST_ROOT_DIR",
-        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/s3_stochastic_duel"),
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/s3_stochastic_duel"
+        ),
     )]
 }
 
 fn bounded_rollout_post_sweep(lines: &[Value]) -> Value {
-    let status = lines.iter().find(|line| line["type"] == "status").expect("preview status");
+    let status = lines
+        .iter()
+        .find(|line| line["type"] == "status")
+        .expect("preview status");
     assert_eq!(status["ok"], true);
     status["body"]["candidates"][0]["post_sweep"].clone()
 }
@@ -256,12 +391,23 @@ fn bounded_rollout_same_seed_is_reproducible() {
 "#
         )
     };
-    let first = run_driver_with_env(&s3_stochastic_duel_args(), &query(1), &s3_stochastic_duel_env());
-    let second = run_driver_with_env(&s3_stochastic_duel_args(), &query(1), &s3_stochastic_duel_env());
+    let first = run_driver_with_env(
+        &s3_stochastic_duel_args(),
+        &query(1),
+        &s3_stochastic_duel_env(),
+    );
+    let second = run_driver_with_env(
+        &s3_stochastic_duel_args(),
+        &query(1),
+        &s3_stochastic_duel_env(),
+    );
     let first_sweep = bounded_rollout_post_sweep(&first);
     let second_sweep = bounded_rollout_post_sweep(&second);
     assert_eq!(first_sweep["evaluation_seed"], 1);
-    assert_eq!(first_sweep, second_sweep, "identical evaluation_seed must reproduce identical rollout results");
+    assert_eq!(
+        first_sweep, second_sweep,
+        "identical evaluation_seed must reproduce identical rollout results"
+    );
 }
 
 #[test]
@@ -272,8 +418,16 @@ fn bounded_rollout_different_seeds_diverge_for_stochastic_combat() {
 "#
         )
     };
-    let seed1 = run_driver_with_env(&s3_stochastic_duel_args(), &query(1), &s3_stochastic_duel_env());
-    let seed2 = run_driver_with_env(&s3_stochastic_duel_args(), &query(2), &s3_stochastic_duel_env());
+    let seed1 = run_driver_with_env(
+        &s3_stochastic_duel_args(),
+        &query(1),
+        &s3_stochastic_duel_env(),
+    );
+    let seed2 = run_driver_with_env(
+        &s3_stochastic_duel_args(),
+        &query(2),
+        &s3_stochastic_duel_env(),
+    );
     let sweep1 = bounded_rollout_post_sweep(&seed1);
     let sweep2 = bounded_rollout_post_sweep(&seed2);
     // Both leaders survive at 50% defense with max_hp=40 against a 16-strike,
@@ -281,7 +435,10 @@ fn bounded_rollout_different_seeds_diverge_for_stochastic_combat() {
     // side HP is a direct readout of the stochastic outcome under that seed.
     let hp1 = &sweep1["stages"]["post_opponent"]["sides"];
     let hp2 = &sweep2["stages"]["post_opponent"]["sides"];
-    assert_ne!(hp1, hp2, "different evaluation_seed values must be able to produce different stochastic outcomes");
+    assert_ne!(
+        hp1, hp2,
+        "different evaluation_seed values must be able to produce different stochastic outcomes"
+    );
 }
 
 #[test]
@@ -299,7 +456,10 @@ fn bounded_rollout_candidate_combat_and_opponent_response_share_one_rng_stream()
 "#,
         &s3_stochastic_duel_env(),
     );
-    let status = lines.iter().find(|line| line["type"] == "status").expect("preview status");
+    let status = lines
+        .iter()
+        .find(|line| line["type"] == "status")
+        .expect("preview status");
     assert_eq!(status["ok"], true);
     let candidates = status["body"]["candidates"].as_array().expect("candidates");
     assert_eq!(candidates.len(), 2);
@@ -309,7 +469,8 @@ fn bounded_rollout_candidate_combat_and_opponent_response_share_one_rng_stream()
     // state; the one that didn't attack left both leaders full health.
     assert_ne!(no_attack_post_finish, with_attack_post_finish);
     let no_attack_post_opponent = &candidates[0]["post_sweep"]["stages"]["post_opponent"]["sides"];
-    let with_attack_post_opponent = &candidates[1]["post_sweep"]["stages"]["post_opponent"]["sides"];
+    let with_attack_post_opponent =
+        &candidates[1]["post_sweep"]["stages"]["post_opponent"]["sides"];
     assert_ne!(
         no_attack_post_opponent, with_attack_post_opponent,
         "the candidate's own RNG consumption must shift the opponent's rolled outcome -- \
@@ -352,20 +513,34 @@ fn bounded_rollout_never_mutates_the_live_state_rng() {
         baseline_attack["damage_to_attacker"], after_preview_attack["damage_to_attacker"],
         "a bounded rollout preview must not perturb the live state's RNG"
     );
-    assert_eq!(baseline_attack["damage_to_defender"], after_preview_attack["damage_to_defender"]);
+    assert_eq!(
+        baseline_attack["damage_to_defender"],
+        after_preview_attack["damage_to_defender"]
+    );
 }
 
 #[test]
 fn unavailable_target_inspection_is_factual_and_nonfatal() {
     let lines = run_driver(
         &[
-            "--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
-            "--gold", "300", "--max-turns", "1",
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+            "--gold",
+            "300",
+            "--max-turns",
+            "1",
         ],
         r#"{"action":"Query","what":"inspect_targets","state_revision":0,"unit_ids":[999999]}
 "#,
     );
-    let status = lines.iter().find(|line| line["type"] == "status").expect("inspection status");
+    let status = lines
+        .iter()
+        .find(|line| line["type"] == "status")
+        .expect("inspection status");
     assert_eq!(status["ok"], true);
     assert_eq!(status["body"]["targets"][0]["available"], false);
     assert_eq!(status["body"]["targets"][0]["reason"], "unit_unavailable");
@@ -741,8 +916,16 @@ fn undead_recruitment_is_roster_gated_and_valid_recruitment_still_works() {
 fn destination_occupancy_feedback_identifies_replay_cause_and_transaction() {
     let validation = run_driver(
         &[
-            "--scenario", "big_battle_6", "--faction0", "undead",
-            "--faction1", "undead", "--gold", "300", "--max-turns", "4",
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+            "--gold",
+            "300",
+            "--max-turns",
+            "4",
         ],
         r#"{"action":"Query","what":"validate_batch","state_revision":0,"orders":[{"action":"Recruit","def_id":"Skeleton","col":2,"row":6},{"action":"Recruit","def_id":"Skeleton","col":2,"row":6},{"action":"EndTurn"}]}
 "#,
@@ -788,12 +971,27 @@ fn destination_occupancy_feedback_identifies_replay_cause_and_transaction() {
         .find(|line| line["type"] == "status")
         .expect("valid reuse status");
     assert_eq!(status["committed"], true);
-    assert_eq!(status["results"].as_array().unwrap().iter().all(|r| r["ok"] == true), true);
+    assert_eq!(
+        status["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["ok"] == true),
+        true
+    );
 
     let original = run_driver(
         &[
-            "--scenario", "big_battle_6", "--faction0", "undead",
-            "--faction1", "undead", "--gold", "300", "--max-turns", "4",
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+            "--gold",
+            "300",
+            "--max-turns",
+            "4",
         ],
         r#"{"action":"Query","what":"validate_batch","state_revision":0,"orders":[{"action":"Move","unit_id":1,"col":2,"row":7},{"action":"EndTurn"}]}
 "#,
@@ -804,15 +1002,25 @@ fn destination_occupancy_feedback_identifies_replay_cause_and_transaction() {
         .expect("original occupancy response");
     let original_failed = &original_body["body"]["results"][0];
     assert_eq!(original_failed["occupancy"]["cause"], "original_live_state");
-    assert!(original_failed["occupancy"].get("earlier_action_index").is_none());
+    assert!(original_failed["occupancy"]
+        .get("earlier_action_index")
+        .is_none());
 }
 
 #[test]
 fn absent_target_feedback_reports_original_live_state_missing() {
     let absent = run_driver(
         &[
-            "--scenario", "big_battle_6", "--faction0", "undead",
-            "--faction1", "undead", "--gold", "300", "--max-turns", "4",
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+            "--gold",
+            "300",
+            "--max-turns",
+            "4",
         ],
         r#"{"action":"Query","what":"validate_batch","state_revision":0,"orders":[{"action":"Attack","attacker_id":1,"defender_id":999},{"action":"EndTurn"}]}
 "#,
@@ -824,10 +1032,16 @@ fn absent_target_feedback_reports_original_live_state_missing() {
     assert_eq!(absent_body["body"]["valid"], false);
     let absent_failed = &absent_body["body"]["results"][0];
     assert_eq!(absent_failed["code"], "UnitNotFound");
-    assert_eq!(absent_failed["target"]["cause"], "original_live_state_missing");
+    assert_eq!(
+        absent_failed["target"]["cause"],
+        "original_live_state_missing"
+    );
     assert_eq!(absent_failed["target"]["originally_present"], false);
     assert_eq!(absent_failed["target"]["unit_id"], 999);
-    assert!(absent_failed["message"].as_str().unwrap().contains("target U999 was not found in the original live state"));
+    assert!(absent_failed["message"]
+        .as_str()
+        .unwrap()
+        .contains("target U999 was not found in the original live state"));
 }
 
 #[test]
@@ -1018,8 +1232,15 @@ fn unit_type_profiles_preserve_attack_specials() {
 fn engage_reports_the_nested_engine_error_and_step_context() {
     let lines = run_driver(
         &[
-            "--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
-            "--max-turns", "1", "--incremental-turns",
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+            "--max-turns",
+            "1",
+            "--incremental-turns",
         ],
         r#"{"action":"Query","what":"validate_batch","state_revision":0,"orders":[{"action":"Engage","target_id":2,"steps":[{"attacker_id":1,"col":2,"row":7}]}]}
 "#,
@@ -1041,8 +1262,15 @@ fn engage_reports_the_nested_engine_error_and_step_context() {
 
     let primitive = run_driver(
         &[
-            "--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
-            "--max-turns", "1", "--incremental-turns",
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+            "--max-turns",
+            "1",
+            "--incremental-turns",
         ],
         r#"{"action":"Query","what":"validate_batch","state_revision":0,"orders":[{"action":"Attack","attacker_id":1,"defender_id":2}]}
 "#,
@@ -1051,12 +1279,22 @@ fn engage_reports_the_nested_engine_error_and_step_context() {
         .iter()
         .find(|line| line["type"] == "status")
         .expect("primitive validation status");
-    assert_eq!(primitive_status["body"]["results"][0]["code"], "NotAdjacent");
+    assert_eq!(
+        primitive_status["body"]["results"][0]["code"],
+        "NotAdjacent"
+    );
 
     let unreachable = run_driver(
         &[
-            "--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
-            "--max-turns", "1", "--incremental-turns",
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+            "--max-turns",
+            "1",
+            "--incremental-turns",
         ],
         r#"{"action":"Query","what":"validate_batch","state_revision":0,"orders":[{"action":"Engage","target_id":2,"steps":[{"attacker_id":1,"col":10,"row":7}]}]}
 "#,
@@ -1072,11 +1310,21 @@ fn engage_reports_the_nested_engine_error_and_step_context() {
 
 #[test]
 fn stationary_engage_skips_steps_after_target_death_without_moving() {
-    let fixture_root = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/s2_deterministic_duel");
+    let fixture_root = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/s2_deterministic_duel"
+    );
     let lines = run_driver_with_env(
         &[
-            "--scenario", "duel", "--faction0", "lethal", "--faction1", "fragile",
-            "--max-turns", "1", "--incremental-turns",
+            "--scenario",
+            "duel",
+            "--faction0",
+            "lethal",
+            "--faction1",
+            "fragile",
+            "--max-turns",
+            "1",
+            "--incremental-turns",
         ],
         r#"[{"action":"Engage","target_id":2,"steps":[{"attacker_id":1,"col":0,"row":0},{"attacker_id":1,"col":0,"row":0}]}]
 "#,
@@ -1093,19 +1341,41 @@ fn stationary_engage_skips_steps_after_target_death_without_moving() {
         .find(|line| line["type"] == "events")
         .expect("engage events");
     let events = events["events"].as_array().unwrap();
-    assert_eq!(events.iter().filter(|event| event["kind"] == "attack").count(), 1);
-    assert_eq!(events.iter().filter(|event| event["kind"] == "move").count(), 0);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["kind"] == "attack")
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["kind"] == "move")
+            .count(),
+        0
+    );
     assert_eq!(lines.last().unwrap()["type"], "game_end");
     assert_eq!(lines.last().unwrap()["reason"], "winner");
 }
 
 #[test]
 fn promoted_friendly_type_enters_the_next_tactical_profile_set() {
-    let fixture_root = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/s2_deterministic_duel");
+    let fixture_root = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/s2_deterministic_duel"
+    );
     let lines = run_driver_with_env(
         &[
-            "--scenario", "profile", "--faction0", "promoter", "--faction1", "lethal",
-            "--max-turns", "1", "--incremental-turns",
+            "--scenario",
+            "profile",
+            "--faction0",
+            "promoter",
+            "--faction1",
+            "lethal",
+            "--max-turns",
+            "1",
+            "--incremental-turns",
         ],
         concat!(
             "[{\"action\":\"Attack\",\"attacker_id\":1,\"defender_id\":2},",
@@ -1136,7 +1406,13 @@ fn promoted_friendly_type_enters_the_next_tactical_profile_set() {
 #[test]
 fn engage_preserves_missing_spent_and_later_step_errors_transactionally() {
     let missing = run_driver(
-        &["--scenario", "big_battle_6", "--max-turns", "1", "--incremental-turns"],
+        &[
+            "--scenario",
+            "big_battle_6",
+            "--max-turns",
+            "1",
+            "--incremental-turns",
+        ],
         r#"[{"action":"Engage","target_id":999,"steps":[{"attacker_id":1,"col":2,"row":7}]}]
 "#,
     );
@@ -1163,13 +1439,26 @@ fn engage_preserves_missing_spent_and_later_step_errors_transactionally() {
     assert_eq!(spent_result["results"][0]["code"], "UnitAlreadyMoved");
     assert_eq!(spent_result["results"][0]["subaction"], "Move");
     assert_eq!(spent_result["state_revision"], 1);
-    assert_eq!(spent.iter().filter(|line| line["type"] == "state").count(), 2);
+    assert_eq!(
+        spent.iter().filter(|line| line["type"] == "state").count(),
+        2
+    );
 
-    let fixture_root = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/s2_deterministic_duel");
+    let fixture_root = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/s2_deterministic_duel"
+    );
     let later = run_driver_with_env(
         &[
-            "--scenario", "profile", "--faction0", "promoter", "--faction1", "lethal",
-            "--max-turns", "1", "--incremental-turns",
+            "--scenario",
+            "profile",
+            "--faction0",
+            "promoter",
+            "--faction1",
+            "lethal",
+            "--max-turns",
+            "1",
+            "--incremental-turns",
         ],
         r#"[{"action":"Engage","target_id":2,"steps":[{"attacker_id":1,"col":0,"row":0},{"attacker_id":1,"col":0,"row":0}]}]
 "#,
@@ -1191,7 +1480,12 @@ fn engage_preserves_missing_spent_and_later_step_errors_transactionally() {
 #[test]
 fn tactical_surface_exposes_phase_modifiers_and_known_faction_pools() {
     let response = tactical_surface_query(&[
-        "--scenario", "big_battle_6", "--faction0", "northerners", "--faction1", "loyalists",
+        "--scenario",
+        "big_battle_6",
+        "--faction0",
+        "northerners",
+        "--faction1",
+        "loyalists",
     ]);
     let body = &response["body"];
     assert_eq!(body["time_of_day_modifiers"]["Dawn"]["chaotic"], 0);
@@ -1210,7 +1504,14 @@ fn tactical_surface_exposes_phase_modifiers_and_known_faction_pools() {
     // values are stored avoidance; combat forecasts use their complement for
     // hit chance (the same contract tested directly by combat_parameters).
     let initial = run_driver(
-        &["--scenario", "big_battle_6", "--faction0", "northerners", "--faction1", "loyalists"],
+        &[
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "northerners",
+            "--faction1",
+            "loyalists",
+        ],
         "{\"action\":\"Query\",\"what\":\"tactical_surface\"}\n",
     );
     let leader = initial
@@ -1408,7 +1709,10 @@ fn max_turns_caps_successful_side_turns() {
     // under `state`, matching this same terminal's own `state_revision`.
     assert!(!lines.iter().any(|line| line["type"] == "state"
         && line["state_revision"].as_u64() == terminal["state_revision"].as_u64()));
-    assert_eq!(terminal["state"]["state_revision"], terminal["state_revision"]);
+    assert_eq!(
+        terminal["state"]["state_revision"],
+        terminal["state_revision"]
+    );
     assert_eq!(terminal["state"]["type"], "state");
     assert!(!lines.iter().any(|line| line["source"] == "greedy"));
 }
@@ -1424,7 +1728,10 @@ fn every_terminal_reason_carries_a_state_revision() {
         &["--scenario", "big_battle_6", "--max-turns", "1"],
         "{\"action\":\"EndTurn\"}\n",
     );
-    let terminal = lines.iter().find(|line| line["type"] == "game_end").unwrap();
+    let terminal = lines
+        .iter()
+        .find(|line| line["type"] == "game_end")
+        .unwrap();
     assert!(terminal.get("state_revision").is_some(), "{terminal:?}");
 }
 
@@ -1439,8 +1746,13 @@ fn a_terminal_ending_never_prints_a_trailing_state_boundary_line() {
         &["--scenario", "big_battle_6", "--max-turns", "1"],
         "{\"action\":\"EndTurn\"}\n",
     );
-    let terminal_index = lines.iter().position(|line| line["type"] == "game_end").unwrap();
-    assert!(!lines[terminal_index + 1..].iter().any(|line| line["type"] == "state"));
+    let terminal_index = lines
+        .iter()
+        .position(|line| line["type"] == "game_end")
+        .unwrap();
+    assert!(!lines[terminal_index + 1..]
+        .iter()
+        .any(|line| line["type"] == "state"));
 }
 
 #[test]
@@ -1476,7 +1788,10 @@ fn resume_from_a_postbatch_checkpoint_runs_the_pending_opponent_turn_exactly_onc
         .expect("driver must publish a postbatch checkpoint before running greedy");
     assert_eq!(postbatch["pending_opponent_turn"], true);
     let checkpoint_path = checkpoint_dir.join(postbatch["path"].as_str().unwrap());
-    assert!(checkpoint_path.is_file(), "checkpoint file must exist on disk");
+    assert!(
+        checkpoint_path.is_file(),
+        "checkpoint file must exist on disk"
+    );
 
     let mut resume_args: Vec<&str> = base_args.to_vec();
     resume_args.push("--resume-checkpoint");
@@ -1531,8 +1846,19 @@ fn move_group_toward_moves_named_units_and_stays_within_one_side_turn() {
     // This is the plan's "recruit, deploy, recruit again" shape distilled to
     // its minimal proof: the group step must not itself end the turn.
     let lines = run_driver(
-        &["--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
-          "--gold", "100", "--max-turns", "4", "--incremental-turns"],
+        &[
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+            "--gold",
+            "100",
+            "--max-turns",
+            "4",
+            "--incremental-turns",
+        ],
         concat!(
             "[{\"action\":\"Recruit\",\"def_id\":\"Skeleton\",\"col\":3,\"row\":7},",
             "{\"action\":\"Recruit\",\"def_id\":\"Skeleton\",\"col\":3,\"row\":6}]\n",
@@ -1540,7 +1866,10 @@ fn move_group_toward_moves_named_units_and_stays_within_one_side_turn() {
             "[{\"action\":\"FinishWithGreedy\",\"groups\":[],\"holds\":[]}]\n",
         ),
     );
-    let statuses: Vec<&Value> = lines.iter().filter(|line| line["type"] == "status").collect();
+    let statuses: Vec<&Value> = lines
+        .iter()
+        .filter(|line| line["type"] == "status")
+        .collect();
     assert_eq!(statuses.len(), 3);
     assert!(statuses.iter().all(|status| status["ok"] == true));
 
@@ -1548,7 +1877,10 @@ fn move_group_toward_moves_named_units_and_stays_within_one_side_turn() {
     // FinishWithGreedy line ends the side turn. `boundaries[0]` is the
     // opening pre-input snapshot; `[1]` and `[2]` follow the two partial
     // batches.
-    let boundaries: Vec<&Value> = lines.iter().filter(|line| line["type"] == "state").collect();
+    let boundaries: Vec<&Value> = lines
+        .iter()
+        .filter(|line| line["type"] == "state")
+        .collect();
     assert!(boundaries[1]["turn_boundary"] == "partial");
     assert!(boundaries[2]["turn_boundary"] == "partial");
 
@@ -1556,11 +1888,17 @@ fn move_group_toward_moves_named_units_and_stays_within_one_side_turn() {
     assert_eq!(move_result["ok"], true);
     let moved = move_result["moved"].as_array().expect("moved list");
     assert_eq!(moved.len(), 2);
-    let moved_ids: Vec<u64> = moved.iter().map(|entry| entry["unit_id"].as_u64().unwrap()).collect();
+    let moved_ids: Vec<u64> = moved
+        .iter()
+        .map(|entry| entry["unit_id"].as_u64().unwrap())
+        .collect();
     assert_eq!(moved_ids, vec![3, 4]);
     assert_eq!(move_result["skipped"].as_array().unwrap().len(), 0);
     for entry in moved {
-        assert_ne!(entry["from"], entry["to"], "a reported move must be an actual displacement");
+        assert_ne!(
+            entry["from"], entry["to"],
+            "a reported move must be an actual displacement"
+        );
     }
 
     // The generated moves are macro output, not individually authored --
@@ -1580,9 +1918,9 @@ fn move_group_toward_moves_named_units_and_stays_within_one_side_turn() {
         .find(|line| {
             line["type"] == "events"
                 && line["source"] == "delegated_greedy"
-                && line["events"].as_array().is_some_and(|events| {
-                    events.iter().any(|event| event["kind"] == "move")
-                })
+                && line["events"]
+                    .as_array()
+                    .is_some_and(|events| events.iter().any(|event| event["kind"] == "move"))
         })
         .expect("delegated move events");
     assert!(move_events["events"]
@@ -1614,8 +1952,19 @@ fn move_group_toward_moves_named_units_and_stays_within_one_side_turn() {
 #[test]
 fn move_group_toward_accepts_an_occupied_rally_hex_as_a_direction() {
     let lines = run_driver(
-        &["--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
-          "--gold", "100", "--max-turns", "4", "--incremental-turns"],
+        &[
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+            "--gold",
+            "100",
+            "--max-turns",
+            "4",
+            "--incremental-turns",
+        ],
         concat!(
             "[{\"action\":\"Recruit\",\"def_id\":\"Skeleton\",\"col\":3,\"row\":7},",
             "{\"action\":\"Recruit\",\"def_id\":\"Skeleton\",\"col\":3,\"row\":6}]\n",
@@ -1624,11 +1973,24 @@ fn move_group_toward_accepts_an_occupied_rally_hex_as_a_direction() {
             "[{\"action\":\"FinishWithGreedy\",\"groups\":[],\"holds\":[]}]\n",
         ),
     );
-    let statuses: Vec<&Value> = lines.iter().filter(|line| line["type"] == "status").collect();
-    assert!(statuses.iter().all(|status| status["ok"] == true), "{statuses:?}");
+    let statuses: Vec<&Value> = lines
+        .iter()
+        .filter(|line| line["type"] == "status")
+        .collect();
+    assert!(
+        statuses.iter().all(|status| status["ok"] == true),
+        "{statuses:?}"
+    );
     let moved = statuses[1]["results"][0]["moved"].as_array().unwrap();
-    assert_eq!(moved.len(), 2, "an occupied rally hex must not block a legal group move");
-    assert_ne!(moved[0]["to"], moved[1]["to"], "the two units cannot land on the same hex");
+    assert_eq!(
+        moved.len(),
+        2,
+        "an occupied rally hex must not block a legal group move"
+    );
+    assert_ne!(
+        moved[0]["to"], moved[1]["to"],
+        "the two units cannot land on the same hex"
+    );
     for entry in moved {
         let to = &entry["to"];
         assert!(
@@ -1641,8 +2003,19 @@ fn move_group_toward_accepts_an_occupied_rally_hex_as_a_direction() {
 #[test]
 fn move_group_toward_gives_spent_and_no_progress_units_an_explicit_skip() {
     let lines = run_driver(
-        &["--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
-          "--gold", "100", "--max-turns", "4", "--incremental-turns"],
+        &[
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+            "--gold",
+            "100",
+            "--max-turns",
+            "4",
+            "--incremental-turns",
+        ],
         concat!(
             "[{\"action\":\"Recruit\",\"def_id\":\"Skeleton\",\"col\":3,\"row\":7}]\n",
             // Already at the rally hex: no reachable destination is
@@ -1655,13 +2028,22 @@ fn move_group_toward_gives_spent_and_no_progress_units_an_explicit_skip() {
             "[{\"action\":\"FinishWithGreedy\",\"groups\":[],\"holds\":[]}]\n",
         ),
     );
-    let statuses: Vec<&Value> = lines.iter().filter(|line| line["type"] == "status").collect();
-    assert!(statuses.iter().all(|status| status["ok"] == true), "{statuses:?}");
+    let statuses: Vec<&Value> = lines
+        .iter()
+        .filter(|line| line["type"] == "status")
+        .collect();
+    assert!(
+        statuses.iter().all(|status| status["ok"] == true),
+        "{statuses:?}"
+    );
 
     let no_progress = &statuses[1]["results"][0];
     assert_eq!(no_progress["moved"].as_array().unwrap().len(), 0);
     assert_eq!(no_progress["skipped"][0]["unit_id"], 3);
-    assert_eq!(no_progress["skipped"][0]["reason"], "no_improving_destination");
+    assert_eq!(
+        no_progress["skipped"][0]["reason"],
+        "no_improving_destination"
+    );
 
     let real_move = &statuses[2]["results"][0];
     assert_eq!(real_move["moved"].as_array().unwrap().len(), 1);
@@ -1676,15 +2058,29 @@ fn move_group_toward_permits_an_explicit_recruiter_with_manual_loss_of_keep() {
     // The model's own leader (id 1) can be named explicitly. Moving it off
     // the keep has the same recruiting consequence a manual Move would have.
     let lines = run_driver(
-        &["--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
-          "--gold", "100", "--max-turns", "4", "--incremental-turns"],
+        &[
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+            "--gold",
+            "100",
+            "--max-turns",
+            "4",
+            "--incremental-turns",
+        ],
         concat!(
             "[{\"action\":\"MoveGroupToward\",\"unit_ids\":[1],\"col\":10,\"row\":7}]\n",
             "[{\"action\":\"FinishWithGreedy\",\"groups\":[],\"holds\":[]}]\n",
             "[{\"action\":\"Recruit\",\"def_id\":\"Skeleton\",\"col\":3,\"row\":7}]\n",
         ),
     );
-    let statuses: Vec<&Value> = lines.iter().filter(|line| line["type"] == "status").collect();
+    let statuses: Vec<&Value> = lines
+        .iter()
+        .filter(|line| line["type"] == "status")
+        .collect();
     let move_result = &statuses[0]["results"][0];
     assert_eq!(move_result["moved"][0]["unit_id"], 1);
     // Once the model's next turn comes back around, the leader is still off
@@ -1699,9 +2095,15 @@ fn move_group_toward_never_attacks_recruits_or_ends_the_turn() {
         &MOVE_GROUP_ARGS,
         "[{\"action\":\"MoveGroupToward\",\"unit_ids\":[1],\"col\":10,\"row\":7}]\n",
     );
-    let status = lines.iter().find(|line| line["type"] == "status").expect("move status");
+    let status = lines
+        .iter()
+        .find(|line| line["type"] == "status")
+        .expect("move status");
     assert_eq!(status["ok"], true);
-    assert!(status.get("finish_kind").is_none(), "a nonfinal move must not report a finish kind");
+    assert!(
+        status.get("finish_kind").is_none(),
+        "a nonfinal move must not report a finish kind"
+    );
     // The first "state" line is the opening pre-input snapshot; the second
     // is the boundary printed after this move batch.
     let boundary = lines
@@ -1710,11 +2112,19 @@ fn move_group_toward_never_attacks_recruits_or_ends_the_turn() {
         .nth(1)
         .expect("partial boundary");
     assert_eq!(boundary["turn_boundary"], "partial");
-    assert_eq!(boundary["active_faction"], 0, "the opponent must not be activated");
-    let events = lines.iter().find(|line| line["type"] == "events").expect("move events");
-    assert!(events["events"].as_array().unwrap().iter().all(|event| {
-        matches!(event["kind"].as_str(), Some("move"))
-    }));
+    assert_eq!(
+        boundary["active_faction"], 0,
+        "the opponent must not be activated"
+    );
+    let events = lines
+        .iter()
+        .find(|line| line["type"] == "events")
+        .expect("move events");
+    assert!(events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|event| { matches!(event["kind"].as_str(), Some("move")) }));
     // Stdin closes right after this one partial batch, so the driver's own
     // end-of-input shutdown is expected -- the claim under test is that
     // MoveGroupToward itself never ends the turn or activates the opponent,
@@ -1736,22 +2146,48 @@ fn move_group_toward_rejects_duplicate_foreign_and_enemy_ids_before_mutation() {
             "[{\"action\":\"MoveGroupToward\",\"unit_ids\":[2],\"col\":10,\"row\":7}]\n",
         ),
     );
-    let statuses: Vec<&Value> = lines.iter().filter(|line| line["type"] == "status").collect();
-    assert_eq!(statuses[0]["code"], "parse", "duplicate ids in one order are malformed shape");
-    assert_eq!(statuses[1]["code"], "unauthorized_unit", "a nonexistent id is never guessed at");
-    assert_eq!(statuses[2]["code"], "unauthorized_unit", "the enemy leader is not a model-side unit");
+    let statuses: Vec<&Value> = lines
+        .iter()
+        .filter(|line| line["type"] == "status")
+        .collect();
+    assert_eq!(
+        statuses[0]["code"], "parse",
+        "duplicate ids in one order are malformed shape"
+    );
+    assert_eq!(
+        statuses[1]["code"], "unauthorized_unit",
+        "a nonexistent id is never guessed at"
+    );
+    assert_eq!(
+        statuses[2]["code"], "unauthorized_unit",
+        "the enemy leader is not a model-side unit"
+    );
     // Only the opening pre-input snapshot may appear -- every rejected batch
     // above is caught before any mutation, so none of them commits a state
     // boundary or an events line of its own.
-    assert_eq!(lines.iter().filter(|line| line["type"] == "state").count(), 1);
+    assert_eq!(
+        lines.iter().filter(|line| line["type"] == "state").count(),
+        1
+    );
     assert!(!lines.iter().any(|line| line["type"] == "events"));
 }
 
 #[test]
 fn move_group_toward_rejects_an_out_of_bounds_target_and_rolls_back_only_that_batch() {
     let lines = run_driver(
-        &["--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
-          "--gold", "100", "--max-turns", "4", "--incremental-turns"],
+        &[
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+            "--gold",
+            "100",
+            "--max-turns",
+            "4",
+            "--incremental-turns",
+        ],
         concat!(
             "[{\"action\":\"Recruit\",\"def_id\":\"Skeleton\",\"col\":3,\"row\":7}]\n",
             "[{\"action\":\"MoveGroupToward\",\"unit_ids\":[3],\"col\":10,\"row\":7}]\n",
@@ -1759,7 +2195,10 @@ fn move_group_toward_rejects_an_out_of_bounds_target_and_rolls_back_only_that_ba
             "[{\"action\":\"FinishWithGreedy\",\"groups\":[],\"holds\":[]}]\n",
         ),
     );
-    let statuses: Vec<&Value> = lines.iter().filter(|line| line["type"] == "status").collect();
+    let statuses: Vec<&Value> = lines
+        .iter()
+        .filter(|line| line["type"] == "status")
+        .collect();
     assert_eq!(statuses.len(), 4);
     assert_eq!(statuses[0]["ok"], true);
     assert_eq!(statuses[1]["ok"], true);
@@ -1808,8 +2247,19 @@ fn move_group_toward_preserves_macro_indices_across_authored_interleaving() {
     // wire envelopes may split around that event, but each generated event
     // must retain the zero-based authored action index that produced it.
     let lines = run_driver(
-        &["--scenario", "big_battle_6", "--faction0", "undead", "--faction1", "undead",
-          "--gold", "100", "--max-turns", "1", "--incremental-turns"],
+        &[
+            "--scenario",
+            "big_battle_6",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+            "--gold",
+            "100",
+            "--max-turns",
+            "1",
+            "--incremental-turns",
+        ],
         concat!(
             "[{\"action\":\"RecruitBatch\",\"def_id\":\"Skeleton\",\"count\":3}]\n",
             "[{\"action\":\"MoveGroupToward\",\"unit_ids\":[3],\"col\":10,\"row\":7},",
@@ -1818,47 +2268,87 @@ fn move_group_toward_preserves_macro_indices_across_authored_interleaving() {
             "{\"action\":\"FinishWithGreedy\",\"groups\":[],\"holds\":[]}]\n",
         ),
     );
-    let statuses: Vec<&Value> = lines.iter().filter(|line| line["type"] == "status").collect();
-    assert!(statuses.iter().all(|status| status["ok"] == true), "{statuses:?}");
+    let statuses: Vec<&Value> = lines
+        .iter()
+        .filter(|line| line["type"] == "status")
+        .collect();
+    assert!(
+        statuses.iter().all(|status| status["ok"] == true),
+        "{statuses:?}"
+    );
     assert_eq!(statuses[1]["results"].as_array().unwrap().len(), 4);
 
-    let event_lines: Vec<&Value> = lines.iter().filter(|line| line["type"] == "events").collect();
-    assert_eq!(event_lines.len(), 4, "recruit plus delegated/authored/delegated segments should remain observable");
+    let event_lines: Vec<&Value> = lines
+        .iter()
+        .filter(|line| line["type"] == "events")
+        .collect();
+    assert_eq!(
+        event_lines.len(),
+        4,
+        "recruit plus delegated/authored/delegated segments should remain observable"
+    );
     assert_eq!(event_lines[0]["source"], "llm");
     assert_eq!(event_lines[1]["source"], "delegated_greedy");
     assert_eq!(event_lines[2]["source"], "llm");
     assert_eq!(event_lines[3]["source"], "delegated_greedy");
-    assert!(event_lines[1]["events"].as_array().unwrap().iter().all(|event| {
-        event["kind"] == "move" && event["delegated_order_index"] == 0
-    }));
-    assert!(event_lines[2]["events"].as_array().unwrap().iter().all(|event| {
-        event["kind"] == "move" && event.get("delegated_order_index").is_none()
-    }));
-    assert!(event_lines[3]["events"].as_array().unwrap().iter().all(|event| {
-        event["delegated_order_index"] == 2 || event["delegated_order_index"] == 3
-    }));
-    assert!(event_lines[3]["events"].as_array().unwrap().iter().any(|event| {
-        event["kind"] == "move" && event["delegated_order_index"] == 2
-    }));
-    assert!(event_lines[3]["events"].as_array().unwrap().iter().any(|event| {
-        event["kind"] == "end_turn" && event["delegated_order_index"] == 3
-    }));
+    assert!(event_lines[1]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|event| { event["kind"] == "move" && event["delegated_order_index"] == 0 }));
+    assert!(event_lines[2]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|event| { event["kind"] == "move" && event.get("delegated_order_index").is_none() }));
+    assert!(event_lines[3]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|event| {
+            event["delegated_order_index"] == 2 || event["delegated_order_index"] == 3
+        }));
+    assert!(event_lines[3]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| { event["kind"] == "move" && event["delegated_order_index"] == 2 }));
+    assert!(event_lines[3]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| { event["kind"] == "end_turn" && event["delegated_order_index"] == 3 }));
 }
 
 #[test]
 fn inspect_unit_reports_destination_costs_and_optional_reference_distance() {
     let lines = run_driver(
         &[
-            "--scenario", "debug_recruit", "--faction0", "undead", "--faction1", "undead",
-            "--gold", "100", "--max-turns", "1",
+            "--scenario",
+            "debug_recruit",
+            "--faction0",
+            "undead",
+            "--faction1",
+            "undead",
+            "--gold",
+            "100",
+            "--max-turns",
+            "1",
         ],
         r#"{"action":"Query","what":"inspect_unit","unit_id":1,"state_revision":0}
 {"action":"Query","what":"inspect_unit","unit_id":1,"state_revision":0,"to_col":1,"to_row":2}
 {"action":"Query","what":"inspect_unit","unit_id":999999,"state_revision":0}
 "#,
     );
-    let statuses: Vec<_> = lines.iter().filter(|line| line["type"] == "status").collect();
-    assert_eq!(statuses.len(), 3, "three queries should produce three statuses");
+    let statuses: Vec<_> = lines
+        .iter()
+        .filter(|line| line["type"] == "status")
+        .collect();
+    assert_eq!(
+        statuses.len(),
+        3,
+        "three queries should produce three statuses"
+    );
 
     // Without a reference hex: every destination carries an engine movement cost,
     // the unit's own hex costs 0, and no distance is reported.
@@ -1869,16 +2359,26 @@ fn inspect_unit_reports_destination_costs_and_optional_reference_distance() {
         .expect("destination_threats array");
     assert!(!plain_dests.is_empty(), "unit 1 should have destinations");
     for entry in plain_dests {
-        assert!(entry["cost"].is_number() || entry["cost"].is_null(),
-                "cost must be a number or explicit null: {:?}", entry);
-        assert!(entry.get("distance").is_none(),
-                "distance must be absent without to_col/to_row: {:?}", entry);
+        assert!(
+            entry["cost"].is_number() || entry["cost"].is_null(),
+            "cost must be a number or explicit null: {:?}",
+            entry
+        );
+        assert!(
+            entry.get("distance").is_none(),
+            "distance must be absent without to_col/to_row: {:?}",
+            entry
+        );
     }
     let current = plain_dests
         .iter()
         .find(|e| e["current"] == true)
         .expect("the unit's own hex must be listed");
-    assert_eq!(current["cost"].as_i64(), Some(0), "standing still costs nothing");
+    assert_eq!(
+        current["cost"].as_i64(),
+        Some(0),
+        "standing still costs nothing"
+    );
 
     // With a reference hex: distance is engine geometry to that hex, and the
     // reference itself is distance 0. Reachability is still the listed set only.
@@ -1888,8 +2388,11 @@ fn inspect_unit_reports_destination_costs_and_optional_reference_distance() {
         .as_array()
         .expect("destination_threats array");
     for entry in referenced_dests {
-        assert!(entry["distance"].is_number(),
-                "distance must be present when a reference hex is supplied: {:?}", entry);
+        assert!(
+            entry["distance"].is_number(),
+            "distance must be present when a reference hex is supplied: {:?}",
+            entry
+        );
     }
     let distance_at = |col: i64, row: i64| -> i64 {
         referenced_dests
@@ -1900,15 +2403,25 @@ fn inspect_unit_reports_destination_costs_and_optional_reference_distance() {
             .as_i64()
             .expect("integer distance")
     };
-    assert_eq!(distance_at(1, 2), 0, "the reference hex is zero from itself");
+    assert_eq!(
+        distance_at(1, 2),
+        0,
+        "the reference hex is zero from itself"
+    );
     assert_eq!(distance_at(0, 0), 2, "(0,0) sits two hexes from (1,2)");
-    assert!(distance_at(1, 2) < distance_at(0, 0),
-            "a nearer hex must report a smaller distance than a farther one");
+    assert!(
+        distance_at(1, 2) < distance_at(0, 0),
+        "a nearer hex must report a smaller distance than a farther one"
+    );
     let distinct: std::collections::BTreeSet<i64> = referenced_dests
         .iter()
         .map(|e| e["distance"].as_i64().expect("integer distance"))
         .collect();
-    assert!(distinct.len() > 1, "distances must vary across the set: {:?}", distinct);
+    assert!(
+        distinct.len() > 1,
+        "distances must vary across the set: {:?}",
+        distinct
+    );
 
     // The existing failure classification is unchanged.
     let missing = &statuses[2];

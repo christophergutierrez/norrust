@@ -14,7 +14,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use norrust_core::ai::{ai_take_turn_greedy, ai_take_turn_greedy_lookahead};
+use norrust_core::ai::{
+    ai_take_turn_coordinated, ai_take_turn_greedy, ai_take_turn_greedy_lookahead,
+};
 use norrust_core::board::Tile;
 use norrust_core::game_state::{apply_action, apply_recruit, Action, GameState};
 use norrust_core::hex::Hex;
@@ -28,6 +30,7 @@ use norrust_core::unit::Unit;
 enum AiKind {
     Greedy,
     Lookahead,
+    Coordinated,
     Random,
 }
 
@@ -86,8 +89,8 @@ Options:
   --scenario NAME       Scenario directory name (default: big_battle_6)
   --team1 ID            Faction on side 1
   --team2 ID            Faction on side 2
-  --ai1 KIND             greedy | greedy-look-ahead | random (default: greedy)
-  --ai2 KIND             greedy | greedy-look-ahead | random (default: greedy)
+  --ai1 KIND             greedy | greedy-look-ahead | coordinated | random (default: greedy)
+  --ai2 KIND             greedy | greedy-look-ahead | coordinated | random (default: greedy)
   --games N             Number of games (default: 100)
   --seed N              First deterministic seed (default: 1)
   --gold N              Starting gold for both teams
@@ -109,6 +112,7 @@ fn parse_ai(s: &str) -> AiKind {
     match s {
         "greedy" => AiKind::Greedy,
         "greedy-look-ahead" => AiKind::Lookahead,
+        "coordinated" => AiKind::Coordinated,
         "random" => AiKind::Random,
         _ => usage(),
     }
@@ -480,6 +484,19 @@ fn play_turn(
                 .unwrap_or(0);
             ai_take_turn_greedy_lookahead(state, side, cheapest, &recruit_defs);
         }
+        AiKind::Coordinated => {
+            let recruit_defs: Vec<(u32, u32)> = faction
+                .recruits
+                .iter()
+                .filter_map(|id| units.get(id).map(|def| (def.cost, def.movement)))
+                .collect();
+            let cheapest = recruit_defs
+                .iter()
+                .map(|(cost, _)| *cost)
+                .min()
+                .unwrap_or(0);
+            ai_take_turn_coordinated(state, side, cheapest, &recruit_defs);
+        }
         AiKind::Random => random_turn(state, side, rng),
     }
 }
@@ -765,6 +782,7 @@ fn ai_name(ai: AiKind) -> &'static str {
     match ai {
         AiKind::Greedy => "greedy",
         AiKind::Lookahead => "greedy-look-ahead",
+        AiKind::Coordinated => "coordinated",
         AiKind::Random => "random",
     }
 }
