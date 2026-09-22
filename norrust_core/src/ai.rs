@@ -1610,12 +1610,38 @@ fn recruiter_needs_protection(state: &GameState, faction: u8) -> bool {
         return false;
     };
     state.units.iter().any(|(id, unit)| {
-        unit.faction != faction
-            && state
-                .positions
-                .get(id)
-                .is_some_and(|hex| recruiter.distance(*hex) <= 3)
+        if unit.faction == faction {
+            return false;
+        }
+        let Some(enemy_hex) = state.positions.get(id) else {
+            return false;
+        };
+        let attack_reach = if unit.attacks.iter().any(|attack| attack.range == "ranged") {
+            2
+        } else {
+            1
+        };
+        recruiter.distance(*enemy_hex) <= unit.movement.max(1) + attack_reach
     })
+}
+
+fn objective_target_is_valid(
+    state: &GameState,
+    faction: u8,
+    objective: CoordinatedObjective,
+    target: Hex,
+) -> bool {
+    match objective {
+        CoordinatedObjective::Protect => recruiter_hex(state, faction) == Some(target),
+        CoordinatedObjective::SecureIncome => state
+            .village_owners
+            .get(&target)
+            .is_some_and(|owner| *owner != faction as i8),
+        CoordinatedObjective::Concentrate | CoordinatedObjective::PressAttack => state
+            .units
+            .iter()
+            .any(|(id, unit)| unit.faction != faction && state.positions.get(id) == Some(&target)),
+    }
 }
 
 /// Choose or retain the small persistent objective. Emergency recruiter
@@ -1636,7 +1662,7 @@ pub fn choose_coordinated_objective(
     if let (Some(objective), Some(target)) = (memory.objective, memory.target) {
         if memory.no_progress < MAX_NO_PROGRESS_TURNS
             && state.board.contains(target)
-            && objective_target(state, faction, objective).is_some()
+            && objective_target_is_valid(state, faction, objective, target)
         {
             memory.age = memory.age.saturating_add(1);
             return objective;
