@@ -81,7 +81,7 @@ class DatasetTests(unittest.TestCase):
             command=[str(binary),'--team1','undead','--team2','undead',
                      '--ai1','greedy-look-ahead','--ai2','greedy','--games','1',
                      '--threads','1','--seed','912','--gold','250','--second-gold','0',
-                     '--first','team2','--max-turns','1','--verbose']
+                     '--first','team2','--max-side-turns','1','--verbose']
             plain=subprocess.run(command,cwd=repo,capture_output=True,text=True,check=True)
             recorded=subprocess.run(command+['--record-dir',str(output)],cwd=repo,capture_output=True,text=True,check=True)
             self.assertEqual(plain.stdout,recorded.stdout)
@@ -89,7 +89,7 @@ class DatasetTests(unittest.TestCase):
             self.assertEqual(meta['starting_gold'],[250,250])
             self.assertEqual(meta['first'],1)
             self.assertEqual(end['reason'],'safety_cap')
-            self.assertEqual(len(states),9)
+            self.assertEqual(len(states),3)
             original=(output/'game-00001.ndjson').read_bytes()
             failed=subprocess.run(command+['--record-dir',str(output)],cwd=repo,capture_output=True,text=True)
             self.assertNotEqual(failed.returncode,0)
