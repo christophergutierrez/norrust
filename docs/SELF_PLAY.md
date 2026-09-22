@@ -132,6 +132,20 @@ with `--seed S+k-1 --games 1`.
 Same `--seed S --games N` is a replay, not an independent replicate. For a
 new sample, use a disjoint range (for example `S+N`).
 
+For the Stack 6 development screen, build `self-play` in release mode and run
+the bounded provider-free harness. It schedules four same-faction mirrors,
+both controlled-side placements, both initiative orders, and the two declared
+opponents (32 cells). Every cell has a fixed 200 side-turn cap, 300 starting
+gold, zero second-player bonus, first-affordable recruitment, one process, and
+a subprocess timeout. Operational failures remain failures; the report sets
+`strength_claim_allowed` false unless every scheduled cell completed.
+
+```bash
+python3 -m tools.algorithm_strength \
+  --out-dir tmp/strategy-planner/algorithm-v2/stack-6/screening \
+  --binary norrust_core/target/release/self-play --workers 2
+```
+
 ## Algorithms
 
 | `--ai1` / `--ai2` | Role |
