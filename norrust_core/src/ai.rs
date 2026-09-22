@@ -10,7 +10,8 @@ use crate::events::GameEvent;
 use crate::game_state::{apply_action, Action, GameState};
 use crate::hex::Hex;
 use crate::pathfinding::{get_zoc_hexes, reachable_hexes};
-use crate::schema::AttackDef;
+use crate::recruitment::{execute_recruitment, RecruitmentPolicy};
+use crate::schema::{AttackDef, UnitDef};
 use crate::tactics::unit_tactics;
 use crate::unit::Unit;
 
@@ -1021,25 +1022,59 @@ fn simulate_recruitment(
     recruited_ids
 }
 
+#[derive(Clone, Copy)]
+enum RecruitmentSource<'a> {
+    Placeholder(&'a [(u32, u32)]),
+    Definitions {
+        definitions: &'a [UnitDef],
+        policy: RecruitmentPolicy,
+    },
+}
+
+fn simulate_recruitment_source(
+    clone: &mut GameState,
+    faction: u8,
+    source: RecruitmentSource<'_>,
+) -> Vec<u32> {
+    match source {
+        RecruitmentSource::Placeholder(definitions) => {
+            simulate_recruitment(clone, faction, definitions)
+        }
+        RecruitmentSource::Definitions {
+            definitions,
+            policy,
+        } => {
+            let mut next_id = clone.next_unit_id;
+            let summary = execute_recruitment(clone, faction, definitions, &mut next_id, policy);
+            clone.next_unit_id = next_id;
+            summary
+                .purchases
+                .into_iter()
+                .map(|purchase| purchase.unit_id)
+                .collect()
+        }
+    }
+}
+
 /// Plan a single turn attempt with the given unit ordering on a clone.
 /// Returns (action_records, final_score).
 ///
 /// Order: non-leaders move first → recruit into freed castle slots → new recruits
 /// move → leader decides last (stay on keep, or walk back to keep).
-fn run_turn_ordering(
+fn run_turn_ordering_source(
     state: &GameState,
     faction: u8,
     leader_id: Option<u32>,
     _return_keep: Option<Hex>,
     unit_order: &[u32],
     cheapest_recruit_cost: u32,
-    recruit_defs: &[(u32, u32)],
+    recruit_source: RecruitmentSource<'_>,
 ) -> (Vec<ActionRecord>, f32) {
     let mut clone = state.clone();
     let mut records = Vec::new();
 
     // Initial recruitment
-    let initial_recruits = simulate_recruitment(&mut clone, faction, recruit_defs);
+    let initial_recruits = simulate_recruitment_source(&mut clone, faction, recruit_source);
     if !initial_recruits.is_empty() {
         records.push(ActionRecord::Recruit);
     }
@@ -1137,7 +1172,7 @@ fn run_turn_ordering(
         if !should_leader_stay(&clone, faction, cheapest_recruit_cost) {
             break;
         }
-        let new_ids = simulate_recruitment(&mut clone, faction, recruit_defs);
+        let new_ids = simulate_recruitment_source(&mut clone, faction, recruit_source);
         if new_ids.is_empty() {
             break;
         }
@@ -1225,15 +1260,35 @@ fn run_turn_ordering(
     (records, score)
 }
 
+fn run_turn_ordering(
+    state: &GameState,
+    faction: u8,
+    leader_id: Option<u32>,
+    return_keep: Option<Hex>,
+    unit_order: &[u32],
+    cheapest_recruit_cost: u32,
+    recruit_defs: &[(u32, u32)],
+) -> (Vec<ActionRecord>, f32) {
+    run_turn_ordering_source(
+        state,
+        faction,
+        leader_id,
+        return_keep,
+        unit_order,
+        cheapest_recruit_cost,
+        RecruitmentSource::Placeholder(recruit_defs),
+    )
+}
+
 /// Plan a full AI turn by trying multiple unit orderings and picking the best.
 /// Returns (action_records, final_score).
 ///
 /// Non-leaders move first (reordered across attempts), then leader acts last.
-fn plan_full_turn(
+fn plan_full_turn_source(
     state: &GameState,
     faction: u8,
     cheapest_recruit_cost: u32,
-    recruit_defs: &[(u32, u32)],
+    recruit_source: RecruitmentSource<'_>,
 ) -> (Vec<ActionRecord>, f32) {
     let leader_id = find_leader(state, faction);
     let return_keep = leader_should_return_to_keep(state, faction, cheapest_recruit_cost);
@@ -1267,14 +1322,14 @@ fn plan_full_turn(
             order.push(non_leader_ids[(j + i) % n]);
         }
 
-        let (records, score) = run_turn_ordering(
+        let (records, score) = run_turn_ordering_source(
             state,
             faction,
             leader_id,
             return_keep,
             &order,
             cheapest_recruit_cost,
-            recruit_defs,
+            recruit_source,
         );
         if score > best_score {
             best_score = score;
@@ -1283,6 +1338,38 @@ fn plan_full_turn(
     }
 
     (best_records, best_score)
+}
+
+fn plan_full_turn(
+    state: &GameState,
+    faction: u8,
+    cheapest_recruit_cost: u32,
+    recruit_defs: &[(u32, u32)],
+) -> (Vec<ActionRecord>, f32) {
+    plan_full_turn_source(
+        state,
+        faction,
+        cheapest_recruit_cost,
+        RecruitmentSource::Placeholder(recruit_defs),
+    )
+}
+
+fn plan_full_turn_with_definitions(
+    state: &GameState,
+    faction: u8,
+    cheapest_recruit_cost: u32,
+    definitions: &[UnitDef],
+    policy: RecruitmentPolicy,
+) -> (Vec<ActionRecord>, f32) {
+    plan_full_turn_source(
+        state,
+        faction,
+        cheapest_recruit_cost,
+        RecruitmentSource::Definitions {
+            definitions,
+            policy,
+        },
+    )
 }
 
 // ── Core AI turn logic ──────────────────────────────────────────────────────
@@ -1603,6 +1690,10 @@ pub fn ai_take_turn_with_recruits_recorded(
     recruit_defs: &[(u32, u32)],
 ) -> Vec<ActionRecord> {
     let (records, _score) = plan_full_turn(state, faction, cheapest_recruit_cost, recruit_defs);
+    commit_planned_turn(state, records)
+}
+
+fn commit_planned_turn(state: &mut GameState, records: Vec<ActionRecord>) -> Vec<ActionRecord> {
     let mut committed = Vec::new();
 
     // Replay the best plan on the real state.
@@ -1656,6 +1747,161 @@ pub fn ai_take_turn_with_recruits_recorded(
 
     apply_action(state, Action::EndTurn).expect("EndTurn must always succeed");
     committed
+}
+
+fn commit_planned_turn_with_definitions(
+    state: &mut GameState,
+    faction: u8,
+    definitions: &[UnitDef],
+    policy: RecruitmentPolicy,
+    records: Vec<ActionRecord>,
+) -> Vec<ActionRecord> {
+    let mut committed = Vec::new();
+    for record in records {
+        match &record {
+            ActionRecord::Recruit => {
+                let before = state.next_unit_id;
+                let mut next_id = before;
+                let summary =
+                    execute_recruitment(state, faction, definitions, &mut next_id, policy);
+                state.next_unit_id = next_id;
+                if summary.recruited > 0 || state.next_unit_id != before {
+                    committed.push(record);
+                }
+            }
+            ActionRecord::Move {
+                unit_id,
+                to_col,
+                to_row,
+            } => {
+                let destination = Hex::from_offset(*to_col, *to_row);
+                if state.units.contains_key(unit_id)
+                    && apply_action(
+                        state,
+                        Action::Move {
+                            unit_id: *unit_id,
+                            destination,
+                        },
+                    )
+                    .is_ok()
+                {
+                    committed.push(record);
+                }
+            }
+            ActionRecord::Attack {
+                attacker_id,
+                defender_id,
+            } => {
+                if state.units.contains_key(attacker_id)
+                    && state.units.contains_key(defender_id)
+                    && apply_action(
+                        state,
+                        Action::Attack {
+                            attacker_id: *attacker_id,
+                            defender_id: *defender_id,
+                        },
+                    )
+                    .is_ok()
+                {
+                    committed.push(record);
+                }
+            }
+        }
+    }
+    apply_action(state, Action::EndTurn).expect("EndTurn must always succeed");
+    committed
+}
+
+/// Execute a planned turn using real unit definitions for recruitment
+/// simulation. Live recruitment and cloned rollout purchases share the same
+/// engine-backed executor and ID allocation rules.
+pub fn ai_take_turn_with_unit_defs_recorded(
+    state: &mut GameState,
+    faction: u8,
+    definitions: &[UnitDef],
+    policy: RecruitmentPolicy,
+) -> Vec<ActionRecord> {
+    let cheapest = definitions.iter().map(|def| def.cost).min().unwrap_or(0);
+    let (records, _score) =
+        plan_full_turn_with_definitions(state, faction, cheapest, definitions, policy);
+    commit_planned_turn_with_definitions(state, faction, definitions, policy, records)
+}
+
+pub fn ai_take_turn_with_unit_defs(
+    state: &mut GameState,
+    faction: u8,
+    definitions: &[UnitDef],
+    policy: RecruitmentPolicy,
+) {
+    let _ = ai_take_turn_with_unit_defs_recorded(state, faction, definitions, policy);
+}
+
+pub fn ai_take_turn_greedy_lookahead_with_unit_defs(
+    state: &mut GameState,
+    faction: u8,
+    definitions: &[UnitDef],
+    policy: RecruitmentPolicy,
+) {
+    let _ =
+        ai_take_turn_greedy_lookahead_with_unit_defs_recorded(state, faction, definitions, policy);
+}
+
+pub fn ai_take_turn_greedy_lookahead_with_unit_defs_recorded(
+    state: &mut GameState,
+    faction: u8,
+    definitions: &[UnitDef],
+    policy: RecruitmentPolicy,
+) -> Vec<ActionRecord> {
+    ai_take_turn_with_unit_defs_recorded(state, faction, definitions, policy)
+}
+
+pub fn ai_plan_turn_with_unit_defs(
+    state: &GameState,
+    faction: u8,
+    definitions: &[UnitDef],
+    policy: RecruitmentPolicy,
+) -> Vec<ActionRecord> {
+    let cheapest = definitions.iter().map(|def| def.cost).min().unwrap_or(0);
+    let (records, _score) =
+        plan_full_turn_with_definitions(state, faction, cheapest, definitions, policy);
+    records
+}
+
+pub fn ai_take_turn_coordinated_with_unit_defs(
+    state: &mut GameState,
+    faction: u8,
+    definitions: &[UnitDef],
+    policy: RecruitmentPolicy,
+) {
+    let _ = ai_take_turn_coordinated_with_unit_defs_recorded(state, faction, definitions, policy);
+}
+
+pub fn ai_take_turn_coordinated_with_unit_defs_recorded(
+    state: &mut GameState,
+    faction: u8,
+    definitions: &[UnitDef],
+    policy: RecruitmentPolicy,
+) -> Vec<ActionRecord> {
+    let evaluation_seed = 0x9e37_79b9_7f4a_7c15_u64
+        ^ state.state_revision
+        ^ ((faction as u64) << 32)
+        ^ state.turn as u64;
+    let mut lookahead = state.clone();
+    lookahead.rng = crate::combat::Rng::new(evaluation_seed);
+    let cheapest = definitions.iter().map(|def| def.cost).min().unwrap_or(0);
+    let (look_records, lookahead_score) =
+        plan_full_turn_with_definitions(&lookahead, faction, cheapest, definitions, policy);
+
+    let mut greedy = state.clone();
+    greedy.rng = crate::combat::Rng::new(evaluation_seed);
+    ai_take_turn_greedy(&mut greedy, faction);
+    let greedy_score = coordinated_state_score(&greedy, faction);
+    if lookahead_score >= greedy_score {
+        commit_planned_turn_with_definitions(state, faction, definitions, policy, look_records)
+    } else {
+        ai_take_turn_greedy(state, faction);
+        Vec::new()
+    }
 }
 
 /// Plan an AI turn on a cloned state, returning the list of actions taken.

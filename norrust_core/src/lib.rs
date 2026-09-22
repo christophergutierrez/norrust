@@ -13,6 +13,7 @@ pub mod hex;
 pub mod loader;
 pub mod mapgen;
 pub mod pathfinding;
+pub mod recruitment;
 pub mod routine;
 pub mod routine_decision;
 pub mod routine_independent;

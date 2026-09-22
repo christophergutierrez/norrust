@@ -15,16 +15,19 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use norrust_core::ai::{
-    ai_take_turn_coordinated, ai_take_turn_greedy, ai_take_turn_with_recruits_recorded,
-    ActionRecord,
+    ai_take_turn_coordinated_with_unit_defs_recorded, ai_take_turn_greedy,
+    ai_take_turn_greedy_lookahead_with_unit_defs_recorded, ActionRecord,
 };
 use norrust_core::board::Tile;
-use norrust_core::game_state::{apply_action, apply_recruit, Action, GameState};
+use norrust_core::game_state::{apply_action, Action, GameState};
 use norrust_core::hex::Hex;
 use norrust_core::loader::Registry;
 use norrust_core::pathfinding::{get_zoc_hexes, reachable_hexes};
+use norrust_core::recruitment::{
+    execute_recruitment, RecruitmentPolicy as RecruitPolicy, RecruitmentSummary,
+};
 use norrust_core::scenario::load_board;
-use norrust_core::schema::{AttackDef, FactionDef, RecruitGroup, TerrainDef, UnitDef};
+use norrust_core::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
 use norrust_core::unit::Unit;
 
 #[derive(Clone, Copy)]
@@ -33,42 +36,6 @@ enum AiKind {
     Lookahead,
     Coordinated,
     Random,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RecruitPolicy {
-    FirstAffordable,
-    Balanced,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RecruitRole {
-    Melee,
-    Ranged,
-    Other,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct RecruitSummary {
-    recruited: u32,
-    melee: u32,
-    ranged: u32,
-    other: u32,
-    balanced_fallbacks: u32,
-}
-
-fn role_for_attacks(attacks: &[AttackDef]) -> RecruitRole {
-    if attacks.iter().any(|attack| attack.range == "ranged") {
-        RecruitRole::Ranged
-    } else if attacks.iter().any(|attack| attack.range == "melee") {
-        RecruitRole::Melee
-    } else {
-        RecruitRole::Other
-    }
-}
-
-fn role_for_def(def: &UnitDef) -> RecruitRole {
-    role_for_attacks(&def.attacks)
 }
 
 fn recruit_policy_name(policy: RecruitPolicy) -> &'static str {
@@ -88,33 +55,6 @@ fn recruit_policy_for_side(config: &Config, side: u8) -> RecruitPolicy {
 
 fn side_turn_cap(config: &Config) -> u32 {
     config.max_side_turns.unwrap_or(DEFAULT_SIDE_TURN_CAP)
-}
-
-fn choose_balanced_recruit(
-    affordable: &[&UnitDef],
-    state: &GameState,
-    side: u8,
-) -> Option<(usize, RecruitRole, bool)> {
-    let (melee, ranged) = state
-        .units
-        .values()
-        .filter(|unit| unit.faction == side)
-        .map(|unit| role_for_attacks(&unit.attacks))
-        .fold((0, 0), |(melee, ranged), role| match role {
-            RecruitRole::Melee => (melee + 1, ranged),
-            RecruitRole::Ranged => (melee, ranged + 1),
-            RecruitRole::Other => (melee, ranged),
-        });
-    let wanted = if ranged < melee {
-        RecruitRole::Ranged
-    } else {
-        RecruitRole::Melee
-    };
-    affordable
-        .iter()
-        .position(|def| role_for_def(def) == wanted)
-        .map(|index| (index, wanted, false))
-        .or_else(|| affordable.first().map(|def| (0, role_for_def(def), true)))
 }
 
 #[derive(Clone, Copy)]
@@ -370,6 +310,14 @@ fn load_factions(data: &Path) -> Vec<Faction> {
         .collect()
 }
 
+fn recruit_definitions(faction: &Faction, units: &Registry<UnitDef>) -> Vec<UnitDef> {
+    faction
+        .recruits
+        .iter()
+        .filter_map(|id| units.get(id).cloned())
+        .collect()
+}
+
 fn upgrade_tiles(state: &mut GameState, terrain: &Registry<TerrainDef>) {
     for col in 0..state.board.width as i32 {
         for row in 0..state.board.height as i32 {
@@ -400,140 +348,6 @@ fn keep_for(state: &GameState, side: u8) -> Hex {
     } else {
         *keeps.last().expect("scenario needs two keeps")
     }
-}
-
-fn recruit(
-    state: &mut GameState,
-    side: u8,
-    faction: &Faction,
-    units: &Registry<UnitDef>,
-    next_id: &mut u32,
-    policy: RecruitPolicy,
-) -> RecruitSummary {
-    let mut summary = RecruitSummary::default();
-    loop {
-        let keep = state
-            .positions
-            .iter()
-            .filter_map(|(&id, &h)| {
-                let u = state.units.get(&id)?;
-                (u.faction == side
-                    && u.can_recruit
-                    && state
-                        .board
-                        .tile_at(h)
-                        .map(|t| t.terrain_id == "keep")
-                        .unwrap_or(false))
-                .then_some((h.to_offset(), id, h))
-            })
-            .min_by_key(|(offset, id, _)| (*offset, *id))
-            .map(|(_, _, h)| h);
-        let Some(keep) = keep else { break };
-        let mut dest = keep.neighbors().iter().copied().find(|h| {
-            state
-                .board
-                .tile_at(*h)
-                .map(|t| t.terrain_id == "castle")
-                .unwrap_or(false)
-                && !state.hex_to_unit.contains_key(h)
-        });
-        if dest.is_none() {
-            let occupied_castle = keep.neighbors().iter().copied().find(|h| {
-                let Some(id) = state.hex_to_unit.get(h) else {
-                    return false;
-                };
-                state
-                    .units
-                    .get(id)
-                    .map(|u| u.faction == side && !u.moved && !u.can_recruit)
-                    .unwrap_or(false)
-            });
-            let Some(castle) = occupied_castle else { break };
-            let id = state.hex_to_unit[&castle];
-            let unit = state.units[&id].clone();
-            let occupied: HashSet<Hex> = state.hex_to_unit.keys().copied().collect();
-            let zoc = get_zoc_hexes(state, side);
-            let movement = if unit.slowed {
-                unit.movement / 2
-            } else {
-                unit.movement
-            };
-            let mut move_destinations: Vec<Hex> = reachable_hexes(
-                &state.board,
-                &unit.movement_costs,
-                1,
-                castle,
-                movement,
-                &zoc,
-                false,
-            )
-            .into_iter()
-            .filter(|h| *h != castle && !occupied.contains(h))
-            .collect();
-            move_destinations.sort_unstable_by_key(|h| {
-                let remains_on_castle = state
-                    .board
-                    .tile_at(*h)
-                    .is_some_and(|tile| tile.terrain_id == "castle");
-                let nearest_enemy = state
-                    .units
-                    .iter()
-                    .filter(|(_, enemy)| enemy.faction != side)
-                    .filter_map(|(enemy_id, _)| state.positions.get(enemy_id))
-                    .map(|enemy_hex| h.distance(*enemy_hex))
-                    .min()
-                    .unwrap_or(u32::MAX);
-                (remains_on_castle, nearest_enemy, *h)
-            });
-            let Some(move_dest) = move_destinations.first().copied() else {
-                break;
-            };
-            if apply_action(
-                state,
-                Action::Move {
-                    unit_id: id,
-                    destination: move_dest,
-                },
-            )
-            .is_err()
-            {
-                break;
-            }
-            dest = Some(castle);
-        }
-        let dest = dest.expect("recruitment destination must exist");
-        let affordable: Vec<&UnitDef> = faction
-            .recruits
-            .iter()
-            .filter_map(|id| units.get(id))
-            .filter(|d| state.gold[side as usize] >= d.cost)
-            .collect();
-        let choice = match policy {
-            RecruitPolicy::FirstAffordable => {
-                affordable.first().map(|def| (0, role_for_def(def), false))
-            }
-            RecruitPolicy::Balanced => choose_balanced_recruit(&affordable, state, side),
-        };
-        let Some((choice_index, role, balanced_fallback)) = choice else {
-            break;
-        };
-        let def = affordable[choice_index];
-        let cost = def.cost;
-        if apply_recruit(state, Unit::from_def(*next_id, def, side), dest, cost).is_err() {
-            break;
-        }
-        *next_id += 1;
-        summary.recruited += 1;
-        match role {
-            RecruitRole::Melee => summary.melee += 1,
-            RecruitRole::Ranged => summary.ranged += 1,
-            RecruitRole::Other => summary.other += 1,
-        }
-        if balanced_fallback {
-            summary.balanced_fallbacks += 1;
-        }
-    }
-    summary
 }
 
 fn legal_random_action(state: &GameState, side: u8) -> Vec<Action> {
@@ -611,8 +425,8 @@ fn play_turn(
     side: u8,
     kind: AiKind,
     rng: &mut u64,
-    faction: &Faction,
-    units: &Registry<UnitDef>,
+    recruit_defs: &[UnitDef],
+    policy: RecruitPolicy,
 ) -> Vec<ActionRecord> {
     match kind {
         AiKind::Greedy => {
@@ -620,31 +434,10 @@ fn play_turn(
             Vec::new()
         }
         AiKind::Lookahead => {
-            let recruit_defs: Vec<(u32, u32)> = faction
-                .recruits
-                .iter()
-                .filter_map(|id| units.get(id).map(|def| (def.cost, def.movement)))
-                .collect();
-            let cheapest = recruit_defs
-                .iter()
-                .map(|(cost, _)| *cost)
-                .min()
-                .unwrap_or(0);
-            ai_take_turn_with_recruits_recorded(state, side, cheapest, &recruit_defs)
+            ai_take_turn_greedy_lookahead_with_unit_defs_recorded(state, side, recruit_defs, policy)
         }
         AiKind::Coordinated => {
-            let recruit_defs: Vec<(u32, u32)> = faction
-                .recruits
-                .iter()
-                .filter_map(|id| units.get(id).map(|def| (def.cost, def.movement)))
-                .collect();
-            let cheapest = recruit_defs
-                .iter()
-                .map(|(cost, _)| *cost)
-                .min()
-                .unwrap_or(0);
-            ai_take_turn_coordinated(state, side, cheapest, &recruit_defs);
-            Vec::new()
+            ai_take_turn_coordinated_with_unit_defs_recorded(state, side, recruit_defs, policy)
         }
         AiKind::Random => {
             random_turn(state, side, rng);
@@ -684,7 +477,7 @@ fn record_recruitment(
     step: u32,
     side: u8,
     policy: RecruitPolicy,
-    summary: RecruitSummary,
+    summary: &RecruitmentSummary,
 ) {
     if let Some(writer) = writer {
         serde_json::to_writer(
@@ -694,17 +487,13 @@ fn record_recruitment(
                 "phase": "committed_recruitment",
                 "step": step,
                 "side": side,
-                "policy": match policy {
-                    RecruitPolicy::FirstAffordable => "first-affordable",
-                    RecruitPolicy::Balanced => "balanced",
-                },
+                "policy": recruit_policy_name(policy),
                 "recruited": summary.recruited,
-                "roles": {
-                    "melee": summary.melee,
-                    "ranged": summary.ranged,
-                    "other": summary.other,
-                },
-                "balanced_fallbacks": summary.balanced_fallbacks,
+                "spent": summary.spent,
+                "purchases": summary.purchases,
+                "composition_before": summary.composition_before,
+                "composition_after": summary.composition_after,
+                "fallback_reason": summary.fallback_reason,
             }),
         )
         .expect("write recruitment record");
@@ -753,6 +542,8 @@ fn run_game(c: &Config, game: u32) -> GameResult {
         .iter()
         .find(|f| f.def.id == c.team2)
         .unwrap_or_else(|| panic!("unknown faction {}", c.team2));
+    let f1_recruit_defs = recruit_definitions(f1, &units);
+    let f2_recruit_defs = recruit_definitions(f2, &units);
     let board = load_board(&base.join("scenarios").join(&c.scenario).join("board.toml"))
         .expect("load board");
     let game_index = c.seed.wrapping_add(game as u64 - 1);
@@ -830,9 +621,11 @@ fn run_game(c: &Config, game: u32) -> GameResult {
         let side = state.active_faction;
         if side == 0 {
             let policy = recruit_policy_for_side(c, 0);
-            let recruitment = recruit(&mut state, 0, f1, &units, &mut next_id, policy);
+            let recruitment =
+                execute_recruitment(&mut state, 0, &f1_recruit_defs, &mut next_id, policy);
+            state.next_unit_id = next_id;
             recruits[0] += recruitment.recruited;
-            record_recruitment(&mut recording, step, 0, policy, recruitment);
+            record_recruitment(&mut recording, step, 0, policy, &recruitment);
             record_state(
                 &mut recording,
                 &state,
@@ -842,13 +635,15 @@ fn run_game(c: &Config, game: u32) -> GameResult {
                 recruits,
                 next_id,
             );
-            let actions = play_turn(&mut state, 0, c.ai1, &mut rng, f1, &units);
+            let actions = play_turn(&mut state, 0, c.ai1, &mut rng, &f1_recruit_defs, policy);
             record_actions(&mut recording, step, 0, &actions);
         } else {
             let policy = recruit_policy_for_side(c, 1);
-            let recruitment = recruit(&mut state, 1, f2, &units, &mut next_id, policy);
+            let recruitment =
+                execute_recruitment(&mut state, 1, &f2_recruit_defs, &mut next_id, policy);
+            state.next_unit_id = next_id;
             recruits[1] += recruitment.recruited;
-            record_recruitment(&mut recording, step, 1, policy, recruitment);
+            record_recruitment(&mut recording, step, 1, policy, &recruitment);
             record_state(
                 &mut recording,
                 &state,
@@ -858,7 +653,7 @@ fn run_game(c: &Config, game: u32) -> GameResult {
                 recruits,
                 next_id,
             );
-            let actions = play_turn(&mut state, 1, c.ai2, &mut rng, f2, &units);
+            let actions = play_turn(&mut state, 1, c.ai2, &mut rng, &f2_recruit_defs, policy);
             record_actions(&mut recording, step, 1, &actions);
         }
         record_state(
@@ -1082,22 +877,6 @@ fn main() {
 mod tests {
     use super::*;
 
-    fn attack(range: &str) -> AttackDef {
-        AttackDef {
-            range: range.to_string(),
-            ..AttackDef::default()
-        }
-    }
-
-    fn unit(id: &str, range: &str, cost: u32) -> UnitDef {
-        UnitDef {
-            id: id.to_string(),
-            cost,
-            attacks: vec![attack(range)],
-            ..UnitDef::default()
-        }
-    }
-
     fn test_state() -> GameState {
         let board = load_board(
             &root()
@@ -1135,53 +914,15 @@ mod tests {
     }
 
     #[test]
-    fn role_classification_prefers_ranged_and_marks_unknown_as_other() {
-        assert_eq!(role_for_attacks(&[attack("melee")]), RecruitRole::Melee);
-        assert_eq!(role_for_attacks(&[attack("ranged")]), RecruitRole::Ranged);
-        assert_eq!(
-            role_for_attacks(&[attack("ranged"), attack("melee")]),
-            RecruitRole::Ranged
-        );
-        assert_eq!(role_for_attacks(&[]), RecruitRole::Other);
-    }
-
-    #[test]
-    fn balanced_choice_is_deterministic_and_targets_missing_role() {
-        let melee = unit("melee", "melee", 10);
-        let ranged = unit("ranged", "ranged", 10);
-        let affordable = vec![&melee, &ranged];
-        let mut state = test_state();
-
-        assert_eq!(
-            choose_balanced_recruit(&affordable, &state, 0),
-            Some((0, RecruitRole::Melee, false))
-        );
-
-        state.place_unit(Unit::from_def(1, &melee, 0), Hex::from_offset(0, 0));
-        assert_eq!(
-            choose_balanced_recruit(&affordable, &state, 0),
-            Some((1, RecruitRole::Ranged, false))
-        );
-    }
-
-    #[test]
-    fn balanced_choice_reports_fallback_when_requested_role_is_unavailable() {
-        let ranged = unit("ranged", "ranged", 10);
-        let affordable = vec![&ranged];
-        let state = test_state();
-
-        assert_eq!(
-            choose_balanced_recruit(&affordable, &state, 0),
-            Some((0, RecruitRole::Ranged, true))
-        );
-    }
-
-    #[test]
     fn side_recruitment_policy_changes_selected_side_only() {
         let data = root().join("data");
         let units: Registry<UnitDef> = Registry::load_from_dir(&data.join("units")).unwrap();
         let factions = load_factions(&data);
         let faction = factions.iter().find(|f| f.def.id == "undead").unwrap();
+        let definitions = vec![
+            units.get("Skeleton").unwrap().clone(),
+            units.get("Skeleton Archer").unwrap().clone(),
+        ];
         let mut base = test_state();
         let keep = keep_for(&base, 1);
         assert_eq!(base.board.tile_at(keep).unwrap().terrain_id, "keep");
@@ -1211,19 +952,17 @@ mod tests {
         let mut balanced = base;
         let mut first_id = 100;
         let mut balanced_id = 100;
-        let first_summary = recruit(
+        let first_summary = execute_recruitment(
             &mut first,
             1,
-            faction,
-            &units,
+            &definitions,
             &mut first_id,
             RecruitPolicy::FirstAffordable,
         );
-        let balanced_summary = recruit(
+        let balanced_summary = execute_recruitment(
             &mut balanced,
             1,
-            faction,
-            &units,
+            &definitions,
             &mut balanced_id,
             RecruitPolicy::Balanced,
         );

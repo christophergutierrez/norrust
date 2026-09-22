@@ -227,13 +227,16 @@ yet. Default `--second-gold 5` is not that compensation.
 The self-play runner defaults both sides to the historical `first-affordable`
 recruitment policy. For a separate composition experiment, set either side
 explicitly with `--recruit1-policy balanced` or `--recruit2-policy balanced`.
-The balanced policy alternates toward a melee or ranged definition when the
-faction actually offers an affordable definition of that role, then falls back
-to the first affordable definition. It does not alter the planner, opponent
-policy, or starting gold. Every recorded trajectory stores both configured
-policies in metadata. Compare policies with identical seeds, factions, gold,
-initiative, and side-turn cap; do not attribute a result to planning when the
-recruitment policy changed too.
+The balanced policy tracks frontline, support, and scout roles from each
+definition's damage, durability, range, and movement. It fills missing roles
+when an affordable definition exists, then falls back to the first affordable
+definition when the desired role is unavailable. Recruitment uses the engine's
+real castle placement and clearing rules, and records the desired and actual
+roles, cost, placement, composition before and after, and any fallback reason.
+It does not alter the planner, opponent policy, or starting gold. Every
+recorded trajectory stores both configured policies in metadata. Compare
+policies with identical seeds, factions, gold, initiative, and side-turn cap;
+do not attribute a result to planning when the recruitment policy changed too.
 
 ## Implementation notes
 
