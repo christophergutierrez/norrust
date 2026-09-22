@@ -66,6 +66,28 @@ pub enum ActionRecord {
     Recruit,
 }
 
+/// The small set of strategic objectives used by the coordinated player.
+/// Each objective produces concrete legal movement/attack records; this is
+/// deliberately a flat choice, not a task-tree or general planning DSL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum CoordinatedObjective {
+    Protect,
+    SecureIncome,
+    Concentrate,
+    PressAttack,
+}
+
+/// Minimal persistent state for one coordinated player.  The caller owns this
+/// value so live play and private rollouts can copy the same memory semantics.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PlannerMemory {
+    pub objective: Option<CoordinatedObjective>,
+    pub target: Option<Hex>,
+    pub age: u32,
+    pub no_progress: u32,
+    pub progress_marker: Option<u32>,
+}
+
 const ACTION_BEAM_WIDTH: usize = 12;
 const ATTACK_BEAM_SLOTS: usize = 6;
 const LOCAL_RESPONSE_LIMIT: usize = 3;
@@ -1469,6 +1491,256 @@ fn coordinated_state_score(state: &GameState, faction: u8) -> f32 {
         + if recruiter_alive { 25.0 } else { -1000.0 }
 }
 
+const MAX_NO_PROGRESS_TURNS: u32 = 2;
+
+fn recruiter_hex(state: &GameState, faction: u8) -> Option<Hex> {
+    state
+        .units
+        .iter()
+        .find(|(_, unit)| unit.faction == faction && unit.can_recruit)
+        .and_then(|(id, _)| state.positions.get(id).copied())
+}
+
+fn nearest_enemy_hex(state: &GameState, faction: u8, from: Hex) -> Option<Hex> {
+    state
+        .units
+        .iter()
+        .filter(|(_, unit)| unit.faction != faction)
+        .filter_map(|(id, _)| {
+            state
+                .positions
+                .get(id)
+                .map(|hex| (from.distance(*hex), *hex))
+        })
+        .min_by_key(|(distance, hex)| (*distance, *hex))
+        .map(|(_, hex)| hex)
+}
+
+fn objective_target(
+    state: &GameState,
+    faction: u8,
+    objective: CoordinatedObjective,
+) -> Option<Hex> {
+    match objective {
+        CoordinatedObjective::Protect => recruiter_hex(state, faction),
+        CoordinatedObjective::SecureIncome => {
+            let origin = recruiter_hex(state, faction).unwrap_or(Hex::ORIGIN);
+            state
+                .village_owners
+                .iter()
+                .filter(|(_, owner)| **owner != faction as i8)
+                .map(|(hex, _)| (origin.distance(*hex), *hex))
+                .min_by_key(|(distance, hex)| (*distance, *hex))
+                .map(|(_, hex)| hex)
+        }
+        CoordinatedObjective::Concentrate | CoordinatedObjective::PressAttack => {
+            let origin = recruiter_hex(state, faction).unwrap_or(Hex::ORIGIN);
+            nearest_enemy_hex(state, faction, origin)
+        }
+    }
+}
+
+fn recruiter_needs_protection(state: &GameState, faction: u8) -> bool {
+    let Some(recruiter) = recruiter_hex(state, faction) else {
+        return false;
+    };
+    state.units.iter().any(|(id, unit)| {
+        unit.faction != faction
+            && state
+                .positions
+                .get(id)
+                .is_some_and(|hex| recruiter.distance(*hex) <= 3)
+    })
+}
+
+/// Choose or retain the small persistent objective. Emergency recruiter
+/// defense always preempts the previous objective; otherwise a feasible target
+/// is retained for two own turns before a new objective is selected.
+pub fn choose_coordinated_objective(
+    state: &GameState,
+    faction: u8,
+    memory: &mut PlannerMemory,
+) -> CoordinatedObjective {
+    if recruiter_needs_protection(state, faction) {
+        memory.objective = Some(CoordinatedObjective::Protect);
+        memory.target = objective_target(state, faction, CoordinatedObjective::Protect);
+        memory.age = 0;
+        memory.no_progress = 0;
+        return CoordinatedObjective::Protect;
+    }
+    if let (Some(objective), Some(target)) = (memory.objective, memory.target) {
+        if memory.no_progress < MAX_NO_PROGRESS_TURNS
+            && state.board.contains(target)
+            && objective_target(state, faction, objective).is_some()
+        {
+            memory.age = memory.age.saturating_add(1);
+            return objective;
+        }
+    }
+    let objective = if state
+        .village_owners
+        .values()
+        .any(|owner| *owner != faction as i8)
+    {
+        CoordinatedObjective::SecureIncome
+    } else if state.units.iter().any(|(id, unit)| {
+        unit.faction != faction
+            && unit.can_recruit
+            && recruiter_hex(state, faction)
+                .and_then(|origin| state.positions.get(id).map(|hex| origin.distance(*hex)))
+                .is_some_and(|distance| distance <= 8)
+    }) {
+        CoordinatedObjective::PressAttack
+    } else {
+        CoordinatedObjective::Concentrate
+    };
+    memory.objective = Some(objective);
+    memory.target = objective_target(state, faction, objective);
+    memory.age = 0;
+    memory.no_progress = 0;
+    objective
+}
+
+fn is_ranged_unit(unit: &Unit) -> bool {
+    unit.attacks.iter().any(|attack| attack.range == "ranged")
+}
+
+fn nearest_enemy_distance(state: &GameState, faction: u8, from: Hex) -> Option<u32> {
+    state
+        .units
+        .iter()
+        .filter(|(_, unit)| unit.faction != faction)
+        .filter_map(|(id, _)| state.positions.get(id).map(|hex| from.distance(*hex)))
+        .min()
+}
+
+fn objective_actions(
+    state: &GameState,
+    faction: u8,
+    objective: CoordinatedObjective,
+    target: Option<Hex>,
+) -> Vec<ActionRecord> {
+    let mut working = state.clone();
+    let mut ids: Vec<u32> = working
+        .units
+        .iter()
+        .filter(|(_, unit)| unit.faction == faction && greedy_unit_is_available(unit))
+        .map(|(id, _)| *id)
+        .collect();
+    // Frontline units claim destinations before ranged support, leaving the
+    // latter behind them when a safe support hex exists.
+    ids.sort_by_key(|id| (is_ranged_unit(&working.units[id]) as u8, *id));
+    let mut records = Vec::new();
+    for id in ids {
+        if !working.units.contains_key(&id) || !greedy_unit_is_available(&working.units[&id]) {
+            continue;
+        }
+        let start = working.positions[&id];
+        let planned = if matches!(
+            objective,
+            CoordinatedObjective::PressAttack | CoordinatedObjective::Concentrate
+        ) {
+            plan_unit_action(&working, id, faction, 1).or_else(|| {
+                target.and_then(|goal| {
+                    Some((
+                        choose_toward_hex_destination_for_faction(&working, id, faction, goal)?,
+                        None,
+                    ))
+                })
+            })
+        } else if objective == CoordinatedObjective::Protect
+            && working.units[&id].hp * 3 < working.units[&id].max_hp
+        {
+            plan_unit_action(&working, id, faction, 1)
+        } else {
+            target
+                .and_then(|goal| {
+                    let destination =
+                        choose_toward_hex_destination_for_faction(&working, id, faction, goal)?;
+                    if is_ranged_unit(&working.units[&id])
+                        && nearest_enemy_distance(&working, faction, destination)
+                            .is_some_and(|distance| distance < 2)
+                    {
+                        return None;
+                    }
+                    Some((destination, None))
+                })
+                .or_else(|| plan_unit_action(&working, id, faction, 1))
+        };
+        let Some((destination, attack)) = planned else {
+            continue;
+        };
+        if destination != start {
+            let (col, row) = destination.to_offset();
+            if apply_action(
+                &mut working,
+                Action::Move {
+                    unit_id: id,
+                    destination,
+                },
+            )
+            .is_ok()
+            {
+                records.push(ActionRecord::Move {
+                    unit_id: id,
+                    to_col: col,
+                    to_row: row,
+                });
+            }
+        }
+        let attack = if objective == CoordinatedObjective::PressAttack {
+            None
+        } else {
+            attack
+        };
+        if let Some(defender_id) = attack {
+            if working.units.contains_key(&id)
+                && working.units.contains_key(&defender_id)
+                && apply_action(
+                    &mut working,
+                    Action::Attack {
+                        attacker_id: id,
+                        defender_id,
+                    },
+                )
+                .is_ok()
+            {
+                records.push(ActionRecord::Attack {
+                    attacker_id: id,
+                    defender_id,
+                });
+            }
+        } else if objective == CoordinatedObjective::PressAttack && working.units.contains_key(&id)
+        {
+            let mut targets: Vec<(u32, u32)> = working
+                .units
+                .iter()
+                .filter(|(_, unit)| unit.faction != faction)
+                .map(|(target_id, unit)| (unit.hp, *target_id))
+                .collect();
+            targets.sort_unstable();
+            for (_, defender_id) in targets {
+                if apply_action(
+                    &mut working,
+                    Action::Attack {
+                        attacker_id: id,
+                        defender_id,
+                    },
+                )
+                .is_ok()
+                {
+                    records.push(ActionRecord::Attack {
+                        attacker_id: id,
+                        defender_id,
+                    });
+                    break;
+                }
+            }
+        }
+    }
+    records
+}
+
 /// Fast baseline AI: process units in ID order and choose each unit's best
 /// immediate move or attack without simulating the opponent's reply.
 /// Recruiters stay on a keep (or walk back to one) instead of chasing fights.
@@ -1882,10 +2154,25 @@ pub fn ai_take_turn_coordinated_with_unit_defs_recorded(
     definitions: &[UnitDef],
     policy: RecruitmentPolicy,
 ) -> Vec<ActionRecord> {
+    let mut memory = PlannerMemory::default();
+    ai_take_turn_coordinated_with_memory(state, faction, definitions, policy, &mut memory)
+}
+
+/// Execute the coordinated planner with caller-owned objective memory.  The
+/// no-memory wrapper above preserves the existing API; live clients that span
+/// turns should retain and pass this value so objective persistence is real.
+pub fn ai_take_turn_coordinated_with_memory(
+    state: &mut GameState,
+    faction: u8,
+    definitions: &[UnitDef],
+    policy: RecruitmentPolicy,
+    memory: &mut PlannerMemory,
+) -> Vec<ActionRecord> {
     let evaluation_seed = 0x9e37_79b9_7f4a_7c15_u64
         ^ state.state_revision
         ^ ((faction as u64) << 32)
         ^ state.turn as u64;
+    let objective = choose_coordinated_objective(state, faction, memory);
     let mut lookahead = state.clone();
     lookahead.rng = crate::combat::Rng::new(evaluation_seed);
     let cheapest = definitions.iter().map(|def| def.cost).min().unwrap_or(0);
@@ -1896,12 +2183,104 @@ pub fn ai_take_turn_coordinated_with_unit_defs_recorded(
     greedy.rng = crate::combat::Rng::new(evaluation_seed);
     ai_take_turn_greedy(&mut greedy, faction);
     let greedy_score = coordinated_state_score(&greedy, faction);
-    if lookahead_score >= greedy_score {
+    let mut objective_state = state.clone();
+    let mut objective_next_id = objective_state.next_unit_id;
+    let objective_recruitment = execute_recruitment(
+        &mut objective_state,
+        faction,
+        definitions,
+        &mut objective_next_id,
+        policy,
+    );
+    objective_state.next_unit_id = objective_next_id;
+    let mut objective_records = Vec::new();
+    if objective_recruitment.recruited > 0 {
+        objective_records.push(ActionRecord::Recruit);
+    }
+    objective_records.extend(objective_actions(
+        &objective_state,
+        faction,
+        objective,
+        memory.target,
+    ));
+    let mut objective_candidate = state.clone();
+    let objective_records = if objective_records.is_empty() {
+        look_records.clone()
+    } else {
+        objective_records
+    };
+    let _objective_committed = commit_planned_turn_with_definitions(
+        &mut objective_candidate,
+        faction,
+        definitions,
+        policy,
+        objective_records.clone(),
+    );
+    let objective_score = coordinated_state_score(&objective_candidate, faction)
+        + objective_progress_score(&objective_candidate, faction, objective, memory.target);
+    let selected = if objective_score >= greedy_score && objective_score >= lookahead_score {
+        commit_planned_turn_with_definitions(state, faction, definitions, policy, objective_records)
+    } else if lookahead_score >= greedy_score {
         commit_planned_turn_with_definitions(state, faction, definitions, policy, look_records)
     } else {
         ai_take_turn_greedy(state, faction);
         Vec::new()
+    };
+    update_planner_memory(memory, state, faction, objective);
+    selected
+}
+
+fn objective_progress_score(
+    state: &GameState,
+    faction: u8,
+    objective: CoordinatedObjective,
+    target: Option<Hex>,
+) -> f32 {
+    match objective {
+        CoordinatedObjective::Protect => recruiter_hex(state, faction)
+            .and_then(|hex| nearest_enemy_distance(state, faction, hex))
+            .map(|distance| distance as f32)
+            .unwrap_or(0.0),
+        CoordinatedObjective::SecureIncome => {
+            state
+                .village_owners
+                .values()
+                .filter(|owner| **owner == faction as i8)
+                .count() as f32
+                * 10.0
+        }
+        CoordinatedObjective::Concentrate | CoordinatedObjective::PressAttack => target
+            .and_then(|goal| {
+                state
+                    .units
+                    .iter()
+                    .filter(|(_, unit)| unit.faction == faction)
+                    .filter_map(|(id, _)| state.positions.get(id).map(|hex| hex.distance(goal)))
+                    .min()
+            })
+            .map(|distance| (20_u32.saturating_sub(distance)) as f32)
+            .unwrap_or(0.0),
     }
+}
+
+fn update_planner_memory(
+    memory: &mut PlannerMemory,
+    state: &GameState,
+    faction: u8,
+    objective: CoordinatedObjective,
+) {
+    let marker = objective_progress_score(state, faction, objective, memory.target) as u32;
+    if memory
+        .progress_marker
+        .is_some_and(|previous| marker <= previous)
+    {
+        memory.no_progress = memory.no_progress.saturating_add(1);
+    } else {
+        memory.no_progress = 0;
+    }
+    memory.progress_marker = Some(marker);
+    memory.objective = Some(objective);
+    memory.age = memory.age.saturating_add(1);
 }
 
 /// Plan an AI turn on a cloned state, returning the list of actions taken.
@@ -2729,6 +3108,149 @@ mod tests {
         assert_eq!(state.active_faction, 1);
         assert!(state.units.values().any(|unit| unit.faction == 0));
         assert!(state.state_revision > 0);
+    }
+
+    #[test]
+    fn protect_objective_preempts_persistent_plan_for_recruiter_emergency() {
+        let board = setup_keep_board(0, 0);
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+        state.place_unit(make_leader(1, 0), Hex::from_offset(0, 0));
+        state.place_unit(make_fighter(2, 1, 30), Hex::from_offset(2, 0));
+        let mut memory = PlannerMemory {
+            objective: Some(CoordinatedObjective::Concentrate),
+            target: Some(Hex::from_offset(4, 2)),
+            age: 2,
+            no_progress: 0,
+            progress_marker: Some(1),
+        };
+
+        let selected = choose_coordinated_objective(&state, 0, &mut memory);
+
+        assert_eq!(selected, CoordinatedObjective::Protect);
+        assert_eq!(memory.target, Some(Hex::from_offset(0, 0)));
+        assert_eq!(memory.age, 0);
+    }
+
+    #[test]
+    fn stale_objective_is_replaced_after_no_progress_budget() {
+        let board = setup_keep_board(0, 0);
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+        state.place_unit(make_leader(1, 0), Hex::from_offset(0, 0));
+        let mut memory = PlannerMemory {
+            objective: Some(CoordinatedObjective::SecureIncome),
+            target: Some(Hex::from_offset(4, 2)),
+            age: 2,
+            no_progress: MAX_NO_PROGRESS_TURNS,
+            progress_marker: Some(0),
+        };
+
+        let selected = choose_coordinated_objective(&state, 0, &mut memory);
+
+        assert_eq!(selected, CoordinatedObjective::Concentrate);
+        assert_eq!(memory.no_progress, 0);
+    }
+
+    #[test]
+    fn secure_income_moves_toward_unowned_village() {
+        let mut board = Board::new(6, 3);
+        for col in 0..6 {
+            for row in 0..3 {
+                board.set_terrain(Hex::from_offset(col, row), "flat");
+            }
+        }
+        board.set_terrain(Hex::from_offset(4, 1), "village");
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+        state.village_owners.insert(Hex::from_offset(4, 1), -1);
+        state.place_unit(make_fighter(1, 0, 30), Hex::from_offset(0, 1));
+        let records = objective_actions(
+            &state,
+            0,
+            CoordinatedObjective::SecureIncome,
+            Some(Hex::from_offset(4, 1)),
+        );
+        let destination = records.iter().find_map(|record| match record {
+            ActionRecord::Move { to_col, to_row, .. } => Some(Hex::from_offset(*to_col, *to_row)),
+            _ => None,
+        });
+        assert!(destination.is_some());
+        assert!(destination.unwrap().distance(Hex::from_offset(4, 1)) < 4);
+    }
+
+    #[test]
+    fn concentrate_reserves_distinct_destinations_for_multiple_units() {
+        let mut board = Board::new(6, 3);
+        for col in 0..6 {
+            for row in 0..3 {
+                board.set_terrain(Hex::from_offset(col, row), "flat");
+            }
+        }
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+        state.place_unit(make_fighter(1, 0, 30), Hex::from_offset(0, 1));
+        state.place_unit(make_fighter(2, 0, 30), Hex::from_offset(0, 2));
+        state.place_unit(make_fighter(3, 1, 30), Hex::from_offset(5, 1));
+        let records = objective_actions(
+            &state,
+            0,
+            CoordinatedObjective::Concentrate,
+            Some(Hex::from_offset(5, 1)),
+        );
+        let destinations: Vec<Hex> = records
+            .iter()
+            .filter_map(|record| match record {
+                ActionRecord::Move { to_col, to_row, .. } => {
+                    Some(Hex::from_offset(*to_col, *to_row))
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(destinations.len() >= 2);
+        assert_ne!(destinations[0], destinations[1]);
+    }
+
+    #[test]
+    fn press_attack_focuses_fire_and_keeps_ranged_support_at_range() {
+        let mut board = Board::new(6, 3);
+        for col in 0..6 {
+            for row in 0..3 {
+                board.set_terrain(Hex::from_offset(col, row), "flat");
+            }
+        }
+        let mut state = GameState::new(board);
+        state.active_faction = 0;
+        state.place_unit(make_fighter(1, 0, 30), Hex::from_offset(1, 1));
+        let mut archer = make_fighter(2, 0, 30);
+        archer.attacks[0].range = "ranged".to_string();
+        state.place_unit(archer, Hex::from_offset(0, 1));
+        state.place_unit(make_fighter(3, 1, 8), Hex::from_offset(2, 1));
+        state.place_unit(make_fighter(4, 1, 30), Hex::from_offset(3, 1));
+
+        let records = objective_actions(
+            &state,
+            0,
+            CoordinatedObjective::PressAttack,
+            Some(Hex::from_offset(2, 1)),
+        );
+        assert!(records
+            .iter()
+            .any(|record| matches!(record, ActionRecord::Attack { defender_id: 3, .. })));
+        assert!(records.iter().any(|record| matches!(
+            record,
+            ActionRecord::Attack {
+                attacker_id: 1,
+                defender_id: 3
+            }
+        )));
+        assert!(records.iter().any(|record| matches!(
+            record,
+            ActionRecord::Attack {
+                attacker_id: 2,
+                defender_id: 4
+            }
+        )));
     }
 
     #[test]
