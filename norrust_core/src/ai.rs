@@ -3630,6 +3630,30 @@ mod tests {
     }
 
     #[test]
+    fn coordinated_response_runs_a_complete_enemy_turn() {
+        let mut board = Board::new(5, 3);
+        for col in 0..5 {
+            for row in 0..3 {
+                board.set_terrain(Hex::from_offset(col, row), "flat");
+            }
+        }
+        let mut state = GameState::new_seeded(board, 91);
+        state.active_faction = 0;
+        let mut exposed = make_fighter(1, 0, 30);
+        exposed.default_defense = 0;
+        state.place_unit(exposed, Hex::from_offset(2, 1));
+        state.place_unit(make_fighter(2, 1, 30), Hex::from_offset(3, 1));
+        let before_hp = state.units[&1].hp;
+
+        apply_action(&mut state, Action::EndTurn).expect("candidate own turn boundary");
+        simulate_complete_greedy_response(&mut state);
+
+        assert_eq!(state.active_faction, 0);
+        assert!(state.units[&1].hp < before_hp, "enemy response must execute an attack");
+        assert!(state.turn >= 2, "complete response must advance the round clock");
+    }
+
+    #[test]
     fn test_bounded_lookahead_is_deterministic() {
         let mut board = Board::new(7, 3);
         for col in 0..7 {
