@@ -71,8 +71,39 @@ def _cell(cell_id: str, faction: str, opponent: str, side: int, first: str,
             "threads": 1}
 
 
+def load_mechanics_schedule(path: Path, through_stack: int = 7) -> list[dict[str, Any]]:
+    """Load the small tracked mechanics manifest into ordinary game cells."""
+    payload = json.loads(path.read_text())
+    if payload.get("schema_version") != 1 or not isinstance(payload.get("fixtures"), list):
+        raise ValueError("unsupported mechanics fixture manifest")
+    schedule = []
+    for fixture in payload["fixtures"]:
+        if not isinstance(fixture, dict) or not isinstance(fixture.get("id"), str):
+            raise ValueError("mechanics fixture lacks an id")
+        if int(fixture.get("introduced_stack", 99)) > through_stack:
+            continue
+        required = {"scenario", "faction", "opponent", "controlled_algorithm", "controlled_side",
+                    "first", "gold", "second_gold", "seed", "max_side_turns",
+                    "recruit1_policy", "recruit2_policy", "threads", "assertions"}
+        missing = sorted(required - fixture.keys())
+        if missing:
+            raise ValueError(f"{fixture['id']}: missing fields {missing}")
+        if fixture["controlled_algorithm"] != CONTROLLED_ALGORITHM or fixture["threads"] != 1:
+            raise ValueError(f"{fixture['id']}: mechanics fixture treatment is not pinned")
+        cell = dict(fixture)
+        cell["cell_id"] = fixture["id"]
+        schedule.append(cell)
+    if not schedule:
+        raise ValueError("mechanics manifest has no fixtures through the requested stack")
+    if len({cell["cell_id"] for cell in schedule}) != len(schedule):
+        raise ValueError("mechanics manifest contains duplicate fixture ids")
+    return schedule
+
+
 def build_schedule(*, suite: str = "screen", base_seed: int = 26001,
-                   gold: int = 300, max_side_turns: int = 200) -> list[dict[str, Any]]:
+                   gold: int = 300, max_side_turns: int = 200,
+                   mechanics_manifest: Path | None = None,
+                   through_stack: int = 7) -> list[dict[str, Any]]:
     """Build the fixed suite schedule; ordering is stable and part of its contract."""
     if suite == "smoke":
         return [
@@ -109,7 +140,9 @@ def build_schedule(*, suite: str = "screen", base_seed: int = 26001,
                                 index += 1
         return cells
     if suite == "mechanics":
-        return []  # Stack 1 supplies the tracked fixture manifest and game cells.
+        if mechanics_manifest is None:
+            raise ValueError("mechanics suite requires the tracked fixture manifest")
+        return load_mechanics_schedule(mechanics_manifest, through_stack)
     raise ValueError(f"unknown suite: {suite}")
 
 
@@ -185,6 +218,23 @@ def validate_engine_result(cell: Mapping[str, Any], result: Mapping[str, Any]) -
             raise ValueError(f"{cell['cell_id']}: draw must not have a winner")
         return "draw"
     raise ValueError(f"{cell['cell_id']}: missing or unsupported termination reason")
+
+
+def validate_mechanics_assertions(cell: Mapping[str, Any], result: Mapping[str, Any]) -> None:
+    """Evaluate the fixed mechanics assertion vocabulary from real result data."""
+    for assertion in cell.get("assertions", []):
+        kind = assertion.get("kind") if isinstance(assertion, dict) else None
+        if kind == "terminal_winner":
+            if result.get("termination_reason") != "winner":
+                raise ValueError(f"{cell['cell_id']}: terminal_winner assertion failed")
+            expected = assertion.get("winner_side")
+            if expected is not None and result.get("winner_side") != expected:
+                raise ValueError(f"{cell['cell_id']}: expected winner side {expected}")
+        elif kind == "no_cap":
+            if result.get("termination_reason") == "side_turn_cap":
+                raise ValueError(f"{cell['cell_id']}: no_cap assertion failed")
+        else:
+            raise ValueError(f"{cell['cell_id']}: unsupported mechanics assertion {kind!r}")
 
 
 def _load_trace(trace_dir: Path, cell: Mapping[str, Any], result: Mapping[str, Any]) -> str:
@@ -273,6 +323,8 @@ def _run_cell(cell: Mapping[str, Any], *, binary: Path, out_dir: Path,
             try:
                 engine = rows[0]
                 outcome = validate_engine_result(cell, engine)
+                if "assertions" in cell:
+                    validate_mechanics_assertions(cell, engine)
                 trace = _load_trace(trace_dir, cell, engine)
                 status = "completed"
             except (ValueError, json.JSONDecodeError) as error:
@@ -307,6 +359,8 @@ def _validate_cell_result(cell: Mapping[str, Any], row: Mapping[str, Any], out_d
     if not isinstance(engine, dict):
         raise ValueError(f"{cell['cell_id']}: completed row lacks engine result")
     outcome = validate_engine_result(cell, engine)
+    if "assertions" in cell:
+        validate_mechanics_assertions(cell, engine)
     if row.get("outcome") != outcome:
         raise ValueError(f"{cell['cell_id']}: derived outcome mismatch")
     if binary is not None:
@@ -433,8 +487,11 @@ def _load_manifest(out_dir: Path) -> dict[str, Any]:
     if manifest.get("settings", {}).get("controlled_algorithm") != CONTROLLED_ALGORITHM:
         raise ValueError("manifest controlled algorithm is not coordinated")
     settings = manifest["settings"]
+    mechanics_manifest = Path(manifest["mechanics_manifest"]) if manifest.get("mechanics_manifest") else None
     expected = build_schedule(suite=manifest["suite"], base_seed=settings["base_seed"],
-                              gold=settings["gold"], max_side_turns=settings["max_side_turns"])
+                              gold=settings["gold"], max_side_turns=settings["max_side_turns"],
+                              mechanics_manifest=mechanics_manifest,
+                              through_stack=settings.get("through_stack", 7))
     if schedule != expected:
         raise ValueError("manifest cells do not match the official suite contract")
     return manifest
@@ -525,20 +582,24 @@ def check_evidence(out_dir: Path) -> tuple[int, dict[str, Any]]:
 
 def run_suite(*, suite: str, out_dir: Path, binary: Path, base_seed: int,
               gold: int, max_side_turns: int, timeout_seconds: float, workers: int,
-              resume: bool, mechanics_manifest: Path | None = None) -> int:
+              resume: bool, mechanics_manifest: Path | None = None,
+              through_stack: int = 7) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     binary = binary.resolve()
-    schedule = build_schedule(suite=suite, base_seed=base_seed, gold=gold, max_side_turns=max_side_turns)
+    schedule = build_schedule(suite=suite, base_seed=base_seed, gold=gold,
+                              max_side_turns=max_side_turns,
+                              mechanics_manifest=mechanics_manifest,
+                              through_stack=through_stack)
     if suite == "mechanics":
         if mechanics_manifest is None or not mechanics_manifest.is_file():
             raise ValueError("mechanics suite requires the tracked Stack 1 fixture manifest")
-        raise ValueError("mechanics fixture manifest schema is introduced by Stack 1")
     manifest_path, results_path = out_dir / "manifest.json", out_dir / "results.json"
     if resume:
         manifest = _load_manifest(out_dir)
         candidate = _manifest_payload(suite, schedule, root=ROOT, binary=binary,
                                       timeout=timeout_seconds, workers=workers, base_seed=base_seed,
                                       gold=gold, cap=max_side_turns, mechanics_manifest=mechanics_manifest)
+        candidate["settings"]["through_stack"] = through_stack
         for key in ("suite", "source", "binary", "binary_sha256", "data_sha256", "schedule_sha256",
                     "settings", "timeout_seconds", "workers"):
             if manifest.get(key) != candidate.get(key):
@@ -549,6 +610,7 @@ def run_suite(*, suite: str, out_dir: Path, binary: Path, base_seed: int,
         manifest = _manifest_payload(suite, schedule, root=ROOT, binary=binary,
                                      timeout=timeout_seconds, workers=workers, base_seed=base_seed,
                                      gold=gold, cap=max_side_turns, mechanics_manifest=mechanics_manifest)
+        manifest["settings"]["through_stack"] = through_stack
         _atomic_json(manifest_path, manifest)
         _atomic_json(results_path, {"results": []})
     existing = json.loads(results_path.read_text()).get("results", []) if results_path.exists() else []
@@ -622,7 +684,8 @@ def main(argv: list[str] | None = None) -> int:
         run_suite(suite=args.suite, out_dir=args.out_dir, binary=args.binary,
                   base_seed=args.base_seed, gold=args.gold, max_side_turns=args.max_side_turns,
                   timeout_seconds=args.timeout_seconds, workers=args.workers, resume=args.resume,
-                  mechanics_manifest=args.mechanics_manifest)
+                  mechanics_manifest=args.mechanics_manifest,
+                  through_stack=args.through_stack)
     except (ValueError, OSError, subprocess.SubprocessError) as error:
         print(json.dumps({"status": "invalid", "error": str(error),
                           "verdicts": {"implementation": "failed", "gameplay": "incomplete", "strength": "incomplete"}}), file=sys.stderr)

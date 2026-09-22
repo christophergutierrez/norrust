@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "fixtures": [
+    {
+      "id": "coordinated-terminal-win-v1",
+      "introduced_stack": 1,
+      "requirements": ["G01", "G12"],
+      "scenario": "big_battle_6",
+      "faction": "undead",
+      "opponent": "greedy",
+      "controlled_algorithm": "coordinated",
+      "controlled_side": 0,
+      "first": "team1",
+      "gold": 300,
+      "second_gold": 0,
+      "seed": 61001,
+      "max_side_turns": 200,
+      "recruit1_policy": "first-affordable",
+      "recruit2_policy": "first-affordable",
+      "threads": 1,
+      "assertions": [
+        {"kind": "terminal_winner", "winner_side": 0},
+        {"kind": "no_cap"}
+      ]
+    }
+  ]
+}

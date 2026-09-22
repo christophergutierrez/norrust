@@ -27,6 +27,25 @@ class AlgorithmStrengthTests(unittest.TestCase):
             ("greedy", 0, "team1"), ("greedy", 1, "team1"),
             ("greedy-look-ahead", 0, "team2"), ("greedy-look-ahead", 1, "team2")])
 
+    def test_mechanics_manifest_is_pinned_and_assertions_are_real(self):
+        manifest = Path("tools/fixtures/coordinated/mechanics.json")
+        schedule = strength.build_schedule(suite="mechanics", mechanics_manifest=manifest,
+                                           through_stack=1)
+        self.assertEqual([cell["cell_id"] for cell in schedule], ["coordinated-terminal-win-v1"])
+        self.assertEqual(schedule[0]["requirements"], ["G01", "G12"])
+        engine = {"raw_seed": 61001, "effective_seed": strength._mix_seed(61001),
+                  "scenario": "big_battle_6", "factions": ["undead", "undead"],
+                  "algorithms": ["coordinated", "greedy"],
+                  "recruitment_policies": ["first-affordable", "first-affordable"],
+                  "first_side": 0, "second_gold": 0, "side_turn_cap": 200,
+                  "starting_gold": [300, 300], "completed_side_turns": 43,
+                  "winner_side": 0, "termination_reason": "winner"}
+        self.assertEqual(strength.validate_engine_result(schedule[0], engine), "win")
+        strength.validate_mechanics_assertions(schedule[0], engine)
+        engine["winner_side"] = 1
+        with self.assertRaises(ValueError):
+            strength.validate_mechanics_assertions(schedule[0], engine)
+
     def test_command_pins_all_treatment_settings(self):
         cell = strength.build_schedule(suite="smoke")[0]
         command = strength.command_for(cell, Path("self-play"), Path("out/trace"))
