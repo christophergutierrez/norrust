@@ -35,7 +35,7 @@ enum AiKind {
     Random,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RecruitPolicy {
     FirstAffordable,
     Balanced,
@@ -69,6 +69,25 @@ fn role_for_attacks(attacks: &[AttackDef]) -> RecruitRole {
 
 fn role_for_def(def: &UnitDef) -> RecruitRole {
     role_for_attacks(&def.attacks)
+}
+
+fn recruit_policy_name(policy: RecruitPolicy) -> &'static str {
+    match policy {
+        RecruitPolicy::FirstAffordable => "first-affordable",
+        RecruitPolicy::Balanced => "balanced",
+    }
+}
+
+fn recruit_policy_for_side(config: &Config, side: u8) -> RecruitPolicy {
+    match side {
+        0 => config.recruit1_policy,
+        1 => config.recruit2_policy,
+        _ => panic!("invalid self-play side {side}"),
+    }
+}
+
+fn side_turn_cap(config: &Config) -> u32 {
+    config.max_side_turns.unwrap_or(DEFAULT_SIDE_TURN_CAP)
 }
 
 fn choose_balanced_recruit(
@@ -117,14 +136,16 @@ struct Config {
     gold: Option<u32>,
     gold1: Option<u32>,
     gold2: Option<u32>,
-    max_turns: Option<u32>,
+    max_side_turns: Option<u32>,
     verbose: bool,
     compact: bool,
+    json: bool,
     threads: usize,
     first: FirstPlayer,
     second_gold: u32,
     record_dir: Option<PathBuf>,
-    recruit_policy: RecruitPolicy,
+    recruit1_policy: RecruitPolicy,
+    recruit2_policy: RecruitPolicy,
 }
 
 #[derive(Clone)]
@@ -136,15 +157,26 @@ struct Faction {
 #[derive(Clone, Copy, Debug)]
 struct GameResult {
     game: u32,
-    seed: u64,
+    raw_seed: u64,
+    effective_seed: u64,
     winner: Option<u8>,
-    turns: u32,
+    termination_reason: TerminationReason,
+    completed_side_turns: u32,
+    engine_turn: u32,
     material: i32,
     first: u8,
     starting_gold: [u32; 2],
     ending_gold: [u32; 2],
     recruits: [u32; 2],
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminationReason {
+    Winner,
+    SideTurnCap,
+}
+
+const DEFAULT_SIDE_TURN_CAP: u32 = 200;
 
 fn usage() -> ! {
     eprintln!(
@@ -161,14 +193,16 @@ Options:
   --gold N              Starting gold for both teams
   --gold1 N             Starting gold for team 1
   --gold2 N             Starting gold for team 2
-  --max-turns N         Override the scenario turn limit
+  --max-side-turns N    Side-turn safety cap (default: 200)
   --threads N           Worker threads (default: available CPUs)
   --first SIDE           team1 | team2 | coin-flip (default: team1)
   --second-gold N        Extra starting gold for the second player (default: 5)
   --record-dir PATH     Write isolated state trajectories (directory must be new)
-  --recruit-policy KIND first-affordable | balanced (default: first-affordable)
+  --recruit1-policy KIND  team 1 recruitment: first-affordable | balanced
+  --recruit2-policy KIND  team 2 recruitment: first-affordable | balanced
   --verbose             CSV header plus one line per game
   --compact             One comma-separated summary line
+  --json                One structured JSON result object per game
   -h, --help            Show this help"
     );
     std::process::exit(2)
@@ -205,16 +239,18 @@ fn parse_args() -> Config {
         gold: None,
         gold1: None,
         gold2: None,
-        max_turns: None,
+        max_side_turns: None,
         verbose: false,
         compact: false,
+        json: false,
         threads: thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1),
         first: FirstPlayer::Team1,
         second_gold: 5,
         record_dir: None,
-        recruit_policy: RecruitPolicy::FirstAffordable,
+        recruit1_policy: RecruitPolicy::FirstAffordable,
+        recruit2_policy: RecruitPolicy::FirstAffordable,
     };
     let args: Vec<String> = env::args().skip(1).collect();
     let mut i = 0;
@@ -230,6 +266,11 @@ fn parse_args() -> Config {
             i += 1;
             continue;
         }
+        if key == "--json" {
+            c.json = true;
+            i += 1;
+            continue;
+        }
         if key == "-h" || key == "--help" {
             usage();
         }
@@ -239,8 +280,15 @@ fn parse_args() -> Config {
         let value = &args[i + 1];
         match key.as_str() {
             "--record-dir" => c.record_dir = Some(PathBuf::from(value)),
-            "--recruit-policy" => {
-                c.recruit_policy = match value.as_str() {
+            "--recruit1-policy" => {
+                c.recruit1_policy = match value.as_str() {
+                    "first-affordable" => RecruitPolicy::FirstAffordable,
+                    "balanced" => RecruitPolicy::Balanced,
+                    _ => usage(),
+                }
+            }
+            "--recruit2-policy" => {
+                c.recruit2_policy = match value.as_str() {
                     "first-affordable" => RecruitPolicy::FirstAffordable,
                     "balanced" => RecruitPolicy::Balanced,
                     _ => usage(),
@@ -256,7 +304,13 @@ fn parse_args() -> Config {
             "--gold" => c.gold = Some(value.parse().unwrap_or_else(|_| usage())),
             "--gold1" => c.gold1 = Some(value.parse().unwrap_or_else(|_| usage())),
             "--gold2" => c.gold2 = Some(value.parse().unwrap_or_else(|_| usage())),
-            "--max-turns" => c.max_turns = Some(value.parse().unwrap_or_else(|_| usage())),
+            "--max-side-turns" => {
+                let cap = value.parse().unwrap_or_else(|_| usage());
+                if cap == 0 {
+                    usage();
+                }
+                c.max_side_turns = Some(cap);
+            }
             "--threads" => c.threads = value.parse().unwrap_or_else(|_| usage()),
             "--first" => c.first = parse_first(value),
             "--second-gold" => c.second_gold = value.parse().unwrap_or_else(|_| usage()),
@@ -267,8 +321,8 @@ fn parse_args() -> Config {
     if c.team1.is_empty() || c.team2.is_empty() || c.games == 0 || c.threads == 0 {
         usage();
     }
-    if c.verbose && c.compact {
-        eprintln!("--verbose and --compact cannot be combined");
+    if c.verbose as u8 + c.compact as u8 + c.json as u8 > 1 {
+        eprintln!("--verbose, --compact, and --json cannot be combined");
         usage();
     }
     c
@@ -706,9 +760,10 @@ fn run_game(c: &Config, game: u32) -> GameResult {
     let mut state = GameState::new_seeded(board.board, game_seed);
     // Self-play is symmetric: objectives and timeout victories are scenario
     // attacker/defender rules, not player-vs-player rules. The scenario limit
-    // remains a safety cap and produces a draw if neither side is eliminated.
+    // remains disabled and the explicit side-turn cap produces a draw if
+    // neither side is eliminated.
     state.objective_hex = None;
-    let safety_turns = c.max_turns.or(board.max_turns).unwrap_or(200);
+    let side_turn_cap = side_turn_cap(c);
     upgrade_tiles(&mut state, &terrain);
     let k1 = keep_for(&state, 0);
     let k2 = keep_for(&state, 1);
@@ -741,7 +796,7 @@ fn run_game(c: &Config, game: u32) -> GameResult {
     state.active_faction = first;
     let mut rng = mix_seed(game_seed ^ 0xa0761d6478bd642f);
     let mut next_id = 3;
-    let limit = safety_turns.saturating_mul(2).saturating_add(2);
+    let limit = side_turn_cap;
     let board_path = base.join("scenarios").join(&c.scenario).join("board.toml");
     let board_path = board_path.to_str().expect("UTF-8 board path");
     let mut recording = c.record_dir.as_ref().map(|dir| {
@@ -752,14 +807,11 @@ fn run_game(c: &Config, game: u32) -> GameResult {
             .expect("create trajectory");
         let mut writer = BufWriter::new(file);
         let meta = serde_json::json!({"type":"metadata", "schema_version":1,
-            "game":game, "input_seed":game_index, "engine_seed":game_seed,
+            "game":game, "input_seed":game_index, "effective_seed":game_seed,
             "scenario":c.scenario, "factions":[c.team1,c.team2],
             "algorithms":[ai_name(c.ai1),ai_name(c.ai2)], "first":first,
-            "recruit_policy": match c.recruit_policy {
-                RecruitPolicy::FirstAffordable => "first-affordable",
-                RecruitPolicy::Balanced => "balanced",
-            },
-            "starting_gold":starting_gold, "safety_side_turns":limit,
+            "recruitment_policies":[recruit_policy_name(c.recruit1_policy), recruit_policy_name(c.recruit2_policy)],
+            "starting_gold":starting_gold, "side_turn_cap":limit,
             "coverage":"state_boundaries_plus_lookahead_actions", "model_calls":0});
         serde_json::to_writer(&mut writer, &meta).expect("write metadata");
         writeln!(writer).expect("write newline");
@@ -777,9 +829,10 @@ fn run_game(c: &Config, game: u32) -> GameResult {
     for step in 0..limit {
         let side = state.active_faction;
         if side == 0 {
-            let recruitment = recruit(&mut state, 0, f1, &units, &mut next_id, c.recruit_policy);
+            let policy = recruit_policy_for_side(c, 0);
+            let recruitment = recruit(&mut state, 0, f1, &units, &mut next_id, policy);
             recruits[0] += recruitment.recruited;
-            record_recruitment(&mut recording, step, 0, c.recruit_policy, recruitment);
+            record_recruitment(&mut recording, step, 0, policy, recruitment);
             record_state(
                 &mut recording,
                 &state,
@@ -792,9 +845,10 @@ fn run_game(c: &Config, game: u32) -> GameResult {
             let actions = play_turn(&mut state, 0, c.ai1, &mut rng, f1, &units);
             record_actions(&mut recording, step, 0, &actions);
         } else {
-            let recruitment = recruit(&mut state, 1, f2, &units, &mut next_id, c.recruit_policy);
+            let policy = recruit_policy_for_side(c, 1);
+            let recruitment = recruit(&mut state, 1, f2, &units, &mut next_id, policy);
             recruits[1] += recruitment.recruited;
-            record_recruitment(&mut recording, step, 1, c.recruit_policy, recruitment);
+            record_recruitment(&mut recording, step, 1, policy, recruitment);
             record_state(
                 &mut recording,
                 &state,
@@ -818,7 +872,7 @@ fn run_game(c: &Config, game: u32) -> GameResult {
         );
         if let Some(winner) = state.check_winner() {
             if let Some(writer) = &mut recording {
-                writeln!(writer, "{}", serde_json::json!({"type":"terminal", "reason":"winner", "winner":winner, "side_turns_executed":step+1})).expect("write terminal");
+                writeln!(writer, "{}", serde_json::json!({"type":"terminal", "reason":"winner", "winner":winner, "completed_side_turns":step+1, "side_turns_executed":step+1, "side_turn_cap":limit})).expect("write terminal");
                 writer.flush().expect("flush trajectory");
             }
             let value = |side: u8| {
@@ -831,9 +885,12 @@ fn run_game(c: &Config, game: u32) -> GameResult {
             };
             return GameResult {
                 game,
-                seed: game_seed,
+                raw_seed: game_index,
+                effective_seed: game_seed,
                 winner: Some(winner),
-                turns: state.turn,
+                termination_reason: TerminationReason::Winner,
+                completed_side_turns: step + 1,
+                engine_turn: state.turn,
                 material: value(winner) - value(1 - winner),
                 first,
                 starting_gold,
@@ -843,14 +900,17 @@ fn run_game(c: &Config, game: u32) -> GameResult {
         }
     }
     if let Some(writer) = &mut recording {
-        writeln!(writer, "{}", serde_json::json!({"type":"terminal", "reason":"safety_cap", "winner":null, "side_turns_executed":limit})).expect("write terminal");
+        writeln!(writer, "{}", serde_json::json!({"type":"terminal", "reason":"safety_cap", "winner":null, "completed_side_turns":limit, "side_turns_executed":limit, "side_turn_cap":limit})).expect("write terminal");
         writer.flush().expect("flush trajectory");
     }
     GameResult {
         game,
-        seed: game_seed,
+        raw_seed: game_index,
+        effective_seed: game_seed,
         winner: None,
-        turns: state.turn,
+        termination_reason: TerminationReason::SideTurnCap,
+        completed_side_turns: limit,
+        engine_turn: state.turn,
         material: 0,
         first,
         starting_gold,
@@ -881,7 +941,7 @@ fn print_results(c: &Config, mut results: Vec<GameResult>) {
         .iter()
         .filter(|r| r.winner.is_some() && r.winner != Some(r.first))
         .count();
-    let mut turns: Vec<u32> = results.iter().map(|r| r.turns).collect();
+    let mut turns: Vec<u32> = results.iter().map(|r| r.completed_side_turns).collect();
     turns.sort_unstable();
     let mats: Vec<i32> = results
         .iter()
@@ -892,20 +952,58 @@ fn print_results(c: &Config, mut results: Vec<GameResult>) {
     let avg = |f: fn(&GameResult) -> u32| {
         results.iter().map(f).sum::<u32>() as f64 / results.len().max(1) as f64
     };
-    if c.verbose {
-        println!("game,seed,first,winner,turns,winner_material_advantage,start_gold1,start_gold2,end_gold1,end_gold2,recruits1,recruits2");
+    if c.json {
         for r in results {
             println!(
-                "{},{},{},{},{},{},{},{},{},{},{},{}",
+                "{}",
+                serde_json::json!({
+                    "type": "self_play_result",
+                    "schema_version": 1,
+                    "game": r.game,
+                    "raw_seed": r.raw_seed,
+                    "effective_seed": r.effective_seed,
+                    "winner_side": r.winner,
+                    "termination_reason": match r.termination_reason {
+                        TerminationReason::Winner => "winner",
+                        TerminationReason::SideTurnCap => "side_turn_cap",
+                    },
+                    "completed_side_turns": r.completed_side_turns,
+                    "side_turn_cap": side_turn_cap(c),
+                    "engine_turn": r.engine_turn,
+                    "scenario": c.scenario,
+                    "factions": [c.team1, c.team2],
+                    "algorithms": [ai_name(c.ai1), ai_name(c.ai2)],
+                    "recruitment_policies": [recruit_policy_name(c.recruit1_policy), recruit_policy_name(c.recruit2_policy)],
+                    "first_side": r.first,
+                    "second_gold": c.second_gold,
+                    "starting_gold": r.starting_gold,
+                    "ending_gold": r.ending_gold,
+                    "recruits": r.recruits,
+                    "winner_material_advantage": r.material,
+                })
+            );
+        }
+    } else if c.verbose {
+        println!("game,raw_seed,effective_seed,first,winner,termination_reason,completed_side_turns,side_turn_cap,engine_turn,winner_material_advantage,start_gold1,start_gold2,end_gold1,end_gold2,recruits1,recruits2");
+        for r in results {
+            println!(
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                 r.game,
-                r.seed,
+                r.raw_seed,
+                r.effective_seed,
                 if r.first == 0 { "team1" } else { "team2" },
                 match r.winner {
                     Some(0) => "team1",
                     Some(1) => "team2",
                     _ => "draw",
                 },
-                r.turns,
+                match r.termination_reason {
+                    TerminationReason::Winner => "winner",
+                    TerminationReason::SideTurnCap => "side_turn_cap",
+                },
+                r.completed_side_turns,
+                side_turn_cap(c),
+                r.engine_turn,
                 r.material,
                 r.starting_gold[0],
                 r.starting_gold[1],
@@ -941,7 +1039,7 @@ fn print_results(c: &Config, mut results: Vec<GameResult>) {
             avg_mat
         );
     } else {
-        println!("Scenario: {}\nFirst player: {}\nSecond-player gold bonus: {}\nTeam 1: {} ({})\nTeam 2: {} ({})\nGames: {}\n\nFirst-player assignment: team 1 {}, team 2 {}\nFirst-player wins: {} ({:.1}%)\nSecond-player wins: {} ({:.1}%)\n\nTeam 1 wins: {} ({:.1}%)\nTeam 2 wins: {} ({:.1}%)\nDraws: {}\n\nTurns: min {}, Q1 {:.1}, median {:.1}, Q3 {:.1}, max {}\nWinner material advantage: average {:+.1} gold-worth\nAverage starting gold: team 1 {:.1}, team 2 {:.1}\nAverage ending gold: team 1 {:.1}, team 2 {:.1}\nAverage recruits: team 1 {:.1}, team 2 {:.1}", c.scenario, match c.first { FirstPlayer::Team1 => "team1", FirstPlayer::Team2 => "team2", FirstPlayer::CoinFlip => "coin-flip" }, c.second_gold, c.team1, ai_name(c.ai1), c.team2, ai_name(c.ai2), results.len(), first_team1, first_team2, first_wins, first_wins as f64 * 100.0 / results.len() as f64, second_wins, second_wins as f64 * 100.0 / results.len() as f64, w1, w1 as f64 * 100.0 / results.len() as f64, w2, w2 as f64 * 100.0 / results.len() as f64, draws, turns[0], percentile(&turns, 0.25), percentile(&turns, 0.5), percentile(&turns, 0.75), turns[turns.len()-1], avg_mat, avg(|r| r.starting_gold[0]), avg(|r| r.starting_gold[1]), avg(|r| r.ending_gold[0]), avg(|r| r.ending_gold[1]), avg(|r| r.recruits[0]), avg(|r| r.recruits[1]));
+        println!("Scenario: {}\nFirst player: {}\nSecond-player gold bonus: {}\nSide-turn cap: {}\nTeam 1: {} ({}, {})\nTeam 2: {} ({}, {})\nGames: {}\n\nFirst-player assignment: team 1 {}, team 2 {}\nFirst-player wins: {} ({:.1}%)\nSecond-player wins: {} ({:.1}%)\n\nTeam 1 wins: {} ({:.1}%)\nTeam 2 wins: {} ({:.1}%)\nDraws: {}\n\nCompleted side turns: min {}, Q1 {:.1}, median {:.1}, Q3 {:.1}, max {}\nWinner material advantage: average {:+.1} gold-worth\nAverage starting gold: team 1 {:.1}, team 2 {:.1}\nAverage ending gold: team 1 {:.1}, team 2 {:.1}\nAverage recruits: team 1 {:.1}, team 2 {:.1}", c.scenario, match c.first { FirstPlayer::Team1 => "team1", FirstPlayer::Team2 => "team2", FirstPlayer::CoinFlip => "coin-flip" }, c.second_gold, side_turn_cap(c), c.team1, ai_name(c.ai1), recruit_policy_name(c.recruit1_policy), c.team2, ai_name(c.ai2), recruit_policy_name(c.recruit2_policy), results.len(), first_team1, first_team2, first_wins, first_wins as f64 * 100.0 / results.len() as f64, second_wins, second_wins as f64 * 100.0 / results.len() as f64, w1, w1 as f64 * 100.0 / results.len() as f64, w2, w2 as f64 * 100.0 / results.len() as f64, draws, turns[0], percentile(&turns, 0.25), percentile(&turns, 0.5), percentile(&turns, 0.75), turns[turns.len()-1], avg_mat, avg(|r| r.starting_gold[0]), avg(|r| r.starting_gold[1]), avg(|r| r.ending_gold[0]), avg(|r| r.ending_gold[1]), avg(|r| r.recruits[0]), avg(|r| r.recruits[1]));
     }
 }
 
@@ -1011,6 +1109,31 @@ mod tests {
         GameState::new_seeded(board.board, 1)
     }
 
+    fn test_config() -> Config {
+        Config {
+            scenario: "big_battle_6".into(),
+            team1: "undead".into(),
+            team2: "undead".into(),
+            ai1: AiKind::Greedy,
+            ai2: AiKind::Greedy,
+            games: 1,
+            seed: 1,
+            gold: Some(0),
+            gold1: None,
+            gold2: None,
+            max_side_turns: Some(1),
+            verbose: false,
+            compact: false,
+            json: false,
+            threads: 1,
+            first: FirstPlayer::Team1,
+            second_gold: 0,
+            record_dir: None,
+            recruit1_policy: RecruitPolicy::FirstAffordable,
+            recruit2_policy: RecruitPolicy::FirstAffordable,
+        }
+    }
+
     #[test]
     fn role_classification_prefers_ranged_and_marks_unknown_as_other() {
         assert_eq!(role_for_attacks(&[attack("melee")]), RecruitRole::Melee);
@@ -1051,5 +1174,89 @@ mod tests {
             choose_balanced_recruit(&affordable, &state, 0),
             Some((0, RecruitRole::Ranged, true))
         );
+    }
+
+    #[test]
+    fn side_recruitment_policy_changes_selected_side_only() {
+        let data = root().join("data");
+        let units: Registry<UnitDef> = Registry::load_from_dir(&data.join("units")).unwrap();
+        let factions = load_factions(&data);
+        let faction = factions.iter().find(|f| f.def.id == "undead").unwrap();
+        let mut base = test_state();
+        let keep = keep_for(&base, 1);
+        assert_eq!(base.board.tile_at(keep).unwrap().terrain_id, "keep");
+        assert!(keep.neighbors().iter().any(|h| {
+            base.board
+                .tile_at(*h)
+                .is_some_and(|tile| tile.terrain_id == "castle")
+        }));
+        base.place_unit(
+            Unit::from_def(1, units.get(&faction.def.leader_def).unwrap(), 1),
+            keep,
+        );
+        // An existing melee unit makes balanced recruitment choose the ranged
+        // definition, while first-affordable chooses Skeleton.
+        base.place_unit(
+            Unit::from_def(2, units.get("Skeleton").unwrap(), 1),
+            Hex::from_offset(15, 7),
+        );
+        base.place_unit(
+            Unit::from_def(3, units.get("Skeleton").unwrap(), 1),
+            Hex::from_offset(16, 7),
+        );
+        base.gold = [0, 20];
+        base.active_faction = 1;
+
+        let mut first = base.clone();
+        let mut balanced = base;
+        let mut first_id = 100;
+        let mut balanced_id = 100;
+        let first_summary = recruit(
+            &mut first,
+            1,
+            faction,
+            &units,
+            &mut first_id,
+            RecruitPolicy::FirstAffordable,
+        );
+        let balanced_summary = recruit(
+            &mut balanced,
+            1,
+            faction,
+            &units,
+            &mut balanced_id,
+            RecruitPolicy::Balanced,
+        );
+        assert_eq!(first_summary.recruited, 1);
+        assert_eq!(balanced_summary.recruited, 1);
+        assert_eq!(first.units[&100].def_id, "Skeleton");
+        assert_eq!(balanced.units[&100].def_id, "Skeleton Archer");
+
+        let mut config = test_config();
+        config.recruit1_policy = RecruitPolicy::Balanced;
+        config.recruit2_policy = RecruitPolicy::FirstAffordable;
+        assert_eq!(recruit_policy_for_side(&config, 0), RecruitPolicy::Balanced);
+        assert_eq!(
+            recruit_policy_for_side(&config, 1),
+            RecruitPolicy::FirstAffordable
+        );
+    }
+
+    #[test]
+    fn side_turn_cap_is_exact_and_terminal_result_is_accounted() {
+        for (first, cap) in [
+            (FirstPlayer::Team1, 1),
+            (FirstPlayer::Team2, 2),
+            (FirstPlayer::Team1, 3),
+            (FirstPlayer::Team2, 100),
+        ] {
+            let mut config = test_config();
+            config.first = first;
+            config.max_side_turns = Some(cap);
+            let result = run_game(&config, 1);
+            assert_eq!(result.completed_side_turns, cap);
+            assert_eq!(result.winner, None);
+            assert_eq!(result.termination_reason, TerminationReason::SideTurnCap);
+        }
     }
 }

@@ -102,8 +102,10 @@ Team 1 is always the left keep; Team 2 is the right keep. `--first team1` or
 is the wrong tool when you want to measure first-player advantage.
 
 Self-play wins by elimination only. Campaign objectives and timeout victories
-are off. `--max-turns N` is a safety cap of `2*N+2` faction turns, not “draw at
-round N”.
+are off. `--max-side-turns N` is an external safety cap on completed faction
+turns. The opening snapshot is step zero, and the runner executes exactly `N`
+completed side turns unless a winner is found earlier. This is independent of
+the engine's round counter and is reported as `completed_side_turns`.
 
 The `scenario_validation` integration test may fail to link (`cdylib` / `rlib` /
 `self-play` collision). Use the Python check above; do not treat a link failure
@@ -121,8 +123,11 @@ Always pass these unless the experiment is specifically about changing them:
 | `--seed S` | Reproducible input-index range `S` .. `S+N-1` |
 
 `--verbose` prints one CSV row per game. `--compact` prints one summary line.
-They cannot be combined. The `seed` column in verbose output is a mixed
-internal seed, not `S`. Replay game `k` of a batch with `--seed S+k-1 --games 1`.
+`--json` prints one structured JSON result per game with the winner side,
+termination reason, exact completed side turns, raw/effective seeds, starting
+configuration, algorithm identities, recruitment policies, and gold/recruit
+accounting. These output modes cannot be combined. Replay game `k` of a batch
+with `--seed S+k-1 --games 1`.
 
 Same `--seed S --games N` is a replay, not an independent replicate. For a
 new sample, use a disjoint range (for example `S+N`).
@@ -219,14 +224,15 @@ yet. Default `--second-gold 5` is not that compensation.
 
 ### Recruitment policy comparison
 
-The self-play runner defaults to the historical `first-affordable` recruitment
-policy. For a separate composition experiment, pass
-`--recruit-policy balanced`. The balanced policy alternates toward a melee or
-ranged definition when the faction actually offers an affordable definition of
-that role, then falls back to the first affordable definition. It does not alter
-the planner, opponent policy, or starting gold. Every recorded trajectory stores
-the selected policy in metadata. Compare the two policies with identical seeds,
-factions, gold and initiative; do not attribute a result to planning when the
+The self-play runner defaults both sides to the historical `first-affordable`
+recruitment policy. For a separate composition experiment, set either side
+explicitly with `--recruit1-policy balanced` or `--recruit2-policy balanced`.
+The balanced policy alternates toward a melee or ranged definition when the
+faction actually offers an affordable definition of that role, then falls back
+to the first affordable definition. It does not alter the planner, opponent
+policy, or starting gold. Every recorded trajectory stores both configured
+policies in metadata. Compare policies with identical seeds, factions, gold,
+initiative, and side-turn cap; do not attribute a result to planning when the
 recruitment policy changed too.
 
 ## Implementation notes
