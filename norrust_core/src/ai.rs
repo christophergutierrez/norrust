@@ -1494,13 +1494,38 @@ fn coordinated_state_score(state: &GameState, faction: u8) -> f32 {
         .units
         .values()
         .any(|unit| unit.faction == enemy && unit.can_recruit);
+    let reachable_force = |side: u8| {
+        let enemy_side = 1 - side;
+        state
+            .units
+            .iter()
+            .filter(|(_, unit)| unit.faction == side && !unit.can_recruit)
+            .filter_map(|(id, unit)| {
+                let from = state.positions.get(id)?;
+                let nearest = state
+                    .units
+                    .iter()
+                    .filter(|(_, other)| other.faction == enemy_side)
+                    .filter_map(|(enemy_id, _)| state.positions.get(enemy_id).map(|hex| from.distance(*hex)))
+                    .min()?;
+                let two_turn_reach = unit.movement.max(1) * 2;
+                (nearest <= two_turn_reach).then_some(
+                    unit.cost as f32 * unit.hp as f32 / unit.max_hp.max(1) as f32,
+                )
+            })
+            .sum::<f32>()
+    };
+    let ready_force_delta = (reachable_force(faction) - reachable_force(enemy)).clamp(-30.0, 30.0);
+    let future_income_delta = (own_villages - enemy_villages) * 4.0;
 
     // Keep the utility deliberately small and on one scale.  Terminal outcomes
     // dominate; material uses actual unit cost and remaining HP instead of unit
     // count or fractional HP with unrelated weights.
     (own_material - enemy_material)
         + (state.gold[faction as usize] as f32 - state.gold[enemy as usize] as f32) * 0.25
-        + (own_villages - enemy_villages) * 12.0
+        + (own_villages - enemy_villages) * 8.0
+        + future_income_delta
+        + ready_force_delta
         + if own_recruiter { 40.0 } else { -400.0 }
         + if enemy_recruiter { 0.0 } else { 400.0 }
 }
