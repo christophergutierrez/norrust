@@ -158,7 +158,8 @@ To validate an existing directory without replaying games, add `--check`. To
 continue an interrupted schedule while retaining successful cells, add
 `--resume`; the frozen source, binary, data, suite, schedule, and configuration
 must still match. `--suite mechanics --through-stack N` uses the tracked
-coordinated fixture manifest as that is added by Stack 1.
+coordinated fixture manifest in `tools/fixtures/coordinated/mechanics.json` and
+fails closed when a fixture assertion is not satisfied.
 
 ## Algorithms
 
@@ -166,7 +167,7 @@ coordinated fixture manifest as that is added by Stack 1.
 | --- | --- |
 | `greedy` | Fast baseline: every reachable hex, expected-damage combat, ID order |
 | `greedy-look-ahead` | Slower: structured beam (keep, attacks, villages, defense, march), skip bad melee terrain trades, expected-damage scoring plus a local opponent reply, sit on keep/village instead of a losing trade. Recruiters stay on a keep and fight from it, or walk back if they are off keep. |
-| `coordinated` | Experimental bounded selector: evaluates one complete Greedy turn and one complete look-ahead turn on cloned state, then commits the higher explicit survival/economy score. It is not a long-horizon search. |
+| `coordinated` | Bounded selector: compares common-scored Greedy, look-ahead, and objective candidates after a complete private opponent response, then commits the selected legal turn. Persistent objectives use engine-valid target checks; scoring includes terminal outcome, cost-weighted force, villages/future income, reachable force, gold, and recruiter access. |
 | `random` | Legal-move uniform random |
 
 Look-ahead is ~40–50× slower than greedy on this map. Time 10 games before
