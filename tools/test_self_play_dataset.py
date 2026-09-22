@@ -72,8 +72,7 @@ class DatasetTests(unittest.TestCase):
         import os
         import subprocess
         repo=Path(__file__).resolve().parents[1]
-        driver=Path(os.environ.get('NORRUST_TEST_DRIVER', repo/'norrust_core/target/release/greedy_driver'))
-        binary=driver.with_name('self-play')
+        binary=Path(os.environ.get('NORRUST_TEST_SELF_PLAY', repo/'norrust_core/target/release/self-play'))
         if not binary.exists():
             self.skipTest('Build self-play before recorder integration check')
         with tempfile.TemporaryDirectory() as d:
@@ -86,6 +85,7 @@ class DatasetTests(unittest.TestCase):
             recorded=subprocess.run(command+['--record-dir',str(output)],cwd=repo,capture_output=True,text=True,check=True)
             self.assertEqual(plain.stdout,recorded.stdout)
             meta,end,states=read_game(output/'game-00001.ndjson')
+            self.assertEqual(meta['recruitment_policies'], ['first-affordable', 'first-affordable'])
             self.assertEqual(meta['starting_gold'],[250,250])
             self.assertEqual(meta['first'],1)
             self.assertEqual(end['reason'],'safety_cap')
@@ -128,7 +128,7 @@ class DatasetTests(unittest.TestCase):
             state = dict(units=[], village_owners=[], gold=[40, 40], turn=1, active_faction=0)
             meta = dict(type='metadata', schema_version=1, input_seed=8, first=1,
                         algorithms=['coordinated', 'random-policy'],
-                        policies=['balanced', 'first-affordable'], controlled_side=0,
+                        recruitment_policies=['balanced', 'first-affordable'], controlled_side=0,
                         scenario='test', factions=['undead', 'undead'], starting_gold=[40, 40])
             rows = [meta]
             for phase, step in [('opening', 0), ('after_recruitment', 0), ('after_turn', 1)]:

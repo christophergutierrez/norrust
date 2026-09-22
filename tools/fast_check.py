@@ -34,6 +34,7 @@ def main() -> int:
                 stdout=subprocess.PIPE, text=True)
     library = None
     driver = None
+    self_play = None
     dump_checkpoint = None
     for line in built.stdout.splitlines():
         artifact = json.loads(line)
@@ -45,15 +46,20 @@ def main() -> int:
                             if Path(p).suffix in {".so", ".dylib", ".dll"}), None)
         if target.get("name") == "greedy_driver" and "bin" in target.get("kind", []):
             driver = artifact.get("executable")
+        if target.get("name") == "self-play" and "bin" in target.get("kind", []):
+            self_play = artifact.get("executable")
         if target.get("name") == "dump_checkpoint" and "bin" in target.get("kind", []):
             dump_checkpoint = artifact.get("executable")
     if not library or not Path(library).is_file() or not driver or not Path(driver).is_file():
         raise RuntimeError("Cargo did not produce the bridge library and model driver")
+    if not self_play or not Path(self_play).is_file():
+        raise RuntimeError("Cargo did not produce the self-play runner")
     if not dump_checkpoint or not Path(dump_checkpoint).is_file():
         raise RuntimeError("Cargo did not produce the checkpoint state dumper")
     # Catalog tests render checkpoint-only snapshots through this tool; without
     # the path they would silently exercise only the "tool unavailable" gap.
     env = dict(os.environ, NORRUST_LIB=library, NORRUST_TEST_DRIVER=driver,
+               NORRUST_TEST_SELF_PLAY=self_play,
                NORRUST_DUMP_CHECKPOINT_BIN=dump_checkpoint)
     run([sys.executable, "-m", "unittest", "discover", "-s", "tools", "-t", "."], env=env)
     run([luajit, "norrust_love/test_llm_bridge.lua"], env=env)

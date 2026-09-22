@@ -77,7 +77,9 @@ def side_metadata(meta):
     algorithms = meta.get('algorithms')
     if not isinstance(algorithms, list) or len(algorithms) != 2 or not all(isinstance(v, str) and v for v in algorithms):
         raise ValueError('metadata algorithms must contain two non-empty names')
-    policies = meta.get('policies', meta.get('recruit_policies'))
+    # ``recruitment_policies`` is the maintained recorder field. Read the old
+    # names only to preserve truthful metadata in historical game archives.
+    policies = meta.get('recruitment_policies', meta.get('policies', meta.get('recruit_policies')))
     if policies is None:
         policy = meta.get('recruit_policy')
         policies = [policy, policy] if isinstance(policy, str) and policy else [None, None]

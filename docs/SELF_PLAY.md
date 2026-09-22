@@ -132,19 +132,33 @@ with `--seed S+k-1 --games 1`.
 Same `--seed S --games N` is a replay, not an independent replicate. For a
 new sample, use a disjoint range (for example `S+N`).
 
-For the Stack 6 development screen, build `self-play` in release mode and run
-the bounded provider-free harness. It schedules four same-faction mirrors,
-both controlled-side placements, both initiative orders, and the two declared
-opponents (32 cells). Every cell has a fixed 200 side-turn cap, 300 starting
-gold, zero second-player bonus, first-affordable recruitment, one process, and
-a subprocess timeout. Operational failures remain failures; the report sets
-`strength_claim_allowed` false unless every scheduled cell completed.
+The maintained `tools.algorithm_strength` runner treats `coordinated` as the
+controlled algorithm and compares it with `greedy` and `greedy-look-ahead`.
+`--suite smoke` runs four normal-board games; `screen` runs 32 cells across
+four faction mirrors, both placements, both initiative orders, and both
+opponents; `development` runs 256 cells; `heldout` runs 512 fresh cells.
+Every cell pins the scenario, faction, seed, gold, initiative, recruitment
+policies, one game process, and the 200 side-turn cap. Outputs include a frozen
+manifest, durable attempt journal, isolated process logs, recorded game traces,
+validated outcomes, and separate implementation/gameplay/strength verdicts.
+Caps are reported as non-wins, not genuine draws. Screen results never certify
+strength. A completed losing development or held-out run exits with status 1;
+incomplete or mismatched evidence exits with status 2.
+
+Start a bounded smoke run with:
 
 ```bash
 python3 -m tools.algorithm_strength \
-  --out-dir tmp/strategy-planner/algorithm-v2/stack-6/screening \
-  --binary norrust_core/target/release/self-play --workers 2
+  --suite smoke \
+  --out-dir tmp/strategy-planner/recovery/smoke \
+  --binary norrust_core/target/release/self-play --workers 1
 ```
+
+To validate an existing directory without replaying games, add `--check`. To
+continue an interrupted schedule while retaining successful cells, add
+`--resume`; the frozen source, binary, data, suite, schedule, and configuration
+must still match. `--suite mechanics --through-stack N` uses the tracked
+coordinated fixture manifest as that is added by Stack 1.
 
 ## Algorithms
 

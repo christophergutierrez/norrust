@@ -231,7 +231,7 @@ Historical experiment reports and game archives retain their original identities
 | `tools/codex_backend.py` | Native Codex session adapter with explicit model configuration |
 | `tools/file_backend.py` | File transport preserving the complete client prompt |
 | `tools/llm_supervisor.py` | Bounded client restart supervisor |
-| `tools/algorithm_strength.py` | Provider-free matched algorithm screening with explicit failure/cap metrics |
+| `tools/algorithm_strength.py` | Frozen, resumable gameplay evaluation with treatment validation and separate strength verdicts |
 | `tools/request_journal.py` | Durable model request records and writer locking |
 | `tools/request_recovery.py` | Read-only reconciliation of request, log, and checkpoint evidence |
 | `tools/turn_agenda.py` | Strict validation/formatting for optional model-authored agenda bookkeeping; agenda tasks and integer IDs are never engine orders |

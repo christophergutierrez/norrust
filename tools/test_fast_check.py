@@ -15,6 +15,7 @@ class FastCheckTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             library = Path(directory) / "custom-target" / "libnorrust_core.so"
             driver = Path(directory) / "custom-target" / "greedy_driver"
+            self_play = Path(directory) / "custom-target" / "self-play"
             dumper = Path(directory) / "custom-target" / "dump_checkpoint"
             calls = []
 
@@ -25,12 +26,14 @@ class FastCheckTests(unittest.TestCase):
                     library.parent.mkdir()
                     library.touch()
                     driver.touch()
+                    self_play.touch()
                     dumper.touch()
                     output = "\n".join(json.dumps({"reason": "compiler-artifact",
                         "target": {"name": name, "kind": kind}, "filenames": [str(path)],
                         "executable": executable}) for name, kind, path, executable in (
                             ("norrust_core", ["cdylib", "rlib"], library, None),
                             ("greedy_driver", ["bin"], driver, str(driver)),
+                            ("self-play", ["bin"], self_play, str(self_play)),
                             ("dump_checkpoint", ["bin"], dumper, str(dumper))))
                 return subprocess.CompletedProcess(command, 0, stdout=output)
 
@@ -53,6 +56,7 @@ class FastCheckTests(unittest.TestCase):
                                     and c[c.index("--bin") + 1] == binary for c, _ in calls))
             python = [k for c, k in calls if "discover" in c]
             self.assertEqual(python[0]["env"]["NORRUST_TEST_DRIVER"], str(driver))
+            self.assertEqual(python[0]["env"]["NORRUST_TEST_SELF_PLAY"], str(self_play))
 
     def test_failed_component_stops_the_gate(self):
         failure = subprocess.CalledProcessError(7, ["cargo", "test"])
