@@ -80,6 +80,21 @@ struct Faction {
     recruits: Vec<String>,
 }
 
+fn cached_tactical_surface(
+    cache: &Option<(u64, u8, Value)>,
+    state_revision: u64,
+    active_faction: u8,
+    requested_revision: Option<u64>,
+) -> Option<Value> {
+    if requested_revision.is_some() && requested_revision != Some(state_revision) {
+        return None;
+    }
+    cache
+        .as_ref()
+        .filter(|(revision, side, _)| *revision == state_revision && *side == active_faction)
+        .map(|(_, _, response)| response.clone())
+}
+
 fn default_max_partial_batches_per_turn() -> u32 {
     3
 }
@@ -3348,6 +3363,10 @@ fn interactive_protocol_game(mut c: Config) {
     let mut query_elapsed = Duration::ZERO;
     let query_budget = Duration::from_secs(c.query_timeout);
     let mut action_count = 0u32;
+    // Tactical surface is a read-only snapshot. Reusing it within the same
+    // state revision avoids rebuilding the expensive threat/forecast view
+    // when a client asks for the same surface more than once in one turn.
+    let mut tactical_surface_cache: Option<(u64, u8, Value)> = None;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         let line_result = match line_rx.recv_timeout(remaining) {
@@ -3620,6 +3639,14 @@ fn interactive_protocol_game(mut c: Config) {
                     }
                 }
                 "tactical_surface" => {
+                    if let Some(cached) = cached_tactical_surface(
+                        &tactical_surface_cache,
+                        state.state_revision,
+                        state.active_faction,
+                        parsed.get("state_revision").and_then(Value::as_u64),
+                    ) {
+                        cached
+                    } else {
                     let requested_revision = parsed.get("state_revision").and_then(Value::as_u64);
                     if requested_revision.is_some_and(|revision| revision != state.state_revision) {
                         json!({"type":"status","ok":false,"what":what,"code":"stale_state","message":"requested state revision is no longer current","state_revision":state.state_revision})
@@ -3732,6 +3759,7 @@ fn interactive_protocol_game(mut c: Config) {
                                 json!({"type":"status","ok":false,"what":what,"code":"tactical_surface_error","message":error.to_string()})
                             }
                         }
+                    }
                     }
                 }
                 "inspect_unit" => {
@@ -4145,6 +4173,10 @@ fn interactive_protocol_game(mut c: Config) {
             query_elapsed += query_started.elapsed();
             if let Some(object) = response.as_object_mut() {
                 object.insert("state_revision".into(), json!(state.state_revision));
+            }
+            if what == "tactical_surface" && response.get("ok") == Some(&Value::Bool(true)) {
+                tactical_surface_cache =
+                    Some((state.state_revision, state.active_faction, response.clone()));
             }
             if query_elapsed > query_budget {
                 println!(
@@ -4717,6 +4749,19 @@ mod protocol_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tactical_surface_cache_is_revision_and_side_scoped() {
+        let response = json!({"type": "status", "ok": true, "what": "tactical_surface"});
+        let cache = Some((17, 0, response.clone()));
+        assert_eq!(
+            cached_tactical_surface(&cache, 17, 0, Some(17)),
+            Some(response.clone())
+        );
+        assert_eq!(cached_tactical_surface(&cache, 17, 0, Some(18)), None);
+        assert_eq!(cached_tactical_surface(&cache, 18, 0, None), None);
+        assert_eq!(cached_tactical_surface(&cache, 17, 1, None), None);
+    }
 
     #[test]
     fn checkpoint_is_digest_named_and_round_trips_atomically() {
