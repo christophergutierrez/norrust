@@ -117,3 +117,41 @@ class DatasetTests(unittest.TestCase):
             swings=result['largest_early_material_swings']
             self.assertEqual(len(swings),1)
             self.assertEqual(swings[0]['hp_material_delta_change'],-20)
+
+    def test_build_accepts_arbitrary_algorithms_and_per_side_policy_metadata(self):
+        import sqlite3
+        from tools.self_play_dataset import build
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); definitions = root/'defs'; definitions.mkdir()
+            (definitions/'unit.toml').write_text('id="a"\ncost=40\n')
+            games = root/'games'; games.mkdir()
+            state = dict(units=[], village_owners=[], gold=[40, 40], turn=1, active_faction=0)
+            meta = dict(type='metadata', schema_version=1, input_seed=8, first=1,
+                        algorithms=['coordinated', 'random-policy'],
+                        policies=['balanced', 'first-affordable'], controlled_side=0,
+                        scenario='test', factions=['undead', 'undead'], starting_gold=[40, 40])
+            rows = [meta]
+            for phase, step in [('opening', 0), ('after_recruitment', 0), ('after_turn', 1)]:
+                rows.append(dict(type='snapshot', phase=phase, step=step, state=state, recruits=[0, 0]))
+            rows.append(dict(type='terminal', reason='winner', winner=0, side_turns_executed=1))
+            (games/'game-00001.ndjson').write_text('\n'.join(map(json.dumps, rows)))
+            report = build(games, root/'output', definitions)
+            self.assertEqual(report['games'], 1)
+            self.assertEqual(report['controlled_outcomes'],
+                             {'declared_games': 1, 'wins': 1, 'losses': 0, 'unknown': 0})
+            exported = [json.loads(line) for line in (root/'output/positions.jsonl').read_text().splitlines()]
+            self.assertEqual({row['algorithm'] for row in exported}, {'coordinated', 'random-policy'})
+            self.assertEqual({row['policy'] for row in exported}, {'balanced', 'first-affordable'})
+            self.assertTrue(all(row['controlled_side'] == 0 for row in exported))
+            with sqlite3.connect(root/'output/dataset.sqlite') as db:
+                game = db.execute('select algorithm0,algorithm1,policy0,policy1,controlled_side from games').fetchone()
+                self.assertEqual(game, ('coordinated', 'random-policy', 'balanced', 'first-affordable', 0))
+                position = db.execute('select algorithm,policy,outcome from positions where side=0 limit 1').fetchone()
+                self.assertEqual(position, ('coordinated', 'balanced', 1))
+
+    def test_invalid_per_side_metadata_is_rejected(self):
+        from tools.self_play_dataset import side_metadata
+        with self.assertRaisesRegex(ValueError, 'two names'):
+            side_metadata({'algorithms': ['coordinated', 'greedy'], 'policies': ['balanced']})
+        with self.assertRaisesRegex(ValueError, 'controlled_side'):
+            side_metadata({'algorithms': ['coordinated', 'greedy'], 'controlled_side': 2})

@@ -66,6 +66,29 @@ def split_for_seed(seed):
     return 'test' if bucket >= 8 else 'validation' if bucket == 7 else 'train'
 
 
+def side_metadata(meta):
+    """Return the declared per-side algorithm/policy identity.
+
+    Trajectories may use any algorithm name.  Older recorders declared one
+    recruitment policy for both sides; preserve that evidence while accepting
+    newer per-side ``policies`` metadata.  Missing controlled-side metadata is
+    represented as ``None`` rather than inferred from algorithm position.
+    """
+    algorithms = meta.get('algorithms')
+    if not isinstance(algorithms, list) or len(algorithms) != 2 or not all(isinstance(v, str) and v for v in algorithms):
+        raise ValueError('metadata algorithms must contain two non-empty names')
+    policies = meta.get('policies', meta.get('recruit_policies'))
+    if policies is None:
+        policy = meta.get('recruit_policy')
+        policies = [policy, policy] if isinstance(policy, str) and policy else [None, None]
+    if not isinstance(policies, list) or len(policies) != 2 or not all(v is None or isinstance(v, str) for v in policies):
+        raise ValueError('metadata policies must contain two names or nulls')
+    controlled = meta.get('controlled_side')
+    if controlled is not None and controlled not in (0, 1):
+        raise ValueError('metadata controlled_side must be 0, 1, or null')
+    return algorithms, policies, controlled
+
+
 def build(root, output, definitions_dir=None):
     repo = Path(__file__).resolve().parents[1]
     definitions = {}
@@ -80,9 +103,10 @@ def build(root, output, definitions_dir=None):
     db = sqlite3.connect(output / 'dataset.sqlite')
     db.executescript('''
       CREATE TABLE games (game_id TEXT PRIMARY KEY, input_seed INTEGER, split TEXT,
-        first_side INTEGER, winner INTEGER, reason TEXT, turns INTEGER, archive TEXT, sha256 TEXT, metadata_json TEXT);
+        first_side INTEGER, winner INTEGER, reason TEXT, turns INTEGER, archive TEXT, sha256 TEXT, metadata_json TEXT,
+        algorithm0 TEXT, algorithm1 TEXT, policy0 TEXT, policy1 TEXT, controlled_side INTEGER);
       CREATE TABLE positions (game_id TEXT, sequence INTEGER, side INTEGER, phase TEXT,
-        step INTEGER, turn INTEGER, algorithm TEXT, outcome INTEGER, features_json TEXT,
+        step INTEGER, turn INTEGER, algorithm TEXT, policy TEXT, outcome INTEGER, features_json TEXT,
         PRIMARY KEY(game_id, sequence, side));
       CREATE TABLE snapshots (game_id TEXT, sequence INTEGER, state_json TEXT,
         PRIMARY KEY(game_id, sequence));
@@ -94,17 +118,17 @@ def build(root, output, definitions_dir=None):
     with (output / 'positions.jsonl').open('w') as exported:
         for path in paths:
             meta, end, snapshots = read_game(path)
-            if meta['algorithms'] != ['greedy-look-ahead', 'greedy']:
-                raise ValueError('Analysis requires lookahead on side 0 and greedy on side 1')
-            identity = (meta['input_seed'], meta['first'], tuple(meta['algorithms']), meta['scenario'], tuple(meta['factions']), tuple(meta['starting_gold']))
+            algorithms, policies, controlled_side = side_metadata(meta)
+            identity = (meta['input_seed'], meta['first'], tuple(algorithms), tuple(policies), controlled_side, meta['scenario'], tuple(meta['factions']), tuple(meta['starting_gold']))
             if identity in seen:
                 raise ValueError(f'Duplicate game configuration: {identity}')
             seen.add(identity)
             game_id = str(path.relative_to(root))
             split = split_for_seed(meta['input_seed'])
-            db.execute('INSERT INTO games VALUES (?,?,?,?,?,?,?,?,?,?)',
+            db.execute('INSERT INTO games VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                        (game_id, meta['input_seed'], split, meta['first'], end['winner'], end['reason'],
-                        snapshots[-1]['state']['turn'], str(path.resolve()), hashlib.sha256(path.read_bytes()).hexdigest(), json.dumps(meta)))
+                        snapshots[-1]['state']['turn'], str(path.resolve()), hashlib.sha256(path.read_bytes()).hexdigest(), json.dumps(meta),
+                        algorithms[0], algorithms[1], policies[0], policies[1], controlled_side))
             seen_landmarks = set()
             previous_delta = None
             for seq, record in enumerate(snapshots):
@@ -132,14 +156,17 @@ def build(root, output, definitions_dir=None):
                     # Outcomes are labels only, excluded from the input features.
                     outcome = None if end['winner'] is None else int(end['winner'] == side)
                     row = dict(game_id=game_id, sequence=seq, side=side, phase=record['phase'], step=record['step'],
-                               turn=state['turn'], algorithm=meta['algorithms'][side], outcome=outcome, features=f, split=split)
-                    db.execute('INSERT INTO positions VALUES (?,?,?,?,?,?,?,?,?)',
+                               turn=state['turn'], algorithm=algorithms[side], policy=policies[side],
+                               controlled_side=controlled_side, outcome=outcome, features=f, split=split)
+                    db.execute('INSERT INTO positions VALUES (?,?,?,?,?,?,?,?,?,?)',
                                (game_id, seq, side, record['phase'], record['step'], state['turn'],
-                                meta['algorithms'][side], outcome, json.dumps(f)))
+                                algorithms[side], policies[side], outcome, json.dumps(f)))
                     exported.write(json.dumps(row) + '\n')
             results.append(dict(game_id=game_id, first=meta['first'], winner=end['winner'],
                                 turns=snapshots[-1]['state']['turn'], snapshots=len(snapshots), split=split,
-                                factions=meta['factions'], gold=meta['starting_gold']))
+                                factions=meta['factions'], gold=meta['starting_gold'], algorithms=algorithms,
+                                policies=policies, controlled_side=controlled_side,
+                                controlled_outcome=(None if controlled_side is None or end['winner'] is None else int(end['winner'] == controlled_side))))
     db.commit()
     summary = {'games': len(results), 'snapshots': sum(r['snapshots'] for r in results),
                'by_first_side': {str(side): {'games': sum(r['first'] == side for r in results),
@@ -151,6 +178,13 @@ def build(root, output, definitions_dir=None):
                'splits': {s: sum(r['split'] == s for r in results) for s in ('train', 'validation', 'test')},
                'coverage': 'state boundaries only; no action sequence or counterfactual labels',
                'review_status': 'unreviewed observational data; not approved imitation targets'}
+    controlled = [r for r in results if r['controlled_side'] is not None]
+    summary['controlled_outcomes'] = {
+        'declared_games': len(controlled),
+        'wins': sum(r['controlled_outcome'] == 1 for r in controlled),
+        'losses': sum(r['controlled_outcome'] == 0 for r in controlled if r['controlled_outcome'] is not None),
+        'unknown': sum(r['controlled_outcome'] is None for r in controlled),
+    }
     strata = {}
     for row in results:
         key = f"{row['factions'][0]} vs {row['factions'][1]}, gold {row['gold']}, first {row['first']}"
