@@ -1324,18 +1324,6 @@ pub fn ai_take_turn_coordinated(
     cheapest_recruit_cost: u32,
     recruit_defs: &[(u32, u32)],
 ) {
-    // Keep the experimental selector within the existing lookahead budget once
-    // armies grow. Comparing two full plans is useful in opening positions but
-    // otherwise doubles the expensive planner work without adding evidence.
-    let own_unit_count = state
-        .units
-        .values()
-        .filter(|u| u.faction == faction)
-        .count();
-    if own_unit_count > 8 {
-        ai_take_turn_greedy_lookahead(state, faction, cheapest_recruit_cost, recruit_defs);
-        return;
-    }
     // Candidate ranking must not depend on the live combat stream. The live
     // state is still used unchanged for the eventual committed turn below.
     let evaluation_seed = 0x9e37_79b9_7f4a_7c15_u64
@@ -2473,6 +2461,28 @@ mod tests {
         assert_eq!(first.positions, second.positions);
         assert_eq!(first.active_faction, second.active_faction);
         assert_eq!(first.sides_acted_this_round, second.sides_acted_this_round);
+    }
+
+    #[test]
+    fn coordinated_planner_keeps_selector_active_for_large_armies() {
+        let board = setup_keep_board(0, 0);
+        let mut state = GameState::new_seeded(board, 17);
+        state.active_faction = 0;
+        state.gold[0] = 0;
+        state.place_unit(make_leader(1, 0), Hex::from_offset(0, 0));
+        for id in 2..=9 {
+            state.place_unit(
+                make_fighter(id, 0, 30),
+                Hex::from_offset((id - 2) as i32, 3),
+            );
+        }
+        state.place_unit(make_fighter(20, 1, 30), Hex::from_offset(7, 4));
+
+        ai_take_turn_coordinated(&mut state, 0, 0, &[]);
+
+        assert_eq!(state.active_faction, 1);
+        assert!(state.units.values().any(|unit| unit.faction == 0));
+        assert!(state.state_revision > 0);
     }
 
     #[test]
