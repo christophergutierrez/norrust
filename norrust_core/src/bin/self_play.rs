@@ -15,8 +15,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use norrust_core::ai::{
-    ai_take_turn_coordinated_with_unit_defs_recorded, ai_take_turn_greedy,
-    ai_take_turn_greedy_lookahead_with_unit_defs_recorded, ActionRecord,
+    ai_take_turn_coordinated_with_memory, ai_take_turn_greedy,
+    ai_take_turn_greedy_lookahead_with_unit_defs_recorded, ActionRecord, PlannerMemory,
 };
 use norrust_core::board::Tile;
 use norrust_core::game_state::{apply_action, Action, GameState};
@@ -427,6 +427,7 @@ fn play_turn(
     rng: &mut u64,
     recruit_defs: &[UnitDef],
     policy: RecruitPolicy,
+    planner_memory: &mut PlannerMemory,
 ) -> Vec<ActionRecord> {
     match kind {
         AiKind::Greedy => {
@@ -437,7 +438,13 @@ fn play_turn(
             ai_take_turn_greedy_lookahead_with_unit_defs_recorded(state, side, recruit_defs, policy)
         }
         AiKind::Coordinated => {
-            ai_take_turn_coordinated_with_unit_defs_recorded(state, side, recruit_defs, policy)
+            ai_take_turn_coordinated_with_memory(
+                state,
+                side,
+                recruit_defs,
+                policy,
+                planner_memory,
+            )
         }
         AiKind::Random => {
             random_turn(state, side, rng);
@@ -586,6 +593,7 @@ fn run_game(c: &Config, game: u32) -> GameResult {
     let mut recruits = [0, 0];
     state.active_faction = first;
     let mut rng = mix_seed(game_seed ^ 0xa0761d6478bd642f);
+    let mut planner_memory = [PlannerMemory::default(), PlannerMemory::default()];
     let mut next_id = 3;
     let limit = side_turn_cap;
     let board_path = base.join("scenarios").join(&c.scenario).join("board.toml");
@@ -635,7 +643,15 @@ fn run_game(c: &Config, game: u32) -> GameResult {
                 recruits,
                 next_id,
             );
-            let actions = play_turn(&mut state, 0, c.ai1, &mut rng, &f1_recruit_defs, policy);
+            let actions = play_turn(
+                &mut state,
+                0,
+                c.ai1,
+                &mut rng,
+                &f1_recruit_defs,
+                policy,
+                &mut planner_memory[0],
+            );
             record_actions(&mut recording, step, 0, &actions);
         } else {
             let policy = recruit_policy_for_side(c, 1);
@@ -653,7 +669,15 @@ fn run_game(c: &Config, game: u32) -> GameResult {
                 recruits,
                 next_id,
             );
-            let actions = play_turn(&mut state, 1, c.ai2, &mut rng, &f2_recruit_defs, policy);
+            let actions = play_turn(
+                &mut state,
+                1,
+                c.ai2,
+                &mut rng,
+                &f2_recruit_defs,
+                policy,
+                &mut planner_memory[1],
+            );
             record_actions(&mut recording, step, 1, &actions);
         }
         record_state(
@@ -997,5 +1021,60 @@ mod tests {
             assert_eq!(result.winner, None);
             assert_eq!(result.termination_reason, TerminationReason::SideTurnCap);
         }
+    }
+
+    #[test]
+    fn coordinated_play_turn_retains_memory_between_side_turns() {
+        let data = root().join("data");
+        let units: Registry<UnitDef> = Registry::load_from_dir(&data.join("units")).unwrap();
+        let factions = load_factions(&data);
+        let undead = factions.iter().find(|f| f.def.id == "undead").unwrap();
+        let mut state = test_state();
+        let own_keep = keep_for(&state, 0);
+        let enemy_keep = keep_for(&state, 1);
+        state.place_unit(
+            Unit::from_def(1, units.get(&undead.def.leader_def).unwrap(), 0),
+            own_keep,
+        );
+        state.place_unit(
+            Unit::from_def(2, units.get(&undead.def.leader_def).unwrap(), 1),
+            enemy_keep,
+        );
+        state.active_faction = 0;
+        let mut memory = PlannerMemory {
+            objective: Some(norrust_core::ai::CoordinatedObjective::Concentrate),
+            target: Some(enemy_keep),
+            age: 0,
+            no_progress: 0,
+            progress_marker: None,
+        };
+        let mut rng = 17;
+        let definitions: Vec<UnitDef> = Vec::new();
+
+        let _ = play_turn(
+            &mut state,
+            0,
+            AiKind::Coordinated,
+            &mut rng,
+            &definitions,
+            RecruitPolicy::FirstAffordable,
+            &mut memory,
+        );
+        let first_age = memory.age;
+        let first_objective = memory.objective;
+        state.active_faction = 0;
+        let _ = play_turn(
+            &mut state,
+            0,
+            AiKind::Coordinated,
+            &mut rng,
+            &definitions,
+            RecruitPolicy::FirstAffordable,
+            &mut memory,
+        );
+
+        assert!(first_age > 0);
+        assert!(memory.age > first_age);
+        assert_eq!(memory.objective, first_objective);
     }
 }
