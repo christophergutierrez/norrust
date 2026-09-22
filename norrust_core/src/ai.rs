@@ -1442,10 +1442,12 @@ pub fn ai_take_turn_coordinated(
     let mut lookahead = state.clone();
     lookahead.rng = crate::combat::Rng::new(evaluation_seed);
     ai_take_turn_greedy_lookahead(&mut lookahead, faction, cheapest_recruit_cost, recruit_defs);
+    simulate_complete_greedy_response(&mut lookahead);
 
     let mut greedy = state.clone();
     greedy.rng = crate::combat::Rng::new(evaluation_seed);
     ai_take_turn_greedy(&mut greedy, faction);
+    simulate_complete_greedy_response(&mut greedy);
 
     let lookahead_score = coordinated_state_score(&lookahead, faction);
     let greedy_score = coordinated_state_score(&greedy, faction);
@@ -1457,38 +1459,76 @@ pub fn ai_take_turn_coordinated(
 }
 
 fn coordinated_state_score(state: &GameState, faction: u8) -> f32 {
-    let own_units = state.units.values().filter(|u| u.faction == faction);
-    let enemy_units = state.units.values().filter(|u| u.faction != faction);
-    let own_hp: f32 = own_units
-        .map(|u| u.hp as f32 / u.max_hp.max(1) as f32)
-        .sum();
-    let enemy_hp: f32 = enemy_units
-        .map(|u| u.hp as f32 / u.max_hp.max(1) as f32)
-        .sum();
-    let own_count = state
-        .units
-        .values()
-        .filter(|u| u.faction == faction)
-        .count() as f32;
-    let enemy_count = state
-        .units
-        .values()
-        .filter(|u| u.faction != faction)
-        .count() as f32;
-    let recruiter_alive = state
-        .units
-        .values()
-        .any(|u| u.faction == faction && u.can_recruit);
-    let villages = state
+    if let Some(winner) = state.check_winner() {
+        return if winner == faction { 10_000.0 } else { -10_000.0 };
+    }
+
+    let enemy = 1 - faction;
+    let material = |side: u8| {
+        state
+            .units
+            .values()
+            .filter(|unit| unit.faction == side)
+            .map(|unit| {
+                unit.cost as f32 * unit.hp as f32 / unit.max_hp.max(1) as f32
+            })
+            .sum::<f32>()
+    };
+    let own_material = material(faction);
+    let enemy_material = material(enemy);
+    let own_villages = state
         .village_owners
         .values()
         .filter(|&&owner| owner == faction as i8)
         .count() as f32;
-    let gold = state.gold[faction as usize] as f32;
-    own_hp * 8.0 - enemy_hp * 3.0 + own_count * 4.0 - enemy_count * 2.0
-        + villages * 6.0
-        + gold * 0.25
-        + if recruiter_alive { 25.0 } else { -1000.0 }
+    let enemy_villages = state
+        .village_owners
+        .values()
+        .filter(|&&owner| owner == enemy as i8)
+        .count() as f32;
+    let own_recruiter = state
+        .units
+        .values()
+        .any(|unit| unit.faction == faction && unit.can_recruit);
+    let enemy_recruiter = state
+        .units
+        .values()
+        .any(|unit| unit.faction == enemy && unit.can_recruit);
+
+    // Keep the utility deliberately small and on one scale.  Terminal outcomes
+    // dominate; material uses actual unit cost and remaining HP instead of unit
+    // count or fractional HP with unrelated weights.
+    (own_material - enemy_material)
+        + (state.gold[faction as usize] as f32 - state.gold[enemy as usize] as f32) * 0.25
+        + (own_villages - enemy_villages) * 12.0
+        + if own_recruiter { 40.0 } else { -400.0 }
+        + if enemy_recruiter { 0.0 } else { 400.0 }
+}
+
+fn coordinated_candidate_score(
+    before: &GameState,
+    after: &GameState,
+    faction: u8,
+    objective: CoordinatedObjective,
+    target: Option<Hex>,
+) -> f32 {
+    let base = coordinated_state_score(after, faction);
+    if base.abs() >= 10_000.0 {
+        return base;
+    }
+    base + objective_progress_delta(before, after, faction, objective, target)
+}
+
+/// Advance a private candidate through one complete legal opponent turn.  The
+/// coordinated selector uses this same response for every candidate, so a
+/// candidate is not rewarded merely because its own turn ended before an
+/// exposed unit could be punished.  This deliberately uses the bounded greedy
+/// opponent rather than recursively invoking coordinated search.
+fn simulate_complete_greedy_response(state: &mut GameState) {
+    if state.check_winner().is_none() {
+        let enemy = state.active_faction;
+        ai_take_turn_greedy(state, enemy);
+    }
 }
 
 const MAX_NO_PROGRESS_TURNS: u32 = 2;
@@ -2176,13 +2216,20 @@ pub fn ai_take_turn_coordinated_with_memory(
     let mut lookahead = state.clone();
     lookahead.rng = crate::combat::Rng::new(evaluation_seed);
     let cheapest = definitions.iter().map(|def| def.cost).min().unwrap_or(0);
-    let (look_records, lookahead_score) =
+    let (look_records, _planner_score) =
         plan_full_turn_with_definitions(&lookahead, faction, cheapest, definitions, policy);
 
     let mut greedy = state.clone();
     greedy.rng = crate::combat::Rng::new(evaluation_seed);
     ai_take_turn_greedy(&mut greedy, faction);
-    let greedy_score = coordinated_state_score(&greedy, faction);
+    simulate_complete_greedy_response(&mut greedy);
+    let greedy_score = coordinated_candidate_score(
+        state,
+        &greedy,
+        faction,
+        objective,
+        memory.target,
+    );
     let mut objective_state = state.clone();
     let mut objective_next_id = objective_state.next_unit_id;
     let objective_recruitment = execute_recruitment(
@@ -2216,8 +2263,30 @@ pub fn ai_take_turn_coordinated_with_memory(
         policy,
         objective_records.clone(),
     );
-    let objective_score = coordinated_state_score(&objective_candidate, faction)
-        + objective_progress_score(&objective_candidate, faction, objective, memory.target);
+    simulate_complete_greedy_response(&mut objective_candidate);
+    let mut lookahead_candidate = state.clone();
+    commit_planned_turn_with_definitions(
+        &mut lookahead_candidate,
+        faction,
+        definitions,
+        policy,
+        look_records.clone(),
+    );
+    simulate_complete_greedy_response(&mut lookahead_candidate);
+    let lookahead_score = coordinated_candidate_score(
+        state,
+        &lookahead_candidate,
+        faction,
+        objective,
+        memory.target,
+    );
+    let objective_score = coordinated_candidate_score(
+        state,
+        &objective_candidate,
+        faction,
+        objective,
+        memory.target,
+    );
     let selected = if objective_score >= greedy_score && objective_score >= lookahead_score {
         commit_planned_turn_with_definitions(state, faction, definitions, policy, objective_records)
     } else if lookahead_score >= greedy_score {
@@ -2261,6 +2330,18 @@ fn objective_progress_score(
             .map(|distance| (20_u32.saturating_sub(distance)) as f32)
             .unwrap_or(0.0),
     }
+}
+
+fn objective_progress_delta(
+    before: &GameState,
+    after: &GameState,
+    faction: u8,
+    objective: CoordinatedObjective,
+    target: Option<Hex>,
+) -> f32 {
+    let before_score = objective_progress_score(before, faction, objective, target);
+    let after_score = objective_progress_score(after, faction, objective, target);
+    (after_score - before_score).clamp(-30.0, 30.0)
 }
 
 fn update_planner_memory(
@@ -3086,6 +3167,22 @@ mod tests {
         assert_eq!(first.positions, second.positions);
         assert_eq!(first.active_faction, second.active_faction);
         assert_eq!(first.sides_acted_this_round, second.sides_acted_this_round);
+    }
+
+    #[test]
+    fn coordinated_score_terminal_result_dominates_resources() {
+        let board = setup_keep_board(0, 0);
+        let mut winning = GameState::new(board.clone());
+        winning.active_faction = 0;
+        winning.gold = [0, 100_000];
+        winning.place_unit(make_fighter(1, 0, 30), Hex::from_offset(0, 0));
+        assert_eq!(coordinated_state_score(&winning, 0), 10_000.0);
+
+        let mut losing = GameState::new(board);
+        losing.active_faction = 0;
+        losing.gold = [100_000, 0];
+        losing.place_unit(make_fighter(2, 1, 30), Hex::from_offset(1, 0));
+        assert_eq!(coordinated_state_score(&losing, 0), -10_000.0);
     }
 
     #[test]
