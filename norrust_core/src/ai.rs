@@ -1779,11 +1779,6 @@ fn objective_actions(
                 });
             }
         }
-        let attack = if objective == CoordinatedObjective::PressAttack {
-            None
-        } else {
-            attack
-        };
         if let Some(defender_id) = attack {
             if working.units.contains_key(&id)
                 && working.units.contains_key(&defender_id)
