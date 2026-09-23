@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 import hashlib
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 from . import algorithm_strength as strength
 from . import coordinated_selector_evaluation as evaluation
@@ -117,17 +118,36 @@ class CoordinatedSelectorEvaluationTests(unittest.TestCase):
         pilot = evaluation.build_pilot_schedule([2038, 4477, 7731])
         self.assertEqual([cell["seed"] for cell in pilot], [2038, 4477, 7731])
         self.assertEqual(len(pilot), 3)
-        self.assertTrue(all(cell["controlled_side"] == 0 and cell["opponent"] == "greedy"
-                            and cell["faction"] == "undead" for cell in pilot))
+        self.assertEqual([cell["controlled_side"] for cell in pilot], [0, 1, 0])
+        self.assertEqual([cell["first"] for cell in pilot], ["team1", "team1", "team2"])
+        self.assertTrue(all(cell["opponent"] == "greedy" and cell["faction"] == "undead"
+                            for cell in pilot))
         self.assertEqual(len(pilot) * 3, 9)  # baseline + the two requested model treatments
 
-    def test_pilot_schedule_is_bounded_to_the_explicit_paired_seeds(self):
-        pilot = evaluation.build_pilot_schedule([2038, 4477, 7731])
-        self.assertEqual([cell["seed"] for cell in pilot], [2038, 4477, 7731])
-        self.assertEqual(len(pilot), 3)
-        self.assertTrue(all(cell["controlled_side"] == 0 and cell["opponent"] == "greedy"
-                            and cell["faction"] == "undead" for cell in pilot))
-        self.assertEqual(len(pilot) * 3, 9)  # baseline + the two requested model treatments
+    def test_pilot_runs_all_local_baselines_before_paid_models(self):
+        treatments = ("coordinated-baseline", "coordinated-fireworks-glm",
+                      "coordinated-fireworks-deepseek")
+        profiles = {t: _profile(t) for t in treatments if t != "coordinated-baseline"}
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            binary = root / "self-play"
+            binary.write_bytes(b"frozen test binary")
+            calls = []
+
+            def fake_game(cell, treatment, *args, **kwargs):
+                calls.append((cell["seed"], treatment))
+                return {"status": "unrun", "outcome": None}
+
+            with patch.object(evaluation, "_run_one", side_effect=fake_game), \
+                    patch.object(evaluation, "build_report", return_value={"status": "complete"}):
+                evaluation.run_screen(root / "pilot", binary, treatments=treatments,
+                                      selector_profiles=profiles, pilot_seeds=[2038, 4477, 7731])
+            self.assertEqual([t for _, t in calls],
+                             ["coordinated-baseline"] * 3
+                             + ["coordinated-fireworks-glm"] * 3
+                             + ["coordinated-fireworks-deepseek"] * 3)
+            self.assertEqual(calls[:3], [(seed, "coordinated-baseline")
+                                         for seed in (2038, 4477, 7731)])
 
     def test_commands_use_coordinated_ai_selector_side_and_fireworks_bridge(self):
         binary, record_dir = Path("self-play"), Path("cell1/trace")

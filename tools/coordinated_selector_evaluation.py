@@ -60,11 +60,13 @@ def build_pilot_schedule(seeds: tuple[int, ...] | list[int], *, gold: int = 300,
     if not seeds or len(set(seeds)) != len(seeds):
         raise ValueError("pilot seeds must be a non-empty unique list")
     cells = []
-    for seed in seeds:
+    seats = ((0, "team1"), (1, "team1"), (0, "team2"))
+    for index, seed in enumerate(seeds):
         if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
             raise ValueError("pilot seeds must be non-negative integers")
-        cell = strength._cell(f"pilot-greedy-undead-seed{seed}-side0-team1", "undead",
-                              "greedy", 0, "team1", gold, seed, max_side_turns)
+        side, first = seats[index % len(seats)]
+        cell = strength._cell(f"pilot-greedy-undead-seed{seed}-side{side}-{first}", "undead",
+                              "greedy", side, first, gold, seed, max_side_turns)
         cell["pair_id"] = cell["cell_id"]
         cells.append(cell)
     return cells
@@ -720,8 +722,10 @@ def run_screen(out_dir: Path, binary: Path, *, base_seed: int = 38101,
     manifest["schedule_sha256"] = hashlib.sha256(strength._canonical_bytes(schedule)).hexdigest()
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     results = []
-    for cell in schedule:
-        for treatment in treatments:
+    # Complete deterministic baselines before dispatching any paid model games.
+    treatment_order = sorted(treatments, key=lambda t: (t not in LOCAL_TREATMENTS, treatments.index(t)))
+    for treatment in treatment_order:
+        for cell in schedule:
             results.append(_run_one(cell, treatment, binary.resolve(), out_dir, timeout_seconds,
                                     profile=resolved_profiles.get(treatment)))
             (out_dir / "results.json").write_text(json.dumps({"results": results}, indent=2) + "\n")
@@ -742,7 +746,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--selector-profiles", type=Path,
                         help="JSON mapping remote treatment names to frozen selector profiles")
     parser.add_argument("--pilot-seeds", type=int, nargs="+",
-                        help="run only these paired seeds (undead vs Greedy, controlled side 0)")
+                        help="run only these paired seeds (undead vs Greedy; seats alternate side0/team1, side1/team1, side0/team2)")
     args = parser.parse_args(argv)
     if args.gold < 1 or args.max_side_turns < 1 or args.timeout_seconds <= 0:
         parser.error("gold, cap, and timeout must be positive")
