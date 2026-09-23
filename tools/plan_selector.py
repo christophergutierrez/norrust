@@ -1,21 +1,31 @@
-"""Bounded, provider-independent selection among engine-produced plan IDs.
+"""Canonical, bounded selector prompt and strict response parser.
 
-This module deliberately knows nothing about game commands. A selector sees
-only the candidate identifiers for the current decision and may return one ID.
-The caller remains responsible for executing the corresponding validated plan.
+The Rust planner owns candidate generation and execution. This module only
+serializes the versioned selector request into a compact prompt and accepts a
+candidate ID in response.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
 import json
+import math
+import argparse
+import sys
 import time
-from typing import Protocol, Sequence
-
+from typing import Any, Protocol, Sequence
 
 SCHEMA_VERSION = 1
+MAX_PROMPT_BYTES = 12_288
 DEFAULT_TIMEOUT_SECONDS = 2.0
 DEFAULT_GAME_REQUEST_BUDGET = 64
+_REQUEST_KEYS = {"schema_version", "turn", "side", "state_revision", "evaluation_seed", "objective", "candidates"}
+_CANDIDATE_KEYS = {"candidate_id", "plan_kind", "label", "score", "material_delta", "gold_delta", "village_delta", "recruiter_alive", "objective_progress", "opponent_response_delta", "legal", "state_revision"}
+_ENVELOPE_KEYS = {"schema_version", "game_id", "decision_id", "request_sha256", "request"}
+
+
+class PromptTooLarge(ValueError):
+    """The complete prompt cannot fit the fixed UTF-8 budget."""
 
 
 class SelectorMode(str, Enum):
@@ -26,7 +36,7 @@ class SelectorMode(str, Enum):
 
 class FallbackReason(str, Enum):
     DISABLED = "disabled"
-    INVALID_CANDIDATES = "invalid_candidates"
+    INVALID_REQUEST = "invalid_request"
     MALFORMED_RESPONSE = "malformed_response"
     UNKNOWN_CANDIDATE = "unknown_candidate"
     TIMEOUT = "timeout"
@@ -34,28 +44,213 @@ class FallbackReason(str, Enum):
     BUDGET_EXHAUSTED = "budget_exhausted"
 
 
+def _integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
+
+
+def _strict_object(text: str) -> dict[str, Any]:
+    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("duplicate JSON key")
+            result[key] = value
+        return result
+
+    def reject_constant(value: str) -> Any:
+        raise ValueError(f"invalid JSON constant: {value}")
+
+    value = json.loads(text, object_pairs_hook=pairs, parse_constant=reject_constant)
+    if not isinstance(value, dict):
+        raise ValueError("selector value must be a JSON object")
+    return value
+
+
+@dataclass(frozen=True)
+class CandidateSummary:
+    candidate_id: str
+    plan_kind: str
+    label: str
+    score: float
+    material_delta: float
+    gold_delta: int
+    village_delta: int
+    recruiter_alive: bool
+    objective_progress: float
+    opponent_response_delta: float
+    legal: bool
+    state_revision: int
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "CandidateSummary":
+        if not isinstance(value, dict):
+            raise ValueError("candidate must be an object")
+        if set(value) != _CANDIDATE_KEYS:
+            raise ValueError("candidate fields do not match selector schema")
+        if any(not isinstance(value[key], str) or not value[key] for key in ("candidate_id", "plan_kind", "label")):
+            raise ValueError("candidate text fields are invalid")
+        if (not _number(value["score"]) or not _number(value["material_delta"])
+                or not _number(value["objective_progress"])
+                or not _number(value["opponent_response_delta"])
+                or not _integer(value["gold_delta"]) or not _integer(value["village_delta"])
+                or not isinstance(value["recruiter_alive"], bool)
+                or not isinstance(value["legal"], bool) or not _integer(value["state_revision"])):
+            raise ValueError("candidate metric types are invalid")
+        return cls(**value)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {key: getattr(self, key) for key in (
+            "candidate_id", "plan_kind", "label", "score", "material_delta",
+            "gold_delta", "village_delta", "recruiter_alive", "objective_progress",
+            "opponent_response_delta", "legal", "state_revision")}
+
+
 @dataclass(frozen=True)
 class SelectorRequest:
-    """Compact selector envelope; it contains no executable game commands."""
+    schema_version: int
+    turn: int
+    side: int
+    state_revision: int
+    evaluation_seed: int
+    objective: str
+    candidates: tuple[CandidateSummary, ...]
 
-    decision_id: str
-    state_revision: str
-    candidate_ids: tuple[str, ...]
-    schema_version: int = SCHEMA_VERSION
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "SelectorRequest":
+        if not isinstance(value, dict):
+            raise ValueError("selector request must be an object")
+        if set(value) != _REQUEST_KEYS or value.get("schema_version") != SCHEMA_VERSION:
+            raise ValueError("unsupported or incomplete selector request schema")
+        if (not _integer(value["turn"]) or value["turn"] < 0
+                or not _integer(value["side"]) or value["side"] not in (0, 1)
+                or not _integer(value["state_revision"]) or value["state_revision"] < 0
+                or not _integer(value["evaluation_seed"]) or value["evaluation_seed"] < 0
+                or not isinstance(value["objective"], str) or not value["objective"]
+                or not isinstance(value["candidates"], list) or not value["candidates"]):
+            raise ValueError("selector request fields are invalid")
+        request = cls(value["schema_version"], value["turn"], value["side"], value["state_revision"],
+                      value["evaluation_seed"], value["objective"],
+                      tuple(CandidateSummary.from_dict(item) for item in value["candidates"]))
+        request.validate()
+        return request
+
+    @classmethod
+    def from_json(cls, text: str) -> "SelectorRequest":
+        return cls.from_dict(_strict_object(text))
+
+    def validate(self) -> None:
+        ids = [candidate.candidate_id for candidate in self.candidates]
+        if len(ids) != len(set(ids)):
+            raise ValueError("candidate IDs must be unique")
+        if any(not candidate.legal or candidate.state_revision != self.state_revision for candidate in self.candidates):
+            raise ValueError("candidate is illegal or has a stale revision")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"schema_version": self.schema_version, "turn": self.turn, "side": self.side,
+                "state_revision": self.state_revision, "evaluation_seed": self.evaluation_seed,
+                "objective": self.objective,
+                "candidates": [candidate.to_dict() for candidate in sorted(self.candidates, key=lambda item: item.candidate_id)]}
 
     def to_json(self) -> str:
+        return json.dumps(self.to_dict(), ensure_ascii=False, separators=(",", ":"), sort_keys=True, allow_nan=False)
+
+
+def _baseline_id(request: SelectorRequest) -> str:
+    rank = {"objective": 2, "lookahead": 1, "greedy": 0}
+    return max(request.candidates, key=lambda candidate: (candidate.score, rank.get(candidate.plan_kind, -1), candidate.candidate_id)).candidate_id
+
+
+@dataclass(frozen=True)
+class SelectorEnvelope:
+    """Identity envelope used by the Rust selector command boundary."""
+
+    game_id: str
+    decision_id: str
+    request_sha256: str
+    request: SelectorRequest
+    schema_version: int = SCHEMA_VERSION
+
+    @classmethod
+    def from_json(cls, text: str) -> "SelectorEnvelope":
+        value = _strict_object(text)
+        if set(value) != _ENVELOPE_KEYS or value.get("schema_version") != SCHEMA_VERSION:
+            raise ValueError("invalid selector envelope")
+        if (not isinstance(value["game_id"], str) or not value["game_id"]
+                or not isinstance(value["decision_id"], str) or not value["decision_id"]
+                or not isinstance(value["request_sha256"], str)
+                or len(value["request_sha256"]) != 64
+                or any(character not in "0123456789abcdef" for character in value["request_sha256"])):
+            raise ValueError("invalid selector envelope identity")
+        return cls(value["game_id"], value["decision_id"], value["request_sha256"],
+                   SelectorRequest.from_dict(value["request"]), value["schema_version"])
+
+    def response_json(self, response: str) -> str:
+        parsed = _parse_response_object(response,
+                                        [candidate.candidate_id for candidate in self.request.candidates])
         return json.dumps({
             "schema_version": self.schema_version,
+            "game_id": self.game_id,
             "decision_id": self.decision_id,
-            "state_revision": self.state_revision,
-            "candidate_ids": list(self.candidate_ids),
+            "request_sha256": self.request_sha256,
+            "response": parsed,
         }, separators=(",", ":"), sort_keys=True)
 
 
-class SelectorBackend(Protocol):
-    """A single backend call. Implementations must enforce the supplied timeout."""
+def build_selector_prompt(request: SelectorRequest) -> str:
+    """Build the sole canonical prompt sent to a selector backend."""
+    request.validate()
+    prompt = (
+        "Choose one existing complete-turn Coordinated Planner plan for the controlled side's long-term survival and victory. "
+        "The engine performs movement, combat, recruitment, arithmetic, and execution. Return only the strict JSON response.\n\n"
+        "Perspective and definitions:\n"
+        "- side is the controlled side; every delta is from its perspective.\n"
+        "- candidate facts cover our completed turn and the modeled opponent response; opponent_response_delta is the utility change caused by that response.\n"
+        "- relative forces are summarized by material_delta and recruiter_alive; gold_delta and village_delta summarize economy and control.\n"
+        "- material_delta and gold_delta are net changes, not enemy casualties; useful spending is not automatically harmful.\n"
+        "- missing threat or consequence evidence is unknown, never safe.\n"
+        "- score is deterministic engine utility; do not select by score alone.\n\n"
+        f"Current objective: {request.objective}\nTurn: {request.turn}; controlled side: {request.side}; state revision: {request.state_revision}; evaluation seed: {request.evaluation_seed}\n"
+        f"Deterministic baseline candidate: {_baseline_id(request)}\n"
+        "Candidates (the baseline is used when advice is unavailable):\n"
+    )
+    for candidate in sorted(request.candidates, key=lambda item: item.candidate_id):
+        prompt += json.dumps(candidate.to_dict(), ensure_ascii=False, separators=(",", ":"), sort_keys=True, allow_nan=False) + "\n"
+    prompt += ('\nRespond with exactly one JSON object: {"schema_version":1,"candidate_id":"<existing ID>","reason_code":"optional short reason"}. '
+               "Do not return commands, actions, scores, markdown, or extra fields.")
+    if len(prompt.encode("utf-8")) > MAX_PROMPT_BYTES:
+        raise PromptTooLarge("selector prompt exceeds 12288 UTF-8 bytes")
+    return prompt
 
-    def select(self, request: SelectorRequest, timeout_seconds: float) -> str: ...
+
+def parse_candidate_response(response: str, candidate_ids: Sequence[str]) -> str:
+    value = _parse_response_object(response, candidate_ids)
+    return value["candidate_id"]
+
+
+def _parse_response_object(response: str, candidate_ids: Sequence[str]) -> dict[str, Any]:
+    try:
+        value = _strict_object(response)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("malformed_response") from exc
+    if set(value) not in ({"schema_version", "candidate_id"}, {"schema_version", "candidate_id", "reason_code"}):
+        raise ValueError("malformed_response")
+    if (value.get("schema_version") != SCHEMA_VERSION or not _integer(value.get("schema_version"))
+            or not isinstance(value.get("candidate_id"), str) or not value["candidate_id"]):
+        raise ValueError("malformed_response")
+    if "reason_code" in value and value["reason_code"] is not None:
+        if not isinstance(value["reason_code"], str) or len(value["reason_code"].encode("utf-8")) > 32:
+            raise ValueError("malformed_response")
+    if value["candidate_id"] not in candidate_ids:
+        raise LookupError("unknown_candidate")
+    return value
+
+
+class SelectorBackend(Protocol):
+    def select(self, prompt: str, timeout_seconds: float) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -74,16 +269,12 @@ class SelectionResult:
 
 @dataclass
 class GameRequestBudget:
-    """Mutable per-game request counter, shared across decision calls."""
-
     maximum: int = DEFAULT_GAME_REQUEST_BUDGET
     used: int = 0
 
     def __post_init__(self) -> None:
-        if self.maximum < 0:
-            raise ValueError("maximum request budget cannot be negative")
-        if self.used < 0 or self.used > self.maximum:
-            raise ValueError("used requests must be within the request budget")
+        if self.maximum < 0 or self.used < 0 or self.used > self.maximum:
+            raise ValueError("invalid selector request budget")
 
     def consume(self) -> bool:
         if self.used >= self.maximum:
@@ -92,74 +283,35 @@ class GameRequestBudget:
         return True
 
 
-def parse_candidate_response(response: str, candidate_ids: Sequence[str]) -> str:
-    """Parse the strict JSON reply and verify it names a current candidate.
-
-    The accepted response is exactly ``{"schema_version":1,"candidate_id":"..."}``.
-    Extra fields (including free-form actions or scores) are rejected.
-    """
-    try:
-        value = json.loads(response)
-    except (TypeError, json.JSONDecodeError) as exc:
-        raise ValueError("malformed_response") from exc
-    if (not isinstance(value, dict) or set(value) != {"schema_version", "candidate_id"}
-            or value.get("schema_version") != SCHEMA_VERSION
-            or isinstance(value.get("schema_version"), bool)
-            or not isinstance(value.get("candidate_id"), str)
-            or not value["candidate_id"]):
-        raise ValueError("malformed_response")
-    candidate_id = value["candidate_id"]
-    if candidate_id not in candidate_ids:
-        raise LookupError("unknown_candidate")
-    return candidate_id
-
-
-def _valid_ids(candidate_ids: Sequence[str], baseline_id: str) -> bool:
-    return (bool(candidate_ids)
-            and all(isinstance(value, str) and value for value in candidate_ids)
-            and len(set(candidate_ids)) == len(candidate_ids)
-            and baseline_id in candidate_ids)
-
-
-def select_candidate(*, mode: SelectorMode, candidate_ids: Sequence[str], baseline_id: str,
-                     decision_id: str, state_revision: str,
+def select_candidate(*, request: SelectorRequest, mode: SelectorMode,
                      backend: SelectorBackend | None = None,
                      budget: GameRequestBudget | None = None,
                      timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS) -> SelectionResult:
-    """Select one current plan ID or return the deterministic baseline.
-
-    A model call is made at most once per invocation. Budget is charged before
-    dispatch, so a failed or timed-out request still consumes its game allowance.
-    """
     started = time.monotonic()
-    if not _valid_ids(candidate_ids, baseline_id):
-        return SelectionResult(baseline_id, baseline_id, mode,
-                               FallbackReason.INVALID_CANDIDATES, False,
-                               time.monotonic() - started)
+    try:
+        request.validate()
+        baseline = _baseline_id(request)
+    except ValueError:
+        return SelectionResult("", "", mode, FallbackReason.INVALID_REQUEST, False, time.monotonic() - started)
     if mode is SelectorMode.DISABLED:
-        return SelectionResult(baseline_id, baseline_id, mode,
-                               FallbackReason.DISABLED, False,
-                               time.monotonic() - started)
+        return SelectionResult(baseline, baseline, mode, FallbackReason.DISABLED, False, time.monotonic() - started)
     if mode is SelectorMode.DETERMINISTIC:
-        return SelectionResult(baseline_id, baseline_id, mode, None, False,
-                               time.monotonic() - started)
+        return SelectionResult(baseline, baseline, mode, None, False, time.monotonic() - started)
     if backend is None:
-        return SelectionResult(baseline_id, baseline_id, mode,
-                               FallbackReason.PROVIDER_ERROR, False,
-                               time.monotonic() - started)
+        return SelectionResult(baseline, baseline, mode, FallbackReason.PROVIDER_ERROR, False, time.monotonic() - started)
     request_budget = budget if budget is not None else GameRequestBudget()
     if not request_budget.consume():
-        return SelectionResult(baseline_id, baseline_id, mode,
-                               FallbackReason.BUDGET_EXHAUSTED, False,
-                               time.monotonic() - started)
-    request = SelectorRequest(decision_id, state_revision, tuple(candidate_ids))
+        return SelectionResult(baseline, baseline, mode, FallbackReason.BUDGET_EXHAUSTED, False, time.monotonic() - started)
     try:
+        prompt = build_selector_prompt(request)
         if timeout_seconds <= 0:
             raise TimeoutError("selector deadline elapsed")
-        response = backend.select(request, timeout_seconds)
+        response = backend.select(prompt, timeout_seconds)
         if time.monotonic() - started > timeout_seconds:
             raise TimeoutError("selector deadline elapsed")
-        selected = parse_candidate_response(response, candidate_ids)
+        selected = parse_candidate_response(response, [candidate.candidate_id for candidate in request.candidates])
+    except PromptTooLarge:
+        reason = FallbackReason.INVALID_REQUEST
     except TimeoutError:
         reason = FallbackReason.TIMEOUT
     except LookupError:
@@ -169,28 +321,25 @@ def select_candidate(*, mode: SelectorMode, candidate_ids: Sequence[str], baseli
     except Exception:
         reason = FallbackReason.PROVIDER_ERROR
     else:
-        return SelectionResult(selected, baseline_id, mode, None, True,
-                               time.monotonic() - started)
-    return SelectionResult(baseline_id, baseline_id, mode, reason, True,
-                           time.monotonic() - started)
+        return SelectionResult(selected, baseline, mode, None, True, time.monotonic() - started)
+    return SelectionResult(baseline, baseline, mode, reason, True, time.monotonic() - started)
 
 
 class FakeSelector:
-    """Configurable, deterministic backend for unit and local acceptance tests."""
+    """Local backend for prompt and parser tests; never performs network I/O."""
 
-    def __init__(self, *, candidate_id: str | None = None, behavior: str = "select",
-                 delay_seconds: float = 0.0):
+    def __init__(self, *, candidate_id: str | None = None, behavior: str = "select", delay_seconds: float = 0.0):
         if behavior not in {"select", "malformed", "unknown", "timeout", "error"}:
             raise ValueError(f"unsupported fake behavior: {behavior}")
         self.candidate_id = candidate_id
         self.behavior = behavior
         self.delay_seconds = delay_seconds
         self.calls = 0
-        self.last_request: SelectorRequest | None = None
+        self.last_prompt: str | None = None
 
-    def select(self, request: SelectorRequest, timeout_seconds: float) -> str:
+    def select(self, prompt: str, timeout_seconds: float) -> str:
         self.calls += 1
-        self.last_request = request
+        self.last_prompt = prompt
         if self.behavior == "timeout" or self.delay_seconds > timeout_seconds:
             raise TimeoutError("fake selector timed out")
         if self.delay_seconds:
@@ -201,5 +350,38 @@ class FakeSelector:
             return json.dumps({"schema_version": SCHEMA_VERSION, "candidate_id": "not-a-candidate"})
         if self.behavior == "error":
             raise RuntimeError("fake provider failure")
-        candidate_id = self.candidate_id or request.candidate_ids[0]
-        return json.dumps({"schema_version": SCHEMA_VERSION, "candidate_id": candidate_id})
+        if self.candidate_id is None:
+            raise ValueError("fake selector needs a candidate_id")
+        return json.dumps({"schema_version": SCHEMA_VERSION, "candidate_id": self.candidate_id})
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run the local identity-preserving command adapter.
+
+    The adapter is deliberately deterministic until the provider transport
+    stack supplies a backend. ``--candidate-id`` is a local test hook; absent
+    that option, the engine-ranked baseline is returned.
+    """
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--candidate-id", help="local test candidate ID")
+    args = parser.parse_args(argv)
+    line = sys.stdin.readline(MAX_PROMPT_BYTES * 2)
+    if not line:
+        print("selector envelope is required", file=sys.stderr)
+        return 2
+    try:
+        envelope = SelectorEnvelope.from_json(line)
+        candidate_id = args.candidate_id or _baseline_id(envelope.request)
+        output = envelope.response_json(json.dumps({
+            "schema_version": SCHEMA_VERSION, "candidate_id": candidate_id,
+        }, separators=(",", ":")))
+    except (ValueError, LookupError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    sys.stdout.write(output + "\n")
+    sys.stdout.flush()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

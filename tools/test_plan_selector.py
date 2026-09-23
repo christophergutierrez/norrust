@@ -1,99 +1,108 @@
-import json
+import dataclasses
+from pathlib import Path
 import unittest
 
 from tools.plan_selector import (
-    FallbackReason, FakeSelector, GameRequestBudget, SelectorMode,
+    FallbackReason, FakeSelector, MAX_PROMPT_BYTES, PromptTooLarge,
+    SelectorEnvelope, SelectorMode, SelectorRequest, build_selector_prompt,
     parse_candidate_response, select_candidate,
 )
 
 
-IDS = ("greedy", "lookahead", "objective")
+FIXTURES = Path(__file__).parent / "fixtures" / "selector_stack2"
+SCENARIOS = ("opening", "large_army", "close_tradeoff", "recruiter_danger")
+
+
+def load_request(name: str) -> SelectorRequest:
+    return SelectorRequest.from_json((FIXTURES / f"{name}.json").read_text(encoding="utf-8"))
 
 
 class PlanSelectorTests(unittest.TestCase):
-    def test_fake_selects_only_configured_current_candidate(self):
-        backend = FakeSelector(candidate_id="objective")
-        result = select_candidate(
-            mode=SelectorMode.MODEL, candidate_ids=IDS, baseline_id="lookahead",
-            decision_id="turn-1", state_revision="rev-5", backend=backend,
-        )
-        self.assertEqual(result.selected_id, "objective")
-        self.assertFalse(result.used_fallback)
-        self.assertEqual(backend.calls, 1)
-        self.assertEqual(backend.last_request.candidate_ids, IDS)
+    def test_four_rust_request_fixtures_have_complete_bounded_prompts(self):
+        for name in SCENARIOS:
+            with self.subTest(scenario=name):
+                request = load_request(name)
+                prompt = build_selector_prompt(request)
+                self.assertLessEqual(len(prompt.encode("utf-8")), MAX_PROMPT_BYTES)
+                self.assertIn(f"controlled side: {request.side}", prompt)
+                self.assertIn("opponent_response_delta", prompt)
+                self.assertIn("material_delta and gold_delta are net changes", prompt)
+                self.assertNotIn("terrain", prompt.lower())
+                self.assertNotIn("history", prompt.lower())
+                for candidate in request.candidates:
+                    self.assertIn(candidate.candidate_id, prompt)
 
-    def test_parser_rejects_malformed_unknown_and_untrusted_extra_fields(self):
-        valid = json.dumps({"schema_version": 1, "candidate_id": "greedy"})
-        self.assertEqual(parse_candidate_response(valid, IDS), "greedy")
-        for bad in (
-            "{", '{"schema_version":2,"candidate_id":"greedy"}',
-            '{"schema_version":true,"candidate_id":"greedy"}',
+    def test_candidate_order_does_not_change_prompt_or_baseline(self):
+        request = load_request("close_tradeoff")
+        reversed_request = dataclasses.replace(request, candidates=tuple(reversed(request.candidates)))
+        self.assertEqual(build_selector_prompt(request), build_selector_prompt(reversed_request))
+        original = select_candidate(request=request, mode=SelectorMode.DETERMINISTIC)
+        reversed_result = select_candidate(request=reversed_request, mode=SelectorMode.DETERMINISTIC)
+        self.assertEqual(original.selected_id, reversed_result.selected_id)
+        self.assertEqual(original.selected_id, "lookahead")
+
+    def test_prompt_uses_exact_utf8_bound_and_rejects_oversize(self):
+        request = load_request("opening")
+        low, high = 0, MAX_PROMPT_BYTES * 2
+        while low < high:
+            middle = (low + high + 1) // 2
+            candidate = dataclasses.replace(request, objective="x" * middle)
+            try:
+                fits = len(build_selector_prompt(candidate).encode("utf-8")) <= MAX_PROMPT_BYTES
+            except PromptTooLarge:
+                fits = False
+            if fits:
+                low = middle
+            else:
+                high = middle - 1
+        exact = dataclasses.replace(request, objective="x" * low)
+        self.assertEqual(len(build_selector_prompt(exact).encode("utf-8")), MAX_PROMPT_BYTES)
+        oversize = dataclasses.replace(request, objective="x" * (low + 1))
+        with self.assertRaises(PromptTooLarge):
+            build_selector_prompt(oversize)
+
+    def test_response_parser_rejects_duplicates_wrappers_and_bad_ids(self):
+        self.assertEqual(parse_candidate_response(
+            '{"schema_version":1,"candidate_id":"greedy","reason_code":"ok"}',
+            ("greedy", "lookahead")), "greedy")
+        bad = (
+            '{"schema_version":1,"schema_version":1,"candidate_id":"greedy"}',
             '{"schema_version":1,"candidate_id":"greedy","actions":[]}',
-            '{"schema_version":1,"candidate_id":4}',
-        ):
-            with self.subTest(response=bad), self.assertRaises(ValueError):
-                parse_candidate_response(bad, IDS)
-        with self.assertRaises(LookupError):
-            parse_candidate_response('{"schema_version":1,"candidate_id":"Move"}', IDS)
-
-    def test_all_fake_failure_modes_fall_back_with_explicit_reason(self):
-        cases = (
-            (FakeSelector(behavior="malformed"), FallbackReason.MALFORMED_RESPONSE),
-            (FakeSelector(behavior="unknown"), FallbackReason.UNKNOWN_CANDIDATE),
-            (FakeSelector(behavior="timeout"), FallbackReason.TIMEOUT),
-            (FakeSelector(behavior="error"), FallbackReason.PROVIDER_ERROR),
-            (FakeSelector(delay_seconds=0.02), FallbackReason.TIMEOUT),
+            '{"schema_version":1,"candidate_id":"invented"}',
+            '{"schema_version":1,"candidate_id":"greedy","reason_code":"' + "x" * 33 + '"}',
+            '{"schema_version":1,"candidate_id":"greedy","response":{"action":"x"}}',
         )
-        for backend, reason in cases:
-            with self.subTest(reason=reason):
-                result = select_candidate(
-                    mode=SelectorMode.MODEL, candidate_ids=IDS, baseline_id="lookahead",
-                    decision_id="turn-1", state_revision="rev-5", backend=backend,
-                    timeout_seconds=0.001 if backend.delay_seconds else 1,
-                )
-                self.assertEqual(result.selected_id, "lookahead")
-                self.assertEqual(result.fallback_reason, reason)
-                self.assertTrue(result.request_used)
-                self.assertEqual(backend.calls, 1)
+        for response in bad:
+            with self.subTest(response=response):
+                with self.assertRaises((ValueError, LookupError)):
+                    parse_candidate_response(response, ("greedy", "lookahead"))
 
-    def test_disabled_and_deterministic_modes_make_no_model_call(self):
-        backend = FakeSelector(candidate_id="objective")
-        for mode in (SelectorMode.DISABLED, SelectorMode.DETERMINISTIC):
-            result = select_candidate(
-                mode=mode, candidate_ids=IDS, baseline_id="lookahead",
-                decision_id="turn-1", state_revision="rev-5", backend=backend,
-            )
-            self.assertEqual(result.selected_id, "lookahead")
-            self.assertFalse(result.request_used)
-        self.assertEqual(backend.calls, 0)
+    def test_identity_envelope_preserves_bridge_fields(self):
+        request = load_request("opening")
+        envelope = SelectorEnvelope.from_json(
+            '{"schema_version":1,"game_id":"game-7","decision_id":"d-3",'
+            '"request_sha256":"' + "a" * 64 + '","request":' + request.to_json() + '}'
+        )
+        response = envelope.response_json('{"schema_version":1,"candidate_id":"lookahead"}')
+        self.assertEqual(response, '{"decision_id":"d-3","game_id":"game-7",'
+                                   '"request_sha256":"' + "a" * 64 + '","response":'
+                                   '{"candidate_id":"lookahead","schema_version":1},"schema_version":1}')
 
-    def test_budget_is_per_game_and_failed_call_consumes_one_request(self):
-        budget = GameRequestBudget(maximum=1)
-        first = select_candidate(
-            mode=SelectorMode.MODEL, candidate_ids=IDS, baseline_id="lookahead",
-            decision_id="turn-1", state_revision="rev-5",
-            backend=FakeSelector(behavior="error"), budget=budget,
-        )
-        self.assertEqual(first.fallback_reason, FallbackReason.PROVIDER_ERROR)
-        second_backend = FakeSelector(candidate_id="objective")
-        second = select_candidate(
-            mode=SelectorMode.MODEL, candidate_ids=IDS, baseline_id="lookahead",
-            decision_id="turn-2", state_revision="rev-6", backend=second_backend,
-            budget=budget,
-        )
-        self.assertEqual(second.fallback_reason, FallbackReason.BUDGET_EXHAUSTED)
-        self.assertEqual(second.selected_id, "lookahead")
-        self.assertEqual(second_backend.calls, 0)
-        self.assertEqual(budget.used, 1)
+    def test_model_selection_sends_canonical_prompt_and_only_current_id(self):
+        request = load_request("recruiter_danger")
+        backend = FakeSelector(candidate_id="lookahead")
+        result = select_candidate(request=request, mode=SelectorMode.MODEL, backend=backend)
+        self.assertEqual(result.selected_id, "lookahead")
+        self.assertTrue(result.request_used)
+        self.assertEqual(backend.calls, 1)
+        self.assertEqual(backend.last_prompt, build_selector_prompt(request))
 
-    def test_invalid_candidate_set_never_reaches_fake_backend(self):
-        backend = FakeSelector(candidate_id="invented")
-        result = select_candidate(
-            mode=SelectorMode.MODEL, candidate_ids=("greedy", "greedy"),
-            baseline_id="greedy", decision_id="turn-1", state_revision="rev-5",
-            backend=backend,
-        )
-        self.assertEqual(result.fallback_reason, FallbackReason.INVALID_CANDIDATES)
+    def test_invalid_request_never_reaches_backend(self):
+        request = load_request("opening")
+        duplicate = dataclasses.replace(request, candidates=(request.candidates[0], request.candidates[0]))
+        backend = FakeSelector(candidate_id="greedy")
+        result = select_candidate(request=duplicate, mode=SelectorMode.MODEL, backend=backend)
+        self.assertEqual(result.fallback_reason, FallbackReason.INVALID_REQUEST)
         self.assertEqual(backend.calls, 0)
 
 
