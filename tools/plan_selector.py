@@ -492,10 +492,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "schema_version": SCHEMA_VERSION, "candidate_id": args.candidate_id,
             }, separators=(",", ":")))
         else:
-            output = run_selector_envelope(
+            result = run_selector_envelope(
                 envelope, model=args.model, reasoning_effort=args.reasoning_effort,
                 max_output_tokens=args.max_output_tokens, timeout=args.timeout,
-            ).envelope
+            )
+            if result.fallback_reason is not None:
+                print(f"selector fallback: {result.fallback_reason}", file=sys.stderr)
+                return 1
+            output = result.envelope
     except (ValueError, LookupError) as exc:
         print(str(exc), file=sys.stderr)
         return 2

@@ -203,6 +203,34 @@ class PlanSelectorTests(unittest.TestCase):
         self.assertEqual(response["request_sha256"], envelope.request_sha256)
         self.assertEqual(response["response"]["candidate_id"], "objective")
 
+    def test_cli_provider_failure_and_truncation_exit_without_stdout_choice(self):
+        envelope = opening_envelope()
+        input_line = json.dumps({
+            "schema_version": 1, "game_id": envelope.game_id,
+            "decision_id": envelope.decision_id,
+            "request_sha256": envelope.request_sha256,
+            "request": envelope.request.to_dict(),
+        }, separators=(",", ":")) + "\n"
+        for reply, expected in (
+            (RuntimeError("request_unknown: test"), "request_unknown"),
+            ({"text": "partial", "error": {"code": "output_limit"}}, "output_limit"),
+        ):
+            with self.subTest(expected=expected):
+                def fake_run(prompt, **kwargs):
+                    if isinstance(reply, BaseException):
+                        raise reply
+                    return reply
+
+                output = io.StringIO()
+                errors = io.StringIO()
+                with patch("tools.plan_selector.fireworks_backend.run", fake_run), \
+                     patch("sys.stdin", io.StringIO(input_line)), \
+                     patch("sys.stdout", output), patch("sys.stderr", errors):
+                    code = __import__("tools.plan_selector", fromlist=["main"]).main([])
+                self.assertEqual(code, 1)
+                self.assertEqual(output.getvalue(), "")
+                self.assertIn(expected, errors.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
