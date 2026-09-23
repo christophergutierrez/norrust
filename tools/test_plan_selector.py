@@ -48,10 +48,10 @@ class PlanSelectorTests(unittest.TestCase):
         self.assertEqual(original.selected_id, reversed_result.selected_id)
         self.assertEqual(original.selected_id, "lookahead")
 
-    def test_prompt_states_bounded_optional_reason_length(self):
+    def test_prompt_requests_only_the_candidate_id(self):
         prompt = build_selector_prompt(load_request("close_tradeoff"))
-        self.assertIn("Omit reason_code unless useful", prompt)
-        self.assertIn("at most 32 UTF-8 bytes", prompt)
+        self.assertIn('{"schema_version":1,"candidate_id":"<existing ID>"}', prompt)
+        self.assertNotIn("reason_code", prompt)
 
     def test_prompt_uses_exact_utf8_bound_and_rejects_oversize(self):
         request = load_request("opening")
@@ -81,13 +81,21 @@ class PlanSelectorTests(unittest.TestCase):
             '{"schema_version":1,"schema_version":1,"candidate_id":"greedy"}',
             '{"schema_version":1,"candidate_id":"greedy","actions":[]}',
             '{"schema_version":1,"candidate_id":"invented"}',
-            '{"schema_version":1,"candidate_id":"greedy","reason_code":"' + "x" * 33 + '"}',
             '{"schema_version":1,"candidate_id":"greedy","response":{"action":"x"}}',
         )
         for response in bad:
             with self.subTest(response=response):
                 with self.assertRaises((ValueError, LookupError)):
                     parse_candidate_response(response, ("greedy", "lookahead"))
+
+    def test_parser_ignores_optional_reason_without_rejecting_valid_choice(self):
+        response = ('{"schema_version":1,"candidate_id":"lookahead",'
+                    '"reason_code":"' + "x" * 128 + '"}')
+        self.assertEqual(parse_candidate_response(response, ("greedy", "lookahead")), "lookahead")
+
+        unicode_reason = ('{"schema_version":1,"candidate_id":"greedy",'
+                          '"reason_code":"' + "理由" * 64 + '"}')
+        self.assertEqual(parse_candidate_response(unicode_reason, ("greedy", "lookahead")), "greedy")
 
     def test_identity_envelope_preserves_bridge_fields(self):
         request = load_request("opening")

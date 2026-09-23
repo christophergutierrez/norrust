@@ -22,7 +22,7 @@ def _profile(treatment="coordinated-fireworks-glm"):
     return {
         "command": {"program": "python3", "args": args},
         "model": model, "reasoning_effort": effort,
-        "profile_id": f"{treatment}-profile-1", "prompt_profile": "coordinated_selector_v1",
+        "profile_id": f"{treatment}-profile-1", "prompt_profile": "coordinated_selector_v2",
         "limits": {"max_prompt_bytes": 12288, "max_output_tokens": 2048,
                    "deadline_seconds": 60, "max_requests": 32},
         "pricing": {"date": "2026-09-20", "reasoning_included_in_output": True,
@@ -79,7 +79,7 @@ def _usage(*, game_id="g1", request_id="r1", call_id="call-1", status="completed
          "call_id": call_id, "status": status,
          "requested_model": "accounts/fireworks/models/glm-5p3-flash",
          "requested_reasoning_effort": "low", "output_limit": 2048,
-         "prompt_layout_version": "coordinated_selector_v1",
+         "prompt_layout_version": "coordinated_selector_v2",
          "input_tokens": input_tokens, "cached_input_tokens": cached_input_tokens,
          "output_tokens": output_tokens},
     ]

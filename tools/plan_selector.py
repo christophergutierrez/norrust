@@ -25,7 +25,7 @@ DEFAULT_TIMEOUT_SECONDS = 2.0
 DEFAULT_GAME_REQUEST_BUDGET = 64
 SELECTOR_OUTPUT_TOKENS = 2_048
 SELECTOR_TIMEOUT_SECONDS = 60.0
-SELECTOR_PROMPT_LAYOUT = "coordinated_selector_v1"
+SELECTOR_PROMPT_LAYOUT = "coordinated_selector_v2"
 MODEL_PROFILES = {
     "accounts/fireworks/models/glm-5p3-flash": "low",
     "accounts/fireworks/models/deepseek-v4p1-flash": "low",
@@ -230,9 +230,8 @@ def build_selector_prompt(request: SelectorRequest) -> str:
     )
     for candidate in sorted(request.candidates, key=lambda item: item.candidate_id):
         prompt += json.dumps(candidate.to_dict(), ensure_ascii=False, separators=(",", ":"), sort_keys=True, allow_nan=False) + "\n"
-    prompt += ('\nRespond with exactly one JSON object: {"schema_version":1,"candidate_id":"<existing ID>","reason_code":"optional short reason"}. '
-               "Omit reason_code unless useful; if included, keep it to at most 32 UTF-8 bytes. "
-               "Do not return commands, actions, scores, markdown, or extra fields.")
+    prompt += ('\nRespond with exactly one JSON object: {"schema_version":1,"candidate_id":"<existing ID>"}. '
+               "Do not return a reason, commands, actions, scores, markdown, or extra fields.")
     if len(prompt.encode("utf-8")) > MAX_PROMPT_BYTES:
         raise PromptTooLarge("selector prompt exceeds 12288 UTF-8 bytes")
     return prompt
@@ -253,9 +252,6 @@ def _parse_response_object(response: str, candidate_ids: Sequence[str]) -> dict[
     if (value.get("schema_version") != SCHEMA_VERSION or not _integer(value.get("schema_version"))
             or not isinstance(value.get("candidate_id"), str) or not value["candidate_id"]):
         raise ValueError("malformed_response")
-    if "reason_code" in value and value["reason_code"] is not None:
-        if not isinstance(value["reason_code"], str) or len(value["reason_code"].encode("utf-8")) > 32:
-            raise ValueError("malformed_response")
     if value["candidate_id"] not in candidate_ids:
         raise LookupError("unknown_candidate")
     return value
