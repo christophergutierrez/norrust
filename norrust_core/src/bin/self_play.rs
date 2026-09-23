@@ -15,8 +15,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use norrust_core::ai::{
-    ai_take_turn_coordinated_with_memory, ai_take_turn_greedy,
-    ai_take_turn_greedy_lookahead_with_unit_defs_recorded, ActionRecord, PlannerMemory,
+    ai_take_turn_coordinated_with_memory, ai_take_turn_coordinated_with_memory_selected,
+    ai_take_turn_greedy, ai_take_turn_greedy_lookahead_with_unit_defs_recorded, ActionRecord,
+    PlannerMemory,
 };
 use norrust_core::board::Tile;
 use norrust_core::game_state::{apply_action, Action, GameState};
@@ -28,6 +29,9 @@ use norrust_core::recruitment::{
 };
 use norrust_core::scenario::load_board;
 use norrust_core::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
+use norrust_core::selector::{
+    DecisionTelemetry, SelectorRequest, SelectorResponse, SELECTOR_SCHEMA_VERSION,
+};
 use norrust_core::unit::Unit;
 
 #[derive(Clone, Copy)]
@@ -84,6 +88,8 @@ struct Config {
     first: FirstPlayer,
     second_gold: u32,
     record_dir: Option<PathBuf>,
+    selector_candidate: Option<String>,
+    selector_failure: bool,
     recruit1_policy: RecruitPolicy,
     recruit2_policy: RecruitPolicy,
 }
@@ -138,6 +144,8 @@ Options:
   --first SIDE           team1 | team2 | coin-flip (default: team1)
   --second-gold N        Extra starting gold for the second player (default: 5)
   --record-dir PATH     Write isolated state trajectories (directory must be new)
+  --selector-candidate ID  Test selector: choose a current plan ID on close decisions
+  --selector-fail       Test selector: force fallback on close decisions
   --recruit1-policy KIND  team 1 recruitment: first-affordable | balanced
   --recruit2-policy KIND  team 2 recruitment: first-affordable | balanced
   --verbose             CSV header plus one line per game
@@ -189,6 +197,8 @@ fn parse_args() -> Config {
         first: FirstPlayer::Team1,
         second_gold: 5,
         record_dir: None,
+        selector_candidate: None,
+        selector_failure: false,
         recruit1_policy: RecruitPolicy::FirstAffordable,
         recruit2_policy: RecruitPolicy::FirstAffordable,
     };
@@ -211,6 +221,11 @@ fn parse_args() -> Config {
             i += 1;
             continue;
         }
+        if key == "--selector-fail" {
+            c.selector_failure = true;
+            i += 1;
+            continue;
+        }
         if key == "-h" || key == "--help" {
             usage();
         }
@@ -220,6 +235,7 @@ fn parse_args() -> Config {
         let value = &args[i + 1];
         match key.as_str() {
             "--record-dir" => c.record_dir = Some(PathBuf::from(value)),
+            "--selector-candidate" => c.selector_candidate = Some(value.clone()),
             "--recruit1-policy" => {
                 c.recruit1_policy = match value.as_str() {
                     "first-affordable" => RecruitPolicy::FirstAffordable,
@@ -259,6 +275,10 @@ fn parse_args() -> Config {
         i += 2;
     }
     if c.team1.is_empty() || c.team2.is_empty() || c.games == 0 || c.threads == 0 {
+        usage();
+    }
+    if c.selector_failure && c.selector_candidate.is_some() {
+        eprintln!("--selector-fail and --selector-candidate cannot be combined");
         usage();
     }
     if c.verbose as u8 + c.compact as u8 + c.json as u8 > 1 {
@@ -428,29 +448,92 @@ fn play_turn(
     recruit_defs: &[UnitDef],
     policy: RecruitPolicy,
     planner_memory: &mut PlannerMemory,
-) -> Vec<ActionRecord> {
+    selector_enabled: bool,
+    selector_config: &Config,
+) -> (Vec<ActionRecord>, Option<DecisionTelemetry>) {
     match kind {
         AiKind::Greedy => {
             ai_take_turn_greedy(state, side);
-            Vec::new()
+            (Vec::new(), None)
         }
-        AiKind::Lookahead => {
-            ai_take_turn_greedy_lookahead_with_unit_defs_recorded(state, side, recruit_defs, policy)
-        }
-        AiKind::Coordinated => {
-            ai_take_turn_coordinated_with_memory(
+        AiKind::Lookahead => (
+            ai_take_turn_greedy_lookahead_with_unit_defs_recorded(
                 state,
                 side,
                 recruit_defs,
                 policy,
-                planner_memory,
-            )
+            ),
+            None,
+        ),
+        AiKind::Coordinated => {
+            if selector_enabled {
+                let fake_selector =
+                    |request: &SelectorRequest| fake_selector_response(selector_config, request);
+                let (actions, _request, telemetry) = ai_take_turn_coordinated_with_memory_selected(
+                    state,
+                    side,
+                    recruit_defs,
+                    policy,
+                    planner_memory,
+                    Some(&fake_selector),
+                );
+                (actions, Some(telemetry))
+            } else {
+                (
+                    ai_take_turn_coordinated_with_memory(
+                        state,
+                        side,
+                        recruit_defs,
+                        policy,
+                        planner_memory,
+                    ),
+                    None,
+                )
+            }
         }
         AiKind::Random => {
             random_turn(state, side, rng);
-            Vec::new()
+            (Vec::new(), None)
         }
     }
+}
+
+fn record_decision(
+    writer: &mut Option<BufWriter<std::fs::File>>,
+    step: u32,
+    side: u8,
+    telemetry: &DecisionTelemetry,
+) {
+    if let Some(writer) = writer {
+        serde_json::to_writer(
+            &mut *writer,
+            &serde_json::json!({
+                "type": "coordinated_decision", "step": step, "side": side,
+                "telemetry": telemetry,
+            }),
+        )
+        .expect("write selector telemetry");
+        writeln!(writer).expect("write selector telemetry newline");
+    }
+}
+
+fn fake_selector_response(
+    config: &Config,
+    _request: &SelectorRequest,
+) -> Result<SelectorResponse, String> {
+    if config.selector_failure {
+        return Err("fake_selector_failure".into());
+    }
+    let candidate_id = config.selector_candidate.as_deref().unwrap_or("objective");
+    Ok(SelectorResponse {
+        schema_version: SELECTOR_SCHEMA_VERSION,
+        candidate_id: candidate_id.to_string(),
+        reason_code: None,
+    })
+}
+
+fn configured_selector(config: &Config) -> bool {
+    config.selector_candidate.is_some() || config.selector_failure
 }
 
 fn record_actions(
@@ -643,7 +726,7 @@ fn run_game(c: &Config, game: u32) -> GameResult {
                 recruits,
                 next_id,
             );
-            let actions = play_turn(
+            let (actions, telemetry) = play_turn(
                 &mut state,
                 0,
                 c.ai1,
@@ -651,8 +734,13 @@ fn run_game(c: &Config, game: u32) -> GameResult {
                 &f1_recruit_defs,
                 policy,
                 &mut planner_memory[0],
+                configured_selector(c),
+                c,
             );
             record_actions(&mut recording, step, 0, &actions);
+            if let Some(telemetry) = telemetry {
+                record_decision(&mut recording, step, 0, &telemetry);
+            }
         } else {
             let policy = recruit_policy_for_side(c, 1);
             let recruitment =
@@ -669,7 +757,7 @@ fn run_game(c: &Config, game: u32) -> GameResult {
                 recruits,
                 next_id,
             );
-            let actions = play_turn(
+            let (actions, telemetry) = play_turn(
                 &mut state,
                 1,
                 c.ai2,
@@ -677,8 +765,13 @@ fn run_game(c: &Config, game: u32) -> GameResult {
                 &f2_recruit_defs,
                 policy,
                 &mut planner_memory[1],
+                configured_selector(c),
+                c,
             );
             record_actions(&mut recording, step, 1, &actions);
+            if let Some(telemetry) = telemetry {
+                record_decision(&mut recording, step, 1, &telemetry);
+            }
         }
         record_state(
             &mut recording,
@@ -932,6 +1025,8 @@ mod tests {
             first: FirstPlayer::Team1,
             second_gold: 0,
             record_dir: None,
+            selector_candidate: None,
+            selector_failure: false,
             recruit1_policy: RecruitPolicy::FirstAffordable,
             recruit2_policy: RecruitPolicy::FirstAffordable,
         }
@@ -1059,6 +1154,8 @@ mod tests {
             &definitions,
             RecruitPolicy::FirstAffordable,
             &mut memory,
+            false,
+            &test_config(),
         );
         let first_age = memory.age;
         let first_objective = memory.objective;
@@ -1071,6 +1168,8 @@ mod tests {
             &definitions,
             RecruitPolicy::FirstAffordable,
             &mut memory,
+            false,
+            &test_config(),
         );
 
         assert!(first_age > 0);

@@ -2278,6 +2278,22 @@ pub fn ai_take_turn_coordinated_with_memory_recorded(
     policy: RecruitmentPolicy,
     memory: &mut PlannerMemory,
 ) -> (Vec<ActionRecord>, SelectorRequest, DecisionTelemetry) {
+    ai_take_turn_coordinated_with_memory_selected(state, faction, definitions, policy, memory, None)
+}
+
+/// Execute the Coordinated Planner with an optional bounded complete-plan selector.
+/// The selector receives summaries only and can return only a current candidate ID.
+/// Invalid responses and provider errors use the deterministic baseline.
+pub fn ai_take_turn_coordinated_with_memory_selected(
+    state: &mut GameState,
+    faction: u8,
+    definitions: &[UnitDef],
+    policy: RecruitmentPolicy,
+    memory: &mut PlannerMemory,
+    selector: Option<
+        &dyn Fn(&SelectorRequest) -> Result<crate::selector::SelectorResponse, String>,
+    >,
+) -> (Vec<ActionRecord>, SelectorRequest, DecisionTelemetry) {
     let evaluation_seed = 0x9e37_79b9_7f4a_7c15_u64
         ^ state.state_revision
         ^ ((faction as u64) << 32)
@@ -2403,7 +2419,7 @@ pub fn ai_take_turn_coordinated_with_memory_recorded(
         .collect();
     // Explicit rank preserves the existing tie order (objective, look-ahead,
     // greedy) independently of candidate collection order.
-    let chosen = deterministic_baseline_candidate(&summaries)
+    let baseline = deterministic_baseline_candidate(&summaries)
         .expect("the planner always builds three candidates")
         .to_string();
     let request = SelectorRequest {
@@ -2416,6 +2432,40 @@ pub fn ai_take_turn_coordinated_with_memory_recorded(
         candidates: summaries,
     };
     debug_assert!(request.validate().is_ok());
+    // Skip remote advice when the deterministic score has a clear lead. This
+    // threshold is deliberately fixed for the first integration experiment.
+    const AMBIGUITY_MARGIN: f32 = 25.0;
+    let margin = candidate_score_margin(&request.candidates, &baseline);
+    let mut chosen = baseline.clone();
+    let mut selector_invoked = false;
+    let mut response_status = "disabled".to_string();
+    let mut fallback_reason = None;
+    let mut latency_ms = None;
+    if let Some(select) = selector {
+        if margin <= AMBIGUITY_MARGIN {
+            selector_invoked = true;
+            let started = std::time::Instant::now();
+            match select(&request) {
+                Ok(response) => match response.validate_for(&request) {
+                    Ok(()) => {
+                        chosen = response.candidate_id;
+                        response_status = "accepted".into();
+                    }
+                    Err(reason) => {
+                        response_status = "rejected".into();
+                        fallback_reason = Some(reason.to_string());
+                    }
+                },
+                Err(reason) => {
+                    response_status = "error".into();
+                    fallback_reason = Some(reason);
+                }
+            }
+            latency_ms = Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64);
+        } else {
+            response_status = "skipped_clear_lead".into();
+        }
+    }
     let selected = if chosen == "objective" {
         commit_planned_turn_with_definitions(state, faction, definitions, policy, objective_records)
     } else if chosen == "lookahead" {
@@ -2436,13 +2486,13 @@ pub fn ai_take_turn_coordinated_with_memory_recorded(
                 score: candidate.score,
             })
             .collect(),
-        baseline_candidate_id: chosen.clone(),
+        baseline_candidate_id: baseline.clone(),
         selected_candidate_id: chosen.clone(),
-        score_margin: candidate_score_margin(&request.candidates, &chosen),
-        selector_invoked: false,
-        response_status: "disabled".into(),
-        fallback_reason: None,
-        latency_ms: None,
+        score_margin: margin,
+        selector_invoked,
+        response_status,
+        fallback_reason,
+        latency_ms,
         input_tokens: None,
         output_tokens: None,
         cost_microusd: None,
@@ -3433,6 +3483,77 @@ mod tests {
         );
         assert!(!telemetry.selector_invoked);
         assert_eq!(telemetry.candidates.len(), request.candidates.len());
+    }
+
+    #[test]
+    fn selector_can_choose_only_a_valid_current_complete_plan() {
+        let board = setup_keep_board(0, 0);
+        let mut state = GameState::new_seeded(board, 1234);
+        state.active_faction = 0;
+        state.gold[0] = 0;
+        state.place_unit(make_leader(1, 0), Hex::from_offset(0, 0));
+        state.place_unit(make_fighter(2, 0, 30), Hex::from_offset(2, 0));
+        state.place_unit(make_leader(3, 1), Hex::from_offset(5, 3));
+        let mut memory = PlannerMemory::default();
+        let choose_objective = |request: &SelectorRequest| {
+            assert!(request.validate().is_ok());
+            Ok(crate::selector::SelectorResponse {
+                schema_version: SELECTOR_SCHEMA_VERSION,
+                candidate_id: "objective".into(),
+                reason_code: None,
+            })
+        };
+        let (_, request, telemetry) = ai_take_turn_coordinated_with_memory_selected(
+            &mut state,
+            0,
+            &[],
+            RecruitmentPolicy::FirstAffordable,
+            &mut memory,
+            Some(&choose_objective),
+        );
+        assert!(request.validate().is_ok());
+        assert_eq!(
+            telemetry.baseline_candidate_id,
+            deterministic_baseline_candidate(&request.candidates).unwrap()
+        );
+        assert!(
+            telemetry.selector_invoked,
+            "fixture should exercise selector: {telemetry:?}"
+        );
+        assert_eq!(telemetry.selected_candidate_id, "objective");
+        assert_eq!(telemetry.response_status, "accepted");
+    }
+
+    #[test]
+    fn selector_error_records_fallback_and_keeps_the_baseline_plan() {
+        let board = setup_keep_board(0, 0);
+        let mut state = GameState::new_seeded(board, 1234);
+        state.active_faction = 0;
+        state.gold[0] = 0;
+        state.place_unit(make_leader(1, 0), Hex::from_offset(0, 0));
+        state.place_unit(make_fighter(2, 0, 30), Hex::from_offset(2, 0));
+        state.place_unit(make_leader(3, 1), Hex::from_offset(5, 3));
+        let mut memory = PlannerMemory::default();
+        let fail = |_request: &SelectorRequest| Err("fake timeout".to_string());
+        let (_, request, telemetry) = ai_take_turn_coordinated_with_memory_selected(
+            &mut state,
+            0,
+            &[],
+            RecruitmentPolicy::FirstAffordable,
+            &mut memory,
+            Some(&fail),
+        );
+        assert!(request.validate().is_ok());
+        assert!(
+            telemetry.selector_invoked,
+            "fixture should exercise selector: {telemetry:?}"
+        );
+        assert_eq!(
+            telemetry.selected_candidate_id,
+            telemetry.baseline_candidate_id
+        );
+        assert_eq!(telemetry.fallback_reason.as_deref(), Some("fake timeout"));
+        assert_eq!(telemetry.response_status, "error");
     }
 
     #[test]
