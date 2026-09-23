@@ -15,14 +15,14 @@ from . import coordinated_selector_evaluation as evaluation
 def _profile(treatment="coordinated-fireworks-glm"):
     model = ("accounts/fireworks/models/glm-5p3-flash" if treatment.endswith("glm")
              else "accounts/fireworks/models/deepseek-v4p1-flash")
-    effort = "low" if treatment.endswith("glm") else "provider_default_unknown"
-    args = ["-m", "tools.coordinated_selector_bridge", "--model", model]
-    if effort != "provider_default_unknown":
-        args.extend(["--reasoning-effort", effort])
+    effort = "low"
+    args = ["-m", "tools.plan_selector", "--model", model,
+            "--reasoning-effort", effort, "--max-output-tokens", "2048",
+            "--timeout", "60"]
     return {
         "command": {"program": "python3", "args": args},
         "model": model, "reasoning_effort": effort,
-        "profile_id": f"{treatment}-profile-1", "prompt_profile": "selector_prompt_v1",
+        "profile_id": f"{treatment}-profile-1", "prompt_profile": "coordinated_selector_v1",
         "limits": {"max_prompt_bytes": 12288, "max_output_tokens": 2048,
                    "deadline_seconds": 60, "max_requests": 32},
         "pricing": {"date": "2026-09-20", "reasoning_included_in_output": True,
@@ -79,7 +79,7 @@ def _usage(*, game_id="g1", request_id="r1", call_id="call-1", status="completed
          "call_id": call_id, "status": status,
          "requested_model": "accounts/fireworks/models/glm-5p3-flash",
          "requested_reasoning_effort": "low", "output_limit": 2048,
-         "prompt_layout_version": "selector_prompt_v1",
+         "prompt_layout_version": "coordinated_selector_v1",
          "input_tokens": input_tokens, "cached_input_tokens": cached_input_tokens,
          "output_tokens": output_tokens},
     ]
@@ -198,13 +198,9 @@ class CoordinatedSelectorEvaluationTests(unittest.TestCase):
             evaluation._validate_profile("coordinated-fireworks-glm", profile)
         deepseek = _profile("coordinated-fireworks-deepseek")
         evaluation._validate_profile("coordinated-fireworks-deepseek", deepseek)
-        self.assertNotIn("--reasoning-effort", deepseek["command"]["args"])
-        with self.assertRaisesRegex(ValueError, "frozen selector limits"):
-            profile = _profile(); profile["limits"]["max_output_tokens"] = 4096
-            evaluation._validate_profile("coordinated-fireworks-glm", profile)
-        deepseek = _profile("coordinated-fireworks-deepseek")
-        evaluation._validate_profile("coordinated-fireworks-deepseek", deepseek)
-        self.assertNotIn("--reasoning-effort", deepseek["command"]["args"])
+        self.assertIn("--reasoning-effort", deepseek["command"]["args"])
+        self.assertIn("low", deepseek["command"]["args"])
+        self.assertIn("tools.plan_selector", deepseek["command"]["args"])
         with self.assertRaisesRegex(ValueError, "frozen selector limits"):
             profile = _profile(); profile["limits"]["max_output_tokens"] = 4096
             evaluation._validate_profile("coordinated-fireworks-glm", profile)
