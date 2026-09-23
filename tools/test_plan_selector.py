@@ -1,11 +1,14 @@
 import dataclasses
+import io
+import json
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from tools.plan_selector import (
     FallbackReason, FakeSelector, MAX_PROMPT_BYTES, PromptTooLarge,
     SelectorEnvelope, SelectorMode, SelectorRequest, build_selector_prompt,
-    parse_candidate_response, select_candidate,
+    parse_candidate_response, run_selector_envelope, select_candidate,
 )
 
 
@@ -15,6 +18,10 @@ SCENARIOS = ("opening", "large_army", "close_tradeoff", "recruiter_danger")
 
 def load_request(name: str) -> SelectorRequest:
     return SelectorRequest.from_json((FIXTURES / f"{name}.json").read_text(encoding="utf-8"))
+
+
+def opening_envelope() -> SelectorEnvelope:
+    return SelectorEnvelope("game-7", "decision-3", "a" * 64, load_request("opening"))
 
 
 class PlanSelectorTests(unittest.TestCase):
@@ -104,6 +111,97 @@ class PlanSelectorTests(unittest.TestCase):
         result = select_candidate(request=duplicate, mode=SelectorMode.MODEL, backend=backend)
         self.assertEqual(result.fallback_reason, FallbackReason.INVALID_REQUEST)
         self.assertEqual(backend.calls, 0)
+
+    def test_fireworks_selector_dispatches_once_with_exact_profile_and_prompt(self):
+        envelope = opening_envelope()
+        seen = {}
+
+        def fake_run(prompt, **kwargs):
+            seen["prompt"] = prompt
+            seen["kwargs"] = kwargs
+            return {"text": '{"schema_version":1,"candidate_id":"lookahead"}'}
+
+        result = run_selector_envelope(
+            envelope, model="accounts/fireworks/models/glm-5p3-flash",
+            reasoning_effort="low", fireworks_run=fake_run,
+        )
+        self.assertTrue(result.dispatched)
+        self.assertIsNone(result.fallback_reason)
+        self.assertEqual(result.selected_id, "lookahead")
+        self.assertEqual(seen["prompt"], build_selector_prompt(envelope.request))
+        self.assertEqual(seen["kwargs"]["model"], "accounts/fireworks/models/glm-5p3-flash")
+        self.assertEqual(seen["kwargs"]["reasoning_effort"], "low")
+        self.assertEqual(seen["kwargs"]["max_output_tokens"], 2048)
+        self.assertEqual(seen["kwargs"]["timeout"], 60.0)
+        self.assertEqual(seen["kwargs"]["request_id"], "decision-3")
+        self.assertTrue(seen["kwargs"]["stream"])
+        self.assertEqual(json.loads(result.envelope)["response"]["candidate_id"], "lookahead")
+
+    def test_length_and_transport_errors_fallback_after_one_dispatch(self):
+        envelope = opening_envelope()
+        calls = []
+
+        def limited(prompt, **kwargs):
+            calls.append((prompt, kwargs))
+            return {"text": "partial", "error": {"code": "output_limit"}}
+
+        limited_result = run_selector_envelope(
+            envelope, model="accounts/fireworks/models/deepseek-v4-flash-0731",
+            reasoning_effort="low", fireworks_run=limited,
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(limited_result.dispatched)
+        self.assertEqual(limited_result.fallback_reason, "output_limit")
+        self.assertEqual(limited_result.selected_id, "greedy")
+
+        def broken(prompt, **kwargs):
+            calls.append((prompt, kwargs))
+            raise RuntimeError("request_unknown: test")
+
+        broken_result = run_selector_envelope(
+            envelope, model="accounts/fireworks/models/deepseek-v4-flash-0731",
+            reasoning_effort="low", fireworks_run=broken,
+        )
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(broken_result.dispatched)
+        self.assertIn("request_unknown", broken_result.fallback_reason)
+        self.assertEqual(broken_result.selected_id, "greedy")
+
+    def test_unsupported_profile_is_rejected_before_dispatch(self):
+        calls = []
+        result = run_selector_envelope(
+            opening_envelope(), model="accounts/fireworks/models/unknown",
+            reasoning_effort="low", fireworks_run=lambda *args, **kwargs: calls.append(1),
+        )
+        self.assertFalse(result.dispatched)
+        self.assertEqual(calls, [])
+        self.assertEqual(result.selected_id, "greedy")
+
+    def test_cli_uses_mocked_transport_and_emits_one_identity_envelope(self):
+        envelope = opening_envelope()
+        seen = []
+
+        def fake_run(prompt, **kwargs):
+            seen.append((prompt, kwargs))
+            return {"text": '{"schema_version":1,"candidate_id":"objective"}'}
+
+        input_line = json.dumps({
+            "schema_version": 1, "game_id": envelope.game_id,
+            "decision_id": envelope.decision_id,
+            "request_sha256": envelope.request_sha256,
+            "request": envelope.request.to_dict(),
+        }, separators=(",", ":")) + "\n"
+        output = io.StringIO()
+        with patch("tools.plan_selector.fireworks_backend.run", fake_run), \
+             patch("sys.stdin", io.StringIO(input_line)), patch("sys.stdout", output):
+            self.assertEqual(__import__("tools.plan_selector", fromlist=["main"]).main([]), 0)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0][0], build_selector_prompt(envelope.request))
+        response = json.loads(output.getvalue())
+        self.assertEqual(response["game_id"], envelope.game_id)
+        self.assertEqual(response["decision_id"], envelope.decision_id)
+        self.assertEqual(response["request_sha256"], envelope.request_sha256)
+        self.assertEqual(response["response"]["candidate_id"], "objective")
 
 
 if __name__ == "__main__":

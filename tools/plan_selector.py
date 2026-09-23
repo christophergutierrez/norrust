@@ -11,14 +11,25 @@ from enum import Enum
 import json
 import math
 import argparse
+import os
+from pathlib import Path
 import sys
 import time
 from typing import Any, Protocol, Sequence
+
+from . import fireworks_backend
 
 SCHEMA_VERSION = 1
 MAX_PROMPT_BYTES = 12_288
 DEFAULT_TIMEOUT_SECONDS = 2.0
 DEFAULT_GAME_REQUEST_BUDGET = 64
+SELECTOR_OUTPUT_TOKENS = 2_048
+SELECTOR_TIMEOUT_SECONDS = 60.0
+SELECTOR_PROMPT_LAYOUT = "coordinated_selector_v1"
+MODEL_PROFILES = {
+    "accounts/fireworks/models/glm-5p3-flash": "low",
+    "accounts/fireworks/models/deepseek-v4-flash-0731": "low",
+}
 _REQUEST_KEYS = {"schema_version", "turn", "side", "state_revision", "evaluation_seed", "objective", "candidates"}
 _CANDIDATE_KEYS = {"candidate_id", "plan_kind", "label", "score", "material_delta", "gold_delta", "village_delta", "recruiter_alive", "objective_progress", "opponent_response_delta", "legal", "state_revision"}
 _ENVELOPE_KEYS = {"schema_version", "game_id", "decision_id", "request_sha256", "request"}
@@ -355,6 +366,103 @@ class FakeSelector:
         return json.dumps({"schema_version": SCHEMA_VERSION, "candidate_id": self.candidate_id})
 
 
+@dataclass(frozen=True)
+class SelectorDispatchResult:
+    envelope: str
+    selected_id: str
+    fallback_reason: str | None
+    dispatched: bool
+
+
+def resolve_selector_profile(model: str, reasoning_effort: str) -> None:
+    """Validate the two frozen Stack 3 profiles before dispatch."""
+    if model not in MODEL_PROFILES or MODEL_PROFILES[model] != reasoning_effort:
+        raise ValueError("unsupported selector model/reasoning profile")
+
+
+def _fallback_result(envelope: SelectorEnvelope, reason: str,
+                     *, dispatched: bool = False) -> SelectorDispatchResult:
+    baseline = _baseline_id(envelope.request)
+    response = envelope.response_json(json.dumps({
+        "schema_version": SCHEMA_VERSION, "candidate_id": baseline,
+    }, separators=(",", ":")))
+    return SelectorDispatchResult(response, baseline, reason, dispatched)
+
+
+def run_selector_envelope(
+    envelope: SelectorEnvelope,
+    *,
+    model: str,
+    reasoning_effort: str,
+    max_output_tokens: int = SELECTOR_OUTPUT_TOKENS,
+    timeout: float = SELECTOR_TIMEOUT_SECONDS,
+    game_id: str | None = None,
+    request_id: str | None = None,
+    sidecar_path: Path | None = None,
+    evidence_dir: Path | None = None,
+    fireworks_run: Any | None = None,
+) -> SelectorDispatchResult:
+    """Make exactly one bounded provider attempt and return an envelope.
+
+    Transport failures, output exhaustion, and strict-response failures all
+    return the engine baseline. The provider's transport has already recorded
+    its dispatch/final lifecycle before reporting those failures.
+    """
+    try:
+        resolve_selector_profile(model, reasoning_effort)
+        if max_output_tokens != SELECTOR_OUTPUT_TOKENS or timeout != SELECTOR_TIMEOUT_SECONDS:
+            raise ValueError("selector output and timeout profile are fixed at 2048/60s")
+        prompt = build_selector_prompt(envelope.request)
+    except (PromptTooLarge, ValueError) as exc:
+        return _fallback_result(envelope, str(exc))
+    game_id = game_id or os.environ.get("NORRUST_GAME_ID") or envelope.game_id
+    request_id = request_id or os.environ.get("NORRUST_REQUEST_ID") or envelope.decision_id
+    sidecar_path = sidecar_path or Path(os.environ.get("NORRUST_USAGE_SIDECAR", "usage.ndjson"))
+    if evidence_dir is None:
+        raw_evidence = os.environ.get("NORRUST_EVIDENCE_DIR")
+        evidence_dir = Path(raw_evidence) if raw_evidence else None
+    context = {
+        "selector": True,
+        "game_id": game_id,
+        "decision_id": envelope.decision_id,
+        "request_sha256": envelope.request_sha256,
+        "output_limit": SELECTOR_OUTPUT_TOKENS,
+        "model_timeout_seconds": SELECTOR_TIMEOUT_SECONDS,
+        "requested_reasoning_effort": reasoning_effort,
+        "prompt_layout_version": SELECTOR_PROMPT_LAYOUT,
+    }
+    fireworks_run = fireworks_run or fireworks_backend.run
+    try:
+        reply = fireworks_run(
+            prompt,
+            model=model,
+            max_output_tokens=SELECTOR_OUTPUT_TOKENS,
+            game_id=game_id,
+            request_id=request_id,
+            sidecar_path=sidecar_path,
+            session_affinity=fireworks_backend.session_affinity_for(game_id, model),
+            prompt_layout_version=SELECTOR_PROMPT_LAYOUT,
+            timeout=SELECTOR_TIMEOUT_SECONDS,
+            stream=True,
+            evidence_dir=evidence_dir,
+            request_context=context,
+            reasoning_effort=reasoning_effort,
+        )
+        if not isinstance(reply, dict):
+            raise ValueError("provider reply was not an object")
+        error = reply.get("error")
+        if isinstance(error, dict) and error.get("code") == "output_limit":
+            return _fallback_result(envelope, "output_limit", dispatched=True)
+        text = reply.get("text")
+        if not isinstance(text, str):
+            raise ValueError("provider reply had no text")
+        response = envelope.response_json(text)
+        selected = json.loads(response)["response"]["candidate_id"]
+        return SelectorDispatchResult(response, selected, None, True)
+    except Exception as exc:
+        return _fallback_result(envelope, str(exc), dispatched=True)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the local identity-preserving command adapter.
 
@@ -364,6 +472,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidate-id", help="local test candidate ID")
+    parser.add_argument("--model", default=os.environ.get(
+        "NORRUST_SELECTOR_MODEL", "accounts/fireworks/models/deepseek-v4-flash-0731"))
+    parser.add_argument("--reasoning-effort", default=os.environ.get(
+        "NORRUST_SELECTOR_REASONING_EFFORT", "low"))
+    parser.add_argument("--max-output-tokens", type=int, default=int(os.environ.get(
+        "NORRUST_SELECTOR_OUTPUT_TOKENS", str(SELECTOR_OUTPUT_TOKENS))))
+    parser.add_argument("--timeout", type=float, default=float(os.environ.get(
+        "NORRUST_SELECTOR_TIMEOUT_SECONDS", str(SELECTOR_TIMEOUT_SECONDS))))
     args = parser.parse_args(argv)
     line = sys.stdin.readline(MAX_PROMPT_BYTES * 2)
     if not line:
@@ -371,10 +487,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     try:
         envelope = SelectorEnvelope.from_json(line)
-        candidate_id = args.candidate_id or _baseline_id(envelope.request)
-        output = envelope.response_json(json.dumps({
-            "schema_version": SCHEMA_VERSION, "candidate_id": candidate_id,
-        }, separators=(",", ":")))
+        if args.candidate_id:
+            output = envelope.response_json(json.dumps({
+                "schema_version": SCHEMA_VERSION, "candidate_id": args.candidate_id,
+            }, separators=(",", ":")))
+        else:
+            output = run_selector_envelope(
+                envelope, model=args.model, reasoning_effort=args.reasoning_effort,
+                max_output_tokens=args.max_output_tokens, timeout=args.timeout,
+            ).envelope
     except (ValueError, LookupError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
