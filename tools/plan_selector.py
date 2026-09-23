@@ -28,7 +28,7 @@ SELECTOR_TIMEOUT_SECONDS = 60.0
 SELECTOR_PROMPT_LAYOUT = "coordinated_selector_v1"
 MODEL_PROFILES = {
     "accounts/fireworks/models/glm-5p3-flash": "low",
-    "accounts/fireworks/models/deepseek-v4-flash-0731": "low",
+    "accounts/fireworks/models/deepseek-v4p1-flash": "low",
 }
 _REQUEST_KEYS = {"schema_version", "turn", "side", "state_revision", "evaluation_seed", "objective", "candidates"}
 _CANDIDATE_KEYS = {"candidate_id", "plan_kind", "label", "score", "material_delta", "gold_delta", "village_delta", "recruiter_alive", "objective_progress", "opponent_response_delta", "legal", "state_revision"}
@@ -473,7 +473,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidate-id", help="local test candidate ID")
     parser.add_argument("--model", default=os.environ.get(
-        "NORRUST_SELECTOR_MODEL", "accounts/fireworks/models/deepseek-v4-flash-0731"))
+        "NORRUST_SELECTOR_MODEL", "accounts/fireworks/models/deepseek-v4p1-flash"))
     parser.add_argument("--reasoning-effort", default=os.environ.get(
         "NORRUST_SELECTOR_REASONING_EFFORT", "low"))
     parser.add_argument("--max-output-tokens", type=int, default=int(os.environ.get(

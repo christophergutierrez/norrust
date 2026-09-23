@@ -146,7 +146,7 @@ class PlanSelectorTests(unittest.TestCase):
             return {"text": "partial", "error": {"code": "output_limit"}}
 
         limited_result = run_selector_envelope(
-            envelope, model="accounts/fireworks/models/deepseek-v4-flash-0731",
+            envelope, model="accounts/fireworks/models/deepseek-v4p1-flash",
             reasoning_effort="low", fireworks_run=limited,
         )
         self.assertEqual(len(calls), 1)
@@ -159,7 +159,7 @@ class PlanSelectorTests(unittest.TestCase):
             raise RuntimeError("request_unknown: test")
 
         broken_result = run_selector_envelope(
-            envelope, model="accounts/fireworks/models/deepseek-v4-flash-0731",
+            envelope, model="accounts/fireworks/models/deepseek-v4p1-flash",
             reasoning_effort="low", fireworks_run=broken,
         )
         self.assertEqual(len(calls), 2)
