@@ -92,7 +92,7 @@ def _write_evidence(root: Path, *, call_id="call-1", request_id="r1"):
     prompt = b"canonical selector prompt"
     (call / "prompt.txt").write_bytes(prompt)
     (call / "prompt.sha256").write_text(hashlib.sha256(prompt).hexdigest())
-    (call / "request_context.json").write_text(json.dumps({"harness_request_id": request_id}))
+    (call / "request_context.json").write_text(json.dumps({"decision_id": request_id}))
     (call / "payload.json").write_text(json.dumps({
         "model": "accounts/fireworks/models/glm-5p3-flash",
         "max_tokens": 2048, "reasoning_effort": "low"}))
@@ -275,7 +275,7 @@ class CoordinatedSelectorEvaluationTests(unittest.TestCase):
                                           expected_game_id="g1", evidence_dir=Path(empty))
         evidence = _write_evidence(self.evidence_dir)
         call_context = evidence / "call-1" / "request_context.json"
-        call_context.write_text(json.dumps({"harness_request_id": "wrong-request"}))
+        call_context.write_text(json.dumps({"decision_id": "wrong-request"}))
         with self.assertRaisesRegex(ValueError, "request identity mismatch"):
             evaluation.validate_trace(self.cell, "coordinated-fireworks-glm", self.engine,
                                       _trace(self.cell), usage_rows=_usage(), selector_profile=profile,

@@ -219,7 +219,7 @@ def _validate_call_evidence(evidence_dir: Path, call_id: str, request_id: str,
         payload = json.loads((call_dir / "payload.json").read_text())
     except json.JSONDecodeError as exc:
         raise ValueError("provider call identity evidence is malformed") from exc
-    if context.get("harness_request_id") != request_id:
+    if context.get("decision_id") != request_id:
         raise ValueError("provider evidence request identity mismatch")
     if final.get("prompt_layout_version") != profile["prompt_profile"]:
         raise ValueError("provider prompt profile differs from frozen selector profile")
