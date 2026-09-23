@@ -33,7 +33,8 @@ use norrust_core::selector::{
     DecisionTelemetry, SelectorRequest, SelectorResponse, SELECTOR_SCHEMA_VERSION,
 };
 use norrust_core::selector_backend::{
-    read_response_file, BackendError, SelectorBudget, SelectorLimits,
+    invoke_command, read_response_file, selector_request_sha256, BackendError, SelectorBudget,
+    SelectorCommandRequest, SelectorLimits,
 };
 use norrust_core::unit::Unit;
 
@@ -94,6 +95,11 @@ struct Config {
     selector_candidate: Option<String>,
     selector_failure: bool,
     selector_response_file: Option<PathBuf>,
+    selector_command: Option<PathBuf>,
+    selector_args: Vec<String>,
+    selector_side: Option<u8>,
+    selector_usage_sidecar: Option<PathBuf>,
+    selector_evidence_dir: Option<PathBuf>,
     recruit1_policy: RecruitPolicy,
     recruit2_policy: RecruitPolicy,
 }
@@ -151,6 +157,11 @@ Options:
   --selector-candidate ID  Test selector: choose a current plan ID on close decisions
   --selector-fail       Test selector: force fallback on close decisions
   --selector-response-file PATH  Local selector v1 JSON reply, used on close decisions
+  --selector-command PROGRAM  Run one request-dependent local selector command
+  --selector-arg ARG      Append one argument to --selector-command (repeatable)
+  --selector-side SIDE    Controlled side: 1 or 2; must use coordinated AI
+  --selector-usage-sidecar PATH  Export environment path for provider usage records
+  --selector-evidence-dir PATH  Export environment path for provider evidence
   --recruit1-policy KIND  team 1 recruitment: first-affordable | balanced
   --recruit2-policy KIND  team 2 recruitment: first-affordable | balanced
   --verbose             CSV header plus one line per game
@@ -205,6 +216,11 @@ fn parse_args() -> Config {
         selector_candidate: None,
         selector_failure: false,
         selector_response_file: None,
+        selector_command: None,
+        selector_args: Vec::new(),
+        selector_side: None,
+        selector_usage_sidecar: None,
+        selector_evidence_dir: None,
         recruit1_policy: RecruitPolicy::FirstAffordable,
         recruit2_policy: RecruitPolicy::FirstAffordable,
     };
@@ -232,6 +248,14 @@ fn parse_args() -> Config {
             i += 1;
             continue;
         }
+        if key == "--selector-arg" {
+            if i + 1 >= args.len() {
+                usage();
+            }
+            c.selector_args.push(args[i + 1].clone());
+            i += 2;
+            continue;
+        }
         if key == "-h" || key == "--help" {
             usage();
         }
@@ -243,6 +267,16 @@ fn parse_args() -> Config {
             "--record-dir" => c.record_dir = Some(PathBuf::from(value)),
             "--selector-candidate" => c.selector_candidate = Some(value.clone()),
             "--selector-response-file" => c.selector_response_file = Some(PathBuf::from(value)),
+            "--selector-command" => c.selector_command = Some(PathBuf::from(value)),
+            "--selector-side" => {
+                c.selector_side = Some(match value.as_str() {
+                    "1" => 0,
+                    "2" => 1,
+                    _ => usage(),
+                })
+            }
+            "--selector-usage-sidecar" => c.selector_usage_sidecar = Some(PathBuf::from(value)),
+            "--selector-evidence-dir" => c.selector_evidence_dir = Some(PathBuf::from(value)),
             "--recruit1-policy" => {
                 c.recruit1_policy = match value.as_str() {
                     "first-affordable" => RecruitPolicy::FirstAffordable,
@@ -284,14 +318,36 @@ fn parse_args() -> Config {
     if c.team1.is_empty() || c.team2.is_empty() || c.games == 0 || c.threads == 0 {
         usage();
     }
-    if (c.selector_failure as u8
+    let selector_modes = c.selector_failure as u8
         + c.selector_candidate.is_some() as u8
-        + c.selector_response_file.is_some() as u8)
-        > 1
+        + c.selector_response_file.is_some() as u8
+        + c.selector_command.is_some() as u8;
+    if selector_modes > 1 {
+        eprintln!("fake, response-file, and command selector backends are mutually exclusive");
+        usage();
+    }
+    if (!c.selector_args.is_empty() && c.selector_command.is_none())
+        || ((c.selector_usage_sidecar.is_some() || c.selector_evidence_dir.is_some())
+            && c.selector_command.is_none())
     {
-        eprintln!(
-            "--selector-fail, --selector-candidate, and --selector-response-file are exclusive"
-        );
+        eprintln!("--selector-arg, usage-sidecar, and evidence-dir require --selector-command");
+        usage();
+    }
+    if configured_selector(&c) {
+        let Some(side) = c.selector_side else {
+            eprintln!("a selector backend requires --selector-side 1|2");
+            usage();
+        };
+        let kind = if side == 0 { c.ai1 } else { c.ai2 };
+        if !matches!(kind, AiKind::Coordinated) {
+            eprintln!(
+                "selector controlled side must use --ai{} coordinated",
+                side + 1
+            );
+            usage();
+        }
+    } else if c.selector_side.is_some() {
+        eprintln!("--selector-side requires a configured selector backend");
         usage();
     }
     if c.verbose as u8 + c.compact as u8 + c.json as u8 > 1 {
@@ -456,6 +512,7 @@ fn random_turn(state: &mut GameState, side: u8, rng: &mut u64) {
 fn play_turn(
     state: &mut GameState,
     side: u8,
+    game_id: &str,
     kind: AiKind,
     rng: &mut u64,
     recruit_defs: &[UnitDef],
@@ -486,7 +543,36 @@ fn play_turn(
             if selector_enabled {
                 let selector_budget = std::cell::RefCell::new(selector_budget);
                 let selector = |request: &SelectorRequest| {
-                    if let Some(path) = selector_config.selector_response_file.as_deref() {
+                    if let Some(program) = selector_config.selector_command.as_deref() {
+                        let decision_id = format!(
+                            "{game_id}-turn-{}-side-{}-revision-{}",
+                            request.turn, request.side, request.state_revision
+                        );
+                        let envelope = SelectorCommandRequest::new(
+                            game_id.to_string(),
+                            decision_id,
+                            request.clone(),
+                        );
+                        selector_budget
+                            .borrow_mut()
+                            .invoke(request, |_| {
+                                invoke_command(
+                                    program,
+                                    &selector_config.selector_args,
+                                    &envelope,
+                                    SelectorLimits::default().timeout,
+                                    SelectorLimits::default().max_response_bytes,
+                                    selector_config.selector_usage_sidecar.as_deref(),
+                                    selector_config.selector_evidence_dir.as_deref(),
+                                )
+                                .and_then(|response| {
+                                    serde_json::to_vec(&response).map_err(|error| {
+                                        format!("serialize selector response: {error}")
+                                    })
+                                })
+                            })
+                            .map_err(backend_error_text)
+                    } else if let Some(path) = selector_config.selector_response_file.as_deref() {
                         selector_budget
                             .borrow_mut()
                             .invoke(request, |_| {
@@ -553,6 +639,7 @@ fn record_decision(
     writer: &mut Option<BufWriter<std::fs::File>>,
     step: u32,
     side: u8,
+    game_id: &str,
     request: &SelectorRequest,
     telemetry: &DecisionTelemetry,
     backend: &str,
@@ -562,7 +649,10 @@ fn record_decision(
             &mut *writer,
             &serde_json::json!({
                 "type": "coordinated_decision", "step": step, "side": side,
-                "decision_id": format!("turn-{}-side-{}-revision-{}", request.turn, side, request.state_revision),
+                "game_id": game_id,
+                "decision_id": format!("{game_id}-turn-{}-side-{}-revision-{}", request.turn, side, request.state_revision),
+                "request_id": format!("{game_id}-turn-{}-side-{}-revision-{}", request.turn, side, request.state_revision),
+                "request_sha256": selector_request_sha256(request),
                 "backend": if telemetry.selector_invoked { backend } else { "none" },
                 "request": request,
                 "response": if telemetry.response_status == "accepted" {
@@ -598,6 +688,11 @@ fn configured_selector(config: &Config) -> bool {
     config.selector_candidate.is_some()
         || config.selector_failure
         || config.selector_response_file.is_some()
+        || config.selector_command.is_some()
+}
+
+fn configured_selector_for_side(config: &Config, side: u8) -> bool {
+    configured_selector(config) && config.selector_side == Some(side)
 }
 
 fn record_actions(
@@ -702,6 +797,7 @@ fn run_game(c: &Config, game: u32) -> GameResult {
         .expect("load board");
     let game_index = c.seed.wrapping_add(game as u64 - 1);
     let game_seed = mix_seed(game_index);
+    let game_id = format!("input-seed-{game_index}-effective-{game_seed}");
     let mut state = GameState::new_seeded(board.board, game_seed);
     // Self-play is symmetric: objectives and timeout victories are scenario
     // attacker/defender rules, not player-vs-player rules. The scenario limit
@@ -755,6 +851,7 @@ fn run_game(c: &Config, game: u32) -> GameResult {
         let mut writer = BufWriter::new(file);
         let meta = serde_json::json!({"type":"metadata", "schema_version":1,
             "game":game, "input_seed":game_index, "effective_seed":game_seed,
+            "game_id":game_id,
             "scenario":c.scenario, "factions":[c.team1,c.team2],
             "algorithms":[ai_name(c.ai1),ai_name(c.ai2)], "first":first,
             "recruitment_policies":[recruit_policy_name(c.recruit1_policy), recruit_policy_name(c.recruit2_policy)],
@@ -794,12 +891,13 @@ fn run_game(c: &Config, game: u32) -> GameResult {
             let (actions, telemetry) = play_turn(
                 &mut state,
                 0,
+                &game_id,
                 c.ai1,
                 &mut rng,
                 &f1_recruit_defs,
                 policy,
                 &mut planner_memory[0],
-                configured_selector(c),
+                configured_selector_for_side(c, 0),
                 c,
                 &mut selector_budget,
             );
@@ -809,10 +907,13 @@ fn run_game(c: &Config, game: u32) -> GameResult {
                     &mut recording,
                     step,
                     0,
+                    &game_id,
                     &request,
                     &telemetry,
                     if c.selector_response_file.is_some() {
                         "local-response-file"
+                    } else if c.selector_command.is_some() {
+                        "command"
                     } else {
                         "test-fake"
                     },
@@ -837,12 +938,13 @@ fn run_game(c: &Config, game: u32) -> GameResult {
             let (actions, telemetry) = play_turn(
                 &mut state,
                 1,
+                &game_id,
                 c.ai2,
                 &mut rng,
                 &f2_recruit_defs,
                 policy,
                 &mut planner_memory[1],
-                configured_selector(c),
+                configured_selector_for_side(c, 1),
                 c,
                 &mut selector_budget,
             );
@@ -852,10 +954,13 @@ fn run_game(c: &Config, game: u32) -> GameResult {
                     &mut recording,
                     step,
                     1,
+                    &game_id,
                     &request,
                     &telemetry,
                     if c.selector_response_file.is_some() {
                         "local-response-file"
+                    } else if c.selector_command.is_some() {
+                        "command"
                     } else {
                         "test-fake"
                     },
@@ -1117,6 +1222,11 @@ mod tests {
             selector_candidate: None,
             selector_failure: false,
             selector_response_file: None,
+            selector_command: None,
+            selector_args: Vec::new(),
+            selector_side: None,
+            selector_usage_sidecar: None,
+            selector_evidence_dir: None,
             recruit1_policy: RecruitPolicy::FirstAffordable,
             recruit2_policy: RecruitPolicy::FirstAffordable,
         }
@@ -1239,6 +1349,7 @@ mod tests {
         let _ = play_turn(
             &mut state,
             0,
+            "test-game",
             AiKind::Coordinated,
             &mut rng,
             &definitions,
@@ -1254,6 +1365,7 @@ mod tests {
         let _ = play_turn(
             &mut state,
             0,
+            "test-game",
             AiKind::Coordinated,
             &mut rng,
             &definitions,
@@ -1267,5 +1379,102 @@ mod tests {
         assert!(first_age > 0);
         assert!(memory.age > first_age);
         assert_eq!(memory.objective, first_objective);
+    }
+
+    #[test]
+    fn command_selector_choice_controls_the_live_coordinated_turn() {
+        let data = root().join("data");
+        let units: Registry<UnitDef> = Registry::load_from_dir(&data.join("units")).unwrap();
+        let factions = load_factions(&data);
+        let undead = factions.iter().find(|f| f.def.id == "undead").unwrap();
+        let mut initial = test_state();
+        initial.active_faction = 0;
+        initial.gold = [0, 0];
+        initial.place_unit(
+            Unit::from_def(1, units.get(&undead.def.leader_def).unwrap(), 0),
+            keep_for(&initial, 0),
+        );
+        initial.place_unit(
+            Unit::from_def(2, units.get(&undead.def.leader_def).unwrap(), 1),
+            keep_for(&initial, 1),
+        );
+        initial.place_unit(
+            Unit::from_def(3, units.get("Skeleton").unwrap(), 0),
+            Hex::from_offset(2, 0),
+        );
+
+        let responder = r#"import json, os, sys
+request = json.load(sys.stdin)
+assert os.environ["NORRUST_GAME_ID"] == request["game_id"]
+assert os.environ["NORRUST_REQUEST_ID"] == request["decision_id"]
+assert os.environ["NORRUST_USAGE_SIDECAR"] == "/tmp/selector-usage.ndjson"
+assert os.environ["NORRUST_EVIDENCE_DIR"] == "/tmp/selector-evidence"
+response = {"schema_version": 1, "candidate_id": "lookahead"}
+print(json.dumps({"schema_version": 1, "game_id": request["game_id"],
+    "decision_id": request["decision_id"], "request_sha256": request["request_sha256"],
+    "response": response}))
+"#;
+        let mut config = test_config();
+        config.selector_command = Some(PathBuf::from("python3"));
+        config.selector_args = vec!["-c".into(), responder.into()];
+        config.selector_side = Some(0);
+        config.selector_usage_sidecar = Some(PathBuf::from("/tmp/selector-usage.ndjson"));
+        config.selector_evidence_dir = Some(PathBuf::from("/tmp/selector-evidence"));
+        let mut live = initial.clone();
+        let mut live_memory = PlannerMemory::default();
+        let mut rng = 17;
+        let (actions, decision) = play_turn(
+            &mut live,
+            0,
+            "fixture-game",
+            AiKind::Coordinated,
+            &mut rng,
+            &[],
+            RecruitPolicy::FirstAffordable,
+            &mut live_memory,
+            true,
+            &config,
+            &mut SelectorBudget::new(SelectorLimits::default()),
+        );
+        let (request, telemetry) = decision.expect("selector decision");
+        assert!(request.validate().is_ok());
+        assert!(telemetry.selector_invoked, "{telemetry:?}");
+        assert_eq!(telemetry.response_status, "accepted");
+        assert_eq!(telemetry.selected_candidate_id, "lookahead");
+
+        let mut expected = initial.clone();
+        let mut expected_memory = PlannerMemory::default();
+        let choose_objective = |_request: &SelectorRequest| {
+            Ok(SelectorResponse {
+                schema_version: SELECTOR_SCHEMA_VERSION,
+                candidate_id: "lookahead".into(),
+                reason_code: None,
+            })
+        };
+        let (expected_actions, _, _) = ai_take_turn_coordinated_with_memory_selected(
+            &mut expected,
+            0,
+            &[],
+            RecruitPolicy::FirstAffordable,
+            &mut expected_memory,
+            Some(&choose_objective),
+        );
+        assert_eq!(format!("{actions:?}"), format!("{expected_actions:?}"));
+        assert_eq!(format!("{live:?}"), format!("{expected:?}"));
+
+        let mut baseline = initial;
+        let mut baseline_memory = PlannerMemory::default();
+        let _ = ai_take_turn_coordinated_with_memory(
+            &mut baseline,
+            0,
+            &[],
+            RecruitPolicy::FirstAffordable,
+            &mut baseline_memory,
+        );
+        assert_ne!(
+            format!("{live:?}"),
+            format!("{baseline:?}"),
+            "fixture must show that the accepted non-baseline choice changes live state"
+        );
     }
 }
