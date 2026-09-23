@@ -1378,6 +1378,27 @@ def _import_requests(conn: sqlite3.Connection, game_id: str, records: list[dict[
     request_records = [r for r in records if r.get("type") == "model_request"]
     if not request_records:
         request_records = [r for r in records if r.get("type") == "model"]
+    # Coordinated Planner selector calls are recorded at the decision boundary
+    # rather than as model_request rows. Import only decisions that actually
+    # invoked a selector and carry a usable identity, so a usage sidecar can
+    # join its physical provider call without inventing prompt or source data.
+    for decision in records:
+        if (decision.get("type") != "coordinated_decision"
+                or not isinstance(decision.get("telemetry"), dict)
+                or decision["telemetry"].get("selector_invoked") is not True):
+            continue
+        request_id = decision.get("request_id")
+        if not isinstance(request_id, str) or not request_id.strip():
+            continue
+        telemetry = decision["telemetry"]
+        request_records.append({
+            "type": "model_request",
+            "request_id": request_id,
+            "state_revision": decision.get("state_revision"),
+            "sequence": decision.get("sequence"),
+            "status": "completed" if decision.get("response_status") == "accepted" else "failed",
+            "error_code": decision.get("fallback_reason") or telemetry.get("fallback_reason"),
+        })
     context_links, identity_conflicts = _request_identity_evidence(
         root, request_records, side_turn_bounds, metadata)
     for request_id, side_turn_id in context_links.items():

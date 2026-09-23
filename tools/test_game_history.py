@@ -726,6 +726,66 @@ class ModelCallUsageTests(unittest.TestCase):
                 "SELECT output_tokens FROM model_calls WHERE game_id=?", (game_id,)).fetchone()[0], 42)
             conn.close()
 
+    def test_coordinated_selector_decisions_link_usage_without_inventing_prompt_or_usage(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _write_minimal_game(root, request_records=[
+                {"type": "coordinated_decision", "request_id": "remote-selector-1",
+                 "state_revision": 7, "response_status": "accepted",
+                 "telemetry": {"selector_invoked": True}},
+                # A local fake invocation has identity but no provider receipt.
+                {"type": "coordinated_decision", "request_id": "local-fake-1",
+                 "state_revision": 8, "response_status": "accepted",
+                 "telemetry": {"selector_invoked": True}},
+                # Skipped decisions and malformed identities are not requests.
+                {"type": "coordinated_decision", "request_id": "skipped-1",
+                 "telemetry": {"selector_invoked": False}},
+                {"type": "coordinated_decision", "request_id": "   ",
+                 "telemetry": {"selector_invoked": True}},
+            ])
+            (root / "usage.ndjson").write_text(json.dumps(_sidecar_row(
+                game_id="selector-game", call_id="provider-call-1",
+                request_id="remote-selector-1", status="completed", record_kind="final",
+                provider="fireworks", input_tokens=123, output_tokens=9)) + "\n")
+            conn = open_history(root / "history.sqlite")
+            game_id = import_game(conn, root, game_id="selector-game")
+
+            self.assertEqual(conn.execute(
+                "SELECT request_id,status FROM model_requests WHERE game_id=? ORDER BY request_id",
+                (game_id,)).fetchall(),
+                [("local-fake-1", "completed"), ("remote-selector-1", "completed")])
+            self.assertEqual(conn.execute(
+                "SELECT input_tokens,output_tokens FROM model_requests WHERE request_id='local-fake-1'"
+            ).fetchone(), (None, None))
+            call = conn.execute(
+                "SELECT request_id,input_tokens,output_tokens,source_ref FROM model_calls WHERE game_id=?",
+                (game_id,)).fetchone()
+            self.assertEqual(call, ("remote-selector-1", 123, 9, None))
+            # The decision trace does not contain the prompt or its source.
+            request = conn.execute("""SELECT prompt_blob,prompt_hash,prompt_bytes,response_blob,
+                                      response_hash,response_bytes FROM model_requests
+                                      WHERE request_id='remote-selector-1'""").fetchone()
+            self.assertEqual(request, (None, None, None, None, None, None))
+            self.assertIsNone(conn.execute(
+                "SELECT source_commit FROM games WHERE game_id=?", (game_id,)).fetchone()[0])
+
+            first_requests = conn.execute(
+                "SELECT request_id,status FROM model_requests WHERE game_id=? ORDER BY request_id",
+                (game_id,)).fetchall()
+            first_calls = conn.execute(
+                "SELECT call_id,request_id,input_tokens,output_tokens FROM model_calls WHERE game_id=?",
+                (game_id,)).fetchall()
+            import_game(conn, root, game_id=game_id)
+            self.assertEqual(conn.execute(
+                "SELECT request_id,status FROM model_requests WHERE game_id=? ORDER BY request_id",
+                (game_id,)).fetchall(), first_requests)
+            self.assertEqual(conn.execute(
+                "SELECT call_id,request_id,input_tokens,output_tokens FROM model_calls WHERE game_id=?",
+                (game_id,)).fetchall(), first_calls)
+            self.assertEqual(conn.execute(
+                "SELECT count(*) FROM model_calls WHERE game_id=?", (game_id,)).fetchone()[0], 1)
+            conn.close()
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DRIVER = Path(os.environ.get("NORRUST_TEST_DRIVER", Path(__file__).resolve().parents[1]
