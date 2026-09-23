@@ -785,16 +785,24 @@ Use the exact bounded profiles supported by `tools.plan_selector`:
 
 | Profile | Model | Reasoning |
 | --- | --- | --- |
+| GLM-5.3 | `accounts/fireworks/models/glm-5p3` | `low` |
 | GLM Flash | `accounts/fireworks/models/glm-5p3-flash` | `low` |
-| DeepSeek Flash | `accounts/fireworks/models/deepseek-v4p1-flash` (V4.1) | `low` |
+| Qwen 3.8 Max | `accounts/fireworks/models/qwen3p8-max` | `low` |
+| DeepSeek V4 Pro | `accounts/fireworks/models/deepseek-v4-pro-0813` | `low` |
+| MiniMax M3 | `accounts/fireworks/models/minimax-m3` | `low` |
+| Kimi K3 | `accounts/fireworks/models/kimi-k3` | `low` |
+| OpenAI gpt-oss-120b | `accounts/fireworks/models/gpt-oss-120b` | `low` |
+| DeepSeek V4.1 Flash | `accounts/fireworks/models/deepseek-v4p1-flash` | `low` |
 
-Both use 2,048 maximum output tokens, a 60-second provider deadline, a
-12,288-byte maximum prompt, no retries, and no more than 32 provider requests
-per game. Errors, malformed or truncated replies, timeouts, and exhausted
-budgets use the deterministic engine baseline. Keep this separate from direct
-action mode: `greedy_driver`/`tools.llm_client` gives its configured model the
-canonical action prompt and validated action interface, with different prompt,
-budgets, and usage records.
+All curated profiles use 2,048 maximum output tokens, a 60-second provider
+deadline, a 12,288-byte maximum prompt, no retries, and no more than 32 provider
+requests per game. Errors, malformed or truncated replies, timeouts, and
+exhausted budgets use the deterministic engine baseline. The list is an
+explicit allowlist in `tools.plan_selector`; model availability alone does not
+enable an endpoint. Keep this separate from direct action mode:
+`greedy_driver`/`tools.llm_client` gives its configured model the canonical
+action prompt and validated action interface, with different prompt, budgets,
+and usage records.
 
 Launch through Rust's production command boundary, for example:
 

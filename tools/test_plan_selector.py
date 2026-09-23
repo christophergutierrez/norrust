@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from tools.plan_selector import (
-    FallbackReason, FakeSelector, MAX_PROMPT_BYTES, PromptTooLarge,
+    FallbackReason, FakeSelector, MAX_PROMPT_BYTES, MODEL_PROFILES, PromptTooLarge,
     SelectorEnvelope, SelectorMode, SelectorRequest, build_selector_prompt,
     parse_candidate_response, run_selector_envelope, select_candidate,
 )
@@ -149,6 +149,25 @@ class PlanSelectorTests(unittest.TestCase):
         self.assertEqual(seen["kwargs"]["request_id"], "decision-3")
         self.assertTrue(seen["kwargs"]["stream"])
         self.assertEqual(json.loads(result.envelope)["response"]["candidate_id"], "lookahead")
+
+    def test_all_curated_fireworks_profiles_dispatch_with_low_reasoning(self):
+        envelope = opening_envelope()
+        for model, effort in MODEL_PROFILES.items():
+            with self.subTest(model=model):
+                seen = {}
+
+                def fake_run(prompt, **kwargs):
+                    seen.update(kwargs)
+                    return {"text": '{"schema_version":1,"candidate_id":"lookahead"}'}
+
+                result = run_selector_envelope(
+                    envelope, model=model, reasoning_effort=effort,
+                    fireworks_run=fake_run,
+                )
+                self.assertTrue(result.dispatched)
+                self.assertIsNone(result.fallback_reason)
+                self.assertEqual(seen["model"], model)
+                self.assertEqual(seen["reasoning_effort"], "low")
 
     def test_length_and_transport_errors_fallback_after_one_dispatch(self):
         envelope = opening_envelope()

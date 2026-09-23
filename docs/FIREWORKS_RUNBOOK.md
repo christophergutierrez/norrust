@@ -77,13 +77,13 @@ This optional `self-play` integration gives Fireworks one bounded choice among
 engine-generated, complete-turn Coordinated Planner candidates. It is not the
 direct-action `greedy_driver` + `tools.llm_client` mode documented below: the
 model sees a compact candidate summary and returns a candidate ID; the engine
-owns action generation and execution. The supported profiles are
-`accounts/fireworks/models/glm-5p3-flash` and
-`accounts/fireworks/models/deepseek-v4p1-flash` (DeepSeek V4.1 Flash), both with
-explicit `low` reasoning. Each has a 2,048 output-token limit, 60-second
-deadline, 12,288-byte prompt limit, one physical attempt per request, and a
-32-request per-game ceiling. No retries or escalation are performed. A failed,
-invalid, truncated, or late reply uses the deterministic planner baseline.
+owns action generation and execution. The explicit model/reasoning allowlist
+is maintained in [LLM_CLIENT.md](LLM_CLIENT.md#fireworks-selector-for-the-coordinated-planner)
+and `tools/plan_selector.py`; the current profiles use `low` reasoning. Each has a
+2,048 output-token limit, 60-second deadline, 12,288-byte prompt limit, one
+physical attempt per request, and a 32-request per-game ceiling. No retries or
+escalation are performed. A failed, invalid, truncated, or late reply uses the
+deterministic planner baseline.
 
 Use a fresh output directory per game. The Rust command boundary provides the
 actual serialized request on stdin; `tools.plan_selector` makes the Fireworks

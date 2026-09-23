@@ -27,7 +27,13 @@ SELECTOR_OUTPUT_TOKENS = 2_048
 SELECTOR_TIMEOUT_SECONDS = 60.0
 SELECTOR_PROMPT_LAYOUT = "coordinated_selector_v2"
 MODEL_PROFILES = {
+    "accounts/fireworks/models/glm-5p3": "low",
     "accounts/fireworks/models/glm-5p3-flash": "low",
+    "accounts/fireworks/models/qwen3p8-max": "low",
+    "accounts/fireworks/models/deepseek-v4-pro-0813": "low",
+    "accounts/fireworks/models/minimax-m3": "low",
+    "accounts/fireworks/models/kimi-k3": "low",
+    "accounts/fireworks/models/gpt-oss-120b": "low",
     "accounts/fireworks/models/deepseek-v4p1-flash": "low",
 }
 _REQUEST_KEYS = {"schema_version", "turn", "side", "state_revision", "evaluation_seed", "objective", "candidates"}
@@ -372,7 +378,7 @@ class SelectorDispatchResult:
 
 
 def resolve_selector_profile(model: str, reasoning_effort: str) -> None:
-    """Validate the two frozen Stack 3 profiles before dispatch."""
+    """Validate a model/effort pair explicitly supported by this selector."""
     if model not in MODEL_PROFILES or MODEL_PROFILES[model] != reasoning_effort:
         raise ValueError("unsupported selector model/reasoning profile")
 
