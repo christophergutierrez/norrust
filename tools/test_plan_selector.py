@@ -48,6 +48,11 @@ class PlanSelectorTests(unittest.TestCase):
         self.assertEqual(original.selected_id, reversed_result.selected_id)
         self.assertEqual(original.selected_id, "lookahead")
 
+    def test_prompt_states_bounded_optional_reason_length(self):
+        prompt = build_selector_prompt(load_request("close_tradeoff"))
+        self.assertIn("Omit reason_code unless useful", prompt)
+        self.assertIn("at most 32 UTF-8 bytes", prompt)
+
     def test_prompt_uses_exact_utf8_bound_and_rejects_oversize(self):
         request = load_request("opening")
         low, high = 0, MAX_PROMPT_BYTES * 2
