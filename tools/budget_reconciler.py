@@ -3,8 +3,9 @@
 Reuses `tools.model_usage`'s `(game_id, call_id)` physical-call identity and
 lifecycle merge helpers (`merge_lifecycle`) to fold repeated dispatch/final
 usage-sidecar rows into one accounted call per identity -- never by prompt
-hash. Reservation sizing reuses the real output-escalation ceiling from
-`tools.output_limits` instead of a guessed fixed number.
+hash. Direct-action reservation sizing reuses the real output-escalation
+ceiling from `tools.output_limits`; an explicit fixed `selector_budget` profile
+uses its one-attempt request, prompt, and output limits instead.
 
 Ledger schema notes:
   - `remaining_authorization_usd` is always `standing_cap_usd - prior_spend_usd
@@ -25,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import datetime
 import json
 import math
 import os
@@ -144,6 +146,13 @@ TERMINAL_RUN_STATUSES = frozenset({"ok", "failed", "error"})
 _MODEL_CALL_FIELDS = {f.name for f in dataclasses.fields(ModelCall)}
 _COST_RELEVANT_TOKEN_FIELDS = ("input_tokens", "cached_input_tokens", "output_tokens")
 
+SELECTOR_BUDGET_PROFILE = {
+    "max_requests": 32,
+    "max_prompt_bytes": 12_288,
+    "max_output_tokens": 2_048,
+    "max_physical_attempts_per_request": 1,
+}
+
 
 def load_ledger(path: Path) -> dict[str, Any]:
   return json.loads(path.read_text(encoding="utf-8"))
@@ -161,7 +170,11 @@ def save_ledger(path: Path, ledger: dict[str, Any]) -> None:
 
 
 def compute_reservation_usd(cell: dict[str, Any]) -> float:
-  """Derive a conservative reservation from resolved limits and the real
+  """Derive a conservative reservation from the cell's enforced limits.
+
+  A cell with `selector_budget` uses `_compute_selector_reservation_usd` and
+  reserves every allowed one-attempt call. The direct-action path below is
+  unchanged and derives its bound from its resolved limits and actual
   output-escalation ceiling, including the last in-flight request.
 
   Retry/cap-check finding (see tools/llm_client.py):
@@ -205,6 +218,9 @@ def compute_reservation_usd(cell: dict[str, Any]) -> float:
                       "refusing to guess a reservation")
   rates = _finite_rates(pricing["rates"])
 
+  if "selector_budget" in cell:
+    return _compute_selector_reservation_usd(cell["selector_budget"], pricing, rates)
+
   budgets = cell.get("budgets")
   if not isinstance(budgets, dict):
     raise ValueError("cell is missing budgets; refusing to guess a reservation")
@@ -224,6 +240,53 @@ def compute_reservation_usd(cell: dict[str, Any]) -> float:
   except (OverflowError, ValueError) as exc:
     raise ValueError("computed reservation is not finite") from exc
   _finite_number(reservation, "computed reservation")
+  return reservation
+
+
+def _compute_selector_reservation_usd(profile: Any, pricing: dict[str, Any],
+                                      rates: dict[str, float | int]) -> float:
+  """Bound every allowed selector call without the direct-action retry tail.
+
+  Prompt bytes are conservatively counted as input tokens, using the greater
+  of dated input and cached-input rates. Output tokens use the dated output
+  rate. The selector performs one physical attempt per request, so its finite
+  32-call ceiling is the complete reservation bound.
+  """
+  if not isinstance(profile, dict):
+    raise ValueError("selector_budget must be an object")
+  expected_keys = set(SELECTOR_BUDGET_PROFILE)
+  if set(profile) != expected_keys:
+    raise ValueError("selector_budget must contain exactly the fixed selector profile fields")
+
+  for key, expected in SELECTOR_BUDGET_PROFILE.items():
+    value = profile.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+      raise ValueError(f"selector_budget.{key} must be an integer")
+    if key == "max_prompt_bytes":
+      if not 0 < value <= expected:
+        raise ValueError("selector_budget.max_prompt_bytes must be in 1..12288")
+    elif value != expected:
+      raise ValueError(f"selector_budget.{key} must equal {expected}")
+
+  date = pricing.get("date")
+  try:
+    parsed_date = datetime.date.fromisoformat(date) if isinstance(date, str) else None
+  except ValueError:
+    parsed_date = None
+  if parsed_date is None or parsed_date.isoformat() != date:
+    raise ValueError("selector reservation requires a valid ISO dated pricing snapshot")
+
+  prompt_rate = max(rates["input_per_million"], rates["cached_input_per_million"])
+  request_count = profile["max_requests"]
+  prompt_cost = (request_count * profile["max_prompt_bytes"]
+                 / 1_000_000.0 * prompt_rate)
+  output_cost = (request_count * profile["max_output_tokens"]
+                 / 1_000_000.0 * rates["output_per_million"])
+  try:
+    reservation = prompt_cost + output_cost
+  except (OverflowError, ValueError) as exc:
+    raise ValueError("computed selector reservation is not finite") from exc
+  _finite_number(reservation, "computed selector reservation")
   return reservation
 
 

@@ -42,6 +42,17 @@ def _cell(cell_id: str = "cell-1", soft_cap: int = 150_000, max_prompt_bytes: in
   }
 
 
+def _selector_cell() -> dict:
+  cell = _cell(soft_cap=50_000_000)
+  cell["selector_budget"] = {
+    "max_requests": 32,
+    "max_prompt_bytes": 12_288,
+    "max_output_tokens": 2_048,
+    "max_physical_attempts_per_request": 1,
+  }
+  return cell
+
+
 def _write_ledger(path: Path, *, standing_cap=2.0, prior_spend=0.171026, remaining=None,
                    pricing=None, active_reservation=0.0, reserved_for_cell=None,
                    cells=None) -> None:
@@ -258,6 +269,68 @@ class ComputeReservationTest(unittest.TestCase):
     cell["pricing"]["rates"]["output_per_million"] = 1e308
     with self.assertRaises(ValueError):
       br.compute_reservation_usd(cell)
+
+
+class SelectorReservationProfileTest(unittest.TestCase):
+  def test_selector_reserves_all_calls_at_prompt_and_output_upper_bounds(self):
+    cell = _selector_cell()
+    # Each physical call reserves 12,288 input tokens and 2,048 output tokens.
+    # Dated Fireworks rates are $0.15/M input and $0.50/M output.
+    expected = (32 * 12_288 * 0.15 / 1_000_000.0
+                + 32 * 2_048 * 0.5 / 1_000_000.0)
+    self.assertAlmostEqual(expected, 0.0917504, places=9)
+    reserved = br.compute_reservation_usd(cell)
+    self.assertAlmostEqual(reserved, expected, places=9)
+    self.assertLess(reserved, 1.0, "selector reservation must not include the direct-action retry tail")
+
+  def test_reserve_cli_uses_selector_profile_in_manifest(self):
+    cell = _selector_cell()
+    with tempfile.TemporaryDirectory() as directory:
+      root = Path(directory)
+      ledger_path = root / "ledger.json"
+      manifest_path = root / "manifest.json"
+      _write_ledger(ledger_path, pricing=cell["pricing"])
+      manifest_path.write_text(json.dumps({"cells": [cell]}), encoding="utf-8")
+      self.assertEqual(br.main(["reserve", "--ledger", str(ledger_path),
+                                "--manifest", str(manifest_path), "--cell-id", cell["id"]]), 0)
+      ledger = br.load_ledger(ledger_path)
+      expected = (32 * 12_288 * 0.15 / 1_000_000.0
+                  + 32 * 2_048 * 0.5 / 1_000_000.0)
+      self.assertAlmostEqual(ledger["active_reservation_usd"], expected, places=9)
+
+  def test_selector_uses_the_higher_cached_input_rate_conservatively(self):
+    cell = _selector_cell()
+    cell["pricing"]["rates"]["cached_input_per_million"] = 0.6
+    expected = (32 * 12_288 * 0.6 / 1_000_000.0
+                + 32 * 2_048 * 0.5 / 1_000_000.0)
+    self.assertAlmostEqual(br.compute_reservation_usd(cell), expected, places=9)
+
+  def test_malformed_selector_profiles_fail_closed(self):
+    mutations = (
+      lambda p: p.pop("max_requests"),
+      lambda p: p.update(max_requests=31),
+      lambda p: p.update(max_requests=True),
+      lambda p: p.update(max_prompt_bytes=12_289),
+      lambda p: p.update(max_prompt_bytes=0),
+      lambda p: p.update(max_prompt_bytes=False),
+      lambda p: p.update(max_output_tokens=2_049),
+      lambda p: p.update(max_physical_attempts_per_request=2),
+      lambda p: p.update(retries=0),
+    )
+    for mutate in mutations:
+      with self.subTest(mutation=mutate):
+        cell = _selector_cell()
+        mutate(cell["selector_budget"])
+        with self.assertRaises(ValueError):
+          br.compute_reservation_usd(cell)
+
+  def test_invalid_selector_pricing_date_fails_closed(self):
+    for bad_date in (None, "2026-02-30", "2026/09/17", ""):
+      with self.subTest(date=bad_date):
+        cell = _selector_cell()
+        cell["pricing"]["date"] = bad_date
+        with self.assertRaises(ValueError):
+          br.compute_reservation_usd(cell)
 
 
 class ReconcileCellTest(unittest.TestCase):
