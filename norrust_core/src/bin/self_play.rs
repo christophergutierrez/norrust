@@ -32,6 +32,9 @@ use norrust_core::schema::{FactionDef, RecruitGroup, TerrainDef, UnitDef};
 use norrust_core::selector::{
     DecisionTelemetry, SelectorRequest, SelectorResponse, SELECTOR_SCHEMA_VERSION,
 };
+use norrust_core::selector_backend::{
+    read_response_file, BackendError, SelectorBudget, SelectorLimits,
+};
 use norrust_core::unit::Unit;
 
 #[derive(Clone, Copy)]
@@ -90,6 +93,7 @@ struct Config {
     record_dir: Option<PathBuf>,
     selector_candidate: Option<String>,
     selector_failure: bool,
+    selector_response_file: Option<PathBuf>,
     recruit1_policy: RecruitPolicy,
     recruit2_policy: RecruitPolicy,
 }
@@ -146,6 +150,7 @@ Options:
   --record-dir PATH     Write isolated state trajectories (directory must be new)
   --selector-candidate ID  Test selector: choose a current plan ID on close decisions
   --selector-fail       Test selector: force fallback on close decisions
+  --selector-response-file PATH  Local selector v1 JSON reply, used on close decisions
   --recruit1-policy KIND  team 1 recruitment: first-affordable | balanced
   --recruit2-policy KIND  team 2 recruitment: first-affordable | balanced
   --verbose             CSV header plus one line per game
@@ -199,6 +204,7 @@ fn parse_args() -> Config {
         record_dir: None,
         selector_candidate: None,
         selector_failure: false,
+        selector_response_file: None,
         recruit1_policy: RecruitPolicy::FirstAffordable,
         recruit2_policy: RecruitPolicy::FirstAffordable,
     };
@@ -236,6 +242,7 @@ fn parse_args() -> Config {
         match key.as_str() {
             "--record-dir" => c.record_dir = Some(PathBuf::from(value)),
             "--selector-candidate" => c.selector_candidate = Some(value.clone()),
+            "--selector-response-file" => c.selector_response_file = Some(PathBuf::from(value)),
             "--recruit1-policy" => {
                 c.recruit1_policy = match value.as_str() {
                     "first-affordable" => RecruitPolicy::FirstAffordable,
@@ -277,8 +284,14 @@ fn parse_args() -> Config {
     if c.team1.is_empty() || c.team2.is_empty() || c.games == 0 || c.threads == 0 {
         usage();
     }
-    if c.selector_failure && c.selector_candidate.is_some() {
-        eprintln!("--selector-fail and --selector-candidate cannot be combined");
+    if (c.selector_failure as u8
+        + c.selector_candidate.is_some() as u8
+        + c.selector_response_file.is_some() as u8)
+        > 1
+    {
+        eprintln!(
+            "--selector-fail, --selector-candidate, and --selector-response-file are exclusive"
+        );
         usage();
     }
     if c.verbose as u8 + c.compact as u8 + c.json as u8 > 1 {
@@ -450,7 +463,11 @@ fn play_turn(
     planner_memory: &mut PlannerMemory,
     selector_enabled: bool,
     selector_config: &Config,
-) -> (Vec<ActionRecord>, Option<DecisionTelemetry>) {
+    selector_budget: &mut SelectorBudget,
+) -> (
+    Vec<ActionRecord>,
+    Option<(SelectorRequest, DecisionTelemetry)>,
+) {
     match kind {
         AiKind::Greedy => {
             ai_take_turn_greedy(state, side);
@@ -467,17 +484,39 @@ fn play_turn(
         ),
         AiKind::Coordinated => {
             if selector_enabled {
-                let fake_selector =
-                    |request: &SelectorRequest| fake_selector_response(selector_config, request);
-                let (actions, _request, telemetry) = ai_take_turn_coordinated_with_memory_selected(
+                let selector_budget = std::cell::RefCell::new(selector_budget);
+                let selector = |request: &SelectorRequest| {
+                    if let Some(path) = selector_config.selector_response_file.as_deref() {
+                        selector_budget
+                            .borrow_mut()
+                            .invoke(request, |_| {
+                                read_response_file(
+                                    path,
+                                    SelectorLimits::default().max_response_bytes,
+                                )
+                            })
+                            .map_err(backend_error_text)
+                    } else {
+                        selector_budget
+                            .borrow_mut()
+                            .invoke(request, |_| {
+                                fake_selector_response(selector_config, request).map(|response| {
+                                    serde_json::to_vec(&response)
+                                        .expect("serialize fake v1 response")
+                                })
+                            })
+                            .map_err(backend_error_text)
+                    }
+                };
+                let (actions, request, telemetry) = ai_take_turn_coordinated_with_memory_selected(
                     state,
                     side,
                     recruit_defs,
                     policy,
                     planner_memory,
-                    Some(&fake_selector),
+                    Some(&selector),
                 );
-                (actions, Some(telemetry))
+                (actions, Some((request, telemetry)))
             } else {
                 (
                     ai_take_turn_coordinated_with_memory(
@@ -498,17 +537,40 @@ fn play_turn(
     }
 }
 
+fn backend_error_text(error: BackendError) -> String {
+    match error {
+        BackendError::BudgetExhausted => "budget_exhausted".into(),
+        BackendError::CircuitOpen => "circuit_open".into(),
+        BackendError::Provider(message) => format!("provider_error:{message}"),
+        BackendError::Timeout => "timeout".into(),
+        BackendError::Oversized => "oversized_response".into(),
+        BackendError::Malformed => "malformed_response".into(),
+        BackendError::InvalidResponse(message) => format!("invalid_response:{message}"),
+    }
+}
+
 fn record_decision(
     writer: &mut Option<BufWriter<std::fs::File>>,
     step: u32,
     side: u8,
+    request: &SelectorRequest,
     telemetry: &DecisionTelemetry,
+    backend: &str,
 ) {
     if let Some(writer) = writer {
         serde_json::to_writer(
             &mut *writer,
             &serde_json::json!({
                 "type": "coordinated_decision", "step": step, "side": side,
+                "decision_id": format!("turn-{}-side-{}-revision-{}", request.turn, side, request.state_revision),
+                "backend": if telemetry.selector_invoked { backend } else { "none" },
+                "request": request,
+                "response": if telemetry.response_status == "accepted" {
+                    serde_json::json!({"schema_version": 1, "candidate_id": telemetry.selected_candidate_id})
+                } else { serde_json::Value::Null },
+                "response_status": telemetry.response_status,
+                "fallback_reason": telemetry.fallback_reason,
+                "usage": {"input_tokens": null, "output_tokens": null, "cost_microusd": null},
                 "telemetry": telemetry,
             }),
         )
@@ -533,7 +595,9 @@ fn fake_selector_response(
 }
 
 fn configured_selector(config: &Config) -> bool {
-    config.selector_candidate.is_some() || config.selector_failure
+    config.selector_candidate.is_some()
+        || config.selector_failure
+        || config.selector_response_file.is_some()
 }
 
 fn record_actions(
@@ -677,6 +741,7 @@ fn run_game(c: &Config, game: u32) -> GameResult {
     state.active_faction = first;
     let mut rng = mix_seed(game_seed ^ 0xa0761d6478bd642f);
     let mut planner_memory = [PlannerMemory::default(), PlannerMemory::default()];
+    let mut selector_budget = SelectorBudget::new(SelectorLimits::default());
     let mut next_id = 3;
     let limit = side_turn_cap;
     let board_path = base.join("scenarios").join(&c.scenario).join("board.toml");
@@ -736,10 +801,22 @@ fn run_game(c: &Config, game: u32) -> GameResult {
                 &mut planner_memory[0],
                 configured_selector(c),
                 c,
+                &mut selector_budget,
             );
             record_actions(&mut recording, step, 0, &actions);
-            if let Some(telemetry) = telemetry {
-                record_decision(&mut recording, step, 0, &telemetry);
+            if let Some((request, telemetry)) = telemetry {
+                record_decision(
+                    &mut recording,
+                    step,
+                    0,
+                    &request,
+                    &telemetry,
+                    if c.selector_response_file.is_some() {
+                        "local-response-file"
+                    } else {
+                        "test-fake"
+                    },
+                );
             }
         } else {
             let policy = recruit_policy_for_side(c, 1);
@@ -767,10 +844,22 @@ fn run_game(c: &Config, game: u32) -> GameResult {
                 &mut planner_memory[1],
                 configured_selector(c),
                 c,
+                &mut selector_budget,
             );
             record_actions(&mut recording, step, 1, &actions);
-            if let Some(telemetry) = telemetry {
-                record_decision(&mut recording, step, 1, &telemetry);
+            if let Some((request, telemetry)) = telemetry {
+                record_decision(
+                    &mut recording,
+                    step,
+                    1,
+                    &request,
+                    &telemetry,
+                    if c.selector_response_file.is_some() {
+                        "local-response-file"
+                    } else {
+                        "test-fake"
+                    },
+                );
             }
         }
         record_state(
@@ -1027,6 +1116,7 @@ mod tests {
             record_dir: None,
             selector_candidate: None,
             selector_failure: false,
+            selector_response_file: None,
             recruit1_policy: RecruitPolicy::FirstAffordable,
             recruit2_policy: RecruitPolicy::FirstAffordable,
         }
@@ -1156,6 +1246,7 @@ mod tests {
             &mut memory,
             false,
             &test_config(),
+            &mut SelectorBudget::new(SelectorLimits::default()),
         );
         let first_age = memory.age;
         let first_objective = memory.objective;
@@ -1170,6 +1261,7 @@ mod tests {
             &mut memory,
             false,
             &test_config(),
+            &mut SelectorBudget::new(SelectorLimits::default()),
         );
 
         assert!(first_age > 0);

@@ -36,6 +36,7 @@ pub struct CandidateSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SelectorResponse {
     pub schema_version: u16,
     pub candidate_id: String,
@@ -74,9 +75,11 @@ impl SelectorRequest {
         if self.candidates.is_empty() {
             return Err("selector request must contain candidates");
         }
-        if self.candidates.iter().any(|candidate| {
-            !candidate.legal || candidate.state_revision != self.state_revision
-        }) {
+        if self
+            .candidates
+            .iter()
+            .any(|candidate| !candidate.legal || candidate.state_revision != self.state_revision)
+        {
             return Err("candidate is illegal or belongs to a different state revision");
         }
         for (index, candidate) in self.candidates.iter().enumerate() {
@@ -104,7 +107,11 @@ impl SelectorResponse {
         {
             return Err("selected candidate ID is not in the current request");
         }
-        if self.reason_code.as_ref().is_some_and(|reason| reason.len() > 32) {
+        if self
+            .reason_code
+            .as_ref()
+            .is_some_and(|reason| reason.len() > 32)
+        {
             return Err("reason code exceeds 32 bytes");
         }
         Ok(())
@@ -148,7 +155,10 @@ mod tests {
         assert_eq!(decoded, value);
         let mut unsupported = decoded;
         unsupported.schema_version += 1;
-        assert_eq!(unsupported.validate(), Err("unsupported selector request schema version"));
+        assert_eq!(
+            unsupported.validate(),
+            Err("unsupported selector request schema version")
+        );
     }
 
     #[test]
@@ -170,7 +180,10 @@ mod tests {
             reason_code: Some("protect_recruiter".into()),
         };
         assert!(valid.validate_for(&value).is_ok());
-        let unknown = SelectorResponse { candidate_id: "invented".into(), ..valid };
+        let unknown = SelectorResponse {
+            candidate_id: "invented".into(),
+            ..valid
+        };
         assert!(unknown.validate_for(&value).is_err());
     }
 }
