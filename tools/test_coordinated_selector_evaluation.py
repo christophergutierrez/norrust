@@ -80,6 +80,34 @@ class CoordinatedSelectorEvaluationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "absent from telemetry"):
             evaluation.validate_trace(cell, "coordinated-llm", engine, trace)
 
+    def test_trace_accepts_rust_accepted_status_and_checks_fallback_evidence(self):
+        cell = evaluation.build_schedule()[0]
+        engine = {"raw_seed": cell["seed"], "effective_seed": strength._mix_seed(cell["seed"]),
+                  "scenario": cell["scenario"], "factions": [cell["faction"]] * 2,
+                  "algorithms": strength._expected_algorithms(cell),
+                  "recruitment_policies": [cell["recruit1_policy"], cell["recruit2_policy"]],
+                  "first_side": 0, "second_gold": 0, "side_turn_cap": cell["max_side_turns"],
+                  "starting_gold": [cell["gold"]] * 2, "completed_side_turns": 1,
+                  "winner_side": cell["controlled_side"], "termination_reason": "winner"}
+        telemetry = {"selector_invoked": True,
+                     "candidates": [{"candidate_id": "greedy"}, {"candidate_id": "objective"}],
+                     "baseline_candidate_id": "greedy", "selected_candidate_id": "objective",
+                     "fallback_reason": None, "response_status": "accepted"}
+        trace = [{"type": "metadata", "input_seed": cell["seed"]},
+                 {"type": "coordinated_decision", "side": cell["controlled_side"],
+                  "telemetry": telemetry},
+                 {"type": "terminal", "side_turns_executed": 1}]
+        result = evaluation.validate_trace(cell, "coordinated-llm", engine, trace)
+        self.assertEqual(result["decision_count"], 1)
+
+        telemetry.update({"selected_candidate_id": "objective", "fallback_reason": "timeout",
+                          "response_status": "error"})
+        with self.assertRaisesRegex(ValueError, "deterministic baseline"):
+            evaluation.validate_trace(cell, "coordinated-llm", engine, trace)
+        telemetry.update({"selected_candidate_id": "greedy", "response_status": "accepted"})
+        with self.assertRaisesRegex(ValueError, "fallback has unexplained status"):
+            evaluation.validate_trace(cell, "coordinated-llm", engine, trace)
+
     def test_trace_rejects_selector_in_baseline_treatment(self):
         cell = evaluation.build_schedule()[0]
         engine = {"raw_seed": cell["seed"], "effective_seed": strength._mix_seed(cell["seed"]),

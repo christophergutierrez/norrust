@@ -84,8 +84,16 @@ def validate_trace(cell: Mapping[str, Any], treatment: str, result: Mapping[str,
             ids = {c.get("candidate_id") for c in telemetry.get("candidates", [])}
             if telemetry.get("selected_candidate_id") not in ids:
                 raise ValueError("selector chose a candidate absent from telemetry")
-            if telemetry.get("fallback_reason") is None and telemetry.get("response_status") not in ("selected", "success"):
-                raise ValueError("selector response has unexplained status")
+            fallback_reason = telemetry.get("fallback_reason")
+            response_status = telemetry.get("response_status")
+            if fallback_reason is None:
+                if response_status not in ("accepted", "selected", "success"):
+                    raise ValueError("selector response has unexplained status")
+            else:
+                if response_status not in ("rejected", "error"):
+                    raise ValueError("selector fallback has unexplained status")
+                if telemetry.get("selected_candidate_id") != telemetry.get("baseline_candidate_id"):
+                    raise ValueError("selector fallback did not use the deterministic baseline")
         decisions.append(telemetry)
 
     return {"outcome": outcome, "decisions": decisions,
