@@ -342,10 +342,13 @@ def validate_trace(cell: Mapping[str, Any], treatment: str, result: Mapping[str,
         expected_backend = "test-fake" if treatment == "coordinated-fake-selector" else "command"
         if row.get("backend") != expected_backend:
             raise ValueError(f"{treatment} trace backend mismatch: expected {expected_backend}")
-        if treatment == "coordinated-fake-selector" and (row.get("request_id") or
-                row.get("usage") not in (None, {}, {"input_tokens": None, "output_tokens": None,
-                                                    "cost_microusd": None})):
-            raise ValueError("fake selector must not claim provider usage")
+        if treatment == "coordinated-fake-selector":
+            usage = row.get("usage")
+            if (not isinstance(usage, Mapping)
+                    or any(usage.get(key) is not None for key in
+                           ("input_tokens", "cached_input_tokens", "output_tokens",
+                            "reasoning_tokens", "cost_microusd"))):
+                raise ValueError("fake selector must not claim measured provider usage")
         if treatment in REMOTE_TREATMENTS:
             decision_id = row.get("decision_id")
             request_id = row.get("request_id")

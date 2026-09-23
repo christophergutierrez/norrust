@@ -61,8 +61,11 @@ def _trace(cell, *, treatment="coordinated-fireworks-glm", state="accepted", gam
                {"candidate_id": "objective", "plan_kind": "objective", "score": 1.0},
            ]},
            "telemetry": telemetry}
-    if treatment.startswith("coordinated-fireworks"):
-        row["request_id"] = request_id
+    row["request_id"] = request_id
+    if treatment == "coordinated-fake-selector":
+        row["usage"] = {"input_tokens": None, "cached_input_tokens": None,
+                        "output_tokens": None, "reasoning_tokens": None,
+                        "cost_microusd": None}
     return [{"type": "metadata", "input_seed": cell["seed"], "game_id": game_id}, row,
             {"type": "terminal", "side_turns_executed": 1}]
 
@@ -337,6 +340,8 @@ class CoordinatedSelectorEvaluationTests(unittest.TestCase):
     def test_fake_has_no_provider_receipt_and_only_fake_cost_is_zero(self):
         trace = _trace(self.cell, treatment="coordinated-fake-selector")
         result = evaluation.validate_trace(self.cell, "coordinated-fake-selector", self.engine, trace)
+        self.assertEqual(result["decisions"][0]["decision_state"], "fake_accepted")
+        self.assertEqual(result["provider_call_count"], 0)
         schedule = [self.cell]
         rows = [{"pair_id": self.cell["pair_id"], "treatment": "coordinated-baseline",
                  "status": "completed", "outcome": "win", "decisions": [], "decision_count": 0},
