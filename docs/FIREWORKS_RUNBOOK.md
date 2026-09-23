@@ -71,6 +71,135 @@ full reservation stays, which is the deliberate conservative default; reconcile
 again when late evidence arrives. Before the next cell, judge available funds by
 `spendable_authorization_usd`, which already subtracts any reservation still held.
 
+## Coordinated Planner selector
+
+This optional `self-play` integration gives Fireworks one bounded choice among
+engine-generated, complete-turn Coordinated Planner candidates. It is not the
+direct-action `greedy_driver` + `tools.llm_client` mode documented below: the
+model sees a compact candidate summary and returns a candidate ID; the engine
+owns action generation and execution. The supported profiles are
+`accounts/fireworks/models/glm-5p3-flash` and
+`accounts/fireworks/models/deepseek-v4p1-flash` (DeepSeek V4.1 Flash), both with
+explicit `low` reasoning. Each has a 2,048 output-token limit, 60-second
+deadline, 12,288-byte prompt limit, one physical attempt per request, and a
+32-request per-game ceiling. No retries or escalation are performed. A failed,
+invalid, truncated, or late reply uses the deterministic planner baseline.
+
+Use a fresh output directory per game. The Rust command boundary provides the
+actual serialized request on stdin; `tools.plan_selector` makes the Fireworks
+call and preserves the engine-generated game and decision/request identity:
+
+```bash
+RUN="$PWD/tmp/selector-glm-game-001-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$RUN/evidence"
+if norrust_core/target/release/self-play \
+  --scenario big_battle_6 --team1 undead --team2 undead \
+  --ai1 coordinated --ai2 greedy --games 1 --seed 48301 --threads 1 \
+  --gold 300 --second-gold 0 --first team1 --json \
+  --selector-side 1 \
+  --selector-command python3 --selector-arg -m --selector-arg tools.plan_selector \
+  --selector-arg --model --selector-arg accounts/fireworks/models/glm-5p3-flash \
+  --selector-usage-sidecar "$RUN/usage.ndjson" \
+  --selector-evidence-dir "$RUN/evidence" \
+  > "$RUN/game.ndjson" 2> "$RUN/stderr.log"; then
+  RESULT=0
+else
+  RESULT=$?
+fi
+if [ "$RESULT" -eq 0 ]; then
+  printf '{"status":"ok"}\n' > "$RUN/run_status.json"
+else
+  printf '{"status":"failed"}\n' > "$RUN/run_status.json"
+fi
+```
+
+For DeepSeek V4.1, change the model ID to
+`accounts/fireworks/models/deepseek-v4p1-flash`. Preserve the complete trace,
+usage sidecar, evidence directory, stderr and exact command. Rust creates
+`game_id`, `decision_id`/request identity and request hash; do not replace those
+with hand-counted or position-derived IDs. The per-game evidence directory
+contains the selector's prompt and request evidence; keep it alongside its
+usage sidecar so each physical call can be joined to its exact selector
+decision.
+
+### Selector budget and accounting
+
+Use the existing standing budget ledger. Do not reset, recreate, or reseed it
+from a remembered balance. Before launch, read the ledger and ensure no other
+cell has an active reservation. Build a resolved cell manifest with the chosen
+model's currently verified, dated input, cached-input, and output rates, plus
+this exact bounded profile:
+
+```json
+{
+  "selector_budget": {
+    "max_requests": 32,
+    "max_prompt_bytes": 12288,
+    "max_output_tokens": 2048,
+    "max_physical_attempts_per_request": 1
+  }
+}
+```
+
+The manifest's `pricing` object must include a valid ISO `date` and `rates`
+with `input_per_million`, `cached_input_per_million`, and
+`output_per_million`. Verify these rates read-only immediately before a paid
+launch. Reserve with the tool's computed minimum, which bounds 32 calls using
+the greater input/cached-input rate, prompt-byte ceiling and output ceiling:
+
+```bash
+python3 -m tools.budget_reconciler reserve \
+  --ledger "$LEDGER" --manifest "$RUN/manifest.json" --cell-id selector-glm-game-001
+```
+
+Do not apply the direct-action retry-tail formula: the selector does one
+physical attempt per request, with no retries, so its fixed 32-call profile is
+the complete bound. Do not lower the computed minimum. Launch only when the
+reservation succeeds and the remaining spendable authorization is sufficient.
+Run one game at a time because the ledger supports one active reservation.
+The reconciler prices measured usage with the ledger's configured `pricing`
+snapshot. Confirm that snapshot matches this cell's selected model and dated
+rates before relying on a cost result. Do not silently change or reset a shared
+ledger to fit a cell; if the selected-model rates do not match its pricing
+snapshot, keep cost unknown and retain the reservation until accounting can be
+reconciled correctly.
+
+Write `run_status.json` only after the synchronous `self-play` command returns,
+as in the launch example; this is the reconciler's evidence the process ended.
+After the process exits, import the self-play game trace and then attach the
+sidecar to that same engine-generated game identity. For example, after setting
+`GAME_ID` to the ID recorded in the trace:
+
+```bash
+python3 - "$RUN/game.ndjson" "$RUN/usage.ndjson" "$GAME_ID" <<'PY'
+import sys
+from pathlib import Path
+from tools.game_history import import_game, import_usage_sidecar, open_history
+
+trace, usage, game_id = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+db = open_history(Path.cwd() / ".norrust_history/history.sqlite")
+try:
+    imported = import_game(db, trace, cohort_id="fireworks-selector", game_id=game_id)
+    if imported != game_id:
+        raise RuntimeError("trace import changed the engine game identity")
+    print(import_usage_sidecar(db, game_id, usage))
+finally:
+    db.close()
+PY
+python3 -m tools.budget_reconciler reconcile \
+  --ledger "$LEDGER" --cell-dir "$RUN" --cell-id selector-glm-game-001
+```
+
+The self-play importer does not establish seed, source commit, or selector
+backend as player metadata. Preserve those from the launch command,
+run manifest, and trace/evaluator evidence; leave absent catalog fields unknown.
+Inspect catalog coverage and the reconciler result before reporting cost.
+Reconcile again when late receipts arrive; an unmatched or incomplete call
+remains unknown and keeps the conservative reservation active. A transport
+receipt or successful game proves wiring and completion, not that model advice
+improves win rate. Do not report a model-quality result without completed
+gameplay evaluation.
+
 ## Bounded recording without a paid observer
 
 This example is one strategy opening, not the three-cell pilot or a full game.

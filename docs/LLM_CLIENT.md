@@ -776,6 +776,69 @@ to `reply_<ID>.txt` by some other backend or script) still gets diagnosed by the
 same `annotation_for_response` validator inside the client itself, so reading an
 annotation error never requires having used this helper.
 
+## Fireworks selector for the Coordinated Planner
+
+This is a separate player shape from `tools.llm_client`: Rust's
+`self-play --aiN coordinated` generates and evaluates legal complete-turn plans,
+then calls a command to select one plan. The model cannot issue game actions.
+Use the exact bounded profiles supported by `tools.plan_selector`:
+
+| Profile | Model | Reasoning |
+| --- | --- | --- |
+| GLM Flash | `accounts/fireworks/models/glm-5p3-flash` | `low` |
+| DeepSeek Flash | `accounts/fireworks/models/deepseek-v4p1-flash` (V4.1) | `low` |
+
+Both use 2,048 maximum output tokens, a 60-second provider deadline, a
+12,288-byte maximum prompt, no retries, and no more than 32 provider requests
+per game. Errors, malformed or truncated replies, timeouts, and exhausted
+budgets use the deterministic engine baseline. Keep this separate from direct
+action mode: `greedy_driver`/`tools.llm_client` gives its configured model the
+canonical action prompt and validated action interface, with different prompt,
+budgets, and usage records.
+
+Launch through Rust's production command boundary, for example:
+
+```bash
+RUN="$PWD/tmp/selector-game-001-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$RUN/evidence"
+norrust_core/target/release/self-play \
+  --scenario big_battle_6 --team1 undead --team2 undead \
+  --ai1 coordinated --ai2 greedy --games 1 --seed 48301 --threads 1 \
+  --gold 300 --second-gold 0 --first team1 --json \
+  --selector-side 1 \
+  --selector-command python3 --selector-arg -m --selector-arg tools.plan_selector \
+  --selector-arg --model --selector-arg accounts/fireworks/models/glm-5p3-flash \
+  --selector-usage-sidecar "$RUN/usage.ndjson" \
+  --selector-evidence-dir "$RUN/evidence" \
+  > "$RUN/game.ndjson" 2> "$RUN/stderr.log"
+```
+
+Change the model argument to `accounts/fireworks/models/deepseek-v4p1-flash`
+for DeepSeek V4.1 Flash. Create a fresh `RUN` directory per game and retain the
+game trace, usage sidecar, evidence directory, stderr and launch command. Rust
+generates `game_id`, `decision_id`/request identity and the request hash; these
+identities must remain unchanged when collecting evidence. Import the trace
+into the game catalog first, then attach the usage sidecar to that same
+engine-generated `game_id`. For this self-play trace shape, use
+`tools.game_history.import_game` and `tools.game_history.import_usage_sidecar`;
+consult [GAME_HISTORY.md](GAME_HISTORY.md) for identity and coverage semantics.
+The self-play importer does not establish seed, source commit, or selector
+backend as player metadata. Preserve those from the launch command,
+run manifest, and trace/evaluator evidence; leave missing catalog fields
+unknown. Inspect usage coverage before reporting costs; absent or unmatched
+token fields are unknown, never zero. A completed transport receipt proves
+dispatch/completion, not that model advice improved play.
+
+Before any paid run, reserve through `tools.budget_reconciler` against the
+existing standing ledger. The resolved cell uses `selector_budget` with
+`max_requests: 32`, `max_prompt_bytes: 12288`, and `max_output_tokens: 2048`,
+plus the selected model's currently verified, dated input, cached-input, and
+output rates. This reserves all permitted one-attempt calls and deliberately
+does not include direct-action retries. Reconcile after terminal completion;
+retain the reservation when any dispatched usage is unknown. Never reset,
+recreate, or infer a ledger balance from an old report. For the full operator
+procedure, see [FIREWORKS_RUNBOOK.md](FIREWORKS_RUNBOOK.md#coordinated-planner-selector).
+
 ## Usage accounting: launch, handoff, collection, and final report
 
 ### Bounded watchdog observer

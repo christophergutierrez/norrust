@@ -170,6 +170,59 @@ fails closed when a fixture assertion is not satisfied.
 | `coordinated` | Bounded selector: compares common-scored Greedy, look-ahead, and objective candidates after a complete private opponent response, then commits the selected legal turn. Persistent objectives use engine-valid target checks; scoring includes terminal outcome, cost-weighted force, villages/future income, reachable force, gold, and recruiter access. |
 | `random` | Legal-move uniform random |
 
+### Fireworks selector in the Coordinated Planner
+
+`--selector-command` lets a request-dependent command choose among plans
+already generated and simulated by `coordinated`; it does not give a model
+control of game actions. Keep the selector call limits fixed: GLM-5.3-Flash
+(`accounts/fireworks/models/glm-5p3-flash`) or DeepSeek V4.1 Flash
+(`accounts/fireworks/models/deepseek-v4p1-flash`), explicit `low` reasoning,
+2,048 output tokens, a 60-second provider deadline, at most 12,288 prompt bytes,
+at most 32 requests per game, and no retries. A timeout, invalid response,
+provider error, or exhausted request budget falls back to the planner's
+deterministic baseline.
+
+Use a separate directory for each game so its usage and prompt evidence cannot
+mix with another run:
+
+```bash
+RUN="$PWD/tmp/selector-game-001-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$RUN/evidence"
+norrust_core/target/release/self-play \
+  --scenario big_battle_6 --team1 undead --team2 undead \
+  --ai1 coordinated --ai2 greedy --games 1 --seed 48301 --threads 1 \
+  --gold 300 --second-gold 0 --first team1 --json \
+  --selector-side 1 \
+  --selector-command python3 --selector-arg -m --selector-arg tools.plan_selector \
+  --selector-usage-sidecar "$RUN/usage.ndjson" \
+  --selector-evidence-dir "$RUN/evidence" \
+  > "$RUN/game.ndjson" 2> "$RUN/stderr.log"
+```
+
+For DeepSeek V4.1 Flash, append
+`--selector-arg --model --selector-arg
+accounts/fireworks/models/deepseek-v4p1-flash` to the command arguments. For
+GLM-5.3-Flash, use `--selector-arg --model --selector-arg
+accounts/fireworks/models/glm-5p3-flash`. The adapter fixes `low`, 2,048
+outputs, and 60 seconds; do not override them. The Rust engine generates
+`game_id`, `decision_id`/request identity and request hash; preserve those
+exact IDs in the trace and usage evidence. Keep `game.ndjson`, `usage.ndjson`,
+and the complete `evidence/` directory together. Missing provider usage remains
+unknown, not zero. Record the source commit and exact command with the run.
+
+For paid evaluation, first reserve against the existing standing budget ledger
+using `tools.budget_reconciler` and a resolved manifest containing the fixed
+`selector_budget` profile (`max_requests: 32`, `max_prompt_bytes: 12288`,
+`max_output_tokens: 2048`), the selected model's currently verified dated
+pricing, and the input/cached-input/output rates. The tool computes a
+conservative reservation for all 32 one-attempt calls; it does not add the
+direct-action retry allowance. Reconcile only after the process is terminal and
+all dispatched calls have final measured receipts; otherwise the reservation
+stays active. Never reset or recreate a ledger from a remembered balance. See
+[FIREWORKS_RUNBOOK.md](FIREWORKS_RUNBOOK.md#coordinated-planner-selector) for
+the accounting and collection steps. These instructions describe configuration,
+not evidence that either model won a game.
+
 Look-ahead is ~40–50× slower than greedy on this map. Time 10 games before
 choosing a large `N`.
 
