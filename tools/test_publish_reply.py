@@ -28,6 +28,34 @@ def _validation_records(directory: Path) -> list[dict]:
 
 
 class PublishReplyTests(unittest.TestCase):
+    def test_selector_reply_validates_candidates_and_pending_prompt(self):
+        from .test_plan_selector import opening_envelope
+        from .plan_selector import build_selector_prompt
+        envelope = opening_envelope()
+        for candidate, wrong_prompt, succeeds in (("lookahead", False, True),
+                                                   ("invented", False, False),
+                                                   ("lookahead", True, False)):
+            with self.subTest(candidate=candidate, wrong_prompt=wrong_prompt), tempfile.TemporaryDirectory() as raw:
+                directory = Path(raw)
+                request_id = _make_request(directory)
+                if not wrong_prompt:
+                    (directory / f"prompt_{request_id}.txt").write_text(build_selector_prompt(envelope.request))
+                source = directory / "envelope.json"
+                source.write_text(json.dumps({"schema_version": 1, "game_id": envelope.game_id,
+                    "decision_id": envelope.decision_id, "request_sha256": envelope.request_sha256,
+                    "request": envelope.request.to_dict()}))
+                text = json.dumps({"schema_version": 1, "candidate_id": candidate})
+                pending = _pending(directory, text)
+                if succeeds:
+                    publish_reply(pending, directory, selector_envelope_path=source)
+                    self.assertEqual((directory / f"reply_{request_id}.txt").read_text(), text)
+                    with self.assertRaises(PublishError):
+                        publish_reply(pending, directory, selector_envelope_path=source)
+                else:
+                    with self.assertRaises(PublishError):
+                        publish_reply(pending, directory, selector_envelope_path=source)
+                    self.assertFalse((directory / f"reply_{request_id}.txt").exists())
+
     def test_valid_action_envelope_publishes(self):
         with tempfile.TemporaryDirectory() as raw:
             directory = Path(raw)

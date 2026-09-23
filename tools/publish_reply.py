@@ -80,7 +80,8 @@ def validate_reply_text(text: str) -> dict[str, Any]:
     return annotation_for_response(text)
 
 
-def publish_reply(pending_path: Path | str, directory: Path | str, request_id: str | None = None) -> str:
+def publish_reply(pending_path: Path | str, directory: Path | str, request_id: str | None = None,
+                  *, selector_envelope_path: Path | str | None = None) -> str:
     """Validate and publish one pending reply. Returns the resolved request ID.
 
     Raises ``PublishError`` without publishing, without touching an existing
@@ -98,7 +99,18 @@ def publish_reply(pending_path: Path | str, directory: Path | str, request_id: s
     except UnicodeDecodeError as exc:
         _record_attempt(directory, resolved_id, raw, "invalid", f"reply is not valid UTF-8: {exc}")
         raise PublishError(f"reply is not valid UTF-8: {exc}") from None
-    annotation = validate_reply_text(text)
+    if selector_envelope_path is not None:
+        from .plan_selector import SelectorEnvelope, build_selector_prompt
+        try:
+            envelope = SelectorEnvelope.from_json(Path(selector_envelope_path).read_text())
+            if (directory / f"prompt_{resolved_id}.txt").read_text() != build_selector_prompt(envelope.request):
+                raise ValueError("selector envelope does not match the pending prompt")
+            envelope.response_json(text)
+            annotation = {"status": "not_applicable"}
+        except (OSError, ValueError, LookupError) as exc:
+            annotation = {"status": "invalid", "error": str(exc)}
+    else:
+        annotation = validate_reply_text(text)
     if annotation["status"] == "invalid":
         _record_attempt(directory, resolved_id, raw, "invalid", annotation["error"])
         raise PublishError(annotation["error"])
@@ -128,10 +140,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pending", required=True, type=Path,
                          help="path to the drafted reply awaiting validation")
     parser.add_argument("--request-id", default=None,
-                         help="the request marker's ID; inferred from a single waiting_* marker if omitted")
+                        help="the request marker's ID; inferred from a single waiting_* marker if omitted")
+    parser.add_argument("--selector-envelope", type=Path,
+                        help="validate a Coordinated Planner choice against this envelope and pending prompt")
     args = parser.parse_args(argv)
     try:
-        resolved_id = publish_reply(args.pending, args.directory, args.request_id)
+        resolved_id = publish_reply(args.pending, args.directory, args.request_id,
+                                    selector_envelope_path=args.selector_envelope)
     except PublishError as exc:
         print(str(exc), file=sys.stderr)
         return 1

@@ -1169,6 +1169,12 @@ request context alongside its own transport handshake
 preserves the request IDs and timing windows that later usage collection
 depends on.
 
+For a Coordinated Planner selector reply, pass `--selector-envelope PATH` to
+`tools.publish_reply`. The publisher checks that the envelope generates the
+exact pending canonical selector prompt and that the reply names an offered
+candidate. It preserves the same atomic publication and handshake accounting;
+action-response annotation validation remains the default for other players.
+
 The subagent must never estimate, self-report, or invent its own token
 counts, and must never place usage fields in its action JSON -- a model's
 self-claimed usage is exactly as unreliable as its self-claimed identity (see
