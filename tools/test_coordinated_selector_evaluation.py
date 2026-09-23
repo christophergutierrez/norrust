@@ -95,7 +95,7 @@ def _write_evidence(root: Path, *, call_id="call-1", request_id="r1"):
     (call / "request_context.json").write_text(json.dumps({"decision_id": request_id}))
     (call / "payload.json").write_text(json.dumps({
         "model": "accounts/fireworks/models/glm-5p3-flash",
-        "max_tokens": 2048, "reasoning_effort": "low"}))
+        "max_completion_tokens": 2048, "reasoning_effort": "low"}))
     return root
 
 
@@ -282,7 +282,7 @@ class CoordinatedSelectorEvaluationTests(unittest.TestCase):
                                       expected_game_id="g1", evidence_dir=evidence)
         _write_evidence(self.evidence_dir)
         payload = self.evidence_dir / "call-1" / "payload.json"
-        payload.write_text(json.dumps({"model": profile["model"], "max_tokens": 4096,
+        payload.write_text(json.dumps({"model": profile["model"], "max_completion_tokens": 4096,
                                        "reasoning_effort": "low"}))
         with self.assertRaisesRegex(ValueError, "output limit differs"):
             evaluation.validate_trace(self.cell, "coordinated-fireworks-glm", self.engine,

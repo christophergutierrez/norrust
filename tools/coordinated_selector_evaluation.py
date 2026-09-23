@@ -225,7 +225,7 @@ def _validate_call_evidence(evidence_dir: Path, call_id: str, request_id: str,
         raise ValueError("provider prompt profile differs from frozen selector profile")
     if payload.get("model") != profile["model"]:
         raise ValueError("provider payload model differs from frozen selector profile")
-    if payload.get("max_tokens") != profile["limits"]["max_output_tokens"]:
+    if payload.get("max_completion_tokens") != profile["limits"]["max_output_tokens"]:
         raise ValueError("provider payload output limit differs from frozen selector profile")
     expected_effort = (None if profile["reasoning_effort"] == "provider_default_unknown"
                        else profile["reasoning_effort"])
