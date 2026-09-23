@@ -219,9 +219,12 @@ class CoordinatedSelectorEvaluationTests(unittest.TestCase):
 
     def test_real_choice_requires_exact_identity_usage_join_and_is_counted(self):
         profile = _profile()
+        engine_game_id = "input-seed-48301-effective-4528498791683271066"
+        self.assertNotEqual(engine_game_id, self.cell["pair_id"])
         result = evaluation.validate_trace(self.cell, "coordinated-fireworks-glm", self.engine,
-                                           _trace(self.cell), usage_rows=_usage(),
-                                           selector_profile=profile, expected_game_id="g1",
+                                           _trace(self.cell, game_id=engine_game_id),
+                                           usage_rows=_usage(game_id=engine_game_id),
+                                           selector_profile=profile, expected_game_id=engine_game_id,
                                            evidence_dir=_write_evidence(self.evidence_dir))
         self.assertEqual(result["decisions"][0]["decision_state"], "model_accepted")
         self.assertEqual(result["provider_call_count"], 1)

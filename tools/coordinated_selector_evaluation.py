@@ -667,9 +667,14 @@ def _run_one(cell: Mapping[str, Any], treatment: str, binary: Path, out_dir: Pat
         if len(engine_rows) != 1:
             raise ValueError(f"expected one engine result, got {len(engine_rows)}")
         trace = _read_trace(trace_dir / "game-00001.ndjson")
+        trace_game_id = trace[0].get("game_id") if trace else None
+        if treatment in REMOTE_TREATMENTS and (not isinstance(trace_game_id, str)
+                                                or not trace_game_id):
+            raise ValueError("real selector trace lacks engine game_id identity")
         decoded = validate_trace(cell, treatment, engine_rows[0], trace,
                                  usage_rows=usage_rows, selector_profile=profile,
-                                 expected_game_id=game_id, evidence_dir=evidence_dir)
+                                 expected_game_id=trace_game_id if treatment in REMOTE_TREATMENTS else None,
+                                 evidence_dir=evidence_dir)
         if treatment in REMOTE_TREATMENTS and decoded["provider_call_count"] == 0:
             usage_stats["provider_usage_missing"] = False
         return {**base, **usage_stats, "status": "completed", **decoded,
