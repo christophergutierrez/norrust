@@ -12,6 +12,10 @@ use crate::hex::Hex;
 use crate::pathfinding::{get_zoc_hexes, reachable_hexes};
 use crate::recruitment::{execute_recruitment, RecruitmentPolicy};
 use crate::schema::{AttackDef, UnitDef};
+use crate::selector::{
+    CandidateSummary, CandidateTelemetry, DecisionTelemetry, SelectorRequest,
+    SELECTOR_SCHEMA_VERSION,
+};
 use crate::tactics::unit_tactics;
 use crate::unit::Unit;
 
@@ -1460,7 +1464,11 @@ pub fn ai_take_turn_coordinated(
 
 fn coordinated_state_score(state: &GameState, faction: u8) -> f32 {
     if let Some(winner) = state.check_winner() {
-        return if winner == faction { 10_000.0 } else { -10_000.0 };
+        return if winner == faction {
+            10_000.0
+        } else {
+            -10_000.0
+        };
     }
 
     let enemy = 1 - faction;
@@ -1469,9 +1477,7 @@ fn coordinated_state_score(state: &GameState, faction: u8) -> f32 {
             .units
             .values()
             .filter(|unit| unit.faction == side)
-            .map(|unit| {
-                unit.cost as f32 * unit.hp as f32 / unit.max_hp.max(1) as f32
-            })
+            .map(|unit| unit.cost as f32 * unit.hp as f32 / unit.max_hp.max(1) as f32)
             .sum::<f32>()
     };
     let own_material = material(faction);
@@ -1506,12 +1512,13 @@ fn coordinated_state_score(state: &GameState, faction: u8) -> f32 {
                     .units
                     .iter()
                     .filter(|(_, other)| other.faction == enemy_side)
-                    .filter_map(|(enemy_id, _)| state.positions.get(enemy_id).map(|hex| from.distance(*hex)))
+                    .filter_map(|(enemy_id, _)| {
+                        state.positions.get(enemy_id).map(|hex| from.distance(*hex))
+                    })
                     .min()?;
                 let two_turn_reach = unit.movement.max(1) * 2;
-                (nearest <= two_turn_reach).then_some(
-                    unit.cost as f32 * unit.hp as f32 / unit.max_hp.max(1) as f32,
-                )
+                (nearest <= two_turn_reach)
+                    .then_some(unit.cost as f32 * unit.hp as f32 / unit.max_hp.max(1) as f32)
             })
             .sum::<f32>()
     };
@@ -2254,6 +2261,23 @@ pub fn ai_take_turn_coordinated_with_memory(
     policy: RecruitmentPolicy,
     memory: &mut PlannerMemory,
 ) -> Vec<ActionRecord> {
+    let (records, _, _) =
+        ai_take_turn_coordinated_with_memory_recorded(state, faction, definitions, policy, memory);
+    records
+}
+
+/// Execute the unchanged deterministic Coordinated Planner and return the
+/// compact candidate request plus optional decision evidence for analysis.
+/// Callers that do not need evidence should use
+/// [`ai_take_turn_coordinated_with_memory`], which does not serialize or retain
+/// the summaries.
+pub fn ai_take_turn_coordinated_with_memory_recorded(
+    state: &mut GameState,
+    faction: u8,
+    definitions: &[UnitDef],
+    policy: RecruitmentPolicy,
+    memory: &mut PlannerMemory,
+) -> (Vec<ActionRecord>, SelectorRequest, DecisionTelemetry) {
     let evaluation_seed = 0x9e37_79b9_7f4a_7c15_u64
         ^ state.state_revision
         ^ ((faction as u64) << 32)
@@ -2268,14 +2292,10 @@ pub fn ai_take_turn_coordinated_with_memory(
     let mut greedy = state.clone();
     greedy.rng = crate::combat::Rng::new(evaluation_seed);
     ai_take_turn_greedy(&mut greedy, faction);
+    let greedy_own_turn = greedy.clone();
     simulate_complete_greedy_response(&mut greedy);
-    let greedy_score = coordinated_candidate_score(
-        state,
-        &greedy,
-        faction,
-        objective,
-        memory.target,
-    );
+    let greedy_score =
+        coordinated_candidate_score(state, &greedy, faction, objective, memory.target);
     let mut objective_state = state.clone();
     let mut objective_next_id = objective_state.next_unit_id;
     let objective_recruitment = execute_recruitment(
@@ -2309,6 +2329,7 @@ pub fn ai_take_turn_coordinated_with_memory(
         policy,
         objective_records.clone(),
     );
+    let objective_own_turn = objective_candidate.clone();
     simulate_complete_greedy_response(&mut objective_candidate);
     let mut lookahead_candidate = state.clone();
     commit_planned_turn_with_definitions(
@@ -2318,6 +2339,7 @@ pub fn ai_take_turn_coordinated_with_memory(
         policy,
         look_records.clone(),
     );
+    let lookahead_own_turn = lookahead_candidate.clone();
     simulate_complete_greedy_response(&mut lookahead_candidate);
     let lookahead_score = coordinated_candidate_score(
         state,
@@ -2333,16 +2355,191 @@ pub fn ai_take_turn_coordinated_with_memory(
         objective,
         memory.target,
     );
-    let selected = if objective_score >= greedy_score && objective_score >= lookahead_score {
+    let candidates = vec![
+        (
+            "greedy",
+            "greedy",
+            "Greedy baseline",
+            0_u8,
+            greedy_score,
+            &greedy_own_turn,
+            &greedy,
+        ),
+        (
+            "lookahead",
+            "lookahead",
+            "Response-aware plan",
+            1_u8,
+            lookahead_score,
+            &lookahead_own_turn,
+            &lookahead_candidate,
+        ),
+        (
+            "objective",
+            "objective",
+            "Objective plan",
+            2_u8,
+            objective_score,
+            &objective_own_turn,
+            &objective_candidate,
+        ),
+    ];
+    let summaries: Vec<CandidateSummary> = candidates
+        .iter()
+        .map(|(id, kind, label, _, score, own, response)| {
+            candidate_summary(
+                state,
+                own,
+                response,
+                faction,
+                objective,
+                memory.target,
+                id,
+                kind,
+                label,
+                *score,
+            )
+        })
+        .collect();
+    // Explicit rank preserves the existing tie order (objective, look-ahead,
+    // greedy) independently of candidate collection order.
+    let chosen = deterministic_baseline_candidate(&summaries)
+        .expect("the planner always builds three candidates")
+        .to_string();
+    let request = SelectorRequest {
+        schema_version: SELECTOR_SCHEMA_VERSION,
+        turn: state.turn,
+        side: faction,
+        state_revision: state.state_revision,
+        evaluation_seed,
+        objective: format!("{objective:?}"),
+        candidates: summaries,
+    };
+    debug_assert!(request.validate().is_ok());
+    let selected = if chosen == "objective" {
         commit_planned_turn_with_definitions(state, faction, definitions, policy, objective_records)
-    } else if lookahead_score >= greedy_score {
+    } else if chosen == "lookahead" {
         commit_planned_turn_with_definitions(state, faction, definitions, policy, look_records)
     } else {
         ai_take_turn_greedy(state, faction);
         Vec::new()
     };
     update_planner_memory(memory, state, faction, objective);
-    selected
+    let telemetry = DecisionTelemetry {
+        schema_version: SELECTOR_SCHEMA_VERSION,
+        state_revision: request.state_revision,
+        candidates: request
+            .candidates
+            .iter()
+            .map(|candidate| CandidateTelemetry {
+                candidate_id: candidate.candidate_id.clone(),
+                score: candidate.score,
+            })
+            .collect(),
+        baseline_candidate_id: chosen.clone(),
+        selected_candidate_id: chosen.clone(),
+        score_margin: candidate_score_margin(&request.candidates, &chosen),
+        selector_invoked: false,
+        response_status: "disabled".into(),
+        fallback_reason: None,
+        latency_ms: None,
+        input_tokens: None,
+        output_tokens: None,
+        cost_microusd: None,
+    };
+    (selected, request, telemetry)
+}
+
+fn deterministic_baseline_candidate(candidates: &[CandidateSummary]) -> Option<&str> {
+    let rank = |kind: &str| match kind {
+        "greedy" => 0,
+        "lookahead" => 1,
+        "objective" => 2,
+        _ => 0,
+    };
+    candidates
+        .iter()
+        .max_by(|a, b| {
+            a.score
+                .total_cmp(&b.score)
+                .then_with(|| rank(&a.plan_kind).cmp(&rank(&b.plan_kind)))
+        })
+        .map(|candidate| candidate.candidate_id.as_str())
+}
+
+fn candidate_score_margin(candidates: &[CandidateSummary], selected: &str) -> f32 {
+    let selected_score = candidates
+        .iter()
+        .find(|candidate| candidate.candidate_id == selected)
+        .map(|candidate| candidate.score)
+        .unwrap_or(0.0);
+    let runner_up = candidates
+        .iter()
+        .filter(|candidate| candidate.candidate_id != selected)
+        .map(|candidate| candidate.score)
+        .max_by(f32::total_cmp)
+        .unwrap_or(selected_score);
+    (selected_score - runner_up).max(0.0)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn candidate_summary(
+    before: &GameState,
+    own_turn: &GameState,
+    after_response: &GameState,
+    faction: u8,
+    objective: CoordinatedObjective,
+    target: Option<Hex>,
+    candidate_id: &str,
+    plan_kind: &str,
+    label: &str,
+    score: f32,
+) -> CandidateSummary {
+    let enemy = 1 - faction;
+    let material = |state: &GameState, side: u8| {
+        state
+            .units
+            .values()
+            .filter(|unit| unit.faction == side)
+            .map(|unit| unit.cost as f32 * unit.hp as f32 / unit.max_hp.max(1) as f32)
+            .sum::<f32>()
+    };
+    let own_villages = |state: &GameState, side: u8| {
+        state
+            .village_owners
+            .values()
+            .filter(|&&owner| owner == side as i8)
+            .count() as i32
+    };
+    CandidateSummary {
+        candidate_id: candidate_id.into(),
+        plan_kind: plan_kind.into(),
+        label: label.into(),
+        score,
+        material_delta: (material(after_response, faction) - material(after_response, enemy))
+            - (material(before, faction) - material(before, enemy)),
+        gold_delta: (after_response.gold[faction as usize] as i64
+            - after_response.gold[enemy as usize] as i64)
+            - (before.gold[faction as usize] as i64 - before.gold[enemy as usize] as i64),
+        village_delta: (own_villages(after_response, faction)
+            - own_villages(after_response, enemy))
+            - (own_villages(before, faction) - own_villages(before, enemy)),
+        recruiter_alive: after_response
+            .units
+            .values()
+            .any(|unit| unit.faction == faction && unit.can_recruit),
+        objective_progress: objective_progress_delta(
+            before,
+            after_response,
+            faction,
+            objective,
+            target,
+        ),
+        opponent_response_delta: coordinated_state_score(after_response, faction)
+            - coordinated_state_score(own_turn, faction),
+        legal: true,
+        state_revision: before.state_revision,
+    }
 }
 
 fn objective_progress_score(
@@ -3196,6 +3393,80 @@ mod tests {
     }
 
     #[test]
+    fn recorded_coordinated_decision_preserves_default_actions_and_emits_candidates() {
+        let board = setup_keep_board(0, 0);
+        let mut baseline = GameState::new_seeded(board.clone(), 1234);
+        baseline.active_faction = 0;
+        baseline.gold[0] = 0;
+        baseline.place_unit(make_leader(1, 0), Hex::from_offset(0, 0));
+        baseline.place_unit(make_fighter(2, 0, 30), Hex::from_offset(2, 0));
+        baseline.place_unit(make_fighter(3, 1, 30), Hex::from_offset(5, 3));
+        let mut recorded = baseline.clone();
+        let mut baseline_memory = PlannerMemory::default();
+        let mut recorded_memory = PlannerMemory::default();
+
+        let expected = ai_take_turn_coordinated_with_memory(
+            &mut baseline,
+            0,
+            &[],
+            RecruitmentPolicy::FirstAffordable,
+            &mut baseline_memory,
+        );
+        let (actual, request, telemetry) = ai_take_turn_coordinated_with_memory_recorded(
+            &mut recorded,
+            0,
+            &[],
+            RecruitmentPolicy::FirstAffordable,
+            &mut recorded_memory,
+        );
+
+        assert_eq!(
+            serde_json::to_string(&actual).unwrap(),
+            serde_json::to_string(&expected).unwrap()
+        );
+        assert_eq!(format!("{recorded:?}"), format!("{baseline:?}"));
+        assert!(request.validate().is_ok());
+        assert_eq!(request.candidates.len(), 3);
+        assert_eq!(
+            telemetry.baseline_candidate_id,
+            telemetry.selected_candidate_id
+        );
+        assert!(!telemetry.selector_invoked);
+        assert_eq!(telemetry.candidates.len(), request.candidates.len());
+    }
+
+    #[test]
+    fn deterministic_candidate_choice_is_independent_of_summary_order() {
+        let candidate = |id: &str, kind: &str, score| CandidateSummary {
+            candidate_id: id.into(),
+            plan_kind: kind.into(),
+            label: id.into(),
+            score,
+            material_delta: 0.0,
+            gold_delta: 0,
+            village_delta: 0,
+            recruiter_alive: true,
+            objective_progress: 0.0,
+            opponent_response_delta: 0.0,
+            legal: true,
+            state_revision: 1,
+        };
+        let candidates = vec![
+            candidate("greedy", "greedy", 5.0),
+            candidate("lookahead", "lookahead", 7.0),
+            candidate("objective", "objective", 7.0),
+        ];
+        assert_eq!(
+            deterministic_baseline_candidate(&candidates),
+            Some("objective")
+        );
+        assert_eq!(
+            deterministic_baseline_candidate(&candidates.into_iter().rev().collect::<Vec<_>>()),
+            Some("objective")
+        );
+    }
+
+    #[test]
     fn coordinated_selection_does_not_use_live_rng_for_ranking() {
         let board = setup_keep_board(0, 0);
         let mut first = GameState::new_seeded(board.clone(), 11);
@@ -3649,8 +3920,14 @@ mod tests {
         simulate_complete_greedy_response(&mut state);
 
         assert_eq!(state.active_faction, 0);
-        assert!(state.units[&1].hp < before_hp, "enemy response must execute an attack");
-        assert!(state.turn >= 2, "complete response must advance the round clock");
+        assert!(
+            state.units[&1].hp < before_hp,
+            "enemy response must execute an attack"
+        );
+        assert!(
+            state.turn >= 2,
+            "complete response must advance the round clock"
+        );
     }
 
     #[test]
