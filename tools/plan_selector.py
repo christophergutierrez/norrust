@@ -469,14 +469,14 @@ def run_selector_envelope(
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the local identity-preserving command adapter.
 
-    The adapter is deliberately deterministic until the provider transport
-    stack supplies a backend. ``--candidate-id`` is a local test hook; absent
-    that option, the engine-ranked baseline is returned.
+    ``--candidate-id`` is an offline test hook. Otherwise route the canonical
+    request to one configured Fireworks model, preserving its identity.
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidate-id", help="local test candidate ID")
-    parser.add_argument("--model", default=os.environ.get(
-        "NORRUST_SELECTOR_MODEL", "accounts/fireworks/models/deepseek-v4p1-flash"))
+    parser.add_argument("--model", help="single model for all selected sides")
+    parser.add_argument("--team1-model", choices=sorted(MODEL_PROFILES))
+    parser.add_argument("--team2-model", choices=sorted(MODEL_PROFILES))
     parser.add_argument("--reasoning-effort", default=os.environ.get(
         "NORRUST_SELECTOR_REASONING_EFFORT", "low"))
     parser.add_argument("--max-output-tokens", type=int, default=int(os.environ.get(
@@ -484,6 +484,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=float(os.environ.get(
         "NORRUST_SELECTOR_TIMEOUT_SECONDS", str(SELECTOR_TIMEOUT_SECONDS))))
     args = parser.parse_args(argv)
+    paired = args.team1_model is not None or args.team2_model is not None
+    if paired and (not args.team1_model or not args.team2_model or args.model):
+        parser.error("supply both --team1-model and --team2-model, without --model")
     line = sys.stdin.readline(MAX_PROMPT_BYTES * 2)
     if not line:
         print("selector envelope is required", file=sys.stderr)
@@ -495,8 +498,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "schema_version": SCHEMA_VERSION, "candidate_id": args.candidate_id,
             }, separators=(",", ":")))
         else:
+            model = ((args.team1_model, args.team2_model)[envelope.request.side]
+                     if paired else args.model or os.environ.get(
+                         "NORRUST_SELECTOR_MODEL", "accounts/fireworks/models/deepseek-v4p1-flash"))
             result = run_selector_envelope(
-                envelope, model=args.model, reasoning_effort=args.reasoning_effort,
+                envelope, model=model, reasoning_effort=args.reasoning_effort,
                 max_output_tokens=args.max_output_tokens, timeout=args.timeout,
             )
             if result.fallback_reason is not None:

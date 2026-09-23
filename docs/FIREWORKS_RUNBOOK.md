@@ -81,7 +81,7 @@ owns action generation and execution. The explicit model/reasoning allowlist
 is maintained in [LLM_CLIENT.md](LLM_CLIENT.md#fireworks-selector-for-the-coordinated-planner)
 and `tools/plan_selector.py`; the current profiles use `low` reasoning. Each has a
 2,048 output-token limit, 60-second deadline, 12,288-byte prompt limit, one
-physical attempt per request, and a 32-request per-game ceiling. No retries or
+physical attempt per request, and a 32-request per-side per-game ceiling. No retries or
 escalation are performed. A failed, invalid, truncated, or late reply uses the
 deterministic planner baseline.
 
@@ -121,6 +121,11 @@ with hand-counted or position-derived IDs. The per-game evidence directory
 contains the selector's prompt and request evidence; keep it alongside its
 usage sidecar so each physical call can be joined to its exact selector
 decision.
+
+For two model-controlled sides, use the [two-selector launch and accounting
+procedure](LLM_CLIENT.md#two-model-selectors-in-one-game). Both participants need
+independent reservations whose sum fits the game cap; route models with
+`--team1-model` and `--team2-model`, and import the full recorded trajectory.
 
 ### Selector budget and accounting
 

@@ -178,9 +178,15 @@ control of game actions. Keep the selector call limits fixed: GLM-5.3-Flash
 (`accounts/fireworks/models/glm-5p3-flash`) or DeepSeek V4.1 Flash
 (`accounts/fireworks/models/deepseek-v4p1-flash`), explicit `low` reasoning,
 2,048 output tokens, a 60-second provider deadline, at most 12,288 prompt bytes,
-at most 32 requests per game, and no retries. A timeout, invalid response,
+at most 32 requests per selected side per game, and no retries. A timeout, invalid response,
 provider error, or exhausted request budget falls back to the planner's
 deterministic baseline.
+
+`--selector-side both` enables selectors for both coordinated teams, each with
+an independent budget and failure circuit. The adapter accepts `--team1-model`
+and `--team2-model` together for different models; see the
+[two-selector procedure](LLM_CLIENT.md#two-model-selectors-in-one-game) for
+routing, evidence collection, and per-model budget reservation.
 
 Use a separate directory for each game so its usage and prompt evidence cannot
 mix with another run:

@@ -235,6 +235,38 @@ class PlanSelectorTests(unittest.TestCase):
         self.assertEqual(response["request_sha256"], envelope.request_sha256)
         self.assertEqual(response["response"]["candidate_id"], "objective")
 
+    def test_cli_routes_each_team_to_its_model_preserving_prompt_and_identity(self):
+        models = ("accounts/fireworks/models/minimax-m3", "accounts/fireworks/models/kimi-k3")
+        for side, model in enumerate(models):
+            envelope = opening_envelope()
+            request = dataclasses.replace(envelope.request, side=side)
+            input_line = json.dumps({"schema_version": 1, "game_id": envelope.game_id,
+                "decision_id": envelope.decision_id, "request_sha256": envelope.request_sha256,
+                "request": request.to_dict()})
+            seen = []
+            def fake_run(prompt, **kwargs):
+                seen.append((prompt, kwargs))
+                return {"text": '{"schema_version":1,"candidate_id":"objective"}'}
+            output = io.StringIO()
+            with patch("tools.plan_selector.fireworks_backend.run", fake_run), \
+                 patch("sys.stdin", io.StringIO(input_line)), patch("sys.stdout", output):
+                from tools.plan_selector import main
+                self.assertEqual(main(["--team1-model", models[0], "--team2-model", models[1]]), 0)
+            self.assertEqual(len(seen), 1)
+            self.assertEqual(seen[0][1]["model"], model)
+            self.assertEqual(seen[0][0], build_selector_prompt(request))
+            self.assertEqual(json.loads(output.getvalue())["decision_id"], envelope.decision_id)
+
+    def test_cli_rejects_incomplete_or_ambiguous_team_models_before_dispatch(self):
+        model = "accounts/fireworks/models/minimax-m3"
+        for args in (["--team1-model", model], ["--team2-model", model],
+                     ["--team1-model", model, "--team2-model", model, "--model", model]):
+            with patch("tools.plan_selector.fireworks_backend.run") as transport, \
+                 patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
+                from tools.plan_selector import main
+                main(args)
+            transport.assert_not_called()
+
     def test_cli_provider_failure_and_truncation_exit_without_stdout_choice(self):
         envelope = opening_envelope()
         input_line = json.dumps({

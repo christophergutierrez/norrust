@@ -796,7 +796,7 @@ Use the exact bounded profiles supported by `tools.plan_selector`:
 
 All curated profiles use 2,048 maximum output tokens, a 60-second provider
 deadline, a 12,288-byte maximum prompt, no retries, and no more than 32 provider
-requests per game. Errors, malformed or truncated replies, timeouts, and
+requests per selected side per game. Errors, malformed or truncated replies, timeouts, and
 exhausted budgets use the deterministic engine baseline. The list is an
 explicit allowlist in `tools.plan_selector`; model availability alone does not
 enable an endpoint. Keep this separate from direct action mode:
@@ -846,6 +846,43 @@ does not include direct-action retries. Reconcile after terminal completion;
 retain the reservation when any dispatched usage is unknown. Never reset,
 recreate, or infer a ledger balance from an old report. For the full operator
 procedure, see [FIREWORKS_RUNBOOK.md](FIREWORKS_RUNBOOK.md#coordinated-planner-selector).
+
+### Two model selectors in one game
+
+Use `--ai1 coordinated --ai2 coordinated --selector-side both`. Each side has
+its own 32-request allowance and failure circuit breaker. For different models,
+replace the adapter's `--model` arguments with:
+
+```bash
+  --selector-arg --team1-model --selector-arg accounts/fireworks/models/minimax-m3 \
+  --selector-arg --team2-model --selector-arg accounts/fireworks/models/glm-5p3-flash
+```
+
+Both team options are required together and cannot be combined with `--model`.
+The adapter routes using the validated request's zero-based `side` (Team 1 is
+side 0), preserving the canonical prompt and identity. Both models write into
+this game's isolated usage sidecar and evidence directory; each call records
+its requested model and decision identity. `--model` still applies one model
+to every selected side when team-specific routing is unnecessary.
+
+Reserve both participants before launch using separate model-priced ledgers;
+the sum of their computed reservations must fit the authorized game cap.
+Allocate disjoint portions of that cap to the two ledgers, never duplicate the
+whole cap. Keep historical ledgers intact. After the process stops, split the
+combined usage sidecar by proven request side into participant accounting
+subdirectories, retaining original records and verifying each requested model
+against its assigned side. Copy terminal status to each accounting directory
+and reconcile its ledger at that model's rates. Import the full
+`--record-dir` trajectory (not the stdout result summary) into the game catalog,
+then attach the original combined usage sidecar. Preserve unknown usage and
+held reservations. Parallel games require independent reserved ledgers and
+isolated artifacts, never concurrent writes to one ledger.
+
+For decision analysis, report accepted choices that match or differ from
+`telemetry.baseline_candidate_id` separately from `skipped_clear_lead`, provider
+failures, request-cap fallbacks, and circuit-breaker skips. A different candidate
+ID proves a selection override, not necessarily a different executed action
+sequence or a beneficial move.
 
 ## Usage accounting: launch, handoff, collection, and final report
 

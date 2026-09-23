@@ -72,6 +72,12 @@ enum FirstPlayer {
     CoinFlip,
 }
 
+#[derive(Clone, Copy)]
+enum SelectorSides {
+    One(u8),
+    Both,
+}
+
 #[derive(Clone)]
 struct Config {
     scenario: String,
@@ -97,7 +103,7 @@ struct Config {
     selector_response_file: Option<PathBuf>,
     selector_command: Option<PathBuf>,
     selector_args: Vec<String>,
-    selector_side: Option<u8>,
+    selector_side: Option<SelectorSides>,
     selector_usage_sidecar: Option<PathBuf>,
     selector_evidence_dir: Option<PathBuf>,
     recruit1_policy: RecruitPolicy,
@@ -159,7 +165,7 @@ Options:
   --selector-response-file PATH  Local selector v1 JSON reply, used on close decisions
   --selector-command PROGRAM  Run one request-dependent local selector command
   --selector-arg ARG      Append one argument to --selector-command (repeatable)
-  --selector-side SIDE    Controlled side: 1 or 2; must use coordinated AI
+  --selector-side SIDE    Controlled side: 1, 2, or both; each must use coordinated AI
   --selector-usage-sidecar PATH  Export environment path for provider usage records
   --selector-evidence-dir PATH  Export environment path for provider evidence
   --recruit1-policy KIND  team 1 recruitment: first-affordable | balanced
@@ -270,8 +276,9 @@ fn parse_args() -> Config {
             "--selector-command" => c.selector_command = Some(PathBuf::from(value)),
             "--selector-side" => {
                 c.selector_side = Some(match value.as_str() {
-                    "1" => 0,
-                    "2" => 1,
+                    "1" => SelectorSides::One(0),
+                    "2" => SelectorSides::One(1),
+                    "both" => SelectorSides::Both,
                     _ => usage(),
                 })
             }
@@ -334,17 +341,18 @@ fn parse_args() -> Config {
         usage();
     }
     if configured_selector(&c) {
-        let Some(side) = c.selector_side else {
-            eprintln!("a selector backend requires --selector-side 1|2");
+        if c.selector_side.is_none() {
+            eprintln!("a selector backend requires --selector-side 1|2|both");
             usage();
-        };
-        let kind = if side == 0 { c.ai1 } else { c.ai2 };
-        if !matches!(kind, AiKind::Coordinated) {
-            eprintln!(
-                "selector controlled side must use --ai{} coordinated",
-                side + 1
-            );
-            usage();
+        }
+        for (side, kind) in [(0, c.ai1), (1, c.ai2)] {
+            if configured_selector_for_side(&c, side) && !matches!(kind, AiKind::Coordinated) {
+                eprintln!(
+                    "selector controlled side must use --ai{} coordinated",
+                    side + 1
+                );
+                usage();
+            }
         }
     } else if c.selector_side.is_some() {
         eprintln!("--selector-side requires a configured selector backend");
@@ -692,7 +700,12 @@ fn configured_selector(config: &Config) -> bool {
 }
 
 fn configured_selector_for_side(config: &Config, side: u8) -> bool {
-    configured_selector(config) && config.selector_side == Some(side)
+    configured_selector(config)
+        && match config.selector_side {
+            Some(SelectorSides::Both) => side < 2,
+            Some(SelectorSides::One(selected)) => side == selected,
+            None => false,
+        }
 }
 
 fn record_actions(
@@ -837,7 +850,10 @@ fn run_game(c: &Config, game: u32) -> GameResult {
     state.active_faction = first;
     let mut rng = mix_seed(game_seed ^ 0xa0761d6478bd642f);
     let mut planner_memory = [PlannerMemory::default(), PlannerMemory::default()];
-    let mut selector_budget = SelectorBudget::new(SelectorLimits::default());
+    let mut selector_budgets = [
+        SelectorBudget::new(SelectorLimits::default()),
+        SelectorBudget::new(SelectorLimits::default()),
+    ];
     let mut next_id = 3;
     let limit = side_turn_cap;
     let board_path = base.join("scenarios").join(&c.scenario).join("board.toml");
@@ -899,7 +915,7 @@ fn run_game(c: &Config, game: u32) -> GameResult {
                 &mut planner_memory[0],
                 configured_selector_for_side(c, 0),
                 c,
-                &mut selector_budget,
+                &mut selector_budgets[0],
             );
             record_actions(&mut recording, step, 0, &actions);
             if let Some((request, telemetry)) = telemetry {
@@ -946,7 +962,7 @@ fn run_game(c: &Config, game: u32) -> GameResult {
                 &mut planner_memory[1],
                 configured_selector_for_side(c, 1),
                 c,
-                &mut selector_budget,
+                &mut selector_budgets[1],
             );
             record_actions(&mut recording, step, 1, &actions);
             if let Some((request, telemetry)) = telemetry {
@@ -1382,6 +1398,21 @@ mod tests {
     }
 
     #[test]
+    fn selector_sides_support_both_and_keep_single_side_isolated() {
+        let mut config = test_config();
+        config.selector_candidate = Some("greedy".into());
+        config.selector_side = Some(SelectorSides::Both);
+        assert!(configured_selector_for_side(&config, 0));
+        assert!(configured_selector_for_side(&config, 1));
+        assert!(!configured_selector_for_side(&config, 2));
+        config.selector_side = Some(SelectorSides::One(1));
+        assert!(!configured_selector_for_side(&config, 0));
+        assert!(configured_selector_for_side(&config, 1));
+        config.selector_candidate = None;
+        assert!(!configured_selector_for_side(&config, 1));
+    }
+
+    #[test]
     fn command_selector_choice_controls_the_live_coordinated_turn() {
         let data = root().join("data");
         let units: Registry<UnitDef> = Registry::load_from_dir(&data.join("units")).unwrap();
@@ -1417,7 +1448,7 @@ print(json.dumps({"schema_version": 1, "game_id": request["game_id"],
         let mut config = test_config();
         config.selector_command = Some(PathBuf::from("python3"));
         config.selector_args = vec!["-c".into(), responder.into()];
-        config.selector_side = Some(0);
+        config.selector_side = Some(SelectorSides::One(0));
         config.selector_usage_sidecar = Some(PathBuf::from("/tmp/selector-usage.ndjson"));
         config.selector_evidence_dir = Some(PathBuf::from("/tmp/selector-evidence"));
         let mut live = initial.clone();
